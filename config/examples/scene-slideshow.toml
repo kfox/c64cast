@@ -1,0 +1,48 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: cycle through still images on the C64 display.
+#
+# `file =` is a comma-separated list of paths, directories, and/or globs
+# (same grammar as `commercial` / `waveform` scenes). Each setup picks
+# from the resolved pool with a shuffle-and-walk picker — every image is
+# shown once before any repeats; no image appears twice back-to-back
+# across reshuffle boundaries.
+#
+# If `file =` is omitted, the scene falls back to scanning
+# `assets/pictures/` (the default directory). Drop some JPGs in there
+# and either set `file =` below or comment it out to use the default.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-slideshow.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_ads = false   # single-scene mode — loops the slideshow forever
+
+[[scenes]]
+type = "slideshow"
+# `display`:
+#   "mhires"      — multi-hires per-cell palette (default — best color)
+#   "hires"       — 320×200 monochrome bitmap
+#   "hires_edges" — Canny edges (treated as "mhires" — `hires_edges` is
+#                   tuned for live webcam; use `hires` for plain bitmap)
+#   "mcm"         — multicolor character mode (160×200 effective)
+#   "petscii"     — character mode with luma → glyph ramp
+#   "random"      — pick one of the above at each scene setup (varies on
+#                   single-scene loop iterations)
+display = "mhires"
+# `file` accepts: a single path, a directory, a glob, or any
+# comma-separated combination. Each setup re-resolves the pool.
+#   file = "assets/pictures/photo.jpg"
+#   file = "assets/pictures"                      # whole directory
+#   file = "assets/pictures/*.png"                # glob
+#   file = "assets/pictures, assets/extra/*.jpg"  # combination
+# Omit the field entirely to fall back to scanning assets/pictures/.
+file = "assets/pictures"
+# Total scene runtime. Standard 30 s default if unset.
+duration_s = 60.0
+# Per-image display time before advancing to the next image. Independent
+# of duration_s — the cycler advances on its own timer and the scene
+# ends when duration_s expires.
+image_duration_s = 5.0

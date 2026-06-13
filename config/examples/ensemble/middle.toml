@@ -1,0 +1,43 @@
+# Per-system config for the middle screen.
+
+[ultimate64]
+url = "http://u64-middle.lan"
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "blank"
+name = "middle-idle"
+duration_s = 600
+border = 4
+background = 14
+
+  [[scenes.overlays]]
+  type = "weather"
+  corner = "top-right"
+  lat = 35.78
+  lon = -78.64
+
+  [[scenes.overlays]]
+  type = "callsign"
+  corner = "top-left"
+  text = "MIDDLE"
+  fg_color = "light gray"
+
+# Follower scene for the right-side conductor's "morning-hello" broadcast.
+# See left.toml's matching scene for an explanation of why this exists
+# and what the placeholder messages are for. `follower_only = true`
+# keeps it out of the regular rotation.
+[[scenes]]
+type = "blank"
+name = "morning-hello"
+follower_only = true
+border = 4
+background = 0
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  loop = false
+  messages = [{ text = "PLACEHOLDER (overridden by conductor snapshot)" }]

@@ -1,0 +1,39 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + weather overlay.
+#
+# Polls a weather provider in a background thread; renders temp +
+# condition string in a corner. Two providers supported:
+#   open-meteo — requires lat / lon. No API key.
+#   wttr.in    — requires a location name (city, airport code, etc.).
+#
+# Edit the lat/lon (or switch to wttr.in) to point at your own location
+# before running.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-weather.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "weather demo"
+
+  [[scenes.overlays]]
+  type = "weather"
+  provider = "open-meteo"        # open-meteo | wttr.in
+  lat = 30.27                    # Austin, TX — replace with yours
+  lon = -97.74
+  # location = "Austin"          # use with provider = "wttr.in" instead of lat/lon
+  units = "F"                    # F | C
+  corner = "top-left"
+  fg_color = "light blue"
+  bg_color = "black"
+  refresh_minutes = 10

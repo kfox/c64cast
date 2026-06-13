@@ -1,0 +1,864 @@
+"""Command-line entry point.
+
+CLI flags layer on top of a TOML config (``--config PATH`` or
+``./c64cast.toml``). Precedence: built-in defaults < config file < CLI.
+Every overridable option uses ``default=None`` so the merge step can tell
+"user didn't pass it" from "user passed the default".
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from typing import TYPE_CHECKING
+
+from . import (
+    __version__,
+    orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
+)
+from . import config as cfgmod
+from .api import SocketDMAError
+from .audio import AUDIO_AVAILABLE, AudioStreamer
+from .backend import C64Backend, make_backend
+from .ensemble import Ensemble, SystemStack
+from .interstitial import default_factory as interstitial_factory
+from .keyboard import CommodoreKeyPoller
+from .playlist import Playlist
+from .profiler import FrameProfiler, NullProfiler, set_profiler
+from .teensyrom_dma import TRError
+from .video import WebcamSource
+from .vision import MediaPipeHandRecognizer, VisionController
+
+if TYPE_CHECKING:
+    from .framebuffer import Framebuffer
+    from .preview import PreviewWindow, StreamRecorder
+
+log = logging.getLogger("c64cast")
+
+
+class StackBuildError(Exception):
+    """Raised by build_stack when a per-system stack cannot be constructed.
+    The user-facing diagnostic has already been logged; this just carries
+    the exit code main() should return."""
+
+    def __init__(self, exit_code: int):
+        super().__init__(f"stack build failed (exit code {exit_code})")
+        self.exit_code = exit_code
+
+
+def build_parser() -> argparse.ArgumentParser:
+    # Pull defaults from the config dataclasses so help text stays in sync
+    # with the actual fallback values. CLI options use default=None at the
+    # argparse layer so merge_cli() can distinguish "not provided" from
+    # "explicitly set to the default"; the `(default: ...)` shown in --help
+    # is the value the merge cascade lands on when nothing overrides it.
+    u64_def = cfgmod.Ultimate64Cfg()
+    video_def = cfgmod.VideoCfg()
+    audio_def = cfgmod.AudioCfg()
+    vision_def = cfgmod.VisionCfg()
+    playlist_def = cfgmod.PlaylistCfg()
+    debug_def = cfgmod.DebugCfg()
+
+    p = argparse.ArgumentParser(
+        prog="c64cast",
+        description="C64 AV streamer framework (Ultimate 64)",
+    )
+
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
+    p.add_argument("--config", default=None,
+                   help="Path to TOML config (default: ./c64cast.toml if it exists)")
+
+    tr_def = cfgmod.TeensyromCfg()
+
+    hw = p.add_argument_group("hardware")
+    hw.add_argument("--backend", choices=list(cfgmod._BACKEND_CHOICES),
+                    default=None,
+                    help="Hardware backend driving the C64 "
+                         f"(default: {cfgmod.HardwareCfg().backend})")
+    hw.add_argument("--tr-transport", choices=list(cfgmod._TR_TRANSPORT_CHOICES),
+                    default=None,
+                    help=f"TeensyROM+ control link (default: {tr_def.transport})")
+    hw.add_argument("--tr-serial-port", default=None,
+                    help="TeensyROM+ serial device (transport=serial)")
+    hw.add_argument("--tr-host", default=None,
+                    help="TeensyROM+ IP address (transport=tcp)")
+
+    u = p.add_argument_group("ultimate 64")
+    u.add_argument("-u", "--url", default=None,
+                   help=f"Base U64 REST URL (default: {u64_def.url})")
+    u.add_argument("-s", "--system", choices=["NTSC", "PAL"], default=None,
+                   help=f"Target system timing (default: {u64_def.system})")
+    u.add_argument("--dma-port", type=int, default=None,
+                   help=f"TCP port for the U64 Socket DMA service (default: {u64_def.dma_port})")
+
+    v = p.add_argument_group("video input")
+    v.add_argument("-d", "--device", type=int, default=None,
+                   help=f"Webcam device index, -1 = system default (default: {video_def.device})")
+
+    a = p.add_argument_group("audio")
+    a.add_argument("-A", "--audio", action="store_true", default=None,
+                   help=f"Enable audio streaming to the SID volume DAC (default: {audio_def.enabled})")
+    a.add_argument("-D", "--audio-device", type=int, default=None,
+                   help=f"Audio input device index, -1 = system default microphone (default: {audio_def.device})")
+    a.add_argument("-r", "--sample-rate", type=int, default=None,
+                   help=f"Audio sample rate in Hz (default: {audio_def.sample_rate})")
+    a.add_argument("-m", "--mic-sensitivity", type=float, default=None,
+                   help=f"Microphone input gain multiplier (default: {audio_def.mic_sensitivity})")
+    a.add_argument("-n", "--noise-gate", type=float, default=None,
+                   help=f"Threshold below which mic input is muted (default: {audio_def.noise_gate})")
+
+    vis = p.add_argument_group("vision input")
+    vis.add_argument("--vision", action="store_true", default=None,
+                     help="Enable webcam hand-gesture control "
+                          "(pinch=pause/resume, swipe=skip, open-hand=cycle); "
+                          f"needs the 'vision' extra (default: {vision_def.enabled})")
+    vis.add_argument("--vision-model", default=None,
+                     help="Path to the MediaPipe HandLandmarker .task model "
+                          f"(default: {vision_def.model_path})")
+
+    pl = p.add_argument_group("playlist")
+    pl.add_argument("--ads", default=None,
+                    help=f"Directory containing commercials "
+                         f"({', '.join(cfgmod.VIDEO_EXTS)}) "
+                         f"(default: {playlist_def.ads_dir})")
+    pl.add_argument("--loop", action=argparse.BooleanOptionalAction,
+                    default=None,
+                    help="Loop the playlist after the last scene finishes "
+                         "(--no-loop = exit after one pass; useful for "
+                         f"\"play one commercial and quit\") (default: {playlist_def.loop})")
+
+    intro = p.add_argument_group("introspection")
+    intro.add_argument("--list-scenes", action="store_true",
+                       help="List scene types and exit")
+    intro.add_argument("--list-overlays", action="store_true",
+                       help="List overlays and exit")
+    intro.add_argument("--list-modes", action="store_true",
+                       help="List display modes and exit")
+    intro.add_argument("--describe", metavar="NAME", default=None,
+                       help="Describe a scene/overlay/section/mode and exit. "
+                            "Prefix to disambiguate: scene:, overlay:, "
+                            "section:, mode: (e.g. --describe overlay:clock)")
+    intro.add_argument("--compat", action="store_true",
+                       help="Print the overlay × display-mode compatibility "
+                            "matrix and exit")
+    intro.add_argument("--print-schema", action="store_true",
+                       help="Print the JSON Schema for the TOML config and exit "
+                            "(point your editor's `#:schema` at it for autocomplete)")
+    intro.add_argument("--init", nargs="?", const="", default=None,
+                       metavar="PATH",
+                       help="Interactively build a config file (needs the "
+                            "'wizard' extra). Optional PATH sets the output "
+                            "file (default ./c64cast.toml)")
+
+    debug = p.add_argument_group("debug")
+    debug.add_argument("-v", "--verbose", action="count", default=None,
+                       help="Increase log verbosity (default: INFO; -v enables DEBUG)")
+    debug.add_argument("--heartbeat", type=float, default=None,
+                       help=f"Health heartbeat interval in seconds, 0 disables (default: {debug_def.heartbeat})")
+    debug.add_argument("--skip-probe", action="store_true", default=None,
+                       help=f"Skip the startup U64 reachability probe (default: {debug_def.skip_probe})")
+    debug.add_argument("--list-devices", action="store_true",
+                       help="List available audio and video input devices and exit")
+    debug.add_argument("--doctor", action="store_true",
+                       help="Validate the whole config (all scenes/overlays at "
+                            "once), check optional extras + probe each U64, then "
+                            "exit. Add --skip-probe for a fast, offline, "
+                            "hardware-free config check.")
+    debug.add_argument("--log-file", default=None, metavar="PATH",
+                       help="Mirror log output to PATH (useful for headless runs)")
+    debug.add_argument("--profile", action=argparse.BooleanOptionalAction,
+                       default=None,
+                       help="Emit per-scene frame timing summaries (cpu_render "
+                            "/ compose / push / wait, plus DMA writes/bytes per "
+                            f"frame) (default: {debug_def.profile})")
+    debug.add_argument("--profile-interval", type=float, default=None,
+                       metavar="SECONDS",
+                       help=f"Seconds between profiler summary lines (default: {debug_def.profile_interval})")
+    debug.add_argument("--frame-numbers", action="store_true", default=None,
+                       help="Overlay playback timecode + source frame number on "
+                            "video frames (debug aid for locating flashing "
+                            f"frames) (default: {debug_def.frame_numbers})")
+    return p
+
+
+def configure_logging(verbosity: int, log_file: str | None = None) -> None:
+    """Wire up the root logger.
+
+    Terminal: RichHandler (color + columns) when `rich` is installed; plain
+    StreamHandler otherwise. File: when `log_file` is given, also append to
+    that path with a verbose plain-text format. Safe to call more than once
+    — clears any existing handlers first so a re-call (e.g. after config
+    load) doesn't double up."""
+    # Default level is INFO so the user sees lifecycle messages (scene
+    # transitions, audio bring-up, keypress detection, resets) without
+    # needing -v. -v / -vv bumps to DEBUG.
+    level = logging.INFO
+    if verbosity >= 1:
+        level = logging.DEBUG
+
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    root.setLevel(level)
+
+    try:
+        # rich is an optional [logging] extra; pyright doesn't see it unless installed.
+        from rich.logging import RichHandler  # pyright: ignore[reportMissingImports]
+        terminal: logging.Handler = RichHandler(
+            level=level, show_path=False, rich_tracebacks=True,
+            log_time_format="%H:%M:%S",
+        )
+        terminal.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    except ImportError:
+        terminal = logging.StreamHandler()
+        terminal.setLevel(level)
+        terminal.setFormatter(logging.Formatter(
+            "%(asctime)s %(name)s %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S"))
+    root.addHandler(terminal)
+
+    if log_file:
+        try:
+            fh = logging.FileHandler(log_file, encoding="utf-8")
+        except OSError as e:
+            # Don't let a bad --log-file path kill the run; surface and
+            # continue with just the terminal handler.
+            log.warning("could not open log file %s: %s", log_file, e)
+        else:
+            fh.setLevel(level)
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s %(name)s %(levelname)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"))
+            root.addHandler(fh)
+
+
+def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) -> None:
+    """Emit a multi-line, user-actionable error covering both the
+    'service disabled' and 'auth' cases. The role label disambiguates
+    the render vs audio sockets in the log so the user knows which one
+    failed if only one of them does."""
+    log.error("Could not open the U64 Socket DMA %s socket at %s:%d.",
+              role, cfg.ultimate64.url, cfg.ultimate64.dma_port)
+    log.error("Underlying error: %s", e)
+    log.error("Check, in order:")
+    log.error("  1. F2 Menu -> Network Settings -> Ultimate DMA Service -> Enabled")
+    log.error("  2. F2 Menu -> Network Settings -> Command Interface -> Enabled")
+    log.error("     (both toggles must be on; the second one gates command "
+              "dispatch even when the listening socket is open)")
+    log.error("  3. If a network password is set on the U64, supply it via the "
+              "C64CAST_DMA_PASSWORD env var or [ultimate64] dma_password.")
+    log.error("Save and reboot the U64 after changing either toggle.")
+
+
+def list_devices() -> int:
+    print("Audio input devices (use with -D / --audio-device):")
+    if AUDIO_AVAILABLE:
+        import sounddevice as sd
+        try:
+            default_in = sd.default.device[0]
+        except Exception:
+            default_in = None
+        any_input = False
+        for idx, d in enumerate(sd.query_devices()):
+            if d["max_input_channels"] <= 0:
+                continue
+            any_input = True
+            marker = " *" if idx == default_in else "  "
+            print(f" {marker}[{idx}] {d['name']} "
+                  f"({d['max_input_channels']}ch @ {int(d['default_samplerate'])} Hz)")
+        if not any_input:
+            print("    (no input-capable audio devices found)")
+    else:
+        print("    (sounddevice not installed)")
+
+    print()
+    print("Video input devices (use with -d / --device):")
+    import cv2
+    found = []
+    # Probing past the highest valid index makes OpenCV (and the AVFoundation
+    # / FFmpeg backends underneath it) print to stderr at the C level. Mute
+    # those for the duration of the probe via fd-level redirection.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_stderr_fd = os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull_fd, 2)
+    try:
+        for idx in range(8):
+            cap = cv2.VideoCapture(idx)
+            try:
+                if cap is not None and cap.isOpened():
+                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    found.append((idx, w, h))
+            finally:
+                if cap is not None:
+                    cap.release()
+    finally:
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
+    if found:
+        for idx, w, h in found:
+            print(f"   [{idx}] {w}x{h}")
+    else:
+        print("    (no webcams responded to OpenCV probe)")
+
+    if sys.platform == "darwin":
+        # Prefer the jq pipeline when jq is on PATH — it collapses
+        # system_profiler's verbose multi-line dump into a clean
+        # `index:name` listing that lines up with AVFoundation's (and
+        # therefore OpenCV's) device enumeration. Falls back to the raw
+        # dump when jq isn't installed.
+        cmd = (["sh", "-c",
+                "system_profiler -json SPCameraDataType 2>/dev/null | "
+                "jq -r '.SPCameraDataType[]._name' | nl -v0 -w1 -s:"]
+               if shutil.which("jq")
+               else ["system_profiler", "SPCameraDataType"])
+        try:
+            out = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            out = None
+        if out is not None and out.returncode == 0 and out.stdout.strip():
+            print()
+            print("macOS cameras (system_profiler SPCameraDataType):")
+            for line in out.stdout.splitlines():
+                if line.strip():
+                    print(f"    {line.rstrip()}")
+    return 0
+
+
+def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
+    """Decide whether [video].use_reu_staged = "auto" should enable REU
+    bank-swap staging for this system, by asking the U64 if its REU is on.
+
+    Returns False (auto → host-DMA everywhere) unless the setting is literally
+    "auto" AND the backend has a REU AND a probe is allowed AND the firmware
+    reports the REU Enabled. Any uncertainty (explicit setting, --skip-probe,
+    no-REU backend, failed query, REU disabled) degrades to host-DMA so video
+    never silently freezes. Logs the verdict so the chosen path is visible."""
+    if cfg.video.use_reu_staged != "auto":
+        return False   # explicit true/false ignores the probe entirely
+    if not api.profile.supports_reu:
+        return False   # backend (e.g. TeensyROM) has no REU to stage into
+    if cfg.debug.skip_probe:
+        log.info("[video].use_reu_staged = auto, but --skip-probe is set — "
+                 "keeping video on the host-DMA path (REU undetected).")
+        return False
+    from . import doctor
+    enabled = doctor.reu_is_enabled(api)
+    if enabled:
+        log.info("[video].use_reu_staged = auto: U64 REU is enabled — "
+                 "double-buffering bitmap (hires/mhires) scenes via REU "
+                 "bank-swap; char modes stay on host-DMA.")
+        return True
+    if enabled is None:
+        log.warning("[video].use_reu_staged = auto: could not read the U64 REU "
+                    "state — keeping video on the host-DMA path.")
+    else:
+        log.info("[video].use_reu_staged = auto: U64 REU is disabled — "
+                 "keeping video on the host-DMA path (enable it at F2 -> C64 "
+                 "and Cartridge Settings -> RAM Expansion Unit to "
+                 "double-buffer bitmap scenes).")
+    return False
+
+
+def build_stack(cfg: cfgmod.Config, name: str, args: argparse.Namespace, *,
+                stop_event: threading.Event,
+                profiler: FrameProfiler | NullProfiler,
+                is_ensemble: bool = False) -> SystemStack:
+    """Construct one system's full runtime stack (api + audio + source +
+    playlist + preview/recording). Raises StackBuildError on any failure
+    that should terminate the process; the user-facing message is logged
+    before the raise. The caller is responsible for tearing down whatever
+    stacks succeeded if a later one fails.
+
+    `is_ensemble=True` propagates into `scenes_from_config` so live
+    scenes (webcam, blank) are built with audio suppressed — the
+    ensemble audio lock arbitrates which system drives the SID."""
+    # Only open the camera when a scene actually needs it. Skipping the open
+    # otherwise means a "blank" or "waveform"-only playlist won't fail on a
+    # box without a webcam (or one whose OS-level camera permission is denied,
+    # which is the typical macOS first-run snag in IDE-launched runs).
+    # The shared camera broker feeds both webcam scenes and the (always-on)
+    # vision controller, so open it if either wants it.
+    needs_webcam = any(s.type == "webcam" for s in cfg.scenes)
+    needs_camera = needs_webcam or cfg.vision.enabled
+    source: WebcamSource | None = None
+    if needs_camera:
+        try:
+            source = WebcamSource(cfg.video.device)
+        except RuntimeError as e:
+            log.error("%s", e)
+            raise StackBuildError(1) from e
+    else:
+        log.debug("no webcam or vision scenes — skipping video device init")
+
+    try:
+        api = make_backend(cfg)
+    except SocketDMAError as e:
+        _log_dma_setup_error(cfg, e, role="render")
+        if source is not None:
+            source.release()
+        raise StackBuildError(4) from e
+    except TRError as e:
+        log.error("TeensyROM connect failed (%s): %s. Check the cable / "
+                  "serial port (transport=serial) or 'Enable TCP Listener' "
+                  "+ host (transport=tcp).", name, e)
+        if source is not None:
+            source.release()
+        raise StackBuildError(4) from e
+
+    if not cfg.debug.skip_probe:
+        status = api.probe()
+        if status is None:
+            log.error("Could not reach the C64 hardware (%s backend) — check "
+                      "power, connection, and config. (use --skip-probe to "
+                      "bypass)", cfg.hardware.backend)
+            api.close()
+            if source is not None:
+                source.release()
+            raise StackBuildError(2)
+        log.info("%s reachable: %s", cfg.hardware.backend, status)
+
+    audio = (AudioStreamer(api, cfg.audio.sample_rate, cfg.ultimate64.system,
+                           dither=cfg.audio.dither,
+                           digi_boost=cfg.audio.digi_boost,
+                           sid_filter_cutoff=cfg.audio.sid_filter_cutoff,
+                           use_reu_pump=cfg.audio.use_reu_pump,
+                           reu_pump_governor=cfg.audio.reu_pump_governor,
+                           host_dma_servo=cfg.audio.host_dma_servo,
+                           dsp_params=cfg.dsp.to_params())
+             if cfg.audio.enabled else None)
+
+    reu_available = _resolve_reu_available(cfg, api)
+    playlist_scenes = cfgmod.scenes_from_config(cfg, api, audio, source,
+                                                is_ensemble=is_ensemble,
+                                                reu_available=reu_available)
+
+    # The system video rate (60 NTSC / 50 PAL) is resolved into the
+    # backend's profile by make_backend; a per-variant `max_fps` cap (None
+    # for the Ultimate) clamps it. Today this resolves identically to the
+    # old `60 if NTSC else 50`.
+    target_fps = api.profile.default_fps
+    if api.profile.max_fps is not None:
+        target_fps = min(target_fps, api.profile.max_fps)
+
+    log.info("%s: reset + run BASIC clear loop", cfg.hardware.backend)
+    api.reset()
+    time.sleep(1)
+    api.run_basic_clear_loop()
+    api.disable_case_switch()
+
+    # The Commodore-key poller reads $028D over the wire. Backends that can't
+    # read C64 memory (e.g. TeensyROM) have no physical-keyboard control —
+    # skip the poller; the HTTP control plane is the read-free equivalent.
+    key_poller = (CommodoreKeyPoller(api, name=name)
+                  if api.profile.supports_read else None)
+    if key_poller is None:
+        log.info("%s: physical-keyboard control unavailable (no memory read) "
+                 "— use the control plane for pause/resume/skip", name)
+
+    # Optional: webcam hand-gesture control. Reads the shared camera (not C64
+    # memory), so it works on any backend. A missing mediapipe dep / model
+    # file degrades to "no gesture control" rather than killing the stream.
+    vision_controller: VisionController | None = None
+    if cfg.vision.enabled:
+        assert source is not None    # needs_camera guaranteed it above
+        try:
+            recognizer = MediaPipeHandRecognizer(
+                cfg.vision.model_path,
+                num_hands=cfg.vision.num_hands,
+                min_detection_confidence=cfg.vision.min_detection_confidence,
+                min_tracking_confidence=cfg.vision.min_tracking_confidence)
+            vision_controller = VisionController(
+                source, recognizer,
+                poll_interval_s=cfg.vision.poll_interval_s,
+                hold_threshold_s=cfg.vision.hold_threshold_s,
+                gesture_cooldown_s=cfg.vision.gesture_cooldown_s,
+                gesture_dwell_s=cfg.vision.gesture_dwell_s,
+                pinch_threshold=cfg.vision.pinch_threshold,
+                swipe_velocity=cfg.vision.swipe_velocity,
+                mirror=cfg.vision.mirror,
+                name=name)
+            log.info("%s: vision gesture control enabled", name)
+        except RuntimeError as e:
+            log.error("vision control disabled: %s", e)
+
+    # Optional: local preview window + stream recorder. Both share a
+    # Framebuffer that shadows U64 memory writes via api listeners.
+    framebuffer: Framebuffer | None = None
+    preview_window: PreviewWindow | None = None
+    recorder: StreamRecorder | None = None
+    if cfg.preview.enabled or cfg.recording.enabled:
+        from .framebuffer import Framebuffer as _FB
+        framebuffer = _FB(charset_path=cfg.preview.charset_path)
+        api.add_write_listener(framebuffer.on_write)
+    if cfg.preview.enabled:
+        assert framebuffer is not None
+        try:
+            from .preview import PreviewWindow as _PW
+            preview_window = _PW(
+                framebuffer, fps=cfg.preview.fps, scale=cfg.preview.scale)
+            preview_window.start()
+        except RuntimeError as e:
+            log.error("preview disabled: %s", e)
+    if cfg.recording.enabled:
+        assert framebuffer is not None
+        try:
+            from .preview import StreamRecorder as _SR
+            recorder = _SR(
+                framebuffer, cfg.recording.path,
+                fps=cfg.recording.fps,
+                scale=cfg.recording.scale,
+                fourcc=cfg.recording.fourcc)
+            recorder.start()
+        except RuntimeError as e:
+            log.error("recording disabled: %s", e)
+
+    playlist = Playlist(playlist_scenes, api, target_fps,
+                        heartbeat_interval=cfg.debug.heartbeat,
+                        stop_event=stop_event,
+                        interstitial_factory=interstitial_factory(api, cfg.interstitial),
+                        key_poller=key_poller,
+                        vision_controller=vision_controller,
+                        profiler=profiler,
+                        name=name,
+                        loop=cfg.playlist.loop,
+                        audio=audio,
+                        audio_calibration=(
+                            {"petscii": cfg.audio.pitch_mult_petscii,
+                             "hires": cfg.audio.pitch_mult_hires,
+                             "mhires": cfg.audio.pitch_mult_mhires,
+                             "mcm": cfg.audio.pitch_mult_mcm,
+                             "blank": cfg.audio.pitch_mult_blank}
+                            if cfg.audio.enabled else None))
+
+    return SystemStack(
+        name=name, cfg=cfg, api=api, audio=audio, source=source,
+        playlist=playlist, key_poller=key_poller,
+        vision_controller=vision_controller,
+        reu_available=reu_available,
+        framebuffer=framebuffer, preview_window=preview_window,
+        recorder=recorder)
+
+
+def teardown_stack(stack: SystemStack) -> None:
+    """Bring one system's stack down cleanly. Each step is independently
+    try/except'd so one failure doesn't strand the rest. Order matters:
+    stop audio before the final reset so the NMI timer isn't firing into
+    a buffer we're about to clear; preview/recording come down first so
+    they don't try to render after the API is closed."""
+    for label, fn in (
+        ("preview shutdown", lambda: stack.preview_window.stop() if stack.preview_window else None),
+        ("recording stop",   lambda: stack.recorder.stop() if stack.recorder else None),
+        ("audio shutdown",   lambda: stack.audio.close() if stack.audio else None),
+        ("vision controller stop", lambda: stack.vision_controller.stop() if stack.vision_controller else None),
+        ("U64 reset",        stack.api.reset),
+        ("API close",        stack.api.close),
+        ("camera release",   lambda: stack.source.release() if stack.source else None),
+    ):
+        try:
+            fn()
+        except Exception:
+            log.exception("[%s] %s failed", stack.name, label)
+
+
+# CLI flags that don't make sense in ensemble mode (they pick a single
+# system's hardware; the per-system TOML is the right place to set them).
+_PER_SYSTEM_CLI_FLAGS: tuple[tuple[str, str], ...] = (
+    ("url",    "--url"),
+    ("device", "--device"),
+)
+
+
+def _run_playlists(stacks: list[SystemStack],
+                   stop_event: threading.Event) -> None:
+    """Run every stack's playlist on its own worker thread. Block on join.
+    Ctrl+C in the main thread sets stop_event so every playlist exits its
+    run loop on the next iteration; each thread gets up to 5s to drain
+    before we move on and log it as stuck."""
+    threads = [threading.Thread(target=s.playlist.run,
+                                name=f"playlist-{s.name}", daemon=False)
+               for s in stacks]
+    for t in threads:
+        t.start()
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        log.info("interrupted; stopping %d system(s)", len(stacks))
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=5)
+            if t.is_alive():
+                log.error("[%s] did not exit within 5s; abandoning", t.name)
+
+
+def run_introspection(args: argparse.Namespace) -> int | None:
+    """Handle the config-introspection commands (--list-*, --describe,
+    --compat, --print-schema). Returns an exit code when one fired, else None
+    so main() continues to the normal run path. These need no config file or
+    hardware."""
+    from . import introspect
+
+    if args.list_scenes:
+        print(introspect.render_list_scenes())
+        return 0
+    if args.list_overlays:
+        print(introspect.render_list_overlays())
+        return 0
+    if args.list_modes:
+        print(introspect.render_list_modes())
+        return 0
+    if args.compat:
+        print(introspect.render_compat())
+        return 0
+    if args.describe is not None:
+        print(introspect.render_describe(args.describe))
+        return 0
+    if args.print_schema:
+        import json
+
+        from . import schema
+        print(json.dumps(schema.build_schema(), indent=2))
+        return 0
+    if args.init is not None:
+        from . import wizard
+        result = wizard.run_init(args.init or None)
+        if result is None:
+            return 2          # cancelled, or the 'wizard' extra is missing
+        out_path, launch = result
+        if launch:
+            # Fall through to the normal run path against the file we just
+            # wrote (returning None lets main() continue to load_master).
+            args.config = out_path
+            return None
+        return 0
+    return None
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.list_devices:
+        # Logging at default level; list-devices skips config load entirely.
+        configure_logging(args.verbose or 0, args.log_file)
+        return list_devices()
+
+    # Introspection commands describe the config surface itself — no config
+    # file, no hardware. Dispatch before load_master so they work anywhere.
+    intro_rc = run_introspection(args)
+    if intro_rc is not None:
+        return intro_rc
+
+    try:
+        loaded = cfgmod.load_master(args.config)
+    except cfgmod.ConfigError as e:
+        # Logging may not be set up yet (verbose/log_file live in [debug]).
+        # Set up a minimal default handler so the error reaches the user
+        # whether or not they passed -v.
+        configure_logging(args.verbose or 0, args.log_file)
+        log.error("%s", e)
+        return 5
+
+    # CLI flags apply to every per-system config. In ensemble mode reject
+    # the flags that pick one system's hardware — `[ultimate64].url` and
+    # `[video].device` are per-system identity and must come from the TOMLs.
+    if loaded.is_ensemble:
+        offending = [flag for dest, flag in _PER_SYSTEM_CLI_FLAGS
+                     if getattr(args, dest, None) is not None]
+        if offending:
+            configure_logging(args.verbose or 0, args.log_file)
+            log.error("ensemble mode (`[ensemble]` in %s) is incompatible "
+                      "with per-system CLI flags: %s. Move these values "
+                      "into the per-system TOMLs.",
+                      args.config, ", ".join(offending))
+            return 5
+
+    cfgs = [cfgmod.merge_cli(c, args) for c in loaded.cfgs]
+    # Logging is process-wide; use the first stack's debug settings (they
+    # already share defaults via the master cascade unless explicitly
+    # overridden).
+    configure_logging(cfgs[0].debug.verbose, cfgs[0].debug.log_file)
+
+    if args.doctor:
+        # Doctor uses the merged configs so CLI flags (e.g. --skip-probe) and
+        # the C64CAST_DMA_PASSWORD env var take effect on the probe.
+        from .doctor import print_report, validate_load_result
+        merged = cfgmod.LoadResult(
+            cfgs=cfgs, names=loaded.names, paths=loaded.paths,
+            is_ensemble=loaded.is_ensemble,
+            master_control=loaded.master_control)
+        diagnostics = validate_load_result(
+            merged, probe_u64=not cfgs[0].debug.skip_probe)
+        return print_report(diagnostics)
+
+    for cfg in cfgs:
+        if cfg.audio.enabled and not AUDIO_AVAILABLE:
+            log.error(
+                "audio enabled but sounddevice is not installed. Install "
+                "with `uv sync --extra mic` (or `pip install c64cast[mic]`), "
+                "or set [audio].enabled = false in your "
+                "config. Aborting so you don't run with broken audio for "
+                "the whole session.")
+            return 3
+
+    # Install the profiler (or NullProfiler if disabled) before constructing
+    # the Playlists so the module-global accessor is correct for the first
+    # frame's sub-stage timings inside _render_with_overlays. The profiler
+    # is process-wide today (per-scene timings will mix across systems in
+    # ensemble mode — a future enhancement could split it per-system).
+    if cfgs[0].debug.profile:
+        profiler: FrameProfiler | NullProfiler = FrameProfiler(
+            interval=cfgs[0].debug.profile_interval)
+        log.info("profiler enabled (interval %.1fs)",
+                 cfgs[0].debug.profile_interval)
+    else:
+        profiler = NullProfiler()
+    set_profiler(profiler)
+
+    # Allocate the Ensemble first (multi-system only) so each stack's
+    # Playlist receives the shared stop_event at construction time.
+    if loaded.is_ensemble:
+        ensemble: Ensemble | None = Ensemble(
+            stacks=[], stop_event=threading.Event())
+        stop_event = ensemble.stop_event
+    else:
+        ensemble = None
+        stop_event = threading.Event()
+
+    stacks: list[SystemStack] = []
+    try:
+        for cfg, name in zip(cfgs, loaded.names, strict=True):
+            stacks.append(build_stack(cfg, name, args,
+                                      stop_event=stop_event,
+                                      profiler=profiler,
+                                      is_ensemble=loaded.is_ensemble))
+    except StackBuildError as e:
+        # Tear down whatever we did manage to build before bailing.
+        for st in reversed(stacks):
+            teardown_stack(st)
+        return e.exit_code
+
+    if ensemble is not None:
+        ensemble.stacks = stacks
+        ensemble.populate_broadcast_events()
+        # Per-stack ensemble plumbing: wire the playlist to its ensemble,
+        # its broadcast events, and a follower-scene factory that closes
+        # over the stack's api/audio/source/cfg (the playlist can't build
+        # follower scenes itself without those references). The factory
+        # captures via lambda default-arg to avoid the late-binding loop
+        # bug.
+        for st, cfg in zip(stacks, cfgs, strict=True):
+            st.playlist.ensemble = ensemble
+            st.playlist._broadcast_interrupt = ensemble.broadcast_interrupt[st.name]
+            st.playlist._broadcast_resume = ensemble.broadcast_resume[st.name]
+            st.playlist.build_follower_scene = (
+                lambda scene_cfg, _st=st, _cfg=cfg: cfgmod.build_scene(
+                    scene_cfg, _cfg, _st.api, _st.audio, _st.source,
+                    is_ensemble=True, reu_available=_st.reu_available))
+
+    control_server = None
+
+    # SIGTERM → graceful shutdown. SIGINT continues to raise KeyboardInterrupt
+    # via the default handler so the user can still Ctrl+C interactively.
+    # SIGHUP → reload TOML config (only the [interstitial] + [playlist] +
+    # [[scenes]] sections take effect; [audio], [video], [ultimate64] are
+    # set at startup and reloading them would require restarting threads).
+    def _on_sigterm(_signum, _frame):
+        log.info("SIGTERM received; stopping")
+        stop_event.set()
+
+    def _on_sighup(_signum, _frame):
+        log.info("SIGHUP received; reloading config for %d system(s)",
+                 len(stacks))
+        # Each per-system TOML reloads independently from the path it was
+        # originally loaded from. The master itself isn't re-read (system
+        # list + master defaults are set at startup); add/remove of systems
+        # requires a restart. Single-system mode just reloads args.config.
+        for st, sub_path in zip(stacks, loaded.paths, strict=True):
+            if sub_path is None:
+                continue   # no file to reload (defaults-only single-system)
+            try:
+                new_cfg = cfgmod.load(sub_path)
+                new_cfg = cfgmod.merge_cli(new_cfg, args)
+                new_scenes = cfgmod.scenes_from_config(
+                    new_cfg, st.api, st.audio, st.source,
+                    is_ensemble=loaded.is_ensemble,
+                    reu_available=st.reu_available)
+                new_factory = interstitial_factory(st.api, new_cfg.interstitial)
+                st.playlist.request_reload(new_scenes, new_factory)
+            except cfgmod.ConfigError as e:
+                log.error("[%s] SIGHUP reload failed; keeping current "
+                          "playlist. %s", st.name, e)
+            except Exception:
+                log.exception("[%s] SIGHUP reload failed; keeping current "
+                              "playlist", st.name)
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    if hasattr(signal, "SIGHUP"):    # Windows lacks SIGHUP
+        signal.signal(signal.SIGHUP, _on_sighup)
+
+    try:
+        # Optional FastAPI control plane. One server for the whole ensemble;
+        # endpoints take ?system=NAME (defaults to all systems in multi
+        # mode, to the sole system in single mode).
+        control_cfg = (loaded.master_control if loaded.is_ensemble
+                       else cfgs[0].control)
+        if control_cfg.enabled:
+            try:
+                from .control_plane import start_control_server
+                # Per-system reload closures. Default-arg `st=st, p=p`
+                # captures by value to avoid the late-binding bug where
+                # every lambda would see the last loop iteration's st.
+                config_loaders = {
+                    st.name: (lambda st=st, p=p: cfgmod.scenes_from_config(
+                        cfgmod.merge_cli(cfgmod.load(p), args),
+                        st.api, st.audio, st.source,
+                        is_ensemble=loaded.is_ensemble,
+                        reu_available=st.reu_available))
+                    for st, p in zip(stacks, loaded.paths, strict=True)
+                    if p is not None
+                }
+                interstitial_factories = {
+                    st.name: (lambda st=st, p=p: interstitial_factory(
+                        st.api, cfgmod.load(p).interstitial))
+                    for st, p in zip(stacks, loaded.paths, strict=True)
+                    if p is not None
+                }
+                control_server = start_control_server(
+                    control_cfg.host, control_cfg.port,
+                    playlists={st.name: st.playlist for st in stacks},
+                    config_loaders=config_loaders,
+                    interstitial_factories=interstitial_factories,
+                )
+            except RuntimeError as e:
+                log.error("control plane disabled: %s", e)
+
+        _run_playlists(stacks, stop_event)
+    finally:
+        if control_server is not None:
+            try:
+                control_server.stop()
+            except Exception:
+                log.exception("control plane shutdown failed")
+        for st in reversed(stacks):
+            teardown_stack(st)
+
+    for st in stacks:
+        log.info("[%s] u64 stats: %s", st.name, st.api.stats)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

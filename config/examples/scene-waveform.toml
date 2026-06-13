@@ -1,0 +1,44 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: SID playback ("waveform" scene).
+#
+# Plays a .sid file on the U64's hardware SID and visualises the three
+# voices as oscilloscope traces. Requires you to supply your own .sid
+# file — HVSC (https://hvsc.c64.org) is the canonical archive.
+#
+# Drop a tune into assets/sids/ and either set `file =` below or omit
+# it to fall back to scanning assets/sids/.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-waveform.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_ads = false
+# Uncomment + point at the HVSC SongLengths.md5 to auto-pick a duration:
+# songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"
+
+[[scenes]]
+type = "waveform"
+# `file =` accepts: a single .sid, a directory, a glob, or any
+# comma-separated combination. Each setup picks a random match.
+#   file = "assets/sids/your-tune.sid"
+#   file = "assets/sids"                            # whole directory
+#   file = "assets/sids/C64Music/MUSICIANS/G/Galway_Martin/*"
+#   file = "assets/sids/Tune1.sid, assets/sids/Tune2.sid"
+# Omit the field entirely to fall back to scanning assets/sids/.
+file = "assets/sids/your-tune.sid"
+song = 0                 # 0 = SID's default; 1+ selects a subtune
+duration_s = 180.0       # only used if songlengths_file isn't set
+color_mode = "per_voice" # per_voice | per_waveform
+voice_colors = ["cyan", "yellow", "light green"]
+# --- Visualization knobs (all compose). Uncomment to try. ---
+# time_base = "auto"            # lock to N complete cycles regardless of pitch
+# auto_cycles = 4.0             # cycles per window when time_base = "auto"
+# persistence = "medium"        # off | short | medium | long | random
+# scroll_columns = 4            # 0 = redraw. >0 = FIFO shift left, draw new
+#                               # N cols on the right edge. Scalar or [N,N,N].
+# PSID-only — RSIDs and SIDs whose load_addr is below $0820 are rejected.
+# PAL tunes on an NTSC kernal play ~20% fast (and vice versa) because the
+# CIA #1 Timer A latch is left at the kernal default. See docs/caveats.md.

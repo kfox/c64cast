@@ -1,0 +1,40 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: webcam → PETSCII + live mic through the SID DAC.
+#
+# Minimal "audio on" example. The mic capture runs through a 4-bit DAC
+# routed to $D418 (SID volume nibble) and out the U64's audio jack — it
+# is intentionally lo-fi. See overlay-spectrum_petscii.toml for a visual
+# FFT on top of this same pipeline.
+#
+# Requires the `mic` extra:
+#   pip install -e .[mic]
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-webcam-audio.toml
+#
+# To pick a non-default input device, run `python -m c64cast -L`
+# first and set `device` below to the listed index.
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[audio]
+enabled = true                # turn the AudioStreamer on globally
+device = -1                   # -1 = system default input; -L lists indices
+sample_rate = 8000            # SID DAC rate; leave at 8 kHz
+mic_sensitivity = 1.5
+noise_gate = 0.05
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "PETSCII + Mic Audio"
+# Mic capture follows the global [audio] enabled flag above — no per-scene
+# opt-in needed. Set `audio = false` here to silence this one scene while
+# keeping audio on for the rest of the playlist.

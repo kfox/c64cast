@@ -1,0 +1,54 @@
+# Per-system config for the leftmost screen in the ensemble. This file
+# is fully standalone — `python -m c64cast --config left.toml` works
+# too (handy for testing this system in isolation).
+
+[ultimate64]
+url = "http://u64-left.lan"        # replace with your leftmost U64's URL
+
+[playlist]
+interleave_ads = false
+
+# A perfectly mundane scene that gets interrupted by the cross-system
+# big_text broadcast whenever the rightmost system's playlist enters
+# the orchestrate=true scene below. After the broadcast scrolls off
+# this (the leftmost) screen, the playlist resumes this scene from
+# the start.
+[[scenes]]
+type = "blank"
+name = "left-idle"
+duration_s = 600
+border = 6
+background = 11
+
+  [[scenes.overlays]]
+  type = "clock"
+  corner = "top-right"
+  fg_color = "white"
+
+  [[scenes.overlays]]
+  type = "callsign"
+  corner = "top-left"
+  text = "LEFT"
+  fg_color = "light gray"
+
+# Follower scene for the right-side conductor's "morning-hello" broadcast.
+# Looked up by `name` when the orchestrator interrupts this playlist.
+# Visual params (border/background) are per-system; the actual scrolling
+# content comes from the conductor's snapshot, so the message list here
+# is just a placeholder to satisfy big_text's "non-empty messages" check.
+#
+# `follower_only = true` keeps this out of the regular playlist rotation
+# — without it, the playlist would advance to this scene after left-idle
+# expires and display the placeholder text standalone.
+[[scenes]]
+type = "blank"
+name = "morning-hello"
+follower_only = true
+border = 6
+background = 0
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  loop = false
+  messages = [{ text = "PLACEHOLDER (overridden by conductor snapshot)" }]

@@ -1,0 +1,23 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: webcam → hi-res bitmap with Canny edge detection.
+#
+# Same 320×200 bitmap as scene-webcam-hires, but the source frame is
+# first run through OpenCV's Canny edge detector. Produces a line-art
+# look that holds up well even when the room is poorly lit.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-webcam-hires_edges.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "hires_edges"
+name = "Hi-Res Edges Webcam"

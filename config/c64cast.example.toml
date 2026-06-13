@@ -1,0 +1,935 @@
+#:schema ../c64cast.schema.json
+# c64cast config — annotated reference + feature showcase.
+#
+# Discovery: `--config PATH` wins; else this file is loaded if named
+# `c64cast.toml` in the working directory; else built-in defaults apply.
+# Every CLI flag overrides its config value when provided.
+#
+# Copy to `c64cast.toml` and edit, or pass with
+# `--config config/c64cast.example.toml`. Out of the box this runs on a
+# webcam + no extra assets — overlays that normally need a file (logo)
+# fall back to friendly placeholders. Sections that REQUIRE external
+# assets (waveform/SID, commercial/video, MIDI, OBS) are commented out
+# below with hints on how to enable them.
+
+# ===========================================================================
+# Ensemble mode (OFF by default — single-system unless [ensemble] is present)
+# ===========================================================================
+#
+# Uncomment the block below to drive N Ultimate 64s from one process.
+# Each per-system file is a fully standalone config (so this same file
+# could be loaded directly with `--config left.toml`). Order in the
+# `systems` array is left-to-right physically — index 0 is leftmost.
+# See config/examples/ensemble/ + docs/usage.md "Ensemble mode" for
+# the full walkthrough.
+#
+# [ensemble]
+# systems = [
+#     { name = "left",   config = "left.toml"   },
+#     { name = "middle", config = "middle.toml" },
+#     { name = "right",  config = "right.toml"  },
+# ]
+#
+# Two per-scene fields (set on a [[scenes]] block in a per-system file)
+# control cross-system broadcast effects; both require the scene to have a
+# `name` and are ignored single-system:
+#
+#   orchestrate = true     # make this system the conductor: broadcast this
+#                          # scene to every other system. If a system has a
+#                          # local scene of the same name with
+#                          # orchestrate = false, that local definition wins
+#                          # there. Mutually exclusive with follower_only.
+#   follower_only = true   # exclude this scene from the normal rotation —
+#                          # it exists only as a broadcast-follower override
+#                          # (a placeholder another system orchestrates onto
+#                          # this one). Mutually exclusive with orchestrate.
+#
+# See config/examples/ensemble/ + docs/usage.md "Ensemble mode" for a
+# worked left/middle/right broadcast example.
+
+# ===========================================================================
+# Global settings — chip / network / OS-level knobs
+# ===========================================================================
+
+[hardware]
+backend = "ultimate"                # which hardware abstraction layer drives
+                                    # the C64. "ultimate" = Ultimate 64 /
+                                    # Ultimate II+ over socket DMA + REST.
+                                    # "teensyrom" = TeensyROM+ (see [teensyrom]).
+
+[teensyrom]                         # only used when [hardware].backend = "teensyrom"
+transport = "serial"                # "serial" (USB-B) | "tcp" (port 2112)
+serial_port = "/dev/tty.usbmodem1234"  # serial device (required for serial);
+                                    #   COM3 on Windows, /dev/ttyACM0 on Linux
+baud = 2000000                      # 2 Mbaud 8N1 (TR uses full USB bandwidth)
+host = "192.168.2.66"               # TR IP (required for tcp; via CCGMS "ATC")
+tcp_port = 2112                     # TR TCP listener port (firmware default)
+storage = "sd"                      # "sd" | "usb" — where helper PRGs upload to
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"   # bare hostname or IP works too
+system = "NTSC"                     # NTSC | PAL (affects fps, frame_time, cycles)
+dma_port = 64                       # TCP port for the Ultimate DMA Service
+                                    # (enable on the U64 via F2 → Network
+                                    # Settings → Ultimate DMA Service)
+# dma_password = ""                 # optional. Prefer the C64CAST_DMA_PASSWORD
+                                    # env var — secrets in a checked-in TOML
+                                    # leak. Env var overrides this field.
+
+[video]
+device = -1                         # -1 = system default camera; `--list-devices` to enumerate
+use_reu_staged = "auto"             # REU-staged video push. Tri-state:
+                                    # true | false | "auto" (default).
+                                    #   "auto" stages BITMAP modes
+                                    #     (hires/hires_edges/mhires) when the
+                                    #     startup probe finds the U64's REU
+                                    #     Enabled — the double-buffer kills the
+                                    #     whole-screen tearing on scene cuts.
+                                    #     Char modes (petscii/blank) stay on
+                                    #     host-DMA under auto (their delta cache
+                                    #     makes staging a net regression), and
+                                    #     auto falls back to host-DMA entirely
+                                    #     when REU isn't confirmed (--skip-probe,
+                                    #     REU disabled, or a no-REU backend) so
+                                    #     video never silently freezes.
+                                    #   true forces staging on for every mode;
+                                    #     false forces it off everywhere.
+                                    # Two pipelines, picked by the scene's
+                                    # display mode:
+                                    #
+                                    # petscii / blank (single-buffer): the
+                                    # 1000-byte screen RAM is REUWRITE-staged
+                                    # into REU SRAM (bus-clean, no SID
+                                    # perturbation) then dropped into $0400
+                                    # via one REU→main DMA trigger. Color RAM
+                                    # at $D800 stays on the delta-cached
+                                    # DMAWRITE path (not VIC-banked).
+                                    #
+                                    # hires / hires_edges / mhires (double-
+                                    # buffer): bitmap + screen are REUWRITE-
+                                    # staged then DMA'd into the off-screen
+                                    # VIC bank (bank 2 @ $A000/$8400 while
+                                    # bank 0 is displayed, and vice versa).
+                                    # A C64-side raster IRQ at line 248 flips
+                                    # $DD00 at vblank for a tear-free swap.
+                                    # MHires additionally DMAs shared $D800
+                                    # color RAM and writes $D021 (bg0) before
+                                    # the swap — a brief c3-mismatch window
+                                    # is unavoidable (the color DMA runs in
+                                    # parallel with the OLD bank still being
+                                    # displayed), but it's bounded to one
+                                    # VIC cell row at the bank-swap tear
+                                    # line and typically imperceptible.
+                                    #
+                                    # Caveats:
+                                    #   * REU controller is shared with the
+                                    #     REU audio pump but serialized at
+                                    #     IRQ granularity — coexistence is
+                                    #     fine. The $0314 IRQ vector is
+                                    #     shared too: on hires/mhires + REU
+                                    #     audio the bank-swap install picks a
+                                    #     MERGED dispatcher whose non-raster
+                                    #     branch JMPs to the audio pump at
+                                    #     $C100. This lifts the older mutex
+                                    #     against use_reu_staged + use_reu_pump
+                                    #     on commercial scenes and on webcam
+                                    #     scenes using bitmap display modes.
+                                    #   * Per-frame bus halt: char modes ~1
+                                    #     ms for a full screen push; hires
+                                    #     ~9 ms for bitmap + screen; mhires
+                                    #     ~10 ms (adds 1 ms for color RAM).
+                                    #     Bitmap halts are on the OFF-SCREEN
+                                    #     bank — VIC keeps rendering the
+                                    #     visible frame cleanly during the
+                                    #     transfer. The mhires color DMA
+                                    #     does touch shared $D800; see the
+                                    #     tear-line caveat above.
+                                    #   * mcm silently ignores the flag.
+                                    #   * Requires REU enabled on the U64 (F2
+                                    #     → C64 and Cartridge Settings → RAM
+                                    #     Expansion Unit: Enabled).
+
+[audio]
+enabled = false                     # true ≡ passing -A on the CLI
+device = -1                         # -1 = system default input; -L lists indices
+sample_rate = 8000                  # SID DAC rate; leave at 8 kHz
+mic_sensitivity = 1.5
+noise_gate = 0.05
+dither = false                      # TPDF dither pre-quantize. false (default
+                                    # after real-6581 A/B testing) = raw signal-
+                                    # correlated rounding, slightly cleaner on
+                                    # 6581 hardware. true = smooth white-noise
+                                    # hiss instead of rounding distortion —
+                                    # may sound better on noisier sources.
+digi_boost = false                  # **EXPERIMENTAL** — lock SID voices 2–3
+                                    # in DC mode to add bias/level. In PWM
+                                    # mode voice 1 is the carrier; boosts
+                                    # voices 2–3 only. On 8580s/emulated
+                                    # SIDs this is mandatory; on 6581 just
+                                    # louder. Defaults off.
+sid_filter_cutoff = 0               # SID LP filter for PWM carrier rejection.
+                                    # 0 = off. When > 0, routes voice 1
+                                    # through the SID low-pass filter at this
+                                    # 11-bit cutoff register value. Mapping is
+                                    # non-linear and chip-dependent on 6581 —
+                                    # try ~1500 for ~6 kHz and tune by ear.
+                                    # Attenuates PWM carrier; may saturate on
+                                    # some 6581 variants (reduce if distorted).
+use_reu_pump = false                # **EXPERIMENTAL** — REU-staged audio path
+                                    # for CommercialScene. Preloads the entire
+                                    # audio track into the U64's REU FPGA SRAM
+                                    # at scene start, then a C64-side IRQ
+                                    # handler streams it from REU into the ring
+                                    # buffer at the kernal IRQ rate. Eliminates
+                                    # the audible "gurgling" from the default
+                                    # host-DMAWRITE pump on real hardware
+                                    # (each host DMA write perturbs the U64
+                                    # bus and the SID output).
+                                    #
+                                    # **Best paired with light display modes**
+                                    # (display = "petscii" or "mcm") OR with
+                                    # use_reu_staged = true on hires/mhires.
+                                    # The REU pump itself is bus-clean, but
+                                    # host-DMA video writes halt the C64 bus
+                                    # and starve the pump's IRQ. Char modes
+                                    # write ~30 KiB/sec and stay out of the
+                                    # way. Bitmap modes write ~200 KiB/sec on
+                                    # the default host-DMA path — REU-staged
+                                    # video moves that traffic to bus-clean
+                                    # REUWRITE, with the merged IRQ dispatcher
+                                    # handling both REC users serially.
+                                    #
+                                    # Requires REU enabled on the U64 (F2 →
+                                    # C64 and Cartridge Settings → RAM
+                                    # Expansion Unit: Enabled).
+                                    #
+                                    # Also enables REU-staged **live mic
+                                    # capture** on webcam/blank scenes: the
+                                    # mic callback REUWRITEs encoded samples
+                                    # into a 64 KB REU ring (bus-clean) and a
+                                    # C64-side IRQ pump drains them into the
+                                    # audio ring at the matched rate, with a
+                                    # ~200 ms bootstrap buffer. Same SID-perf
+                                    # win as the commercial path, applied to
+                                    # live audio.
+reu_pump_governor = true            # C64-side rate governor for the REU audio
+                                    # pump (only matters with use_reu_pump).
+                                    # The pump (CIA #1 rate) and the NMI DAC
+                                    # reader free-run open-loop; video DMA
+                                    # bus-halts throttle the reader below
+                                    # nominal, so the pump out-produces it and
+                                    # laps the 8 KB ring every ~15-23s — an
+                                    # audible echo/overlap. The governor lives
+                                    # in the pump's own IRQ handler: it reads
+                                    # the NMI read pointer and SKIPS a chunk
+                                    # whenever its write head gets too far
+                                    # ahead, self-throttling to the consumer
+                                    # with zero host bus writes (a host-side
+                                    # servo was tried first but its CIA-latch
+                                    # writes audibly glitched the pump). On by
+                                    # default; set false to A/B the open-loop
+                                    # (drift/echo) behavior.
+host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
+                                    # audio worker (mic + commercials, i.e.
+                                    # use_reu_pump = false). That worker paces
+                                    # ring writes to wall-clock, so its write
+                                    # head advances at exactly sample_rate while
+                                    # the NMI reader loses ~4% of its ticks to
+                                    # video DMA bus-halts — the write head laps
+                                    # the ring every ~26s = the same echo. The
+                                    # servo reads the NMI read pointer once per
+                                    # chunk and runs a PI controller on the
+                                    # worker's sleep so the gap locks near half
+                                    # a ring. Pure host-side timing — no C64
+                                    # writes, so none of the REU servo's glitch.
+                                    # On by default; false = open-loop A/B.
+source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
+                                    # 100 ms 200→3500 Hz linear chirp to the
+                                    # pre-encoded REU audio so Cam Link
+                                    # captures have a deterministic source-
+                                    # timeline anchor. Find it post-capture
+                                    # with c64cast.audio_marker.find_marker
+                                    # _in_capture(); content begins at
+                                    # marker_start + 100ms. Plays as a brief
+                                    # sweep blip at scene start, then real
+                                    # audio. Turn OFF for production
+                                    # listening. Only honored on the REU pump
+                                    # path; host-DMA scenes are unmarked.
+
+# --- host-DMA servo pitch compensation ---
+# The host_dma_servo (above) kills the echo but locks playback to the C64 NMI
+# consumer rate R, which runs slightly below the nominal 8000 Hz because the
+# display steals NMI ticks (VIC badlines + host-DMA video writes + the REU
+# bank-swap raster IRQ on staged bitmap modes) — so playback comes out a touch
+# slow (pitch + speed together). Each multiplier below is a per-display-mode
+# *playback-rate multiplier*: >1.0 speeds playback up to cancel that slowdown,
+# 1.0 = no change. c64cast converts it to a shorter CIA #2 Timer A period
+# (faster NMI → faster R; rate and latch are inversely related), applied once per
+# scene change. hires_edges scenes use pitch_mult_hires (same VIC fetch).
+# Defaults were tuned BY EAR on a real U64-II (NTSC, 60fps, default
+# use_reu_staged="auto" so bitmap video rides the bus-clean REU bank-swap →
+# residual loss is small). They're standard/backend coupled: PAL (50fps) and the
+# lower-latency TR+ backend want their own ears-on values. Only active when
+# host_dma_servo = true; ignored on the REU pump path.
+pitch_mult_petscii = 1.0     # PETSCII (char mode) — good at 1.0 on U64-II NTSC.
+pitch_mult_hires = 1.02      # Hires / Hires-edges (REU-staged bitmap).
+pitch_mult_mhires = 1.015    # MultiHires (REU-staged bitmap + $D800 color RAM).
+pitch_mult_mcm = 1.0         # MCM (char mode) — good at 1.0 on U64-II NTSC.
+pitch_mult_blank = 1.0       # Blank (no video input).
+
+[vision]
+# Camera-as-input: webcam hand-gesture control via MediaPipe HandLandmarker.
+# Needs the 'vision' extra (mediapipe) + a downloaded model file (see
+# assets/models/README.md). The camera is shared with any webcam scene through
+# the WebcamSource broker, so no second device is needed — gestures work over
+# ANY scene. Gestures map to the same controls as the C64 keyboard:
+#   pinch (thumb+index) = pause; pinch-and-hold while paused = resume
+#   fast horizontal swipe = skip; open hand = cycle display style
+enabled = false
+model_path = "assets/models/hand_landmarker.task"  # download separately
+num_hands = 1                       # max hands tracked per frame
+min_detection_confidence = 0.7      # 0..1; raise to reject phantom torso/face hands
+min_tracking_confidence = 0.5       # 0..1; cross-frame tracking confidence
+poll_interval_s = 0.066             # ~15 Hz recognition tick
+pinch_threshold = 0.05              # thumb-index distance for a pinch (frame units)
+swipe_velocity = 0.4                # wrist speed (frame-widths/sec) to skip (HW-tuned)
+gesture_cooldown_s = 1.0            # min seconds between fired gesture events
+gesture_dwell_s = 0.4              # seconds a pose must be held STILL before firing
+hold_threshold_s = 3.0             # pinch-hold seconds to resume while paused
+mirror = true                       # mirror frame so swipe matches webcam view
+
+[interstitial]
+duration_s = 4.0
+text_color = "rainbow"              # C64 color name | "rainbow" | "random"
+background = "random"               # starfield | petscii_bars | raster_bars
+                                    # | checker | nature | city | none | random
+
+[playlist]
+ads_dir = "assets/commercials"
+interleave_ads = true               # auto-insert ads between non-ad scenes
+loop = true                         # restart from scene 1 after the last
+                                    # scene finishes. false = exit the
+                                    # streamer cleanly after one pass
+                                    # (useful for "play one commercial and
+                                    # quit"). CLI: --loop / --no-loop.
+# songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"   # optional;
+#                                    waveform scenes use this to auto-pick a
+#                                    duration when duration_s is omitted.
+
+[preview]
+enabled = false                     # requires the `preview` extra
+fps = 30
+scale = 3                           # window pixels per C64 pixel
+charset_path = "assets/roms/characters.901225-01.bin"
+
+[recording]
+enabled = false                     # cv2.VideoWriter; uses opencv-python
+path = "recording.mp4"
+fps = 30
+scale = 2
+fourcc = "mp4v"
+
+[color]
+# Global pre-quantization color shaping. BOTH stages below run before
+# nearest-palette quantization on every chromatic display mode (mcm, mhires,
+# petscii), independent of palette_mode (which only picks per-cell slots).
+#
+# channel_boost: per-channel gain [blue, green, red] in OpenCV BGR order. The
+# blue/green lift biases the palette match toward C64-friendly hues; red is
+# left neutral (the historical 0.9 red-cut only raised perceptual error and
+# starved warm colors). Omit / leave empty for the built-in default below.
+channel_boost = [1.3, 1.2, 1.0]
+#
+# auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
+# above are the same for every video; this adapts to each one). For commercial
+# and slideshow scenes only (webcam can't pre-scan), c64cast pre-scans the
+# source, then stretches its contrast + saturation to FILL the C64 tonal +
+# chroma range — dark/flat content stops looking muddy and monochromatic.
+# Faithful: hue is preserved (it expands what's there, it doesn't recolor) and
+# well-exposed sources are left ~unchanged. auto_fit_strength dials it 0..1
+# (1 = full, 0 = off). On by default.
+auto_fit = true
+auto_fit_strength = 1.0
+#
+# force_palette: the EXTREME, deliberately FALSE-COLOR remap (off by default).
+# Everything above is faithful — pixels still map to their nearest C64 color, so
+# a source clustered in one gamut region (e.g. TRON = black + dark blue) leaves
+# most of the 16 colors unused and looks monochromatic. force_palette instead
+# pre-scans the source, k-means it into N clusters, and assigns each cluster to a
+# DISTINCT C64 color (optimal min-error bijection) so all N colors get used and
+# the assignment is consistent across the whole source (no flicker). Commercial +
+# slideshow only (needs a pre-scan), mcm/mhires only. Also reachable at runtime
+# via the SHIFT cycle's "percell+forced" stop once enabled.
+force_palette = false
+# force_palette_colors: how many distinct C64 colors to spread across, 2..16.
+force_palette_colors = 16
+# force_palette_indices: optional explicit C64 index whitelist (0..15). When set,
+# its length sets the color count and overrides force_palette_colors. Empty = all.
+force_palette_indices = []
+#
+# hue_corrections: the C64's single purple (index 4) is a bright magenta, so
+# dark real-world violets quantize to gray/blue and never to purple. The
+# built-in default ships one band ("purple_rescue") that snaps + boosts the
+# violet→magenta hue range so it reaches C64 purple. Define your own
+# [[color.hue_corrections]] bands to tune any hue; by default they EXTEND the
+# built-in defaults (set hue_corrections_replace_defaults = true to replace —
+# e.g. set true with no bands to disable the purple rescue entirely).
+hue_corrections_replace_defaults = false
+# Example band (commented — uncommenting ADDS it on top of the purple rescue):
+#   [[color.hue_corrections]]
+#   name = "purple_rescue"   # label, for logs only
+#   hue_lo_deg = 240         # band start, degrees 0..360 (wraps if hi < lo)
+#   hue_hi_deg = 330         # band end, degrees 0..360
+#   sat_thresh = 0.16        # only touch pixels with saturation >= this (0..1)
+#   val_thresh = 0.12        # only touch pixels with value/brightness >= this
+#   sat_mult = 2.2           # multiply saturation of matched pixels
+#   val_mult = 1.9           # multiply value/brightness of matched pixels
+#   hue_target_deg = 300     # optional: snap matched hues toward this angle
+
+[dsp]
+# Host-side audio DSP applied to float samples BEFORE the 4-bit $D418 DAC
+# quantization. The DAC has only 16 levels (~24 dB usable range); these stages
+# make the signal use that range — the same heavy-compression rationale behind
+# AM radio and telephony. ON by default (the 4-bit DAC needs it); set
+# enabled=false for the legacy linear encode + hard mic gate. Orthogonal to
+# [audio].dither (the quantizer step) and [audio].use_reu_pump (the transport).
+# Applies to mic, commercial, and WAV paths; the AGC stage is mic-only (line
+# audio is already normalized).
+enabled = true
+# HF boost amount; y[n]=x+amt*(x-x[-1]). Brightens speech for intelligibility.
+# Unset (commented) = source-aware default: 0.7 for the mic/voice path, 0.6 for
+# line/commercial. A number here forces that amount for ALL sources; 0 disables.
+# Per-scene [[scenes]].pre_emphasis overrides this.
+# pre_emphasis = 0.5
+# Expander (downward, with hysteresis) — replaces the hard noise gate when DSP
+# is on. Cleans the noise floor without chattering on signal at the threshold.
+expander = true
+expander_threshold_db = -45.0       # attenuate below this level (dBFS)
+expander_ratio = 2.0                # >1; larger = more attenuation below thresh
+expander_hysteresis_db = 6.0        # gap below open thresh before the gate closes
+expander_floor_db = -60.0           # maximum attenuation applied (dB)
+expander_attack_ms = 5.0            # gain-open time constant (ms)
+expander_release_ms = 80.0          # gain-close time constant (ms)
+# Compressor (soft-knee feed-forward + makeup) — the main win for fitting
+# program dynamics into 4 bits so quiet detail survives quantization.
+compress = true
+comp_threshold_db = -18.0           # above this, gain reduces (dBFS)
+comp_ratio = 3.0                    # e.g. 3 = 3:1 above threshold
+comp_knee_db = 6.0                  # soft-knee width (0 = hard knee)
+comp_attack_ms = 5.0                # compressor attack (ms)
+comp_release_ms = 120.0             # compressor release (ms)
+comp_makeup_auto = true             # auto makeup so threshold-level → ~unity
+comp_makeup_db = 0.0                # explicit makeup (dB) when auto = false
+# Limiter — fast peak / brickwall ceiling, final safety stage.
+limiter = true
+limiter_ceiling = 0.95              # output ceiling, linear 0..1 (just under FS)
+limiter_release_ms = 50.0           # limiter recovery (ms)
+# AGC — MIC PATH ONLY (line/commercial audio is already peak-normalized).
+agc = false
+agc_target_db = -18.0               # target RMS level (dBFS)
+agc_max_gain_db = 24.0              # max gain/attenuation magnitude (dB)
+agc_time_ms = 300.0                 # adaptation time constant (ms; larger = steadier)
+agc_noise_floor_db = -60.0          # below this RMS, hold gain (don't amplify noise)
+
+[control]
+enabled = false                     # requires the `control` extra
+host = "127.0.0.1"
+port = 8765
+
+[debug]
+verbose = 0                         # 0 info (default), 1+ debug (-v)
+heartbeat = 10.0                    # seconds between health log lines
+skip_probe = false                  # skip the U64 reachability check at startup
+# log_file = "c64cast.log"        # mirror log output to this file (headless use)
+profile = false                     # per-frame timing: cpu_render / compose /
+                                    # overlay_compose / push / wait + DMA
+                                    # writes/bytes. Off by default; zero
+                                    # overhead when off.
+profile_interval = 10.0             # seconds between profiler summary lines
+
+
+# ===========================================================================
+# Scenes — the playlist
+# ===========================================================================
+#
+# Scenes run in declaration order; each plays for `duration_s` seconds,
+# then advances. Common fields:
+#   type        — "webcam" | "commercial" | "waveform" | "midi"
+#   duration_s  — seconds before advancing. Rejected on `commercial`
+#                 scenes (they run until the video file ends).
+#   name        — display name (used by the interstitial). Optional.
+#   target_fps  — per-scene FPS cap. Default: system rate
+#                 (60 NTSC / 50 PAL) for all scenes, except waveform
+#                 which defaults to half rate (30 NTSC / 25 PAL) to stay
+#                 under the DMA ceiling (see docs/caveats.md).
+#   audio       — opt out of audio for this scene. Default: when
+#                 [audio].enabled is on (or -A is passed), every webcam,
+#                 blank, and commercial scene plays its audio. Set
+#                 `audio = false` to silence one without disabling the
+#                 streamer globally. Waveform/MIDI scenes ignore this
+#                 (they drive the SID directly).
+#
+# Each scene may carry overlays via [[scenes.overlays]] blocks. Order
+# matters — later overlays paint on top of earlier ones in overlapping
+# cells. The overlay catalog is at the bottom of this file.
+
+# ---------------------------------------------------------------------------
+# SCENE 1 — PETSCII webcam + the kitchen-sink of PETSCII-only overlays.
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "Live PETSCII + Overlays"
+duration_s = 45.0
+# style = "default"                     # default | halftone | random_glyph
+#                                       # | letter_rain | neon | inverse_pop
+#                                       # | hatch | color_only | random
+#                                       # SHIFT key cycles through these at
+#                                       # runtime. "random" picks at setup.
+# Mic capture follows the global [audio] enabled flag — set it (or pass -A)
+# and this scene's samples will be fed to the SID DAC. Combine with the
+# spectrum_petscii overlay below for a live VU-meter look. To silence just
+# this scene while keeping audio on for the rest of the playlist, add
+# `audio = false`.
+# pre_emphasis = 0.7                     # per-scene HF boost override (needs
+#                                       # [dsp].enabled); unset = source-aware
+#                                       # default (mic 0.7 / line 0.6).
+
+  [[scenes.overlays]]
+  type = "scrolling_text"
+  row = 24                              # 0..24; defaults to bottom row
+  speed_cells_per_s = 6.0
+  bg_color = "black"
+  messages = [
+    { text = "WELCOME TO C64CAST!", color = "yellow", style = "static", pause_time_s = 2.0 },
+    { text = "EDIT c64cast.toml TO PERSONALISE", color = "purple" },
+    { text = "ULTIMATE 64 TRICKS", color = "cyan" },
+  ]
+
+  # spectrum_petscii needs an AudioStreamer to read from. Enable [audio]
+  # (or pass -A) before uncommenting — the scene picks up the streamer
+  # automatically unless overridden with `audio = false`.
+  # Requires the `mic` extra: `pip install -e .[mic]`.
+  # [[scenes.overlays]]
+  # type = "spectrum_petscii"
+  # placement = "center"                # bottom | center | split
+  # height_rows = 10
+  # gain = 1.0
+
+  [[scenes.overlays]]
+  type = "clock"
+  corner = "top-right"
+  format = "%H:%M"
+  fg_color = "white"
+  bg_color = "black"
+
+  [[scenes.overlays]]
+  type = "weather"                      # background HTTP fetch
+  provider = "open-meteo"               # open-meteo | wttr.in
+  lat = 30.27                           # Austin, TX — replace with yours.
+  lon = -97.74
+  # location = "Austin"                 # use this with provider = "wttr.in"
+  units = "F"                           # F | C
+  corner = "top-left"
+  fg_color = "light blue"
+  bg_color = "black"
+  refresh_minutes = 10
+
+  [[scenes.overlays]]
+  type = "network"                      # local IP + U64 ping latency
+  items = ["ip", "ping"]                # ip | hostname | ping
+  corner = "bottom-left"
+  fg_color = "light gray"
+  refresh_s = 5.0
+
+  [[scenes.overlays]]
+  type = "callsign"                     # static text in a corner
+  text = "DE C64"
+  corner = "bottom-right"
+  fg_color = "light blue"
+
+# ---------------------------------------------------------------------------
+# SCENE 2 — PETSCII webcam + ticker, RSS, countdown, logo placeholder.
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "Ticker + News + Countdown"
+duration_s = 45.0
+
+  [[scenes.overlays]]
+  type = "marquee"                      # single slow ticker line
+  text = "C64CAST // C= TO PAUSE // CTRL TO SKIP // EDIT THIS LINE IN c64cast.toml"
+  row = 0
+  speed_cells_per_s = 3.0
+  fg_color = "yellow"
+
+  [[scenes.overlays]]
+  type = "rss"                          # RSS / Atom feed ticker
+  url = "https://hnrss.org/frontpage"   # any RSS/Atom feed
+  row = 1
+  max_items = 8
+  refresh_minutes = 15
+  fg_color = "light green"
+
+  [[scenes.overlays]]
+  type = "countdown"
+  target = "2027-01-01T00:00:00"        # ISO 8601 — edit to your event
+  format = "auto"                       # auto | "{d}D {h:02d}:{m:02d}:{s:02d}"
+  corner = "top-right"
+  fg_color = "yellow"
+
+  [[scenes.overlays]]
+  type = "logo"
+  # The example uses a path that probably doesn't exist; the overlay
+  # detects that and renders a labelled placeholder box. Drop your own
+  # ASCII art into assets/logos/ and update this path.
+  file = "assets/logos/yours.txt"
+  corner = "bottom-left"
+  fg_color = "white"
+
+# ---------------------------------------------------------------------------
+# SCENE 3 — Hi-res edges (bitmap).
+# Bitmap scenes only accept overlays that don't write screen/color RAM.
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "hires_edges"
+name = "Hi-Res Edges"
+duration_s = 30.0
+
+# ---------------------------------------------------------------------------
+# SCENE 4 — Multi-hires bitmap.
+# `palette_mode` chooses the VIC-II per-cell SLOT-ALLOCATION strategy only
+# (mcm/mhires); color shaping (channel boost + hue/purple corrections) is the
+# global [color] section above, applied to every mode.
+#   "percell" (default) — bg0 is picked globally (most-populated index),
+#                         then every 4×8 cell picks its own top 3 non-bg
+#                         colors by population. The frame can carry up to
+#                         bg0 + 3×1000 distinct colors, which is what
+#                         VIC-II MCBM is actually designed for.
+#   "cheap"             — legacy global-4: saturation boost (HSV) +
+#                         gray-axis penalty; 4 slots picked by raw pixel
+#                         frequency, then every cell shares those 4.
+#   "vivid"             — same biases as cheap, but the 4 global slots
+#                         are chosen for hue diversity. For mhires
+#                         "percell" usually covers this case better.
+#   "grayscale"         — fixed gray-axis slots (the "old broadcast" look).
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "mhires"
+name = "Multi-Hires (percell)"
+duration_s = 30.0
+palette_mode = "percell"                # default; included here for clarity
+
+# ---------------------------------------------------------------------------
+# SCENE 5 — Multi-hires bitmap, "vivid" palette mode.
+# Use this when a frame keeps coming out monochromatic — the hue-diversity
+# picker forces more distinct colors into the 4 global slots.
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "mhires"
+name = "Multi-Hires (vivid palette)"
+duration_s = 30.0
+palette_mode = "vivid"
+
+# ---------------------------------------------------------------------------
+# SCENE 6 — Multicolor character mode (MCM), "cheap" palette mode.
+# MCM reinterprets color RAM bit 3 + halves horizontal pixel resolution, so
+# PETSCII-glyph overlays (clock, marquee, etc.) won't render correctly here;
+# stick to bitmap-safe overlays (big_text).
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "mcm"
+name = "MCM Webcam (cheap palette)"
+duration_s = 30.0
+palette_mode = "cheap"
+
+# ---------------------------------------------------------------------------
+# SCENE 7 — MCM, "vivid" palette mode.
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "mcm"
+name = "MCM Webcam (vivid palette)"
+duration_s = 30.0
+palette_mode = "vivid"
+
+# ---------------------------------------------------------------------------
+# SCENE 8 — Blank canvas + demo-scene-style scrolling big text.
+# `blank` is a PETSCII char mode with configurable border + background and
+# no video feed — every visible cell comes from overlays. Pairs naturally
+# with the big_text overlay for title cards / greetz scrollers.
+#
+# If `duration_s` expires mid-scroll, the Playlist waits for the message
+# to finish scrolling off-screen before transitioning. CTRL still cuts
+# through immediately.
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "blank"
+name = "Title Card"
+duration_s = 12.0
+border = 0                              # 0..15 — palette index for the border
+background = 6                          # 0..15 — palette index for the canvas
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"                        # top | middle | bottom
+  speed_cells_per_s = 8.0               # screen cells (= source pixels) per second
+  inter_message_pause_s = 1.5
+  loop = true                           # cycle messages forever (within duration_s).
+                                        # false = play once, defer scene auto-advance
+                                        # until the last message scrolls off.
+  # Glyph size is fixed: each source PETSCII character expands to an 8×8
+  # cell footprint (1 source pixel → 1 solid screen cell).
+  messages = [
+    { text = "C64CAST",        color = "rainbow" },
+    { text = "DEMO SCENE VIBES", color = "yellow"  },
+    { text = "GREETZ TO CCUG",   color = "cyan"    },
+  ]
+
+# ---------------------------------------------------------------------------
+# SCENE 9 — MCM webcam, "grayscale" palette mode, with big_text overlay.
+# "grayscale" forces every per-pixel argmin to land on one of the 5 gray-
+# axis palette entries (black, white, dark gray, gray, light gray). The
+# bg slots are fixed in luminance order (not picked per frame) — this is
+# the perf path; adaptive picking from only 5 entries was reshuffling
+# slots every frame and busting the bitmap delta cache. Result: a low-fi
+# "TV broadcast" aesthetic at the bitmap-mode 30 fps target. MCM-mode
+# big_text is limited to FG colors 0..7 by the hardware (color RAM bit 3
+# = multicolor flag steals the high bit).
+# ---------------------------------------------------------------------------
+
+[[scenes]]
+type = "webcam"
+display = "mcm"
+name = "Grayscale Webcam"
+duration_s = 30.0
+palette_mode = "grayscale"
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "bottom"
+  speed_cells_per_s = 6.0
+  messages = [
+    { text = "LIVE FROM AUSTIN", color = "white" },
+  ]
+
+
+# ===========================================================================
+# Optional scenes — uncomment after providing the required assets/hardware.
+# ===========================================================================
+
+# --- SID jukebox ----------------------------------------------------------
+# Plays a .sid file on the U64 and visualises the three voices.
+#
+# Drop SIDs into assets/sids/ (HVSC is the canonical archive: hvsc.c64.org).
+# Without the songlengths DB you must set duration_s; with the DB it's
+# looked up automatically.
+#
+# [[scenes]]
+# type = "waveform"
+# # `file` accepts a single .sid path, a directory, a glob, or any
+# # comma-separated combination of those. Each scene setup() picks a
+# # random match from the resolved pool. Omit the field entirely to
+# # fall back to scanning assets/sids/.
+# #   file = "assets/sids/your-tune.sid"
+# #   file = "assets/sids"  # whole directory
+# #   file = "assets/sids/C64Music/MUSICIANS/G/Galway_Martin/*"
+# #   file = "assets/sids/Tune1.sid, assets/sids/Tune2.sid"
+# file = "assets/sids/your-tune.sid"
+# song = 0                              # 0 = SID's default; 1+ = subtune
+# duration_s = 180.0                    # omit if [playlist].songlengths_file is set
+# color_mode = "per_voice"              # per_voice | per_waveform
+# voice_colors = ["cyan", "yellow", "light green"]
+# # target_fps = 30.0                   # default = HALF system rate (30 NTSC / 25 PAL); see docs/caveats.md
+#
+# # Visualization knobs — all three compose freely.
+# time_base = "wallclock"               # wallclock | auto. "auto" locks the
+#                                       # rendered window to N complete cycles
+#                                       # per voice (using v.freq) so high notes
+#                                       # don't collapse into dense fuzz.
+# auto_cycles = 4.0                     # cycles per render window (auto only)
+# persistence = "off"                   # off | short | medium | long | random
+#                                       # Decays the per-voice intensity strip
+#                                       # so older traces fade out. "random"
+#                                       # picks a preset at scene setup.
+# scroll_columns = 0                    # 0 = redraw from scratch. >0 = FIFO
+#                                       # shift the strip left by N cols per
+#                                       # frame and draw only the new N on the
+#                                       # right edge. Accepts a per-voice list:
+#                                       # scroll_columns = [1, 0, 8]
+#
+# [scenes.waveform_colors]              # per_waveform mode only
+# triangle = "light green"
+# sawtooth = "light red"
+# pulse    = "cyan"
+# noise    = "yellow"
+# off      = "dark gray"
+
+# --- Slideshow: cycle through still images ---------------------------------
+# Shows a pool of images on the C64 display, one at a time. No audio, no
+# webcam. Drop pictures into assets/pictures/ (the default scan dir).
+#
+# [[scenes]]
+# type = "slideshow"
+# # `file` accepts a single image path, a directory, a glob, or any
+# # comma-separated combination. Each setup() re-resolves the pool and
+# # walks it shuffle-and-walk (every image shown once before any repeat;
+# # no image twice back-to-back across reshuffles). Omit to scan
+# # assets/pictures/.
+# #   file = "assets/pictures/photo.jpg"
+# #   file = "assets/pictures"           # whole directory
+# #   file = "assets/pictures/*.png"     # glob
+# file = "assets/pictures"
+# display = "mhires"                    # mhires | hires | hires_edges | mcm
+#                                       # | petscii | random. "random" picks a
+#                                       # fresh mode each setup(); "hires_edges"
+#                                       # is treated as "mhires" for photos.
+# duration_s = 60.0                     # total scene runtime (30 s if unset)
+# image_duration_s = 5.0               # per-image dwell time before advancing;
+#                                       # independent of duration_s (the cycler
+#                                       # advances on its own timer and the
+#                                       # scene ends when duration_s expires).
+# palette_mode = "percell"             # percell | cheap | vivid | grayscale
+
+# --- Commercial / video playback ------------------------------------------
+# Requires the `commercials` extra (PyAV). Drop video files into
+# assets/commercials/ to have the playlist auto-interleave them between
+# other scenes (see [playlist].interleave_ads). For an explicit commercial
+# scene anywhere in the playlist:
+#
+# [[scenes]]
+# type = "commercial"
+# # `file` accepts a single video path, a directory, a glob, or any
+# # comma-separated combination of those. Each scene setup() picks a
+# # random match. Omit the field entirely to fall back to scanning
+# # assets/videos/.
+# #   file = "assets/videos/your-ad.mp4"
+# #   file = "assets/videos"  # whole directory
+# #   file = "assets/videos/*.mkv"
+# #   file = "assets/videos, assets/extra/promo.mp4"
+# file = "assets/videos/your-ad.mp4"
+# display = "hires_edges"
+#
+# Commercial scenes run until the video file ends — `duration_s` is
+# rejected by the config loader (the playlist advances when the source
+# reports `finished`, so a duration field would silently be a no-op or
+# truncate the clip).
+#
+# The audio track is pre-scanned and gain-normalized to ~90% of full
+# scale at scene setup (the 4-bit SID DAC has no usable range for quiet
+# sources, so without this a low-volume clip plays as silence-with-clicks).
+# No TOML knob; the heuristic is fixed. Adds <1 s to setup, hidden under
+# the interstitial.
+
+# --- MIDI → SID synth -----------------------------------------------------
+# Requires the `midi` extra (mido + python-rtmidi) and a MIDI device or
+# software loopback (IAC on macOS, snd-virmidi on Linux). The scene opens
+# the first input port whose name contains `midi_port` (substring match).
+#
+# [[scenes]]
+# type = "midi"
+# name = "MIDI → SID"
+# duration_s = 60.0
+# midi_port = ""                        # "" or omit → first available port
+# midi_waveform = "pulse"               # pulse | sawtooth | triangle | noise
+# midi_adsr = [0, 8, 12, 8]             # attack, decay, sustain, release (0-15)
+# midi_pulse_width = 2048               # 0-4095 (pulse waveform only)
+# midi_filter_cutoff = 1024             # 0-2047
+# midi_filter_mode = "lowpass"          # lowpass | bandpass | highpass
+# midi_master_volume = 15               # 0-15
+# voice_colors = ["light green", "cyan", "yellow"]
+#
+#   # OBS overlay also has a `bottom-right` slot if you want to chord them.
+#   [[scenes.overlays]]
+#   type = "callsign"
+#   text = "MIDI"
+#   corner = "bottom-right"
+#   fg_color = "light red"
+
+# --- Launcher: run a native C64 program -----------------------------------
+# Launches a .prg (firmware run_prg) or .crt cartridge (run_crt) — chosen by
+# extension — and hands the whole machine to it. Once launched the program
+# owns the VIC/SID/CIAs; c64cast stops painting and only polls for player
+# input. Drop programs into assets/programs/ (see assets/programs/README.md).
+#
+# `duration_s` here is an IDLE TIMEOUT: it counts down from launch and resets
+# on player input, so a game stays up while it's being played. For a self-
+# running demo, set a long duration_s (and optionally input_source = "none").
+# Single program only — no disk/tape mounting, no multi-disk games.
+#
+# [[scenes]]
+# type = "launcher"
+# # `file` accepts a single .prg/.crt path, a directory, a glob, or any
+# # comma-separated combination. Each setup() picks a random match. Omit to
+# # fall back to scanning assets/programs/.
+# #   file = "assets/programs/game.prg"
+# #   file = "assets/programs"       # whole directory
+# #   file = "assets/programs/*.crt"
+# file = "assets/programs/game.prg"
+# duration_s = 120.0                    # idle timeout (reset by player input)
+# input_source = "cia"                  # cia | kernal | auto | none. What counts
+#                                       # as input — never the C=/SHIFT/CTRL keys.
+# # max_duration_s = 600.0              # hard ceiling regardless of input (no cap if unset)
+# # min_duration_s = 10.0              # floor before idle can advance
+# # reset_before_launch = true         # clean machine state before launching
+# # bypass_audio_lock = true           # ensemble: skip the exclusive audio slot
+# #                                     # so multiple players hear their own games
+
+# --- OBS Studio status overlay --------------------------------------------
+# Requires the `obs` extra (obsws-python). Polls a running OBS instance
+# over websocket v5 and shows the active scene + dropped-frame count in
+# a corner. Useful when c64cast is on a different machine from OBS.
+#
+# Attach to any PETSCII scene:
+#
+#   [[scenes.overlays]]
+#   type = "obs_status"
+#   host = "localhost"
+#   port = 4455
+#   password = ""                       # set in OBS → Tools → WebSocket Server
+#   show_dropped = true
+#   corner = "bottom-right"
+#   fg_color = "light green"
+#   refresh_s = 2.0
+
+
+# ===========================================================================
+# Overlay quick reference
+# ===========================================================================
+#
+# Restrictions (validated at config-load time):
+#   REQUIRES_PETSCII        paints PETSCII glyphs — accepted on any display
+#                           mode that sets `is_petscii_compatible` (petscii,
+#                           blank). Rejects mcm (different color RAM semantics
+#                           + pixel pair rendering) and bitmap modes.
+#   COMPATIBLE_MODES        whitelist of display-mode names the overlay
+#                           supports (e.g. big_text: blank + mcm only).
+#   REQUIRES_AUDIO          needs [audio].enabled = true.
+#
+# | Overlay            | Restriction             | What it shows                       |
+# |--------------------|-------------------------|-------------------------------------|
+# | scrolling_text     | petscii / blank         | One row of multi-message marquee    |
+# | marquee            | petscii / blank         | One row, single ticker text         |
+# | rss                | petscii / blank         | RSS/Atom headlines (bg fetch)       |
+# | spectrum_petscii   | petscii / blank, audio  | 8-band FFT, vertical bars in RAM    |
+# | clock              | petscii / blank         | Time/date in a corner               |
+# | weather            | petscii / blank         | Temp + conditions in a corner       |
+# | callsign           | petscii / blank         | Static text in a corner             |
+# | countdown          | petscii / blank         | Time-until-target in a corner       |
+# | network            | petscii / blank         | IP / hostname / U64 ping in a corner |
+# | logo               | petscii / blank         | Multi-line ASCII art block          |
+# | big_text           | blank / mcm only        | Demo-scene 8×-scale scrolling text  |
+# | obs_status         | petscii / blank         | OBS scene + dropped frames          |

@@ -1,0 +1,30 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + RSS feed ticker.
+#
+# Pulls headlines from an RSS/Atom feed in a background thread, renders
+# them as a marquee on one row. Stdlib parser only (no extra deps).
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-rss.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "rss demo"
+
+  [[scenes.overlays]]
+  type = "rss"
+  url = "https://hnrss.org/frontpage"   # any RSS/Atom feed
+  row = 1
+  max_items = 8
+  refresh_minutes = 15
+  fg_color = "light green"

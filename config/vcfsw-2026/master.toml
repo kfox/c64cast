@@ -1,0 +1,62 @@
+#:schema ../../c64cast.schema.json
+# ============================================================================
+# VCFSW 2026 — 3-system Commodore video wall (master config)
+# ============================================================================
+# Vintage Computer Festival Southwest, hosted by the Central Texas
+# Commodore Users Group. A row of three Ultimate 64s, left → middle →
+# right (viewed from the front), each running a similar-but-staggered
+# playlist so the three screens always show something different.
+#
+# Run the whole wall:
+#   python -m c64cast --config config/vcfsw-2026/master.toml
+#
+# Test one system in isolation (each per-system file is standalone):
+#   python -m c64cast --config config/vcfsw-2026/left.toml
+#
+# The [ensemble].systems order is load-bearing: index 0 is the leftmost
+# screen, the last entry is the rightmost. Sections below cascade into
+# every per-system file as DEFAULTS unless that file overrides them;
+# [video] and [[scenes]] are per-system only and never cascade.
+
+[ensemble]
+systems = [
+    { name = "left",   config = "left.toml"   },
+    { name = "middle", config = "middle.toml" },
+    { name = "right",  config = "right.toml"  },
+]
+
+[audio]
+# Master switch. Required so the waveform scenes can drive the real SID.
+# Live webcam + commercial scenes are muted per-scene (audio = false) and,
+# in ensemble mode, live scenes never hold the audio spotlight anyway.
+# Only ONE system across the wall may drive audio at a time — the
+# ensemble audio lock arbitrates, so the SID-playing waveform scenes
+# naturally take turns and never overlap.
+enabled = true
+
+[playlist]
+# Commercials are placed explicitly in each playlist (as muted
+# `commercial` scenes pointed at assets/videos/), so the automatic
+# ad-interleaver stays off.
+interleave_ads = false
+loop = true
+# Gives every waveform scene its true length straight from HVSC instead
+# of a flat 180 s default. Comment out if you don't have the file.
+songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"
+
+[interstitial]
+# The "UP NEXT" card between scenes — random parallax background +
+# rainbow text keeps the transitions varied across the wall.
+duration_s = 3.0
+text_color = "rainbow"
+background = "random"
+
+[control]
+# Flip to true to drive the wall over HTTP (pause/resume/skip/reload).
+# This section lives ONLY in the master — it doesn't cascade; there is
+# one control plane shared across the whole ensemble.
+enabled = true
+
+[debug]
+verbose = 0
+heartbeat = 30.0

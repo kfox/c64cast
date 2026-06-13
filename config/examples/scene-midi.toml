@@ -1,0 +1,34 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: MIDI → SID synth.
+#
+# Listens on a MIDI input port and synthesises notes on the U64's
+# hardware SID — turns the C64 into a 3-voice MIDI sound module.
+#
+# Requires:
+#   - The `midi` extra (`pip install -e .[midi]`): mido + python-rtmidi.
+#   - A MIDI source. On macOS, enable IAC in Audio MIDI Setup; on Linux,
+#     `modprobe snd-virmidi`. Or just plug in a USB MIDI keyboard.
+#
+# `midi_port` is a substring match against available input port names.
+# Empty string ("" or commented out) picks the first available port.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-midi.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "midi"
+name = "MIDI -> SID"
+midi_port = ""                # "" = first port; or e.g. "IAC", "MPK"
+midi_waveform = "pulse"       # pulse | sawtooth | triangle | noise
+midi_adsr = [0, 8, 12, 8]     # attack, decay, sustain, release (each 0..15)
+midi_pulse_width = 2048       # 0..4095, pulse waveform only
+midi_filter_cutoff = 1024     # 0..2047
+midi_filter_mode = "lowpass"  # lowpass | bandpass | highpass
+midi_master_volume = 15       # 0..15
+voice_colors = ["light green", "cyan", "yellow"]

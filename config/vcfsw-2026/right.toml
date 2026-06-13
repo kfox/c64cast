@@ -1,0 +1,159 @@
+#:schema ../../c64cast.schema.json
+# ============================================================================
+# VCFSW 2026 — RIGHT screen
+# ============================================================================
+# Standalone-runnable: `python -m c64cast --config config/vcfsw-2026/right.toml`.
+# Same scene mix as the other screens, but it OPENS on a commercial so it
+# stays out of phase with left (webcam) and middle (gallery). SID
+# composers carried by this screen: Ben Daglish, Charles Deenen (plus a
+# wildcard random SID). A playable launcher scene and interleaved muted
+# commercials round out the loop.
+
+[ultimate64]
+url = "http://192.168.2.64"         # <-- set to the RIGHT U64's IP/hostname
+
+[video]
+device = 0                           # see left.toml for the camera-index note
+
+# --- Commercial (muted), multi-hires per-cell ---
+[[scenes]]
+type = "commercial"
+display = "mhires"
+palette_mode = "percell"
+name = "Commercial Break"
+file = "assets/videos"
+audio = false
+
+# --- Single picture for the whole scene (multi-hires, per-cell) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "percell"
+name = "Gallery"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999
+
+# --- Live PETSCII webcam: weather (UL) + time (UR) + retro RSS (bottom) ---
+[[scenes]]
+type = "webcam"
+display = "petscii"
+style = "default"
+name = "Live Cam (PETSCII)"
+duration_s = 45
+audio = false
+
+  [[scenes.overlays]]
+  type = "weather"
+  provider = "open-meteo"
+  lat = 32.95
+  lon = -96.73
+  units = "F"
+  corner = "top-left"
+
+  [[scenes.overlays]]
+  type = "clock"
+  corner = "top-right"
+  format = "%H:%M"
+  show_date = true
+
+  [[scenes.overlays]]
+  type = "rss"
+  url = "https://feeds.arstechnica.com/arstechnica/index"   # Ars Technica — tech, family-friendly
+  row = 24
+  speed_cells_per_s = 3.0
+  fg_color = "light green"
+
+# --- SID oscilloscope: Ben Daglish ---
+[[scenes]]
+type = "waveform"
+name = "SID: Ben Daglish"
+file = "assets/sids/C64Music/MUSICIANS/D/Daglish_Ben"
+color_mode = "per_voice"
+voice_colors = ["light green", "yellow", "light red"]
+persistence = "random"
+
+# --- Single picture for the whole scene (multi-hires, grayscale) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "grayscale"
+name = "Gallery (Mono)"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999
+
+# --- Playable program: random game/demo from assets/programs (idle-timeout) ---
+[[scenes]]
+type = "launcher"
+name = "Play a Game"
+file = "assets/programs"             # random .prg/.crt each setup
+duration_s = 120.0                   # idle timeout — resets on player input
+input_source = "cia"                 # joystick at $DC00/$DC01
+
+# --- SID oscilloscope: Charles Deenen ---
+[[scenes]]
+type = "waveform"
+name = "SID: Charles Deenen"
+file = "assets/sids/C64Music/MUSICIANS/D/Deenen_Charles"
+color_mode = "per_waveform"
+time_base = "auto"
+persistence = "random"
+
+# --- Live webcam, Canny edges (white-on-black demo look) ---
+[[scenes]]
+type = "webcam"
+display = "hires_edges"
+name = "Live Cam (Edges)"
+duration_s = 45
+audio = false
+
+# --- Big-text scroller ---
+[[scenes]]
+type = "blank"
+name = "Greetings"
+border = 11
+background = 0
+duration_s = 60
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  speed_cells_per_s = 12.0
+  loop = true
+  messages = [
+    { text = "RETROCOMPUTING IS THE FUTURE",        color = "light blue" },
+    { text = "WELCOME TO VCFSW 2026!",              color = "rainbow"    },
+    { text = "CENTRAL TEXAS COMMODORE USERS GROUP", color = "orange"     },
+  ]
+
+# --- Commercial (muted), Canny edges ---
+[[scenes]]
+type = "commercial"
+display = "hires_edges"
+name = "Commercial Break"
+file = "assets/videos"
+audio = false
+
+# --- SID oscilloscope: random tune from the whole HVSC MUSICIANS tree ---
+[[scenes]]
+type = "waveform"
+name = "SID: Random"
+# Glob across the whole HVSC MUSICIANS tree (letter/composer/tune.sid) —
+# a fresh random tune every loop. The scene skips any RSID / incompatible
+# pick and retries, so the wildcard stays robust.
+file = "assets/sids/C64Music/MUSICIANS/*/*/*.sid"
+color_mode = "per_voice"
+voice_colors = ["cyan", "purple", "light green"]
+persistence = "random"
+scroll_columns = 2
+
+# --- Single picture for the whole scene (multi-hires, per-cell) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "percell"
+name = "Gallery"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999

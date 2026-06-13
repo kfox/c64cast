@@ -1,0 +1,39 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + OBS Studio status overlay.
+#
+# Polls a running OBS instance over its WebSocket API (v5) and shows
+# the active OBS scene + dropped-frame count in a corner. Useful when
+# c64cast runs on a machine separate from OBS and you want at-a-glance
+# stream-health info on the C64 itself.
+#
+# Requires:
+#   - The `obs` extra:  pip install -e .[obs]   (obsws-python)
+#   - OBS → Tools → WebSocket Server: enabled, port + (optional) password
+#     matching this config.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-obs_status.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "obs_status demo"
+
+  [[scenes.overlays]]
+  type = "obs_status"
+  host = "localhost"
+  port = 4455
+  password = ""               # set in OBS → Tools → WebSocket Server
+  show_dropped = true
+  corner = "bottom-right"
+  fg_color = "light green"
+  refresh_s = 2.0

@@ -1,0 +1,795 @@
+"""Playlist state machine. Walks scenes, inserts an interstitial scene
+between them, paces the main render loop to the target frame rate, prints
+periodic health heartbeats, and tolerates per-scene crashes by advancing
+the playlist.
+
+The interstitial is built via an injected ``interstitial_factory(name) ->
+Scene`` so callers can swap in custom designs (e.g. the colorful
+InterstitialScene) or stub it out for tests."""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+from .backend import C64Backend
+from .profiler import FrameProfiler, NullProfiler
+from .scenes import Scene
+
+if TYPE_CHECKING:
+    from .config import SceneCfg
+    from .ensemble import Ensemble
+
+InterstitialFactory = Callable[[str], Scene]
+FollowerSceneFactory = Callable[["SceneCfg"], Scene]
+
+
+class Playlist:
+    def __init__(self, scenes: list[Scene], api: C64Backend,
+                 target_fps: float,
+                 heartbeat_interval: float = 10.0,
+                 stop_event: threading.Event | None = None,
+                 interstitial_factory: InterstitialFactory | None = None,
+                 key_poller: Any = None,
+                 vision_controller: Any = None,
+                 profiler: FrameProfiler | NullProfiler | None = None,
+                 name: str = "system",
+                 loop: bool = True,
+                 audio: Any = None,
+                 audio_calibration: dict[str, float] | None = None) -> None:
+        if not scenes:
+            raise ValueError("Playlist needs at least one scene")
+        # Per-instance logger so ensemble runs can tell which system a
+        # given line came from. Child of the existing c64cast.playlist
+        # logger, so assertLogs("c64cast.playlist", ...) in tests still
+        # matches (per logging hierarchy: parent captures children).
+        self.name = name
+        self.log = logging.getLogger(f"c64cast.playlist.{name}")
+        self.scenes = scenes
+        # Single-scene mode: skip the interstitial cycle entirely, loop the
+        # one scene via teardown+setup on is_done, and drop CTRL skip events
+        # (there's nowhere to skip *to*). Auto-detected from the scene list.
+        self.single_scene = len(scenes) == 1
+        # Loop the playlist after the last scene finishes. False = exit
+        # the streamer cleanly after one pass through `scenes` (or one
+        # play of the single scene). Drives `_advance`'s end-of-list
+        # branches: when False, the final teardown sets stop_event
+        # instead of looping back / re-setting-up. See [playlist].loop in
+        # config.py for the user-facing knob.
+        self.loop = loop
+        self.api = api
+        self.audio = audio  # Optional AudioStreamer for pitch retune
+        # Optional {display_mode_name: playback-rate multiplier} for servo pitch.
+        self.audio_calibration = audio_calibration
+        self.default_target_fps = target_fps
+        self.frame_time = 1.0 / target_fps
+        self.heartbeat_interval = heartbeat_interval
+        self.stop_event = stop_event or threading.Event()
+        self.interstitial_factory = (
+            interstitial_factory or self._default_interstitial_factory()
+        )
+        self.key_poller = key_poller
+        # Optional vision controller — a second, camera-driven control surface
+        # that sets the same pause/resume/skip/cycle events as the keyboard
+        # poller (started/stopped alongside it). None unless [vision].enabled.
+        self.vision_controller = vision_controller
+        # Optional per-frame profiler. NullProfiler keeps the hot path
+        # branch-free; cli.py also calls set_profiler() so sub-stages from
+        # scenes._render_with_overlays land in the same instance.
+        self.profiler: FrameProfiler | NullProfiler = profiler or NullProfiler()
+        # Pause/resume events: poller sets pause_event on C= press; we set
+        # resume_event after the held-key check, also via the poller.
+        # Skip event: poller sets it on CTRL press (while running), or
+        # the FastAPI control plane sets it on POST /skip. The run loop
+        # forces is_done = True on the current scene when it fires.
+        # Cycle event: poller sets it on SHIFT press (while running). The
+        # run loop calls display_mode.cycle_style() on the current scene,
+        # which lets the mode rotate through its visual styles. No-op for
+        # modes that don't override cycle_style().
+        self.pause_event = threading.Event()
+        self.resume_event = threading.Event()
+        self.skip_event = threading.Event()
+        self.cycle_event = threading.Event()
+
+        self.index = 0
+        self.current: Scene | None = None
+        self.transitioning = False
+        self._last_heartbeat = 0.0
+        self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
+        # Reload event + pending replacement state. The CLI sets these on
+        # SIGHUP; the run loop notices, finishes the current scene's frame,
+        # then swaps in the new playlist at the next advance boundary.
+        self.reload_event = threading.Event()
+        self._pending_scenes: list[Scene] | None = None
+        self._pending_interstitial: InterstitialFactory | None = None
+        self._reload_lock = threading.Lock()
+        # Ensemble + broadcast-interrupt plumbing. None in single-system
+        # mode; wired up by cli.py after Ensemble construction in
+        # multi-system mode. When `_broadcast_interrupt` fires the run
+        # loop tears down the current scene, runs a follower scene
+        # driven by `ensemble.active_orchestrator`, and resumes the
+        # saved index. `build_follower_scene` builds the per-system
+        # follower Scene from a SceneCfg (the playlist itself doesn't
+        # know about audio/source/cfg; the factory closes over them).
+        self.ensemble: Ensemble | None = None
+        self._broadcast_interrupt: threading.Event | None = None
+        self._broadcast_resume: threading.Event | None = None
+        self.build_follower_scene: FollowerSceneFactory | None = None
+
+    def request_reload(self, new_scenes: list[Scene],
+                       new_interstitial: InterstitialFactory | None = None) -> None:
+        """Queue a playlist swap. The run loop applies it at the next
+        natural advance boundary (after the current scene finishes, or
+        immediately if the current scene is an interstitial). Pass None
+        for `new_interstitial` to keep the existing factory."""
+        with self._reload_lock:
+            self._pending_scenes = list(new_scenes)
+            self._pending_interstitial = new_interstitial
+            self.reload_event.set()
+
+    def _apply_reload(self) -> None:
+        """Swap in the queued scenes + interstitial factory. The current
+        scene is torn down so its overlays release threads/network state
+        cleanly; the new scenes start from index 0."""
+        with self._reload_lock:
+            new_scenes = self._pending_scenes
+            new_interstitial = self._pending_interstitial
+            self._pending_scenes = None
+            self._pending_interstitial = None
+            self.reload_event.clear()
+        if not new_scenes:
+            return
+        self.log.info("playlist: reloading (%d → %d scenes)",
+                 len(self.scenes), len(new_scenes))
+        if self.current is not None:
+            self._safe_teardown(self.current)
+            self.current = None
+        self.scenes = new_scenes
+        self.single_scene = len(new_scenes) == 1
+        if new_interstitial is not None:
+            self.interstitial_factory = new_interstitial
+        self.index = 0
+        self.transitioning = False
+
+    def _default_interstitial_factory(self) -> InterstitialFactory:
+        # Late import so tests that supply their own factory don't have
+        # to pull in backgrounds + InterstitialCfg.
+        from .interstitial import InterstitialScene
+        api = self.api
+        return lambda name: InterstitialScene(api, name)
+
+    def _frame_time_for(self, scene: Scene) -> float:
+        """Resolve the scene's per-frame budget.
+
+        Precedence:
+          1. scene.target_fps (explicit, set in WaveformScene's __init__ etc.)
+          2. display_mode.default_target_fps (None for bitmap → falls through)
+          3. self.default_target_fps (the Playlist's system-level fps)
+
+        Returns seconds per frame."""
+        scene_fps: float | None = getattr(scene, "target_fps", None)
+        if scene_fps is not None and scene_fps > 0:
+            return 1.0 / float(scene_fps)
+        dm = getattr(scene, "display_mode", None)
+        mode_fps: float | None = (
+            getattr(dm, "default_target_fps", None) if dm else None
+        )
+        if mode_fps is not None and mode_fps > 0:
+            return 1.0 / float(mode_fps)
+        return 1.0 / self.default_target_fps
+
+    def _wait_for_audio_claim(self, scene: Scene) -> bool:
+        """If the playlist is part of an ensemble and `scene` actually
+        contends for audio (`competes_for_audio_lock()`), block until we
+        hold the ensemble's audio slot — or return False if stop_event
+        fires first. Stamps the scene with `_audio_lock_held = True` on
+        success so the matching `_safe_teardown` releases. Always
+        returns True for non-ensemble runs or scenes that don't
+        compete for audio (including a muted commercial).
+
+        Used by single-scene mode (which can't skip itself, so the
+        only sensible option is to wait). Multi-scene playlists use
+        `_resolve_next_index` instead — that one skips past gated
+        scenes to a runnable one before falling back to wait."""
+        if self.ensemble is None or not scene.competes_for_audio_lock():
+            return True
+        poll_interval = 0.1
+        first_wait = True
+        while not self.stop_event.is_set():
+            if self.ensemble.try_claim_audio(self.name):
+                scene.__dict__["_audio_lock_held"] = True
+                return True
+            if first_wait:
+                self.log.info("audio-bearing scene %r waiting — slot "
+                              "held by %s", scene.name,
+                              self.ensemble.audio_holder)
+                first_wait = False
+            self.stop_event.wait(timeout=poll_interval)
+        return False
+
+    def _resolve_next_index(self) -> int | None:
+        """Walk forward from self.index in ensemble mode to find the
+        next scene we can actually run. Scenes that actually contend for
+        audio (`competes_for_audio_lock()`) whose lock is held by another
+        system are skipped; a muted commercial passes through like any
+        non-audio scene. If every scene is gated,
+        blocks (stop_event-aware) until the lock frees and a candidate
+        becomes claimable. Returns the resolved index, or None only if
+        stop_event fires while waiting.
+
+        Side effect: on a successful audio-bearing claim, marks the
+        chosen scene so its eventual `_safe_teardown` releases the slot.
+
+        In single-system mode (ensemble is None) returns self.index
+        directly — no gating possible."""
+        if self.ensemble is None:
+            return self.index
+        n = len(self.scenes)
+        poll_interval = 0.1
+        first_full_wait = True
+        while not self.stop_event.is_set():
+            first_pass_log = first_full_wait
+            for offset in range(n):
+                idx = (self.index + offset) % n
+                scene = self.scenes[idx]
+                if not scene.competes_for_audio_lock():
+                    return idx
+                if self.ensemble.try_claim_audio(self.name):
+                    scene.__dict__["_audio_lock_held"] = True
+                    return idx
+                if first_pass_log:
+                    self.log.info("skipping audio-bearing %r — slot held "
+                                  "by %s", scene.name,
+                                  self.ensemble.audio_holder)
+            if first_full_wait:
+                self.log.info("all scenes audio-gated; waiting for "
+                              "ensemble audio slot to free")
+                first_full_wait = False
+            self.stop_event.wait(timeout=poll_interval)
+        return None
+
+    def _advance(self) -> None:
+        if self.single_scene:
+            if self.current is None:
+                scene = self.scenes[0]
+                if not self._wait_for_audio_claim(scene):
+                    return
+                self.current = scene
+                self.log.info("scene %r (single-scene mode, %s)",
+                         self.current.name,
+                         "looping" if self.loop else "once-through")
+                self._safe_setup(self.current)
+            elif self.current.is_done:
+                if not self.loop:
+                    self.log.info("scene %r finished and loop=False — stopping",
+                                  self.current.name)
+                    self._safe_teardown(self.current)
+                    self.current = None
+                    self.stop_event.set()
+                    return
+                # Loop the same scene back-to-back: teardown + setup. Works
+                # for every scene type — webcam re-reads source, commercial
+                # re-opens the file, waveform restarts the SID.
+                scene = self.current
+                self._safe_teardown(scene)
+                if not self._wait_for_audio_claim(scene):
+                    self.current = None
+                    return
+                self._safe_setup(scene)
+                scene.is_done = False
+            return
+        if self.current is None:
+            resolved = self._resolve_next_index()
+            if resolved is None:
+                return  # stop_event fired during the gate wait
+            self.index = resolved
+            self._enter_interstitial()
+        elif self.transitioning and self.current.is_done:
+            self._safe_teardown(self.current)
+            self.current = self.scenes[self.index]
+            self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes),
+                     self.current.name)
+            self._safe_setup(self.current)
+            self.transitioning = False
+        elif not self.transitioning and self.current.is_done:
+            self._safe_teardown(self.current)
+            next_index = self.index + 1
+            if next_index >= len(self.scenes):
+                if not self.loop:
+                    self.log.info("playlist finished and loop=False — stopping")
+                    self.current = None
+                    self.stop_event.set()
+                    return
+                next_index = 0
+            self.index = next_index
+            resolved = self._resolve_next_index()
+            if resolved is None:
+                self.current = None
+                return
+            self.index = resolved
+            self._enter_interstitial()
+
+    def _enter_interstitial(self) -> None:
+        """Set up the interstitial "UP NEXT" card for the scene at
+        `self.index` (which must already point at the resolved upcoming
+        scene) and flip `transitioning` on. Shared by both interstitial-
+        entry paths in `_advance` (first scene + scene-to-scene)."""
+        nxt = self.scenes[self.index]
+        # Let randomized scenes pick their file now so the "UP NEXT" card
+        # shows the real upcoming content (not a directory spec / stale
+        # prior pick). Must run before we read nxt.name.
+        self._safe_prepare_next(nxt)
+        self.log.info("interstitial → %r (scene %d/%d)",
+                 nxt.name, self.index + 1, len(self.scenes))
+        self.current = self.interstitial_factory(nxt.name)
+        self._safe_setup(self.current)
+        self.transitioning = True
+
+    def _maybe_install_conductor(self, scene: Scene) -> None:
+        """If this scene's SceneCfg has `orchestrate = true` AND we're
+        running in ensemble mode, resolve the right Orchestrator
+        subclass, instantiate it, and stamp the scene so overlays can
+        find it. The overlay (e.g. big_text) is what actually calls
+        orch.begin() to fire the follower interrupts — we just put the
+        orchestrator in place + set the ensemble's active slot."""
+        if self.ensemble is None:
+            return
+        # Skip if the scene is already wired with an orchestrator —
+        # _handle_broadcast_interrupt stamps follower scenes before
+        # calling us, and we must not clobber the follower role with a
+        # fresh conductor (especially when the follower's fallback cfg
+        # IS the conductor's orchestrate=true cfg, which carries that
+        # flag with it).
+        if scene.__dict__.get("_orchestrator") is not None:
+            return
+        cfg = scene.__dict__.get("_cfg")
+        if cfg is None or not getattr(cfg, "orchestrate", False):
+            return
+        try:
+            from .orchestrator import resolve_orchestrator
+            orch_cls = resolve_orchestrator(cfg)
+        except Exception:
+            self.log.exception("orchestrate=true on scene %r: could not "
+                               "resolve orchestrator subclass; running "
+                               "scene as local-only", scene.name)
+            return
+        orch = orch_cls(self.ensemble, self.name)
+        self.ensemble.active_orchestrator = orch
+        scene._orchestrator = orch
+        scene._is_conductor = True
+        scene._system_index = self.ensemble.system_names().index(self.name)
+
+    def _safe_prepare_next(self, scene: Scene) -> None:
+        """Invoke a scene's prepare_next() hook defensively. A failure here
+        must not strand the transition — the scene's own setup() re-picks
+        (and flips is_done on a hard failure), so we just log and fall
+        through to the interstitial."""
+        try:
+            scene.prepare_next()
+        except Exception:
+            self.log.exception("prepare_next failed on %r — interstitial "
+                               "will show a stale name", scene.name)
+
+    def _safe_setup(self, scene: Scene) -> None:
+        self._maybe_install_conductor(scene)
+        scene.setup()
+        # Adjust NMI latch for the new display mode (if audio is active and has
+        # a calibration table). This restores pitch under the host-DMA servo by
+        # boosting the NMI consumer rate back toward 8000 Hz after being throttled
+        # by video DMA bus-halts.
+        if (self.audio is not None and self.audio_calibration is not None
+                and hasattr(scene, "display_mode") and scene.display_mode is not None):
+            mode_name = getattr(scene.display_mode, "name", None)
+            if mode_name:
+                self.audio.set_nmi_latch_for_mode(mode_name, self.audio_calibration)
+        for ov in getattr(scene, "overlays", ()):
+            try:
+                ov.setup(self.api, scene)
+            except Exception:
+                # Overlay failure mustn't strand the scene — log and drop
+                # the offending overlay from the run list for this scene.
+                self.log.exception("overlay %r setup failed on %r — disabling",
+                              ov.name, scene.name)
+                ov._disabled = True   # checked in process_frame loop
+
+    def _safe_teardown(self, scene: Scene) -> None:
+        for ov in getattr(scene, "overlays", ()):
+            if getattr(ov, "_disabled", False):
+                continue
+            try:
+                ov.teardown(self.api, scene)
+            except Exception:
+                self.log.exception("overlay %r teardown failed", ov.name)
+        try:
+            scene.teardown()
+        except Exception:
+            self.log.exception("teardown of %r failed", scene.name)
+        # Clear the ensemble's active-orchestrator slot if this teardown
+        # was for a conductor scene. Big_text.teardown already calls
+        # orch.end() defensively; here we release the slot so the next
+        # orchestrate=true scene can install a fresh orchestrator. Also
+        # clear the per-scene conductor stamps: the same Scene instance
+        # is reused across loop iterations and a stale _orchestrator
+        # would make _maybe_install_conductor short-circuit on the next
+        # setup, leaving ensemble.active_orchestrator unset — followers
+        # would then drop the broadcast interrupt as "no active orch".
+        if (self.ensemble is not None
+                and scene.__dict__.get("_is_conductor", False)):
+            self.ensemble.active_orchestrator = None
+            scene.__dict__["_orchestrator"] = None
+            scene.__dict__["_is_conductor"] = False
+        # Release the ensemble audio lock if this scene held it. Runs
+        # even when teardown raised — a crashing CommercialScene must
+        # not strand the slot. The flag is reset on the scene so a
+        # subsequent re-setup (single-scene loop) re-resolves the claim
+        # rather than thinking it still holds the previous one.
+        if (self.ensemble is not None
+                and scene.__dict__.get("_audio_lock_held", False)):
+            self.ensemble.release_audio(self.name)
+            scene.__dict__["_audio_lock_held"] = False
+
+    def _maybe_heartbeat(self, now: float) -> None:
+        if self.heartbeat_interval <= 0:
+            return
+        if now - self._last_heartbeat < self.heartbeat_interval:
+            return
+        # First call just establishes the baseline; don't emit a 0-second window.
+        if self._last_heartbeat == 0.0:
+            self._last_heartbeat = now
+            self._last_stats = self.api.stats
+            return
+        s = self.api.stats
+        dt = max(now - self._last_heartbeat, 1e-6)
+        d_w = s["writes"] - self._last_stats["writes"]
+        d_e = s["errors"] - self._last_stats["errors"]
+        d_sk = s["skipped"] - self._last_stats["skipped"]
+        d_by = s["bytes"] - self._last_stats["bytes"]
+        name = self.current.name if self.current else "(none)"
+        msg = (
+            f"[{name}] writes={d_w / dt:.0f}/s errors={d_e / dt:.2f}/s "
+            f"skipped={d_sk / dt:.0f}/s "
+            f"bytes={d_by / dt / 1024.0:.0f}KiB/s"
+        )
+        # Promote to WARNING when errors are actually flowing — without this
+        # the user wouldn't see issues unless they ran with -v.
+        if d_e / dt > 1.0:
+            self.log.warning(msg)
+        else:
+            self.log.info(msg)
+        self._last_stats = s
+        self._last_heartbeat = now
+
+    def _run_one_frame(self, scene: Scene, next_deadline: float) -> float:
+        """Render one frame of `scene`. Returns the new next_deadline.
+
+        Extracted from the inner loop of run() so the broadcast-interrupt
+        path can drive a follower scene through the same render +
+        overlay + heartbeat + frame-drop machinery without duplicating
+        any of it. Skip/cycle events are honored against this scene
+        (consistent with `self.current` being the active scene)."""
+        frame_time = self._frame_time_for(scene)
+        with self.profiler.frame(scene.name):
+            t0 = time.time()
+            # Sleep until the deadline if we're early. Slow DMA pushes
+            # mean t0 can be later than expected; natural pacing absorbs
+            # that, and the catch-up below absorbs the rest.
+            if t0 < next_deadline:
+                with self.profiler.stage("wait"):
+                    self.stop_event.wait(timeout=next_deadline - t0)
+                t0 = time.time()
+
+            stats_before = self.api.stats
+
+            with self.profiler.stage("cpu_render"):
+                try:
+                    still_active = scene.process_frame(t0)
+                except Exception:
+                    self.log.exception("scene %r raised; advancing", scene.name)
+                    still_active = False
+                # Run process_frame for overlays that still write directly
+                # to the U64. Overlays with PAINTS_INTO_BUFFERS were
+                # already composed into the scene's screen+color buffers
+                # during scene.process_frame — calling process_frame
+                # again would race the scene write.
+                for ov in getattr(scene, "overlays", ()):
+                    if getattr(ov, "_disabled", False):
+                        continue
+                    if getattr(ov, "PAINTS_INTO_BUFFERS", False):
+                        continue
+                    try:
+                        ov.process_frame(self.api, scene, t0)
+                    except Exception:
+                        self.log.exception("overlay %r raised on %r — disabling",
+                                      ov.name, scene.name)
+                        ov._disabled = True
+
+            stats_after = self.api.stats
+            self.profiler.record_counts(
+                writes=stats_after["writes"] - stats_before["writes"],
+                bytes_=stats_after["bytes"] - stats_before["bytes"],
+            )
+
+            scene.is_done = not still_active
+            # Defer auto-advance while any overlay reports busy (e.g.
+            # BigText with an unfinished scroll-off). CTRL skip below
+            # still wins — it forces is_done = True regardless.
+            if scene.is_done and any(
+                    not getattr(ov, "_disabled", False) and ov.is_busy()
+                    for ov in getattr(scene, "overlays", ())):
+                scene.is_done = False
+            # Skip request (CTRL key from poller, or POST /skip from
+            # the control plane): force is_done so the next iteration
+            # advances. Race-free because we apply *after* the
+            # is_done = not still_active assignment.
+            if self.skip_event.is_set():
+                if self.single_scene:
+                    self.log.debug("skip ignored — single-scene mode")
+                else:
+                    self.log.info("skip requested — advancing past %r",
+                             scene.name)
+                    scene.is_done = True
+                self.skip_event.clear()
+
+            # Cycle request (SHIFT key, or future POST /cycle):
+            # rotate the current scene's display style. Ignored
+            # during an interstitial transition — cycling the
+            # interstitial mid-flight would be confusing and the
+            # interstitial doesn't implement cycle_style anyway.
+            if self.cycle_event.is_set():
+                if not self.transitioning:
+                    self._handle_cycle()
+                self.cycle_event.clear()
+
+            self._maybe_heartbeat(t0)
+            if self.profiler.emit_if_due(t0, self.log):
+                # Same cadence as the profiler — surfaces U64
+                # per-DMA-write latency so we can tell whether
+                # cpu_render is really CPU work or producer blocked
+                # on the network.
+                latency_line = self.api.format_write_latency()
+                if latency_line is not None:
+                    self.log.info(latency_line)
+
+        next_deadline += frame_time
+        # If we fell more than 2 frames behind, snap the deadline
+        # forward (drop frames) so we don't burst to catch up.
+        now = time.time()
+        if now > next_deadline + 2 * frame_time:
+            dropped = int((now - next_deadline) / frame_time)
+            if dropped > 0:
+                next_deadline += dropped * frame_time
+                self.log.debug("[%s] dropped %d frame(s); behind by %.0fms",
+                          scene.name, dropped,
+                          (now - next_deadline + frame_time) * 1000)
+        return next_deadline
+
+    def _handle_broadcast_interrupt(self) -> None:
+        """Save current scene state, swap in a follower scene driven by
+        the ensemble's active orchestrator, run frames until the
+        orchestrator releases us, then restore the saved scene index.
+
+        Called from the run loop when `_broadcast_interrupt` is set
+        (only happens in ensemble mode where the orchestrator wired the
+        events). The actual orchestrator subclass + its protocol live
+        in c64cast/orchestrator.py + subclasses."""
+        assert self._broadcast_interrupt is not None
+        assert self._broadcast_resume is not None
+        self._broadcast_interrupt.clear()
+        if self.ensemble is None or self.ensemble.active_orchestrator is None:
+            # Stale event (orchestrator ended between set and our
+            # observation). Drop the interrupt and let the run loop
+            # continue normally.
+            return
+        if self.build_follower_scene is None:
+            self.log.error("broadcast interrupt arrived but no follower "
+                           "scene factory wired; ignoring")
+            return
+        orch = self.ensemble.active_orchestrator
+
+        # Force-resume if paused. The pause_event was set by the keyboard
+        # poller; we clear it + set resume_event so any concurrent
+        # _handle_pause loop exits cleanly. Per the design, paused
+        # systems get woken by a broadcast and are left un-paused after
+        # (matches user expectation: emergency broadcast overrides pause).
+        if self.pause_event.is_set():
+            self.log.info("broadcast: force-resuming paused playlist")
+            self.pause_event.clear()
+            self.resume_event.set()
+
+        # Save scene index; tear down the current scene cleanly so its
+        # overlays release threads/network state. The follower scene
+        # runs in its place until the orchestrator releases us.
+        saved_idx = self.index
+        if self.current is not None:
+            self._safe_teardown(self.current)
+            self.current = None
+
+        follower_cfg = orch.follower_scene_cfg_for(self.name)
+        try:
+            follower_scene = self.build_follower_scene(follower_cfg)
+        except Exception:
+            self.log.exception("broadcast: follower scene build failed; "
+                               "skipping interrupt")
+            return
+        # Stamp orchestrator + role + this system's index in the
+        # ensemble (left-to-right) onto the scene so overlays that
+        # participate in the broadcast (e.g. big_text) can find them in
+        # their setup(). Followers are not conductors; the index is
+        # used by span-mode orchestrators to compute each follower's
+        # slice of the global content.
+        follower_scene._orchestrator = orch
+        follower_scene._is_conductor = False
+        follower_scene._system_index = (
+            self.ensemble.system_names().index(self.name))
+        self._safe_setup(follower_scene)
+        self.current = follower_scene
+
+        self.log.info("broadcast: follower scene %r running until resume",
+                      follower_scene.name)
+
+        # Spin frames until the orchestrator releases us or stop fires.
+        next_deadline = time.time()
+        while (not self._broadcast_resume.is_set()
+               and not self.stop_event.is_set()):
+            next_deadline = self._run_one_frame(follower_scene, next_deadline)
+        self._broadcast_resume.clear()
+
+        self.log.info("broadcast: resume — tearing down follower, "
+                      "restoring scene index %d", saved_idx)
+        self._safe_teardown(follower_scene)
+        self.current = None
+        # Defensive: _advance() reads self.index on the next iteration
+        # and re-sets-up the scene at that index from scratch. We didn't
+        # touch self.index during the broadcast, but pin it anyway in
+        # case some future code path mutates it mid-flight.
+        self.index = saved_idx
+
+    def run(self) -> None:
+        self._last_heartbeat = 0.0
+        self.log.info("playlist: starting (%d scene(s), default %.1f fps, "
+                 "heartbeat %.0fs)",
+                 len(self.scenes), self.default_target_fps,
+                 self.heartbeat_interval)
+        for controller in (self.key_poller, self.vision_controller):
+            if controller is not None:
+                controller.start(
+                    self.pause_event, self.resume_event,
+                    skip_event=self.skip_event,
+                    cycle_event=self.cycle_event)
+        # Deadline-based pacing: after each frame we advance the deadline by
+        # one frame_time. If real wall clock has fallen far behind the
+        # deadline, jump it forward (effectively dropping the missed frames)
+        # so animations stay tied to wall-clock time instead of compounding lag.
+        next_deadline = time.time()
+        try:
+            while not self.stop_event.is_set():
+                if self.pause_event.is_set():
+                    self._handle_pause()
+                    next_deadline = time.time()
+                    if self.stop_event.is_set():
+                        break
+                if self.reload_event.is_set():
+                    self._apply_reload()
+                    next_deadline = time.time()
+                if (self._broadcast_interrupt is not None
+                        and self._broadcast_interrupt.is_set()):
+                    self._handle_broadcast_interrupt()
+                    next_deadline = time.time()
+                    if self.stop_event.is_set():
+                        break
+
+                try:
+                    self._advance()
+                except Exception:
+                    self.log.exception("playlist advance failed; aborting")
+                    break
+                # loop=False end-of-playlist: _advance has torn down the
+                # last scene, set self.current = None, and set stop_event.
+                # Skip the render and let the while-loop condition exit.
+                if self.current is None:
+                    break
+
+                next_deadline = self._run_one_frame(self.current, next_deadline)
+        except KeyboardInterrupt:
+            self.log.info("interrupted")
+        finally:
+            for controller in (self.key_poller, self.vision_controller):
+                if controller is not None:
+                    controller.stop()
+            if self.current is not None:
+                self._safe_teardown(self.current)
+
+    def _handle_cycle(self) -> None:
+        """Broadcast a style cycle to the current scene, its display mode,
+        and every overlay attached to it.
+
+        Three opt-in surfaces respond to SHIFT:
+          * scene.cycle_style(api) — for scenes without a display_mode that
+            still want their own SHIFT behavior (e.g. WaveformScene cycles
+            the SID subtune).
+          * scene.display_mode.cycle_style(api) — the usual path used by
+            PETSCII style packs and the MCM/MHires palette modes.
+          * each overlay.cycle_style(api, scene).
+
+        Default cycle_style implementations return None, so opt-in
+        modes/overlays are the only ones that actually rotate; the rest
+        just ignore the request. Failures are logged but don't tear down
+        the scene — a broken style cycle is way better than killing the
+        playlist mid-stream."""
+        if self.current is None:
+            return
+        labels: list[str] = []
+        scene_cycle = getattr(self.current, "cycle_style", None)
+        if callable(scene_cycle):
+            try:
+                new_style = scene_cycle(self.api)
+            except Exception:
+                self.log.exception("cycle_style failed on scene %r — "
+                              "leaving as-is", self.current.name)
+                new_style = None
+            if new_style is not None:
+                labels.append(f"scene={new_style}")
+        dm = getattr(self.current, "display_mode", None)
+        if dm is not None:
+            try:
+                new_style = dm.cycle_style(self.api)
+            except Exception:
+                self.log.exception("cycle_style failed on %r display mode — "
+                              "leaving style as-is", self.current.name)
+                new_style = None
+            if new_style is not None:
+                labels.append(f"display={new_style}")
+        for ov in getattr(self.current, "overlays", ()):
+            if getattr(ov, "_disabled", False):
+                continue
+            try:
+                ov_style = ov.cycle_style(self.api, self.current)
+            except Exception:
+                self.log.exception("cycle_style failed on overlay %r — leaving "
+                              "style as-is", getattr(ov, "name", ov))
+                continue
+            if ov_style is not None:
+                labels.append(f"{ov.name}={ov_style}")
+        if labels:
+            self.log.info("cycle: %r → %s",
+                     self.current.name, ", ".join(labels))
+        else:
+            self.log.debug("cycle ignored: %r has no cyclable styles",
+                      self.current.name)
+
+    def _handle_pause(self) -> None:
+        """Tear down the current scene, hard-reset the U64, and wait until
+        either the resume signal fires (C= held N seconds) or stop fires.
+
+        We do NOT advance self.index — the same scene picks back up after
+        the next `_advance()` call when we leave this method."""
+        self.log.info("paused — hold Commodore key to resume")
+        if self.current is not None:
+            self._safe_teardown(self.current)
+            self.current = None
+        try:
+            self.log.info("U64: reset (pause) — leaving the BASIC READY banner up")
+            self.api.reset()
+        except Exception:
+            self.log.exception("reset during pause failed")
+
+        self.resume_event.clear()
+        # Spin on stop_event.wait so SIGTERM can shortcut the pause.
+        while not self.stop_event.is_set() and not self.resume_event.is_set():
+            self.stop_event.wait(timeout=0.1)
+        if self.stop_event.is_set():
+            return
+
+        self.log.info("resuming — U64: reset + run BASIC clear loop")
+        try:
+            self.api.reset()
+            time.sleep(1)
+            self.api.run_basic_clear_loop()
+            self.api.disable_case_switch()
+        except Exception:
+            self.log.exception("reset/clear during resume failed")
+        # The same scene gets re-set-up by _advance() on the next loop pass.
+        self.pause_event.clear()
+        self.resume_event.clear()

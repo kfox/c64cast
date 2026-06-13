@@ -1,0 +1,38 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + audio spectrum analyzer.
+#
+# Requires [audio] enabled = true and the `mic` extra:
+#   pip install -e .[mic]
+#
+# Reads recent audio samples from the AudioStreamer, runs an FFT, and
+# paints 8 vertical color bars (~5 cols each) into screen + color RAM.
+# Will refuse to start if [audio] isn't on.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-spectrum_petscii.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[audio]
+enabled = true                # required by spectrum_petscii
+device = -1                   # -1 = system default mic; -L lists indices
+mic_sensitivity = 1.5
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "spectrum_petscii demo"
+# Audio is picked up automatically from the global [audio] above.
+
+  [[scenes.overlays]]
+  type = "spectrum_petscii"
+  placement = "center"        # bottom | center | split
+  height_rows = 10
+  gain = 1.0

@@ -1,0 +1,45 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: the TeensyROM+ backend driving a blank canvas with a
+# scrolling-text overlay over USB serial.
+#
+# This is the Phase-1 TeensyROM bring-up demo. Unlike the Ultimate backend,
+# the TR has no physical-keyboard control (no memory-read command) — use the
+# HTTP control plane for pause/resume/skip if you need it.
+#
+# Before running:
+#   1. Connect your laptop to the TR's micro-USB-B port.
+#   2. Set serial_port below to your device (macOS: ls /dev/tty.usbmodem*;
+#      Linux: /dev/ttyACM0; Windows: COM3). For Ethernet instead, set
+#      transport = "tcp" + host = "<TR ip>" (enable the TCP listener + reboot
+#      the TR first).
+#
+# Run:
+#   python -m c64cast --config config/examples/teensyrom-blank.toml
+#
+# First smoke test on real hardware: confirm the border colour changes — a
+# byte-swapped address would write to RAM and leave the border untouched.
+
+[hardware]
+backend = "teensyrom"
+
+[teensyrom]
+transport = "serial"
+serial_port = "/dev/tty.usbmodem1234"   # <-- set to your device
+storage = "sd"
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "blank"
+name = "TeensyROM Hello"
+border = 6        # 0..15 palette index (6 = blue)
+background = 0    # 0..15 palette index (0 = black)
+
+  [[scenes.overlays]]
+  type = "scrolling_text"
+  row = 12
+  speed_cells_per_s = 8.0
+  messages = [
+    { text = "HELLO FROM TEENSYROM+ VIA C64CAST", color = "white" },
+  ]

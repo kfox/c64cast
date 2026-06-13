@@ -1,0 +1,77 @@
+#:schema ../../c64cast.schema.json
+# Vision demo: SWIPE cycles the video MODE; hold-open cycles the style within a
+# mode; pinch pauses.
+#
+# Four webcam scenes — petscii -> mcm -> hires_edges -> mhires — each showing
+# your camera in that VIC mode. A swipe = skip = jump to the next scene = next
+# mode, and loop=true wraps mhires back round to petscii. A brief "UP NEXT: ..."
+# card names the incoming mode. The scenes never time out on their own
+# (duration_s is huge), so the ONLY thing that changes mode is your swipe.
+#
+# Gestures:
+#   swipe (fast horizontal)         -> next video mode
+#   hold open hand ~0.35s           -> cycle the style/palette within this mode
+#   pinch (thumb+index)             -> pause; pinch-and-hold ~3s -> resume
+#
+# Camera: device = -1 is the system default. If that's not your webcam (e.g. you
+# have a capture card on a lower index), override on the CLI:
+#   python -m c64cast --config config/examples/vision-modes.toml -d 1
+#
+# Prereqs: the 'vision' extra (uv sync --extra vision) + the HandLandmarker
+# model (see assets/models/README.md). Missing either -> the stream still runs,
+# just without gesture control.
+#
+# Run:
+#   python -m c64cast --config config/examples/vision-modes.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[vision]
+enabled = true
+
+[playlist]
+interleave_ads = false
+loop = true                # swipe past the last mode wraps back to the first
+
+[interstitial]
+duration_s = 1.5           # brief "UP NEXT: <mode>" card on each swipe
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "PETSCII"
+duration_s = 86400         # effectively never auto-advance; swipe drives changes
+target_fps = 30            # cap render rate — leaves CPU/DMA headroom for the
+                           # hand tracker (raise toward 60 if your machine keeps up)
+
+  [[scenes.overlays]]
+  # PETSCII-only overlay (rejected on mcm/bitmap), so it lives on this scene.
+  type = "marquee"
+  row = 24
+  text = "SWIPE = NEXT MODE     HOLD OPEN HAND = CYCLE STYLE     PINCH = PAUSE"
+
+[[scenes]]
+type = "webcam"
+display = "mcm"
+name = "MCM"
+duration_s = 86400
+target_fps = 30
+
+[[scenes]]
+type = "webcam"
+display = "hires_edges"
+name = "Hires Edges"
+duration_s = 86400
+target_fps = 30
+
+[[scenes]]
+type = "webcam"
+display = "mhires"
+name = "MHires"
+duration_s = 86400
+target_fps = 20            # mhires is the heaviest renderer — cap lower to avoid
+                           # the stutter/catch-up "speedups" on busy frames

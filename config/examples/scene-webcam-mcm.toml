@@ -1,0 +1,26 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: webcam → multicolor character mode (MCM).
+#
+# Cheaper color than bitmap modes: each 8×8 cell can use the screen
+# background + 2 global colors + 1 per-cell color, at the cost of
+# halved horizontal pixel resolution. PETSCII overlays are rejected
+# here (color RAM bit 3 reinterprets the cell as multicolor), but
+# bitmap-safe overlays (big_text) work fine.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-webcam-mcm.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "mcm"
+name = "MCM Webcam"
+palette_mode = "cheap"   # cheap | vivid | grayscale

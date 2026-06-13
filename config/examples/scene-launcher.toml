@@ -1,0 +1,53 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: launch a native C64 program (game or demo) on the U64
+# and hand the machine over to it.
+#
+# The launcher loads + runs a `.prg` (firmware run_prg) or a `.crt`
+# cartridge (run_crt), chosen by file extension. Once launched, the program
+# owns the VIC/SID/CIAs — c64cast stops painting and only watches for
+# player input.
+#
+# `duration_s` is an IDLE TIMEOUT, not a fixed runtime: it counts down from
+# launch and resets whenever a player provides input (joystick / non-modifier
+# keyboard), so a game stays up while someone is playing. For a self-running
+# demo, set a long duration_s (and optionally `input_source = "none"`).
+#
+# `file =` uses the same comma-separated path/dir/glob grammar as the other
+# file scenes; omit it to scan assets/programs/. Drop a .prg or .crt in there.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-launcher.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_ads = false   # single-scene mode — relaunches the program forever
+
+[[scenes]]
+type = "launcher"
+# A single path, a directory, a glob, or any comma-separated combination.
+# Omit to fall back to scanning assets/programs/.
+#   file = "assets/programs/game.prg"
+#   file = "assets/programs"            # whole directory (random pick each setup)
+#   file = "assets/programs/*.crt"      # glob
+file = "assets/programs"
+# Idle timeout in seconds: advance once input goes quiet this long.
+duration_s = 120.0
+# What counts as player input (never the C=/SHIFT/CTRL modifier keys):
+#   "cia"    — joystick bits at $DC00/$DC01 (default; best for games)
+#   "kernal" — $00C5/$00C6 (only live while the kernal IRQ runs)
+#   "auto"   — both of the above
+#   "none"   — no input polling; pure timer (for self-running demos)
+input_source = "cia"
+# Optional hard ceiling: advance after this long regardless of input.
+# Unset = no cap (a continuously-played game runs until idle).
+# max_duration_s = 600.0
+# Minimum seconds before the idle timeout can advance, even if idle.
+# min_duration_s = 10.0
+# Reset the U64 before launching for a clean machine state (default true).
+# reset_before_launch = true
+# Ensemble only: don't contend for the exclusive audio slot, so several
+# people can play their own games at once and each hears their own SID.
+# No effect on a single-system run.
+# bypass_audio_lock = true

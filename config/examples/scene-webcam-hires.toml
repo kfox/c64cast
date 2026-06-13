@@ -1,0 +1,23 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: webcam → hi-res bitmap mode.
+#
+# 320×200 bitmap, one foreground color per 8×8 cell. Edge-detection is
+# OFF — the source frame is quantized directly. Caps at 30 fps because a
+# full-frame bitmap upload over HTTP can't sustain 60.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-webcam-hires.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "hires"
+name = "Hi-Res Webcam"

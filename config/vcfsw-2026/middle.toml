@@ -1,0 +1,150 @@
+#:schema ../../c64cast.schema.json
+# ============================================================================
+# VCFSW 2026 — MIDDLE screen
+# ============================================================================
+# Standalone-runnable: `python -m c64cast --config config/vcfsw-2026/middle.toml`.
+# Same scene mix as the other screens, but it OPENS on a still gallery
+# image (left opens on the webcam, right opens on a commercial) so the
+# three screens stay out of phase. SID composers carried by this screen:
+# Martin Galway, Matt Gray, Chris Hülsbeck (plus a wildcard random SID).
+#
+# This screen runs on the Ultimate II+ (slower than the U64), so every
+# scene is capped at `target_fps = 30` to keep the host paint/DMA load
+# comfortable. No launcher scene here — playable programs live on the
+# left and right screens.
+
+[ultimate64]
+url = "http://192.168.2.65"        # <-- set to the MIDDLE U64's IP/hostname
+
+# --- Single picture for the whole scene (multi-hires, vivid) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "vivid"
+name = "Gallery"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999
+target_fps = 30
+
+# --- SID oscilloscope: Martin Galway ---
+[[scenes]]
+type = "waveform"
+name = "SID: Martin Galway"
+file = "assets/sids/C64Music/MUSICIANS/G/Galway_Martin"
+color_mode = "per_waveform"
+time_base = "auto"
+persistence = "random"
+target_fps = 30
+
+# --- Commercial (muted), multi-hires per-cell ---
+[[scenes]]
+type = "commercial"
+display = "mhires"
+palette_mode = "percell"
+name = "Commercial Break"
+file = "assets/videos"
+audio = false
+target_fps = 30
+
+# --- Single picture for the whole scene (mono hires bitmap) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+name = "Gallery"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999
+target_fps = 30
+
+# --- SID oscilloscope: Matt Gray ---
+[[scenes]]
+type = "waveform"
+name = "SID: Matt Gray"
+file = "assets/sids/C64Music/MUSICIANS/G/Gray_Matt"
+color_mode = "per_voice"
+voice_colors = ["light green", "yellow", "light red"]
+persistence = "random"
+target_fps = 30
+
+# --- Big-text scroller ---
+[[scenes]]
+type = "blank"
+name = "Greetings"
+border = 0
+background = 0
+duration_s = 15
+target_fps = 30
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  speed_cells_per_s = 14.0
+  loop = true
+  messages = [
+    { text = "WELCOME TO VCFSW 2026!", color = "rainbow" },
+  ]
+
+# --- Commercial (muted), Canny edges ---
+[[scenes]]
+type = "commercial"
+display = "hires_edges"
+name = "Commercial Break"
+file = "assets/videos"
+audio = false
+target_fps = 30
+
+# --- Single picture for the whole scene (multi-hires, grayscale) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "grayscale"
+name = "Gallery (Mono)"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999
+target_fps = 30
+
+# --- SID oscilloscope: Chris Hülsbeck ---
+[[scenes]]
+type = "waveform"
+name = "SID: Chris Hülsbeck"
+file = "assets/sids/C64Music/MUSICIANS/H/Huelsbeck_Chris"
+color_mode = "per_waveform"
+time_base = "auto"
+persistence = "random"
+target_fps = 30
+
+# --- Single picture for the whole scene (multi-hires, per-cell) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "percell"
+name = "Gallery"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999
+target_fps = 30
+
+# --- SID oscilloscope: random tune from the whole HVSC MUSICIANS tree ---
+[[scenes]]
+type = "waveform"
+name = "SID: Random"
+# Glob across the whole HVSC MUSICIANS tree (letter/composer/tune.sid) —
+# a fresh random tune every loop. The scene skips any RSID / incompatible
+# pick and retries, so the wildcard stays robust.
+file = "assets/sids/C64Music/MUSICIANS/*/*/*.sid"
+color_mode = "per_voice"
+voice_colors = ["cyan", "purple", "light green"]
+persistence = "random"
+target_fps = 30
+
+# --- Commercial (muted), multi-hires per-cell ---
+[[scenes]]
+type = "commercial"
+display = "mhires"
+palette_mode = "percell"
+name = "Commercial Break"
+file = "assets/videos"
+audio = false
+target_fps = 30

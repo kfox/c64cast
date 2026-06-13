@@ -1,0 +1,28 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + callsign overlay.
+#
+# Static text in a corner — paints once, then change-detects so it
+# emits zero traffic for the rest of the run.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-callsign.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "callsign demo"
+
+  [[scenes.overlays]]
+  type = "callsign"
+  text = "DE C64"
+  corner = "bottom-right"
+  fg_color = "light blue"

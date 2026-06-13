@@ -1,0 +1,35 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + scrolling_text overlay.
+#
+# Per-row multi-message marquee: each entry in `messages` plays once
+# (with optional `style`), then advances. PETSCII-only — paints into
+# screen + color RAM with PETSCII codes.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-scrolling_text.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "scrolling_text demo"
+
+  [[scenes.overlays]]
+  type = "scrolling_text"
+  row = 24                        # 0..24; 24 = bottom row
+  speed_cells_per_s = 6.0
+  bg_color = "black"
+  messages = [
+    { text = "SCROLLING TEXT OVERLAY", color = "yellow"      },
+    { text = "PETSCII-ONLY",           color = "light green" },
+    { text = "ONE ROW PER OVERLAY",    color = "cyan"        },
+    { text = "STATIC MESSAGE",         color = "white",       style = "static", pause_time_s = 2.0 },
+  ]

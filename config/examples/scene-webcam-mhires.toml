@@ -1,0 +1,30 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: webcam → multicolor hi-res bitmap (MHires).
+#
+# 160×200 effective resolution (pixel pairs), 4 colors per 4×8 cell from
+# the C64 palette. The `palette_mode` knob controls how those 4 colors
+# get chosen:
+#   percell   — bg0 global, c1/c2/c3 picked per cell (default; uses
+#               VIC-II MCBM's per-cell c1/c2/c3 capacity for up to
+#               bg0 + 3×1000 distinct colors per frame)
+#   cheap     — legacy global-4, frequency-picked + gray-axis penalty
+#   vivid     — legacy global-4, hue-diverse pick
+#   grayscale — restricted to 5 gray-axis entries, "old TV" look
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-webcam-mhires.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "mhires"
+name = "Multicolor Hi-Res Webcam"
+palette_mode = "percell"

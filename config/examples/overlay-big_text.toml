@@ -1,0 +1,43 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: blank canvas + big_text overlay.
+#
+# Classic 1×→8× demo-scene scroller: each source PETSCII character
+# (8×8 px) expands so that every glyph pixel becomes one solid-block
+# character on the C64 screen. Each source char therefore occupies an
+# 8×8 cell footprint — about 5 letters visible at once. Renders only
+# on `blank` and `mcm` scenes (bitmap modes lack a character matrix;
+# PETSCII scenes would fight the scroller's own cell writes).
+#
+# Smooth horizontal motion uses the VIC's hardware X-scroll register
+# ($D016 bits 0-2) for sub-cell pixel-by-pixel slide, plus screen-RAM
+# page-flipping ($0400 ↔ $0C00 via $D018) for tear-free cell shifts.
+#
+# `loop = true` (the default) cycles the message list indefinitely —
+# the scene's `duration_s` controls how long the demo runs.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-big_text.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "blank"
+name = "big_text demo"
+border = 0
+background = 6
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"                  # top | middle | bottom
+  speed_cells_per_s = 16.0        # screen cells (= source pixels) per second
+  inter_message_pause_s = 1.5
+  loop = true                     # cycle the message list forever
+  messages = [
+    { text = "C64CAST",        color = "rainbow"     },
+    { text = "DEMO SCENE VIBES", color = "yellow"      },
+    { text = "GREETZ TO CCUG",   color = "cyan"        },
+  ]

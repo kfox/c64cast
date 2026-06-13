@@ -1,0 +1,27 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: webcam → PETSCII char mode.
+#
+# The most "C64-feeling" mode: the live video is quantized into the
+# uppercase PETSCII character set and rendered at 40×25. Cheap (it runs
+# at full 60/50 fps on the U64 because it only writes screen + color
+# RAM, not the bitmap).
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-webcam-petscii.toml
+#
+# Single-scene mode: no interstitial, CTRL skip ignored, loops forever
+# until Ctrl+C. C= (Commodore key) pause/resume still works.
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "PETSCII Webcam"

@@ -1,0 +1,32 @@
+#:schema ../../c64cast.schema.json
+# Diag config: REU-staged audio pump, TRACKED path (mhires bank-swap video).
+#
+# Display = mhires + use_reu_staged routes video through the REU double-buffer
+# bank-swap, whose raster IRQ owns $0314; the audio pump is chained via the
+# merged dispatcher and maintains the $C200 src/dst tracker in main RAM. That
+# makes the pump write pointer W authoritatively readable as $C203/$C204
+# (RAM, reliable) instead of the dubious $DF02/$DF03 REU register.
+#
+# This is also the path where the echo/overlap was reported worst — the
+# bank-swap REC DMA bus-halts starve NMI ticks and/or the pump IRQ.
+#
+#   scripts/diags/reu_margin_probe.py --config scripts/diags/reu_audio_tracked.toml -t 30
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[audio]
+enabled = true
+use_reu_pump = true
+
+[video]
+use_reu_staged = true     # bank-swap double-buffer → tracked pump, $C200 mirror
+
+[playlist]
+loop = true
+interleave_ads = false
+
+[[scenes]]
+type = "commercial"
+display = "mhires"        # bitmap mode → REU bank-swap video path
+# file omitted → scans assets/videos/ at random

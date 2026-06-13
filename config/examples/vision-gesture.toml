@@ -1,0 +1,48 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: webcam hand-gesture control (the vision controller).
+#
+# Your camera is quantized to C64 PETSCII AND drives gesture control at the
+# same time — the shared WebcamSource broker hands frames to the renderer and
+# the vision controller together, so one camera does both jobs.
+#
+# Gestures (mirror the C64 keyboard controls):
+#   open hand                       -> cycle the PETSCII art style (very visible)
+#   pinch (thumb+index)             -> pause (drops to the C64 boot screen)
+#   pinch and hold ~3s while paused -> resume
+#   (swipe=skip is a no-op here: single-scene mode has nowhere to skip to)
+#
+# Prerequisites:
+#   uv sync --extra vision        # installs mediapipe
+#   download the HandLandmarker model (see assets/models/README.md)
+# If mediapipe or the model is missing, the stream still runs — it just logs
+# "vision control disabled" and gesture control is off.
+#
+# Run:
+#   python -m c64cast --config config/examples/vision-gesture.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+# -1 = system default camera. On a multi-camera machine the default may not be
+# the one you want — list them with `python -m c64cast --list-devices`, but
+# note that ordering can be misleading; the reliable check is to grab a frame
+# from each index and look. Set the right index here.
+device = -1
+
+[vision]
+enabled = true
+# model_path defaults to assets/models/hand_landmarker.task
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "Gesture Cam"
+
+  [[scenes.overlays]]
+  type = "marquee"
+  row = 24
+  text = "OPEN HAND = CYCLE STYLE     PINCH = PAUSE  (HOLD 3S TO RESUME)"

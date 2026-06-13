@@ -1,0 +1,29 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + marquee overlay.
+#
+# Single-line continuous ticker — text loops with a separator. Cheaper
+# than scrolling_text (no per-message animation logic). PETSCII-only.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-marquee.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "marquee demo"
+
+  [[scenes.overlays]]
+  type = "marquee"
+  text = "C64CAST // SINGLE-SCENE EXAMPLE // EDIT THIS TOML // CTRL-C TO EXIT"
+  row = 0
+  speed_cells_per_s = 3.0
+  fg_color = "yellow"

@@ -1,0 +1,202 @@
+#:schema ../../c64cast.schema.json
+# ============================================================================
+# VCFSW 2026 — LEFT screen
+# ============================================================================
+# Standalone-runnable: `python -m c64cast --config config/vcfsw-2026/left.toml`.
+# Cascading sections ([audio], [playlist], [interstitial], [debug]) come
+# from master.toml; this file owns [ultimate64].url, [video].device, and
+# the scene list.
+#
+# Playlist starts on the signature live PETSCII webcam, then alternates
+# music / video / stills / a playable program so it stays out of phase
+# with the middle and right screens. SID composers carried by this
+# screen: Rob Hubbard, Jeroen Tel, Tim Follin (plus a wildcard random
+# SID). Muted commercials are interleaved throughout.
+
+[ultimate64]
+url = "http://192.168.2.66"          # <-- set to the LEFT U64's IP/hostname
+
+[video]
+# Camera index on the HOST running the ensemble. The three systems share
+# one machine, so each needs its OWN capture device — 0/1/2 here. Adjust
+# to match your hardware (`--list-devices`); drop the webcam scenes on a
+# system that has no camera.
+device = 1
+
+# --- Live PETSCII webcam: weather (UL) + time (UR) + retro RSS (bottom) ---
+[[scenes]]
+type = "webcam"
+display = "petscii"
+style = "default"
+name = "Live Cam (PETSCII)"
+duration_s = 45
+audio = false                        # muted, per spec
+
+  [[scenes.overlays]]
+  type = "weather"
+  provider = "open-meteo"
+  lat = 32.95                        # Richardson / Dallas, TX (VCFSW area)
+  lon = -96.73
+  units = "F"
+  corner = "top-left"
+
+  [[scenes.overlays]]
+  type = "clock"
+  corner = "top-right"
+  format = "%H:%M"
+  show_date = false
+
+  [[scenes.overlays]]
+  type = "rss"
+  url = "https://hackaday.com/blog/feed/"   # Hackaday — retro/maker, family-friendly
+  row = 24
+  speed_cells_per_s = 3.0
+  fg_color = "light green"
+
+# --- SID oscilloscope: Rob Hubbard ---
+[[scenes]]
+type = "waveform"
+name = "SID: Rob Hubbard"
+file = "assets/sids/C64Music/MUSICIANS/H/Hubbard_Rob"
+color_mode = "per_waveform"
+time_base = "auto"
+persistence = "random"
+
+# --- Commercial (muted), multi-hires per-cell ---
+[[scenes]]
+type = "commercial"
+display = "mhires"
+palette_mode = "percell"
+name = "Commercial Break"
+file = "assets/videos"               # random clip each loop
+audio = false
+
+# --- Single picture for the whole scene (multi-hires, per-cell color) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "percell"
+name = "Gallery"
+file = "assets/pictures"             # picks one random image...
+duration_s = 30
+image_duration_s = 9999              # ...and holds it for the whole scene
+
+# --- Live webcam, multi-hires (vivid palette) ---
+[[scenes]]
+type = "webcam"
+display = "mhires"
+palette_mode = "vivid"
+name = "Live Cam (Multi-Hires)"
+duration_s = 45
+audio = false
+
+# --- SID oscilloscope: Jeroen Tel ---
+[[scenes]]
+type = "waveform"
+name = "SID: Jeroen Tel"
+file = "assets/sids/C64Music/MUSICIANS/T/Tel_Jeroen"
+color_mode = "per_voice"
+voice_colors = ["cyan", "yellow", "light red"]
+persistence = "random"
+
+# --- Playable program: random game/demo from assets/programs (idle-timeout) ---
+[[scenes]]
+type = "launcher"
+name = "Play a Game"
+file = "assets/programs"             # random .prg/.crt each setup
+duration_s = 120.0                   # idle timeout — resets on player input
+input_source = "cia"                 # joystick at $DC00/$DC01
+
+# --- Commercial (muted), Canny edges ---
+[[scenes]]
+type = "commercial"
+display = "hires_edges"
+name = "Commercial Break"
+file = "assets/videos"
+audio = false
+
+# --- Big-text scroller ---
+[[scenes]]
+type = "blank"
+name = "Greetings"
+border = 0
+background = 0
+duration_s = 60
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  speed_cells_per_s = 12.0
+  loop = true
+  messages = [
+    { text = "WELCOME TO VCFSW 2026!",              color = "rainbow" },
+    { text = "CENTRAL TEXAS COMMODORE USERS GROUP", color = "cyan"    },
+    { text = "RETROCOMPUTING IS THE FUTURE",        color = "yellow"  },
+  ]
+
+# --- Live webcam, Canny edges (white-on-black demo look) ---
+[[scenes]]
+type = "webcam"
+display = "hires_edges"
+name = "Live Cam (Edges)"
+duration_s = 45
+audio = false
+
+# --- SID oscilloscope: Tim Follin ---
+[[scenes]]
+type = "waveform"
+name = "SID: Tim Follin"
+file = "assets/sids/C64Music/MUSICIANS/F/Follin_Tim"
+color_mode = "per_waveform"
+time_base = "auto"
+persistence = "random"
+
+# --- Single picture for the whole scene (multi-hires, per-cell) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "percell"
+name = "Gallery"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999
+
+# --- Live webcam, multicolor char (grayscale = "old TV" look) ---
+[[scenes]]
+type = "webcam"
+display = "mcm"
+palette_mode = "grayscale"
+name = "Live Cam (Mono)"
+duration_s = 45
+audio = false
+
+# --- SID oscilloscope: random tune from the whole HVSC MUSICIANS tree ---
+[[scenes]]
+type = "waveform"
+name = "SID: Random"
+# Glob across the whole HVSC MUSICIANS tree (letter/composer/tune.sid) —
+# a fresh random tune every loop. The scene skips any RSID / incompatible
+# pick and retries, so the wildcard stays robust.
+file = "assets/sids/C64Music/MUSICIANS/*/*/*.sid"
+color_mode = "per_voice"
+voice_colors = ["cyan", "purple", "light green"]
+persistence = "random"
+
+# --- Commercial (muted), multi-hires per-cell ---
+[[scenes]]
+type = "commercial"
+display = "mhires"
+palette_mode = "percell"
+name = "Commercial Break"
+file = "assets/videos"
+audio = false
+
+# --- Single picture for the whole scene (multi-hires, per-cell) ---
+[[scenes]]
+type = "slideshow"
+display = "mhires"
+palette_mode = "percell"
+name = "Gallery"
+file = "assets/pictures"
+duration_s = 30
+image_duration_s = 9999

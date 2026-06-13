@@ -1,0 +1,12 @@
+[tools]
+python = { version = "3.14.5", install_env = { CONFIGURE_OPTS = "--enable-optimizations" } }
+uv = "latest"
+
+[env]
+UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
+
+[settings]
+python.uv_venv_auto = "create|source"
+
+[deps.uv]
+auto = true

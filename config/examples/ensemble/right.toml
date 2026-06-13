@@ -1,0 +1,56 @@
+# Per-system config for the rightmost screen — also the *conductor*
+# for the cross-system big_text broadcast (since the message scrolls
+# right-to-left, it enters on the rightmost screen).
+
+[ultimate64]
+url = "http://u64-right.lan"
+
+[playlist]
+interleave_ads = false
+
+# Quiet idle scene — the rightmost system runs this most of the time.
+[[scenes]]
+type = "blank"
+name = "right-idle"
+duration_s = 30
+border = 0
+background = 6
+
+  [[scenes.overlays]]
+  type = "clock"
+  corner = "top-right"
+
+  [[scenes.overlays]]
+  type = "callsign"
+  corner = "top-left"
+  text = "RIGHT"
+  fg_color = "light gray"
+
+# The broadcast scene. `orchestrate = true` is what makes this trigger
+# the cross-system scroll: when the rightmost playlist enters this
+# scene, every other system in the ensemble is interrupted and renders
+# its slice of the message.
+#
+# Followers look up "morning-hello" by name in their own playlists; if
+# a matching scene (with `orchestrate = false`) exists there, that local
+# definition wins so per-system border/background apply. left.toml and
+# middle.toml each define one — preferred, since `c64cast --doctor`
+# warns about conductors without explicit followers (the fallback is to
+# clone this cfg verbatim, which usually isn't what you want).
+[[scenes]]
+type = "blank"
+name = "morning-hello"
+duration_s = 60                     # long enough to allow the scroll to finish
+border = 0
+background = 0
+orchestrate = true
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  speed_cells_per_s = 10.0
+  loop = false                      # one-shot — scroll the messages once
+  messages = [
+    { text = "GOOD MORNING EVERYONE", color = "rainbow" },
+    { text = "GREETZ FROM THE WALL", color = "yellow" },
+  ]

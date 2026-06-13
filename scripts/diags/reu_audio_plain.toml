@@ -1,0 +1,30 @@
+#:schema ../../c64cast.schema.json
+# Diag config: REU-staged audio pump, PLAIN path (no bank-swap video).
+#
+# Drives start_for_reu_staged with the non-tracked REU_IRQ_HANDLER so the
+# pump write pointer W lives in the REU dst register $DF02/$DF03 and the
+# audio ring runs free against the NMI read pointer R. Display is petscii
+# (char mode, host-DMA) so nothing owns $0314 except the audio pump — this
+# isolates the pump margin from the mhires bank-swap video path.
+#
+# Used by reu_margin_probe.py to measure the W-vs-R pointer phase:
+#   scripts/diags/reu_margin_probe.py --config scripts/diags/reu_audio_plain.toml -t 30
+#
+# Picks a random clip from assets/videos/ (drop one in if empty). A clip
+# with continuous music exercises the pump steadily.
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[audio]
+enabled = true
+use_reu_pump = true       # REU-staged audio ring pump (the path under test)
+
+[playlist]
+loop = true
+interleave_ads = false
+
+[[scenes]]
+type = "commercial"
+display = "petscii"       # char mode → plain pump path, no video bank-swap
+# file omitted → scans assets/videos/ and picks one at random

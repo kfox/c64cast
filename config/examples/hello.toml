@@ -1,0 +1,49 @@
+#:schema ../../c64cast.schema.json
+# c64cast "hello world" — the simplest thing that puts something on the
+# screen. Start here.
+#
+# This config needs NOTHING but a reachable Ultimate 64: no webcam, no
+# microphone, no SID files, no video clips, no optional extras. It paints
+# a solid canvas and scrolls big demo-scene text across it.
+#
+# It defines exactly one scene, so c64cast runs in single-scene mode:
+# no interstitial, and the scene loops forever. Press Ctrl-C to exit.
+#
+# Run it:
+#   python -m c64cast --config config/examples/hello.toml
+#
+# Then make it yours: change the URL below to your U64, edit the messages,
+# swap the colors, change the scroll speed. When you want more, copy one of the
+# other config/examples/ files (one per scene type / overlay) or crib from
+# the fully-annotated config/c64cast.example.toml.
+
+[ultimate64]
+# Point this at your Ultimate 64. A bare hostname or IP works too, e.g.
+# "http://192.168.1.64". The default below assumes mDNS discovery.
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_ads = false   # single scene → loop the demo forever
+
+[[scenes]]
+type = "blank"           # a no-video PETSCII canvas — pure backdrop for overlays
+name = "Hello"
+border = 0               # 0..15 palette index (0 = black)
+background = 6           # 0..15 palette index (6 = blue)
+
+  # Big demo-scene scroller: each letter is drawn 8× tall out of solid
+  # blocks and slides across the middle of the screen. big_text owns the
+  # whole display while it scrolls (it drives the VIC hardware X-scroll
+  # register and page-flips screen RAM), so it does NOT share the screen
+  # with other overlays — keep it as the only overlay on its scene. To
+  # see stacked overlays instead, look at the overlay-*.toml demos.
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"                  # top | middle | bottom
+  speed_cells_per_s = 12.0
+  inter_message_pause_s = 1.0
+  messages = [
+    { text = "HELLO WORLD",          color = "rainbow" },
+    { text = "EDIT THIS TOML",       color = "cyan"    },
+    { text = "CTRL-C TO EXIT",       color = "yellow"  },
+  ]

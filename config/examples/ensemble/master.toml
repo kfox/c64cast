@@ -1,0 +1,32 @@
+# Master config for a 3-system ensemble (a row of three Ultimate 64s
+# laid out left → middle → right, viewed from the front).
+#
+# Run:
+#   python -m c64cast --config config/examples/ensemble/master.toml
+#
+# Each [ensemble].systems entry names a per-system file relative to
+# this master TOML's directory. The order is load-bearing — index 0
+# is the leftmost screen, the last entry is the rightmost. Span-mode
+# orchestrators (e.g. the BigTextSpan one used by the broadcast scene
+# below) require the conductor to be the rightmost system because the
+# message scrolls right-to-left.
+
+[ensemble]
+systems = [
+    { name = "left",   config = "left.toml"   },
+    { name = "middle", config = "middle.toml" },
+    { name = "right",  config = "right.toml"  },
+]
+
+# Sections below are DEFAULTS inherited by each per-system file
+# unless overridden. [video] / [control] / [[scenes]] are per-system
+# only and intentionally don't cascade.
+[interstitial]
+duration_s = 3.0
+
+[control]
+enabled = false                     # set true to drive via HTTP, see docs/usage.md
+
+[debug]
+verbose = 0
+heartbeat = 30.0

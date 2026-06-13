@@ -1,0 +1,43 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: the EXTREME forced-palette remap ([color].force_palette).
+#
+# Requires the `commercials` extra (PyAV):
+#   pip install -e .[commercials]
+#
+# Every other [color] stage is FAITHFUL — pixels map to their nearest of the 16
+# C64 colors, so a source clustered in one gamut region (TRON = black + dark
+# blue) leaves most of the palette unused and looks monochromatic. force_palette
+# is the opt-in false-color answer: it pre-scans the source, k-means it into N
+# clusters, and assigns each cluster to a DISTINCT C64 color (optimal min-error
+# bijection), so all N colors get used and the assignment stays consistent across
+# the whole file (no per-frame flicker). It pairs with the percell mhires
+# palette_mode (3 colors/cell + bg), which gives the spread room to breathe.
+#
+# At runtime, SHIFT cycles the palette: percell, cheap, vivid, grayscale, and a
+# "percell+forced" stop (present because force_palette is enabled here) — so you
+# can A/B the forced look against the faithful ones live.
+#
+# Run:
+#   python -m c64cast --config config/examples/color-force-palette.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[audio]
+enabled = true                # required for the soundtrack to be heard
+
+[color]
+force_palette = true          # the showcase: deliberate false-color remap
+force_palette_colors = 16     # spread the source across all 16 C64 colors
+# force_palette_indices = [0, 2, 4, 6, 14]   # or pin an explicit palette
+
+[playlist]
+interleave_ads = false        # the single scene IS the demo
+
+[[scenes]]
+type = "commercial"
+display = "mhires"            # forced palette applies to mcm / mhires
+palette_mode = "percell"     # forced pairs with percell (the recommended combo)
+# Drop a high-contrast, color-clustered clip here (TRON is the canonical test).
+# Omit the field to fall back to scanning assets/videos/.
+file = "assets/videos/TRON.webm"

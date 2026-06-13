@@ -1,0 +1,31 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: PETSCII webcam + countdown overlay.
+#
+# Renders time-until-target in a corner. `format = "auto"` picks the
+# coarsest unit that still makes sense (days when far away, seconds
+# when imminent). Use `format = "{d}D {h:02d}:{m:02d}:{s:02d}"` for a
+# fixed-width template.
+#
+# Run:
+#   python -m c64cast --config config/examples/overlay-countdown.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+device = -1
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "countdown demo"
+
+  [[scenes.overlays]]
+  type = "countdown"
+  target = "2030-01-01T00:00:00"   # ISO 8601 — edit to your event
+  format = "auto"
+  corner = "top-right"
+  fg_color = "yellow"

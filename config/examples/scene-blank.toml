@@ -1,0 +1,32 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: blank PETSCII canvas with a big_text overlay.
+#
+# `blank` is a PETSCII char mode with configurable border + background
+# and no video input — every cell starts as SC_SPACE in the background
+# color, so the canvas reads as a solid block until an overlay paints
+# on it. Designed as the foundation for demo-scene title cards / greetz
+# scrollers. The big_text overlay below gives the otherwise-invisible
+# canvas something to display.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-blank.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_ads = false
+
+[[scenes]]
+type = "blank"
+name = "Blank Canvas"
+border = 0       # 0..15 palette index (0 = black)
+background = 6   # 0..15 palette index (6 = blue)
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  speed_cells_per_s = 8.0
+  messages = [
+    { text = "BLANK SCENE", color = "white" },
+  ]

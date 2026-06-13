@@ -1,0 +1,71 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: video file ("commercial") playback with audio.
+#
+# Requires the `commercials` extra (PyAV):
+#   pip install -e .[commercials]
+#
+# `file =` is a comma-separated list of paths, directories, and/or
+# globs — each scene setup picks a random file from the resolved pool.
+# If `file =` is omitted entirely, the scene falls back to scanning
+# `assets/videos/` (the default directory). Drop a video into
+# assets/videos/ and either set `file =` below or comment it out to
+# use the default. Edit the display mode if you'd rather see it in
+# PETSCII / MCM / etc.
+#
+# Audio is on by default for commercial scenes — the demuxer pushes the
+# file's soundtrack into the AudioStreamer, which feeds the SID DAC. The
+# audio playback position is the master clock, so A/V stays in sync.
+# Set `audio = false` on the scene to mute. `[audio] enabled = true`
+# is required globally for the soundtrack to play at all.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-commercial.toml
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[audio]
+enabled = false                # required for the soundtrack to be heard
+
+[color]
+# auto_fit's per-source contrast/saturation stretch (default on) pushes
+# TRON's high-contrast neon pixels across palette boundaries, which roughly
+# doubles per-frame screen/color-RAM churn — the "much more flicker" at
+# 1:45-1:50. Verified on real HW: off = ~26% less temporal activity here.
+# Set auto_fit_strength = 0.3 instead of false if you want a little of the
+# colour lift back at a smaller flicker cost.
+auto_fit = false
+
+[video]
+# Double-buffer the bitmap via the REU bank-swap path: stage each frame
+# off-screen and swap $DD00 atomically at vblank. Without it, the per-frame
+# bitmap+screen+color push lands as three separate DMA writes and the VIC
+# scans a partially-updated frame on whole-screen-change frames (scene cuts /
+# high motion) — a full-screen colour scramble for ~1 frame (the flashes at
+# ~0:30 and ~0:47). Verified on real HW: this eliminates them. Requires the
+# RAM Expansion Unit ENABLED on the U64 (F2 -> C64 and Cartridge Settings);
+# with REU off the staged path silently shows unchanging video, so leave this
+# false if your machine has no REU. Trades the full-screen tear for a bounded
+# one-cell-row colour seam at the swap line ($D800 colour RAM isn't banked).
+use_reu_staged = true
+
+[playlist]
+interleave_ads = false   # the single-scene IS the commercial
+
+[[scenes]]
+type = "commercial"
+display = "mhires"
+# `file =` accepts: a single path, a directory, a glob, or any
+# comma-separated combination. Each setup picks a random match.
+#   file = "assets/videos/your-ad.mp4"
+#   file = "assets/videos"                          # whole directory
+#   file = "assets/videos/*.mkv"                    # glob
+#   file = "assets/videos, assets/extra/promo.mp4"  # combination
+# Omit the field entirely to fall back to scanning assets/videos/.
+file = "assets/videos/TRON.webm"
+# No `duration_s` — commercial scenes run until the video file ends and
+# the config loader rejects the field. In single-scene mode the playlist
+# tears the scene down at EOF and immediately restarts it, looping the
+# file forever.
+audio = false                # uncomment to mute this scene only
+target_fps = 48
