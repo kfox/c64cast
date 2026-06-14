@@ -463,10 +463,12 @@ class VoiceScopeRenderer:
         return C64_COLORS.get(self.waveform_color_names[name],
                               C64_COLORS["white"])
 
-    def _repaint_voice_color(self, v_idx: int) -> None:
+    def _repaint_voice_color(self, v_idx: int, color: int | None = None) -> None:
         """Re-write the screen-RAM FG-nibble cells under the given voice's
-        bitmap strip with its current color."""
-        color = self._voice_color_now(v_idx)
+        bitmap strip with `color` (a C64 palette index), or the voice's current
+        color when None. MidiScene passes an explicit gray to dim idle voices."""
+        if color is None:
+            color = self._voice_color_now(v_idx)
         top, bot = BITMAP_STRIPS[v_idx]
         cell_row_top = top // 8
         n_rows = (bot - top) // 8

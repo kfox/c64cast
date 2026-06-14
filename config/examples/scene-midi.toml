@@ -3,9 +3,16 @@
 #
 # Listens on a MIDI input port and synthesises notes on the U64's
 # hardware SID — turns the C64 into a 3-voice MIDI sound module — and
-# draws a full-screen hires oscilloscope of the three voices, with the
-# per-voice note/velocity + global waveform/volume on the bottom text rows.
+# draws a full-screen hires oscilloscope of the three voices. Voices draw in
+# color while sounding and gray out when idle; the bottom rows show the global
+# waveform + volume and a live controller readout (PW/cutoff/resonance/ADSR).
 # (Bitmap-only: PETSCII overlays don't apply, like a waveform scene.)
+#
+# Live control:
+#   SHIFT     cycle the global waveform (pulse → saw → triangle → noise)
+#   velocity  → per-note loudness (each voice's sustain level)
+#   CC1 modwheel → pulse width   CC7 → volume   CC74 → cutoff
+#   CC71 → resonance             CC73/CC75/CC72 → attack/decay/release
 #
 # Requires:
 #   - The `midi` extra (`pip install -e .[midi]`): mido + python-rtmidi.
@@ -28,12 +35,13 @@ interleave_ads = false
 type = "midi"
 name = "MIDI -> SID"
 midi_port = ""                # "" = first port; or e.g. "IAC", "MPK"
-midi_waveform = "pulse"       # pulse | sawtooth | triangle | noise
-midi_adsr = [0, 8, 12, 8]     # attack, decay, sustain, release (each 0..15)
-midi_pulse_width = 2048       # 0..4095, pulse waveform only
-midi_filter_cutoff = 1024     # 0..2047
+midi_waveform = "pulse"       # pulse | sawtooth | triangle | noise (SHIFT cycles)
+midi_adsr = [0, 8, 12, 8]     # attack, decay, sustain, release (0..15); velocity overrides sustain
+midi_pulse_width = 2048       # 0..4095, pulse waveform only (CC1)
+midi_filter_cutoff = 2047     # 0..2047, default open / neutral lowpass (CC74)
+midi_filter_resonance = 0     # 0..15 (CC71)
 midi_filter_mode = "lowpass"  # lowpass | bandpass | highpass
-midi_master_volume = 15       # 0..15
+midi_master_volume = 15       # 0..15 (CC7)
 # Oscilloscope knobs (shared with the waveform scene):
 voice_colors = ["light green", "cyan", "yellow"]
 color_mode = "per_voice"      # per_voice | per_waveform

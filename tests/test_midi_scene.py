@@ -36,7 +36,7 @@ from _fakes import FakeAPI  # noqa: E402
 
 from c64cast import midi_scene  # noqa: E402
 from c64cast.c64 import SID  # noqa: E402
-from c64cast.midi_scene import MidiScene, _note_name, _note_to_sid_freq  # noqa: E402
+from c64cast.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
 from c64cast.modes import DisplayMode  # noqa: E402
 from c64cast.sidemu import primary_waveform  # noqa: E402
 
@@ -215,10 +215,11 @@ class ProgramVoiceTests(_MidiTestCase):
 
 class ControlChangeTests(_MidiTestCase):
     def test_cc7_sets_master_volume(self):
-        scene, api = _make_scene()
+        scene, api = _make_scene()           # default filter_mode = lowpass (1)
         scene._control_change(7, 127)
         self.assertEqual(scene.master_volume, 15)
-        self.assertEqual(api.memories["D418"], "0F")
+        # $D418 = (filter mode << 4) | volume — CC7 preserves the mode nibble.
+        self.assertEqual(api.memories["D418"], f"{(0x1 << 4) | 15:02X}")
 
     def test_cc1_modwheel_sweeps_pulse_width_on_all_voices(self):
         scene, api = _make_scene()
@@ -257,6 +258,67 @@ class ControlChangeTests(_MidiTestCase):
         scene._control_change(99, 64)
         self.assertEqual(api.memories, before)
 
+    def test_cc71_sets_resonance_and_routes_filter(self):
+        scene, api = _make_scene()
+        scene._control_change(midi_scene._CC_RESONANCE, 127)
+        self.assertEqual(scene.filter_resonance, 15)
+        # $D417 = (resonance << 4) | 0x07 (all 3 voices routed to the filter).
+        self.assertEqual(api.memories["D417"], f"{(15 << 4) | 0x07:02X}")
+
+    def test_cc73_72_75_set_adsr(self):
+        scene, api = _make_scene(adsr=(0, 8, 12, 8))
+        scene._control_change(midi_scene._CC_ATTACK, 127)   # attack → 15
+        scene._control_change(midi_scene._CC_DECAY, 0)      # decay → 0
+        scene._control_change(midi_scene._CC_RELEASE, 64)   # release → 8
+        self.assertEqual(scene.adsr[0], 15)
+        self.assertEqual(scene.adsr[1], 0)
+        self.assertEqual(scene.adsr[3], 8)
+        # AD byte for voice 0 = (attack << 4) | decay.
+        self.assertEqual(api.regs["D405"][0], (15 << 4) | 0)
+
+
+class VelocityTests(_MidiTestCase):
+    def test_velocity_drives_sustain_nibble(self):
+        # Velocity → sustain (loudness): SR high nibble = velocity >> 3.
+        scene, api = _make_scene(adsr=(0, 8, 12, 8))
+        scene._note_on(60, 40)            # 40 >> 3 = 5
+        sr = api.regs["D400"][6]
+        self.assertEqual((sr >> 4) & 0xF, 5)
+        self.assertEqual(sr & 0xF, 8)     # release unchanged
+        scene._note_on(64, 120)           # 120 >> 3 = 15 (voice 1)
+        self.assertEqual((api.regs["D407"][6] >> 4) & 0xF, 15)
+
+    def test_release_keeps_release_nibble(self):
+        scene, api = _make_scene(adsr=(0, 8, 12, 9))
+        scene._note_on(60, 100)
+        scene._note_off(60)
+        # note_off clears the gate; release nibble (9) stays.
+        ctrl = api.regs["D400"][4]
+        self.assertEqual(ctrl & SID.GATE, 0)
+        self.assertEqual(api.regs["D400"][6] & 0xF, 9)
+
+
+class WaveformCycleTests(_MidiTestCase):
+    def test_shift_cycles_waveform(self):
+        scene, _ = _make_scene(waveform="pulse")
+        self.assertEqual(scene.cycle_style(scene.api), "waveform=sawtooth")
+        self.assertEqual(scene.waveform, "sawtooth")
+        self.assertEqual(scene.waveform_bits, SID.WAVE_SAWTOOTH)
+        # wraps pulse→saw→tri→noise→pulse
+        scene.cycle_style(scene.api)   # triangle
+        scene.cycle_style(scene.api)   # noise
+        label = scene.cycle_style(scene.api)
+        self.assertEqual(scene.waveform, "pulse")
+        self.assertEqual(label, "waveform=pulse")
+
+    def test_cycle_reprograms_held_voice_with_new_waveform(self):
+        scene, api = _make_scene(waveform="pulse")
+        scene._note_on(60, 100)
+        scene.cycle_style(scene.api)   # → sawtooth
+        ctrl = api.regs["D400"][4]
+        # Held voice keeps its gate but switches to the new waveform.
+        self.assertEqual(ctrl, SID.WAVE_SAWTOOTH | SID.GATE)
+
 
 class PitchWheelTests(_MidiTestCase):
     def test_pitch_bend_re_emits_frequency_for_gated_voices(self):
@@ -294,7 +356,8 @@ class HandleMsgDispatchTests(_MidiTestCase):
     def test_control_change_message_routes(self):
         scene, api = _make_scene()
         scene._handle_msg(mido.Message("control_change", control=7, value=0))
-        self.assertEqual(api.memories["D418"], "00")
+        # vol 0 + lowpass mode (1) → high nibble 1, low nibble 0.
+        self.assertEqual(api.memories["D418"], f"{(0x1 << 4) | 0:02X}")
 
 
 class ShadowEmulatorTests(_MidiTestCase):
@@ -360,23 +423,44 @@ class PaintTests(_MidiTestCase):
         self.assertIn(_TITLE_BITMAP, api.regions)
         self.assertIn(_TITLE_SCREEN, api.regions)
         self.assertIn(_META_BITMAP, api.regions)
-        # The info-row content reflects the global + per-voice state.
+        # Title = global state; controller row = live CC values (no per-voice
+        # note text — the colored/gray strips convey activity).
         title = scene._build_title_line()
         self.assertIn("MIDI PULSE", title)
         self.assertIn("VOL 15", title)
-        meta = scene._build_meta_line()
-        self.assertIn(f"V1 {_note_name(60)} 100", meta)
+        ctl = scene._build_controller_line()
+        self.assertIn("PW", ctl)
+        self.assertIn("CUT", ctl)
 
-    def test_meta_line_shows_released_voice_as_dashes(self):
-        # After release the meta row must not keep the last note/vel — the
-        # voice reads "---" so the display matches what's heard.
-        scene, _ = _make_scene()
+    def test_voice_strip_grays_when_idle_colors_when_sounding(self):
+        # A sounding voice paints its color; once released + decayed it repaints
+        # gray. Change-detected via _voice_sounding.
+        from c64cast.palette import C64_COLORS
+        scene, api = _make_scene(voice_colors=["light green", "cyan", "yellow"])
+        _bring_up_display(scene)
+        scene._voice_sounding = [False, False, False]
         scene._note_on(60, 100)
-        self.assertIn(f"V1 {_note_name(60)} 100", scene._build_meta_line())
+        api.regions.clear()
+        scene.process_frame(0.0)
+        green = C64_COLORS["light green"]
+        self.assertEqual(api.regions[_SCREEN_BASE], bytes([green << 4]) * 280)
+        self.assertTrue(scene._voice_sounding[0])
+        # Force the voice fully idle (released + envelope decayed) and re-render.
         scene._note_off(60)
-        meta = scene._build_meta_line()
-        self.assertIn("V1 ---", meta)
-        self.assertNotIn(_note_name(60), meta)
+        scene.emulator.voices[0].envelope_level = 0.0
+        api.regions.clear()
+        scene.process_frame(1.0)
+        gray = C64_COLORS[midi_scene._IDLE_GRAY]
+        self.assertEqual(api.regions[_SCREEN_BASE], bytes([gray << 4]) * 280)
+        self.assertFalse(scene._voice_sounding[0])
+
+    def test_controller_line_reflects_cc_state(self):
+        scene, _ = _make_scene()
+        scene._control_change(midi_scene._CC_CUTOFF, 64)
+        scene._control_change(midi_scene._CC_RESONANCE, 127)
+        ctl = scene._build_controller_line()
+        self.assertIn(f"RES {scene.filter_resonance:2d}", ctl)
+        self.assertEqual(len(ctl), 40)   # _paint_text_row needs exactly 40
 
     def test_info_rows_repaint_only_when_dirty(self):
         # The scope strips redraw every frame, but the change-detected text
@@ -567,8 +651,10 @@ class LifecycleTests(_MidiTestCase):
         ):
             scene.setup()
         try:
-            # Global SID program: filter routing off, master vol + lp mode.
-            self.assertEqual(api.memories["D417"], "00")
+            # Global SID program: all 3 voices routed to the filter (low 3
+            # bits of $D417) so the cutoff/resonance CCs are audible; master
+            # vol + lowpass mode in $D418.
+            self.assertEqual(api.memories["D417"], "07")
             self.assertEqual(api.memories["D418"], f"{(0x1 << 4) | 15:02X}")
             # Per-voice pre-program ran (pw + waveform, gate off) for all 3.
             for base in ("D402", "D409", "D410"):

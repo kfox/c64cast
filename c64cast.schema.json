@@ -1552,13 +1552,18 @@
           },
           "midi_pulse_width": {
             "type": "integer",
-            "description": "SID pulse width (0..4095) when midi_waveform = 'pulse'.",
+            "description": "SID pulse width (0..4095) when midi_waveform = 'pulse'. Swept live by CC1 (mod wheel).",
             "default": 2048
           },
           "midi_filter_cutoff": {
             "type": "integer",
-            "description": "SID filter cutoff (0..2047) for MIDI notes.",
-            "default": 1024
+            "description": "SID filter cutoff (0..2047); all voices are routed through the filter. Default open (neutral lowpass); swept live by CC74.",
+            "default": 2047
+          },
+          "midi_filter_resonance": {
+            "type": "integer",
+            "description": "SID filter resonance (0..15) for MIDI notes; swept live by CC71.",
+            "default": 0
           },
           "midi_filter_mode": {
             "type": "string",
@@ -1572,7 +1577,7 @@
           },
           "midi_master_volume": {
             "type": "integer",
-            "description": "SID master volume nibble (0..15) for MIDI notes.",
+            "description": "SID master volume nibble (0..15) for MIDI notes; CC7.",
             "default": 15
           },
           "image_duration_s": {
