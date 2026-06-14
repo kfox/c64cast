@@ -148,21 +148,26 @@ ignore = [
 default-groups = ["dev"]
 
 # --- mypy ------------------------------------------------------------------
-# Strict on the state-bearing modules (api, audio, playlist, socket_dma,
-# scenes, config). The rest of the codebase is gradually-typed and would
-# explode under --strict; modes.py especially mixes numpy with cv2 in ways
-# that don't survive strict checking without heavy annotation noise.
-# Run with `make typecheck`.
+# Strict on the state-bearing modules where a type slip would corrupt state:
+# the two backends' transports + clients (api/backend/teensyrom_api,
+# socket_dma/teensyrom_dma), the playlist/scene/config state machines, the
+# ensemble audio-slot coordinator, and the audio/dsp paths. The rest of the
+# codebase is gradually-typed and would explode under --strict; modes.py
+# especially mixes numpy with cv2 in ways that don't survive strict checking
+# without heavy annotation noise. Run with `make typecheck`.
 [tool.mypy]
 python_version = "3.11"
 files = [
     "c64cast/api.py",
     "c64cast/backend.py",
+    "c64cast/teensyrom_api.py",
     "c64cast/audio.py",
     "c64cast/playlist.py",
     "c64cast/socket_dma.py",
+    "c64cast/teensyrom_dma.py",
     "c64cast/scenes.py",
     "c64cast/config.py",
+    "c64cast/ensemble.py",
     "c64cast/dsp.py",
 ]
 strict = true
