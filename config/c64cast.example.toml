@@ -840,22 +840,31 @@ palette_mode = "grayscale"
 # the first input port whose name contains `midi_port` (substring match).
 #
 # Visualization is a full-screen hires oscilloscope of the three SID voices
-# (the same renderer as the waveform scene), with per-voice note/velocity +
-# the global waveform/volume on the bottom text rows. Bitmap-only, so the
-# `display` field is ignored and PETSCII overlays (clock/callsign/marquee/…)
-# are NOT compatible — same as a waveform scene.
+# (the same renderer as the waveform scene). Voices draw in color while
+# sounding and fade to gray when idle; the bottom rows show the global waveform
+# + master volume and a live controller readout (PW / cutoff / resonance /
+# ADSR). Bitmap-only, so the `display` field is ignored and PETSCII overlays
+# (clock/callsign/marquee/…) are NOT compatible — same as a waveform scene.
+#
+# Live control:
+#   SHIFT       cycle the global waveform (pulse → saw → triangle → noise)
+#   velocity    → per-note loudness (drives each voice's sustain level)
+#   CC1  modwheel → pulse width      CC7  → master volume
+#   CC74 → filter cutoff   CC71 → resonance
+#   CC73 / CC75 / CC72 → attack / decay / release
 #
 # [[scenes]]
 # type = "midi"
 # name = "MIDI → SID"
 # duration_s = 60.0
 # midi_port = ""                        # "" or omit → first available port
-# midi_waveform = "pulse"               # pulse | sawtooth | triangle | noise
-# midi_adsr = [0, 8, 12, 8]             # attack, decay, sustain, release (0-15)
-# midi_pulse_width = 2048               # 0-4095 (pulse waveform only)
-# midi_filter_cutoff = 1024             # 0-2047
+# midi_waveform = "pulse"               # pulse | sawtooth | triangle | noise (SHIFT cycles)
+# midi_adsr = [0, 8, 12, 8]             # attack, decay, sustain, release (0-15); velocity overrides sustain
+# midi_pulse_width = 2048               # 0-4095 (pulse waveform only); CC1
+# midi_filter_cutoff = 2047             # 0-2047, default open (neutral lowpass); CC74
+# midi_filter_resonance = 0             # 0-15; CC71
 # midi_filter_mode = "lowpass"          # lowpass | bandpass | highpass
-# midi_master_volume = 15               # 0-15
+# midi_master_volume = 15               # 0-15; CC7
 # # Oscilloscope knobs — shared with the waveform scene:
 # voice_colors = ["light green", "cyan", "yellow"]
 # color_mode = "per_voice"              # per_voice | per_waveform

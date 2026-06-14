@@ -434,17 +434,22 @@ class SceneCfg:
         "help": "ADSR envelope as [attack, decay, sustain, release] (4 nibbles 0..15).",
         "applies_to": ("midi",)})
     midi_pulse_width: int = field(default=2048, metadata={
-        "help": "SID pulse width (0..4095) when midi_waveform = 'pulse'.",
+        "help": "SID pulse width (0..4095) when midi_waveform = 'pulse'. "
+                "Swept live by CC1 (mod wheel).",
         "applies_to": ("midi",)})
-    midi_filter_cutoff: int = field(default=1024, metadata={
-        "help": "SID filter cutoff (0..2047) for MIDI notes.",
+    midi_filter_cutoff: int = field(default=2047, metadata={
+        "help": "SID filter cutoff (0..2047); all voices are routed through "
+                "the filter. Default open (neutral lowpass); swept live by CC74.",
+        "applies_to": ("midi",)})
+    midi_filter_resonance: int = field(default=0, metadata={
+        "help": "SID filter resonance (0..15) for MIDI notes; swept live by CC71.",
         "applies_to": ("midi",)})
     midi_filter_mode: str = field(default="lowpass", metadata={
         "help": "SID filter mode for MIDI notes.",
         "choices": _MIDI_FILTER_MODE_CHOICES,
         "applies_to": ("midi",)})
     midi_master_volume: int = field(default=15, metadata={
-        "help": "SID master volume nibble (0..15) for MIDI notes.",
+        "help": "SID master volume nibble (0..15) for MIDI notes; CC7.",
         "applies_to": ("midi",)})
     # See CLAUDE.md modes.py for the per-mode palette_mode semantics.
     palette_mode: str = field(default="percell", metadata={
@@ -1805,6 +1810,7 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
             adsr=(a, d, sus, r),
             pulse_width=s.midi_pulse_width,
             filter_cutoff=s.midi_filter_cutoff,
+            filter_resonance=s.midi_filter_resonance,
             filter_mode=s.midi_filter_mode,
             master_volume=s.midi_master_volume,
             voice_colors=s.voice_colors or None,
