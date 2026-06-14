@@ -41,6 +41,8 @@ recordings/
 *.mp4
 *.mkv
 *.mov
+# video production planning, demo configs, and footage (uncommitted)
+videos/
 
 # Assets — only the directory READMEs are tracked. Drop your own files
 # under assets/<subdir>/ and they will be ignored (most have unclear
