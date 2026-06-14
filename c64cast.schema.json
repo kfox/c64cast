@@ -675,7 +675,7 @@
           },
           "display": {
             "type": "string",
-            "description": "VIC-II display mode. waveform is bitmap-only and midi is petscii-only (both ignore this); slideshow also accepts 'random'.",
+            "description": "VIC-II display mode. waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'.",
             "enum": [
               "hires_edges",
               "hires",

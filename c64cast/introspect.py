@@ -149,7 +149,7 @@ _SCENE_TYPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
      ("hires_edges", "hires", "mhires", "mcm", "petscii", "blank")),
     ("waveform", "3-voice SID oscilloscope playing a .sid file (bitmap-only).",
      ()),
-    ("midi", "Live MIDI input → SID synth + oscilloscope (petscii-only).",
+    ("midi", "Live MIDI input → SID synth + 3-voice oscilloscope (bitmap-only).",
      ()),
     ("slideshow", "Cycle through still images, each stylized through a display mode.",
      ("mhires", "hires", "hires_edges", "mcm", "petscii", "random")),

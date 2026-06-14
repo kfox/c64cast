@@ -834,10 +834,16 @@ palette_mode = "grayscale"
 # No TOML knob; the heuristic is fixed. Adds <1 s to setup, hidden under
 # the interstitial.
 
-# --- MIDI → SID synth -----------------------------------------------------
+# --- MIDI → SID synth + oscilloscope --------------------------------------
 # Requires the `midi` extra (mido + python-rtmidi) and a MIDI device or
 # software loopback (IAC on macOS, snd-virmidi on Linux). The scene opens
 # the first input port whose name contains `midi_port` (substring match).
+#
+# Visualization is a full-screen hires oscilloscope of the three SID voices
+# (the same renderer as the waveform scene), with per-voice note/velocity +
+# the global waveform/volume on the bottom text rows. Bitmap-only, so the
+# `display` field is ignored and PETSCII overlays (clock/callsign/marquee/…)
+# are NOT compatible — same as a waveform scene.
 #
 # [[scenes]]
 # type = "midi"
@@ -850,14 +856,19 @@ palette_mode = "grayscale"
 # midi_filter_cutoff = 1024             # 0-2047
 # midi_filter_mode = "lowpass"          # lowpass | bandpass | highpass
 # midi_master_volume = 15               # 0-15
+# # Oscilloscope knobs — shared with the waveform scene:
 # voice_colors = ["light green", "cyan", "yellow"]
-#
-#   # OBS overlay also has a `bottom-right` slot if you want to chord them.
-#   [[scenes.overlays]]
-#   type = "callsign"
-#   text = "MIDI"
-#   corner = "bottom-right"
-#   fg_color = "light red"
+# color_mode = "per_voice"              # per_voice | per_waveform
+# time_base = "wallclock"               # wallclock | auto
+# auto_cycles = 4.0                     # cycles per render window (auto only)
+# persistence = "off"                   # off | short | medium | long | random
+# scroll_columns = 0                    # 0 = redraw; >0 = FIFO scroll (int or [v1,v2,v3])
+# target_fps = 30                       # default = half video rate (30/25)
+# # [scenes.waveform_colors]            # per_waveform mode only
+# # pulse = "cyan"
+# # sawtooth = "light red"
+# # triangle = "light green"
+# # noise = "yellow"
 
 # --- Launcher: run a native C64 program -----------------------------------
 # Launches a .prg (firmware run_prg) or .crt cartridge (run_crt) — chosen by

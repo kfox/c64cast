@@ -1,4 +1,5 @@
-"""MIDI → SID scene. Drives the C64's SID directly from incoming MIDI.
+"""MIDI → SID scene. Drives the C64's SID directly from incoming MIDI, and
+visualizes the three voices as a full-screen hires oscilloscope.
 
 A live MIDI input port (any source — keyboard, DAW, looper) becomes a
 real-time control surface for the SID's three voices. Note on/off
@@ -13,9 +14,19 @@ only the $D418 volume nibble and the MIDI scene reserves writes to
 that register for its own master-volume CC. (If you have both, the
 last writer wins.)
 
-Visualization is intentionally minimal: a PETSCII status block shows
-the current note and envelope phase per voice. For something flashier,
-attach overlays (spectrum_petscii, scrolling_text, etc.) to the scene.
+Visualization is the shared :class:`~c64cast.voice_scope.VoiceScopeRenderer`
+oscilloscope (the same one WaveformScene uses): three stacked voice strips
+in a 320×200 hires bitmap, with the per-voice readout (note / velocity /
+waveform) and the global state (port waveform / master volume) on the two
+bottom text rows. Unlike WaveformScene — which mirrors a write-only SID via a
+parallel py65 6502 — MidiScene *is* the writer: it keeps a 25-byte $D400-$D418
+register shadow updated alongside every SID write and feeds the host-side
+:class:`~c64cast.sidemu.SIDEmulator` directly. A light background poll thread
+advances the ADSR envelopes at the video rate so attack/decay/release tails
+evolve on screen between MIDI events.
+
+Display is bitmap-only, so PETSCII overlays don't apply (overlay-compat
+rejects them against the hires mode `_validate_midi` reports).
 
 Requires the `midi` extra (``pip install c64cast[midi]``).
 """
@@ -26,11 +37,20 @@ import threading
 import time
 from typing import Any
 
-from .c64 import SID, RegionID, cpu_clock
-from .modes import PETSCIIDisplayMode
-from .overlays import ascii_to_screen
+from ._pollthread import PollThread
+from .c64 import CIA2, SID, VIC_BANK_0, RegionID, cpu_clock
 from .palette import C64_COLORS
 from .scenes import Scene
+from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
+from .voice_scope import (
+    D018_HIRES_BITMAP,
+    META_ROW,
+    METADATA_TEXT_COLOR,
+    TITLE_ROW,
+    TITLE_TEXT_COLOR,
+    VoiceScopeRenderer,
+    _layout_lr,
+)
 
 log = logging.getLogger(__name__)
 
@@ -99,8 +119,9 @@ class _VoiceState:
         self.velocity: int = 0
 
 
-class MidiScene(Scene):
-    """Open a MIDI input and play notes through the SID's three voices.
+class MidiScene(VoiceScopeRenderer, Scene):
+    """Open a MIDI input and play notes through the SID's three voices,
+    visualized as a hires oscilloscope (see the module docstring).
 
     Voice allocation is round-robin with voice-stealing: when all three
     voices are gated and a new note arrives, the oldest one is dropped
@@ -118,9 +139,16 @@ class MidiScene(Scene):
                  filter_mode: str = "lowpass",
                  master_volume: int = 15,
                  voice_colors: list[str] | None = None,
+                 color_mode: str = "per_voice",
+                 waveform_colors: dict | None = None,
+                 time_base: str = "wallclock",
+                 auto_cycles: float = 4.0,
+                 persistence: str = "off",
+                 scroll_columns: int | list[int] = 0,
+                 target_fps: float | None = None,
                  system: str = "NTSC",
                  name: str = "MIDI"):
-        super().__init__(api, audio, PETSCIIDisplayMode(), name)
+        super().__init__(api, audio, None, name)
         if not MIDI_AVAILABLE:
             raise RuntimeError(
                 "MidiScene requires mido + python-rtmidi "
@@ -153,18 +181,60 @@ class MidiScene(Scene):
         self.master_volume = int(master_volume)
         self.system = system
 
-        # Default voice colors land somewhere C64-friendly.
+        # Voice trace colors. Pad the configured names to 3 with C64-friendly
+        # defaults; the scope mixin (via _init_scope_knobs) resolves these to
+        # palette indices and requires at least 3.
         default_colors = ["light green", "cyan", "yellow"]
-        if voice_colors is None:
-            voice_colors = default_colors
-        if len(voice_colors) < SID.N_VOICES:
-            voice_colors = (
-                list(voice_colors)
-                + default_colors[len(voice_colors):]
-            )[:SID.N_VOICES]
-        self.voice_colors = [
-            C64_COLORS.get(c, C64_COLORS["white"]) for c in voice_colors
-        ]
+        names = list(voice_colors) if voice_colors else list(default_colors)
+        if len(names) < SID.N_VOICES:
+            names = (names + default_colors[len(names):])[:SID.N_VOICES]
+
+        # Bitmap display: fixed VIC bank 0 ($0400 screen / $2000 bitmap). No
+        # relocation — MidiScene uploads no SID payload and leaves the audio
+        # ring idle, so bank 0's display regions are always free.
+        self._screen_base = VIC_BANK_0.SCREEN
+        self._bitmap_base = VIC_BANK_0.BITMAP
+        self._dd00 = CIA2.PORT_A_BANK_0
+        self._d018 = D018_HIRES_BITMAP
+
+        # Host-side SID model driving the oscilloscope. We feed it from our own
+        # $D400-$D418 register shadow (below) rather than a py65 host emulator —
+        # MidiScene computes every SID byte it sends, so no parallel 6502 is
+        # needed. The poll thread advances the ADSR envelopes at the video rate.
+        self.emulator = SIDEmulator(system=system)
+        self._reg_lock = threading.Lock()
+        self._sid_shadow = bytearray(SID_REG_COUNT)   # mirrors $D400-$D418
+        self._video_hz = 50.0 if system.upper() == "PAL" else 60.0
+        self._poll_dt = 1.0 / self._video_hz
+        self._poll: PollThread | None = None
+
+        # Default to HALF the system video rate (30 NTSC / 25 PAL), matching
+        # WaveformScene: an oscilloscope reads fine at half-rate and it halves
+        # the per-frame bitmap DMA volume. The text rows are change-detected
+        # (repainted only on note/CC events), so they add little. An explicit
+        # target_fps (CLI/TOML) still wins. The envelope poll rate is
+        # independent (self._video_hz) and stays at the full video rate.
+        if target_fps is None:
+            target_fps = self._video_hz / 2.0
+        self.target_fps = float(target_fps)
+
+        # Scope visualization knobs (validates color_mode/time_base/
+        # auto_cycles/persistence/scroll_columns; sets the render modes +
+        # buffers + frame_time_s). One displayed column-window = one display
+        # frame of audio time.
+        self._init_scope_knobs(
+            color_mode=color_mode,
+            voice_colors=names,
+            waveform_colors=waveform_colors,
+            time_base=time_base,
+            auto_cycles=auto_cycles,
+            persistence=persistence,
+            scroll_columns=scroll_columns,
+            frame_time_s=1.0 / self.target_fps,
+        )
+        # Track the last waveform per voice so per_waveform color-RAM writes
+        # only fire on transitions (see process_frame).
+        self._last_voice_wave: list[int] = [-1, -1, -1]
 
         self.voices: list[_VoiceState] = [
             _VoiceState() for _ in range(SID.N_VOICES)
@@ -173,14 +243,7 @@ class MidiScene(Scene):
         self._midi_port = None
         self._reader_thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._dirty = True   # force first paint
-        # The status block is a low-rate text readout, not animation. Cap
-        # its repaint well below the 60 fps system default so per-note
-        # screen pushes don't burst the shared DMA socket during fast
-        # playing (which can trip a reconnect stall). Note→sound latency is
-        # unaffected — notes are written from the MIDI reader thread, not
-        # this render loop.
-        self.target_fps = 20.0
+        self._dirty = True   # force first text-row paint
 
     # ---- MIDI plumbing -------------------------------------------------------
     def _open_port(self):
@@ -302,6 +365,9 @@ class MidiScene(Scene):
             self.master_volume = max(0, min(15, value >> 3))
             self.api.write_memory(f"{SID.MODE_VOL:04X}",
                                   f"{self.master_volume & 0x0F:02X}")
+            self._poke_shadow(SID.MODE_VOL, self.master_volume & 0x0F)
+            self._feed_emulator()
+            self._dirty = True   # title row shows VOL nn
         elif cc == 1:
             # Map the wheel into an audible window so wheel-to-zero (or
             # full) doesn't drive the pulse to a silent 0% / 100% duty.
@@ -314,6 +380,10 @@ class MidiScene(Scene):
                     self.pulse_width & 0xFF,
                     (self.pulse_width >> 8) & 0x0F,
                 )
+                self._poke_shadow(base + SID.OFF_PW_LO, self.pulse_width & 0xFF)
+                self._poke_shadow(base + SID.OFF_PW_HI,
+                                  (self.pulse_width >> 8) & 0x0F)
+            self._feed_emulator()   # pulse width changes the trace shape
         elif cc == 74:
             self.filter_cutoff = (value << 4) & 0x07FF
             self.api.write_regs(
@@ -321,10 +391,13 @@ class MidiScene(Scene):
                 self.filter_cutoff & 0x07,
                 (self.filter_cutoff >> 3) & 0xFF,
             )
+            self._poke_shadow(SID.FC_LO, self.filter_cutoff & 0x07)
+            self._poke_shadow(SID.FC_HI, (self.filter_cutoff >> 3) & 0xFF)
 
     def _pitchwheel(self, pitch: int) -> None:
         # Re-emit frequency for every gated voice with a +/- 2 semitone bend.
         bend_semitones = (pitch / 8192.0) * 2.0
+        touched = False
         for idx, v in enumerate(self.voices):
             if v.on and v.note is not None:
                 freq = _note_to_sid_freq(
@@ -334,17 +407,34 @@ class MidiScene(Scene):
                     f"{base + SID.OFF_FREQ_LO:04X}",
                     freq & 0xFF, (freq >> 8) & 0xFF,
                 )
+                self._poke_shadow(base + SID.OFF_FREQ_LO, freq & 0xFF)
+                self._poke_shadow(base + SID.OFF_FREQ_HI, (freq >> 8) & 0xFF)
+                touched = True
+        if touched:
+            self._feed_emulator()
 
-    # ---- SID writes ----------------------------------------------------------
+    # ---- SID writes + register shadow ---------------------------------------
+    def _poke_shadow(self, addr: int, value: int) -> None:
+        """Mirror one $D400-$D418 register write into the 25-byte shadow."""
+        self._sid_shadow[addr - SID.BASE] = value & 0xFF
+
+    def _feed_emulator(self, retrigger: tuple[bool, ...] | None = None) -> None:
+        """Push the current register shadow into the host SID emulator so the
+        oscilloscope reflects the latest writes. `retrigger` forces a per-voice
+        hard re-attack the gate-edge logic can't see (re-trigger / voice steal
+        on an already-gated voice)."""
+        with self._reg_lock:
+            self.emulator.update_registers(bytes(self._sid_shadow),
+                                           retrigger=retrigger)
+
     def _program_voice(self, voice_idx: int, midi_note: int, gate: bool) -> None:
         base = SID.voice_base(voice_idx)
         freq = _note_to_sid_freq(midi_note, self.system)
         # Coalesce freq + pulse-width + control + ADSR (7 contiguous bytes)
-        # into a single PUT — minimises HTTP overhead per note event.
+        # into a single PUT — minimises socket overhead per note event.
         ctrl = self.waveform_bits | (SID.GATE if gate else 0)
         a, d, s, r = self.adsr
-        self.api.write_regs(
-            f"{base:04X}",
+        regs = (
             freq & 0xFF,
             (freq >> 8) & 0xFF,
             self.pulse_width & 0xFF,
@@ -353,35 +443,50 @@ class MidiScene(Scene):
             ((a & 0xF) << 4) | (d & 0xF),
             ((s & 0xF) << 4) | (r & 0xF),
         )
+        self.api.write_regs(f"{base:04X}", *regs)
+
+        # Mirror into the shadow + feed the emulator. A note that re-gates a
+        # voice already gated (re-trigger or voice steal) shows no off→on edge
+        # to update_registers, so flag it for a hard re-attack — otherwise a
+        # plucked (sustain=0) voice would flatline after its first decay.
+        off = voice_idx * SID.BYTES_PER_VOICE
+        prev_ctrl = self._sid_shadow[off + SID.OFF_CONTROL]
+        self._sid_shadow[off:off + SID.BYTES_PER_VOICE] = bytes(regs)
+        retrigger: tuple[bool, ...] | None = None
+        if gate and (prev_ctrl & SID.GATE) and (ctrl & SID.GATE):
+            mask = [False] * SID.N_VOICES
+            mask[voice_idx] = True
+            retrigger = tuple(mask)
+        self._feed_emulator(retrigger=retrigger)
 
     def _program_global_sid(self) -> None:
         # Filter routing: low nibble of $D417 selects which voices feed
         # the filter. Default: route nothing through the filter so notes
         # are audible even at FC=0.
         self.api.write_memory(f"{SID.RES_FILT:04X}", "00")
+        self._poke_shadow(SID.RES_FILT, 0)
         fc = self.filter_cutoff
         self.api.write_regs(
             f"{SID.FC_LO:04X}",
             fc & 0x07,
             (fc >> 3) & 0xFF,
         )
+        self._poke_shadow(SID.FC_LO, fc & 0x07)
+        self._poke_shadow(SID.FC_HI, (fc >> 3) & 0xFF)
         # Mode bits in high nibble of $D418: lp=1, bp=2, hp=4, mute_v3=8.
         mode_bits = {"lowpass": 0x1, "bandpass": 0x2, "highpass": 0x4}.get(
             self.filter_mode, 0x1)
-        self.api.write_memory(
-            f"{SID.MODE_VOL:04X}",
-            f"{((mode_bits & 0xF) << 4) | (self.master_volume & 0xF):02X}",
-        )
+        mode_vol = ((mode_bits & 0xF) << 4) | (self.master_volume & 0xF)
+        self.api.write_memory(f"{SID.MODE_VOL:04X}", f"{mode_vol:02X}")
+        self._poke_shadow(SID.MODE_VOL, mode_vol)
 
-    # ---- Scene lifecycle -----------------------------------------------------
-    def setup(self) -> None:
-        super().setup()
-        self._program_global_sid()
-        # Pre-program ADSR + waveform on all voices so a note_on only
-        # needs to write freq + gate.
+    def _preprogram_voices(self) -> None:
+        """Seed each voice's pulse width + waveform + ADSR (gate off) on the
+        SID and in the shadow so a note_on only changes freq + gate and the
+        emulator starts from the configured (silent) state."""
+        a, d, s, r = self.adsr
         for vidx in range(SID.N_VOICES):
             base = SID.voice_base(vidx)
-            a, d, s, r = self.adsr
             self.api.write_regs(
                 f"{base + SID.OFF_PW_LO:04X}",
                 self.pulse_width & 0xFF,
@@ -390,60 +495,88 @@ class MidiScene(Scene):
                 ((a & 0xF) << 4) | (d & 0xF),
                 ((s & 0xF) << 4) | (r & 0xF),
             )
+            off = vidx * SID.BYTES_PER_VOICE
+            self._poke_shadow(base + SID.OFF_PW_LO, self.pulse_width & 0xFF)
+            self._poke_shadow(base + SID.OFF_PW_HI, (self.pulse_width >> 8) & 0x0F)
+            self._sid_shadow[off + SID.OFF_CONTROL] = self.waveform_bits
+            self._sid_shadow[off + SID.OFF_AD] = ((a & 0xF) << 4) | (d & 0xF)
+            self._sid_shadow[off + SID.OFF_SR] = ((s & 0xF) << 4) | (r & 0xF)
+        self._feed_emulator()
+
+    # ---- info text rows ------------------------------------------------------
+    def _build_title_line(self) -> str:
+        """Global state: MIDI + current waveform (left), master volume (right)."""
+        return _layout_lr(f"MIDI {self.waveform.upper()}",
+                          f"VOL {self.master_volume:2d}")
+
+    def _build_meta_line(self) -> str:
+        """Condensed per-voice readout for all three voices on one row:
+        `V1 C-4 100  V2 E-4  88  V3 ---`. Gated voices show note + velocity;
+        released voices show `---`."""
+        parts = []
+        for i, v in enumerate(self.voices):
+            if v.on and v.note is not None:
+                parts.append(f"V{i + 1} {_note_name(v.note)} {v.velocity:3d}")
+            else:
+                parts.append(f"V{i + 1} ---")
+        return "  ".join(parts)[:40].ljust(40)
+
+    def _paint_info_rows(self) -> None:
+        title_fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
+        self._paint_text_row(TITLE_ROW, self._build_title_line(), title_fg,
+                             RegionID.WAVE_TITLE_BITMAP,
+                             RegionID.WAVE_TITLE_SCREEN)
+        meta_fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
+        self._paint_text_row(META_ROW, self._build_meta_line(), meta_fg,
+                             RegionID.WAVE_META_BITMAP,
+                             RegionID.WAVE_META_SCREEN)
+
+    # ---- Scene lifecycle -----------------------------------------------------
+    def setup(self) -> None:
+        super().setup()
+        self._program_global_sid()
+        self._preprogram_voices()
+        # Bitmap bring-up: clear + colors + charset, then the two info rows,
+        # then allocate the per-voice render buffers. invalidate_cache first so
+        # the delta cache gets a clean baseline (the previous scene may have
+        # used $0400/$2000 for char-mode content).
+        self.api.invalidate_cache()
+        self._apply_vic_hires_bank()
+        self._paint_info_rows()
+        self._alloc_scope_buffers()
         self._open_port()
         self._stop.clear()
         self._reader_thread = threading.Thread(
             target=self._reader, daemon=True, name="midi-reader")
         self._reader_thread.start()
+        # Envelope ticker: advances each voice's ADSR at the video rate so
+        # attack/decay/release tails evolve on screen between MIDI events.
+        self._poll = PollThread(self._tick_envelopes, period=self._poll_dt,
+                                name="midi-env")
+        self._poll.start()
         self._dirty = True
 
+    def _tick_envelopes(self) -> None:
+        with self._reg_lock:
+            self.emulator.advance_envelopes(self._poll_dt)
+
     def process_frame(self, current_time: float) -> bool:
-        if not self._dirty:
-            return True
-        chars = bytearray([0x20] * 1000)   # space (screen code)
-        colors = bytearray([C64_COLORS["dark gray"]] * 1000)
-
-        # Header row: scene name + waveform + master volume.
-        header = (
-            f"MIDI  {self.waveform.upper()[:4]:4s}  "
-            f"VOL {self.master_volume:2d}"
-        )[:40]
-        self._paint(chars, colors, row=0, col=0,
-                    text=header, color=C64_COLORS["white"])
-
-        # One row per voice. Only gated (sounding) voices show a note +
-        # velocity; a released voice clears back to "--- off" so the
-        # display reflects what's actually being heard rather than the
-        # last note that played. (chars is rebuilt from spaces each frame,
-        # so the shorter released line overwrites the stale text.) Released
-        # rows are dimmed to read as inactive.
-        for i, v in enumerate(self.voices):
-            row = 10 + i * 2
-            note = v.note
-            if v.on and note is not None:
-                line = f"V{i + 1}  {_note_name(note):3s}  ON   vel {v.velocity:3d}"
-                color = self.voice_colors[i]
-            else:
-                line = f"V{i + 1}  ---  off"
-                color = C64_COLORS["dark gray"]
-            self._paint(chars, colors, row=row, col=2,
-                        text=line[:36], color=color)
-
-        self.api.write_region(0x0400, bytes(chars), region_id=RegionID.SCREEN)
-        self.api.write_region(0xD800, bytes(colors), region_id=RegionID.COLOR)
-        self._dirty = False
+        # Per-waveform coloring: repaint a voice's strip color only when its
+        # selected waveform changes (change-detected so normal frames are free).
+        if self.color_mode == "per_waveform":
+            with self._reg_lock:
+                controls = [v.control for v in self.emulator.voices]
+            for v_idx in range(SID.N_VOICES):
+                wave_now = primary_waveform(controls[v_idx])
+                if wave_now != self._last_voice_wave[v_idx]:
+                    self._repaint_voice_color(v_idx)
+                    self._last_voice_wave[v_idx] = wave_now
+        # Text rows repaint only on note/CC changes (keeps DMA low).
+        if self._dirty:
+            self._paint_info_rows()
+            self._dirty = False
+        self._render_hires()
         return True
-
-    def _paint(self, chars: bytearray, colors: bytearray,
-               row: int, col: int, text: str, color: int) -> None:
-        if not 0 <= row < 25:
-            return
-        encoded = ascii_to_screen(text)
-        start = row * 40 + col
-        end = min(start + len(encoded), row * 40 + 40)
-        chars[start:end] = encoded[: end - start]
-        for i in range(start, end):
-            colors[i] = color
 
     def teardown(self) -> None:
         super().teardown()
@@ -457,8 +590,18 @@ class MidiScene(Scene):
             except Exception:
                 log.debug("MidiScene: port close failed", exc_info=True)
             self._midi_port = None
-        # Silence the SID so the next scene starts clean.
+        if self._poll is not None:
+            self._poll.stop()
+            self._poll = None
+        # Silence the SID, then restore VIC bank 0 + the default $D018 so the
+        # next scene's char-mode display renders cleanly (we left VIC in hires
+        # bitmap mode).
         try:
             self.api.silence_sid()
+            self.api.write_memory(f"{CIA2.PORT_A:04X}",
+                                  f"{CIA2.PORT_A_BANK_0:02X}")
+            self.api.write_memory("d018", f"{D018_HIRES_BITMAP:02X}")
+            self.api.flush()
         except Exception:
-            log.debug("MidiScene: silence_sid failed", exc_info=True)
+            log.debug("MidiScene: teardown silence/restore failed",
+                      exc_info=True)
