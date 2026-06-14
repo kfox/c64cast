@@ -33,10 +33,14 @@ jobs:
         # (PyAV, pygame, sounddevice) that aren't needed for the
         # unittest suite, which mocks all hardware paths. Add specific
         # extras here if you start testing them.
+        # `midi` (mido + python-rtmidi) IS included: the MidiScene suite is
+        # gated `@skipUnless(HAVE_MIDI)`, so without it those tests silently
+        # skip and the module reads as uncovered. python-rtmidi ships
+        # manylinux wheels (no native build) and imports fine headless.
         # --frozen: use uv.lock exactly, error if it's out of date
         # --no-default-groups: skip [tool.uv] default-groups (which is [dev])
         # --group dev: pull in the dev dependency group
-        run: uv sync --frozen --no-default-groups --group dev
+        run: uv sync --frozen --no-default-groups --group dev --extra midi
 
       - name: Ruff (lint)
         run: uv run ruff check .
@@ -73,7 +77,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dev deps
-        run: uv sync --frozen --no-default-groups --group dev
+        # Include the `midi` extra so the @skipUnless(HAVE_MIDI) MidiScene
+        # suite runs here — otherwise midi_scene.py reads as uncovered and
+        # tanks the codecov patch/project gates. See the lint-and-test job.
+        run: uv sync --frozen --no-default-groups --group dev --extra midi
 
       - name: Coverage
         run: |
