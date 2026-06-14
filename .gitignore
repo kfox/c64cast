@@ -16,7 +16,6 @@ htmlcov/
 .pytest_cache/
 .tox/
 .ruff_cache/
-test.toml
 
 # Virtualenvs / package managers
 .venv/
@@ -32,8 +31,11 @@ env/
 *~
 
 # Project-specific
-# user config; only config/c64cast.example.toml is tracked
-c64cast.toml
+# user-generated top-level config tomls (quick tests, scratch scene configs).
+# Only real project files are tracked; put reusable configs under config/.
+/*.toml
+!/mise.toml
+!/pyproject.toml
 # diag tool captures/fixtures; the tools are tracked
 scripts/diags/out/
 # legacy: local stream recordings outside assets/
