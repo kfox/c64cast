@@ -107,6 +107,24 @@ for the file index.
 (`hardware`, `ultimate 64`, `video input`, `audio`, `playlist`,
 `introspection`, `debug`).
 
+### Launcher script
+
+[`scripts/c64cast.sh`](scripts/c64cast.sh) is a thin convenience wrapper
+around `python -m c64cast`. It `cd`s to the repo root and forwards every
+argument, running through `uv run` when `uv` is on your `PATH` (so the
+project `.venv` is always used) and falling back to a bare `python`
+otherwise. Handy when invoking c64cast from another directory or from a
+context where direnv hasn't activated `.venv` (cron, systemd, an ssh
+one-liner):
+
+```bash
+scripts/c64cast.sh --config config/examples/hello.toml
+scripts/c64cast.sh --doctor --skip-probe
+```
+
+Anywhere this README shows `python -m c64cast ...`, `scripts/c64cast.sh ...`
+is an equivalent drop-in.
+
 ## Configuration
 
 A config is a single TOML file (`--config PATH`, else `./c64cast.toml`,
