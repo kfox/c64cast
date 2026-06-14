@@ -1486,8 +1486,8 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
         s, DEFAULT_WAVEFORM_DIR, SID_EXTS,
         label="waveform", drop_hint="a .sid")
-    from .waveform import BITMAP_W as _WAVE_BITMAP_W
-    from .waveform import PERSISTENCE_NAMES, TIME_BASE_NAMES
+    from .voice_scope import BITMAP_W as _WAVE_BITMAP_W
+    from .voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
     if s.time_base not in TIME_BASE_NAMES:
         raise ValueError(
             f"waveform: time_base must be one of "
