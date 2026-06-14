@@ -350,8 +350,8 @@ class SceneCfg:
         "help": "Scene kind.",
         "choices": SCENE_TYPES})
     display: str = field(default="hires_edges", metadata={
-        "help": "VIC-II display mode. waveform is bitmap-only and midi is "
-                "petscii-only (both ignore this); slideshow also accepts 'random'.",
+        "help": "VIC-II display mode. waveform and midi are bitmap-only (both "
+                "ignore this); slideshow also accepts 'random'.",
         "choices": _DISPLAY_CHOICES,
         "applies_to": ("webcam", "blank", "commercial", "slideshow")})
     name: str | None = field(default=None, metadata={
@@ -398,30 +398,30 @@ class SceneCfg:
     color_mode: str = field(default="per_voice", metadata={
         "help": "Oscilloscope coloring: fixed per voice, or by current waveform type.",
         "choices": _COLOR_MODE_CHOICES,
-        "applies_to": ("waveform",)})
+        "applies_to": ("waveform", "midi")})
     voice_colors: list[str] = field(default_factory=list, metadata={
         "help": "Per-voice trace colors (C64 color names) for color_mode=per_voice.",
         "applies_to": ("waveform", "midi")})
     waveform_colors: dict[str, str] = field(default_factory=dict, metadata={
         "help": "Per-waveform-type colors (e.g. pulse=cyan) for color_mode=per_waveform.",
-        "applies_to": ("waveform",)})
+        "applies_to": ("waveform", "midi")})
     time_base: str = field(default="wallclock", metadata={
         "help": "Scope time window: 'wallclock' (1 row = 1 frame) or 'auto' "
                 "(per-voice window sized so auto_cycles cycles fit).",
         "choices": _TIME_BASE_CHOICES,
-        "applies_to": ("waveform",)})
+        "applies_to": ("waveform", "midi")})
     auto_cycles: float = field(default=4.0, metadata={
         "help": "Complete cycles per render window when time_base = 'auto'.",
-        "applies_to": ("waveform",)})
+        "applies_to": ("waveform", "midi")})
     persistence: str = field(default="off", metadata={
         "help": "Trace decay/trail length ('off' redraws each frame).",
         "choices": _PERSISTENCE_CHOICES,
-        "applies_to": ("waveform",)})
+        "applies_to": ("waveform", "midi")})
     # Scalar broadcasts to all 3 voices; a list of 3 assigns per voice.
     scroll_columns: int | list[int] = field(default=0, metadata={
         "help": "FIFO-scroll the strip left by N columns/frame (0 = redraw). "
                 "Int or a list of 3 per-voice ints.",
-        "applies_to": ("waveform",)})
+        "applies_to": ("waveform", "midi")})
     # MIDI scene kwargs.
     midi_port: str | None = field(default=None, metadata={
         "help": "MIDI input port name substring; unset = first available port.",
@@ -1482,42 +1482,49 @@ def _validate_commercial(s: SceneCfg, cfg: Config) -> DisplayMode:
     return _display_mode_for_scene(s.display, s, cfg)
 
 
-def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
-    _resolve_file_spec_or_explain(
-        s, DEFAULT_WAVEFORM_DIR, SID_EXTS,
-        label="waveform", drop_hint="a .sid")
-    from .voice_scope import BITMAP_W as _WAVE_BITMAP_W
+def _validate_scope_knobs(s: SceneCfg, label: str) -> None:
+    """Validate the shared VoiceScopeRenderer knobs (time_base / auto_cycles /
+    persistence / scroll_columns) used by both waveform and midi scenes. Mirrors
+    the constructor checks so doctor mode (no scene instance) catches them too."""
+    from .voice_scope import BITMAP_W as _SCOPE_BITMAP_W
     from .voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
     if s.time_base not in TIME_BASE_NAMES:
         raise ValueError(
-            f"waveform: time_base must be one of "
+            f"{label}: time_base must be one of "
             f"{tuple(TIME_BASE_NAMES)}, got {s.time_base!r}")
     if s.auto_cycles <= 0:
         raise ValueError(
-            f"waveform: auto_cycles must be > 0, got {s.auto_cycles!r}")
+            f"{label}: auto_cycles must be > 0, got {s.auto_cycles!r}")
     if s.persistence not in PERSISTENCE_NAMES:
         raise ValueError(
-            f"waveform: persistence must be one of "
+            f"{label}: persistence must be one of "
             f"{tuple(PERSISTENCE_NAMES)}, got {s.persistence!r}")
     sc = s.scroll_columns
     if isinstance(sc, list):
         if len(sc) != 3 or not all(isinstance(x, int) for x in sc):
             raise ValueError(
-                f"waveform: scroll_columns list must have 3 ints, "
+                f"{label}: scroll_columns list must have 3 ints, "
                 f"got {sc!r}")
-        if any(x < 0 or x > _WAVE_BITMAP_W for x in sc):
+        if any(x < 0 or x > _SCOPE_BITMAP_W for x in sc):
             raise ValueError(
-                f"waveform: scroll_columns entries must be in "
-                f"0..{_WAVE_BITMAP_W}, got {sc!r}")
+                f"{label}: scroll_columns entries must be in "
+                f"0..{_SCOPE_BITMAP_W}, got {sc!r}")
     elif isinstance(sc, int):
-        if sc < 0 or sc > _WAVE_BITMAP_W:
+        if sc < 0 or sc > _SCOPE_BITMAP_W:
             raise ValueError(
-                f"waveform: scroll_columns must be in "
-                f"0..{_WAVE_BITMAP_W}, got {sc!r}")
+                f"{label}: scroll_columns must be in "
+                f"0..{_SCOPE_BITMAP_W}, got {sc!r}")
     else:
         raise ValueError(
-            f"waveform: scroll_columns must be an int or list of 3 "
+            f"{label}: scroll_columns must be an int or list of 3 "
             f"ints, got {type(sc).__name__}")
+
+
+def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
+    _resolve_file_spec_or_explain(
+        s, DEFAULT_WAVEFORM_DIR, SID_EXTS,
+        label="waveform", drop_hint="a .sid")
+    _validate_scope_knobs(s, "waveform")
     # WaveformScene is bitmap-only — the SceneCfg `display` field is
     # ignored for this scene type. Synthesise a hires display_mode so
     # overlay compatibility checks fire against what the scene will
@@ -1529,10 +1536,12 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
     if len(s.midi_adsr) != 4:
         raise ValueError(
             f"midi scene midi_adsr must have 4 entries, got {s.midi_adsr!r}")
-    # MidiScene uses a fixed PETSCII display; matches WaveformScene's
-    # internal choice so overlay compatibility validates against the
-    # mode the user will actually see.
-    return _build_display_mode("petscii")
+    _validate_scope_knobs(s, "midi")
+    # MidiScene is bitmap-only (hires oscilloscope) — the SceneCfg `display`
+    # field is ignored. Synthesise a hires display_mode so overlay
+    # compatibility validates against what the scene will actually paint
+    # (and PETSCII overlays are rejected, as on a waveform scene).
+    return _build_display_mode("hires")
 
 
 def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
@@ -1799,6 +1808,13 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
             filter_mode=s.midi_filter_mode,
             master_volume=s.midi_master_volume,
             voice_colors=s.voice_colors or None,
+            color_mode=s.color_mode,
+            waveform_colors=s.waveform_colors or None,
+            time_base=s.time_base,
+            auto_cycles=s.auto_cycles,
+            persistence=s.persistence,
+            scroll_columns=s.scroll_columns,
+            target_fps=s.target_fps,
             system=cfg.ultimate64.system,
             name=s.name or "MIDI",
         )

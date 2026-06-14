@@ -1,12 +1,13 @@
 """Host-side unit tests for MidiScene (c64cast/midi_scene.py).
 
 These exercise the pure logic — note→frequency math, voice allocation /
-stealing, CC + pitch-wheel mapping, the status-block paint, config
-validation, and teardown — against the shared FakeAPI. No MIDI hardware
-and no U64 are touched: `_open_port` is patched out, and real `mido.Message`
-objects drive `_handle_msg` so message-attribute access is covered.
+stealing, CC + pitch-wheel mapping, the SID register shadow + emulator feed,
+the bitmap-oscilloscope info rows, config validation, and teardown — against
+the shared FakeAPI. No MIDI hardware and no U64 are touched: `_open_port` is
+patched out, and real `mido.Message` objects drive `_handle_msg` so
+message-attribute access is covered.
 
-Real-hardware behavior (sound out of the SID, the PETSCII display on the
+Real-hardware behavior (sound out of the SID, the live oscilloscope on the
 HDMI scaler) is covered separately by the Tier-2 smoke script, not here.
 """
 from __future__ import annotations
@@ -35,13 +36,29 @@ from _fakes import FakeAPI  # noqa: E402
 
 from c64cast import midi_scene  # noqa: E402
 from c64cast.c64 import SID  # noqa: E402
-from c64cast.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
+from c64cast.midi_scene import MidiScene, _note_name, _note_to_sid_freq  # noqa: E402
 from c64cast.modes import DisplayMode  # noqa: E402
-from c64cast.overlays import ascii_to_screen  # noqa: E402
+from c64cast.sidemu import primary_waveform  # noqa: E402
 
 # Control-register byte index within the 7-byte voice block written by
 # _program_voice (freq_lo, freq_hi, pw_lo, pw_hi, CONTROL, ad, sr).
 _CTRL_IDX = 4
+
+# Bitmap layout (bank 0): screen matrix at $0400, hires bitmap at $2000;
+# 320 bytes per cell-row. The two info rows live at cell rows 22 (title) and
+# 23 (meta); voice strips start at cell rows 0 / 7 / 14.
+_SCREEN_BASE = 0x0400
+_BITMAP_BASE = 0x2000
+_TITLE_BITMAP = _BITMAP_BASE + 22 * 320
+_TITLE_SCREEN = _SCREEN_BASE + 22 * 40
+_META_BITMAP = _BITMAP_BASE + 23 * 320
+
+
+def _bring_up_display(scene) -> None:
+    """Run the bitmap bring-up pieces a full setup() would (VIC bank + charset
+    + render buffers) without opening a MIDI port or starting threads."""
+    scene._apply_vic_hires_bank()
+    scene._alloc_scope_buffers()
 
 
 def _make_scene(**kwargs) -> tuple[MidiScene, FakeAPI]:
@@ -280,51 +297,118 @@ class HandleMsgDispatchTests(_MidiTestCase):
         self.assertEqual(api.memories["D418"], "00")
 
 
+class ShadowEmulatorTests(_MidiTestCase):
+    """The 25-byte $D400-$D418 register shadow + the host SIDEmulator it
+    feeds — the data source for the oscilloscope (no py65 host emu)."""
+
+    def test_note_on_updates_shadow_and_gates_emulator_voice(self):
+        scene, _ = _make_scene(waveform="pulse")
+        scene._note_on(60, 100)
+        # Shadow voice 0 control byte = pulse waveform + gate.
+        ctrl = scene._sid_shadow[0 * SID.BYTES_PER_VOICE + SID.OFF_CONTROL]
+        self.assertEqual(ctrl, SID.WAVE_PULSE | SID.GATE)
+        # Emulator mirrors it: voice 0 gated, freq matches the note, and the
+        # gate edge put it into the attack phase.
+        v = scene.emulator.voices[0]
+        self.assertTrue(v.gated())
+        self.assertEqual(v.freq, _note_to_sid_freq(60, scene.system))
+        self.assertEqual(v.envelope_state, "attack")
+
+    def test_note_off_releases_emulator_voice(self):
+        scene, _ = _make_scene()
+        scene._note_on(60, 100)
+        scene._note_off(60)
+        ctrl = scene._sid_shadow[0 * SID.BYTES_PER_VOICE + SID.OFF_CONTROL]
+        self.assertEqual(ctrl & SID.GATE, 0)
+        self.assertEqual(scene.emulator.voices[0].envelope_state, "release")
+
+    def test_retrigger_reattacks_already_gated_voice(self):
+        # Re-gating a still-gated voice (re-trigger / voice steal) shows no
+        # off→on edge to update_registers, so MidiScene must flag a hard
+        # re-attack — otherwise a plucked voice would flatline after decay.
+        scene, _ = _make_scene()
+        scene._note_on(60, 100)
+        v = scene.emulator.voices[0]
+        # Force it down into release-ish state then re-trigger the SAME voice
+        # with a new note while it is still gated.
+        v.envelope_level = 0.0
+        v.envelope_state = "sustain"
+        scene._note_on(60, 110)        # reuses voice 0 (note already playing)
+        self.assertEqual(v.envelope_state, "attack")
+        self.assertEqual(v.envelope_level, 0.0)
+
+    def test_envelope_ticker_advances_held_note(self):
+        scene, _ = _make_scene(adsr=(8, 8, 12, 8))   # slow-ish attack
+        scene._note_on(60, 100)
+        v = scene.emulator.voices[0]
+        start = v.envelope_level
+        scene._tick_envelopes()
+        scene._tick_envelopes()
+        self.assertGreater(v.envelope_level, start)
+
+
 class PaintTests(_MidiTestCase):
-    def test_process_frame_paints_header_and_voice_row(self):
-        scene, api = _make_scene(waveform="pulse")
+    def test_process_frame_writes_voice_strips_and_info_rows(self):
+        scene, api = _make_scene(waveform="pulse", master_volume=15)
+        _bring_up_display(scene)
         scene._note_on(60, 100)
         self.assertTrue(scene.process_frame(0.0))
+        # All three voice bitmap strips were drawn (cell rows 0 / 7 / 14).
+        for cell_row in (0, 7, 14):
+            self.assertIn(_BITMAP_BASE + cell_row * 320, api.regions)
+        # Both info rows painted: bitmap glyphs + screen-RAM FG nibble.
+        self.assertIn(_TITLE_BITMAP, api.regions)
+        self.assertIn(_TITLE_SCREEN, api.regions)
+        self.assertIn(_META_BITMAP, api.regions)
+        # The info-row content reflects the global + per-voice state.
+        title = scene._build_title_line()
+        self.assertIn("MIDI PULSE", title)
+        self.assertIn("VOL 15", title)
+        meta = scene._build_meta_line()
+        self.assertIn(f"V1 {_note_name(60)} 100", meta)
 
-        screen = api.regions[0x0400]
-        self.assertEqual(len(screen), 1000)
-        # Header starts at row 0.
-        self.assertTrue(screen.startswith(ascii_to_screen("MIDI")))
-        # Voice 1 row is row 10, col 2 → offset 402.
-        v1 = ascii_to_screen("V1")
-        self.assertEqual(screen[402:402 + len(v1)], v1)
-        # Color RAM is also written.
-        self.assertEqual(len(api.regions[0xD800]), 1000)
-
-    def test_released_voice_clears_note_and_velocity(self):
-        # After release the row must not keep showing the last note/vel —
-        # it should read "--- off" so the display matches what's heard.
-        scene, api = _make_scene()
+    def test_meta_line_shows_released_voice_as_dashes(self):
+        # After release the meta row must not keep the last note/vel — the
+        # voice reads "---" so the display matches what's heard.
+        scene, _ = _make_scene()
         scene._note_on(60, 100)
-        scene.process_frame(0.0)
-        held = api.regions[0x0400]
-        self.assertIn(ascii_to_screen("C-4"), held)
-        self.assertIn(ascii_to_screen("vel 100"), held)
-
+        self.assertIn(f"V1 {_note_name(60)} 100", scene._build_meta_line())
         scene._note_off(60)
-        scene.process_frame(1.0)
-        released = api.regions[0x0400]
-        # Voice 1 row (row 10, col 2 → offset 402) now reads "V1  --- off".
-        self.assertEqual(released[402:402 + len(ascii_to_screen("V1"))],
-                         ascii_to_screen("V1"))
-        self.assertIn(ascii_to_screen("---"), released)
-        # The stale note name and velocity are gone.
-        self.assertNotIn(ascii_to_screen("C-4"), released)
-        self.assertNotIn(ascii_to_screen("vel 100"), released)
+        meta = scene._build_meta_line()
+        self.assertIn("V1 ---", meta)
+        self.assertNotIn(_note_name(60), meta)
 
-    def test_process_frame_is_skipped_when_not_dirty(self):
+    def test_info_rows_repaint_only_when_dirty(self):
+        # The scope strips redraw every frame, but the change-detected text
+        # rows repaint only on note/CC events — keeps DMA low.
         scene, api = _make_scene()
+        _bring_up_display(scene)
         scene._note_on(60, 100)
         scene.process_frame(0.0)
         api.regions.clear()
-        # No new MIDI activity → _dirty is False → no repaint.
-        self.assertTrue(scene.process_frame(1.0))
-        self.assertEqual(api.regions, {})
+        scene.process_frame(1.0)        # _dirty now False
+        # Info rows NOT rewritten...
+        self.assertNotIn(_TITLE_BITMAP, api.regions)
+        self.assertNotIn(_TITLE_SCREEN, api.regions)
+        self.assertNotIn(_META_BITMAP, api.regions)
+        # ...but the scope strips are redrawn.
+        self.assertIn(_BITMAP_BASE, api.regions)
+
+    def test_default_knobs_take_fast_render_path(self):
+        scene, _ = _make_scene()
+        self.assertEqual(scene._voice_render_modes, ["fast", "fast", "fast"])
+        self.assertTrue(scene._fast_path)
+
+    def test_per_waveform_color_repaints_on_transition(self):
+        scene, api = _make_scene(color_mode="per_waveform", waveform="pulse")
+        _bring_up_display(scene)
+        scene._note_on(60, 100)
+        api.regions.clear()
+        scene.process_frame(0.0)
+        # Voice 0 went from "off" (-1) to pulse → its color cells repaint.
+        self.assertEqual(scene._last_voice_wave[0],
+                         primary_waveform(SID.WAVE_PULSE | SID.GATE))
+        self.assertIn(_SCREEN_BASE, api.regions)   # voice-0 FG nibble block
 
 
 class ValidationTests(_MidiTestCase):
@@ -353,7 +437,54 @@ class ValidationTests(_MidiTestCase):
 
     def test_short_voice_colors_padded_to_three(self):
         scene, _ = _make_scene(voice_colors=["white"])
-        self.assertEqual(len(scene.voice_colors), SID.N_VOICES)
+        self.assertEqual(len(scene.voice_color_names), SID.N_VOICES)
+
+    def test_bad_scope_knobs_rejected(self):
+        with self.assertRaises(ValueError):
+            _make_scene(color_mode="rainbow")
+        with self.assertRaises(ValueError):
+            _make_scene(time_base="bogus")
+        with self.assertRaises(ValueError):
+            _make_scene(persistence="weird")
+        with self.assertRaises(ValueError):
+            _make_scene(scroll_columns=[1, 2])      # wrong length
+
+
+class PortSelectionTests(_MidiTestCase):
+    """_open_port name resolution (substring match / first-port / errors),
+    exercised with mido patched so no real MIDI hardware is touched."""
+
+    def _patch_mido(self, scene, names, opened):
+        fake = mock.MagicMock()
+        fake.get_input_names.return_value = names
+        fake.open_input.side_effect = lambda n: opened.append(n) or _FakePort()
+        return mock.patch.object(midi_scene, "mido", fake)
+
+    def test_empty_port_picks_first(self):
+        scene, _ = _make_scene(port="")
+        opened: list[str] = []
+        with self._patch_mido(scene, ["Port A", "Port B"], opened):
+            scene._open_port()
+        self.assertEqual(opened, ["Port A"])
+
+    def test_no_ports_raises(self):
+        scene, _ = _make_scene(port="")
+        with self._patch_mido(scene, [], []):
+            with self.assertRaises(RuntimeError):
+                scene._open_port()
+
+    def test_substring_match(self):
+        scene, _ = _make_scene(port="keylab")
+        opened: list[str] = []
+        with self._patch_mido(scene, ["IAC Bus 1", "KeyLab mkII 49"], opened):
+            scene._open_port()
+        self.assertEqual(opened, ["KeyLab mkII 49"])
+
+    def test_no_match_raises(self):
+        scene, _ = _make_scene(port="nonexistent")
+        with self._patch_mido(scene, ["IAC Bus 1"], []):
+            with self.assertRaises(RuntimeError):
+                scene._open_port()
 
 
 class ReaderCoalescingTests(_MidiTestCase):

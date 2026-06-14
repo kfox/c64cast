@@ -104,11 +104,17 @@ class AppliesToTest(unittest.TestCase):
         self.assertIn("time_base", names)
         self.assertNotIn("midi_waveform", names)
 
-    def test_midi_excludes_waveform_fields(self):
+    def test_midi_includes_scope_knobs_and_midi_fields(self):
+        # MidiScene now shares the bitmap oscilloscope, so the scope knobs
+        # (time_base etc.) apply to it as well as its own midi_* fields.
         midi = next(s for s in introspect.scene_types() if s.name == "midi")
         names = {f.name for f in midi.fields}
         self.assertIn("midi_waveform", names)
-        self.assertNotIn("time_base", names)
+        self.assertIn("time_base", names)
+        self.assertIn("persistence", names)
+        self.assertIn("scroll_columns", names)
+        # waveform-only fields (SID file playback) stay excluded.
+        self.assertNotIn("song", names)
 
     def test_universal_fields_present_everywhere(self):
         for s in introspect.scene_types():

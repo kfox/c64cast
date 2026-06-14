@@ -66,8 +66,14 @@ c64cast/
 │                     color_only) cycled by the SHIFT key
 ├── scenes.py         Scene base + Webcam + Blank + Slideshow + Commercial
 │                     + Launcher (native .prg/.crt handoff)
-├── waveform.py       WaveformScene: 3-voice SID oscilloscope (full-screen)
-├── midi_scene.py     MidiScene: live MIDI input → SID synth + oscilloscope
+├── voice_scope.py    VoiceScopeRenderer mixin: the shared 3-voice hires
+│                     oscilloscope renderer (layout, VIC hires bring-up,
+│                     glyph text rows, per-voice render paths + knobs) used
+│                     by both WaveformScene and MidiScene
+├── waveform.py       WaveformScene: 3-voice SID oscilloscope (full-screen),
+│                     SID-file playback; inherits VoiceScopeRenderer
+├── midi_scene.py     MidiScene: live MIDI input → SID synth + 3-voice
+│                     oscilloscope (inherits VoiceScopeRenderer; bitmap-only)
 ├── sidemu.py         Minimal SID waveform synthesizer (per-voice +
 │                     ADSR; no filter/mixing) — drives the oscilloscope
 │                     trace from live $D400-$D418 snapshots
@@ -190,9 +196,13 @@ Each Scene also has an optional `target_fps` attribute. When set, the Playlist h
 
 `SlideshowScene` cycles through still images for the scene's `duration_s`. File spec mirrors CommercialScene's grammar (comma-separated paths / dirs / globs via `resolve_file_spec`, default dir `assets/pictures/`). Per-image timer is `image_duration_s` (default 5s) — independent of `duration_s`, which controls total runtime. Picker is shuffle-and-walk: every image in the pool plays once before any repeats, and the first pick after a reshuffle is swapped with the second when the pool has >1 entry, so no image appears twice back-to-back across reshuffle boundaries. No audio, no `WANTS_AUDIO_LOCK`, no CLAHE/temporal-EMA smoothing (the webcam blend would cross-fade unrelated stills). `display = "random"` resolves to a fresh mode in `SLIDESHOW_RANDOM_DISPLAYS` at every `setup()` (so single-scene loops vary per iteration); `display = "hires_edges"` is substituted with `mhires` (the SceneCfg global default is tuned for live webcam Canny edges, not photos — use `display = "hires"` for plain bitmap). Images load via `cv2.imread` (no extra dependency).
 
+### `voice_scope.py` — shared 3-voice oscilloscope renderer
+
+`VoiceScopeRenderer` is the SID-source-agnostic hires oscilloscope renderer, factored out of `WaveformScene` so `MidiScene` can reuse it. It's a **mixin** (both `WaveformScene` and `MidiScene` are `class X(VoiceScopeRenderer, Scene)`): the extraction kept every `self._<attr>` reference intact, so `WaveformScene`'s byte-output and its full test suite are unchanged (the regression guard). It owns the layout constants (`BITMAP_STRIPS`, `TITLE_ROW`/`META_ROW`, the `D011`/`D016`/`D018` pokes), the VIC hires bring-up (`_apply_vic_hires_bank`), the glyph + text-row rasterizer (`_paint_text_row`, `_load_glyphs`, `_ascii_to_screen_code`, `_layout_lr`/`_layout_lcr`), the per-voice color helpers, the three render paths (`_render_voice_fast`/`_scroll`/`_echo` → `_render_hires`), and the knob parsing + buffer allocation (`_init_scope_knobs` / `_alloc_scope_buffers`). A host scene satisfies a documented attribute contract (`api`, `emulator`, `_reg_lock`, `_screen_base`/`_bitmap_base`/`_dd00`/`_d018`, …) and supplies its own text-row CONTENT. `waveform.py` re-exports the moved consts so historical `from .waveform import …` (config, tests) keeps working.
+
 ### `waveform.py` + `sidemu.py` + `sid_host_emu.py` — SID oscilloscope scene
 
-`WaveformScene` plays a SID file on the U64 via `api.run_sid_player(...)` (DMA SID payload + 73-byte 6502 player relocated per-tune by `_choose_player_layout` — default $C300, bumped past the SID payload on overlap — then POST a matching `10 SYS <player_base>` BASIC stub via `runners:run_prg`) and visualizes the three SID voices' waveforms across the full screen. Display is bitmap-only (320×200 hires). Voices stack vertically — voice 1 top, voice 3 bottom.
+`WaveformScene` (inherits `VoiceScopeRenderer`) plays a SID file on the U64 via `api.run_sid_player(...)` (DMA SID payload + 73-byte 6502 player relocated per-tune by `_choose_player_layout` — default $C300, bumped past the SID payload on overlap — then POST a matching `10 SYS <player_base>` BASIC stub via `runners:run_prg`) and visualizes the three SID voices' waveforms across the full screen. Display is bitmap-only (320×200 hires). Voices stack vertically — voice 1 top, voice 3 bottom.
 
 The firmware's `runners:sidplay` endpoint is deliberately avoided: on firmware 3.14d it draws its own "ULTIMATE C-64 SID PLAYER" UI on the HDMI scaler that covers everything we paint into VIC RAM. PSID-only — RSIDs (which install their own raster IRQ in INIT), tunes whose `load_addr` is below `$0820` (would collide with the BASIC SYS stub), tunes whose `play_addr` is zero (INIT installs own IRQ), and tunes with code/data under KERNAL ROM (`$E000-$FFFF`, where the player can't bank KERNAL out without losing its `$EA31` IRQ chain) are refused at scene setup with a clear error. Tunes under **BASIC** ROM (`$A000-$BFFF`) are supported — the player banks BASIC out per-call around the affected `JSR init`/`JSR play` (`$01 = $36`; see below). PAL/NTSC speed flag is ignored — the kernal's default CIA #1 Timer A rate is used. See [docs/caveats.md](docs/caveats.md) for the full design discussion.
 
@@ -217,6 +227,14 @@ Visualization knobs (all compose; defaults preserve the redraw-from-scratch, wal
 * `time_base = "wallclock" | "auto"` — `auto` derives the per-voice time window from `v.freq` so `auto_cycles` complete cycles always fit, regardless of pitch. Silent voices (freq=0, wave=off, or envelope=0) fall back to wallclock per-voice so the trace doesn't collapse to a flat line on a divide-by-zero.
 * `persistence = "off" | "short" | "medium" | "long" | "random"` — replaces the per-frame-cleared bool canvas with a per-voice `uint8` intensity strip that decays each frame (faded pixels fall under a fixed mid-scale threshold and turn off). `random` resolves to one of the named presets at scene setup (same sentinel pattern as `petscii_styles`); the resolved name is logged on the scene's startup line.
 * `scroll_columns = 0 | N | [N1, N2, N3]` — per-voice FIFO: shift the intensity strip left by N columns and draw only the new N columns on the right edge. Scalar broadcasts to all three voices; list assigns per voice (so one strip can scroll fast, one slow, one stay redraw-style). Scroll mode rewrites the whole strip per frame and busts the dirty cache on purpose; cost is bounded (~700 KB/s of DMA at 60 fps, well under the ceiling). SHIFT-cycle zeroes the strip buffers so a `persistence = "long"` trail from the prior subtune doesn't ghost-merge into the new one.
+
+### `midi_scene.py` — MidiScene (live MIDI → SID + oscilloscope)
+
+`MidiScene` (inherits `VoiceScopeRenderer`) turns the C64 into a 3-voice MIDI sound module and visualizes it with the **same** hires oscilloscope as `WaveformScene`. Note on/off → voice freq + gate; pitch-bend → ±2 semitones on gated voices; CC1 → pulse width (mapped to an audible `[128, 3968]` window so wheel-to-zero doesn't mute), CC7 → master volume, CC74 → filter cutoff. Voice allocation is round-robin with oldest-voice stealing. The MIDI reader thread coalesces continuous-controller floods (wheel sweeps) to ≤60 Hz so they can't burst the DMA socket; notes stay immediate.
+
+The key difference from `WaveformScene`: **no py65 host emulator.** MidiScene *is* the writer — it computes every SID byte it sends — so it keeps a 25-byte `$D400-$D418` register **shadow** (`_sid_shadow`, indexed by `addr - $D400`) updated alongside every SID write and feeds `SIDEmulator.update_registers(...)` directly under `_reg_lock`. A re-gate of an already-gated voice (re-trigger / voice steal) shows no off→on edge to `update_registers`, so `_program_voice` passes a per-voice `retrigger` mask to force a hard re-attack (else a plucked sustain=0 voice would flatline after one decay). A background `PollThread` (`midi-env`) advances the ADSR envelopes at the video rate (60/50 Hz) so attack/decay/release tails evolve on screen between MIDI events; render phase is owned by the emulator (advanced by `voice_samples` during render), same as WaveformScene.
+
+Display is fixed bank-0 hires (no relocation — MidiScene uploads no SID payload and leaves the audio ring idle). Bitmap-only ⇒ `_validate_midi` reports a `hires` display so PETSCII overlays are rejected (same as waveform). The two bottom text rows are change-detected (repainted only on note/CC events): row 22 = global `MIDI <WAVEFORM>` + `VOL nn`; row 23 = condensed per-voice `V1 C-4 100  V2 E-4  88  V3 ---`. `target_fps` defaults to half the video rate (30/25), like WaveformScene; the scope knobs (`color_mode`/`time_base`/`auto_cycles`/`persistence`/`scroll_columns`/`voice_colors`/`waveform_colors`) all apply.
 
 ### Framerate pacing & frame-dropping
 
