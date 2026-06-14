@@ -144,10 +144,12 @@ class MidiScene(VoiceScopeRenderer, Scene):
     """Open a MIDI input and play notes through the SID's three voices,
     visualized as a hires oscilloscope (see the module docstring).
 
-    Voice allocation is round-robin with voice-stealing: when all three
-    voices are gated and a new note arrives, the oldest one is dropped
-    and replaced. Per-voice waveform / ADSR / pulse width come from the
-    scene config and are programmed once at setup.
+    Voice allocation layers a monophonic melody line over a polyphonic
+    sustain pad: held notes keep their voice, and a new note that needs a
+    voice when all three are sounding steals the most-recently-started one
+    (so the older/held notes stay put). See _note_on / _note_off. Per-voice
+    waveform / ADSR / pulse width come from the scene config (ADSR + filter
+    are also live-tweakable via CC; see _control_change).
     """
 
     WANTS_AUDIO_LOCK = True
@@ -270,6 +272,10 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self.voices: list[_VoiceState] = [
             _VoiceState() for _ in range(SID.N_VOICES)
         ]
+        # Stack of all currently-held MIDI notes (most-recent last) + their
+        # press velocities; the top SID.N_VOICES sound. See _reconcile_voices.
+        self._held: list[int] = []
+        self._held_vel: dict[int, int] = {}
         self._allocation_lock = threading.Lock()
         self._midi_port = None
         self._reader_thread: threading.Thread | None = None
@@ -350,44 +356,71 @@ class MidiScene(VoiceScopeRenderer, Scene):
         elif msg.type == "pitchwheel":
             self._pitchwheel(msg.pitch)
 
-    # ---- voice allocation ----------------------------------------------------
-    def _pick_voice(self, midi_note: int) -> int:
-        # If this note is already playing somewhere, reuse that voice (so
-        # consecutive trigger-style note_ons don't waste a slot).
+    # ---- voice allocation: mono-melody priority over a sustain pad ----------
+    # Held notes keep their voice (a stable polyphonic pad); when all three
+    # voices are sounding and a new note arrives, it steals the **most-recently
+    # -started** voice (`max` t_changed) rather than the oldest. So the first
+    # notes you hold form a sticky pad and a later overlapping line (melody /
+    # arp) cycles on the top voice, stealing itself instead of the pad. When a
+    # voice frees, the most-recent still-held *suspended* note resurfaces into
+    # it (LIFO) so nothing held stays silent. `self._held` is the stack of all
+    # currently-held notes (most-recent last) + `_held_vel` their velocities.
+    def _voice_for_note(self, midi_note: int) -> int | None:
         for i, v in enumerate(self.voices):
             if v.on and v.note == midi_note:
                 return i
-        # Prefer a released voice.
-        for i, v in enumerate(self.voices):
-            if not v.on:
-                return i
-        # Steal the oldest gated voice.
-        oldest = min(range(len(self.voices)),
-                     key=lambda i: self.voices[i].t_changed)
-        return oldest
+        return None
+
+    def _free_voice(self) -> int | None:
+        return next((i for i, v in enumerate(self.voices) if not v.on), None)
 
     def _note_on(self, midi_note: int, velocity: int) -> None:
-        now = time.time()
         with self._allocation_lock:
-            idx = self._pick_voice(midi_note)
-            v = self.voices[idx]
-            v.note = midi_note
-            v.on = True
-            v.t_changed = now
-            v.velocity = velocity
-        self._program_voice(idx, midi_note, gate=True, velocity=velocity)
+            if midi_note in self._held:
+                self._held.remove(midi_note)
+            self._held.append(midi_note)
+            self._held_vel[midi_note] = velocity
+            idx = self._voice_for_note(midi_note)   # re-press → re-trigger
+            if idx is None:
+                idx = self._free_voice()
+            if idx is None:
+                # All voices sounding: steal the most-recently-started one so
+                # the older/held pad voices survive.
+                idx = max(range(SID.N_VOICES),
+                          key=lambda i: self.voices[i].t_changed)
+            self._assign_voice(idx, midi_note, velocity)
         self._dirty = True
 
     def _note_off(self, midi_note: int) -> None:
-        now = time.time()
         with self._allocation_lock:
-            for idx, v in enumerate(self.voices):
-                if v.on and v.note == midi_note:
-                    v.on = False
-                    v.t_changed = now
-                    self._program_voice(idx, midi_note, gate=False)
-                    self._dirty = True
-                    return
+            if midi_note not in self._held:
+                return
+            self._held.remove(midi_note)
+            self._held_vel.pop(midi_note, None)
+            idx = self._voice_for_note(midi_note)
+            if idx is None:
+                self._dirty = True       # a suspended (silent) note was lifted
+                return
+            # Gate the voice off, then resurrect the most-recent still-held
+            # note that isn't already sounding (a suspended pad/melody note).
+            v = self.voices[idx]
+            v.on = False
+            self._program_voice(idx, midi_note, gate=False)
+            sounding = {vv.note for vv in self.voices if vv.on}
+            resurrect = next((n for n in reversed(self._held)
+                              if n not in sounding), None)
+            if resurrect is not None:
+                self._assign_voice(idx, resurrect,
+                                   self._held_vel.get(resurrect, 100))
+            self._dirty = True
+
+    def _assign_voice(self, idx: int, note: int, velocity: int) -> None:
+        v = self.voices[idx]
+        v.note = note
+        v.on = True
+        v.t_changed = time.time()
+        v.velocity = velocity
+        self._program_voice(idx, note, gate=True, velocity=velocity)
 
     def _control_change(self, cc: int, value: int) -> None:
         """Map a MIDI continuous controller to a SID parameter. `value` is
@@ -532,17 +565,26 @@ class MidiScene(VoiceScopeRenderer, Scene):
             ((a & 0xF) << 4) | (d & 0xF),
             ((sustain & 0xF) << 4) | (r & 0xF),
         )
-        self.api.write_regs(f"{base:04X}", *regs)
-
-        # Mirror into the shadow + feed the emulator. A note that re-gates a
-        # voice already gated (re-trigger or voice steal) shows no off→on edge
-        # to update_registers, so flag it for a hard re-attack — otherwise a
-        # plucked (sustain=0) voice would flatline after its first decay.
         off = voice_idx * SID.BYTES_PER_VOICE
         prev_ctrl = self._sid_shadow[off + SID.OFF_CONTROL]
+        # Hard re-trigger: the real SID's envelope only attacks on a gate 0→1
+        # edge. Re-gating a voice that's already gated (re-press, voice steal,
+        # a trill cycling one voice) writes gate=1 with no edge, so the chip
+        # changes pitch but never re-attacks — the note is silent (only the
+        # host emulator, fed the retrigger flag below, re-attacks → "waveform
+        # moves but no sound"). Force the edge by clearing the gate first.
+        hard_restart = gate and bool(prev_ctrl & SID.GATE)
+        if hard_restart:
+            self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}",
+                                  f"{self.waveform_bits & 0xFF:02X}")  # gate off
+        self.api.write_regs(f"{base:04X}", *regs)
+
+        # Mirror into the shadow + feed the emulator. The same hard-restart
+        # case is invisible to update_registers' gate-edge detection (the
+        # shadow's previous control byte was gated), so flag it explicitly.
         self._sid_shadow[off:off + SID.BYTES_PER_VOICE] = bytes(regs)
         retrigger: tuple[bool, ...] | None = None
-        if gate and (prev_ctrl & SID.GATE) and (ctrl & SID.GATE):
+        if hard_restart:
             mask = [False] * SID.N_VOICES
             mask[voice_idx] = True
             retrigger = tuple(mask)

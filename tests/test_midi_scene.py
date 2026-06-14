@@ -149,20 +149,76 @@ class VoiceAllocationTests(_MidiTestCase):
         self.assertEqual(notes, [60, 64, 67])
         self.assertTrue(all(v.on for v in scene.voices))
 
-    def test_fourth_note_steals_oldest_voice(self):
+    def test_fourth_note_steals_newest_keeps_pad(self):
+        scene, _ = _make_scene()
+        for n in (60, 64, 67):
+            scene._note_on(n, 100)    # v0=60, v1=64, v2=67
+        scene._note_on(72, 100)
+        # The most-recently-started voice (v2=67) is stolen; the older pad
+        # (60, 64) survives. 67 is suspended (still held).
+        self.assertEqual({v.note for v in scene.voices if v.on}, {60, 64, 72})
+        self.assertEqual([v.note for v in scene.voices], [60, 64, 72])
+        self.assertEqual(scene._held, [60, 64, 67, 72])
+
+    def test_suspended_note_resurfaces_on_release(self):
+        # Hold a 3-note chord, tap a 4th (steals the newest = 67), release the
+        # 4th — the suspended 67 must come back (no voice left silent).
         scene, _ = _make_scene()
         for n in (60, 64, 67):
             scene._note_on(n, 100)
-        scene._note_on(72, 100)
-        # Voice 0 was gated first (smallest t_changed) → it gets stolen.
-        self.assertEqual(scene.voices[0].note, 72)
-        self.assertEqual([v.note for v in scene.voices[1:]], [64, 67])
+        scene._note_on(72, 100)                 # suspends 67 (newest voice)
+        self.assertEqual({v.note for v in scene.voices if v.on}, {60, 64, 72})
+        scene._note_off(72)                      # 67 resurfaces
+        self.assertEqual({v.note for v in scene.voices if v.on}, {60, 64, 67})
+        self.assertTrue(all(v.on for v in scene.voices))
 
-    def test_repeated_note_reuses_same_voice(self):
+    def test_pad_plus_legato_melody_keeps_pad_voices_stable(self):
+        # Regression for the reported glitch: hold a low F + C (pad), then play
+        # an overlapping (legato) high F→G line repeatedly. The two pad voices
+        # must NOT move/restart — only the third voice cycles.
+        scene, _ = _make_scene()
+        scene._note_on(41, 100)   # low F  -> v0
+        scene._note_on(48, 100)   # C      -> v1
+        for _ in range(3):
+            scene._note_on(65, 100)            # high F -> v2
+            scene._note_on(67, 100)            # G overlaps F -> steals v2 (F)
+            scene._note_off(65)                # F lifts (already suspended)
+            scene._note_off(67)                # G lifts -> v2 idle
+            # The pad never moved off v0/v1 and stayed gated the whole time.
+            self.assertEqual(scene.voices[0].note, 41)
+            self.assertEqual(scene.voices[1].note, 48)
+            self.assertTrue(scene.voices[0].on and scene.voices[1].on)
+
+    def test_hold_chord_play_melody_over_it(self):
+        # Hold two notes, play single melody notes on top: the held pair stays,
+        # the melody note takes the third voice and frees it on release.
+        scene, _ = _make_scene()
+        scene._note_on(48, 100)   # held bass
+        scene._note_on(55, 100)   # held fifth
+        for melody in (60, 62, 64):
+            scene._note_on(melody, 100)
+            self.assertEqual({v.note for v in scene.voices if v.on},
+                             {48, 55, melody})
+            scene._note_off(melody)
+            self.assertEqual({v.note for v in scene.voices if v.on}, {48, 55})
+
+    def test_releasing_suspended_note_is_silent_change(self):
+        scene, api = _make_scene()
+        for n in (60, 62, 64, 67):    # 67 steals v2(64); 64 suspended
+            scene._note_on(n, 100)
+        sounding = {v.note for v in scene.voices if v.on}
+        self.assertNotIn(64, sounding)
+        api.regs.clear()
+        scene._note_off(64)            # release the suspended (silent) note
+        self.assertEqual({v.note for v in scene.voices if v.on}, sounding)
+        self.assertNotIn(64, scene._held)
+        self.assertEqual(api.regs, {})  # no SID writes — it wasn't sounding
+
+    def test_repeated_note_reuses_same_voice_and_retriggers(self):
         scene, _ = _make_scene()
         scene._note_on(60, 100)
         scene._note_on(60, 110)
-        # Still only voice 0 is in use.
+        # Still only voice 0 in use; velocity updated (re-press re-triggers it).
         self.assertEqual(scene.voices[0].note, 60)
         self.assertEqual(scene.voices[0].velocity, 110)
         self.assertFalse(scene.voices[1].on)
@@ -184,6 +240,41 @@ class VoiceAllocationTests(_MidiTestCase):
         scene._note_on(60, 100)
         scene._note_off(72)  # never pressed
         self.assertTrue(scene.voices[0].on)
+
+
+class HardRestartTests(_MidiTestCase):
+    """The real SID re-attacks only on a gate 0→1 edge, so re-using an
+    already-gated voice (re-press, steal, trill) must emit a gate-off first —
+    otherwise the chip changes pitch but never re-triggers (silent note while
+    the host-emulator waveform still moves)."""
+
+    def _gate_off_op(self, scene, voice_idx):
+        addr = f"{SID.voice_base(voice_idx) + SID.OFF_CONTROL:04X}"
+        return ("write_memory", addr, f"{scene.waveform_bits:02X}")
+
+    def test_re_press_emits_gate_off_edge_before_block(self):
+        scene, api = _make_scene(waveform="pulse")
+        scene._note_on(60, 100)        # fresh attack on idle v0 (gate 0→1)
+        api.ops.clear()
+        scene._note_on(60, 110)        # re-press same note → hard restart
+        gate_off = self._gate_off_op(scene, 0)
+        self.assertIn(gate_off, api.ops)
+        block = next(i for i, o in enumerate(api.ops)
+                     if o[0] == "write_regs" and o[1] == "D400")
+        self.assertLess(api.ops.index(gate_off), block)   # edge precedes block
+
+    def test_steal_emits_gate_off_on_stolen_voice(self):
+        scene, api = _make_scene(waveform="pulse")
+        for n in (60, 64, 67):         # fills v0,v1,v2 (67 newest → v2)
+            scene._note_on(n, 100)
+        api.ops.clear()
+        scene._note_on(72, 100)        # steals newest voice v2
+        self.assertIn(self._gate_off_op(scene, 2), api.ops)
+
+    def test_fresh_note_on_idle_voice_no_gate_off(self):
+        scene, api = _make_scene(waveform="pulse")
+        scene._note_on(60, 100)        # idle voice → single gate 0→1, no edge fix
+        self.assertNotIn(self._gate_off_op(scene, 0), api.ops)
 
 
 class ProgramVoiceTests(_MidiTestCase):
