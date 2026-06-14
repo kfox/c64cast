@@ -28,6 +28,12 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
+      - name: Install MIDI build deps (python-rtmidi)
+        # python-rtmidi has no wheel for every interpreter (e.g. cp313), so uv
+        # builds it from sdist; the meson build needs the ALSA dev headers or
+        # it errors with "Dependency alsa not found". Cheap apt install.
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Install runtime + dev deps
         # Skip the [all] extras here — most pull in heavy native libs
         # (PyAV, pygame, sounddevice) that aren't needed for the
@@ -35,8 +41,8 @@ jobs:
         # extras here if you start testing them.
         # `midi` (mido + python-rtmidi) IS included: the MidiScene suite is
         # gated `@skipUnless(HAVE_MIDI)`, so without it those tests silently
-        # skip and the module reads as uncovered. python-rtmidi ships
-        # manylinux wheels (no native build) and imports fine headless.
+        # skip and the module reads as uncovered. The tests never open a real
+        # port (they patch mido / use scripted ports), so they run headless.
         # --frozen: use uv.lock exactly, error if it's out of date
         # --no-default-groups: skip [tool.uv] default-groups (which is [dev])
         # --group dev: pull in the dev dependency group
@@ -75,6 +81,10 @@ jobs:
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
+
+      - name: Install MIDI build deps (python-rtmidi)
+        # See lint-and-test: rtmidi's sdist build needs the ALSA dev headers.
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Install dev deps
         # Include the `midi` extra so the @skipUnless(HAVE_MIDI) MidiScene
