@@ -10,6 +10,13 @@ python -m c64cast --url http://ultimate-64-ii.lan -A -d 0
 python -m c64cast --config c64cast.toml
 ```
 
+[scripts/c64cast.sh](scripts/c64cast.sh) is a convenience launcher equivalent to `python -m c64cast`: it `cd`s to the repo root and forwards all args, running through `uv run` when `uv` is on `PATH` (so the project `.venv` is always used, matching the mise + direnv + uv workflow) and falling back to a bare `python` otherwise. Use it from any directory or from outside an activated shell (cron, systemd, ssh one-liners) where direnv hasn't activated `.venv`:
+
+```bash
+scripts/c64cast.sh --config c64cast.toml
+scripts/c64cast.sh --doctor --skip-probe
+```
+
 Flag groups (`-h` shows them grouped): `hardware`, `ultimate 64`, `video input`, `audio`, `playlist`, `introspection`, `debug`.
 Notable additions: `--config`, `--dma-port`, `-v` / `-vv` (info / debug logging), `--log-file PATH` (mirror logs to disk for headless runs). Terminal logging uses `rich.logging.RichHandler` (colored + timestamped) when the `logging` extra is installed; falls back to plain stdlib `StreamHandler` otherwise.
 
@@ -320,7 +327,9 @@ docs/                Markdown user/developer documentation.
                      [docs/troubleshooting.md](docs/troubleshooting.md),
                      [docs/extending.md](docs/extending.md).
 scripts/             Dev helpers ([scripts/coverage.sh](scripts/coverage.sh),
-                     [scripts/pre-commit.sh](scripts/pre-commit.sh)).
+                     [scripts/pre-commit.sh](scripts/pre-commit.sh)) +
+                     [scripts/c64cast.sh](scripts/c64cast.sh), the uv-aware
+                     launcher (forwards args to `python -m c64cast`).
 tests/               unittest suite. `python -m unittest discover tests`.
 .github/workflows/   CI (lint + tests on push/PR).
 .pre-commit-config.yaml  Git pre-commit hooks (ruff + tests).
