@@ -1,5 +1,5 @@
 [tools]
-python = { version = "3.14.5", install_env = { CONFIGURE_OPTS = "--enable-optimizations" } }
+python = { version = "3.14.6", install_env = { CONFIGURE_OPTS = "--enable-optimizations" } }
 uv = "latest"
 
 [env]
