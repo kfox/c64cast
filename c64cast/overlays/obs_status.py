@@ -12,6 +12,7 @@ at construction time rather than at the first frame.
 OBS exposes the websocket on ws://<host>:4455 by default; set a password
 in OBS → Tools → WebSocket Server Settings if you want auth.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 
 try:
     import obsws_python as _obsws
+
     OBSWS_AVAILABLE = True
 except ImportError:
     _obsws = None
@@ -48,24 +50,26 @@ class OBSStatusOverlay(CornerTextOverlay):
         "show_dropped": "Append the dropped-frame count to the status line.",
     }
 
-    def __init__(self, host: str = "localhost", port: int = 4455,
-                 password: str = "",
-                 show_dropped: bool = True,
-                 corner: str = "bottom-right",
-                 fg_color: str = "light green",
-                 bg_color: str = "black",
-                 refresh_s: float = 2.0):
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 4455,
+        password: str = "",
+        show_dropped: bool = True,
+        corner: str = "bottom-right",
+        fg_color: str = "light green",
+        bg_color: str = "black",
+        refresh_s: float = 2.0,
+    ):
         if not OBSWS_AVAILABLE:
             raise RuntimeError(
-                "obs_status overlay requires obsws-python "
-                "(pip install c64cast[obs])"
+                "obs_status overlay requires obsws-python (pip install c64cast[obs])"
             )
         # CornerTextOverlay handles paint-throttling internally; we set a
         # short refresh_s here so the corner-text base renders immediately
         # whenever our cached string changes (the OBS poll runs at a
         # separate cadence in the background thread).
-        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color,
-                         refresh_s=0.5)
+        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color, refresh_s=0.5)
         self.host = host
         self.port = int(port)
         self.password = password
@@ -73,15 +77,15 @@ class OBSStatusOverlay(CornerTextOverlay):
         self.poll_interval = float(refresh_s)
         self._lines: list[str] = ["OBS …"]
         self._lines_lock = threading.Lock()
-        self._poll = PollThread(self._worker, name="obs-status", manual=True,
-                                join_timeout=1.0)
+        self._poll = PollThread(self._worker, name="obs-status", manual=True, join_timeout=1.0)
         self._client = None
 
     # ---- background polling --------------------------------------------------
     def _connect(self):
         assert _obsws is not None
         return _obsws.ReqClient(
-            host=self.host, port=self.port,
+            host=self.host,
+            port=self.port,
             password=self.password or None,
             timeout=2.0,
         )
@@ -90,14 +94,13 @@ class OBSStatusOverlay(CornerTextOverlay):
         if self._client is None:
             self._client = self._connect()
         scene_resp = self._client.get_current_program_scene()
-        scene = getattr(scene_resp, "current_program_scene_name", None) \
-            or getattr(scene_resp, "scene_name", "?")
+        scene = getattr(scene_resp, "current_program_scene_name", None) or getattr(
+            scene_resp, "scene_name", "?"
+        )
         lines = [str(scene).upper()[:14]]
         if self.show_dropped:
             stats = self._client.get_stats()
-            dropped = (
-                getattr(stats, "output_skipped_frames", 0) or 0
-            ) + (
+            dropped = (getattr(stats, "output_skipped_frames", 0) or 0) + (
                 getattr(stats, "render_skipped_frames", 0) or 0
             )
             lines.append(f"DROP {int(dropped):>4}")

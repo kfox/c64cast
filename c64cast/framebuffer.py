@@ -17,6 +17,7 @@ covers letters/digits/punctuation enough for the visible scene previews
 to be legible. To get pixel-accurate PETSCII glyphs, pass a 2 KB char-ROM
 dump as `charset_path` (read from a real C64 / VICE / U64).
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,12 +37,12 @@ def _builtin_charset() -> bytes:
     2048-byte block in C64 charset layout (each char = 8 bytes, one row
     per byte, MSB = leftmost pixel)."""
     import cv2
+
     cs = bytearray(2048)
     for code in range(0x20, 0x60):
         ch = chr(code)
         img = np.zeros((8, 8), dtype=np.uint8)
-        cv2.putText(img, ch, (0, 7), cv2.FONT_HERSHEY_PLAIN, 0.5,
-                    255, 1, cv2.LINE_8)
+        cv2.putText(img, ch, (0, 7), cv2.FONT_HERSHEY_PLAIN, 0.5, 255, 1, cv2.LINE_8)
         # Threshold to 1-bit.
         bits = (img > 128).astype(np.uint8)
         # Pack each row's 8 bits into a byte (MSB = col 0).
@@ -53,11 +54,10 @@ def _builtin_charset() -> bytes:
     # Map upper-case to screen codes 0x01-0x1A (where C64 PETSCII puts them).
     # The C64 default charset has @ at screen code 0, A at 1, ..., Z at 26.
     for code in range(0x01, 0x1B):
-        ascii_code = 0x40 + code   # A..Z
+        ascii_code = 0x40 + code  # A..Z
         ch = chr(ascii_code)
         img = np.zeros((8, 8), dtype=np.uint8)
-        cv2.putText(img, ch, (0, 7), cv2.FONT_HERSHEY_PLAIN, 0.5,
-                    255, 1, cv2.LINE_8)
+        cv2.putText(img, ch, (0, 7), cv2.FONT_HERSHEY_PLAIN, 0.5, 255, 1, cv2.LINE_8)
         bits = (img > 128).astype(np.uint8)
         for row in range(8):
             byte = 0
@@ -65,7 +65,7 @@ def _builtin_charset() -> bytes:
                 byte |= int(bits[row, col]) << (7 - col)
             cs[code * 8 + row] = byte
     # Solid block at screen code 0x60 (reverse-space). Used heavily.
-    cs[0x60 * 8:0x60 * 8 + 8] = bytes([0xFF] * 8)
+    cs[0x60 * 8 : 0x60 * 8 + 8] = bytes([0xFF] * 8)
     return bytes(cs)
 
 
@@ -79,8 +79,8 @@ class Framebuffer:
         self.ram[VIC.D011_CONTROL_1] = 0x1B
         self.ram[VIC.D016_CONTROL_2] = 0x08
         self.ram[VIC.D018_MEMORY] = 0x14
-        self.ram[VIC.D020_BORDER] = 14    # light blue
-        self.ram[VIC.D021_BG0] = 6        # blue
+        self.ram[VIC.D020_BORDER] = 14  # light blue
+        self.ram[VIC.D021_BG0] = 6  # blue
         # Color RAM defaults to light blue (matches boot).
         for i in range(SCREEN.N_CELLS):
             self.ram[SCREEN.COLOR_RAM + i] = 14
@@ -89,8 +89,7 @@ class Framebuffer:
             with open(charset_path, "rb") as f:
                 self.charset = f.read(2048)
             if len(self.charset) < 2048:
-                log.warning("charset %s shorter than 2KB; padding with zeros",
-                            charset_path)
+                log.warning("charset %s shorter than 2KB; padding with zeros", charset_path)
                 self.charset = self.charset.ljust(2048, b"\x00")
         else:
             self.charset = _builtin_charset()
@@ -101,7 +100,7 @@ class Framebuffer:
             return
         end = address + len(data)
         if end > 0x10000:
-            data = data[:0x10000 - address]
+            data = data[: 0x10000 - address]
             end = 0x10000
         with self._lock:
             self.ram[address:end] = data
@@ -109,7 +108,7 @@ class Framebuffer:
     def render(self) -> np.ndarray:
         """Produce a (200, 320, 3) uint8 BGR image of the current screen."""
         with self._lock:
-            ram = bytes(self.ram)   # snapshot
+            ram = bytes(self.ram)  # snapshot
         d011 = ram[VIC.D011_CONTROL_1]
         d016 = ram[VIC.D016_CONTROL_2]
         is_bitmap = bool(d011 & 0x20)
@@ -129,11 +128,11 @@ class Framebuffer:
         RAM byte) and BG (low nibble)."""
         # Cell layout: 25 cell rows × 40 cells × 8 bytes/cell.
         bitmap = np.frombuffer(
-            ram[SCREEN.BITMAP:SCREEN.BITMAP + SCREEN.BITMAP_BYTES],
+            ram[SCREEN.BITMAP : SCREEN.BITMAP + SCREEN.BITMAP_BYTES],
             dtype=np.uint8,
         ).reshape(25, 40, 8)
         screen = np.frombuffer(
-            ram[SCREEN.RAM:SCREEN.RAM + SCREEN.N_CELLS],
+            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         fg = (screen >> 4) & 0x0F
@@ -155,15 +154,15 @@ class Framebuffer:
         """160×200 multicolor bitmap. 4 colors per cell: 00=$D021, 01=high
         nibble of screen RAM, 10=low nibble of screen RAM, 11=color RAM."""
         bitmap = np.frombuffer(
-            ram[SCREEN.BITMAP:SCREEN.BITMAP + SCREEN.BITMAP_BYTES],
+            ram[SCREEN.BITMAP : SCREEN.BITMAP + SCREEN.BITMAP_BYTES],
             dtype=np.uint8,
         ).reshape(25, 40, 8)
         screen = np.frombuffer(
-            ram[SCREEN.RAM:SCREEN.RAM + SCREEN.N_CELLS],
+            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         color_ram = np.frombuffer(
-            ram[SCREEN.COLOR_RAM:SCREEN.COLOR_RAM + SCREEN.N_CELLS],
+            ram[SCREEN.COLOR_RAM : SCREEN.COLOR_RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         bg0 = ram[VIC.D021_BG0] & 0x0F
@@ -193,11 +192,11 @@ class Framebuffer:
         """Standard 40×25 char mode. Each cell: screen code, FG from color
         RAM, BG from $D021."""
         screen = np.frombuffer(
-            ram[SCREEN.RAM:SCREEN.RAM + SCREEN.N_CELLS],
+            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         color_ram = np.frombuffer(
-            ram[SCREEN.COLOR_RAM:SCREEN.COLOR_RAM + SCREEN.N_CELLS],
+            ram[SCREEN.COLOR_RAM : SCREEN.COLOR_RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         bg0 = ram[VIC.D021_BG0] & 0x0F
@@ -222,11 +221,11 @@ class Framebuffer:
         (FG = color RAM low 3 bits). If bit 3 = 1, multicolor: 4 colors per
         cell — 00=$D021, 01=$D022, 10=$D023, 11=color RAM low 3 bits."""
         screen = np.frombuffer(
-            ram[SCREEN.RAM:SCREEN.RAM + SCREEN.N_CELLS],
+            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         color_ram = np.frombuffer(
-            ram[SCREEN.COLOR_RAM:SCREEN.COLOR_RAM + SCREEN.N_CELLS],
+            ram[SCREEN.COLOR_RAM : SCREEN.COLOR_RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         bg0 = ram[VIC.D021_BG0] & 0x0F

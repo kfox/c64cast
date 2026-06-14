@@ -31,6 +31,7 @@ Delta uploads (`write_region`) cache the last-pushed bytes per region and
 push only the changed sub-range or chunked diffs — applies to both DMA
 and REST eras since it sits above the transport.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,21 +58,35 @@ log = logging.getLogger(__name__)
 # Tokenized BASIC for `10 PRINT CHR$(147) : 20 GOTO 20` as a PRG file
 # (2-byte load address $0801 prefix, then linked-list of BASIC lines,
 # terminated by 00 00). PRINT=$99, CHR$=$C7, GOTO=$89.
-BASIC_CLEAR_LOOP_PRG = bytes([
-    0x01, 0x08,                          # load address $0801
-    0x0D, 0x08,                          # line 10 next-line ptr = $080D
-    0x0A, 0x00,                          # line number 10
-    0x99,                                # PRINT
-    0xC7,                                # CHR$
-    0x28, 0x31, 0x34, 0x37, 0x29,        # (147)
-    0x00,                                # end of line
-    0x16, 0x08,                          # line 20 next-line ptr = $0816
-    0x14, 0x00,                          # line number 20
-    0x89,                                # GOTO
-    0x20, 0x32, 0x30,                    # " 20"
-    0x00,                                # end of line
-    0x00, 0x00,                          # end of program
-])
+BASIC_CLEAR_LOOP_PRG = bytes(
+    [
+        0x01,
+        0x08,  # load address $0801
+        0x0D,
+        0x08,  # line 10 next-line ptr = $080D
+        0x0A,
+        0x00,  # line number 10
+        0x99,  # PRINT
+        0xC7,  # CHR$
+        0x28,
+        0x31,
+        0x34,
+        0x37,
+        0x29,  # (147)
+        0x00,  # end of line
+        0x16,
+        0x08,  # line 20 next-line ptr = $0816
+        0x14,
+        0x00,  # line number 20
+        0x89,  # GOTO
+        0x20,
+        0x32,
+        0x30,  # " 20"
+        0x00,  # end of line
+        0x00,
+        0x00,  # end of program
+    ]
+)
 
 # C64-side SID player. Default base $C300 (just past audio.py's
 # $C000-$C2FF allocation for the NMI DAC + REU pump handlers); per-tune
@@ -139,26 +154,26 @@ SID_PLAYER_DIVIDER_OFFSET = 59
 #    [Ultimate64API._tune_play_divider] after INIT.
 # Bytes start at 0x00 (or 0x01 for the divider seed + counter) in the
 # template so an unpatched address operand is obviously broken on use.
-_SID_PATCH_INITBANK      = 2     # LDA #<initBank> $01 value around JSR init
-                                 #              (see [_init_bank_for])
-_SID_PATCH_SONG          = 6     # LDA #song-1
-_SID_PATCH_INIT_LO       = 12    # JSR init operand low
-_SID_PATCH_INIT_HI       = 13    # JSR init operand high
-_SID_PATCH_CTR_INIT_LO   = 26    # STA counter (init seed) operand low
-_SID_PATCH_CTR_INIT_HI   = 27    # STA counter (init seed) operand high
-_SID_PATCH_IRQ_LO        = 29    # LDA #<irq_handler  (immediate operand)
-_SID_PATCH_IRQ_HI        = 34    # LDA #>irq_handler  (immediate operand)
-_SID_PATCH_SPIN_LO       = 40    # JMP <spin> operand low
-_SID_PATCH_SPIN_HI       = 41    # JMP <spin> operand high
-_SID_PATCH_PLAYBANK      = 43    # LDA #<playBank> $01 value around JSR play
-                                 #              (see [_play_bank_for])
-_SID_PATCH_PLAY_LO       = 47    # JSR play operand low  (inside IRQ handler)
-_SID_PATCH_PLAY_HI       = 48    # JSR play operand high
-_SID_PATCH_CTR_DEC_LO    = 54    # DEC counter operand low
-_SID_PATCH_CTR_DEC_HI    = 55    # DEC counter operand high
-_SID_PATCH_DIVIDER       = 59    # LDA #N immediate operand (live-patched)
-_SID_PATCH_CTR_RELOAD_LO = 61    # STA counter (reload) operand low
-_SID_PATCH_CTR_RELOAD_HI = 62    # STA counter (reload) operand high
+_SID_PATCH_INITBANK = 2  # LDA #<initBank> $01 value around JSR init
+#              (see [_init_bank_for])
+_SID_PATCH_SONG = 6  # LDA #song-1
+_SID_PATCH_INIT_LO = 12  # JSR init operand low
+_SID_PATCH_INIT_HI = 13  # JSR init operand high
+_SID_PATCH_CTR_INIT_LO = 26  # STA counter (init seed) operand low
+_SID_PATCH_CTR_INIT_HI = 27  # STA counter (init seed) operand high
+_SID_PATCH_IRQ_LO = 29  # LDA #<irq_handler  (immediate operand)
+_SID_PATCH_IRQ_HI = 34  # LDA #>irq_handler  (immediate operand)
+_SID_PATCH_SPIN_LO = 40  # JMP <spin> operand low
+_SID_PATCH_SPIN_HI = 41  # JMP <spin> operand high
+_SID_PATCH_PLAYBANK = 43  # LDA #<playBank> $01 value around JSR play
+#              (see [_play_bank_for])
+_SID_PATCH_PLAY_LO = 47  # JSR play operand low  (inside IRQ handler)
+_SID_PATCH_PLAY_HI = 48  # JSR play operand high
+_SID_PATCH_CTR_DEC_LO = 54  # DEC counter operand low
+_SID_PATCH_CTR_DEC_HI = 55  # DEC counter operand high
+_SID_PATCH_DIVIDER = 59  # LDA #N immediate operand (live-patched)
+_SID_PATCH_CTR_RELOAD_LO = 61  # STA counter (reload) operand low
+_SID_PATCH_CTR_RELOAD_HI = 62  # STA counter (reload) operand high
 #
 # Bank-config history (don't repeat past experiments):
 #   2026-05-26: tried `LDA #$36 / STA $01` (unmap BASIC ROM) between SEI
@@ -194,67 +209,110 @@ _SID_PATCH_CTR_RELOAD_HI = 62    # STA counter (reload) operand high
 #     restore happens AFTER INIT returns so it can't be wiped.
 # Running between INIT and the IRQ install means the kernal IRQ can't fire
 # mid-restore (we're still under the SEI at the entry point).
-SID_PLAYER_MC_TEMPLATE = bytes([
-    # --- init (offsets 0-41) -------------------------------------------
-    0x78,                          # 00  SEI
-    0xA9, 0x37,                    # 01  LDA #<initBank>  (CPU port $01 around
-                                   #               JSR init; $37 default, $36
-                                   #               under BASIC ROM — patched
-                                   #               by _init_bank_for)
-    0x85, 0x01,                    # 03  STA $01   (transient bank so JSR init
-                                   #               reaches the tune's RAM)
-    0xA9, 0x00,                    # 05  LDA #song-1            (patched)
-    0xA2, 0x00,                    # 07  LDX #$00
-    0xA0, 0x00,                    # 09  LDY #$00
-    0x20, 0x00, 0x00,              # 11  JSR init_addr          (patched)
-    0xA9, 0x37,                    # 14  LDA #$37   (restore the resting bank:
-                                   #               BASIC+KERNAL+I/O mapped, the
-                                   #               environment tunes assume
-                                   #               between calls)
-    0x85, 0x01,                    # 16  STA $01
-    0xA9, 0x0F,                    # 18  LDA #$0F   (master volume max)
-    0x8D, 0x18, 0xD4,              # 20  STA $D418
-    0xA9, 0x01,                    # 23  LDA #$01   (seed counter = 1 so the
-                                   #               first IRQ chains + reloads
-                                   #               with whatever N the host
-                                   #               has patched by then)
-    0x8D, 0x00, 0x00,              # 25  STA counter            (patched)
-    0xA9, 0x00,                    # 28  LDA #<irq_handler      (patched)
-    0x8D, 0x14, 0x03,              # 30  STA $0314
-    0xA9, 0x00,                    # 33  LDA #>irq_handler      (patched)
-    0x8D, 0x15, 0x03,              # 35  STA $0315
-    0x58,                          # 38  CLI
-    0x4C, 0x00, 0x00,              # 39  JMP <spin>             (patched —
-                                   #               points at itself; don't
-                                   #               return to corrupted BASIC)
-    # --- IRQ handler entry @ offset 42 -------------------------------
-    0xA9, 0x37,                    # 42  LDA #<playBank>  (CPU port $01 around
-                                   #               JSR play — patched by
-                                   #               _play_bank_for)
-    0x85, 0x01,                    # 44  STA $01
-    0x20, 0x00, 0x00,              # 46  JSR play_addr          (patched)
-    0xA9, 0x37,                    # 49  LDA #$37   (restore resting bank after
-                                   #               play, before the kernal tail)
-    0x85, 0x01,                    # 51  STA $01
-    0xCE, 0x00, 0x00,              # 53  DEC counter            (patched)
-    0xD0, 0x08,                    # 56  BNE lean_exit (+8 -> offset 66)
-    0xA9, 0x01,                    # 58  LDA #N   (divider, live-patched by
-                                   #              _tune_play_divider; seeded
-                                   #              to 1 = chain every tick
-                                   #              until measured)
-    0x8D, 0x00, 0x00,              # 60  STA counter            (patched)
-    0x4C, 0x31, 0xEA,              # 63  JMP $EA31  (kernal IRQ tail:
-                                   #              SCNKEY + UDTIM + blink)
-    # --- lean exit @ offset 66 ----------------------------------------
-    0xAD, 0x0D, 0xDC,              # 66  LDA $DC0D  (ack CIA #1 IRQ — read
-                                   #              clears the flag; skipping it
-                                   #              would re-fire immediately)
-    0x4C, 0x81, 0xEA,              # 69  JMP $EA81  (kernal register
-                                   #              restore + RTI)
-    # --- counter byte @ offset 72 -------------------------------------
-    0x01,                          # 72  counter (live: decremented per IRQ;
-                                   #     reloaded to N on underflow)
-])
+SID_PLAYER_MC_TEMPLATE = bytes(
+    [
+        # --- init (offsets 0-41) -------------------------------------------
+        0x78,  # 00  SEI
+        0xA9,
+        0x37,  # 01  LDA #<initBank>  (CPU port $01 around
+        #               JSR init; $37 default, $36
+        #               under BASIC ROM — patched
+        #               by _init_bank_for)
+        0x85,
+        0x01,  # 03  STA $01   (transient bank so JSR init
+        #               reaches the tune's RAM)
+        0xA9,
+        0x00,  # 05  LDA #song-1            (patched)
+        0xA2,
+        0x00,  # 07  LDX #$00
+        0xA0,
+        0x00,  # 09  LDY #$00
+        0x20,
+        0x00,
+        0x00,  # 11  JSR init_addr          (patched)
+        0xA9,
+        0x37,  # 14  LDA #$37   (restore the resting bank:
+        #               BASIC+KERNAL+I/O mapped, the
+        #               environment tunes assume
+        #               between calls)
+        0x85,
+        0x01,  # 16  STA $01
+        0xA9,
+        0x0F,  # 18  LDA #$0F   (master volume max)
+        0x8D,
+        0x18,
+        0xD4,  # 20  STA $D418
+        0xA9,
+        0x01,  # 23  LDA #$01   (seed counter = 1 so the
+        #               first IRQ chains + reloads
+        #               with whatever N the host
+        #               has patched by then)
+        0x8D,
+        0x00,
+        0x00,  # 25  STA counter            (patched)
+        0xA9,
+        0x00,  # 28  LDA #<irq_handler      (patched)
+        0x8D,
+        0x14,
+        0x03,  # 30  STA $0314
+        0xA9,
+        0x00,  # 33  LDA #>irq_handler      (patched)
+        0x8D,
+        0x15,
+        0x03,  # 35  STA $0315
+        0x58,  # 38  CLI
+        0x4C,
+        0x00,
+        0x00,  # 39  JMP <spin>             (patched —
+        #               points at itself; don't
+        #               return to corrupted BASIC)
+        # --- IRQ handler entry @ offset 42 -------------------------------
+        0xA9,
+        0x37,  # 42  LDA #<playBank>  (CPU port $01 around
+        #               JSR play — patched by
+        #               _play_bank_for)
+        0x85,
+        0x01,  # 44  STA $01
+        0x20,
+        0x00,
+        0x00,  # 46  JSR play_addr          (patched)
+        0xA9,
+        0x37,  # 49  LDA #$37   (restore resting bank after
+        #               play, before the kernal tail)
+        0x85,
+        0x01,  # 51  STA $01
+        0xCE,
+        0x00,
+        0x00,  # 53  DEC counter            (patched)
+        0xD0,
+        0x08,  # 56  BNE lean_exit (+8 -> offset 66)
+        0xA9,
+        0x01,  # 58  LDA #N   (divider, live-patched by
+        #              _tune_play_divider; seeded
+        #              to 1 = chain every tick
+        #              until measured)
+        0x8D,
+        0x00,
+        0x00,  # 60  STA counter            (patched)
+        0x4C,
+        0x31,
+        0xEA,  # 63  JMP $EA31  (kernal IRQ tail:
+        #              SCNKEY + UDTIM + blink)
+        # --- lean exit @ offset 66 ----------------------------------------
+        0xAD,
+        0x0D,
+        0xDC,  # 66  LDA $DC0D  (ack CIA #1 IRQ — read
+        #              clears the flag; skipping it
+        #              would re-fire immediately)
+        0x4C,
+        0x81,
+        0xEA,  # 69  JMP $EA81  (kernal register
+        #              restore + RTI)
+        # --- counter byte @ offset 72 -------------------------------------
+        0x01,  # 72  counter (live: decremented per IRQ;
+        #     reloaded to N on underflow)
+    ]
+)
 
 # SHIFT-driven subtune cycling. Default base $C400 (clean page boundary
 # past the player MC at $C300-$C33C, with headroom for both regions to
@@ -280,37 +338,59 @@ REINIT_STUB_ADDR = 0xC400
 # Patch offsets. Per-tune operands filled by [_build_reinit_stub] at
 # upload; the song byte is then re-patched in place by [cue_song_reinit]
 # each SHIFT.
-_REINIT_PATCH_BANK    = 1     # LDA #<initBank> $01 value around JSR init
-_REINIT_PATCH_SONG    = 5     # LDA #song-1
-_REINIT_PATCH_INIT_LO = 11    # JSR init operand low
-_REINIT_PATCH_INIT_HI = 12    # JSR init operand high
-_REINIT_PATCH_IRQ_LO  = 23    # LDA #<play handler (immediate operand)
-_REINIT_PATCH_IRQ_HI  = 28    # LDA #>play handler (immediate operand)
+_REINIT_PATCH_BANK = 1  # LDA #<initBank> $01 value around JSR init
+_REINIT_PATCH_SONG = 5  # LDA #song-1
+_REINIT_PATCH_INIT_LO = 11  # JSR init operand low
+_REINIT_PATCH_INIT_HI = 12  # JSR init operand high
+_REINIT_PATCH_IRQ_LO = 23  # LDA #<play handler (immediate operand)
+_REINIT_PATCH_IRQ_HI = 28  # LDA #>play handler (immediate operand)
 
-REINIT_STUB_TEMPLATE = bytes([
-    0xA9, 0x37,                    # 00  LDA #<initBank>  (patched; transient
-                                   #               bank around JSR init)
-    0x85, 0x01,                    # 02  STA $01
-    0xA9, 0x00,                    # 04  LDA #song-1        (patched)
-    0xA2, 0x00,                    # 06  LDX #$00
-    0xA0, 0x00,                    # 08  LDY #$00
-    0x20, 0x00, 0x00,              # 10  JSR init_addr      (patched)
-    0xA9, 0x37,                    # 13  LDA #$37   (restore resting bank)
-    0x85, 0x01,                    # 15  STA $01
-    0xA9, 0x0F,                    # 17  LDA #$0F           (master volume max)
-    0x8D, 0x18, 0xD4,              # 19  STA $D418
-    0xA9, 0x00,                    # 22  LDA #<play handler (patched)
-    0x8D, 0x14, 0x03,              # 24  STA $0314
-    0xA9, 0x00,                    # 27  LDA #>play handler (patched)
-    0x8D, 0x15, 0x03,              # 29  STA $0315
-    0x4C, 0x31, 0xEA,              # 32  JMP $EA31          (chain kernal IRQ)
-])
+REINIT_STUB_TEMPLATE = bytes(
+    [
+        0xA9,
+        0x37,  # 00  LDA #<initBank>  (patched; transient
+        #               bank around JSR init)
+        0x85,
+        0x01,  # 02  STA $01
+        0xA9,
+        0x00,  # 04  LDA #song-1        (patched)
+        0xA2,
+        0x00,  # 06  LDX #$00
+        0xA0,
+        0x00,  # 08  LDY #$00
+        0x20,
+        0x00,
+        0x00,  # 10  JSR init_addr      (patched)
+        0xA9,
+        0x37,  # 13  LDA #$37   (restore resting bank)
+        0x85,
+        0x01,  # 15  STA $01
+        0xA9,
+        0x0F,  # 17  LDA #$0F           (master volume max)
+        0x8D,
+        0x18,
+        0xD4,  # 19  STA $D418
+        0xA9,
+        0x00,  # 22  LDA #<play handler (patched)
+        0x8D,
+        0x14,
+        0x03,  # 24  STA $0314
+        0xA9,
+        0x00,  # 27  LDA #>play handler (patched)
+        0x8D,
+        0x15,
+        0x03,  # 29  STA $0315
+        0x4C,
+        0x31,
+        0xEA,  # 32  JMP $EA31          (chain kernal IRQ)
+    ]
+)
 
 # Audio handler region — audio.py installs NMI DAC at $C020 and REU pump
 # handlers at $C100-$C2FF. Refuse player layouts that would overlap so
 # we don't clobber bytes the audio path may read/write under us.
 _AUDIO_REGION_LO = 0xC000
-_AUDIO_REGION_HI = 0xC300   # exclusive
+_AUDIO_REGION_HI = 0xC300  # exclusive
 
 # Highest legal end address for the player bundle. $D000+ is I/O space.
 _PLAYER_BUNDLE_HI_MAX = 0xD000
@@ -336,6 +416,7 @@ class _PlayerLayout:
     divider byte) are derived from `player_base` + the OFFSET constants
     — exposed as properties so the patching helpers don't recompute them
     inline."""
+
     player_base: int
     stub_base: int
 
@@ -356,8 +437,7 @@ class _PlayerLayout:
         return self.player_base + SID_PLAYER_DIVIDER_OFFSET
 
 
-_DEFAULT_PLAYER_LAYOUT = _PlayerLayout(player_base=SID_PLAYER_MC_ADDR,
-                                       stub_base=REINIT_STUB_ADDR)
+_DEFAULT_PLAYER_LAYOUT = _PlayerLayout(player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR)
 
 
 def _patch_word(buf: bytearray, lo_off: int, hi_off: int, addr: int) -> None:
@@ -369,8 +449,9 @@ def _patch_word(buf: bytearray, lo_off: int, hi_off: int, addr: int) -> None:
     buf[hi_off] = (addr >> 8) & 0xFF
 
 
-def _layout_fits(layout: _PlayerLayout, parsed: ParsedPsid,
-                 avoid: bytes | bytearray | None = None) -> bool:
+def _layout_fits(
+    layout: _PlayerLayout, parsed: ParsedPsid, avoid: bytes | bytearray | None = None
+) -> bool:
     """True when the layout's player + stub blocks both land in legal
     free RAM (above $0820, below $D000), don't overlap audio.py's
     $C000-$C2FF region, don't overlap the SID payload, don't overlap
@@ -402,8 +483,7 @@ def _layout_fits(layout: _PlayerLayout, parsed: ParsedPsid,
     return not (p_base < s_base + s_size and s_base < p_base + p_size)
 
 
-def _find_free_layout(parsed: ParsedPsid,
-                      avoid: bytes | bytearray) -> _PlayerLayout:
+def _find_free_layout(parsed: ParsedPsid, avoid: bytes | bytearray) -> _PlayerLayout:
     """Place the player bundle in the LARGEST contiguous RAM hole the tune
     never writes (and the caller didn't reserve).
 
@@ -446,18 +526,18 @@ def _find_free_layout(parsed: ParsedPsid,
     runs.sort(key=lambda r: (-(r[1] - r[0]), r[0]))
     for start, end in runs:
         if end - start >= bundle_size:
-            return _PlayerLayout(player_base=start,
-                                 stub_base=start + _RELOCATED_STUB_OFFSET)
+            return _PlayerLayout(player_base=start, stub_base=start + _RELOCATED_STUB_OFFSET)
 
     raise ValueError(
         f"no free slot for the SID player: payload "
         f"${payload_lo:04X}-${payload_hi:04X} plus the tune's RAM "
-        f"footprint leave no {bundle_size}-byte hole in $0820-$CFFF")
+        f"footprint leave no {bundle_size}-byte hole in $0820-$CFFF"
+    )
 
 
-def _choose_player_layout(parsed: ParsedPsid,
-                          avoid: bytes | bytearray | None = None
-                          ) -> _PlayerLayout:
+def _choose_player_layout(
+    parsed: ParsedPsid, avoid: bytes | bytearray | None = None
+) -> _PlayerLayout:
     """Pick on-C64 addresses for the player MC + re-INIT stub.
 
     Always tries the historical default ($C300 / $C400) first. When that
@@ -479,8 +559,7 @@ def _choose_player_layout(parsed: ParsedPsid,
         return _find_free_layout(parsed, avoid)
 
     def _relocated(base: int) -> _PlayerLayout:
-        return _PlayerLayout(player_base=base,
-                             stub_base=base + _RELOCATED_STUB_OFFSET)
+        return _PlayerLayout(player_base=base, stub_base=base + _RELOCATED_STUB_OFFSET)
 
     payload_hi = parsed.load_addr + len(parsed.payload)
     payload_lo = parsed.load_addr
@@ -504,7 +583,8 @@ def _choose_player_layout(parsed: ParsedPsid,
     raise ValueError(
         f"no free slot for the SID player: payload "
         f"${payload_lo:04X}-${payload_hi:04X} blocks the default "
-        f"$C300/$C400 layout and both relocation candidates")
+        f"$C300/$C400 layout and both relocation candidates"
+    )
 
 
 def _bank_for_addr_hi(hi: int) -> int:
@@ -544,8 +624,9 @@ def _play_bank_for(parsed: ParsedPsid) -> int:
     return _bank_for_addr_hi(parsed.play_addr >> 8)
 
 
-def _build_player_mc(parsed: ParsedPsid, layout: _PlayerLayout,
-                     play_bank: int | None = None) -> bytes:
+def _build_player_mc(
+    parsed: ParsedPsid, layout: _PlayerLayout, play_bank: int | None = None
+) -> bytes:
     mc = bytearray(SID_PLAYER_MC_TEMPLATE)
     mc[_SID_PATCH_INITBANK] = _init_bank_for(parsed)
     # play_bank override: the static heuristic keys on the play *address*
@@ -553,8 +634,7 @@ def _build_player_mc(parsed: ParsedPsid, layout: _PlayerLayout,
     # (e.g. Galway's Times of Lore subtunes 2-11 read $B400) while its code
     # sits below $A000. The caller detects that from the PLAY footprint and
     # passes $36 so PLAY sees RAM there instead of ROM. See WaveformScene.
-    mc[_SID_PATCH_PLAYBANK] = (play_bank if play_bank is not None
-                               else _play_bank_for(parsed))
+    mc[_SID_PATCH_PLAYBANK] = play_bank if play_bank is not None else _play_bank_for(parsed)
     mc[_SID_PATCH_SONG] = (parsed.song_to_play - 1) & 0xFF
     _patch_word(mc, _SID_PATCH_INIT_LO, _SID_PATCH_INIT_HI, parsed.init_addr)
     _patch_word(mc, _SID_PATCH_PLAY_LO, _SID_PATCH_PLAY_HI, parsed.play_addr)
@@ -564,8 +644,8 @@ def _build_player_mc(parsed: ParsedPsid, layout: _PlayerLayout,
     # counter at counter_addr); patched together so a layout relocation
     # can't desync them.
     counter = layout.counter_addr
-    _patch_word(mc, _SID_PATCH_CTR_INIT_LO,   _SID_PATCH_CTR_INIT_HI,   counter)
-    _patch_word(mc, _SID_PATCH_CTR_DEC_LO,    _SID_PATCH_CTR_DEC_HI,    counter)
+    _patch_word(mc, _SID_PATCH_CTR_INIT_LO, _SID_PATCH_CTR_INIT_HI, counter)
+    _patch_word(mc, _SID_PATCH_CTR_DEC_LO, _SID_PATCH_CTR_DEC_HI, counter)
     _patch_word(mc, _SID_PATCH_CTR_RELOAD_LO, _SID_PATCH_CTR_RELOAD_HI, counter)
     return bytes(mc)
 
@@ -574,10 +654,8 @@ def _build_reinit_stub(parsed: ParsedPsid, layout: _PlayerLayout) -> bytes:
     stub = bytearray(REINIT_STUB_TEMPLATE)
     stub[_REINIT_PATCH_BANK] = _init_bank_for(parsed)
     stub[_REINIT_PATCH_SONG] = (parsed.song_to_play - 1) & 0xFF
-    _patch_word(stub, _REINIT_PATCH_INIT_LO, _REINIT_PATCH_INIT_HI,
-                parsed.init_addr)
-    _patch_word(stub, _REINIT_PATCH_IRQ_LO, _REINIT_PATCH_IRQ_HI,
-                layout.irq_handler_addr)
+    _patch_word(stub, _REINIT_PATCH_INIT_LO, _REINIT_PATCH_INIT_HI, parsed.init_addr)
+    _patch_word(stub, _REINIT_PATCH_IRQ_LO, _REINIT_PATCH_IRQ_HI, layout.irq_handler_addr)
     return bytes(stub)
 
 
@@ -590,17 +668,19 @@ def _build_basic_sys_stub(sys_addr: int) -> bytes:
     line (next-line ptr, line number, tokens, end-of-line null), then
     two terminating null bytes that flag end-of-program."""
     LOAD_ADDR = 0x0801
-    sys_tokens = bytes([0x9E, 0x20])               # SYS, ' '
+    sys_tokens = bytes([0x9E, 0x20])  # SYS, ' '
     digits = str(sys_addr).encode("ascii")
-    line_body = sys_tokens + digits + b"\x00"      # ... + end-of-line
+    line_body = sys_tokens + digits + b"\x00"  # ... + end-of-line
     # next_line_ptr = where the *following* line's next-line ptr field
     # would start = load_addr + 2 (skip own ptr field) + 2 (line num) + body.
     next_line_ptr = LOAD_ADDR + 4 + len(line_body)
-    return (bytes([LOAD_ADDR & 0xFF, (LOAD_ADDR >> 8) & 0xFF])
-            + next_line_ptr.to_bytes(2, "little")
-            + bytes([0x0A, 0x00])                  # line number 10
-            + line_body
-            + bytes([0x00, 0x00]))                 # end of program
+    return (
+        bytes([LOAD_ADDR & 0xFF, (LOAD_ADDR >> 8) & 0xFF])
+        + next_line_ptr.to_bytes(2, "little")
+        + bytes([0x0A, 0x00])  # line number 10
+        + line_body
+        + bytes([0x00, 0x00])
+    )  # end of program
 
 
 class ParsedPsid(NamedTuple):
@@ -609,6 +689,7 @@ class ParsedPsid(NamedTuple):
     header bytes already consumed, so `payload[0]` is the byte that goes at
     `load_addr` on the C64. `song_to_play` is 1-based and bounds-checked
     against `num_songs`."""
+
     load_addr: int
     init_addr: int
     play_addr: int
@@ -645,10 +726,10 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
         raise ValueError(
             "RSID tunes are not supported by run_sid_player — they "
             "expect their own raster IRQ and don't cooperate with "
-            "the kernal-chained player. Use a PSID-format tune.")
+            "the kernal-chained player. Use a PSID-format tune."
+        )
     if magic != b"PSID":
-        raise ValueError(
-            f"not a SID file (expected PSID/RSID magic, got {magic!r})")
+        raise ValueError(f"not a SID file (expected PSID/RSID magic, got {magic!r})")
     data_offset = int.from_bytes(sid_bytes[6:8], "big")
     load_addr = int.from_bytes(sid_bytes[8:10], "big")
     init_addr = int.from_bytes(sid_bytes[10:12], "big")
@@ -667,7 +748,8 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
         raise ValueError(
             "SID has play_addr=0 (INIT installs its own IRQ); "
             "run_sid_player only supports tunes with an explicit "
-            "PLAY entry point.")
+            "PLAY entry point."
+        )
     # The BASIC stub at $0801 occupies 17 bytes ($0801-$0811 — the
     # tokenized `10 SYS 49920` plus the 2-byte load-address header). A
     # SID whose payload starts inside that window would be clobbered
@@ -677,7 +759,8 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
         raise ValueError(
             f"SID load_addr ${load_addr:04X} conflicts with the BASIC "
             f"SYS stub at $0801-$0811 — choose a tune that loads at "
-            f"$0820 or higher.")
+            f"$0820 or higher."
+        )
     # Tunes whose code/data live under KERNAL ROM ($E000-$FFFF) can't be
     # played: the kernal-chained player keeps KERNAL mapped (to JMP $EA31
     # at IRQ time), so banking it out to expose that RAM isn't an option.
@@ -698,11 +781,11 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
                 f"init ${init_addr:04X}, play ${play_addr:04X}; "
                 f"overlaps $E000-$FFFF) — the kernal-chained player keeps "
                 f"KERNAL mapped for its $EA31 IRQ tail and can't expose "
-                f"RAM there. Unsupported.")
+                f"RAM there. Unsupported."
+            )
     song_to_play = song if song > 0 else start_song
     if song_to_play < 1 or song_to_play > num_songs:
-        raise ValueError(
-            f"song {song_to_play} out of range 1..{num_songs}")
+        raise ValueError(f"song {song_to_play} out of range 1..{num_songs}")
     return ParsedPsid(
         load_addr=load_addr,
         init_addr=init_addr,
@@ -715,10 +798,14 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
 
 
 class Ultimate64API(BufferedWriteBackend):
-    def __init__(self, base_url: str, *,
-                 dma_port: int = DEFAULT_PORT,
-                 dma_password: str | None = None,
-                 profile: HardwareProfile | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        dma_port: int = DEFAULT_PORT,
+        dma_password: str | None = None,
+        profile: HardwareProfile | None = None,
+    ):
         # Init the shared write path (delta cache, stats, listeners).
         super().__init__()
         # The Ultimate is fully capable; default to the generic Ultimate
@@ -748,8 +835,7 @@ class Ultimate64API(BufferedWriteBackend):
         host = urlparse(self.base_url).hostname
         if not host:
             raise ValueError(f"could not extract hostname from {base_url!r}")
-        self.socket_dma = SocketDMAClient(
-            host=host, port=dma_port, password=dma_password)
+        self.socket_dma = SocketDMAClient(host=host, port=dma_port, password=dma_password)
         # connect() raises SocketDMAError on refused/auth-rejected; let it
         # propagate so the CLI can render a user-actionable message.
         self.socket_dma.connect()
@@ -773,8 +859,7 @@ class Ultimate64API(BufferedWriteBackend):
             self._note_emit_failure(addr, e)
 
     # ---- read / runner / reset (REST) --------------------------------------
-    def read_memory(self, address: int, length: int,
-                    timeout: float = 1.0) -> bytes | None:
+    def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         """Read `length` bytes from the U64. Returns None on failure.
 
         REST GET — Socket DMA has no read opcode. Cheap enough for 10 Hz
@@ -837,7 +922,8 @@ class Ultimate64API(BufferedWriteBackend):
         else:
             raise ValueError(
                 f"launch_program: unsupported extension {ext!r} for {path!r} "
-                f"(expected .prg or .crt)")
+                f"(expected .prg or .crt)"
+            )
 
         with open(path, "rb") as fh:
             payload = fh.read()
@@ -858,7 +944,8 @@ class Ultimate64API(BufferedWriteBackend):
                 raise RuntimeError(
                     f"U64 endpoint {url} returned 404 — the {ext} runner "
                     "is required to launch this program (check firmware "
-                    "version).") from e
+                    "version)."
+                ) from e
             raise
 
     def reset(self) -> None:
@@ -887,10 +974,15 @@ class Ultimate64API(BufferedWriteBackend):
         except requests.RequestException as e:
             log.warning("U64 reset failed: %s", e)
 
-    def run_sid_player(self, sid_bytes: bytes, song: int = 0,
-                       timeout: float = 5.0, *,
-                       avoid: bytes | bytearray | None = None,
-                       play_bank: int | None = None) -> None:
+    def run_sid_player(
+        self,
+        sid_bytes: bytes,
+        song: int = 0,
+        timeout: float = 5.0,
+        *,
+        avoid: bytes | bytearray | None = None,
+        play_bank: int | None = None,
+    ) -> None:
         """Play a SID on the real 6510 without going through the firmware's
         /v1/runners:sidplay UI (which takes over HDMI).
 
@@ -951,12 +1043,15 @@ class Ultimate64API(BufferedWriteBackend):
         self._sid_player_default_play_bank = _play_bank_for(parsed)
 
         if layout is not _DEFAULT_PLAYER_LAYOUT:
-            log.info("SID player relocated to player=$%04X stub=$%04X "
-                     "(default $C300/$C400 conflicts with payload "
-                     "$%04X-$%04X)",
-                     layout.player_base, layout.stub_base,
-                     parsed.load_addr,
-                     parsed.load_addr + len(parsed.payload))
+            log.info(
+                "SID player relocated to player=$%04X stub=$%04X "
+                "(default $C300/$C400 conflicts with payload "
+                "$%04X-$%04X)",
+                layout.player_base,
+                layout.stub_base,
+                parsed.load_addr,
+                parsed.load_addr + len(parsed.payload),
+            )
 
         mc = _build_player_mc(parsed, layout, play_bank=play_bank)
         reinit = _build_reinit_stub(parsed, layout)
@@ -990,7 +1085,8 @@ class Ultimate64API(BufferedWriteBackend):
             if e.response is not None and e.response.status_code == 404:
                 raise RuntimeError(
                     f"U64 endpoint {url} returned 404 — run_prg is "
-                    "required for the SID player path.") from e
+                    "required for the SID player path."
+                ) from e
             raise
 
         # Once INIT has had a moment to reprogram CIA #1 Timer A, measure
@@ -998,8 +1094,7 @@ class Ultimate64API(BufferedWriteBackend):
         # fast-PLAY tunes don't run SCNKEY/UDTIM/blink every tick.
         self._tune_play_divider()
 
-    def cue_song_reinit(self, song: int, *,
-                        play_bank: int | None = None) -> None:
+    def cue_song_reinit(self, song: int, *, play_bank: int | None = None) -> None:
         """Cue the next kernal IRQ tick to re-INIT the SID on a new
         subtune, without going through the BASIC-runs-SYS-stub path.
         Avoids the run_prg round-trip that resets VIC mode + clears
@@ -1031,24 +1126,24 @@ class Ultimate64API(BufferedWriteBackend):
         if layout is None:
             raise RuntimeError(
                 "cue_song_reinit called before run_sid_player — the "
-                "re-INIT stub hasn't been uploaded yet")
+                "re-INIT stub hasn't been uploaded yet"
+            )
         self.write_memory(
-            f"{layout.stub_base + _REINIT_PATCH_SONG:04X}",
-            f"{(song - 1) & 0xFF:02X}")
+            f"{layout.stub_base + _REINIT_PATCH_SONG:04X}", f"{(song - 1) & 0xFF:02X}"
+        )
         # Patch the player MC's playBank BEFORE the vector swap so the first
         # PLAY after the re-INIT stub restores the vector already uses it.
         # When the caller passes None, restore the tune's heuristic default
         # so a previous subtune's override (e.g. $36 for a Times-of-Lore
         # under-ROM subtune) doesn't leak into one that wants $37.
-        bank = (play_bank if play_bank is not None
-                else self._sid_player_default_play_bank)
+        bank = play_bank if play_bank is not None else self._sid_player_default_play_bank
         if bank is not None:
             self.write_memory(
-                f"{layout.player_base + _SID_PATCH_PLAYBANK:04X}",
-                f"{bank & 0xFF:02X}")
-        self.write_regs(f"{VECTORS.IRQ:04X}",
-                        layout.stub_base & 0xFF,
-                        (layout.stub_base >> 8) & 0xFF)
+                f"{layout.player_base + _SID_PATCH_PLAYBANK:04X}", f"{bank & 0xFF:02X}"
+            )
+        self.write_regs(
+            f"{VECTORS.IRQ:04X}", layout.stub_base & 0xFF, (layout.stub_base >> 8) & 0xFF
+        )
         # The new subtune's INIT may reprogram CIA #1 Timer A to a
         # different rate — re-measure and re-patch the tick divider.
         # Longer settle than run_sid_player's path: cue takes effect on
@@ -1110,33 +1205,40 @@ class Ultimate64API(BufferedWriteBackend):
         for _ in range(self._DIVIDER_LATCH_SAMPLES):
             buf = self.read_memory(CIA1.TIMER_A_LO, 2)
             if buf is None or len(buf) < 2:
-                log.debug("_tune_play_divider: CIA1 read failed; "
-                          "leaving divider at template default")
+                log.debug(
+                    "_tune_play_divider: CIA1 read failed; leaving divider at template default"
+                )
                 return 1
             v = buf[0] | (buf[1] << 8)
             if v > max_count:
                 max_count = v
         if max_count == 0:
-            log.debug("_tune_play_divider: CIA1 latch sampled as 0; "
-                      "leaving divider at template default")
+            log.debug(
+                "_tune_play_divider: CIA1 latch sampled as 0; leaving divider at template default"
+            )
             return 1
         play_rate_hz = self._DIVIDER_PHI2_HZ / max_count
         divider = max(1, int(play_rate_hz / self._DIVIDER_TARGET_KERNAL_HZ))
         if divider > self._DIVIDER_MAX:
             divider = self._DIVIDER_MAX
         try:
-            self.write_memory(f"{layout.divider_addr:04X}",
-                              f"{divider & 0xFF:02X}")
+            self.write_memory(f"{layout.divider_addr:04X}", f"{divider & 0xFF:02X}")
             self.flush()
         except Exception:
-            log.warning("_tune_play_divider: failed to patch divider "
-                        "byte at $%04X", layout.divider_addr,
-                        exc_info=True)
+            log.warning(
+                "_tune_play_divider: failed to patch divider byte at $%04X",
+                layout.divider_addr,
+                exc_info=True,
+            )
             return 1
-        log.info("SID player: CIA1 latch~=$%04X (~%.0fHz PLAY) -> "
-                 "kernal-chain divider=%d (~%.0fHz service rate)",
-                 max_count, play_rate_hz, divider,
-                 play_rate_hz / divider)
+        log.info(
+            "SID player: CIA1 latch~=$%04X (~%.0fHz PLAY) -> "
+            "kernal-chain divider=%d (~%.0fHz service rate)",
+            max_count,
+            play_rate_hz,
+            divider,
+            play_rate_hz / divider,
+        )
         return divider
 
     # ---- lifecycle / introspection ----------------------------------------

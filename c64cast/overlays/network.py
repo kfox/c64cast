@@ -8,6 +8,7 @@ Configurable list of items to show, in order, one per line:
 Polled by a background thread at `refresh_s` seconds so the render loop
 doesn't block on socket / DNS / connect. Failures keep the previous value.
 """
+
 from __future__ import annotations
 
 import logging
@@ -54,27 +55,26 @@ class NetworkOverlay(CornerTextOverlay):
         "items": "Which lines to show, any of: 'ip', 'hostname', 'ping'.",
     }
 
-    def __init__(self, items: list | None = None,
-                 corner: str = "bottom-right",
-                 fg_color: str = "light gray",
-                 bg_color: str = "black",
-                 refresh_s: float = 5.0):
+    def __init__(
+        self,
+        items: list | None = None,
+        corner: str = "bottom-right",
+        fg_color: str = "light gray",
+        bg_color: str = "black",
+        refresh_s: float = 5.0,
+    ):
         items = items or ["ip", "ping"]
         bad = [i for i in items if i not in VALID_ITEMS]
         if bad:
-            raise ValueError(
-                f"network: unknown items {bad!r} "
-                f"(known: {', '.join(VALID_ITEMS)})")
-        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color,
-                         refresh_s=1.0)
+            raise ValueError(f"network: unknown items {bad!r} (known: {', '.join(VALID_ITEMS)})")
+        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color, refresh_s=1.0)
         self.items = list(items)
         self.poll_interval_s = max(1.0, float(refresh_s))
         self._cached_lines: list[str] = ["..." for _ in items]
         self._lock = threading.Lock()
         self._target_host: str | None = None
         self._target_port: int = 80
-        self._poll = PollThread(self._poll_once, period=self.poll_interval_s,
-                                name="network-poll")
+        self._poll = PollThread(self._poll_once, period=self.poll_interval_s, name="network-poll")
 
     def setup(self, api, scene):
         super().setup(api, scene)
@@ -116,8 +116,9 @@ class NetworkOverlay(CornerTextOverlay):
                 log.debug("network %s failed: %s", item, e)
                 # Preserve the last good value rather than clobbering with "?".
                 with self._lock:
-                    prev = (self._cached_lines[len(out)]
-                            if len(out) < len(self._cached_lines) else "?")
+                    prev = (
+                        self._cached_lines[len(out)] if len(out) < len(self._cached_lines) else "?"
+                    )
                 out.append(prev)
         return out
 

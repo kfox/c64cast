@@ -4,9 +4,18 @@
 #
 # Run manually against all files with:
 #   pre-commit run --all-files
+#
+# These same hooks are enforced in CI (.github/workflows/ci.yml, "pre-commit"
+# job, which skips the pyright/unittest hooks since the lint-and-test job
+# already runs them across the Python matrix).
+#
+# NOTE: the ruff-pre-commit rev below pins the SAME ruff version as uv.lock
+# (and therefore `make lint` / `make fmt`). Keep the two in sync — bump this
+# rev whenever you `uv lock --upgrade-package ruff`, or formatting will differ
+# between local `make fmt` and the pre-commit/CI check.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -19,10 +28,11 @@ repos:
         args: ["--fix=lf"]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.7.4
+    rev: v0.15.17
     hooks:
       - id: ruff
         args: ["--fix"]
+      - id: ruff-format
 
   - repo: local
     hooks:

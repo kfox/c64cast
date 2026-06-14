@@ -13,6 +13,7 @@ processing a signal in one shot must match processing it split across blocks
 (within a small tolerance — the recursive smoothers carry their state across
 calls). Several tests assert that property directly.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -48,7 +49,7 @@ def _split_process(proc, x: np.ndarray, sizes: list[int]) -> np.ndarray:
     out = []
     i = 0
     for s in sizes:
-        out.append(proc.process(x[i:i + s]))
+        out.append(proc.process(x[i : i + s]))
         i += s
     if i < x.size:
         out.append(proc.process(x[i:]))
@@ -98,9 +99,18 @@ class PreEmphasisTest(unittest.TestCase):
 
 class CompressorTest(unittest.TestCase):
     def _comp(self, **kw):
-        return Compressor(**{"sample_rate": SR, "threshold_db": -18.0,
-                             "ratio": 4.0, "knee_db": 0.0, "attack_ms": 1.0,
-                             "release_ms": 50.0, "makeup_db": 0.0, **kw})
+        return Compressor(
+            **{
+                "sample_rate": SR,
+                "threshold_db": -18.0,
+                "ratio": 4.0,
+                "knee_db": 0.0,
+                "attack_ms": 1.0,
+                "release_ms": 50.0,
+                "makeup_db": 0.0,
+                **kw,
+            }
+        )
 
     def test_loud_signal_attenuated_above_threshold(self):
         # A steady tone well above threshold should settle to the static
@@ -123,15 +133,20 @@ class CompressorTest(unittest.TestCase):
         comp = self._comp(makeup_db=6.0)
         x = _sine(500, 0.5, amp=db_to_lin(-30.0))  # below threshold
         y = comp.process(x)
-        self.assertAlmostEqual(lin_to_db(_rms(y[-1000:]) / _rms(x[-1000:])),
-                               6.0, delta=0.5)
+        self.assertAlmostEqual(lin_to_db(_rms(y[-1000:]) / _rms(x[-1000:])), 6.0, delta=0.5)
 
     def test_auto_makeup_brings_threshold_to_unity(self):
         # With auto makeup, a signal AT threshold should come out near 0 dB
         # change (makeup compensates the curve at the threshold point).
-        comp = Compressor(sample_rate=SR, threshold_db=-18.0, ratio=4.0,
-                          knee_db=0.0, attack_ms=1.0, release_ms=50.0,
-                          makeup_db=None)  # None = auto
+        comp = Compressor(
+            sample_rate=SR,
+            threshold_db=-18.0,
+            ratio=4.0,
+            knee_db=0.0,
+            attack_ms=1.0,
+            release_ms=50.0,
+            makeup_db=None,
+        )  # None = auto
         self.assertGreater(comp.makeup_db, 0.0)
 
     def test_output_finite_and_bounded(self):
@@ -141,8 +156,9 @@ class CompressorTest(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(y)))
 
     def test_streaming_continuity(self):
-        x = np.concatenate([_sine(500, 0.2, amp=db_to_lin(-30)),
-                            _sine(500, 0.2, amp=db_to_lin(-3))])
+        x = np.concatenate(
+            [_sine(500, 0.2, amp=db_to_lin(-30)), _sine(500, 0.2, amp=db_to_lin(-3))]
+        )
         a = self._comp().process(x)
         b = _split_process(self._comp(), x, [128, 333, 1000, 64])
         np.testing.assert_allclose(a, b, atol=1e-4)
@@ -164,17 +180,26 @@ class LimiterTest(unittest.TestCase):
     def test_streaming_continuity(self):
         x = _sine(440, 0.4, amp=1.0)
         a = Limiter(sample_rate=SR, ceiling=0.7, release_ms=20.0).process(x)
-        b = _split_process(Limiter(sample_rate=SR, ceiling=0.7,
-                                   release_ms=20.0), x, [100, 500, 999])
+        b = _split_process(
+            Limiter(sample_rate=SR, ceiling=0.7, release_ms=20.0), x, [100, 500, 999]
+        )
         np.testing.assert_allclose(a, b, atol=1e-4)
 
 
 class ExpanderTest(unittest.TestCase):
     def _exp(self, **kw):
-        return Expander(**{"sample_rate": SR, "threshold_db": -40.0,
-                           "ratio": 2.0, "hysteresis_db": 6.0,
-                           "floor_db": -60.0, "attack_ms": 2.0,
-                           "release_ms": 60.0, **kw})
+        return Expander(
+            **{
+                "sample_rate": SR,
+                "threshold_db": -40.0,
+                "ratio": 2.0,
+                "hysteresis_db": 6.0,
+                "floor_db": -60.0,
+                "attack_ms": 2.0,
+                "release_ms": 60.0,
+                **kw,
+            }
+        )
 
     def test_loud_signal_passes(self):
         exp = self._exp()
@@ -205,8 +230,9 @@ class ExpanderTest(unittest.TestCase):
         self.assertGreater(_rms(y_mid[-1000:]), _rms(mid[-1000:]) * 0.8)
 
     def test_streaming_continuity(self):
-        x = np.concatenate([_sine(500, 0.2, amp=db_to_lin(-6)),
-                            _sine(500, 0.2, amp=db_to_lin(-55))])
+        x = np.concatenate(
+            [_sine(500, 0.2, amp=db_to_lin(-6)), _sine(500, 0.2, amp=db_to_lin(-55))]
+        )
         a = self._exp().process(x)
         b = _split_process(self._exp(), x, [50, 400, 1200, 30])
         np.testing.assert_allclose(a, b, atol=1e-4)
@@ -214,9 +240,16 @@ class ExpanderTest(unittest.TestCase):
 
 class AGCTest(unittest.TestCase):
     def _agc(self, **kw):
-        return AGC(**{"sample_rate": SR, "target_db": -18.0,
-                      "max_gain_db": 24.0, "time_ms": 200.0,
-                      "noise_floor_db": -60.0, **kw})
+        return AGC(
+            **{
+                "sample_rate": SR,
+                "target_db": -18.0,
+                "max_gain_db": 24.0,
+                "time_ms": 200.0,
+                "noise_floor_db": -60.0,
+                **kw,
+            }
+        )
 
     def test_quiet_input_boosted_toward_target(self):
         agc = self._agc()
@@ -265,9 +298,11 @@ class AudioDSPChainTest(unittest.TestCase):
         self.assertEqual(out.size, 0)
 
     def test_enabled_output_finite_and_in_range(self):
-        dsp = AudioDSP(DSPParams(enabled=True, limiter=True,
-                                 limiter_ceiling=0.95),
-                       sample_rate=SR, is_mic=False)
+        dsp = AudioDSP(
+            DSPParams(enabled=True, limiter=True, limiter_ceiling=0.95),
+            sample_rate=SR,
+            is_mic=False,
+        )
         x = _sine(500, 0.5, amp=1.0)
         y = dsp.process(x)
         self.assertTrue(np.all(np.isfinite(y)))
@@ -276,17 +311,26 @@ class AudioDSPChainTest(unittest.TestCase):
     def test_quiet_source_made_louder(self):
         # The headline win: a quiet source should come out louder after the
         # compressor (+ makeup) so it uses more of the 4-bit DAC range.
-        dsp = AudioDSP(DSPParams(enabled=True, compress=True,
-                                 comp_threshold_db=-24.0, comp_ratio=3.0,
-                                 expander=False, limiter=True),
-                       sample_rate=SR, is_mic=False)
+        dsp = AudioDSP(
+            DSPParams(
+                enabled=True,
+                compress=True,
+                comp_threshold_db=-24.0,
+                comp_ratio=3.0,
+                expander=False,
+                limiter=True,
+            ),
+            sample_rate=SR,
+            is_mic=False,
+        )
         x = _sine(500, 0.5, amp=db_to_lin(-20.0))
         y = dsp.process(x)
         self.assertGreater(_rms(y[-1000:]), _rms(x[-1000:]))
 
     def test_agc_only_active_for_mic(self):
-        params = DSPParams(enabled=True, agc=True, compress=False,
-                           expander=False, limiter=False, pre_emphasis=0.0)
+        params = DSPParams(
+            enabled=True, agc=True, compress=False, expander=False, limiter=False, pre_emphasis=0.0
+        )
         x = _sine(400, 2.0, amp=db_to_lin(-36.0))
         line = AudioDSP(params, sample_rate=SR, is_mic=False).process(x)
         mic = AudioDSP(params, sample_rate=SR, is_mic=True).process(x)

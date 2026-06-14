@@ -4,6 +4,7 @@ The host-side mechanism (REUWRITE wrap, callback encoding, host write
 position tracking) is exercised directly. The C64-side IRQ handler bytes
 get the same shape verification as the commercial REU pump handler so a
 hand-assembled regression can't pass tests."""
+
 from __future__ import annotations
 
 import queue
@@ -93,18 +94,18 @@ class ReuMicIrqHandlerTest(unittest.TestCase):
         # BCC +15 at offset 64 → offset 81 (start of dst wrap block,
         # LDA $DF03 absolute = 0xAD opcode). Wrong offset here lands
         # mid-instruction and stomps either REU regs or the tracker.
-        self.assertEqual(REU_MIC_IRQ_HANDLER[64], 0x90)   # BCC
-        self.assertEqual(REU_MIC_IRQ_HANDLER[65], 0x0F)   # +15
-        self.assertEqual(REU_MIC_IRQ_HANDLER[81], 0xAD)   # LDA absolute opcode
+        self.assertEqual(REU_MIC_IRQ_HANDLER[64], 0x90)  # BCC
+        self.assertEqual(REU_MIC_IRQ_HANDLER[65], 0x0F)  # +15
+        self.assertEqual(REU_MIC_IRQ_HANDLER[81], 0xAD)  # LDA absolute opcode
 
     def test_dst_wrap_bcc_lands_on_trailing_pla(self):
         # BCC +10 at offset 86 → PLA at offset 98 (opcode 0x68). Same
         # constraint as the commercial pump's BCC; pinned to catch any
         # future edit to the dst-wrap block that doesn't recompute the
         # displacement.
-        self.assertEqual(REU_MIC_IRQ_HANDLER[86], 0x90)   # BCC
-        self.assertEqual(REU_MIC_IRQ_HANDLER[87], 0x0A)   # +10
-        self.assertEqual(REU_MIC_IRQ_HANDLER[98], 0x68)   # PLA
+        self.assertEqual(REU_MIC_IRQ_HANDLER[86], 0x90)  # BCC
+        self.assertEqual(REU_MIC_IRQ_HANDLER[87], 0x0A)  # +10
+        self.assertEqual(REU_MIC_IRQ_HANDLER[98], 0x68)  # PLA
 
     def test_handler_ends_in_jmp_kernal_irq(self):
         # JMP $EA31 — chains keyboard scan + jiffy clock so the C= /
@@ -160,10 +161,13 @@ class ReuMicIrqHandlerTest(unittest.TestCase):
             if REU_MIC_IRQ_HANDLER[i] == 0xAD:
                 addr_lo = REU_MIC_IRQ_HANDLER[i + 1]
                 addr_hi = REU_MIC_IRQ_HANDLER[i + 2]
-                self.assertNotEqual((addr_lo, addr_hi), (0x06, 0xDF),
-                                    f"handler reads $DF06 at offset {i} — "
-                                    "the read-back is garbage; use the "
-                                    "main-RAM tracker instead")
+                self.assertNotEqual(
+                    (addr_lo, addr_hi),
+                    (0x06, 0xDF),
+                    f"handler reads $DF06 at offset {i} — "
+                    "the read-back is garbage; use the "
+                    "main-RAM tracker instead",
+                )
 
 
 class PushMicToReuTest(unittest.TestCase):
@@ -185,7 +189,7 @@ class PushMicToReuTest(unittest.TestCase):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s._mic_reu_write_pos = REU_MIC_SIZE - 128
-        s._push_mic_to_reu(b"\xAA" * 128)
+        s._push_mic_to_reu(b"\xaa" * 128)
         # Single write, position wraps back to 0.
         self.assertEqual(len(fake.socket_dma.reuwrites), 1)
         off, data = fake.socket_dma.reuwrites[0]
@@ -238,13 +242,14 @@ class StartMicForReuPumpTest(unittest.TestCase):
         s = self._start()
         fake = cast(FakeAPI, s.api)
         # First N REUWRITEs are the NEUTRAL prefill — one per 32 KB slice.
-        prefill_writes = fake.socket_dma.reuwrites[:REU_MIC_SIZE // REU_UPLOAD_SLICE]
+        prefill_writes = fake.socket_dma.reuwrites[: REU_MIC_SIZE // REU_UPLOAD_SLICE]
         self.assertEqual(len(prefill_writes), REU_MIC_SIZE // REU_UPLOAD_SLICE)
         for off, data in prefill_writes:
             self.assertGreaterEqual(off, REU_MIC_BASE)
             self.assertLess(off, REU_MIC_BASE + REU_MIC_SIZE)
-            self.assertTrue(all(b == NEUTRAL_SAMPLE for b in data),
-                            "REU mic prefill must be NEUTRAL_SAMPLE")
+            self.assertTrue(
+                all(b == NEUTRAL_SAMPLE for b in data), "REU mic prefill must be NEUTRAL_SAMPLE"
+            )
 
     def test_handler_lands_at_c100(self):
         s = self._start()
@@ -259,8 +264,7 @@ class StartMicForReuPumpTest(unittest.TestCase):
         # uppercase address key.
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        expected = (f"{RING_BUFFER_ADDR & 0xFF:02X}"
-                    f"{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}")
+        expected = f"{RING_BUFFER_ADDR & 0xFF:02X}{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}"
         self.assertEqual(fake.memories["DF02"], expected)
 
     def test_main_ram_tracker_seeded_to_mic_base(self):
@@ -270,33 +274,33 @@ class StartMicForReuPumpTest(unittest.TestCase):
         # transfer reads from a bogus REU offset.
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        expected = (f"{REU_MIC_BASE & 0xFF:02X}"
-                    f"{(REU_MIC_BASE >> 8) & 0xFF:02X}"
-                    f"{(REU_MIC_BASE >> 16) & 0xFF:02X}")
+        expected = (
+            f"{REU_MIC_BASE & 0xFF:02X}"
+            f"{(REU_MIC_BASE >> 8) & 0xFF:02X}"
+            f"{(REU_MIC_BASE >> 16) & 0xFF:02X}"
+        )
         key = f"{REU_MIC_SRC_TRACKER_ADDR:04X}"
         self.assertEqual(fake.memories[key], expected)
 
     def test_reu_length_matches_chunk_size(self):
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        expected = (f"{REU_PUMP_CHUNK_SIZE & 0xFF:02X}"
-                    f"{(REU_PUMP_CHUNK_SIZE >> 8) & 0xFF:02X}")
+        expected = f"{REU_PUMP_CHUNK_SIZE & 0xFF:02X}{(REU_PUMP_CHUNK_SIZE >> 8) & 0xFF:02X}"
         self.assertEqual(fake.memories["DF07"], expected)
 
     def test_cia1_latch_is_reprogrammed(self):
         # Same matched-rate latch as the commercial REU path.
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        expected = (f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}"
-                    f"{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}")
+        expected = f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}"
         self.assertEqual(fake.memories["DC04"], expected)
 
     def test_irq_vector_patched_to_handler(self):
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        self.assertEqual(fake.regs["0314"],
-                         (REU_PUMP_HANDLER_ADDR & 0xFF,
-                          (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF))
+        self.assertEqual(
+            fake.regs["0314"], (REU_PUMP_HANDLER_ADDR & 0xFF, (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF)
+        )
 
     def test_pump_armed_state_set(self):
         s = self._start()
@@ -317,9 +321,14 @@ class _FakeStream:
     """Stand-in for sounddevice.InputStream so _start_mic_for_reu_pump
     can run without real audio hardware."""
 
-    def start(self): pass
-    def stop(self): pass
-    def close(self): pass
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
 
 
 class StartMicBranchesOnReuFlagTest(unittest.TestCase):
@@ -333,6 +342,7 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         # is a module global; if sounddevice isn't installed in the test env
         # the function early-returns and we can't observe the branch — skip.
         from c64cast import audio as audio_mod
+
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")
         s.start_mic(device=5, sensitivity=1.0, noise_gate=0.0)
@@ -341,6 +351,7 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
     def test_host_path_is_taken_when_flag_unset(self):
         s = _new_streamer(use_reu_pump=False)
         from c64cast import audio as audio_mod
+
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")
         # Re-route the heavy bits: pretend mic open succeeded.

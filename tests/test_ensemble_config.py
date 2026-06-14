@@ -4,6 +4,7 @@ Covers `load_master()` routing logic and `EnsembleCfg` / `SystemEntryCfg`
 dataclass shape. The override cascade implemented by
 `apply_master_defaults` is exercised in a later commit; this file just
 asserts the stub passes per-system configs through unchanged."""
+
 from __future__ import annotations
 
 import os
@@ -20,7 +21,6 @@ def _write(path: str, body: str) -> None:
 
 
 class LoadMasterRoutingTest(unittest.TestCase):
-
     def test_no_ensemble_returns_single_config(self):
         toml = """
             [ultimate64]
@@ -158,8 +158,7 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
         defaults.ultimate64.url = "http://shared.lan"
         sys_cfg = cfgmod.Config()
         cfgmod.apply_master_defaults(defaults, sys_cfg)
-        self.assertEqual(sys_cfg.ultimate64.url,
-                         cfgmod.Ultimate64Cfg().url)
+        self.assertEqual(sys_cfg.ultimate64.url, cfgmod.Ultimate64Cfg().url)
 
     def test_dma_port_does_cascade(self):
         defaults = cfgmod.Config()
@@ -184,10 +183,8 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
         defaults.control.port = 9999
         sys_cfg = cfgmod.Config()
         cfgmod.apply_master_defaults(defaults, sys_cfg)
-        self.assertEqual(sys_cfg.control.enabled,
-                         cfgmod.ControlPlaneCfg().enabled)
-        self.assertEqual(sys_cfg.control.port,
-                         cfgmod.ControlPlaneCfg().port)
+        self.assertEqual(sys_cfg.control.enabled, cfgmod.ControlPlaneCfg().enabled)
+        self.assertEqual(sys_cfg.control.port, cfgmod.ControlPlaneCfg().port)
 
     def test_cascade_through_load_master(self):
         # End-to-end through load_master: master sets interstitial duration,
@@ -233,7 +230,6 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
 
 
 class EnsembleSectionParseTest(unittest.TestCase):
-
     def test_empty_systems_rejected(self):
         master = """
             [ensemble]

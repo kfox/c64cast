@@ -21,6 +21,7 @@ Usage at capture-analysis time:
     src_t0 = t0 + MARKER_DURATION_SAMPLES_48K    # source content starts here
     # source time T plays at capture sample = src_t0 + T * 48000
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -84,7 +85,7 @@ def synthesize_capture_reference(
     # Center the 4-bit codes around 0: values 0..15 → -7.5..+7.5 ×
     # arbitrary amplitude. Real capture amplitude depends on input gain;
     # mean subtraction in find_marker_in_capture neutralizes it.
-    centered = (vol - 7.5)
+    centered = vol - 7.5
     factor = capture_rate // playback_rate
     upsampled = np.repeat(centered, factor)
     return upsampled
@@ -113,5 +114,5 @@ def find_marker_in_capture(
     nfft = 1 << (n - 1).bit_length()
     cap_fft = np.fft.rfft(cap, nfft)
     ref_fft = np.fft.rfft(refd, nfft)
-    corr = np.fft.irfft(cap_fft * np.conj(ref_fft))[:len(cap)]
+    corr = np.fft.irfft(cap_fft * np.conj(ref_fft))[: len(cap)]
     return int(np.argmax(corr))

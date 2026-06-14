@@ -10,6 +10,7 @@ A background thread polls every `refresh_minutes` (default 10). The
 render loop reads whatever the latest cache says; transient API failures
 keep the last good value visible.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,26 +28,46 @@ log = logging.getLogger(__name__)
 # Compact 5-char weather labels by WMO code (Open-Meteo).
 # Anything missing → "MIST" (the catch-all for "atmospheric weirdness").
 WMO_CODES = {
-    0: "CLEAR", 1: "FAIR ", 2: "PCLDY", 3: "CLOUD",
-    45: "FOG  ", 48: "FOG  ",
-    51: "DRIZL", 53: "DRIZL", 55: "DRIZL",
-    56: "FRZRN", 57: "FRZRN",
-    61: "RAIN ", 63: "RAIN ", 65: "RAIN ",
-    66: "FRZRN", 67: "FRZRN",
-    71: "SNOW ", 73: "SNOW ", 75: "SNOW ", 77: "SLEET",
-    80: "SHOWR", 81: "SHOWR", 82: "SHOWR",
-    85: "SNOW ", 86: "SNOW ",
-    95: "STORM", 96: "STORM", 99: "STORM",
+    0: "CLEAR",
+    1: "FAIR ",
+    2: "PCLDY",
+    3: "CLOUD",
+    45: "FOG  ",
+    48: "FOG  ",
+    51: "DRIZL",
+    53: "DRIZL",
+    55: "DRIZL",
+    56: "FRZRN",
+    57: "FRZRN",
+    61: "RAIN ",
+    63: "RAIN ",
+    65: "RAIN ",
+    66: "FRZRN",
+    67: "FRZRN",
+    71: "SNOW ",
+    73: "SNOW ",
+    75: "SNOW ",
+    77: "SLEET",
+    80: "SHOWR",
+    81: "SHOWR",
+    82: "SHOWR",
+    85: "SNOW ",
+    86: "SNOW ",
+    95: "STORM",
+    96: "STORM",
+    99: "STORM",
 }
 
 
 def _fetch_open_meteo(lat: float, lon: float, units: str) -> str:
     """One-shot. Returns a short string like '72F CLEAR' or '' on failure."""
     unit_param = "fahrenheit" if units.upper() == "F" else "celsius"
-    url = (f"https://api.open-meteo.com/v1/forecast"
-           f"?latitude={lat}&longitude={lon}"
-           f"&current=temperature_2m,weather_code"
-           f"&temperature_unit={unit_param}")
+    url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        f"&current=temperature_2m,weather_code"
+        f"&temperature_unit={unit_param}"
+    )
     r = requests.get(url, timeout=4.0)
     r.raise_for_status()
     data = r.json()
@@ -85,19 +106,22 @@ class WeatherOverlay(CornerTextOverlay):
         "refresh_minutes": "Minutes between background weather polls.",
     }
 
-    def __init__(self, provider: str = "open-meteo",
-                 lat: float | None = None,
-                 lon: float | None = None,
-                 location: str | None = None,
-                 units: str = "F",
-                 corner: str = "top-left",
-                 fg_color: str = "light blue",
-                 bg_color: str = "black",
-                 refresh_minutes: float = 10.0):
+    def __init__(
+        self,
+        provider: str = "open-meteo",
+        lat: float | None = None,
+        lon: float | None = None,
+        location: str | None = None,
+        units: str = "F",
+        corner: str = "top-left",
+        fg_color: str = "light blue",
+        bg_color: str = "black",
+        refresh_minutes: float = 10.0,
+    ):
         if provider not in ("open-meteo", "wttr.in"):
             raise ValueError(
-                f"weather: provider must be 'open-meteo' or 'wttr.in', "
-                f"got {provider!r}")
+                f"weather: provider must be 'open-meteo' or 'wttr.in', got {provider!r}"
+            )
         if provider == "open-meteo" and (lat is None or lon is None):
             raise ValueError("weather: open-meteo requires lat + lon")
         if provider == "wttr.in" and not location:
@@ -106,8 +130,7 @@ class WeatherOverlay(CornerTextOverlay):
             raise ValueError("weather: units must be 'F' or 'C'")
         # Render-side refresh fast (cheap change-detection); the actual API
         # poll honors refresh_minutes via the background thread.
-        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color,
-                         refresh_s=1.0)
+        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color, refresh_s=1.0)
         self.provider = provider
         self.lat = lat
         self.lon = lon
@@ -118,8 +141,7 @@ class WeatherOverlay(CornerTextOverlay):
         self._lock = threading.Lock()
         # First fetch runs immediately so the user isn't stuck on "--" for
         # the whole first interval; subsequent fetches honor the cadence.
-        self._poll = PollThread(self._poll_once, period=self.poll_interval_s,
-                                name="weather-poll")
+        self._poll = PollThread(self._poll_once, period=self.poll_interval_s, name="weather-poll")
 
     def _fetch_once(self) -> str:
         try:

@@ -11,6 +11,7 @@ participating in the scene's delta-cache (they don't pass a region_id to
 write_region). Restrictions are declared as class attributes and validated
 at scene-build time in config.py.
 """
+
 from __future__ import annotations
 
 import difflib
@@ -43,14 +44,14 @@ def ascii_to_screen(text: str) -> bytes:
     (0x40-0x5F) map to screen codes 0x00-0x1F; everything else passes
     through (works for digits, punctuation, space)."""
     return bytes(
-        (ord(c) - 0x40) & 0x3F if 0x40 <= ord(c) <= 0x5F else ord(c) & 0xFF
-        for c in text.upper()
+        (ord(c) - 0x40) & 0x3F if 0x40 <= ord(c) <= 0x5F else ord(c) & 0xFF for c in text.upper()
     )
 
 
 # ---------------------------------------------------------------------------
 # Base + registry
 # ---------------------------------------------------------------------------
+
 
 class Overlay:
     name = "base"
@@ -142,10 +143,12 @@ def register(name: str) -> Callable[[type[_OverlayT]], type[_OverlayT]]:
     subclass type — important for static analyzers (Pyright/Pylance) to see
     each overlay's actual `__init__` parameters instead of the base class's.
     """
+
     def deco(cls: type[_OverlayT]) -> type[_OverlayT]:
         cls.name = name
         _REGISTRY[name] = cls
         return cls
+
     return deco
 
 
@@ -168,8 +171,7 @@ def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
     cls = _REGISTRY.get(type_name)
     if cls is None:
         raise ValueError(
-            f"unknown overlay type {type_name!r} "
-            f"(known: {', '.join(known_overlays())})"
+            f"unknown overlay type {type_name!r} (known: {', '.join(known_overlays())})"
         )
     if cls.REQUIRES_AUDIO and audio is None:
         raise ValueError(
@@ -185,9 +187,7 @@ def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
         return cls(**kwargs)
     except TypeError as e:
         hint = _kwarg_suggestion(cls, str(e))
-        raise ValueError(
-            f"overlay {type_name!r}: {e}.{hint} cfg={cfg!r}"
-        ) from e
+        raise ValueError(f"overlay {type_name!r}: {e}.{hint} cfg={cfg!r}") from e
 
 
 _BAD_KWARG_RE = re.compile(r"unexpected keyword argument '([^']+)'")
@@ -203,8 +203,9 @@ def _kwarg_suggestion(cls: type[Overlay], err_msg: str) -> str:
         return ""
     bad = m.group(1)
     try:
-        params = [p for p in inspect.signature(cls.__init__).parameters
-                  if p not in ("self", "audio")]
+        params = [
+            p for p in inspect.signature(cls.__init__).parameters if p not in ("self", "audio")
+        ]
     except (TypeError, ValueError):
         return ""
     close = difflib.get_close_matches(bad, params, n=1)
@@ -214,8 +215,7 @@ def _kwarg_suggestion(cls: type[Overlay], err_msg: str) -> str:
 def validate_for_scene(overlay: Overlay, display_mode) -> None:
     """Raise ValueError if `overlay` can't run on a scene with `display_mode`."""
     mode_name = getattr(display_mode, "name", "?")
-    if overlay.REQUIRES_PETSCII and not getattr(
-            display_mode, "is_petscii_compatible", False):
+    if overlay.REQUIRES_PETSCII and not getattr(display_mode, "is_petscii_compatible", False):
         raise ValueError(
             f"overlay {overlay.name!r} paints PETSCII screen codes and only "
             f"renders correctly with display = 'petscii' or 'blank', but "
@@ -257,4 +257,5 @@ def _load_all():
         spectrum_petscii,
         weather,
     )
+
     _LOADED = True

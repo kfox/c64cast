@@ -1,6 +1,7 @@
 """Tests for BigTextSpanOrchestrator — claims() dispatch, conductor-
 must-be-rightmost validation, snapshot round-trip, and the per-system
 window-slicing math."""
+
 # pyright: reportAttributeAccessIssue=false
 from __future__ import annotations
 
@@ -23,18 +24,21 @@ def _fake_stack(name: str, scenes: list[SceneCfg] | None = None) -> SystemStack:
     cfg = MagicMock(name=f"cfg-{name}")
     cfg.scenes = scenes or []
     return SystemStack(
-        name=name, cfg=cfg,
+        name=name,
+        cfg=cfg,
         api=MagicMock(name=f"api-{name}"),
-        audio=None, source=None,
+        audio=None,
+        source=None,
         playlist=MagicMock(name=f"playlist-{name}"),
         key_poller=MagicMock(name=f"keyboard-{name}"),
-        framebuffer=None, preview_window=None, recorder=None,
+        framebuffer=None,
+        preview_window=None,
+        recorder=None,
     )
 
 
 def _ensemble(*names: str) -> Ensemble:
-    return Ensemble(stacks=[_fake_stack(n) for n in names],
-                    stop_event=threading.Event())
+    return Ensemble(stacks=[_fake_stack(n) for n in names], stop_event=threading.Event())
 
 
 class ClaimsTest(unittest.TestCase):
@@ -42,25 +46,21 @@ class ClaimsTest(unittest.TestCase):
     and rejects everything else."""
 
     def test_claims_blank_with_big_text(self):
-        cfg = SceneCfg(type="blank", name="b",
-                       overlays=[{"type": "big_text"}])
+        cfg = SceneCfg(type="blank", name="b", overlays=[{"type": "big_text"}])
         self.assertTrue(BigTextSpanOrchestrator.claims(cfg))
 
     def test_claims_mcm_with_big_text(self):
-        cfg = SceneCfg(type="mcm", name="b",
-                       overlays=[{"type": "big_text"}])
+        cfg = SceneCfg(type="mcm", name="b", overlays=[{"type": "big_text"}])
         self.assertTrue(BigTextSpanOrchestrator.claims(cfg))
 
     def test_rejects_webcam_with_big_text(self):
         # big_text isn't supported on webcam — claims() shouldn't lie
         # about it just because the overlay dict happens to be there.
-        cfg = SceneCfg(type="webcam", name="b",
-                       overlays=[{"type": "big_text"}])
+        cfg = SceneCfg(type="webcam", name="b", overlays=[{"type": "big_text"}])
         self.assertFalse(BigTextSpanOrchestrator.claims(cfg))
 
     def test_rejects_blank_without_big_text(self):
-        cfg = SceneCfg(type="blank", name="b",
-                       overlays=[{"type": "clock"}])
+        cfg = SceneCfg(type="blank", name="b", overlays=[{"type": "clock"}])
         self.assertFalse(BigTextSpanOrchestrator.claims(cfg))
 
     def test_rejects_blank_with_no_overlays(self):
@@ -69,7 +69,6 @@ class ClaimsTest(unittest.TestCase):
 
 
 class RightmostConductorValidationTest(unittest.TestCase):
-
     def test_rightmost_conductor_accepted(self):
         ens = _ensemble("left", "middle", "right")
         orch = BigTextSpanOrchestrator(ens, "right")
@@ -95,7 +94,6 @@ class RightmostConductorValidationTest(unittest.TestCase):
 
 
 class PublishSnapshotRoundTripTest(unittest.TestCase):
-
     def _bits(self, n_src_px: int) -> np.ndarray:
         return np.zeros((8, n_src_px), dtype=bool)
 
@@ -139,8 +137,7 @@ class PublishSnapshotRoundTripTest(unittest.TestCase):
         # caught during phase-2 end-to-end verification.
         ens = _ensemble("left", "right")
         orch = BigTextSpanOrchestrator(ens, "right")
-        orch.publish_bits(bits=self._bits(8), color=1, rainbow=False,
-                          px_per_frame=1)
+        orch.publish_bits(bits=self._bits(8), color=1, rainbow=False, px_per_frame=1)
         orch.advance(42)
         snap = orch.snapshot()
         self.assertEqual(snap["abs_scroll_px"], 42)
@@ -157,8 +154,7 @@ class PublishSnapshotRoundTripTest(unittest.TestCase):
         ens = _ensemble("left", "right")
         orch = BigTextSpanOrchestrator(ens, "right")
         orch.begin(SceneCfg(type="blank", name="b"))
-        orch.publish_bits(bits=self._bits(8), color=1, rainbow=False,
-                          px_per_frame=1)
+        orch.publish_bits(bits=self._bits(8), color=1, rainbow=False, px_per_frame=1)
         orch.end()
         # Cannot snapshot after end (orchestrator is inactive) — the
         # bits cleanup is observable through end_threshold_px instead.
@@ -184,8 +180,7 @@ class WindowSlicingMathTest(unittest.TestCase):
         orch = self._orch(3)
         for abs_px in (0, 50, 320, 700):
             with self.subTest(abs_px=abs_px):
-                self.assertEqual(orch.local_x_left_px(2, abs_px),
-                                 SCREEN_W_PX - abs_px)
+                self.assertEqual(orch.local_x_left_px(2, abs_px), SCREEN_W_PX - abs_px)
 
     def test_abs_zero_message_just_off_right(self):
         # At abs_scroll_px = 0, message is just off the right of the
@@ -201,8 +196,9 @@ class WindowSlicingMathTest(unittest.TestCase):
         # leftmost's x_left_px = -n_src_px*8 (fully scrolled past).
         orch = self._orch(3)
         n_src_px = 16
-        orch.publish_bits(bits=np.zeros((8, n_src_px), dtype=bool),
-                          color=0, rainbow=False, px_per_frame=1)
+        orch.publish_bits(
+            bits=np.zeros((8, n_src_px), dtype=bool), color=0, rainbow=False, px_per_frame=1
+        )
         end = orch.end_threshold_px
         self.assertEqual(end, 3 * SCREEN_W_PX + n_src_px * 8)
         self.assertEqual(orch.local_x_left_px(0, end), -n_src_px * 8)
@@ -212,7 +208,7 @@ class WindowSlicingMathTest(unittest.TestCase):
         # 1.5 * SCREEN_W_PX), the rightmost shows the second half and
         # the middle shows the first half emerging from the right.
         orch = self._orch(3)
-        abs_px = SCREEN_W_PX + SCREEN_W_PX // 2   # 480
+        abs_px = SCREEN_W_PX + SCREEN_W_PX // 2  # 480
         # Rightmost (index 2): x_left_px = 320 - 480 = -160 → first
         # half is off-screen left, second half visible.
         self.assertEqual(orch.local_x_left_px(2, abs_px), -160)

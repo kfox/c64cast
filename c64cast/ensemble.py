@@ -14,6 +14,7 @@ In single-system mode `Ensemble` is `None`; the lone SystemStack is
 constructed standalone and the existing single-system code paths read
 unchanged. cli.py only allocates an Ensemble when [ensemble] is set in
 the master TOML."""
+
 from __future__ import annotations
 
 import logging
@@ -42,6 +43,7 @@ class SystemStack:
     source, playlist, keyboard poller, and optional preview/recording
     plumbing. A single-system invocation has exactly one of these;
     multi-system mode (ensemble) holds a list of them."""
+
     name: str
     cfg: Config
     api: C64Backend
@@ -95,6 +97,7 @@ class Ensemble:
     transaction so concurrent claims can't both win. Live scenes
     (webcam, blank) never claim — their audio is suppressed at build
     time in ensemble mode (see config.build_scene)."""
+
     stacks: list[SystemStack]
     stop_event: threading.Event
     active_orchestrator: Orchestrator | None = None
@@ -126,8 +129,11 @@ class Ensemble:
             if self.audio_holder == name:
                 self.audio_holder = None
             elif self.audio_holder is not None:
-                log.debug("ensemble: %s tried to release audio slot held "
-                          "by %s — ignoring", name, self.audio_holder)
+                log.debug(
+                    "ensemble: %s tried to release audio slot held by %s — ignoring",
+                    name,
+                    self.audio_holder,
+                )
 
     def populate_broadcast_events(self) -> None:
         """Allocate one interrupt + one resume Event per system. Idempotent
@@ -149,5 +155,4 @@ class Ensemble:
         for s in self.stacks:
             if s.name == name:
                 return s
-        raise KeyError(
-            f"unknown system {name!r}; known: {self.system_names()}")
+        raise KeyError(f"unknown system {name!r}; known: {self.system_names()}")

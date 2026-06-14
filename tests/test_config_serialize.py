@@ -5,6 +5,7 @@ corpus test: every shipped example config is loaded, serialized, and reloaded,
 and the two Configs must compare equal — which exercises every field type,
 overlay, and scene type the project actually uses against a real TOML parse.
 """
+
 from __future__ import annotations
 
 import glob
@@ -23,8 +24,7 @@ _EXAMPLES_DIR = os.path.join(_REPO, "config", "examples")
 def _reload(cfg: cfgmod.Config, **kwargs: object) -> cfgmod.Config:
     """dumps(cfg) → temp file → load() back into a fresh Config."""
     text = ser.dumps(cfg, **kwargs)  # type: ignore[arg-type]
-    with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False,
-                                     encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False, encoding="utf-8") as f:
         f.write(text)
         path = f.name
     try:
@@ -34,7 +34,6 @@ def _reload(cfg: cfgmod.Config, **kwargs: object) -> cfgmod.Config:
 
 
 class RoundTripDefaultsTest(unittest.TestCase):
-
     def test_defaults_round_trip(self):
         cfg = cfgmod.Config()
         self.assertEqual(_reload(cfg), cfg)
@@ -72,37 +71,46 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
 
     def test_waveform_lists_and_dicts(self):
         cfg = cfgmod.Config()
-        cfg.scenes = [cfgmod.SceneCfg(
-            type="waveform",
-            file="assets/sids/x.sid",
-            voice_colors=["red", "green", "light_blue"],
-            waveform_colors={"pulse": "cyan", "sawtooth": "light_red"},
-            color_mode="per_waveform",
-            scroll_columns=[2, 0, 5],
-            persistence="long",
-        )]
+        cfg.scenes = [
+            cfgmod.SceneCfg(
+                type="waveform",
+                file="assets/sids/x.sid",
+                voice_colors=["red", "green", "light_blue"],
+                waveform_colors={"pulse": "cyan", "sawtooth": "light_red"},
+                color_mode="per_waveform",
+                scroll_columns=[2, 0, 5],
+                persistence="long",
+            )
+        ]
         self.assertEqual(_reload(cfg), cfg)
 
     def test_scene_with_overlays(self):
         cfg = cfgmod.Config()
-        cfg.scenes = [cfgmod.SceneCfg(
-            type="blank",
-            display="blank",
-            border=6,
-            background=0,
-            overlays=[
-                {"type": "clock", "corner": "top_right"},
-                {"type": "marquee", "text": "hello \"world\"", "row": 24},
-            ],
-        )]
+        cfg.scenes = [
+            cfgmod.SceneCfg(
+                type="blank",
+                display="blank",
+                border=6,
+                background=0,
+                overlays=[
+                    {"type": "clock", "corner": "top_right"},
+                    {"type": "marquee", "text": 'hello "world"', "row": 24},
+                ],
+            )
+        ]
         self.assertEqual(_reload(cfg), cfg)
 
     def test_color_hue_corrections(self):
         cfg = cfgmod.Config()
         cfg.color.channel_boost = [1.4, 1.1, 0.95]
         cfg.color.hue_corrections = [
-            {"name": "test", "hue_lo_deg": 250, "hue_hi_deg": 280,
-             "hue_target_deg": 300, "sat_mult": 1.5},
+            {
+                "name": "test",
+                "hue_lo_deg": 250,
+                "hue_hi_deg": 280,
+                "hue_target_deg": 300,
+                "sat_mult": 1.5,
+            },
         ]
         cfg.color.hue_corrections_replace_defaults = True
         self.assertEqual(_reload(cfg), cfg)
@@ -116,16 +124,17 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
 
     def test_string_escaping(self):
         cfg = cfgmod.Config()
-        cfg.scenes = [cfgmod.SceneCfg(
-            type="blank", display="blank",
-            overlays=[{"type": "callsign",
-                       "text": 'tab\there "quote" back\\slash'}],
-        )]
+        cfg.scenes = [
+            cfgmod.SceneCfg(
+                type="blank",
+                display="blank",
+                overlays=[{"type": "callsign", "text": 'tab\there "quote" back\\slash'}],
+            )
+        ]
         self.assertEqual(_reload(cfg), cfg)
 
 
 class BehaviorTest(unittest.TestCase):
-
     def test_secret_never_emitted(self):
         cfg = cfgmod.Config()
         cfg.ultimate64.dma_password = "hunter2"
@@ -146,8 +155,7 @@ class BehaviorTest(unittest.TestCase):
     def test_custom_schema_path(self):
         cfg = cfgmod.Config()
         text = ser.dumps(cfg, schema_path="../../c64cast.schema.json")
-        self.assertEqual(text.splitlines()[0],
-                         "#:schema ../../c64cast.schema.json")
+        self.assertEqual(text.splitlines()[0], "#:schema ../../c64cast.schema.json")
 
     def test_minimal_omits_defaults(self):
         cfg = cfgmod.Config()
@@ -185,8 +193,9 @@ class BehaviorTest(unittest.TestCase):
 
     def test_ensemble_master_rejected(self):
         cfg = cfgmod.Config()
-        cfg.ensemble = cfgmod.EnsembleCfg(systems=[
-            cfgmod.SystemEntryCfg(name="left", config="left.toml")])
+        cfg.ensemble = cfgmod.EnsembleCfg(
+            systems=[cfgmod.SystemEntryCfg(name="left", config="left.toml")]
+        )
         with self.assertRaises(ser.SerializeError):
             ser.dumps(cfg)
 

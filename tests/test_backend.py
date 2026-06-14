@@ -9,6 +9,7 @@ preserving seam over the existing Ultimate backend. These tests pin:
 They construct no hardware — `make_backend` is exercised via a fake that
 stubs out the socket connect, and the ABC contract is checked structurally.
 """
+
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -69,9 +70,17 @@ class ProfileAndRegistryTest(unittest.TestCase):
     def test_ultimate_profile_is_fully_capable(self):
         p = ULTIMATE_PROFILE
         self.assertEqual(p.family, "ultimate")
-        for flag in ("supports_write", "supports_read", "supports_reset",
-                     "supports_probe", "supports_run_prg", "supports_run_crt",
-                     "supports_reu", "reu_bus_clean", "kernal_irq_intact"):
+        for flag in (
+            "supports_write",
+            "supports_read",
+            "supports_reset",
+            "supports_probe",
+            "supports_run_prg",
+            "supports_run_crt",
+            "supports_reu",
+            "reu_bus_clean",
+            "kernal_irq_intact",
+        ):
             self.assertTrue(getattr(p, flag), f"{flag} should be True")
         # The U64 DMAWRITE is fire-and-forget, not acked.
         self.assertFalse(p.writes_are_acked)
@@ -94,24 +103,33 @@ class AbstractContractTest(unittest.TestCase):
         # construct fine, and every capability-gated method raises until
         # overridden.
         class MinimalBackend(C64Backend):
-            profile = replace(ULTIMATE_PROFILE, name="min", family="tr",
-                              supports_read=False, supports_reset=False,
-                              supports_run_prg=False, supports_reu=False)
+            profile = replace(
+                ULTIMATE_PROFILE,
+                name="min",
+                family="tr",
+                supports_read=False,
+                supports_reset=False,
+                supports_run_prg=False,
+                supports_reu=False,
+            )
 
             def write_memory(self, address, data_hex): ...
             def write_memory_file(self, address, data_bytes): ...
             def write_regs(self, base_addr, *values): ...
-            def write_region(self, address, data, region_id=None,
-                             full_threshold=0.6): return 0
+            def write_region(self, address, data, region_id=None, full_threshold=0.6):
+                return 0
+
             def flush(self): ...
             def close(self): ...
             def invalidate_cache(self): ...
             def add_write_listener(self, callback): ...
             def remove_write_listener(self, callback): ...
-            def format_write_latency(self): return None
+            def format_write_latency(self):
+                return None
 
             @property
-            def stats(self): return {}
+            def stats(self):
+                return {}
 
         b = MinimalBackend()
         # probe is a soft default (returns None, doesn't raise).
@@ -150,6 +168,7 @@ class MakeBackendTest(unittest.TestCase):
         # default_fps was resolved from the configured video system.
         with mock.patch("c64cast.socket_dma.SocketDMAClient.connect"):
             from c64cast.api import Ultimate64API
+
             api = make_backend(self._cfg(system="NTSC"))
             self.assertIsInstance(api, Ultimate64API)
             self.assertIsInstance(api, C64Backend)
@@ -162,6 +181,7 @@ class MakeBackendTest(unittest.TestCase):
     def test_direct_construction_defaults_to_ultimate_profile(self):
         with mock.patch("c64cast.socket_dma.SocketDMAClient.connect"):
             from c64cast.api import Ultimate64API
+
             api = Ultimate64API("http://example.lan")
             self.assertIs(api.profile, ULTIMATE_PROFILE)
 
@@ -170,6 +190,7 @@ class MakeBackendTest(unittest.TestCase):
         # it forwards to the socket client's reuwrite.
         with mock.patch("c64cast.socket_dma.SocketDMAClient.connect"):
             from c64cast.api import Ultimate64API
+
             api = Ultimate64API("http://example.lan")
             with mock.patch.object(api.socket_dma, "reuwrite") as rw:
                 api.reu_write(0x100000, b"\x01\x02")
@@ -202,7 +223,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
 
     def test_write_regs_masks_to_byte(self):
         b = self._b()
-        b.write_regs("d020", 0x1FF)        # overflow masked to 0xFF
+        b.write_regs("d020", 0x1FF)  # overflow masked to 0xFF
         self.assertEqual(b.emits, [(0xD020, b"\xff")])
 
     # ---- write_region delta cache ----------------------------------------
@@ -244,8 +265,8 @@ class BufferedWriteBackendTest(unittest.TestCase):
         base = bytearray(n)
         b.write_region(0x4000, bytes(base), region_id=2)
         b.emits.clear()
-        base[5] = 1                                   # chunk 0
-        base[n - 5] = 1                               # last chunk
+        base[5] = 1  # chunk 0
+        base[n - 5] = 1  # last chunk
         uploaded = b.write_region(0x4000, bytes(base), region_id=2)
         # Two dirty chunks of DELTA_CHUNK_BYTES each — far less than n.
         self.assertEqual(uploaded, DELTA_CHUNK_BYTES * 2)
@@ -276,21 +297,20 @@ class BufferedWriteBackendTest(unittest.TestCase):
 
     def test_region_accepts_bytearray(self):
         b = self._b()
-        self.assertEqual(b.write_region(0x0400, bytearray(b"\x01\x02"),
-                                        region_id=1), 2)
+        self.assertEqual(b.write_region(0x0400, bytearray(b"\x01\x02"), region_id=1), 2)
 
     # ---- listeners -------------------------------------------------------
     def test_listeners_receive_writes_and_can_be_removed(self):
         b = self._b()
         seen: list[tuple[int, bytes]] = []
-        cb = lambda a, d: seen.append((a, bytes(d)))   # noqa: E731
+        cb = lambda a, d: seen.append((a, bytes(d)))  # noqa: E731
         b.add_write_listener(cb)
         b.write_memory("d020", "0e")
         b.write_memory_file("0400", b"\x01")
         self.assertEqual(seen, [(0xD020, b"\x0e"), (0x0400, b"\x01")])
         b.remove_write_listener(cb)
         b.write_memory("d021", "06")
-        self.assertEqual(len(seen), 2)            # no new notifications
+        self.assertEqual(len(seen), 2)  # no new notifications
         # Removing an unregistered callback is a no-op (suppressed ValueError).
         b.remove_write_listener(cb)
 
@@ -298,7 +318,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b = self._b()
         b.add_write_listener(lambda a, d: (_ for _ in ()).throw(RuntimeError()))
         with self.assertLogs("c64cast.backend", level="ERROR"):
-            b.write_memory("d020", "0e")          # must not propagate
+            b.write_memory("d020", "0e")  # must not propagate
         self.assertEqual(b.emits, [(0xD020, b"\x0e")])
 
     # ---- failure ladder --------------------------------------------------
@@ -314,9 +334,9 @@ class BufferedWriteBackendTest(unittest.TestCase):
     def test_emit_success_resets_consecutive_counter(self):
         b = self._b()
         b.fail = True
-        b.write_memory("d020", "00")              # one failure
+        b.write_memory("d020", "00")  # one failure
         b.fail = False
-        b.write_memory("d020", "00")              # success clears the counter
+        b.write_memory("d020", "00")  # success clears the counter
         self.assertEqual(b._consecutive_errors, 0)
 
     # ---- semantic write helpers ------------------------------------------
@@ -324,7 +344,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b = self._b()
         b.silence_sid()
         addrs = [a for a, _ in b.emits]
-        self.assertIn(0xD418, addrs)              # master volume
+        self.assertIn(0xD418, addrs)  # master volume
         # One gate-clear per voice.
         self.assertEqual(b.emits[0], (0xD418, b"\x00"))
         self.assertGreaterEqual(len(b.emits), 4)
@@ -332,7 +352,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
     def test_blank_display_clears_den(self):
         b = self._b()
         b.blank_display()
-        self.assertEqual(b.emits, [(0xD011, b"\x0b")])   # DEN bit cleared
+        self.assertEqual(b.emits, [(0xD011, b"\x0b")])  # DEN bit cleared
 
     def test_disable_case_switch(self):
         b = self._b()

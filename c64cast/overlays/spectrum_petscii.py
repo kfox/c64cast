@@ -11,6 +11,7 @@ Placement modes:
   split  — bars descend from row 0 AND rise from row 24
            (meet in the middle when loud).
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,19 +28,22 @@ SCREEN_W = SCREEN.W_CHARS
 SCREEN_H = SCREEN.H_CHARS
 
 N_BANDS = 8
-COLS_PER_BAND = SCREEN_W // N_BANDS   # 5
+COLS_PER_BAND = SCREEN_W // N_BANDS  # 5
 
 # Lowest → highest frequency band color (as in the plan).
-BAND_COLORS = np.array([
-    C64_COLORS["red"],          # band 0 — lowest
-    C64_COLORS["orange"],
-    C64_COLORS["yellow"],
-    C64_COLORS["light green"],
-    C64_COLORS["cyan"],
-    C64_COLORS["light blue"],
-    C64_COLORS["purple"],
-    C64_COLORS["light red"],    # band 7 — highest
-], dtype=np.uint8)
+BAND_COLORS = np.array(
+    [
+        C64_COLORS["red"],  # band 0 — lowest
+        C64_COLORS["orange"],
+        C64_COLORS["yellow"],
+        C64_COLORS["light green"],
+        C64_COLORS["cyan"],
+        C64_COLORS["light blue"],
+        C64_COLORS["purple"],
+        C64_COLORS["light red"],  # band 7 — highest
+    ],
+    dtype=np.uint8,
+)
 
 FFT_SIZE = 1024
 WINDOW = np.hanning(FFT_SIZE).astype(np.float32)
@@ -68,15 +72,15 @@ class PetsciiSpectrumOverlay(Overlay):
         "gain": "Multiplier applied to FFT magnitudes before bar height.",
     }
 
-    def __init__(self, audio=None, placement: str = "center",
-                 height_rows: int = 12, gain: float = 1.0):
+    def __init__(
+        self, audio=None, placement: str = "center", height_rows: int = 12, gain: float = 1.0
+    ):
         if placement not in ("bottom", "center", "split"):
             raise ValueError(
-                f"spectrum_petscii: placement must be bottom|center|split, "
-                f"got {placement!r}")
+                f"spectrum_petscii: placement must be bottom|center|split, got {placement!r}"
+            )
         if not (1 <= height_rows <= SCREEN_H):
-            raise ValueError(
-                f"spectrum_petscii: height_rows must be 1..{SCREEN_H}")
+            raise ValueError(f"spectrum_petscii: height_rows must be 1..{SCREEN_H}")
         self.audio = audio
         self.placement = placement
         self.height_rows = int(height_rows)
@@ -153,19 +157,17 @@ class PetsciiSpectrumOverlay(Overlay):
         elif self.placement == "center":
             mid = SCREEN_H // 2
             half = max(1, ln // 2)
-            self._fill_rect(chars, colors,
-                            x_start, x_end, mid - half, mid + half, color)
+            self._fill_rect(chars, colors, x_start, x_end, mid - half, mid + half, color)
         elif self.placement == "split":
             # From top down to `ln`, AND from bottom up `ln` rows. When loud,
             # they meet in the middle. Each side gets half the magnitude.
             half = max(1, ln // 2)
             self._fill_rect(chars, colors, x_start, x_end, 0, half, color)
-            self._fill_rect(chars, colors,
-                            x_start, x_end, SCREEN_H - half, SCREEN_H, color)
+            self._fill_rect(chars, colors, x_start, x_end, SCREEN_H - half, SCREEN_H, color)
 
     @staticmethod
     def _fill_rect(chars, colors, x0, x1, y0, y1, color):
         for y in range(y0, y1):
             base = y * SCREEN_W
-            chars[base + x0:base + x1] = SC_FULL
-            colors[base + x0:base + x1] = color
+            chars[base + x0 : base + x1] = SC_FULL
+            colors[base + x0 : base + x1] = color

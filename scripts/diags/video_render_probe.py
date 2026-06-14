@@ -76,19 +76,18 @@ class RecordingBackend(BufferedWriteBackend):
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("video", help="path to a video file")
-    ap.add_argument("--mode", default="mhires",
-                    help="display mode name (default mhires)")
-    ap.add_argument("--palette", default="percell",
-                    help="palette_mode for mcm/mhires (default percell)")
-    ap.add_argument("--max-frames", type=int, default=0,
-                    help="stop after N frames (0 = whole file)")
-    ap.add_argument("--top", type=int, default=50,
-                    help="how many flip/full-upload events to print")
-    ap.add_argument("--csv", default=None,
-                    help="write per-frame churn to this path")
+    ap.add_argument("--mode", default="mhires", help="display mode name (default mhires)")
+    ap.add_argument(
+        "--palette", default="percell", help="palette_mode for mcm/mhires (default percell)"
+    )
+    ap.add_argument(
+        "--max-frames", type=int, default=0, help="stop after N frames (0 = whole file)"
+    )
+    ap.add_argument("--top", type=int, default=50, help="how many flip/full-upload events to print")
+    ap.add_argument("--csv", default=None, help="write per-frame churn to this path")
     args = ap.parse_args()
 
     import av
@@ -116,8 +115,15 @@ def main() -> int:
         rb = api.region_bytes
         bg.append(api.d021)
         bmp.append(rb["bitmap"])
-        rows.append((rb["bitmap"], rb["screen"], rb["color"], rb["regs"],
-                     api.d021 if api.d021 is not None else -1))
+        rows.append(
+            (
+                rb["bitmap"],
+                rb["screen"],
+                rb["color"],
+                rb["regs"],
+                api.d021 if api.d021 is not None else -1,
+            )
+        )
     container.close()
     total = len(bg)
     if total == 0:
@@ -135,32 +141,39 @@ def main() -> int:
     print(f"mode={args.mode} palette={args.palette} frames={total} fps={fps:.2f}")
 
     changes = int(np.count_nonzero(np.diff(arr) != 0))
-    trans = [i for i in range(1, total - 1)
-             if arr[i] != arr[i - 1] and arr[i] != arr[i + 1]
-             and arr[i - 1] == arr[i + 1]]
+    trans = [
+        i
+        for i in range(1, total - 1)
+        if arr[i] != arr[i - 1] and arr[i] != arr[i + 1] and arr[i - 1] == arr[i + 1]
+    ]
     full_uploads = [i for i in range(total) if bmp_arr[i] >= full_bytes]
-    print(f"\nbg0/$D021: changed on {changes}/{total} frames; "
-          f"transient 1-frame flips (flash-and-revert): {len(trans)}")
-    print(f"bitmap full-uploads (>= {full_bytes}B / 8000B): "
-          f"{len(full_uploads)}/{total} frames "
-          f"(mean bitmap push {bmp_arr.mean():.0f}B/frame)")
+    print(
+        f"\nbg0/$D021: changed on {changes}/{total} frames; "
+        f"transient 1-frame flips (flash-and-revert): {len(trans)}"
+    )
+    print(
+        f"bitmap full-uploads (>= {full_bytes}B / 8000B): "
+        f"{len(full_uploads)}/{total} frames "
+        f"(mean bitmap push {bmp_arr.mean():.0f}B/frame)"
+    )
 
     if trans:
         print("\ntransient bg0 flips (frame  time  from->flash->back):")
-        for i in trans[:args.top]:
-            print(f"  f{i:5d} {ts(i):>6}  {arr[i-1]:2d}->{arr[i]:2d}->{arr[i+1]:2d}")
+        for i in trans[: args.top]:
+            print(f"  f{i:5d} {ts(i):>6}  {arr[i - 1]:2d}->{arr[i]:2d}->{arr[i + 1]:2d}")
 
     vals, counts = np.unique(arr, return_counts=True)
-    print("\nbg0 value distribution (palette idx: frames): "
-          + ", ".join(f"{int(v)}:{int(c)}"
-                      for v, c in zip(vals, counts, strict=True)))
+    print(
+        "\nbg0 value distribution (palette idx: frames): "
+        + ", ".join(f"{int(v)}:{int(c)}" for v, c in zip(vals, counts, strict=True))
+    )
 
     if args.csv:
         import csv
+
         with open(args.csv, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["frame", "time_s", "bitmap_B", "screen_B",
-                        "color_B", "reg_B", "bg0"])
+            w.writerow(["frame", "time_s", "bitmap_B", "screen_B", "color_B", "reg_B", "bg0"])
             for i, r in enumerate(rows):
                 w.writerow([i, f"{i / fps:.3f}", *r])
         print(f"\nwrote per-frame churn → {args.csv}")

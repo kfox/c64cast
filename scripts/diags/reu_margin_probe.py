@@ -49,7 +49,7 @@ from c64cast.audio import (
 )
 
 # Read-pointer operand: NMI_ROUTINE offset 5/6 -> LDA $00?? operand = $C025/$C026.
-READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5          # $C025 (LO), $C026 (HI)
+READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 (LO), $C026 (HI)
 # REU register block: dst pointer is $DF02 (LO) / $DF03 (HI).
 REU_DST_REG_ADDR = 0xDF02
 
@@ -98,20 +98,33 @@ def main() -> int:
     )
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--config", help="c64cast TOML (REU-staged audio) to launch")
-    g.add_argument("--attach", action="store_true",
-                   help="probe an already-running c64cast (don't launch/reset)")
-    ap.add_argument("-t", "--seconds", type=float, default=30.0,
-                    help="poll duration after boot (default 30)")
+    g.add_argument(
+        "--attach",
+        action="store_true",
+        help="probe an already-running c64cast (don't launch/reset)",
+    )
+    ap.add_argument(
+        "-t", "--seconds", type=float, default=30.0, help="poll duration after boot (default 30)"
+    )
     ap.add_argument("--hz", type=float, default=20.0, help="poll rate (default 20)")
-    ap.add_argument("--boot", type=float, default=7.0,
-                    help="seconds to wait for c64cast boot+first-PLAY (default 7)")
+    ap.add_argument(
+        "--boot",
+        type=float,
+        default=7.0,
+        help="seconds to wait for c64cast boot+first-PLAY (default 7)",
+    )
     ap.add_argument("--label", default="reu_margin")
-    ap.add_argument("--w", choices=["auto", "reg", "tracker"], default="auto",
-                    help="W (pump write ptr) source: reg=$DF02 (PLAIN path), "
-                         "tracker=$C203 (bank-swap TRACKED path), auto=legacy")
+    ap.add_argument(
+        "--w",
+        choices=["auto", "reg", "tracker"],
+        default="auto",
+        help="W (pump write ptr) source: reg=$DF02 (PLAIN path), "
+        "tracker=$C203 (bank-swap TRACKED path), auto=legacy",
+    )
     ap.add_argument("--url", default=d.U64_URL)
-    ap.add_argument("--no-reset", action="store_true",
-                    help="leave the machine running (implied by --attach)")
+    ap.add_argument(
+        "--no-reset", action="store_true", help="leave the machine running (implied by --attach)"
+    )
     args = ap.parse_args()
 
     app: subprocess.Popen[bytes] | None = None
@@ -120,8 +133,9 @@ def main() -> int:
         if not cfg.exists():
             ap.error(f"config not found: {cfg}")
         print(f"[run] python -m c64cast --config {cfg}")
-        app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                                "--config", str(cfg), "--url", args.url])
+        app = subprocess.Popen(
+            [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+        )
         print(f"[boot] waiting {args.boot:g}s for boot + first PLAY")
         time.sleep(args.boot)
 
@@ -132,8 +146,10 @@ def main() -> int:
     missed = 0
 
     print(f"[probe] polling R($C025/26) vs W for {args.seconds:g}s @ {args.hz:g}Hz")
-    print(f"        ring=${RING_BUFFER_ADDR:04X}-${RING_BUFFER_END - 1:04X} "
-          f"size={RING_BUFFER_SIZE} target_phase={REU_PUMP_INITIAL_MARGIN}")
+    print(
+        f"        ring=${RING_BUFFER_ADDR:04X}-${RING_BUFFER_END - 1:04X} "
+        f"size={RING_BUFFER_SIZE} target_phase={REU_PUMP_INITIAL_MARGIN}"
+    )
     t0 = time.time()
     next_t = t0
     try:
@@ -147,7 +163,7 @@ def main() -> int:
                 missed += 1
                 continue
             sources.add(src)
-            phase = (w - r) % RING_BUFFER_SIZE          # how far W leads R, forward
+            phase = (w - r) % RING_BUFFER_SIZE  # how far W leads R, forward
             nearest = min(phase, RING_BUFFER_SIZE - phase)
             rows.append((round(now - t0, 3), r, w, phase, nearest))
     finally:
@@ -162,8 +178,10 @@ def main() -> int:
             print(f"[reset] machine:reset -> {code}")
 
     if not rows:
-        print(f"[FAIL] no valid pointer samples ({missed} missed reads). "
-              "Is REU-staged audio actually playing? Is the REU enabled?")
+        print(
+            f"[FAIL] no valid pointer samples ({missed} missed reads). "
+            "Is REU-staged audio actually playing? Is the REU enabled?"
+        )
         return 1
 
     with csv_path.open("w") as f:
@@ -174,12 +192,16 @@ def main() -> int:
     phases = [r[3] for r in rows]
     nearest = [r[4] for r in rows]
     print(f"\n[probe] {len(rows)} samples, {missed} missed, W source(s)={sorted(sources)}")
-    print(f"  phase (W-R mod ring): min={min(phases)} "
-          f"median={int(statistics.median(phases))} max={max(phases)} "
-          f"(target ~{REU_PUMP_INITIAL_MARGIN})")
-    print(f"  nearest-lap distance: min={min(nearest)} "
-          f"median={int(statistics.median(nearest))} "
-          f"(0 = lapped/echo; higher = safer)")
+    print(
+        f"  phase (W-R mod ring): min={min(phases)} "
+        f"median={int(statistics.median(phases))} max={max(phases)} "
+        f"(target ~{REU_PUMP_INITIAL_MARGIN})"
+    )
+    print(
+        f"  nearest-lap distance: min={min(nearest)} "
+        f"median={int(statistics.median(nearest))} "
+        f"(0 = lapped/echo; higher = safer)"
+    )
     danger = sum(1 for n in nearest if n < 512)
     print(f"  near-lap events (<512 B ~64ms): {danger} / {len(rows)}")
     print(f"  csv -> {csv_path}")

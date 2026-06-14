@@ -35,6 +35,7 @@ Ultimate exposes it as an optional sub-transport (`reu_write`, forwarded to
 REU leaves the default raising implementation in place; the experimental
 `use_reu_*` config paths must check `supports_reu` before reaching it.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -78,8 +79,7 @@ class BackendCapabilityError(RuntimeError):
 
     def __init__(self, capability: str):
         self.capability = capability
-        super().__init__(
-            f"this hardware backend does not support {capability!r}")
+        super().__init__(f"this hardware backend does not support {capability!r}")
 
 
 @dataclass(frozen=True)
@@ -96,32 +96,32 @@ class HardwareProfile:
     hardware variants live — the playlist clamps the system rate to it.
     """
 
-    name: str                       # human-facing, e.g. "Ultimate 64"
-    family: str                     # "ultimate" | "tr"
+    name: str  # human-facing, e.g. "Ultimate 64"
+    family: str  # "ultimate" | "tr"
 
     # ---- capability flags ----------------------------------------------
-    supports_write: bool = True     # the mandatory write path (always True
-                                    #   for a usable backend; here for symmetry)
-    supports_read: bool = True      # read_memory (device round-trip read)
-    supports_reset: bool = True     # hard machine reset
-    supports_probe: bool = True     # a cheap liveness probe
-    supports_run_prg: bool = True   # launch a PRG (clear-loop, SID player)
-    supports_run_crt: bool = True   # launch a CRT (cartridge)
-    supports_reu: bool = True       # REU writes (use_reu_pump / use_reu_staged)
-    reu_bus_clean: bool = False     # REU writes don't perturb the C64 bus/SID
+    supports_write: bool = True  # the mandatory write path (always True
+    #   for a usable backend; here for symmetry)
+    supports_read: bool = True  # read_memory (device round-trip read)
+    supports_reset: bool = True  # hard machine reset
+    supports_probe: bool = True  # a cheap liveness probe
+    supports_run_prg: bool = True  # launch a PRG (clear-loop, SID player)
+    supports_run_crt: bool = True  # launch a CRT (cartridge)
+    supports_reu: bool = True  # REU writes (use_reu_pump / use_reu_staged)
+    reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
 
     # ---- transport -----------------------------------------------------
-    write_transport: str = "socket_dma"   # "socket_dma" | "tr_serial" | "tr_tcp"
+    write_transport: str = "socket_dma"  # "socket_dma" | "tr_serial" | "tr_tcp"
 
     # ---- timing / throughput limits ------------------------------------
-    default_fps: float = 60.0       # resolved system rate (NTSC/PAL)
-    max_fps: float | None = None    # per-variant cap on top of default_fps
-    max_write_rate_hz: float | None = None   # sustained write ceiling (pacing)
+    default_fps: float = 60.0  # resolved system rate (NTSC/PAL)
+    max_fps: float | None = None  # per-variant cap on top of default_fps
+    max_write_rate_hz: float | None = None  # sustained write ceiling (pacing)
 
     # ---- C64 memory map assumptions ------------------------------------
-    audio_ring_addr: int = 0x4000   # base of the audio DAC ring buffer
+    audio_ring_addr: int = 0x4000  # base of the audio DAC ring buffer
 
 
 # The Ultimate family (Ultimate 64, Ultimate II+). The two are protocol-
@@ -140,12 +140,12 @@ ULTIMATE_PROFILE = HardwareProfile(
     supports_run_prg=True,
     supports_run_crt=True,
     supports_reu=True,
-    reu_bus_clean=True,             # U64 REUWRITE is an ARM-side memcpy; no bus halt
-    writes_are_acked=False,         # socket DMAWRITE is fire-and-forget
+    reu_bus_clean=True,  # U64 REUWRITE is an ARM-side memcpy; no bus halt
+    writes_are_acked=False,  # socket DMAWRITE is fire-and-forget
     kernal_irq_intact=True,
     write_transport="socket_dma",
-    max_fps=None,                   # no extra cap beyond the system rate
-    max_write_rate_hz=200.0,        # ~200 writes/sec DMA ceiling (see caveats)
+    max_fps=None,  # no extra cap beyond the system rate
+    max_write_rate_hz=200.0,  # ~200 writes/sec DMA ceiling (see caveats)
     audio_ring_addr=0x4000,
 )
 
@@ -161,18 +161,18 @@ TEENSYROM_PROFILE = HardwareProfile(
     name="TeensyROM+",
     family="tr",
     supports_write=True,
-    supports_read=False,            # no read-C64-memory token in the protocol
-    supports_reset=True,            # ResetC64Token 0x64EE
-    supports_probe=True,            # Ping 0x6455 / FWCheck 0x64E0
-    supports_run_prg=True,          # PostFile + LaunchFile
-    supports_run_crt=True,          # RemoteLaunch handles CRT launch
-    supports_reu=False,             # no REUWRITE opcode
+    supports_read=False,  # no read-C64-memory token in the protocol
+    supports_reset=True,  # ResetC64Token 0x64EE
+    supports_probe=True,  # Ping 0x6455 / FWCheck 0x64E0
+    supports_run_prg=True,  # PostFile + LaunchFile
+    supports_run_crt=True,  # RemoteLaunch handles CRT launch
+    supports_reu=False,  # no REUWRITE opcode
     reu_bus_clean=False,
-    writes_are_acked=True,          # every write returns Ack/Fail -> flush ~free
+    writes_are_acked=True,  # every write returns Ack/Fail -> flush ~free
     kernal_irq_intact=True,
     write_transport="tr_serial",
     max_fps=None,
-    max_write_rate_hz=None,         # to be measured on hardware
+    max_write_rate_hz=None,  # to be measured on hardware
     audio_ring_addr=0x4000,
 )
 
@@ -208,9 +208,9 @@ class C64Backend(ABC):
     def write_regs(self, base_addr: str, *values: int) -> None: ...
 
     @abstractmethod
-    def write_region(self, address: int, data: bytes,
-                     region_id: int | None = None,
-                     full_threshold: float = 0.6) -> int: ...
+    def write_region(
+        self, address: int, data: bytes, region_id: int | None = None, full_threshold: float = 0.6
+    ) -> int: ...
 
     @abstractmethod
     def flush(self) -> None: ...
@@ -242,8 +242,7 @@ class C64Backend(ABC):
     # CAPABILITY-GATED — default impls raise. Override + flip the matching
     # profile flag to support. Callers gate on profile.supports_* first.
     # ==================================================================
-    def read_memory(self, address: int, length: int,
-                    timeout: float = 1.0) -> bytes | None:
+    def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise BackendCapabilityError("read_memory")
 
     def reset(self) -> None:
@@ -261,14 +260,18 @@ class C64Backend(ABC):
     def launch_program(self, path: str, timeout: float = 10.0) -> None:
         raise BackendCapabilityError("run_prg/run_crt")
 
-    def run_sid_player(self, sid_bytes: bytes, song: int = 0,
-                       timeout: float = 5.0, *,
-                       avoid: bytes | bytearray | None = None,
-                       play_bank: int | None = None) -> None:
+    def run_sid_player(
+        self,
+        sid_bytes: bytes,
+        song: int = 0,
+        timeout: float = 5.0,
+        *,
+        avoid: bytes | bytearray | None = None,
+        play_bank: int | None = None,
+    ) -> None:
         raise BackendCapabilityError("run_sid_player")
 
-    def cue_song_reinit(self, song: int, *,
-                        play_bank: int | None = None) -> None:
+    def cue_song_reinit(self, song: int, *, play_bank: int | None = None) -> None:
         raise BackendCapabilityError("cue_song_reinit")
 
     def reu_write(self, reu_offset: int, data: bytes) -> None:
@@ -314,7 +317,10 @@ class BufferedWriteBackend(C64Backend):
         # valid for the lifetime of the cache entry.
         self._cache: dict[int, tuple[bytes, np.ndarray]] = {}
         self._stats: dict[str, int] = {
-            "writes": 0, "skipped": 0, "errors": 0, "bytes": 0,
+            "writes": 0,
+            "skipped": 0,
+            "errors": 0,
+            "bytes": 0,
         }
         # Write listeners (preview, recording, framebuffer shadowing). Each
         # callback receives (address: int, data: bytes) for every write that
@@ -358,11 +364,18 @@ class BufferedWriteBackend(C64Backend):
         if self._consecutive_errors == 1:
             log.debug("%s $%04X failed: %s", self._EMIT_WRITE_LABEL, addr, e)
         elif self._consecutive_errors in (10, 50):
-            log.warning("%s failures: %d consecutive (last: %s)",
-                        self._EMIT_WRITE_LABEL, self._consecutive_errors, e)
+            log.warning(
+                "%s failures: %d consecutive (last: %s)",
+                self._EMIT_WRITE_LABEL,
+                self._consecutive_errors,
+                e,
+            )
         elif self._consecutive_errors == 200:
-            log.error("%s unreachable? %d consecutive write failures",
-                      self._EMIT_DEVICE_LABEL, self._consecutive_errors)
+            log.error(
+                "%s unreachable? %d consecutive write failures",
+                self._EMIT_DEVICE_LABEL,
+                self._consecutive_errors,
+            )
 
     # ---- listeners --------------------------------------------------------
     def add_write_listener(self, callback: WriteListener) -> None:
@@ -409,9 +422,9 @@ class BufferedWriteBackend(C64Backend):
         """
         self.write_memory(base_addr, "".join(f"{v & 0xFF:02X}" for v in values))
 
-    def write_region(self, address: int, data: bytes,
-                     region_id: int | None = None,
-                     full_threshold: float = 0.6) -> int:
+    def write_region(
+        self, address: int, data: bytes, region_id: int | None = None, full_threshold: float = 0.6
+    ) -> int:
         """Push data, but only the changed sub-range if we have a cached copy.
 
         Returns bytes actually uploaded (0 = unchanged, skipped).
@@ -478,8 +491,7 @@ class BufferedWriteBackend(C64Backend):
                 for ci in np.flatnonzero(chunk_dirty):
                     start = int(ci) * DELTA_CHUNK_BYTES
                     end = min(start + DELTA_CHUNK_BYTES, n)
-                    self.write_memory_file(
-                        f"{address + start:04X}", new[start:end])
+                    self.write_memory_file(f"{address + start:04X}", new[start:end])
                     uploaded += end - start
                 self._cache[key] = (new, arr_new)
                 return uploaded
@@ -518,7 +530,7 @@ class BufferedWriteBackend(C64Backend):
         kernal reinitializes VIC. Blanking first replaces that flash with a
         clean solid color. Written value is text mode with DEN cleared — the
         non-DEN bits are irrelevant while the screen is blanked."""
-        blanked = 0x1B & ~VIC.D011_DISPLAY_ENABLE   # $0B: standard CR1, DEN off
+        blanked = 0x1B & ~VIC.D011_DISPLAY_ENABLE  # $0B: standard CR1, DEN off
         self.write_memory(f"{VIC.D011_CONTROL_1:04X}", f"{blanked:02X}")
 
     def disable_case_switch(self) -> None:
@@ -535,9 +547,9 @@ class BufferedWriteBackend(C64Backend):
     def restore_kernal_irq_vector(self) -> None:
         """Point $0314/$0315 back at the kernal default ($EA31). Call this
         after teardown of anything that hooks the IRQ (SID players)."""
-        self.write_regs(f"{VECTORS.IRQ:04X}",
-                        KERNAL.IRQ_HANDLER & 0xFF,
-                        (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        self.write_regs(
+            f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+        )
 
     def suppress_cursor_blink(self) -> None:
         """Write $80 to BLNSW ($00CC) so the kernal editor's cursor-blink
@@ -570,6 +582,7 @@ def make_backend(cfg: Config) -> C64Backend:
 
     if backend == "ultimate":
         from .api import Ultimate64API
+
         profile = replace(ULTIMATE_PROFILE, default_fps=fps)
         return Ultimate64API(
             cfg.ultimate64.url,
@@ -587,31 +600,30 @@ def make_backend(cfg: Config) -> C64Backend:
             TcpTransport,
             TRTransport,
         )
+
         tr = cfg.teensyrom
         transport: TRTransport
         if tr.transport == "serial":
             if not tr.serial_port:
                 raise ValueError(
                     "[teensyrom].serial_port is required when transport = "
-                    "\"serial\" (e.g. /dev/tty.usbmodem* or COM3)")
+                    '"serial" (e.g. /dev/tty.usbmodem* or COM3)'
+                )
             transport = SerialTransport(tr.serial_port, tr.baud or DEFAULT_BAUD)
             transport_kind = "tr_serial"
         elif tr.transport == "tcp":
             if not tr.host:
                 raise ValueError(
-                    "[teensyrom].host is required when transport = \"tcp\" "
-                    "(the TR's IP; find it via CCGMS \"ATC\" or RTC sync)")
+                    '[teensyrom].host is required when transport = "tcp" '
+                    '(the TR\'s IP; find it via CCGMS "ATC" or RTC sync)'
+                )
             transport = TcpTransport(tr.host, tr.tcp_port or DEFAULT_TCP_PORT)
             transport_kind = "tr_tcp"
         else:
-            raise ValueError(
-                f"unknown [teensyrom].transport {tr.transport!r} "
-                "(want: serial, tcp)")
-        profile = replace(TEENSYROM_PROFILE, default_fps=fps,
-                          write_transport=transport_kind)
-        return TeensyROMBackend(transport, profile=profile,
-                                storage=tr.storage)
+            raise ValueError(f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)")
+        profile = replace(TEENSYROM_PROFILE, default_fps=fps, write_transport=transport_kind)
+        return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
 
     raise ValueError(
-        f"unknown [hardware].backend {backend!r} — known backends: "
-        f"{', '.join(BACKENDS)}")
+        f"unknown [hardware].backend {backend!r} — known backends: {', '.join(BACKENDS)}"
+    )

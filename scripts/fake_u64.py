@@ -24,6 +24,7 @@ The HTTP shim covers:
   POST /v1/runners:run_prg        → 200  (BASIC clear loop)
   POST /v1/runners:sidplay        → 200
 """
+
 from __future__ import annotations
 
 import argparse
@@ -63,8 +64,11 @@ class WriteLog:
         # Process-lifetime handle (closed in self.close() at shutdown);
         # a with-block doesn't fit the open-in-__init__/close-in-close
         # ownership pattern.
-        self._fh = (open(path, "w", buffering=1)  # noqa: SIM115
-                    if path else None)
+        self._fh = (
+            open(path, "w", buffering=1)  # noqa: SIM115
+            if path
+            else None
+        )
         self._count = 0
 
     def record(self, addr: int, data: bytes) -> None:
@@ -72,11 +76,16 @@ class WriteLog:
             self._count += 1
             if self._fh is None:
                 return
-            self._fh.write(json.dumps({
-                "t": time.time(),
-                "addr": f"{addr:04X}",
-                "len": len(data),
-            }) + "\n")
+            self._fh.write(
+                json.dumps(
+                    {
+                        "t": time.time(),
+                        "addr": f"{addr:04X}",
+                        "len": len(data),
+                    }
+                )
+                + "\n"
+            )
 
     @property
     def count(self) -> int:
@@ -125,8 +134,7 @@ class DMAHandler(socketserver.BaseRequestHandler):
             buf.extend(chunk)
         return bytes(buf)
 
-    def _dispatch(self, sock: socket.socket, opcode: int,
-                  payload: bytes) -> None:
+    def _dispatch(self, sock: socket.socket, opcode: int, payload: bytes) -> None:
         server: FakeU64DMAServer = self.server  # type: ignore[assignment]
         if opcode == CMD_DMAWRITE:
             if len(payload) < 2:
@@ -145,8 +153,7 @@ class DMAHandler(socketserver.BaseRequestHandler):
         elif opcode == CMD_KEYB:
             log.debug("DMA: client requested KEYB %r (ignored)", payload)
         else:
-            log.warning("DMA: unknown opcode %04X (len=%d) — dropping",
-                        opcode, len(payload))
+            log.warning("DMA: unknown opcode %04X (len=%d) — dropping", opcode, len(payload))
 
 
 class FakeU64DMAServer(socketserver.ThreadingTCPServer):
@@ -155,11 +162,11 @@ class FakeU64DMAServer(socketserver.ThreadingTCPServer):
     multiplexed on different ports) can all run against this stub
     process — though c64cast itself only opens one socket per
     Ultimate64API today."""
+
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, host: str, port: int, writes: WriteLog,
-                 product: bytes):
+    def __init__(self, host: str, port: int, writes: WriteLog, product: bytes):
         super().__init__((host, port), DMAHandler)
         self.writes = writes
         self.product = product
@@ -216,8 +223,7 @@ class HTTPHandler(BaseHTTPRequestHandler):
             return
         self.send_error(404)
 
-    def _ok(self, body: bytes,
-            content_type: str = "application/octet-stream") -> None:
+    def _ok(self, body: bytes, content_type: str = "application/octet-stream") -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -232,20 +238,17 @@ class FakeU64HTTPServer(ThreadingHTTPServer):
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Ultimate 64 stub for c64cast "
-                                            "ensemble verification testing.")
-    p.add_argument("--host", default="127.0.0.1",
-                   help="Interface to bind (default localhost only)")
-    p.add_argument("--dma-port", type=int, default=8064,
-                   help="TCP port for the Socket DMA service")
-    p.add_argument("--http-port", type=int, default=8080,
-                   help="TCP port for the REST API")
-    p.add_argument("--writes-log", default=None, metavar="PATH",
-                   help="JSONL file to append every DMA write to")
-    p.add_argument("--product", default="FakeU64-Ensemble-Stub",
-                   help="String returned on IDENTIFY")
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="Log every HTTP request at DEBUG")
+    p = argparse.ArgumentParser(
+        description="Ultimate 64 stub for c64cast ensemble verification testing."
+    )
+    p.add_argument("--host", default="127.0.0.1", help="Interface to bind (default localhost only)")
+    p.add_argument("--dma-port", type=int, default=8064, help="TCP port for the Socket DMA service")
+    p.add_argument("--http-port", type=int, default=8080, help="TCP port for the REST API")
+    p.add_argument(
+        "--writes-log", default=None, metavar="PATH", help="JSONL file to append every DMA write to"
+    )
+    p.add_argument("--product", default="FakeU64-Ensemble-Stub", help="String returned on IDENTIFY")
+    p.add_argument("-v", "--verbose", action="store_true", help="Log every HTTP request at DEBUG")
     args = p.parse_args(argv)
 
     logging.basicConfig(
@@ -255,8 +258,7 @@ def main(argv=None) -> int:
     )
 
     writes = WriteLog(args.writes_log)
-    dma = FakeU64DMAServer(args.host, args.dma_port, writes,
-                           args.product.encode("utf-8"))
+    dma = FakeU64DMAServer(args.host, args.dma_port, writes, args.product.encode("utf-8"))
     http = FakeU64HTTPServer((args.host, args.http_port), HTTPHandler)
 
     stop = threading.Event()
@@ -268,15 +270,18 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    dma_thread = threading.Thread(target=dma.serve_forever, name="fake-u64-dma",
-                                  daemon=True)
-    http_thread = threading.Thread(target=http.serve_forever, name="fake-u64-http",
-                                   daemon=True)
+    dma_thread = threading.Thread(target=dma.serve_forever, name="fake-u64-dma", daemon=True)
+    http_thread = threading.Thread(target=http.serve_forever, name="fake-u64-http", daemon=True)
     dma_thread.start()
     http_thread.start()
-    log.info("DMA listening on %s:%d, HTTP on %s:%d (writes log: %s)",
-             args.host, args.dma_port, args.host, args.http_port,
-             args.writes_log or "(none)")
+    log.info(
+        "DMA listening on %s:%d, HTTP on %s:%d (writes log: %s)",
+        args.host,
+        args.dma_port,
+        args.host,
+        args.http_port,
+        args.writes_log or "(none)",
+    )
 
     try:
         stop.wait()

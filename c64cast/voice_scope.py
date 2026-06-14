@@ -37,6 +37,7 @@ Bring-up order in a host's ``setup()``: ``_init_scope_knobs(...)`` (usually in
 the two text rows (host-specific content via ``_paint_text_row``) →
 ``_alloc_scope_buffers()`` → render each frame via ``_render_hires()``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -71,8 +72,8 @@ BITMAP_H = SCREEN.BITMAP_H
 
 # Bitmap layout: each 8-row cell row of the screen maps to a contiguous
 # 320-byte slice of the bitmap, organized as 40 cells × 8 bytes.
-CELL_PX = 8                              # one screen cell = 8 px square
-BITMAP_CELL_ROW_BYTES = BITMAP_W         # 320 bytes per cell row
+CELL_PX = 8  # one screen cell = 8 px square
+BITMAP_CELL_ROW_BYTES = BITMAP_W  # 320 bytes per cell row
 
 # Three voice strips in hires mode, 7 cell rows each = 56 pixel rows.
 # The bottom of the screen carries two text rows (metadata) — see TITLE_ROW /
@@ -88,9 +89,9 @@ BITMAP_CELL_ROW_BYTES = BITMAP_W         # 320 bytes per cell row
 #   23    META_ROW
 #   24    spacer (1 char row at the very bottom)
 BITMAP_STRIPS = [
-    (0,   56),    # voice 1: cell rows 0-6
-    (56,  112),   # voice 2: cell rows 7-13
-    (112, 168),   # voice 3: cell rows 14-20
+    (0, 56),  # voice 1: cell rows 0-6
+    (56, 112),  # voice 2: cell rows 7-13
+    (112, 168),  # voice 3: cell rows 14-20
 ]
 TITLE_ROW = 22
 META_ROW = 23
@@ -98,8 +99,8 @@ META_ROW = 23
 # VIC register pokes used by _apply_vic_hires_bank. Hex strings match the
 # existing write_memory API. Named so the intent (bitmap mode, multicolor off,
 # screen page) is readable inline.
-D011_HIRES_ON = "3b"      # bitmap mode + display enable, raster MSB clear
-D016_STANDARD = "08"      # 40-col, no multicolor
+D011_HIRES_ON = "3b"  # bitmap mode + display enable, raster MSB clear
+D016_STANDARD = "08"  # 40-col, no multicolor
 # $D018 selects the screen matrix (bits 7-4 = offset/$0400 within the bank)
 # and the bitmap (bit 3 = bitmap at bank+$2000). $18 = matrix at bank+$0400
 # + bitmap at bank+$2000 — bank-relative.
@@ -109,11 +110,11 @@ COLOR_NIBBLE_MASK = 0x0F
 
 DEFAULT_VOICE_COLORS = ["cyan", "yellow", "light green"]
 DEFAULT_WAVEFORM_COLORS = {
-    "triangle":  "light green",
-    "sawtooth":  "light red",
-    "pulse":     "cyan",
-    "noise":     "yellow",
-    "off":       "dark gray",
+    "triangle": "light green",
+    "sawtooth": "light red",
+    "pulse": "cyan",
+    "noise": "yellow",
+    "off": "dark gray",
 }
 
 # Text-row colors. Picked to (a) read against a black background and (b)
@@ -141,10 +142,10 @@ TIME_BASE_NAMES = (TIME_BASE_WALLCLOCK, TIME_BASE_AUTO)
 # decay is gone: each echo is a hard render at a fixed gray, not a fading
 # intensity — fits 1bpp hardware naturally.
 PERSISTENCE_ECHOES = {
-    "off":    (),
-    "short":  ("gray", "light gray"),                      # 2 visible echoes
-    "medium": ("dark gray", "gray", "light gray"),         # 3 visible echoes
-    "long":   ("black", "dark gray", "gray", "light gray"),# 4 slots (oldest invisible)
+    "off": (),
+    "short": ("gray", "light gray"),  # 2 visible echoes
+    "medium": ("dark gray", "gray", "light gray"),  # 3 visible echoes
+    "long": ("black", "dark gray", "gray", "light gray"),  # 4 slots (oldest invisible)
 }
 RANDOM_PERSISTENCE = "random"
 PERSISTENCE_NAMES = (*PERSISTENCE_ECHOES.keys(), RANDOM_PERSISTENCE)
@@ -175,9 +176,9 @@ def _load_glyphs() -> bytes:
         if len(data) >= 2048:
             _GLYPHS_CACHE = data
             return _GLYPHS_CACHE
-        log.warning("voice_scope: charset %s shorter than 2KB; using builtin",
-                    _CHARGEN_PATH)
+        log.warning("voice_scope: charset %s shorter than 2KB; using builtin", _CHARGEN_PATH)
     from .framebuffer import _builtin_charset
+
     _GLYPHS_CACHE = _builtin_charset()
     return _GLYPHS_CACHE
 
@@ -192,10 +193,10 @@ def _ascii_to_screen_code(ch: str) -> int:
     blank cell instead of a graphics glyph that would look like noise."""
     c = ord(ch.upper())
     if 0x40 <= c <= 0x5F:
-        return (c - 0x40) & 0x3F            # @, A-Z, [\]^_
+        return (c - 0x40) & 0x3F  # @, A-Z, [\]^_
     if 0x20 <= c <= 0x3F:
-        return c                            # space, digits, !"#... ?
-    return 0x20                             # unknown → blank
+        return c  # space, digits, !"#... ?
+    return 0x20  # unknown → blank
 
 
 def _layout_lr(left: str, right: str, width: int = SCREEN_W_CHARS) -> str:
@@ -210,15 +211,14 @@ def _layout_lr(left: str, right: str, width: int = SCREEN_W_CHARS) -> str:
         max_right = max(1, width // 2 - 1)
         if len(right) > max_right:
             right = right[:max_right]
-        max_left = width - len(right) - 1   # 1-char minimum gap
+        max_left = width - len(right) - 1  # 1-char minimum gap
         if len(left) > max_left:
             left = left[:max_left]
     gap = width - len(left) - len(right)
     return left + (" " * gap) + right
 
 
-def _layout_lcr(left: str, center: str, right: str,
-                width: int = SCREEN_W_CHARS) -> str:
+def _layout_lcr(left: str, center: str, right: str, width: int = SCREEN_W_CHARS) -> str:
     """Build a width-char line with left/center/right fields. Center is
     placed at the geometric middle when room allows, then nudged off-center
     to avoid colliding with left or right if either is unusually long."""
@@ -227,14 +227,14 @@ def _layout_lcr(left: str, center: str, right: str,
     right = right[:width]
     # Truncate left first if everything together overflows — copyright is
     # usually the most flexible field (year + label is the gist).
-    max_total = width - 2                    # leave 1-char gaps each side
+    max_total = width - 2  # leave 1-char gaps each side
     while len(left) + len(center) + len(right) > max_total and len(left) > 1:
         left = left[:-1]
     while len(left) + len(center) + len(right) > max_total and len(right) > 1:
         right = right[:-1]
     if len(left) + len(center) + len(right) > max_total:
         # Even with both sides minimal, center is too wide — truncate it.
-        center = center[:max_total - len(left) - len(right)]
+        center = center[: max_total - len(left) - len(right)]
     # Try geometric center first.
     center_start = width // 2 - len(center) // 2
     center_start = max(center_start, len(left) + 1)
@@ -269,30 +269,34 @@ class VoiceScopeRenderer:
 
     # ---- knob parsing / buffer allocation ----------------------------------
 
-    def _init_scope_knobs(self, *, color_mode: str, voice_colors: list | None,
-                          waveform_colors: dict | None,
-                          time_base: str, auto_cycles: float,
-                          persistence: str,
-                          scroll_columns: int | list[int],
-                          frame_time_s: float) -> None:
+    def _init_scope_knobs(
+        self,
+        *,
+        color_mode: str,
+        voice_colors: list | None,
+        waveform_colors: dict | None,
+        time_base: str,
+        auto_cycles: float,
+        persistence: str,
+        scroll_columns: int | list[int],
+        frame_time_s: float,
+    ) -> None:
         """Validate + normalize the visualization knobs and derive the
         per-voice render modes. Sets every knob attribute in the contract
         plus the (initially-None) per-render buffers. Raises ValueError on
         any invalid knob — matching the prior in-__init__ validation."""
         if color_mode not in ("per_voice", "per_waveform"):
-            raise ValueError(
-                "voice_scope: color_mode must be 'per_voice' or 'per_waveform'")
+            raise ValueError("voice_scope: color_mode must be 'per_voice' or 'per_waveform'")
         if time_base not in TIME_BASE_NAMES:
             raise ValueError(
-                f"voice_scope: time_base must be one of {TIME_BASE_NAMES}, "
-                f"got {time_base!r}")
+                f"voice_scope: time_base must be one of {TIME_BASE_NAMES}, got {time_base!r}"
+            )
         if auto_cycles <= 0:
-            raise ValueError(
-                f"voice_scope: auto_cycles must be > 0, got {auto_cycles!r}")
+            raise ValueError(f"voice_scope: auto_cycles must be > 0, got {auto_cycles!r}")
         if persistence not in PERSISTENCE_NAMES:
             raise ValueError(
-                f"voice_scope: persistence must be one of {PERSISTENCE_NAMES}, "
-                f"got {persistence!r}")
+                f"voice_scope: persistence must be one of {PERSISTENCE_NAMES}, got {persistence!r}"
+            )
 
         self._frame_time_s = frame_time_s
         self.color_mode = color_mode
@@ -316,13 +320,14 @@ class VoiceScopeRenderer:
             sc_list = list(scroll_columns)
         if len(sc_list) != 3:
             raise ValueError(
-                f"voice_scope: scroll_columns list must have 3 entries, "
-                f"got {sc_list!r}")
+                f"voice_scope: scroll_columns list must have 3 entries, got {sc_list!r}"
+            )
         for x in sc_list:
             if not isinstance(x, int) or x < 0 or x > BITMAP_W:
                 raise ValueError(
                     f"voice_scope: scroll_columns entries must be ints in "
-                    f"0..{BITMAP_W}, got {sc_list!r}")
+                    f"0..{BITMAP_W}, got {sc_list!r}"
+                )
         self.scroll_columns: list[int] = sc_list
 
         # Persistence: resolve "random" sentinel now so the chosen preset
@@ -336,9 +341,7 @@ class VoiceScopeRenderer:
         # corresponds to one history slot drawn at that gray; the current
         # frame is overlaid on top in the voice's regular color.
         echo_names = PERSISTENCE_ECHOES[self.persistence]
-        self._echo_colors: list[int] = [
-            C64_COLORS.get(n, C64_COLORS["black"]) for n in echo_names
-        ]
+        self._echo_colors: list[int] = [C64_COLORS.get(n, C64_COLORS["black"]) for n in echo_names]
         self._echo_depth = len(self._echo_colors)
         # Echo mode is per-voice only meaningful when no scroll: scroll
         # already gives a natural "trail off the left edge" effect, and
@@ -384,8 +387,7 @@ class VoiceScopeRenderer:
         for v_idx, (top, bot) in enumerate(BITMAP_STRIPS):
             mode = self._voice_render_modes[v_idx]
             self._strips.append(
-                np.zeros((bot - top, BITMAP_W), dtype=bool)
-                if mode == "scroll" else None
+                np.zeros((bot - top, BITMAP_W), dtype=bool) if mode == "scroll" else None
             )
             self._echo_history.append([])
             self._last_y.append(None)
@@ -413,10 +415,12 @@ class VoiceScopeRenderer:
         # that would otherwise render as garbage (bank 0 got them blanked by
         # the BASIC clear screen). Per-voice/title/meta writes overwrite their
         # rows on top (distinct region_ids; invalidate_cache already ran).
-        self.api.write_region(self._bitmap_base, bytes(SCREEN.BITMAP_BYTES),
-                              region_id=RegionID.WAVE_BITMAP)
-        self.api.write_region(self._screen_base, bytes(SCREEN.N_CELLS),
-                              region_id=RegionID.WAVE_SCREEN_CLEAR)
+        self.api.write_region(
+            self._bitmap_base, bytes(SCREEN.BITMAP_BYTES), region_id=RegionID.WAVE_BITMAP
+        )
+        self.api.write_region(
+            self._screen_base, bytes(SCREEN.N_CELLS), region_id=RegionID.WAVE_SCREEN_CLEAR
+        )
         self._init_hires_colors()
         # Lazy-load the charset once. Glyph loading is process-wide cached so
         # a second scope scene doesn't re-read the file.
@@ -430,7 +434,7 @@ class VoiceScopeRenderer:
             cell_row_top = top // CELL_PX
             cell_row_bot = bot // CELL_PX
             n_rows = cell_row_bot - cell_row_top
-            byte = ((color & COLOR_NIBBLE_MASK) << 4)  # FG = color, BG = black
+            byte = (color & COLOR_NIBBLE_MASK) << 4  # FG = color, BG = black
             block = bytes([byte] * (n_rows * SCREEN_W_CHARS))
             self.api.write_region(
                 self._screen_base + cell_row_top * SCREEN_W_CHARS,
@@ -442,26 +446,22 @@ class VoiceScopeRenderer:
 
     def _initial_voice_color(self, v_idx: int) -> int:
         if self.color_mode == "per_voice":
-            return C64_COLORS.get(self.voice_color_names[v_idx],
-                                  C64_COLORS["white"])
-        return C64_COLORS.get(self.waveform_color_names["off"],
-                              C64_COLORS["dark gray"])
+            return C64_COLORS.get(self.voice_color_names[v_idx], C64_COLORS["white"])
+        return C64_COLORS.get(self.waveform_color_names["off"], C64_COLORS["dark gray"])
 
     def _voice_color_now(self, v_idx: int) -> int:
         if self.color_mode == "per_voice":
-            return C64_COLORS.get(self.voice_color_names[v_idx],
-                                  C64_COLORS["white"])
+            return C64_COLORS.get(self.voice_color_names[v_idx], C64_COLORS["white"])
         v = self.emulator.voices[v_idx]
         wave = primary_waveform(v.control)
         name = {
             WAVE_TRIANGLE: "triangle",
             WAVE_SAWTOOTH: "sawtooth",
-            WAVE_PULSE:    "pulse",
-            WAVE_NOISE:    "noise",
-            0:             "off",
+            WAVE_PULSE: "pulse",
+            WAVE_NOISE: "noise",
+            0: "off",
         }[wave]
-        return C64_COLORS.get(self.waveform_color_names[name],
-                              C64_COLORS["white"])
+        return C64_COLORS.get(self.waveform_color_names[name], C64_COLORS["white"])
 
     def _repaint_voice_color(self, v_idx: int, color: int | None = None) -> None:
         """Re-write the screen-RAM FG-nibble cells under the given voice's
@@ -481,29 +481,31 @@ class VoiceScopeRenderer:
 
     # ---- hires text rows ---------------------------------------------------
 
-    def _paint_text_row(self, cell_row: int, text: str, fg: int,
-                        bitmap_region_id: int, screen_region_id: int) -> None:
+    def _paint_text_row(
+        self, cell_row: int, text: str, fg: int, bitmap_region_id: int, screen_region_id: int
+    ) -> None:
         """Render a 40-char line into one bitmap cell-row + matching FG
         color into screen RAM. Caller supplies the two region IDs so the
         delta cache absorbs unchanged columns on re-paint (a SHIFT-driven
         title repaint typically only changes ~2 digit cells, ~16 bytes)."""
         assert self._glyphs is not None
         assert len(text) == SCREEN_W_CHARS, (
-            f"text row must be exactly {SCREEN_W_CHARS} chars, got {len(text)}")
+            f"text row must be exactly {SCREEN_W_CHARS} chars, got {len(text)}"
+        )
         glyphs = self._glyphs
         bitmap_bytes = bytearray(SCREEN_W_CHARS * CELL_PX)
         for col, ch in enumerate(text):
             sc = _ascii_to_screen_code(ch)
-            bitmap_bytes[col * CELL_PX:(col + 1) * CELL_PX] = (
-                glyphs[sc * CELL_PX:(sc + 1) * CELL_PX])
+            bitmap_bytes[col * CELL_PX : (col + 1) * CELL_PX] = glyphs[
+                sc * CELL_PX : (sc + 1) * CELL_PX
+            ]
         bitmap_addr = self._bitmap_base + cell_row * BITMAP_CELL_ROW_BYTES
-        self.api.write_region(bitmap_addr, bytes(bitmap_bytes),
-                              region_id=bitmap_region_id)
-        fg_byte = (fg & COLOR_NIBBLE_MASK) << 4   # FG in high nibble, BG = 0
+        self.api.write_region(bitmap_addr, bytes(bitmap_bytes), region_id=bitmap_region_id)
+        fg_byte = (fg & COLOR_NIBBLE_MASK) << 4  # FG in high nibble, BG = 0
         screen_addr = self._screen_base + cell_row * SCREEN_W_CHARS
-        self.api.write_region(screen_addr,
-                              bytes([fg_byte] * SCREEN_W_CHARS),
-                              region_id=screen_region_id)
+        self.api.write_region(
+            screen_addr, bytes([fg_byte] * SCREEN_W_CHARS), region_id=screen_region_id
+        )
 
     # ---- hires rendering ---------------------------------------------------
 
@@ -537,8 +539,7 @@ class VoiceScopeRenderer:
 
     # ---- per-voice render helpers -----------------------------------------
 
-    def _compute_ys(self, v_idx: int, top: int, bot: int,
-                    n_new: int) -> np.ndarray:
+    def _compute_ys(self, v_idx: int, top: int, bot: int, n_new: int) -> np.ndarray:
         """Sample n_new audio samples for voice v_idx at the per-voice
         time window and map to pixel-row y in absolute bitmap coords
         (top..bot-1)."""
@@ -555,8 +556,7 @@ class VoiceScopeRenderer:
         np.clip(ys, top, bot - 1, out=ys)
         return ys
 
-    def _span_mask(self, ys: np.ndarray, top: int, bot: int,
-                   prev_y: int | None) -> np.ndarray:
+    def _span_mask(self, ys: np.ndarray, top: int, bot: int, prev_y: int | None) -> np.ndarray:
         """Build a (strip_h, len(ys)) bool mask, filling the vertical span
         between adjacent x's so a sharp jump doesn't leave a one-pixel
         gap. `prev_y` (absolute coord) is the y of the column immediately
@@ -570,21 +570,19 @@ class VoiceScopeRenderer:
         ys_prev[1:] = ys[:-1]
         lo = np.minimum(ys_prev, ys) - top
         hi = np.maximum(ys_prev, ys) - top
-        strip_rows = self._rows_col[:bot - top]
+        strip_rows = self._rows_col[: bot - top]
         return (strip_rows >= lo[None, :]) & (strip_rows <= hi[None, :])
 
-    def _write_bitmap_strip(self, v_idx: int, top: int, bot: int,
-                            mask: np.ndarray) -> None:
+    def _write_bitmap_strip(self, v_idx: int, top: int, bot: int, mask: np.ndarray) -> None:
         """Pack a (strip_h, BITMAP_W) bool mask into the C64 hires bitmap
         memory layout and DMA it to the strip's bitmap region."""
         cell_row_top = top // CELL_PX
         cell_row_bot = bot // CELL_PX
         n_cell_rows = cell_row_bot - cell_row_top
-        packed = np.packbits(mask, axis=1)                  # (strip_h, 40)
-        bitmap_strip = (packed.reshape(
-            n_cell_rows, CELL_PX, SCREEN_W_CHARS)
-                              .transpose(0, 2, 1)
-                              .tobytes())
+        packed = np.packbits(mask, axis=1)  # (strip_h, 40)
+        bitmap_strip = (
+            packed.reshape(n_cell_rows, CELL_PX, SCREEN_W_CHARS).transpose(0, 2, 1).tobytes()
+        )
         self.api.write_region(
             self._bitmap_base + cell_row_top * BITMAP_CELL_ROW_BYTES,
             bitmap_strip,
@@ -614,7 +612,7 @@ class VoiceScopeRenderer:
         strip[:, -scroll_n:] = False
         ys = self._compute_ys(v_idx, top, bot, scroll_n)
         mask = self._span_mask(ys, top, bot, prev_y=self._last_y[v_idx])
-        strip[:, BITMAP_W - scroll_n:] = mask
+        strip[:, BITMAP_W - scroll_n :] = mask
         self._last_y[v_idx] = int(ys[-1])
         self._write_bitmap_strip(v_idx, top, bot, strip)
 
@@ -628,9 +626,9 @@ class VoiceScopeRenderer:
         FG color. Unclaimed cells fall back to the voice's regular color
         with FG = BG so they read as background even if a stray pixel
         slips through (defensive — the bitmap is the source of truth)."""
-        assert (self._strips is not None
-                and self._echo_history is not None
-                and self._last_y is not None)
+        assert (
+            self._strips is not None and self._echo_history is not None and self._last_y is not None
+        )
         history = self._echo_history[v_idx]
         ys = self._compute_ys(v_idx, top, bot, BITMAP_W)
         current_mask = self._span_mask(ys, top, bot, prev_y=None)
@@ -650,9 +648,7 @@ class VoiceScopeRenderer:
         # the full list on a first-frame warm-up instead of empty.
         masks_newest_first: list[np.ndarray] = [current_mask, *reversed(history)]
         n_hist = len(history)
-        past_colors_newest_first = (
-            list(reversed(self._echo_colors[-n_hist:])) if n_hist else []
-        )
+        past_colors_newest_first = list(reversed(self._echo_colors[-n_hist:])) if n_hist else []
         colors_newest_first: list[int] = [
             self._voice_color_now(v_idx),
             *past_colors_newest_first,
@@ -660,13 +656,10 @@ class VoiceScopeRenderer:
         n_cell_rows = (bot - top) // CELL_PX
         cell_color = np.zeros((n_cell_rows, SCREEN_W_CHARS), dtype=np.uint8)
         claimed = np.zeros((n_cell_rows, SCREEN_W_CHARS), dtype=bool)
-        for mask, color in zip(masks_newest_first, colors_newest_first,
-                               strict=True):
+        for mask, color in zip(masks_newest_first, colors_newest_first, strict=True):
             # Reshape to (cell_rows, CELL_PX, SCREEN_W_CHARS, CELL_PX) and
             # reduce over the pixel-within-cell axes to "any pixel lit?".
-            cell_lit = (mask.reshape(n_cell_rows, CELL_PX,
-                                     SCREEN_W_CHARS, CELL_PX)
-                            .any(axis=(1, 3)))
+            cell_lit = mask.reshape(n_cell_rows, CELL_PX, SCREEN_W_CHARS, CELL_PX).any(axis=(1, 3))
             new_claims = cell_lit & ~claimed
             cell_color[new_claims] = color & COLOR_NIBBLE_MASK
             claimed |= new_claims

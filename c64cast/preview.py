@@ -8,6 +8,7 @@ Both sit on top of `Framebuffer.render()`, which is the heavy lift.
 This module is mostly orchestration: a thread that periodically asks
 for a render and pumps it into the consumer.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 # attributes of None — the PYGAME_AVAILABLE flag is the runtime guard.
 try:
     import pygame as _pygame
+
     pygame: Any = _pygame
     PYGAME_AVAILABLE = True
 except ImportError:
@@ -39,12 +41,15 @@ class PreviewWindow:
 
     DEFAULT_SCALE = 3
 
-    def __init__(self, framebuffer: Framebuffer,
-                 fps: int = 30, scale: int = DEFAULT_SCALE,
-                 title: str = "c64cast preview"):
+    def __init__(
+        self,
+        framebuffer: Framebuffer,
+        fps: int = 30,
+        scale: int = DEFAULT_SCALE,
+        title: str = "c64cast preview",
+    ):
         if not PYGAME_AVAILABLE:
-            raise RuntimeError(
-                "preview requires pygame: pip install c64cast[preview]")
+            raise RuntimeError("preview requires pygame: pip install c64cast[preview]")
         self.fb = framebuffer
         self.fps = max(1, int(fps))
         self.scale = max(1, int(scale))
@@ -55,8 +60,7 @@ class PreviewWindow:
 
     def start(self):
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="preview-window")
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="preview-window")
         self._thread.start()
 
     def stop(self):
@@ -98,11 +102,14 @@ class StreamRecorder:
     them to `output_path` as an MP4. The actual codec depends on what's
     bundled in your opencv build — mp4v works almost everywhere."""
 
-    def __init__(self, framebuffer: Framebuffer,
-                 output_path: str,
-                 fps: int = 30,
-                 scale: int = 2,
-                 fourcc: str = "mp4v"):
+    def __init__(
+        self,
+        framebuffer: Framebuffer,
+        output_path: str,
+        fps: int = 30,
+        scale: int = 2,
+        fourcc: str = "mp4v",
+    ):
         self.fb = framebuffer
         self.output_path = output_path
         self.fps = max(1, int(fps))
@@ -127,13 +134,12 @@ class StreamRecorder:
             raise RuntimeError(
                 f"recording: cv2.VideoWriter failed to open {self.output_path}; "
                 f"check the fourcc ({self.fourcc!r}) and codecs in your opencv "
-                "build")
+                "build"
+            )
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="stream-recorder")
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="stream-recorder")
         self._thread.start()
-        log.info("recording: %s @ %dx%d %dfps (%s)",
-                 self.output_path, w, h, self.fps, self.fourcc)
+        log.info("recording: %s @ %dx%d %dfps (%s)", self.output_path, w, h, self.fps, self.fourcc)
 
     def stop(self):
         self._stop.set()
@@ -157,8 +163,7 @@ class StreamRecorder:
                 bgr = self.fb.render()
                 if self.scale != 1:
                     w, h = 320 * self.scale, 200 * self.scale
-                    bgr = cv2.resize(bgr, (w, h),
-                                     interpolation=cv2.INTER_NEAREST)
+                    bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_NEAREST)
                 assert self._writer is not None
                 self._writer.write(bgr)
                 self._frame_count += 1

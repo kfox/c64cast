@@ -21,6 +21,7 @@ appropriate.
 When profiling is off, ``get_profiler()`` returns a ``NullProfiler`` whose
 context managers and methods are no-ops, so the hot path pays only the cost
 of one attribute lookup and a Python ``with`` statement (~0.5µs)."""
+
 from __future__ import annotations
 
 import logging
@@ -182,8 +183,7 @@ class FrameProfiler:
         avg, p50, p95, mx = (v * 1000.0 for v in seconds_summary)
         return f"avg={avg:.1f} p50={p50:.1f} p95={p95:.1f} max={mx:.1f} ms"
 
-    def _format_line(self, scene_name: str,
-                     stages: dict[str, _Stats]) -> str | None:
+    def _format_line(self, scene_name: str, stages: dict[str, _Stats]) -> str | None:
         frame_stats = stages.get("frame_total")
         if frame_stats is None or frame_stats.count() == 0:
             return None
@@ -192,14 +192,12 @@ class FrameProfiler:
             f"profile[{scene_name}] n={n}",
             f"frame {self._fmt_ms(frame_stats.summary())}",
         ]
-        for stage_name in ("cpu_render", "compose", "overlay_compose",
-                           "push", "render", "wait"):
+        for stage_name in ("cpu_render", "compose", "overlay_compose", "push", "render", "wait"):
             s = stages.get(stage_name)
             if s is None or s.count() == 0:
                 continue
             parts.append(f"{stage_name} {self._fmt_ms(s.summary())}")
-        for count_name, label in (("writes", "writes/frame"),
-                                  ("bytes", "bytes/frame")):
+        for count_name, label in (("writes", "writes/frame"), ("bytes", "bytes/frame")):
             s = stages.get(count_name)
             if s is None or s.count() == 0:
                 continue

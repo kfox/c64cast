@@ -27,9 +27,22 @@ import _diaglib as d
 
 def record(device: str, seconds: float, out_path: str) -> None:
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "avfoundation", "-i", device,
-        "-t", str(seconds), "-ac", "1", "-ar", "48000", out_path,
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "avfoundation",
+        "-i",
+        device,
+        "-t",
+        str(seconds),
+        "-ac",
+        "1",
+        "-ar",
+        "48000",
+        out_path,
     ]
     print(f"recording {seconds:g}s from avfoundation {device} -> {out_path}")
     subprocess.run(cmd, check=True)
@@ -38,9 +51,9 @@ def record(device: str, seconds: float, out_path: str) -> None:
 def analyze(path: str) -> None:
     """Run volumedetect and surface the mean/max dB lines."""
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", path, "-af", "volumedetect",
-         "-vn", "-f", "null", "-"],
-        capture_output=True, text=True,
+        ["ffmpeg", "-hide_banner", "-i", path, "-af", "volumedetect", "-vn", "-f", "null", "-"],
+        capture_output=True,
+        text=True,
     )
     # volumedetect writes to stderr.
     wanted = re.compile(r"(mean_volume|max_volume|n_samples|histogram_0db)")
@@ -55,15 +68,20 @@ def analyze(path: str) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--device", default=d.CAMLINK_AVF_AUDIO,
-                    help=f"avfoundation audio device (default {d.CAMLINK_AVF_AUDIO}; "
-                         "confirm with: ffmpeg -f avfoundation -list_devices true -i \"\")")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--device",
+        default=d.CAMLINK_AVF_AUDIO,
+        help=f"avfoundation audio device (default {d.CAMLINK_AVF_AUDIO}; "
+        'confirm with: ffmpeg -f avfoundation -list_devices true -i "")',
+    )
     ap.add_argument("-t", "--seconds", type=float, default=15.0)
     ap.add_argument("-o", "--out", default=None, help="output wav path")
-    ap.add_argument("--analyze", metavar="WAV", default=None,
-                    help="skip capture; just analyze this file")
+    ap.add_argument(
+        "--analyze", metavar="WAV", default=None, help="skip capture; just analyze this file"
+    )
     args = ap.parse_args()
 
     if args.analyze:

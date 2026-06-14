@@ -33,6 +33,7 @@ Nyquist. At an 8 kHz DAC rate "toward Nyquist" is only 4 kHz, still audible,
 which is why it lost the ears test. The metrics here prove the transform is
 correct; whether it SOUNDS better was the (failed) ears question.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -58,8 +59,9 @@ SHAPER_COEFFS: dict[str, tuple[float, ...]] = {
 MODES = tuple(SHAPER_COEFFS)
 
 
-def encode_4bit(floats: np.ndarray, *, mode: str, dither: bool,
-                rng: np.random.Generator | None) -> np.ndarray:
+def encode_4bit(
+    floats: np.ndarray, *, mode: str, dither: bool, rng: np.random.Generator | None
+) -> np.ndarray:
     """Float [-1, 1] → 4-bit DAC codes (uint8). `mode` selects the noise
     shaper. Mirrors the production encoder's contract: exact-zero input stays
     NEUTRAL; the off path truncates (matching the legacy quantizer), the shaped
@@ -67,7 +69,7 @@ def encode_4bit(floats: np.ndarray, *, mode: str, dither: bool,
     error)."""
     vol = (floats.astype(np.float64) + 1.0) * DAC_VOLUME_SCALE
     if dither:
-        draw = (rng.random if rng is not None else np.random.random_sample)
+        draw = rng.random if rng is not None else np.random.random_sample
         dth = draw(floats.shape).astype(np.float64) - draw(floats.shape).astype(np.float64)
         dth[floats == 0] = 0.0
         vol = vol + dth
@@ -84,7 +86,7 @@ def encode_4bit(floats: np.ndarray, *, mode: str, dither: bool,
         else:
             u = vol[i] + float(coeffs @ hist)
             q = np.floor(u + 0.5)
-            e = u - q                       # pre-clip error → bounded feedback
+            e = u - q  # pre-clip error → bounded feedback
             code = int(min(max(q, 0), DAC_MAX_VOLUME))
         hist[1:] = hist[:-1]
         hist[0] = e
@@ -93,6 +95,7 @@ def encode_4bit(floats: np.ndarray, *, mode: str, dither: bool,
 
 
 # ---- source acquisition ---------------------------------------------------
+
 
 def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
     rng = np.random.default_rng(1234)
@@ -104,7 +107,7 @@ def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
         while pos < n:
             word = int(sr * rng.uniform(0.2, 0.5))
             gap = int(sr * rng.uniform(0.1, 0.4))
-            env[pos:pos + word] = float(rng.uniform(0.05, 1.0))
+            env[pos : pos + word] = float(rng.uniform(0.05, 1.0))
             pos += word + gap
         k = np.hanning(int(sr * 0.02))
         env = np.convolve(env, k / k.sum(), mode="same")
@@ -125,16 +128,18 @@ def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
 
 def _load_source(path: str, sr: int, secs: float | None) -> np.ndarray:
     from c64cast.video import decode_audio_full
+
     int16 = decode_audio_full(path, sr)
     if int16.size == 0:
         raise SystemExit(f"no audio decoded from {path}")
     if secs is not None:
-        int16 = int16[:int(secs * sr)]
+        int16 = int16[: int(secs * sr)]
     return int16.astype(np.float32) / 32768.0
 
 
 def _peak_normalize(floats: np.ndarray) -> np.ndarray:
     from c64cast.video import _compute_normalization_gain
+
     gain = _compute_normalization_gain(int(np.max(np.abs(floats)) * 32768))
     return np.clip(floats * gain, -1.0, 1.0).astype(np.float32)
 
@@ -150,6 +155,7 @@ def _write_wav(path, codes: np.ndarray, sr: int) -> None:
 
 
 # ---- metrics --------------------------------------------------------------
+
 
 def _db(power: float) -> float:
     return 10.0 * np.log10(max(power, 1e-12))
@@ -186,31 +192,38 @@ def _print_table(rows: dict[str, dict[str, float]]) -> None:
     head = f"{'metric':<30}" + "".join(f"{c:>12}" for c in cols)
     print("\n" + head + "\n" + "-" * len(head))
     for key, label, fmt in _FMT:
-        print(f"{label:<30}" + "".join(fmt.format(rows[c][key]).rjust(12)
-                                       for c in cols))
+        print(f"{label:<30}" + "".join(fmt.format(rows[c][key]).rjust(12) for c in cols))
     base = rows["off"]
     print("\nDeltas vs off (shaping win = midband DOWN, HF UP):")
     for c in cols:
         if c == "off":
             continue
-        print(f"  {c:<8} midband {rows[c]['mid_db']-base['mid_db']:+.2f} dB"
-              f"   HF {rows[c]['hf_db']-base['hf_db']:+.2f} dB")
-    print("\nReading: a working shaper drops midband noise and raises HF; the HF"
-          "\nrise is the cost. On the real 6581 at 8 kHz that HF hiss was audible"
-          "\nand off won the ears test — metrics correct, ears decide.")
+        print(
+            f"  {c:<8} midband {rows[c]['mid_db'] - base['mid_db']:+.2f} dB"
+            f"   HF {rows[c]['hf_db'] - base['hf_db']:+.2f} dB"
+        )
+    print(
+        "\nReading: a working shaper drops midband noise and raises HF; the HF"
+        "\nrise is the cost. On the real 6581 at 8 kHz that HF hiss was audible"
+        "\nand off won the ears test — metrics correct, ears decide."
+    )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("source", nargs="?", help="audio/video file (PyAV)")
-    ap.add_argument("--signal", choices=("speech", "music", "tone"),
-                    help="synthetic test signal instead of a file")
+    ap.add_argument(
+        "--signal",
+        choices=("speech", "music", "tone"),
+        help="synthetic test signal instead of a file",
+    )
     ap.add_argument("--sr", type=int, default=8000, help="DAC sample rate")
-    ap.add_argument("--seconds", type=float, default=None,
-                    help="truncate to N seconds")
-    ap.add_argument("--dither", action="store_true",
-                    help="enable TPDF dither (shaping composes with it)")
+    ap.add_argument("--seconds", type=float, default=None, help="truncate to N seconds")
+    ap.add_argument(
+        "--dither", action="store_true", help="enable TPDF dither (shaping composes with it)"
+    )
     ap.add_argument("--prefix", default=None, help="output filename prefix")
     args = ap.parse_args()
 
@@ -219,14 +232,17 @@ def main() -> int:
         name = args.prefix or f"synth_{args.signal}"
     elif args.source:
         import os
+
         floats = _load_source(args.source, args.sr, args.seconds)
         name = args.prefix or os.path.splitext(os.path.basename(args.source))[0]
     else:
         ap.error("give a SOURCE file or --signal speech|music|tone")
 
     ideal = _peak_normalize(floats)
-    print(f"source: {name}  ({ideal.size} samples @ {args.sr} Hz, "
-          f"{ideal.size / args.sr:.1f}s)  dither={args.dither}")
+    print(
+        f"source: {name}  ({ideal.size} samples @ {args.sr} Hz, "
+        f"{ideal.size / args.sr:.1f}s)  dither={args.dither}"
+    )
 
     rows: dict[str, dict[str, float]] = {}
     for mode in MODES:

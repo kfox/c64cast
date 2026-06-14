@@ -1,4 +1,5 @@
 """Tests for the profiling harness."""
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +16,6 @@ from c64cast.profiler import (
 
 
 class StatsTest(unittest.TestCase):
-
     def test_empty(self):
         s = _Stats()
         self.assertEqual(s.count(), 0)
@@ -45,7 +45,6 @@ class StatsTest(unittest.TestCase):
 
 
 class FrameProfilerTest(unittest.TestCase):
-
     def test_frame_records_total(self):
         p = FrameProfiler(interval=10.0)
         with p.frame("scene-a"):
@@ -128,14 +127,20 @@ class FrameProfilerTest(unittest.TestCase):
         with self.assertLogs(log, level="INFO") as cap:
             p.emit_if_due(now=time.time(), log=log)
         line = cap.output[0]
-        for token in ("profile[scene-x]", "frame ", "cpu_render ",
-                      "compose ", "push ", "wait ",
-                      "writes/frame", "bytes/frame"):
+        for token in (
+            "profile[scene-x]",
+            "frame ",
+            "cpu_render ",
+            "compose ",
+            "push ",
+            "wait ",
+            "writes/frame",
+            "bytes/frame",
+        ):
             self.assertIn(token, line)
 
 
 class NullProfilerTest(unittest.TestCase):
-
     def test_is_default(self):
         # Module-level default: get_profiler() returns a NullProfiler.
         # Save+restore in case a prior test mutated the global.

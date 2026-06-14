@@ -22,6 +22,7 @@ Validation (RSID/load_addr/play_addr) is delegated to
 [Ultimate64API.run_sid_player](api.py) refuses — config errors surface
 identically regardless of which path reports them first.
 """
+
 from __future__ import annotations
 
 import logging
@@ -118,19 +119,25 @@ class TrappedRam:
     `access` is None on the normal scope path (one `is not None` test).
     """
 
-    __slots__ = ("ram", "sid_shadow", "footprint", "access", "gate_low_seen",
-                 "cia1_timer_a_written")
+    __slots__ = (
+        "ram",
+        "sid_shadow",
+        "footprint",
+        "access",
+        "gate_low_seen",
+        "cia1_timer_a_written",
+    )
 
     _SID_HI = SID.BASE + SID_REG_COUNT  # exclusive upper bound
     # Voice control-register offsets within $D400 (gate bit lives here).
     _CONTROL_OFFSETS = frozenset(
-        v * SID.BYTES_PER_VOICE + SID.OFF_CONTROL for v in range(SID.N_VOICES))
+        v * SID.BYTES_PER_VOICE + SID.OFF_CONTROL for v in range(SID.N_VOICES)
+    )
     # CIA #1 Timer A latch bytes — a CIA-timed (multispeed) tune writes
     # these from INIT to set its PLAY call rate; see SidHostEmu.play_rate_hz.
     _CIA1_TIMER_A = frozenset((CIA1.TIMER_A_LO, CIA1.TIMER_A_HI))
 
-    def __init__(self, track_footprint: bool = False,
-                 track_access: bool = False) -> None:
+    def __init__(self, track_footprint: bool = False, track_access: bool = False) -> None:
         self.ram = bytearray(65536)
         # Fill ROM-mapped region with $60 (RTS) so any unexpected JSR
         # into BASIC/kernal space returns cleanly.
@@ -146,12 +153,10 @@ class TrappedRam:
         self.gate_low_seen = bytearray(SID.N_VOICES)
         # 64 KB write-footprint bitmap (1 = written at least once), or None
         # when footprint tracking is disabled (the normal scope path).
-        self.footprint: bytearray | None = (
-            bytearray(65536) if track_footprint else None)
+        self.footprint: bytearray | None = bytearray(65536) if track_footprint else None
         # 64 KB read+write access bitmap (1 = read or written at least once),
         # or None when access tracking is disabled. See [ram_play_access_footprint].
-        self.access: bytearray | None = (
-            bytearray(65536) if track_access else None)
+        self.access: bytearray | None = bytearray(65536) if track_access else None
         # Set once a tune writes CIA #1 Timer A — the signal that it's
         # CIA-timed (multispeed) rather than vsync. See play_rate_hz.
         self.cia1_timer_a_written = False
@@ -176,8 +181,7 @@ class TrappedRam:
             # intra-tick) gate-low — recovered by retriggers() as a
             # hard-restart even when the shadow's final value is gate-high.
             if off in self._CONTROL_OFFSETS and not (val & SID.GATE):
-                self.gate_low_seen[(off - SID.OFF_CONTROL)
-                                   // SID.BYTES_PER_VOICE] = 1
+                self.gate_low_seen[(off - SID.OFF_CONTROL) // SID.BYTES_PER_VOICE] = 1
 
 
 class SidHostEmu:
@@ -195,12 +199,15 @@ class SidHostEmu:
     snapshot of $D400-$D418 after the most recent INIT or PLAY.
     """
 
-    def __init__(self, sid_bytes: bytes, song: int = 0,
-                 track_footprint: bool = False,
-                 track_access: bool = False) -> None:
+    def __init__(
+        self,
+        sid_bytes: bytes,
+        song: int = 0,
+        track_footprint: bool = False,
+        track_access: bool = False,
+    ) -> None:
         self._parsed = parse_psid_for_player(sid_bytes, song=song)
-        self._memory = TrappedRam(track_footprint=track_footprint,
-                                  track_access=track_access)
+        self._memory = TrappedRam(track_footprint=track_footprint, track_access=track_access)
         self._mpu = MPU(memory=self._memory)
         # Set processor flags to a sane post-init state. I=1 (IRQs
         # disabled) matches what the real 6510 looks like immediately
@@ -218,13 +225,12 @@ class SidHostEmu:
         self.last_routine_capped: bool = False
         # Load the SID payload at its declared address.
         load = self._parsed.load_addr
-        self._memory.ram[load:load + len(self._parsed.payload)] = (
-            self._parsed.payload)
+        self._memory.ram[load : load + len(self._parsed.payload)] = self._parsed.payload
         # Run INIT once: A = song-1, X=Y=0; call init_addr; wait for
         # sentinel RTS or the cycle cap.
-        self._run_routine(self._parsed.init_addr,
-                          a=(self._parsed.song_to_play - 1) & 0xFF,
-                          tag="init")
+        self._run_routine(
+            self._parsed.init_addr, a=(self._parsed.song_to_play - 1) & 0xFF, tag="init"
+        )
 
     def regs(self) -> bytes:
         """Return a 25-byte snapshot of $D400-$D418. Always exactly
@@ -258,8 +264,7 @@ class SidHostEmu:
         shadow = self._memory.sid_shadow
         result = []
         for v in range(SID.N_VOICES):
-            final_gate = bool(
-                shadow[v * SID.BYTES_PER_VOICE + SID.OFF_CONTROL] & SID.GATE)
+            final_gate = bool(shadow[v * SID.BYTES_PER_VOICE + SID.OFF_CONTROL] & SID.GATE)
             result.append(bool(gl[v]) and final_gate)
         return (result[0], result[1], result[2])
 
@@ -285,8 +290,7 @@ class SidHostEmu:
         on a PAL vs NTSC machine."""
         if not self._memory.cia1_timer_a_written:
             return video_hz
-        latch = (self._memory.ram[CIA1.TIMER_A_LO]
-                 | (self._memory.ram[CIA1.TIMER_A_HI] << 8))
+        latch = self._memory.ram[CIA1.TIMER_A_LO] | (self._memory.ram[CIA1.TIMER_A_HI] << 8)
         if latch <= 0:
             return video_hz
         rate = clock_hz / (latch + 1)
@@ -326,14 +330,17 @@ class SidHostEmu:
         while mpu.pc != sentinel:
             step()
             if mpu.processorCycles >= cap:
-                log.debug("sid_host_emu: %s cycle cap (%d) reached at "
-                          "PC=$%04X — giving up this tick", tag, cap, mpu.pc)
+                log.debug(
+                    "sid_host_emu: %s cycle cap (%d) reached at PC=$%04X — giving up this tick",
+                    tag,
+                    cap,
+                    mpu.pc,
+                )
                 self.last_routine_capped = True
                 return
 
 
-def ram_write_footprint(sid_bytes: bytes, song: int = 0,
-                        ticks: int = FOOTPRINT_TICKS) -> bytearray:
+def ram_write_footprint(sid_bytes: bytes, song: int = 0, ticks: int = FOOTPRINT_TICKS) -> bytearray:
     """Run a tune's INIT + `ticks` PLAY passes on a throwaway host emulator
     and return a 64 KB bitmap (1 = the tune wrote this RAM address at least
     once).
@@ -359,8 +366,9 @@ def ram_write_footprint(sid_bytes: bytes, song: int = 0,
     return footprint
 
 
-def ram_play_access_footprint(sid_bytes: bytes, song: int = 0,
-                              ticks: int = FOOTPRINT_TICKS) -> bytearray:
+def ram_play_access_footprint(
+    sid_bytes: bytes, song: int = 0, ticks: int = FOOTPRINT_TICKS
+) -> bytearray:
     """Run a tune's INIT + `ticks` PLAY passes and return a 64 KB bitmap of
     every address the tune *read or wrote during PLAY* (1 = accessed).
 

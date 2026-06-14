@@ -46,6 +46,7 @@ Smooth horizontal scrolling combines four pieces:
    https://codebase64.net/doku.php?id=base:8x_scale_charset_scrolling_message
    for the spirit of the original.
 """
+
 from __future__ import annotations
 
 import logging
@@ -72,13 +73,13 @@ SCREEN_H_CELLS = 25
 SCREEN_W_PX = 320
 SCREEN_H_PX = 200
 
-GLYPH_CELL_H = 8        # source glyph is 8 px tall → 8 screen rows
-GLYPH_CELL_W = 8        # 8 px wide per source char → 8 screen cols
+GLYPH_CELL_H = 8  # source glyph is 8 px tall → 8 screen rows
+GLYPH_CELL_W = 8  # 8 px wide per source char → 8 screen cols
 
 # Screen codes for the "on" and "off" pixels in each scene mode.
-SC_BLANK = SCREEN.SC_SPACE         # space — invisible against the background
-SC_ON_PETSCII = SCREEN.SC_FULL_BLOCK   # inverse-space / solid block, standard ROM
-SC_ON_MCM = 0xFF                   # all 4 sub-pixels = FG in MCM's 2×2 charset
+SC_BLANK = SCREEN.SC_SPACE  # space — invisible against the background
+SC_ON_PETSCII = SCREEN.SC_FULL_BLOCK  # inverse-space / solid block, standard ROM
+SC_ON_MCM = 0xFF  # all 4 sub-pixels = FG in MCM's 2×2 charset
 
 # Page-flipping addresses (within VIC bank 0). When updating the strip,
 # we always write to the page that the VIC is NOT currently displaying,
@@ -101,16 +102,31 @@ D018_PAGE_VALUES = (0x14, 0x34)
 IRQ_HANDLER_ADDR = 0xC000
 SHADOW_D016_ADDR = 0xC100
 SHADOW_D018_ADDR = 0xC101
-RASTER_IRQ_HANDLER = bytes([
-    0xAD, 0x00, 0xC1,   # LDA $C100   ; shadow D016
-    0x8D, 0x16, 0xD0,   # STA $D016
-    0xAD, 0x01, 0xC1,   # LDA $C101   ; shadow D018
-    0x8D, 0x18, 0xD0,   # STA $D018
-    0xA9, 0x01,         # LDA #$01
-    0x8D, 0x19, 0xD0,   # STA $D019   ; ack raster IRQ
-    0x4C, 0x31, 0xEA,   # JMP $EA31   ; chain to kernal (kbd scan + jiffy)
-])
-RASTER_IRQ_LINE = RASTER_VBLANK_LINE   # line 248 — first VBLANK line on PAL/NTSC
+RASTER_IRQ_HANDLER = bytes(
+    [
+        0xAD,
+        0x00,
+        0xC1,  # LDA $C100   ; shadow D016
+        0x8D,
+        0x16,
+        0xD0,  # STA $D016
+        0xAD,
+        0x01,
+        0xC1,  # LDA $C101   ; shadow D018
+        0x8D,
+        0x18,
+        0xD0,  # STA $D018
+        0xA9,
+        0x01,  # LDA #$01
+        0x8D,
+        0x19,
+        0xD0,  # STA $D019   ; ack raster IRQ
+        0x4C,
+        0x31,
+        0xEA,  # JMP $EA31   ; chain to kernal (kbd scan + jiffy)
+    ]
+)
+RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 248 — first VBLANK line on PAL/NTSC
 
 _VALID_ROWS = ("top", "middle", "bottom")
 _VALID_MSG_KEYS = {"text", "color"}
@@ -121,8 +137,8 @@ _VALID_MSG_KEYS = {"text", "color"}
 # stays in effect for every message painted by this overlay until the
 # scene tears down (overlays are reconstructed per scene from config, so
 # the next scene's big_text starts fresh at "no override").
-_CONFIG_COLOR_SENTINEL = -2          # internal: use msg._resolved_color
-_RAINBOW_SENTINEL = -1               # matches msg._resolved_color rainbow
+_CONFIG_COLOR_SENTINEL = -2  # internal: use msg._resolved_color
+_RAINBOW_SENTINEL = -1  # matches msg._resolved_color rainbow
 # Build the spectrum portion of the cycle from C64_SPECTRUM_INDICES so
 # the order matches the rainbow scroller — predictable advancement.
 _SPECTRUM_NAME_FOR_INDEX = {v: k for k, v in C64_COLORS.items()}
@@ -132,7 +148,8 @@ COLOR_CYCLE: tuple[int, ...] = (
     *(int(i) for i in C64_SPECTRUM_INDICES),
 )
 COLOR_CYCLE_LABELS: tuple[str, ...] = (
-    "config", "rainbow",
+    "config",
+    "rainbow",
     *(_SPECTRUM_NAME_FOR_INDEX[int(i)] for i in C64_SPECTRUM_INDICES),
 )
 
@@ -140,7 +157,7 @@ COLOR_CYCLE_LABELS: tuple[str, ...] = (
 @dataclass
 class BigTextMessage:
     text: str
-    color: str = "white"               # C64 color name | "rainbow" | "random"
+    color: str = "white"  # C64 color name | "rainbow" | "random"
     _resolved_color: int = field(default=-1, init=False)
 
 
@@ -154,8 +171,8 @@ def _resolve_color(name: str) -> int:
     if name in C64_COLORS:
         return C64_COLORS[name]
     raise ValueError(
-        f"big_text: unknown color {name!r}. Use a C64 color name, "
-        "'rainbow', or 'random'.")
+        f"big_text: unknown color {name!r}. Use a C64 color name, 'rainbow', or 'random'."
+    )
 
 
 @register("big_text")
@@ -169,6 +186,7 @@ class BigTextOverlay(Overlay):
     don't expose the character matrix at all, and PETSCII scenes have
     their own per-frame char rendering that would fight the scroller.
     """
+
     PAINTS_INTO_BUFFERS = True
     COMPATIBLE_MODES = ("blank", "mcm")
     HELP = "Demo-scene 8×-scaled horizontally-scrolling big text (blank/mcm only)."
@@ -196,8 +214,7 @@ class BigTextOverlay(Overlay):
         if not messages:
             raise ValueError("big_text: messages must be non-empty")
         if row not in _VALID_ROWS:
-            raise ValueError(
-                f"big_text: row must be one of {_VALID_ROWS}, got {row!r}")
+            raise ValueError(f"big_text: row must be one of {_VALID_ROWS}, got {row!r}")
         self.row = row
         self.speed_cells_per_s = float(speed_cells_per_s)
         # Source-pixel-per-second = screen-px-per-second since we expand
@@ -220,7 +237,8 @@ class BigTextOverlay(Overlay):
                 if unknown:
                     raise ValueError(
                         f"big_text: unknown message keys {sorted(unknown)} "
-                        f"(allowed: {sorted(_VALID_MSG_KEYS)})")
+                        f"(allowed: {sorted(_VALID_MSG_KEYS)})"
+                    )
                 if "text" not in m:
                     raise ValueError(f"big_text: message missing 'text': {m!r}")
                 msg = BigTextMessage(**m)
@@ -242,7 +260,7 @@ class BigTextOverlay(Overlay):
         # the message becomes visible (after any inter-message pause).
         self._msg_idx = -1
         self._msg_start_t = 0.0
-        self._scroll_frame = 0     # frames elapsed inside the active scroll
+        self._scroll_frame = 0  # frames elapsed inside the active scroll
         self.start_time = 0.0
         # Ensemble / orchestration mode. None in single-system or local
         # mode (today's behaviour); set by Playlist (for followers) or
@@ -267,7 +285,7 @@ class BigTextOverlay(Overlay):
         # display it — the previously-displayed page becomes the next
         # write target. Eliminates VIC scan-line tearing on the
         # 320-byte strip upload.
-        self._next_page = 1            # 0 = $0400, 1 = $0C00
+        self._next_page = 1  # 0 = $0400, 1 = $0C00
         self._last_coarse_x_px = None  # last frame's cell-snapped scroll
         # Snapped at setup() from target_fps + requested speed.
         self._px_per_frame = 1
@@ -288,9 +306,9 @@ class BigTextOverlay(Overlay):
                 data = f.read(2048)
             if len(data) >= 2048:
                 return data
-            log.warning("big_text: charset %s shorter than 2KB; using builtin",
-                        path)
+            log.warning("big_text: charset %s shorter than 2KB; using builtin", path)
         from ..framebuffer import _builtin_charset
+
         return _builtin_charset()
 
     @staticmethod
@@ -313,10 +331,9 @@ class BigTextOverlay(Overlay):
         # Unpack the 8-byte glyph for each source code into 8 rows of 8 bits.
         out = np.empty((GLYPH_CELL_H, n * GLYPH_CELL_W), dtype=np.uint8)
         for i, code in enumerate(codes):
-            glyph = np.frombuffer(self._charset[code * 8:code * 8 + 8],
-                                  dtype=np.uint8)
+            glyph = np.frombuffer(self._charset[code * 8 : code * 8 + 8], dtype=np.uint8)
             # (8, 1) → (8, 8): MSB is the leftmost pixel.
-            out[:, i * 8:i * 8 + 8] = np.unpackbits(glyph[:, None], axis=1)
+            out[:, i * 8 : i * 8 + 8] = np.unpackbits(glyph[:, None], axis=1)
         bits = out.astype(bool)
         self._mask_cache[msg_idx] = bits
         return bits
@@ -332,6 +349,7 @@ class BigTextOverlay(Overlay):
         self._last_xscroll_byte = -1
         self._last_coarse_x_px = None
         self._next_page = 1
+
         # NB: _color_cycle_idx deliberately NOT reset here — overlays
         # survive single-scene loop iterations on the same instance, and
         # cycled style persists across loops + pause/resume (same
@@ -344,6 +362,7 @@ class BigTextOverlay(Overlay):
         # determines actual on-screen speed.
         def _num(x):
             return x if isinstance(x, int | float) and x > 0 else None
+
         fps = _num(self.target_fps) or _num(getattr(scene, "target_fps", None))
         if fps is None:
             dm = getattr(scene, "display_mode", None)
@@ -352,9 +371,10 @@ class BigTextOverlay(Overlay):
             fps = 50.0
         self._px_per_frame = max(1, int(round(self.speed_px_per_s / fps)))
         log.info(
-            "big_text: %.1f px/s requested -> %d px/frame @ %.0f fps "
-            "(actual %.1f px/s)",
-            self.speed_px_per_s, self._px_per_frame, fps,
+            "big_text: %.1f px/s requested -> %d px/frame @ %.0f fps (actual %.1f px/s)",
+            self.speed_px_per_s,
+            self._px_per_frame,
+            fps,
             self._px_per_frame * fps,
         )
         # Filter the scene's static background color out of the rainbow
@@ -415,8 +435,7 @@ class BigTextOverlay(Overlay):
         # broadcast is still active (CTRL skip mid-scroll, stop_event
         # mid-message, etc.) make sure followers get released. end()
         # is idempotent so a no-op when already ended.
-        if (self._orchestrator is not None and self._is_conductor
-                and self._orchestrator.is_active()):
+        if self._orchestrator is not None and self._is_conductor and self._orchestrator.is_active():
             self._orchestrator.end()
         self._orchestrator = None
         self._api = None
@@ -444,8 +463,7 @@ class BigTextOverlay(Overlay):
         # 4) Hook the IRQ vector. Single coalesced PUT — the two-byte
         #    vector lands as one DMA transaction so there's no torn-vector
         #    window even if some IRQ were somehow live.
-        api.write_regs("0314", IRQ_HANDLER_ADDR & 0xFF,
-                       (IRQ_HANDLER_ADDR >> 8) & 0xFF)
+        api.write_regs("0314", IRQ_HANDLER_ADDR & 0xFF, (IRQ_HANDLER_ADDR >> 8) & 0xFF)
         # 5) Program the raster compare register to VBLANK (line 248).
         #    $D011 = $1B is the kernal default (bit 7 = 0 keeps line < 256).
         api.write_memory("D012", f"{RASTER_IRQ_LINE:02X}")
@@ -464,8 +482,7 @@ class BigTextOverlay(Overlay):
         api.write_memory("D01A", "00")
         # 2) Restore IRQ vector to the kernal default ($EA31). With both
         #    raster IRQ and CIA #1 IRQ masked, no IRQ source is live.
-        api.write_regs("0314", KERNAL.IRQ_HANDLER & 0xFF,
-                       (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        api.write_regs("0314", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
         # 3) Ack any pending raster IRQ before re-enabling CIA #1.
         api.write_memory("D019", "01")
         # 4) Re-enable CIA #1 timer A IRQ — kernal jiffy / keyboard scan
@@ -478,8 +495,7 @@ class BigTextOverlay(Overlay):
         # off the leftmost system — the orchestrator's
         # follower-window math depends on us continuing to publish
         # abs_scroll_px past our own local screen.
-        if (self._orchestrator is not None and self._is_conductor
-                and self._orchestrator.is_active()):
+        if self._orchestrator is not None and self._is_conductor and self._orchestrator.is_active():
             return True
         # When looping, the message queue is effectively infinite — busy-defer
         # would prevent the scene from EVER advancing, so let the scene's
@@ -504,10 +520,10 @@ class BigTextOverlay(Overlay):
         bits = self._glyph_bits(self._msg_idx)
         msg = self.messages[self._msg_idx]
         color = self._active_color(msg)
-        rainbow = (color == _RAINBOW_SENTINEL)
+        rainbow = color == _RAINBOW_SENTINEL
         self._orchestrator.publish_bits(
-            bits=bits, color=color, rainbow=rainbow,
-            px_per_frame=self._px_per_frame)
+            bits=bits, color=color, rainbow=rainbow, px_per_frame=self._px_per_frame
+        )
         self._published_msg_idx = self._msg_idx
 
     # ---- SHIFT-driven color cycling ---------------------------------------
@@ -603,8 +619,7 @@ class BigTextOverlay(Overlay):
         abs_scroll_px = self._scroll_frame * self._px_per_frame
         if self._orchestrator is not None and self._is_conductor:
             self._orchestrator.advance(abs_scroll_px)
-            end_threshold = getattr(self._orchestrator,
-                                    "end_threshold_px", 0)
+            end_threshold = getattr(self._orchestrator, "end_threshold_px", 0)
             if end_threshold > 0 and abs_scroll_px >= end_threshold:
                 self._advance_message(t)
                 # If we wrapped past the last message in non-loop mode,
@@ -618,8 +633,7 @@ class BigTextOverlay(Overlay):
                 self._advance_message(t)
                 return
 
-        self._render_at(bits, x_left_px, self._active_color(msg),
-                        scene, buffers)
+        self._render_at(bits, x_left_px, self._active_color(msg), scene, buffers)
 
     def _compose_follower(self, buffers: dict, scene) -> None:
         """Follower-mode render: read state from the orchestrator and
@@ -639,12 +653,12 @@ class BigTextOverlay(Overlay):
         if bits is None:
             return
         active_color = snap.get("color", 0)
-        local_x_left_px = orch.local_x_left_px(
-            self._system_index, snap.get("abs_scroll_px", 0))
+        local_x_left_px = orch.local_x_left_px(self._system_index, snap.get("abs_scroll_px", 0))
         self._render_at(bits, local_x_left_px, active_color, scene, buffers)
 
-    def _render_at(self, bits: np.ndarray, x_left_px: int,
-                   active_color: int, scene, buffers: dict) -> None:
+    def _render_at(
+        self, bits: np.ndarray, x_left_px: int, active_color: int, scene, buffers: dict
+    ) -> None:
         """Paint glyph `bits` so its leftmost source pixel sits at
         `x_left_px` of this screen (negative = scrolled past the left
         edge; > SCREEN_W_PX = off the right edge).
@@ -662,13 +676,13 @@ class BigTextOverlay(Overlay):
         # Cell-snap the render position; push the sub-cell remainder to
         # the hardware X-scroll register for pixel-smooth motion.
         coarse_x_px = (x_left_px // 8) * 8
-        sub_x = x_left_px - coarse_x_px        # 0..7
-        leftmost_cell = coarse_x_px // 8       # screen cell column where the
-                                               # message's first source pixel
-                                               # lands
+        sub_x = x_left_px - coarse_x_px  # 0..7
+        leftmost_cell = coarse_x_px // 8  # screen cell column where the
+        # message's first source pixel
+        # lands
 
         in_mcm = self._scene_is_mcm(scene)
-        xscroll_byte = 0x08 | (sub_x & 0x07)   # 40-col + X-scroll bits
+        xscroll_byte = 0x08 | (sub_x & 0x07)  # 40-col + X-scroll bits
 
         # Build the (8, 40) cell pattern: for each visible screen cell c,
         # look up the source pixel at column (c - leftmost_cell).
@@ -680,7 +694,7 @@ class BigTextOverlay(Overlay):
             v = np.where(visible)[0]
             cell_block[:, v] = bits[:, src_cols[v]]
 
-        rainbow = (active_color == _RAINBOW_SENTINEL)
+        rainbow = active_color == _RAINBOW_SENTINEL
         fg_color = active_color if not rainbow else 0
         top = self._top_cell_row()
 
@@ -702,8 +716,7 @@ class BigTextOverlay(Overlay):
             strip_row_colors = (col_colors & 0x0F).astype(np.uint8)
         strip_start = top * SCREEN_W_CELLS
         strip_end = (top + GLYPH_CELL_H) * SCREEN_W_CELLS
-        color_buf[strip_start:strip_end] = np.tile(
-            strip_row_colors, GLYPH_CELL_H)
+        color_buf[strip_start:strip_end] = np.tile(strip_row_colors, GLYPH_CELL_H)
 
         # ---- Screen RAM --------------------------------------------------
         if in_mcm:
@@ -726,17 +739,14 @@ class BigTextOverlay(Overlay):
         if self._api is None:
             return
 
-        cell_shifted = (coarse_x_px != self._last_coarse_x_px)
+        cell_shifted = coarse_x_px != self._last_coarse_x_px
 
         if cell_shifted:
             self._last_coarse_x_px = coarse_x_px
-            strip = np.full((GLYPH_CELL_H, SCREEN_W_CELLS),
-                            SC_BLANK, dtype=np.uint8)
+            strip = np.full((GLYPH_CELL_H, SCREEN_W_CELLS), SC_BLANK, dtype=np.uint8)
             strip[cell_block] = SC_ON_PETSCII
-            offscreen_addr = (SCREEN_PAGE_ADDRS[self._next_page]
-                              + top * SCREEN_W_CELLS)
-            self._api.write_memory_file(
-                f"{offscreen_addr:04X}", strip.tobytes())
+            offscreen_addr = SCREEN_PAGE_ADDRS[self._next_page] + top * SCREEN_W_CELLS
+            self._api.write_memory_file(f"{offscreen_addr:04X}", strip.tobytes())
             # Update both shadow bytes in one coalesced PUT. The raster
             # IRQ at line 248 will commit them together during VBLANK,
             # so the new fine-scroll and the page-flip become visible on
@@ -751,6 +761,5 @@ class BigTextOverlay(Overlay):
         elif xscroll_byte != self._last_xscroll_byte:
             # Sub-cell motion only — update the shadow $D016 byte. The
             # raster IRQ at line 248 commits it during VBLANK.
-            self._api.write_memory(
-                f"{SHADOW_D016_ADDR:04X}", f"{xscroll_byte:02x}")
+            self._api.write_memory(f"{SHADOW_D016_ADDR:04X}", f"{xscroll_byte:02x}")
             self._last_xscroll_byte = xscroll_byte

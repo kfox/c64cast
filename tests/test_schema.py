@@ -6,6 +6,7 @@ Guards:
   * the real example configs all validate against it (so the schema isn't
     accidentally over-strict and breaking editor autocomplete).
 """
+
 from __future__ import annotations
 
 import glob
@@ -26,8 +27,8 @@ class SchemaBuildTest(unittest.TestCase):
             committed = json.load(f)
         fresh = schema.build_schema()
         self.assertEqual(
-            committed, fresh,
-            "c64cast.schema.json is stale — run `make schema` to regenerate.")
+            committed, fresh, "c64cast.schema.json is stale — run `make schema` to regenerate."
+        )
 
     def test_top_level_shape(self):
         s = schema.build_schema()
@@ -47,20 +48,18 @@ class SchemaValidatesExamplesTest(unittest.TestCase):
 
     def _configs(self):
         yield os.path.join(_REPO_ROOT, "config", "c64cast.example.toml")
-        yield from sorted(glob.glob(
-            os.path.join(_REPO_ROOT, "config", "examples", "*.toml")))
+        yield from sorted(glob.glob(os.path.join(_REPO_ROOT, "config", "examples", "*.toml")))
 
     def test_examples_validate(self):
         for path in self._configs():
             with self.subTest(config=os.path.relpath(path, _REPO_ROOT)):
                 with open(path, "rb") as f:
                     data = tomllib.load(f)
-                errors = sorted(self.validator.iter_errors(data),
-                                key=lambda e: list(e.path))
+                errors = sorted(self.validator.iter_errors(data), key=lambda e: list(e.path))
                 if errors:
                     msg = "\n".join(
-                        f"  {'/'.join(map(str, e.path))}: {e.message}"
-                        for e in errors[:10])
+                        f"  {'/'.join(map(str, e.path))}: {e.message}" for e in errors[:10]
+                    )
                     self.fail(f"{path} failed schema validation:\n{msg}")
 
     def test_typo_is_rejected(self):

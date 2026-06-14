@@ -1,4 +1,5 @@
 """C64 palette constants and color quantization."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,17 +8,45 @@ import cv2
 import numpy as np
 
 C64_COLORS = {
-    "black": 0, "white": 1, "red": 2, "cyan": 3, "purple": 4, "green": 5,
-    "blue": 6, "yellow": 7, "orange": 8, "brown": 9, "light red": 10,
-    "dark gray": 11, "gray": 12, "light green": 13, "light blue": 14, "light gray": 15,
+    "black": 0,
+    "white": 1,
+    "red": 2,
+    "cyan": 3,
+    "purple": 4,
+    "green": 5,
+    "blue": 6,
+    "yellow": 7,
+    "orange": 8,
+    "brown": 9,
+    "light red": 10,
+    "dark gray": 11,
+    "gray": 12,
+    "light green": 13,
+    "light blue": 14,
+    "light gray": 15,
 }
 
-C64_PALETTE_BGR = np.array([
-    [0, 0, 0], [255, 255, 255], [0, 0, 136], [238, 255, 170],
-    [204, 68, 204], [85, 204, 0], [170, 0, 0], [119, 238, 238],
-    [85, 136, 221], [0, 68, 102], [119, 119, 255], [51, 51, 51],
-    [119, 119, 119], [102, 255, 170], [255, 136, 0], [187, 187, 187],
-], dtype=np.float32)
+C64_PALETTE_BGR = np.array(
+    [
+        [0, 0, 0],
+        [255, 255, 255],
+        [0, 0, 136],
+        [238, 255, 170],
+        [204, 68, 204],
+        [85, 204, 0],
+        [170, 0, 0],
+        [119, 238, 238],
+        [85, 136, 221],
+        [0, 68, 102],
+        [119, 119, 255],
+        [51, 51, 51],
+        [119, 119, 119],
+        [102, 255, 170],
+        [255, 136, 0],
+        [187, 187, 187],
+    ],
+    dtype=np.float32,
+)
 
 C64_SPECTRUM_INDICES = np.array([2, 8, 7, 5, 13, 3, 14, 6, 4, 10])
 DISTANCE_WEIGHTS = np.array([2.0, 4.0, 3.0], dtype=np.float32)
@@ -34,8 +63,8 @@ CHANNEL_BOOST = np.array([1.3, 1.2, 1.0], dtype=np.float32)
 # Precomputing the weighted palette and per-palette norm avoids materializing
 # the (N, 16, 3) broadcast tensor that the naive form requires.
 _W = DISTANCE_WEIGHTS
-_WPAL = (C64_PALETTE_BGR * _W).T              # (3, 16)
-_PAL_NORMSQ = (C64_PALETTE_BGR ** 2) @ _W     # (16,)
+_WPAL = (C64_PALETTE_BGR * _W).T  # (3, 16)
+_PAL_NORMSQ = (C64_PALETTE_BGR**2) @ _W  # (16,)
 
 
 def quantize_distances(flat_pixels: np.ndarray) -> np.ndarray:
@@ -43,8 +72,8 @@ def quantize_distances(flat_pixels: np.ndarray) -> np.ndarray:
 
     flat_pixels: (N, 3) float32. Returns (N, 16) float32.
     """
-    px_normsq = (flat_pixels ** 2) @ _W              # (N,)
-    cross = flat_pixels @ _WPAL                      # (N, 16)
+    px_normsq = (flat_pixels**2) @ _W  # (N,)
+    cross = flat_pixels @ _WPAL  # (N, 16)
     return px_normsq[:, None] - 2.0 * cross + _PAL_NORMSQ[None, :]
 
 
@@ -61,8 +90,8 @@ def quantize_flat(flat_pixels: np.ndarray) -> np.ndarray:
 # any desaturated pixel has 5 close winners and rarely picks a chromatic
 # neighbor — `make_gray_penalty()` adds a distance² bias that shifts the
 # decision boundary in favor of the chromatic entry.
-GRAY_INDICES = (0, 1, 11, 12, 15)   # black, white, dark gray, gray, light gray
-PALE_INDICES = (3,)                 # cyan — chromatic but very pale; over-selected on warm-gray skin
+GRAY_INDICES = (0, 1, 11, 12, 15)  # black, white, dark gray, gray, light gray
+PALE_INDICES = (3,)  # cyan — chromatic but very pale; over-selected on warm-gray skin
 CHROMATIC_INDICES = tuple(i for i in range(16) if i not in GRAY_INDICES)
 
 # Default penalties chosen by eye against typical webcam input. Units are
@@ -76,9 +105,11 @@ DEFAULT_PALE_PENALTY = 625.0
 GRAYSCALE_CHROMATIC_PENALTY = 1e10
 
 
-def make_gray_penalty(gray_strength: float = DEFAULT_GRAY_PENALTY,
-                      pale_strength: float = DEFAULT_PALE_PENALTY,
-                      chromatic_strength: float = 0.0) -> np.ndarray:
+def make_gray_penalty(
+    gray_strength: float = DEFAULT_GRAY_PENALTY,
+    pale_strength: float = DEFAULT_PALE_PENALTY,
+    chromatic_strength: float = 0.0,
+) -> np.ndarray:
     """Return a (16,) float32 penalty vector to ADD to per-pixel distances.
 
     Larger values mean the corresponding palette entry needs to be that
@@ -110,8 +141,7 @@ def _saturation_lut(factor: float) -> np.ndarray:
     the table once at startup, not every frame."""
     lut = _SAT_LUT_CACHE.get(factor)
     if lut is None:
-        lut = np.clip(np.arange(256, dtype=np.float32) * factor,
-                      0, 255).astype(np.uint8)
+        lut = np.clip(np.arange(256, dtype=np.float32) * factor, 0, 255).astype(np.uint8)
         _SAT_LUT_CACHE[factor] = lut
     return lut
 
@@ -153,6 +183,7 @@ class HueCorrection:
     hue_target_deg, if set, hard-snaps the hue of matched pixels toward that
     angle. name is for logging/debug only.
     """
+
     hue_lo_deg: float
     hue_hi_deg: float
     sat_thresh: float = 0.0
@@ -165,10 +196,16 @@ class HueCorrection:
 
 # The one C64 colour gap worth closing by default: dark blue-violets → purple.
 DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = (
-    HueCorrection(hue_lo_deg=240.0, hue_hi_deg=330.0,
-                  sat_thresh=40.0 / 255.0, val_thresh=30.0 / 255.0,
-                  sat_mult=2.2, val_mult=1.9,
-                  hue_target_deg=300.0, name="purple_rescue"),
+    HueCorrection(
+        hue_lo_deg=240.0,
+        hue_hi_deg=330.0,
+        sat_thresh=40.0 / 255.0,
+        val_thresh=30.0 / 255.0,
+        sat_mult=2.2,
+        val_mult=1.9,
+        hue_target_deg=300.0,
+        name="purple_rescue",
+    ),
 )
 
 
@@ -186,11 +223,11 @@ def apply_hue_corrections(
         return img_bgr
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    deg = h * 2.0                                   # cv2 hue 0..179 → 0..359
+    deg = h * 2.0  # cv2 hue 0..179 → 0..359
     for c in corrections:
         if c.hue_lo_deg <= c.hue_hi_deg:
             in_band = (deg >= c.hue_lo_deg) & (deg <= c.hue_hi_deg)
-        else:                                       # wrap through 360°/0°
+        else:  # wrap through 360°/0°
             in_band = (deg >= c.hue_lo_deg) | (deg <= c.hue_hi_deg)
         mask = in_band & (s >= c.sat_thresh * 255.0) & (v >= c.val_thresh * 255.0)
         if not mask.any():
@@ -198,7 +235,7 @@ def apply_hue_corrections(
         s[mask] = np.minimum(255.0, s[mask] * c.sat_mult)
         v[mask] = np.minimum(255.0, v[mask] * c.val_mult)
         if c.hue_target_deg is not None:
-            h[mask] = c.hue_target_deg / 2.0        # degrees → cv2 hue
+            h[mask] = c.hue_target_deg / 2.0  # degrees → cv2 hue
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
@@ -213,45 +250,50 @@ def parse_hue_corrections(
     out: list[HueCorrection] = []
     for i, entry in enumerate(raw):
         if not isinstance(entry, dict):
-            raise ValueError(
-                f"color.hue_corrections[{i}] must be a table, got {entry!r}")
+            raise ValueError(f"color.hue_corrections[{i}] must be a table, got {entry!r}")
         for req in ("hue_lo_deg", "hue_hi_deg"):
             if req not in entry:
-                raise ValueError(
-                    f"color.hue_corrections[{i}] is missing required key {req!r}")
+                raise ValueError(f"color.hue_corrections[{i}] is missing required key {req!r}")
         unknown = set(entry) - {
-            "hue_lo_deg", "hue_hi_deg", "sat_thresh", "val_thresh",
-            "sat_mult", "val_mult", "hue_target_deg", "name"}
+            "hue_lo_deg",
+            "hue_hi_deg",
+            "sat_thresh",
+            "val_thresh",
+            "sat_mult",
+            "val_mult",
+            "hue_target_deg",
+            "name",
+        }
         if unknown:
             raise ValueError(
-                f"color.hue_corrections[{i}] has unknown key(s): "
-                f"{', '.join(sorted(unknown))}")
+                f"color.hue_corrections[{i}] has unknown key(s): {', '.join(sorted(unknown))}"
+            )
         for k in ("hue_lo_deg", "hue_hi_deg", "hue_target_deg"):
             val = entry.get(k)
             if val is not None and not (0.0 <= float(val) <= 360.0):
-                raise ValueError(
-                    f"color.hue_corrections[{i}].{k} must be in 0..360, got {val}")
+                raise ValueError(f"color.hue_corrections[{i}].{k} must be in 0..360, got {val}")
         for k in ("sat_thresh", "val_thresh"):
             val = entry.get(k, 0.0)
             if not (0.0 <= float(val) <= 1.0):
-                raise ValueError(
-                    f"color.hue_corrections[{i}].{k} must be in 0..1, got {val}")
+                raise ValueError(f"color.hue_corrections[{i}].{k} must be in 0..1, got {val}")
         for k in ("sat_mult", "val_mult"):
             val = entry.get(k, 1.0)
             if float(val) <= 0.0:
-                raise ValueError(
-                    f"color.hue_corrections[{i}].{k} must be > 0, got {val}")
-        out.append(HueCorrection(
-            hue_lo_deg=float(entry["hue_lo_deg"]),
-            hue_hi_deg=float(entry["hue_hi_deg"]),
-            sat_thresh=float(entry.get("sat_thresh", 0.0)),
-            val_thresh=float(entry.get("val_thresh", 0.0)),
-            sat_mult=float(entry.get("sat_mult", 1.0)),
-            val_mult=float(entry.get("val_mult", 1.0)),
-            hue_target_deg=(None if entry.get("hue_target_deg") is None
-                            else float(entry["hue_target_deg"])),
-            name=str(entry.get("name", "")),
-        ))
+                raise ValueError(f"color.hue_corrections[{i}].{k} must be > 0, got {val}")
+        out.append(
+            HueCorrection(
+                hue_lo_deg=float(entry["hue_lo_deg"]),
+                hue_hi_deg=float(entry["hue_hi_deg"]),
+                sat_thresh=float(entry.get("sat_thresh", 0.0)),
+                val_thresh=float(entry.get("val_thresh", 0.0)),
+                sat_mult=float(entry.get("sat_mult", 1.0)),
+                val_mult=float(entry.get("val_mult", 1.0)),
+                hue_target_deg=(
+                    None if entry.get("hue_target_deg") is None else float(entry["hue_target_deg"])
+                ),
+                name=str(entry.get("name", "")),
+            )
+        )
     return tuple(out)
 
 
@@ -270,11 +312,11 @@ def parse_channel_boost(
     if len(raw) != 3:
         raise ValueError(
             f"color.channel_boost must have exactly 3 entries "
-            f"[blue, green, red], got {len(raw)}: {raw!r}")
+            f"[blue, green, red], got {len(raw)}: {raw!r}"
+        )
     for i, v in enumerate(raw):
         if float(v) <= 0.0:
-            raise ValueError(
-                f"color.channel_boost[{i}] must be > 0, got {v}")
+            raise ValueError(f"color.channel_boost[{i}] must be > 0, got {v}")
     return np.array([float(v) for v in raw], dtype=np.float32)
 
 
@@ -292,15 +334,15 @@ def parse_channel_boost(
 # the gain, the saturation lift is floored at 1.0 (never desaturates) and
 # capped, and a 0..1 strength dial lerps the whole transform toward identity.
 
-_AUTO_FIT_BLACK_PCT = 1.0      # luma percentile mapped to black
-_AUTO_FIT_WHITE_PCT = 99.0     # luma percentile mapped to white
+_AUTO_FIT_BLACK_PCT = 1.0  # luma percentile mapped to black
+_AUTO_FIT_WHITE_PCT = 99.0  # luma percentile mapped to white
 # Smallest black→white span we'll stretch across. Enforcing a floor caps the
 # contrast gain at 255/MIN_SPAN (~8x) so a near-flat frame doesn't blow its
 # sensor/compression noise up to full contrast.
 _AUTO_FIT_MIN_SPAN = 32.0
-_AUTO_FIT_SAT_TARGET = 110.0   # target mean HSV S (0..255) the lift aims for
-_AUTO_FIT_SAT_CAP = 1.6        # never multiply saturation by more than this
-_AUTO_FIT_SCAN_WIDTH = 160     # downscale width for the cheap pre-scan
+_AUTO_FIT_SAT_TARGET = 110.0  # target mean HSV S (0..255) the lift aims for
+_AUTO_FIT_SAT_CAP = 1.6  # never multiply saturation by more than this
+_AUTO_FIT_SCAN_WIDTH = 160  # downscale width for the cheap pre-scan
 
 
 @dataclass(frozen=True)
@@ -310,6 +352,7 @@ class ColorFit:
     `black`/`white` are the luma levels (0..255) mapped to 0/255 by the stretch;
     `sat_mult` is the HSV saturation multiplier. Applied by `apply_color_fit`.
     """
+
     black: float
     white: float
     sat_mult: float
@@ -317,8 +360,7 @@ class ColorFit:
     def is_identity(self) -> bool:
         """True when the fit would leave a frame essentially unchanged, so the
         scene can skip installing it (and `result()` can return None)."""
-        return (self.black <= 1.0 and self.white >= 254.0
-                and self.sat_mult <= 1.01)
+        return self.black <= 1.0 and self.white >= 254.0 and self.sat_mult <= 1.01
 
 
 _CONTRAST_LUT_CACHE: dict[tuple[int, int], np.ndarray] = {}
@@ -334,8 +376,9 @@ def _contrast_lut(black: float, white: float) -> np.ndarray:
     lut = _CONTRAST_LUT_CACHE.get(key)
     if lut is None:
         span = max(float(key[1] - key[0]), 1.0)
-        lut = np.clip((np.arange(256, dtype=np.float32) - key[0]) * (255.0 / span),
-                      0, 255).astype(np.uint8)
+        lut = np.clip((np.arange(256, dtype=np.float32) - key[0]) * (255.0 / span), 0, 255).astype(
+            np.uint8
+        )
         _CONTRAST_LUT_CACHE[key] = lut
     return lut
 
@@ -369,8 +412,7 @@ class ColorFitAccumulator:
         h, w = img_bgr.shape[:2]
         if w > _AUTO_FIT_SCAN_WIDTH:
             new_h = max(1, h * _AUTO_FIT_SCAN_WIDTH // w)
-            small = cv2.resize(img_bgr, (_AUTO_FIT_SCAN_WIDTH, new_h),
-                               interpolation=cv2.INTER_AREA)
+            small = cv2.resize(img_bgr, (_AUTO_FIT_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA)
         else:
             small = img_bgr
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
@@ -390,8 +432,11 @@ class ColorFitAccumulator:
         white = float(np.searchsorted(cdf, total * _AUTO_FIT_WHITE_PCT / 100.0))
         white = min(255.0, black + max(white - black, _AUTO_FIT_MIN_SPAN))
         mean_s = (self._sat_sum / self._sat_n) if self._sat_n else 0.0
-        sat_mult = (float(np.clip(_AUTO_FIT_SAT_TARGET / mean_s, 1.0, _AUTO_FIT_SAT_CAP))
-                    if mean_s > 1.0 else 1.0)
+        sat_mult = (
+            float(np.clip(_AUTO_FIT_SAT_TARGET / mean_s, 1.0, _AUTO_FIT_SAT_CAP))
+            if mean_s > 1.0
+            else 1.0
+        )
         # Lerp toward identity by strength.
         st = self._strength
         black *= st
@@ -422,10 +467,10 @@ class ColorFitAccumulator:
 # Per-frame cost is a single LUT gather (see ColorMap.apply); the only real work
 # (pre-scan + k-means + assignment + LUT bake) happens once per source.
 
-_FORCE_PALETTE_BINS = 32          # per-axis BGR bins for the bake-once 3D LUT
-_FORCE_PALETTE_SHIFT = 3          # 8 - log2(bins): BGR byte → bin index
+_FORCE_PALETTE_BINS = 32  # per-axis BGR bins for the bake-once 3D LUT
+_FORCE_PALETTE_SHIFT = 3  # 8 - log2(bins): BGR byte → bin index
 _FORCE_PALETTE_SAMPLE_CAP = 60000  # max Lab pixels fed to k-means
-_FORCE_PALETTE_PER_FRAME = 2000    # pixels sampled per added frame/image
+_FORCE_PALETTE_PER_FRAME = 2000  # pixels sampled per added frame/image
 _FORCE_PALETTE_SCAN_WIDTH = _AUTO_FIT_SCAN_WIDTH
 
 
@@ -440,7 +485,7 @@ def _hungarian(cost: np.ndarray) -> np.ndarray:
     INF = float("inf")
     u = [0.0] * (n + 1)
     v = [0.0] * (n + 1)
-    p = [0] * (n + 1)          # p[j] = row matched to column j (1-indexed)
+    p = [0] * (n + 1)  # p[j] = row matched to column j (1-indexed)
     way = [0] * (n + 1)
     for i in range(1, n + 1):
         p[0] = i
@@ -496,6 +541,7 @@ class ColorMap:
     BGR cell to a C64 palette index; `shift` turns a BGR byte into its bin index;
     `indices` is the distinct C64 indices the source was mapped onto (logging).
     Apply is a pure gather — cheap enough to run every frame."""
+
     lut: np.ndarray
     shift: int
     indices: tuple[int, ...]
@@ -539,8 +585,9 @@ class ColorMapAccumulator:
         h, w = img_bgr.shape[:2]
         if w > _FORCE_PALETTE_SCAN_WIDTH:
             new_h = max(1, h * _FORCE_PALETTE_SCAN_WIDTH // w)
-            small = cv2.resize(img_bgr, (_FORCE_PALETTE_SCAN_WIDTH, new_h),
-                               interpolation=cv2.INTER_AREA)
+            small = cv2.resize(
+                img_bgr, (_FORCE_PALETTE_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA
+            )
         else:
             small = img_bgr
         lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).reshape(-1, 3)
@@ -564,17 +611,23 @@ class ColorMapAccumulator:
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
         # bestLabels=None is the documented "let OpenCV allocate" form; the cv2
         # stubs type it as a required MatLike, so suppress the false positive.
-        _compactness, _labels, centers = cv2.kmeans(  # type: ignore[arg-type]
-            samples, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS)  # pyright: ignore[reportCallIssue, reportArgumentType]
-        centers = centers.astype(np.float32)                    # (k, 3) Lab
+        _compactness, _labels, centers = cv2.kmeans(
+            samples,
+            k,
+            None,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+            criteria,
+            3,
+            cv2.KMEANS_PP_CENTERS,
+        )
+        centers = centers.astype(np.float32)  # (k, 3) Lab
 
         # Optimal cluster→distinct-C64-color bijection (min total Lab error).
         cand = self._candidates
-        cand_lab = _PALETTE_LAB[cand]                           # (C, 3)
-        diff = centers[:, None, :] - cand_lab[None, :, :]       # (k, C, 3)
-        cost = (diff * diff).sum(axis=2)                        # (k, C)
+        cand_lab = _PALETTE_LAB[cand]  # (C, 3)
+        diff = centers[:, None, :] - cand_lab[None, :, :]  # (k, C, 3)
+        cost = (diff * diff).sum(axis=2)  # (k, C)
         c = len(cand)
-        if k < c:                                               # pad to square
+        if k < c:  # pad to square
             square = np.zeros((c, c), dtype=np.float32)
             square[:k] = cost
             assign_col = _hungarian(square)[:k]
@@ -595,11 +648,14 @@ class ColorMapAccumulator:
         grid = np.arange(bins, dtype=np.uint8) * step + step // 2
         bb, gg, rr = np.meshgrid(grid, grid, grid, indexing="ij")
         centers_bgr = np.stack([bb, gg, rr], axis=-1).reshape(-1, 1, 3)
-        bin_lab = cv2.cvtColor(centers_bgr.astype(np.uint8),
-                               cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
-        diff = bin_lab[:, None, :] - centers_lab[None, :, :]    # (bins³, k, 3)
-        d = (diff * diff).sum(axis=2)                           # (bins³, k)
-        nearest = d.argmin(axis=1)                              # (bins³,)
+        bin_lab = (
+            cv2.cvtColor(centers_bgr.astype(np.uint8), cv2.COLOR_BGR2LAB)
+            .reshape(-1, 3)
+            .astype(np.float32)
+        )
+        diff = bin_lab[:, None, :] - centers_lab[None, :, :]  # (bins³, k, 3)
+        d = (diff * diff).sum(axis=2)  # (bins³, k)
+        nearest = d.argmin(axis=1)  # (bins³,)
         return assigned[nearest].reshape(bins, bins, bins)
 
 
@@ -611,7 +667,7 @@ def _compute_palette_hues() -> np.ndarray:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[0, 0]
         # cv2 HSV: H in 0..179, S in 0..255. Low saturation = no meaningful hue.
         if hsv[1] >= 20:
-            hues[i] = float(hsv[0]) * 2.0   # scale to 0..359
+            hues[i] = float(hsv[0]) * 2.0  # scale to 0..359
     return hues
 
 
@@ -624,8 +680,7 @@ def _hue_gap(a: float, b: float) -> float:
     return min(d, 360.0 - d)
 
 
-def pick_diverse_top_n(counts: np.ndarray, n: int,
-                       min_hue_gap_deg: float = 45.0) -> list[int]:
+def pick_diverse_top_n(counts: np.ndarray, n: int, min_hue_gap_deg: float = 45.0) -> list[int]:
     """Pick `n` palette indices favoring hue diversity AMONG populated entries.
 
     Diversity is a tie-breaker, not an override. An unpopulated palette
@@ -647,7 +702,7 @@ def pick_diverse_top_n(counts: np.ndarray, n: int,
     counts: (16,) int — typically np.bincount of nearest-palette indices.
     """
     counts = np.asarray(counts)
-    order = [int(i) for i in np.argsort(counts)[::-1]]    # most → least
+    order = [int(i) for i in np.argsort(counts)[::-1]]  # most → least
     populated = [i for i in order if counts[i] > 0]
 
     if not populated:

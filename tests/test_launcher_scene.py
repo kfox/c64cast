@@ -1,5 +1,6 @@
 """Tests for LauncherScene's idle-timeout state machine and input
 snapshot logic. Pure-Python: the api is a Mock; no hardware is touched."""
+
 from __future__ import annotations
 
 import os
@@ -35,7 +36,7 @@ class IdleTimeoutTest(unittest.TestCase):
             scene, _ = _make_scene(tmp)
             scene.duration_s = 10.0
             scene.start_time = 0.0
-            scene._last_input_t = 8.0   # input 3 s ago at t=11
+            scene._last_input_t = 8.0  # input 3 s ago at t=11
             self.assertTrue(scene.process_frame(11.0))
 
     def test_min_duration_floor_blocks_early_advance(self):
@@ -43,7 +44,7 @@ class IdleTimeoutTest(unittest.TestCase):
             scene, _ = _make_scene(tmp, min_duration_s=30.0)
             scene.duration_s = 5.0
             scene.start_time = 0.0
-            scene._last_input_t = 0.0   # idle the whole time
+            scene._last_input_t = 0.0  # idle the whole time
             # Idle timeout would fire at t=5, but the floor holds until t=30.
             self.assertTrue(scene.process_frame(10.0))
             self.assertFalse(scene.process_frame(31.0))
@@ -77,8 +78,7 @@ class InputSnapshotTest(unittest.TestCase):
             # Upper bits set (keyboard-scan noise) must be masked away.
             api.read_memory.return_value = bytes([0xEF, 0xFF])
             snap = scene._read_snapshot()
-            self.assertEqual(snap,
-                             bytes([0xEF & CIA1.JOY_MASK, 0xFF & CIA1.JOY_MASK]))
+            self.assertEqual(snap, bytes([0xEF & CIA1.JOY_MASK, 0xFF & CIA1.JOY_MASK]))
             api.read_memory.assert_called_once_with(CIA1.PORT_A, 2)
 
     def test_kernal_snapshot_reads_scratch_bytes(self):

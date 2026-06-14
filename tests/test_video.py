@@ -1,4 +1,5 @@
 """Tests for the video module's pure helpers (no PyAV / no real file)."""
+
 from __future__ import annotations
 
 import threading
@@ -14,8 +15,7 @@ from c64cast.video import (
 )
 
 
-def _make_av_source_stub(frames: list[tuple[float, np.ndarray]],
-                         eof: bool) -> AVFileSource:
+def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> AVFileSource:
     """Build an AVFileSource without going through __init__ (which opens a
     real container via PyAV). Only the attributes touched by
     `current_frame` / `finished` are set; everything else stays unset."""
@@ -27,7 +27,6 @@ def _make_av_source_stub(frames: list[tuple[float, np.ndarray]],
 
 
 class NormalizationGainTest(unittest.TestCase):
-
     def test_zero_peak_returns_unity(self):
         # Defensive: a fully-silent or unscannable file shouldn't divide-by-
         # zero and shouldn't get amplified into noise.
@@ -69,8 +68,7 @@ class NormalizationGainTest(unittest.TestCase):
 
     def test_max_gain_at_exact_threshold(self):
         # Sanity check: gain just under the cap doesn't trip the cap.
-        threshold_peak = int((NORMALIZATION_TARGET_PEAK * 32767)
-                             / NORMALIZATION_MAX_GAIN) + 1
+        threshold_peak = int((NORMALIZATION_TARGET_PEAK * 32767) / NORMALIZATION_MAX_GAIN) + 1
         gain = _compute_normalization_gain(threshold_peak)
         self.assertLess(gain, NORMALIZATION_MAX_GAIN)
 
@@ -106,20 +104,26 @@ class AVFileSourceEOFTest(unittest.TestCase):
         b = np.ones((4, 4, 3), dtype=np.uint8) * 100
         src = _make_av_source_stub([(0.0, a), (1.0, b)], eof=True)
         chosen = src.current_frame(audio_position_s=1.5)
-        self.assertIs(chosen, b,
-                      "the last consumed frame must still be returned to "
-                      "the caller (one final paint), but not retained")
-        self.assertEqual(len(src._video_buf), 0,
-                         "buffer must be drained when EOF + last frame "
-                         "consumed, so `finished` can flip")
+        self.assertIs(
+            chosen,
+            b,
+            "the last consumed frame must still be returned to "
+            "the caller (one final paint), but not retained",
+        )
+        self.assertEqual(
+            len(src._video_buf),
+            0,
+            "buffer must be drained when EOF + last frame consumed, so `finished` can flip",
+        )
         self.assertTrue(src.finished, "EOF + drained buffer = done")
 
     def test_partial_consume_at_eof_keeps_unconsumed_frames(self):
         # EOF was set but the audio clock is still behind some frames. The
         # unconsumed frames must NOT be dropped — only the consumed-through
         # range (including the chosen one, since EOF means no more coming).
-        frames = [(t, np.full((2, 2, 3), int(t * 10), dtype=np.uint8))
-                  for t in (0.0, 1.0, 2.0, 3.0)]
+        frames = [
+            (t, np.full((2, 2, 3), int(t * 10), dtype=np.uint8)) for t in (0.0, 1.0, 2.0, 3.0)
+        ]
         src = _make_av_source_stub(frames, eof=True)
         # Consume through PTS=1.0 (the second frame). PTS=2.0 and 3.0 are
         # ahead of the clock; they stay.
@@ -131,11 +135,12 @@ class AVFileSourceEOFTest(unittest.TestCase):
         # the LAST in the buffer; here it isn't, so normal trim applies and
         # the chosen frame stays as stall protection.
         remaining = [f[1][0, 0, 0] for f in src._video_buf]
-        self.assertEqual(remaining, [10, 20, 30],
-                         "unconsumed future frames must survive partial "
-                         "consume even after EOF")
-        self.assertFalse(src.finished,
-                         "still frames ahead of clock → not finished")
+        self.assertEqual(
+            remaining,
+            [10, 20, 30],
+            "unconsumed future frames must survive partial consume even after EOF",
+        )
+        self.assertFalse(src.finished, "still frames ahead of clock → not finished")
 
 
 if __name__ == "__main__":

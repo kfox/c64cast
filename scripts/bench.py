@@ -15,6 +15,7 @@ artificial per-request latency so you can simulate a slow LAN.
 
 Run via ``make bench`` or ``python scripts/bench.py [--latency-ms N]``.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -89,8 +90,7 @@ def _print_section(title: str):
     print("-" * len(title))
 
 
-def run_bench(latency_ms: float = 0.0, frames: int = 600,
-              region_bytes: int = 8000) -> None:
+def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 8000) -> None:
     """Replay a few realistic write patterns against the local fake U64.
 
     * **full_writes** — every frame pushes a brand-new 8 KB region (worst
@@ -103,13 +103,11 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600,
     _Handler.latency_ms = latency_ms
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True,
-                              name="bench-http")
+    thread = threading.Thread(target=server.serve_forever, daemon=True, name="bench-http")
     thread.start()
     base_url = f"http://127.0.0.1:{port}"
 
-    print(f"fake U64 listening on {base_url}  (per-request latency: "
-          f"{latency_ms:.1f} ms)")
+    print(f"fake U64 listening on {base_url}  (per-request latency: {latency_ms:.1f} ms)")
     print(f"frames={frames}, region_bytes={region_bytes}")
 
     rng = np.random.default_rng(0)
@@ -138,12 +136,11 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600,
     region = rng.integers(0, 256, size=region_bytes, dtype=np.uint8)
     api.write_region(0x2000, region.tobytes(), region_id=99)
     _reset_stats()
-    window = 40                          # 40 bytes = one PETSCII row
+    window = 40  # 40 bytes = one PETSCII row
     t0 = time.perf_counter()
     for i in range(frames):
         start = (i * 7) % (region_bytes - window)
-        region[start:start + window] = rng.integers(
-            0, 256, size=window, dtype=np.uint8)
+        region[start : start + window] = rng.integers(0, 256, size=window, dtype=np.uint8)
         api.write_region(0x2000, region.tobytes(), region_id=99)
     api.flush(timeout=30.0)
     api.close()
@@ -164,8 +161,7 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600,
         # 8 bands × 8 bytes each, spread across the region.
         for b in range(8):
             base = b * (region_bytes // 8)
-            region[base:base + 8] = rng.integers(
-                0, 256, size=8, dtype=np.uint8)
+            region[base : base + 8] = rng.integers(0, 256, size=8, dtype=np.uint8)
         api.write_region(0x2000, region.tobytes(), region_id=99)
     api.flush(timeout=30.0)
     api.close()
@@ -200,34 +196,38 @@ def _report(api: Ultimate64API, dt: float, frames: int, region_bytes: int):
     mbps = bytes_total / dt / 1e6 if dt > 0 else 0.0
     print(f"wall time          : {dt * 1000:.1f} ms ({fps:.1f} frames/s)")
     print(f"requests           : {reqs} ({reqs / dt:.0f} req/s)")
-    print(f"bytes uploaded     : {bytes_total / 1024:.1f} KiB "
-          f"({mbps:.2f} MB/s)")
+    print(f"bytes uploaded     : {bytes_total / 1024:.1f} KiB ({mbps:.2f} MB/s)")
     print(f"avg bytes/request  : {(bytes_total / reqs) if reqs else 0:.0f}")
-    print(f"latency p50 / p95  : "
-          f"{_percentile(_Handler.latencies_ms, 50):.2f} ms / "
-          f"{_percentile(_Handler.latencies_ms, 95):.2f} ms")
+    print(
+        f"latency p50 / p95  : "
+        f"{_percentile(_Handler.latencies_ms, 50):.2f} ms / "
+        f"{_percentile(_Handler.latencies_ms, 95):.2f} ms"
+    )
     print(f"latency max        : {max(_Handler.latencies_ms or [0]):.2f} ms")
     print(f"api skipped frames : {api.stats['skipped']}")
     if frames * region_bytes > 0:
         compression = 1.0 - bytes_total / (frames * region_bytes)
-        print(f"delta efficiency   : {compression * 100:.1f}% bytes saved "
-              "vs. naive full upload")
+        print(f"delta efficiency   : {compression * 100:.1f}% bytes saved vs. naive full upload")
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--latency-ms", type=float, default=0.0,
-                   help="Simulated per-request latency the fake server "
-                        "adds before responding (default: 0 = pure local).")
-    p.add_argument("--frames", type=int, default=600,
-                   help="Frames to simulate per scenario.")
-    p.add_argument("--region-bytes", type=int, default=8000,
-                   help="Size of the simulated region (default: 8 KB, "
-                        "matches the hires bitmap area).")
+    p.add_argument(
+        "--latency-ms",
+        type=float,
+        default=0.0,
+        help="Simulated per-request latency the fake server "
+        "adds before responding (default: 0 = pure local).",
+    )
+    p.add_argument("--frames", type=int, default=600, help="Frames to simulate per scenario.")
+    p.add_argument(
+        "--region-bytes",
+        type=int,
+        default=8000,
+        help="Size of the simulated region (default: 8 KB, matches the hires bitmap area).",
+    )
     args = p.parse_args()
-    run_bench(latency_ms=args.latency_ms,
-              frames=args.frames,
-              region_bytes=args.region_bytes)
+    run_bench(latency_ms=args.latency_ms, frames=args.frames, region_bytes=args.region_bytes)
     return 0
 
 

@@ -22,6 +22,7 @@ Camera index trap (see local_capture_hardware memory): on this Mac cv2 idx 1 is
 the FaceTime camera, idx 0 is the Cam Link. Default here is 1; override with
 --device. Grab a frame and look if unsure.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,26 +51,54 @@ def _pinch_distance(hand) -> float:
 
 def main() -> None:
     defaults = VisionCfg()
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--device", type=int, default=1,
-                    help="cv2 camera index (default 1 = FaceTime on this Mac)")
-    ap.add_argument("--model", default=defaults.model_path,
-                    help=f"HandLandmarker .task path (default {defaults.model_path})")
-    ap.add_argument("-t", "--seconds", type=float, default=None,
-                    help="capture window length; omit to run until Ctrl-C")
-    ap.add_argument("--pinch", type=float, default=defaults.pinch_threshold,
-                    help=f"pinch_threshold to preview (default {defaults.pinch_threshold})")
-    ap.add_argument("--swipe", type=float, default=defaults.swipe_velocity,
-                    help=f"swipe_velocity to preview (default {defaults.swipe_velocity})")
-    ap.add_argument("--rate", type=float, default=defaults.poll_interval_s,
-                    help=f"seconds between ticks (default {defaults.poll_interval_s})")
-    ap.add_argument("--mirror", action="store_true", default=defaults.mirror,
-                    help="mirror the frame (match the webcam view)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--device", type=int, default=1, help="cv2 camera index (default 1 = FaceTime on this Mac)"
+    )
+    ap.add_argument(
+        "--model",
+        default=defaults.model_path,
+        help=f"HandLandmarker .task path (default {defaults.model_path})",
+    )
+    ap.add_argument(
+        "-t",
+        "--seconds",
+        type=float,
+        default=None,
+        help="capture window length; omit to run until Ctrl-C",
+    )
+    ap.add_argument(
+        "--pinch",
+        type=float,
+        default=defaults.pinch_threshold,
+        help=f"pinch_threshold to preview (default {defaults.pinch_threshold})",
+    )
+    ap.add_argument(
+        "--swipe",
+        type=float,
+        default=defaults.swipe_velocity,
+        help=f"swipe_velocity to preview (default {defaults.swipe_velocity})",
+    )
+    ap.add_argument(
+        "--rate",
+        type=float,
+        default=defaults.poll_interval_s,
+        help=f"seconds between ticks (default {defaults.poll_interval_s})",
+    )
+    ap.add_argument(
+        "--mirror",
+        action="store_true",
+        default=defaults.mirror,
+        help="mirror the frame (match the webcam view)",
+    )
     args = ap.parse_args()
 
-    print(f"opening camera index {args.device} + loading model "
-          f"(thresholds preview: pinch<{args.pinch} swipe>={args.swipe}) ...")
+    print(
+        f"opening camera index {args.device} + loading model "
+        f"(thresholds preview: pinch<{args.pinch} swipe>={args.swipe}) ..."
+    )
     src = WebcamSource(args.device)
     rec = MediaPipeHandRecognizer(args.model)
     print("ready. perform a gesture. Ctrl-C to stop.\n")
@@ -101,7 +130,7 @@ def main() -> None:
             if hand is None:
                 prev = None
                 if now - last_print >= 0.4:
-                    print(f"t={now-t0:5.1f}  (no hand)")
+                    print(f"t={now - t0:5.1f}  (no hand)")
                     last_print = now
                 time.sleep(args.rate)
                 continue
@@ -132,8 +161,10 @@ def main() -> None:
             if now - last_print >= 0.4:
                 tag = static.value.upper()
                 hot = "  <SWIPE" if is_swipe else ""
-                print(f"t={now-t0:5.1f}  pinch_d={pd:.3f}  fingers={nf}  "
-                      f"vx={vx:5.2f}  vy={vy:5.2f}  -> {tag}{hot}")
+                print(
+                    f"t={now - t0:5.1f}  pinch_d={pd:.3f}  fingers={nf}  "
+                    f"vx={vx:5.2f}  vy={vy:5.2f}  -> {tag}{hot}"
+                )
                 last_print = now
             time.sleep(args.rate)
     except KeyboardInterrupt:
@@ -147,18 +178,26 @@ def main() -> None:
 
     dur = time.monotonic() - t0
     print("\n==== summary ====")
-    print(f"window {dur:.1f}s  frames={frames}  hand-present={hands} "
-          f"({100*hands/max(frames,1):.0f}%)")
+    print(
+        f"window {dur:.1f}s  frames={frames}  hand-present={hands} "
+        f"({100 * hands / max(frames, 1):.0f}%)"
+    )
     if pinch_ds:
-        print(f"pinch_distance : min={min(pinch_ds):.3f}  p10={pct(pinch_ds,10):.3f}  "
-              f"median={pct(pinch_ds,50):.3f}  p90={pct(pinch_ds,90):.3f}  "
-              f"max={max(pinch_ds):.3f}")
-        print(f"wrist_velocity : median={pct(vels,50):.2f}  p90={pct(vels,90):.2f}  "
-              f"p99={pct(vels,99):.2f}  max={max(vels):.2f}")
+        print(
+            f"pinch_distance : min={min(pinch_ds):.3f}  p10={pct(pinch_ds, 10):.3f}  "
+            f"median={pct(pinch_ds, 50):.3f}  p90={pct(pinch_ds, 90):.3f}  "
+            f"max={max(pinch_ds):.3f}"
+        )
+        print(
+            f"wrist_velocity : median={pct(vels, 50):.2f}  p90={pct(vels, 90):.2f}  "
+            f"p99={pct(vels, 99):.2f}  max={max(vels):.2f}"
+        )
         print(f"finger counts  : {finger_hist}")
-        print(f"would-fire (at pinch<{args.pinch}, swipe>={args.swipe}): "
-              f"pinch={fired['pinch']} swipe={fired['swipe']} open_hand={fired['open']} "
-              f"(of {hands} hand frames)")
+        print(
+            f"would-fire (at pinch<{args.pinch}, swipe>={args.swipe}): "
+            f"pinch={fired['pinch']} swipe={fired['swipe']} open_hand={fired['open']} "
+            f"(of {hands} hand frames)"
+        )
     print("=================")
 
 

@@ -14,6 +14,7 @@ honest with three checks:
   3. Type coverage: config/examples/ ships a demo for every scene type and
      every overlay type (so a newly added type can't land undocumented).
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -90,8 +91,8 @@ class ForwardStrictnessTest(unittest.TestCase):
                 unknown = set(data[section]) - valid
                 self.assertFalse(
                     unknown,
-                    f"{os.path.relpath(path, _REPO)} [{section}] unknown keys: "
-                    f"{sorted(unknown)}")
+                    f"{os.path.relpath(path, _REPO)} [{section}] unknown keys: {sorted(unknown)}",
+                )
 
     def test_scene_keys_are_real(self):
         valid = {f.name for f in dataclasses.fields(cfgmod.SceneCfg)}
@@ -100,24 +101,24 @@ class ForwardStrictnessTest(unittest.TestCase):
                 unknown = set(s) - valid
                 self.assertFalse(
                     unknown,
-                    f"{os.path.relpath(path, _REPO)} [[scenes]] unknown keys: "
-                    f"{sorted(unknown)}")
+                    f"{os.path.relpath(path, _REPO)} [[scenes]] unknown keys: {sorted(unknown)}",
+                )
 
     def test_overlay_keys_are_real(self):
-        params = {od.name: {p.name for p in od.params}
-                  for od in introspect.overlay_docs()}
+        params = {od.name: {p.name for p in od.params} for od in introspect.overlay_docs()}
         for path in _all_configs():
             for s in _load(path).get("scenes", []):
                 for ov in s.get("overlays", []):
                     ot = ov.get("type")
-                    self.assertIn(ot, params,
-                                  f"{os.path.relpath(path, _REPO)} unknown "
-                                  f"overlay type {ot!r}")
+                    self.assertIn(
+                        ot, params, f"{os.path.relpath(path, _REPO)} unknown overlay type {ot!r}"
+                    )
                     unknown = set(ov) - {"type"} - params[ot]
                     self.assertFalse(
                         unknown,
                         f"{os.path.relpath(path, _REPO)} overlay {ot!r} "
-                        f"unknown keys: {sorted(unknown)}")
+                        f"unknown keys: {sorted(unknown)}",
+                    )
 
 
 class SectionCoverageTest(unittest.TestCase):
@@ -134,7 +135,8 @@ class SectionCoverageTest(unittest.TestCase):
         self.assertFalse(
             missing,
             "c64cast.example.toml is missing these fields (document them, or "
-            f"add to _COVERAGE_EXEMPT with a reason): {sorted(missing)}")
+            f"add to _COVERAGE_EXEMPT with a reason): {sorted(missing)}",
+        )
 
 
 class TypeCoverageTest(unittest.TestCase):
@@ -150,14 +152,12 @@ class TypeCoverageTest(unittest.TestCase):
     def test_every_scene_type_has_a_demo(self):
         scene_types, _ = self._examples_union()
         missing = set(introspect.scene_type_names()) - scene_types
-        self.assertFalse(missing, f"no config/examples demo for scene types: "
-                                  f"{sorted(missing)}")
+        self.assertFalse(missing, f"no config/examples demo for scene types: {sorted(missing)}")
 
     def test_every_overlay_has_a_demo(self):
         _, overlay_types = self._examples_union()
         missing = set(introspect.overlay_names()) - overlay_types
-        self.assertFalse(missing, f"no config/examples demo for overlays: "
-                                  f"{sorted(missing)}")
+        self.assertFalse(missing, f"no config/examples demo for overlays: {sorted(missing)}")
 
 
 if __name__ == "__main__":

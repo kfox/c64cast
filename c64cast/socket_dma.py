@@ -23,6 +23,7 @@ This module covers only the opcodes needed by c64cast's write path
 (DMAWRITE, IDENTIFY, AUTHENTICATE, plus RESET and KEYB for completeness).
 The full opcode set is documented in [docs/caveats.md](../docs/caveats.md).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -64,10 +65,14 @@ class SocketDMAClient:
     failed sendall triggers exactly one transparent reconnect-and-retry;
     a second failure is raised to the caller."""
 
-    def __init__(self, host: str, port: int = DEFAULT_PORT,
-                 password: str | None = None,
-                 connect_timeout: float = 5.0,
-                 io_timeout: float = 2.0):
+    def __init__(
+        self,
+        host: str,
+        port: int = DEFAULT_PORT,
+        password: str | None = None,
+        connect_timeout: float = 5.0,
+        io_timeout: float = 2.0,
+    ):
         self.host = host
         self.port = port
         self.password = password or None  # treat "" same as None
@@ -96,16 +101,15 @@ class SocketDMAClient:
     def _connect_locked(self) -> None:
         # Caller must hold self._lock.
         try:
-            sock = socket.create_connection(
-                (self.host, self.port), timeout=self.connect_timeout)
+            sock = socket.create_connection((self.host, self.port), timeout=self.connect_timeout)
         except ConnectionRefusedError as e:
             raise SocketDMAError(
                 f"connection refused at {self.host}:{self.port}. The U64 "
                 f"Ultimate DMA Service is probably disabled. Enable it at "
-                f"F2 Menu -> Network Settings -> Ultimate DMA Service.") from e
+                f"F2 Menu -> Network Settings -> Ultimate DMA Service."
+            ) from e
         except OSError as e:
-            raise SocketDMAError(
-                f"could not connect to {self.host}:{self.port}: {e}") from e
+            raise SocketDMAError(f"could not connect to {self.host}:{self.port}: {e}") from e
         sock.settimeout(self.io_timeout)
         # Disable Nagle so 7-byte DMAWRITE commands ship immediately
         # instead of waiting for the kernel to coalesce — Nagle would
@@ -127,8 +131,7 @@ class SocketDMAClient:
         except Exception:
             self._close_locked()
             raise
-        log.info("socket dma: connected to %s:%d (%s)",
-                 self.host, self.port, self.product)
+        log.info("socket dma: connected to %s:%d (%s)", self.host, self.port, self.product)
 
     def _authenticate_locked(self) -> None:
         assert self._sock is not None
@@ -140,11 +143,13 @@ class SocketDMAClient:
         except OSError as e:
             raise SocketDMAError(
                 "authentication failed — socket closed before reply. "
-                "Server may have throttled too many bad attempts.") from e
+                "Server may have throttled too many bad attempts."
+            ) from e
         if reply != b"\x01":
             raise SocketDMAError(
                 "authentication rejected. Check [ultimate64] dma_password "
-                "or the C64CAST_DMA_PASSWORD env var.")
+                "or the C64CAST_DMA_PASSWORD env var."
+            )
 
     def _identify_locked(self) -> str:
         assert self._sock is not None
@@ -164,13 +169,15 @@ class SocketDMAClient:
                 "Check that BOTH 'Ultimate DMA Service' AND 'Command "
                 "Interface' are enabled in F2 → Network Settings. If a "
                 "network password is set on the U64, also configure "
-                "dma_password.") from e
+                "dma_password."
+            ) from e
         except OSError as e:
             raise SocketDMAError(
                 f"IDENTIFY round-trip failed: {e}. The DMA service may have "
                 "closed the connection — check F2 → Network Settings → "
                 "Ultimate DMA Service and Command Interface are both "
-                "enabled.") from e
+                "enabled."
+            ) from e
         return payload.decode("utf-8", errors="replace")
 
     def close(self) -> None:
@@ -250,9 +257,7 @@ class SocketDMAClient:
         the destination can be reached later via the REU's REC ($DF00-$DF0A)
         DMA mechanism. Requires REU to be enabled in F2 → C64 and Cartridge
         Settings on the U64."""
-        addr_bytes = bytes([reu_offset & 0xFF,
-                            (reu_offset >> 8) & 0xFF,
-                            (reu_offset >> 16) & 0xFF])
+        addr_bytes = bytes([reu_offset & 0xFF, (reu_offset >> 8) & 0xFF, (reu_offset >> 16) & 0xFF])
         self._send_with_reconnect(CMD_REUWRITE, addr_bytes + data)
 
     def reset(self) -> None:
@@ -316,6 +321,8 @@ class SocketDMAClient:
         avg, p50, p95, mx, n = self.latency_summary()
         if n == 0:
             return None
-        return (f"u64 dma latency: n={n} avg={avg * 1000:.1f} "
-                f"p50={p50 * 1000:.1f} p95={p95 * 1000:.1f} "
-                f"max={mx * 1000:.1f} ms")
+        return (
+            f"u64 dma latency: n={n} avg={avg * 1000:.1f} "
+            f"p50={p50 * 1000:.1f} p95={p95 * 1000:.1f} "
+            f"max={mx * 1000:.1f} ms"
+        )

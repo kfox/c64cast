@@ -1,4 +1,5 @@
 """Tests for the Commodore-key poller and the Playlist pause/resume flow."""
+
 from __future__ import annotations
 
 import threading
@@ -43,17 +44,16 @@ class FakeApi:
 
 
 class CommodoreKeyPollerTest(unittest.TestCase):
-
     def test_press_sets_pause_event(self):
         api = FakeApi()
-        api.set_script([b"\x00", b"\x02", b"\x02"])   # released, then pressed
-        poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01,
-                                    hold_threshold_s=10.0)
+        api.set_script([b"\x00", b"\x02", b"\x02"])  # released, then pressed
+        poller = CommodoreKeyPoller(
+            cast(Ultimate64API, api), poll_interval_s=0.01, hold_threshold_s=10.0
+        )
         pause = threading.Event()
         resume = threading.Event()
         poller.start(pause, resume)
-        self.assertTrue(pause.wait(timeout=0.5),
-                        "press should set pause_event quickly")
+        self.assertTrue(pause.wait(timeout=0.5), "press should set pause_event quickly")
         self.assertFalse(resume.is_set())
         poller.stop()
 
@@ -75,15 +75,15 @@ class CommodoreKeyPollerTest(unittest.TestCase):
 
     def test_hold_while_paused_sets_resume(self):
         api = FakeApi()
-        api.set_script([b"\x02"])   # always pressed
+        api.set_script([b"\x02"])  # always pressed
         pause = threading.Event()
-        pause.set()                  # already paused
+        pause.set()  # already paused
         resume = threading.Event()
-        poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.02,
-                                    hold_threshold_s=0.15)
+        poller = CommodoreKeyPoller(
+            cast(Ultimate64API, api), poll_interval_s=0.02, hold_threshold_s=0.15
+        )
         poller.start(pause, resume)
-        self.assertTrue(resume.wait(timeout=1.0),
-                        "held-while-paused should set resume_event")
+        self.assertTrue(resume.wait(timeout=1.0), "held-while-paused should set resume_event")
         poller.stop()
 
     def test_release_resets_hold_timer(self):
@@ -95,33 +95,32 @@ class CommodoreKeyPollerTest(unittest.TestCase):
         pause = threading.Event()
         pause.set()
         resume = threading.Event()
-        poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.02,
-                                    hold_threshold_s=0.30)
+        poller = CommodoreKeyPoller(
+            cast(Ultimate64API, api), poll_interval_s=0.02, hold_threshold_s=0.30
+        )
         poller.start(pause, resume)
         # Total script time ~ 10 × 20 ms = 200 ms, less than the 300 ms
         # threshold AFTER the release. Resume should not fire.
         time.sleep(0.25)
-        self.assertFalse(resume.is_set(),
-                         "release in the middle should reset the hold timer")
+        self.assertFalse(resume.is_set(), "release in the middle should reset the hold timer")
         poller.stop()
 
     def test_read_failure_does_not_trigger_pause(self):
         class BadApi(FakeApi):
             def read_memory(self, *a, **kw):
                 return None
+
         api = BadApi()
         pause = threading.Event()
         resume = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume)
         time.sleep(0.15)
-        self.assertFalse(pause.is_set(),
-                         "read failures must not phantom-press")
+        self.assertFalse(pause.is_set(), "read failures must not phantom-press")
         poller.stop()
 
 
 class CtrlSkipTest(unittest.TestCase):
-
     def test_ctrl_press_sets_skip_event(self):
         api = FakeApi()
         # released, then CTRL pressed (bit 2 = 0x04).
@@ -131,10 +130,8 @@ class CtrlSkipTest(unittest.TestCase):
         skip = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume, skip_event=skip)
-        self.assertTrue(skip.wait(timeout=0.5),
-                        "CTRL edge should set skip_event")
-        self.assertFalse(pause.is_set(),
-                         "CTRL alone must not trigger pause")
+        self.assertTrue(skip.wait(timeout=0.5), "CTRL edge should set skip_event")
+        self.assertFalse(pause.is_set(), "CTRL alone must not trigger pause")
         poller.stop()
 
     def test_ctrl_press_while_paused_is_no_op(self):
@@ -148,10 +145,8 @@ class CtrlSkipTest(unittest.TestCase):
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume, skip_event=skip)
         time.sleep(0.15)
-        self.assertFalse(skip.is_set(),
-                         "CTRL while paused must be ignored")
-        self.assertFalse(resume.is_set(),
-                         "CTRL while paused must not trigger resume either")
+        self.assertFalse(skip.is_set(), "CTRL while paused must be ignored")
+        self.assertFalse(resume.is_set(), "CTRL while paused must not trigger resume either")
         poller.stop()
 
     def test_ctrl_dropped_when_no_skip_event_provided(self):
@@ -176,27 +171,23 @@ class CtrlSkipTest(unittest.TestCase):
         skip = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume, skip_event=skip)
-        self.assertTrue(pause.wait(timeout=0.5),
-                        "C= in the chord should still trigger pause")
-        self.assertFalse(skip.is_set(),
-                         "skip must NOT fire on the same tick as pause")
+        self.assertTrue(pause.wait(timeout=0.5), "C= in the chord should still trigger pause")
+        self.assertFalse(skip.is_set(), "skip must NOT fire on the same tick as pause")
         poller.stop()
 
     def test_ctrl_press_and_shift_chord_does_not_cycle(self):
         # SHIFT + CTRL → skip wins, cycle suppressed (SHIFT in any
         # multi-mod chord is dropped per the UI contract).
         api = FakeApi()
-        api.set_script([b"\x00", b"\x05", b"\x05"])   # SHIFT|CTRL
+        api.set_script([b"\x00", b"\x05", b"\x05"])  # SHIFT|CTRL
         pause = threading.Event()
         resume = threading.Event()
         skip = threading.Event()
         cycle = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume, skip_event=skip, cycle_event=cycle)
-        self.assertTrue(skip.wait(timeout=0.3),
-                        "CTRL in the chord should still trigger skip")
-        self.assertFalse(cycle.is_set(),
-                         "SHIFT must NOT cycle when chorded with CTRL")
+        self.assertTrue(skip.wait(timeout=0.3), "CTRL in the chord should still trigger skip")
+        self.assertFalse(cycle.is_set(), "SHIFT must NOT cycle when chorded with CTRL")
         poller.stop()
 
     def test_ctrl_edge_after_release(self):
@@ -226,17 +217,14 @@ class ShiftCycleTest(unittest.TestCase):
 
     def test_shift_press_sets_cycle_event(self):
         api = FakeApi()
-        api.set_script([b"\x00", b"\x01", b"\x01"])   # SHIFT
+        api.set_script([b"\x00", b"\x01", b"\x01"])  # SHIFT
         pause = threading.Event()
         resume = threading.Event()
         cycle = threading.Event()
-        poller = CommodoreKeyPoller(cast(Ultimate64API, api),
-                                    poll_interval_s=0.01)
+        poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume, cycle_event=cycle)
-        self.assertTrue(cycle.wait(timeout=0.5),
-                        "SHIFT edge should set cycle_event")
-        self.assertFalse(pause.is_set(),
-                         "SHIFT alone must not trigger pause")
+        self.assertTrue(cycle.wait(timeout=0.5), "SHIFT edge should set cycle_event")
+        self.assertFalse(pause.is_set(), "SHIFT alone must not trigger pause")
         poller.stop()
 
     def test_shift_press_while_paused_is_no_op(self):
@@ -246,14 +234,11 @@ class ShiftCycleTest(unittest.TestCase):
         pause.set()
         resume = threading.Event()
         cycle = threading.Event()
-        poller = CommodoreKeyPoller(cast(Ultimate64API, api),
-                                    poll_interval_s=0.01)
+        poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume, cycle_event=cycle)
         time.sleep(0.15)
-        self.assertFalse(cycle.is_set(),
-                         "SHIFT while paused must be ignored")
-        self.assertFalse(resume.is_set(),
-                         "SHIFT while paused must not trigger resume either")
+        self.assertFalse(cycle.is_set(), "SHIFT while paused must be ignored")
+        self.assertFalse(resume.is_set(), "SHIFT while paused must not trigger resume either")
         poller.stop()
 
     def test_shift_dropped_when_no_cycle_event_provided(self):
@@ -262,8 +247,7 @@ class ShiftCycleTest(unittest.TestCase):
         api.set_script([b"\x00", b"\x01"])
         pause = threading.Event()
         resume = threading.Event()
-        poller = CommodoreKeyPoller(cast(Ultimate64API, api),
-                                    poll_interval_s=0.01)
+        poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume)
         time.sleep(0.1)
         self.assertFalse(pause.is_set())
@@ -272,17 +256,14 @@ class ShiftCycleTest(unittest.TestCase):
     def test_shift_chord_with_cbm_drops_cycle(self):
         # SHIFT + C= → pause wins, cycle suppressed.
         api = FakeApi()
-        api.set_script([b"\x00", b"\x03", b"\x03"])   # SHIFT|CBM
+        api.set_script([b"\x00", b"\x03", b"\x03"])  # SHIFT|CBM
         pause = threading.Event()
         resume = threading.Event()
         cycle = threading.Event()
-        poller = CommodoreKeyPoller(cast(Ultimate64API, api),
-                                    poll_interval_s=0.01)
+        poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         poller.start(pause, resume, cycle_event=cycle)
-        self.assertTrue(pause.wait(timeout=0.3),
-                        "C= in the chord should still trigger pause")
-        self.assertFalse(cycle.is_set(),
-                         "SHIFT must NOT cycle when chorded with C=")
+        self.assertTrue(pause.wait(timeout=0.3), "C= in the chord should still trigger pause")
+        self.assertFalse(cycle.is_set(), "SHIFT must NOT cycle when chorded with C=")
         poller.stop()
 
 

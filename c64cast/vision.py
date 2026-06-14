@@ -22,6 +22,7 @@ HandLandmarker), lazy-imported so the rest of the app and the whole test suite
 run without the `vision` extra installed. Tests inject a scripted fake
 recognizer + fake source, the same way `test_keyboard.py` scripts `$028D`.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -82,12 +83,14 @@ STILL_SPEED = 0.35
 # error when the model file is missing).
 MODEL_DOWNLOAD_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-    "hand_landmarker/float16/1/hand_landmarker.task")
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
 
 
 class Gesture(enum.Enum):
     """A static (single-frame) hand pose. SWIPE is temporal and handled in the
     controller from wrist-motion history, not here."""
+
     NONE = "none"
     PINCH = "pinch"
     OPEN_HAND = "open_hand"
@@ -100,6 +103,7 @@ class HandState:
     `landmarks` is a (21, 3) float array of normalized coordinates: x and y in
     [0, 1] across the (already mirror-corrected) frame, z is relative depth.
     `handedness` is "Left"/"Right" (or "" if unknown)."""
+
     landmarks: np.ndarray
     handedness: str = ""
 
@@ -120,6 +124,7 @@ class GestureRecognizer(Protocol):
 # ---------------------------------------------------------------------------
 # Pure gesture classification (no mediapipe, no camera — directly unit-tested).
 # ---------------------------------------------------------------------------
+
 
 def _dist(a: np.ndarray, b: np.ndarray) -> float:
     # 2D (x,y) distance in normalized frame units; depth (z) ignored so the
@@ -142,11 +147,15 @@ def _finger_extended(hand: HandState, tip: int, pip: int) -> bool:
 
 def count_extended_fingers(hand: HandState) -> int:
     """Number of the four non-thumb fingers that are extended."""
-    return sum(_finger_extended(hand, tip, pip) for tip, pip in (
-        (INDEX_TIP, INDEX_PIP),
-        (MIDDLE_TIP, MIDDLE_PIP),
-        (RING_TIP, RING_PIP),
-        (PINKY_TIP, PINKY_PIP)))
+    return sum(
+        _finger_extended(hand, tip, pip)
+        for tip, pip in (
+            (INDEX_TIP, INDEX_PIP),
+            (MIDDLE_TIP, MIDDLE_PIP),
+            (RING_TIP, RING_PIP),
+            (PINKY_TIP, PINKY_PIP),
+        )
+    )
 
 
 # A pinch must have the hand otherwise OPEN (this many of the four fingers
@@ -173,7 +182,7 @@ def classify_static(hand: HandState, *, pinch_threshold: float) -> Gesture:
 # ---------------------------------------------------------------------------
 
 _mp: Any = None
-_MP_AVAILABLE: bool | None = None     # tri-state: None = not yet probed
+_MP_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
 
 
 @contextlib.contextmanager
@@ -208,6 +217,7 @@ def _ensure_mediapipe() -> bool:
         return _MP_AVAILABLE
     try:
         import mediapipe as mp
+
         _mp = mp
         _MP_AVAILABLE = True
     except ImportError:
@@ -218,23 +228,31 @@ def _ensure_mediapipe() -> bool:
 class MediaPipeHandRecognizer:
     """`GestureRecognizer` backed by MediaPipe Tasks HandLandmarker."""
 
-    def __init__(self, model_path: str, *, num_hands: int = 1,
-                 min_detection_confidence: float = 0.7,
-                 min_tracking_confidence: float = 0.5):
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        num_hands: int = 1,
+        min_detection_confidence: float = 0.7,
+        min_tracking_confidence: float = 0.5,
+    ):
         if not _ensure_mediapipe():
             raise RuntimeError(
                 "vision controller requires mediapipe: "
                 "install with `uv sync --extra vision` "
-                "(or `pip install c64cast[vision]`)")
+                "(or `pip install c64cast[vision]`)"
+            )
         if not os.path.exists(model_path):
             raise RuntimeError(
                 f"HandLandmarker model not found at {model_path!r}. Download it "
                 f"to that path:\n  {MODEL_DOWNLOAD_URL}\n"
-                "or set [vision].model_path to where you saved it.")
+                "or set [vision].model_path to where you saved it."
+            )
         # Import the Tasks submodules explicitly — `import mediapipe` does not
         # guarantee `tasks.python.vision` is bound as an attribute.
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision as mp_vision
+
         # Image / ImageFormat are top-level on the mediapipe package; cache them
         # so the per-frame `process()` path doesn't re-resolve attributes.
         self._mp_image = _mp.Image
@@ -246,15 +264,17 @@ class MediaPipeHandRecognizer:
             min_hand_detection_confidence=min_detection_confidence,
             min_hand_presence_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
-            running_mode=mp_vision.RunningMode.VIDEO)
+            running_mode=mp_vision.RunningMode.VIDEO,
+        )
         # create_from_options emits the GL/XNNPACK/feedback noise; the warm-up
         # inference (timestamp 0; real ticks always land at > 0) emits the
         # landmark_projection warning. Run both inside the fd silence so all of
         # mediapipe's startup chatter is swallowed here on the main thread.
         with _silence_native_stderr():
             self._landmarker = mp_vision.HandLandmarker.create_from_options(options)
-            warm = self._mp_image(image_format=self._image_format.SRGB,
-                                  data=np.zeros((64, 64, 3), dtype=np.uint8))
+            warm = self._mp_image(
+                image_format=self._image_format.SRGB, data=np.zeros((64, 64, 3), dtype=np.uint8)
+            )
             self._landmarker.detect_for_video(warm, 0)
         # VIDEO mode requires strictly increasing timestamps per instance. The
         # warm-up consumed 0; track the last value so process() can never feed
@@ -269,8 +289,9 @@ class MediaPipeHandRecognizer:
         h, w = frame.shape[:2]
         if w > MP_MAX_WIDTH:
             scale = MP_MAX_WIDTH / w
-            frame = cv2.resize(frame, (MP_MAX_WIDTH, round(h * scale)),
-                               interpolation=cv2.INTER_AREA)
+            frame = cv2.resize(
+                frame, (MP_MAX_WIDTH, round(h * scale)), interpolation=cv2.INTER_AREA
+            )
         # cv2 frames are BGR; MediaPipe wants RGB.
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = self._mp_image(image_format=self._image_format.SRGB, data=rgb)
@@ -297,21 +318,27 @@ class MediaPipeHandRecognizer:
 # VisionController — sibling to CommodoreKeyPoller.
 # ---------------------------------------------------------------------------
 
+
 class VisionController:
     """Watches the camera for gestures and drives the playlist control events.
 
     Mirrors `CommodoreKeyPoller`'s shape: same `start(...)`/`stop()` surface so
     the Playlist starts/stops it interchangeably with the keyboard poller."""
 
-    def __init__(self, source: WebcamSource, recognizer: GestureRecognizer, *,
-                 poll_interval_s: float = 0.066,
-                 hold_threshold_s: float = 3.0,
-                 gesture_cooldown_s: float = 1.0,
-                 gesture_dwell_s: float = 0.4,
-                 pinch_threshold: float = 0.05,
-                 swipe_velocity: float = 0.4,
-                 mirror: bool = True,
-                 name: str = "system"):
+    def __init__(
+        self,
+        source: WebcamSource,
+        recognizer: GestureRecognizer,
+        *,
+        poll_interval_s: float = 0.066,
+        hold_threshold_s: float = 3.0,
+        gesture_cooldown_s: float = 1.0,
+        gesture_dwell_s: float = 0.4,
+        pinch_threshold: float = 0.05,
+        swipe_velocity: float = 0.4,
+        mirror: bool = True,
+        name: str = "system",
+    ):
         self.source = source
         self.recognizer = recognizer
         self.name = name
@@ -332,8 +359,7 @@ class VisionController:
         # deliberate swipes peak ~0.5-1.1, slow drift stays < ~0.2.
         self.swipe_velocity = swipe_velocity
         self.mirror = mirror
-        self._poll = PollThread(self._loop, name="vision-poll",
-                                manual=True, join_timeout=1.0)
+        self._poll = PollThread(self._loop, name="vision-poll", manual=True, join_timeout=1.0)
         self._pause_event: threading.Event | None = None
         self._resume_event: threading.Event | None = None
         self._skip_event: threading.Event | None = None
@@ -342,10 +368,13 @@ class VisionController:
         self._state_lock = threading.Lock()
         self._latest_hand: HandState | None = None
 
-    def start(self, pause_event: threading.Event,
-              resume_event: threading.Event,
-              skip_event: threading.Event | None = None,
-              cycle_event: threading.Event | None = None):
+    def start(
+        self,
+        pause_event: threading.Event,
+        resume_event: threading.Event,
+        skip_event: threading.Event | None = None,
+        cycle_event: threading.Event | None = None,
+    ):
         """Begin watching. Event semantics match `CommodoreKeyPoller.start`."""
         self._pause_event = pause_event
         self._resume_event = resume_event
@@ -357,7 +386,7 @@ class VisionController:
         self._poll.stop()
         try:
             self.recognizer.close()
-        except Exception:    # noqa: BLE001 — best-effort cleanup
+        except Exception:  # noqa: BLE001 — best-effort cleanup
             self.log.debug("recognizer.close() failed", exc_info=True)
 
     def latest_hands(self) -> HandState | None:
@@ -378,7 +407,7 @@ class VisionController:
             frame = cv2.flip(frame, 1)
         try:
             hand = self.recognizer.process(frame, timestamp_ms)
-        except Exception:    # noqa: BLE001 — a bad frame shouldn't kill the thread
+        except Exception:  # noqa: BLE001 — a bad frame shouldn't kill the thread
             self.log.debug("recognizer.process() failed", exc_info=True)
             return None
         with self._state_lock:
@@ -394,14 +423,14 @@ class VisionController:
     def _loop(self, stop: threading.Event):
         assert self._pause_event is not None
         assert self._resume_event is not None
-        held_since: float | None = None       # pinch-hold timer (resume)
-        last_static = Gesture.NONE             # for the dwell run-length
-        static_run = 0                         # consecutive STILL ticks of the pose
-        static_fired = False                   # one fire per held pose
-        swipe_run = 0                          # consecutive swipe-eligible ticks
-        last_fire = 0.0                        # cooldown timer
+        held_since: float | None = None  # pinch-hold timer (resume)
+        last_static = Gesture.NONE  # for the dwell run-length
+        static_run = 0  # consecutive STILL ticks of the pose
+        static_fired = False  # one fire per held pose
+        swipe_run = 0  # consecutive swipe-eligible ticks
+        last_fire = 0.0  # cooldown timer
         prev_wrist: tuple[float, float] | None = None
-        hand_frames = 0                        # consecutive ticks a hand is present
+        hand_frames = 0  # consecutive ticks a hand is present
         last_tick = time.monotonic()
         # detect_for_video requires monotonically increasing ms timestamps.
         t0 = time.monotonic()
@@ -412,8 +441,11 @@ class VisionController:
             last_tick = now
             hand = self._read_hand(int((now - t0) * 1000))
             hand_frames = hand_frames + 1 if hand is not None else 0
-            static = (classify_static(hand, pinch_threshold=self.pinch_threshold)
-                      if hand is not None else Gesture.NONE)
+            static = (
+                classify_static(hand, pinch_threshold=self.pinch_threshold)
+                if hand is not None
+                else Gesture.NONE
+            )
 
             # Wrist motion since the last tick.
             cur = self._wrist_xy(hand)
@@ -421,7 +453,7 @@ class VisionController:
                 dx, dy = cur[0] - prev_wrist[0], cur[1] - prev_wrist[1]
                 speed = (dx * dx + dy * dy) ** 0.5 / dt
                 horiz_speed = abs(dx) / dt
-                horizontal = abs(dx) > abs(dy)     # sideways, not a vertical raise
+                horizontal = abs(dx) > abs(dy)  # sideways, not a vertical raise
             else:
                 speed = horiz_speed = 0.0
                 horizontal = False
@@ -434,8 +466,9 @@ class VisionController:
                     if held_since is None:
                         held_since = now
                     elif now - held_since >= self.hold_threshold_s:
-                        self.log.info("pinch held %.1fs while paused — resuming",
-                                      self.hold_threshold_s)
+                        self.log.info(
+                            "pinch held %.1fs while paused — resuming", self.hold_threshold_s
+                        )
                         self._resume_event.set()
                         held_since = None
                 else:
@@ -477,8 +510,7 @@ class VisionController:
                 self._pause_event.set()
                 last_fire = now
                 static_fired = True
-            elif (cooled and held and static == Gesture.OPEN_HAND
-                  and self._cycle_event is not None):
+            elif cooled and held and static == Gesture.OPEN_HAND and self._cycle_event is not None:
                 self.log.info("open hand held — cycling display style")
                 self._cycle_event.set()
                 last_fire = now

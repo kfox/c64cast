@@ -9,6 +9,7 @@ is: built-in defaults < config file < CLI flags.
 list into real Scene instances. Lives here rather than in scenes.py so the
 display-mode registry doesn't create an import cycle.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,25 +52,40 @@ _SYSTEM_CHOICES = ("NTSC", "PAL")
 _BACKEND_CHOICES = ("ultimate", "teensyrom")
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
 _TR_STORAGE_CHOICES = ("sd", "usb")
-_DISPLAY_CHOICES = ("hires_edges", "hires", "petscii", "mcm", "mhires",
-                    "blank", "random")
+_DISPLAY_CHOICES = ("hires_edges", "hires", "petscii", "mcm", "mhires", "blank", "random")
 _PALETTE_MODE_CHOICES = ("percell", "cheap", "vivid", "grayscale")
-_STYLE_CHOICES = ("default", "halftone", "random_glyph", "letter_rain",
-                  "neon", "inverse_pop", "hatch", "color_only", "random")
+_STYLE_CHOICES = (
+    "default",
+    "halftone",
+    "random_glyph",
+    "letter_rain",
+    "neon",
+    "inverse_pop",
+    "hatch",
+    "color_only",
+    "random",
+)
 _TIME_BASE_CHOICES = ("wallclock", "auto")
 _PERSISTENCE_CHOICES = ("off", "short", "medium", "long", "random")
 _COLOR_MODE_CHOICES = ("per_voice", "per_waveform")
 _MIDI_WAVEFORM_CHOICES = ("triangle", "sawtooth", "pulse", "noise")
 _MIDI_FILTER_MODE_CHOICES = ("lowpass", "bandpass", "highpass")
-_BACKGROUND_CHOICES = ("starfield", "petscii_bars", "raster_bars", "checker",
-                       "nature", "city", "none", "random")
+_BACKGROUND_CHOICES = (
+    "starfield",
+    "petscii_bars",
+    "raster_bars",
+    "checker",
+    "nature",
+    "city",
+    "none",
+    "random",
+)
 _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
 
 # The scene types (mirrors validate_scene_cfg). Used by the introspection
 # layer's `applies_to` filtering; declared here so SceneCfg metadata can name
 # them symbolically.
-SCENE_TYPES = ("webcam", "blank", "commercial", "waveform", "midi",
-               "slideshow", "launcher")
+SCENE_TYPES = ("webcam", "blank", "commercial", "waveform", "midi", "slideshow", "launcher")
 
 
 # ---------------------------------------------------------------------------
@@ -88,61 +104,96 @@ SCENE_TYPES = ("webcam", "blank", "commercial", "waveform", "midi",
 # recognizes a literal `dataclasses.field(...)` call when deciding a field has
 # a default. A wrapper would make every field look required.
 
+
 @dataclass
 class HardwareCfg:
     # Selects the hardware abstraction backend (see backend.make_backend).
     # "ultimate" = Ultimate 64 / Ultimate II+ over socket DMA + REST.
     # "teensyrom" = TeensyROM+ over the token protocol ([teensyrom] section).
     # Defaults to "ultimate" so existing configs are unaffected.
-    backend: str = field(default="ultimate", metadata={
-        "help": "Hardware backend family driving the C64.",
-        "choices": _BACKEND_CHOICES})
+    backend: str = field(
+        default="ultimate",
+        metadata={"help": "Hardware backend family driving the C64.", "choices": _BACKEND_CHOICES},
+    )
 
 
 @dataclass
 class TeensyromCfg:
     # Connection + storage settings for the TeensyROM+ backend
     # ([hardware].backend = "teensyrom"). Ignored by the Ultimate backend.
-    transport: str = field(default="serial", metadata={
-        "help": "TR control link: USB serial or raw TCP (port 2112).",
-        "choices": _TR_TRANSPORT_CHOICES})
-    serial_port: str | None = field(default=None, metadata={
-        "help": "Serial device for transport=serial "
-                "(e.g. /dev/tty.usbmodem* or COM3). Required for serial."})
-    baud: int = field(default=2_000_000, metadata={
-        "help": "Serial baud rate (TR uses full USB bandwidth; 2 Mbaud 8N1)."})
-    host: str | None = field(default=None, metadata={
-        "help": "TR IP address for transport=tcp (find via CCGMS \"ATC\" or "
-                "RTC sync). Required for tcp."})
-    tcp_port: int = field(default=2112, metadata={
-        "help": "TR TCP listener port (firmware default 2112)."})
-    storage: str = field(default="sd", metadata={
-        "help": "Where helper PRGs are uploaded + launched from.",
-        "choices": _TR_STORAGE_CHOICES})
+    transport: str = field(
+        default="serial",
+        metadata={
+            "help": "TR control link: USB serial or raw TCP (port 2112).",
+            "choices": _TR_TRANSPORT_CHOICES,
+        },
+    )
+    serial_port: str | None = field(
+        default=None,
+        metadata={
+            "help": "Serial device for transport=serial "
+            "(e.g. /dev/tty.usbmodem* or COM3). Required for serial."
+        },
+    )
+    baud: int = field(
+        default=2_000_000,
+        metadata={"help": "Serial baud rate (TR uses full USB bandwidth; 2 Mbaud 8N1)."},
+    )
+    host: str | None = field(
+        default=None,
+        metadata={
+            "help": 'TR IP address for transport=tcp (find via CCGMS "ATC" or '
+            "RTC sync). Required for tcp."
+        },
+    )
+    tcp_port: int = field(
+        default=2112, metadata={"help": "TR TCP listener port (firmware default 2112)."}
+    )
+    storage: str = field(
+        default="sd",
+        metadata={
+            "help": "Where helper PRGs are uploaded + launched from.",
+            "choices": _TR_STORAGE_CHOICES,
+        },
+    )
 
 
 @dataclass
 class Ultimate64Cfg:
-    url: str = field(default="http://ultimate-64-ii.lan", metadata={
-        "help": "Base URL of the Ultimate 64 (REST + DMA host)."})
-    system: str = field(default="NTSC", metadata={
-        "help": "Target video system timing (affects frame rate + SID PLAY rate).",
-        "choices": _SYSTEM_CHOICES})
+    url: str = field(
+        default="http://ultimate-64-ii.lan",
+        metadata={"help": "Base URL of the Ultimate 64 (REST + DMA host)."},
+    )
+    system: str = field(
+        default="NTSC",
+        metadata={
+            "help": "Target video system timing (affects frame rate + SID PLAY rate).",
+            "choices": _SYSTEM_CHOICES,
+        },
+    )
     # See docs/usage.md for how to enable the DMA service on the U64 itself.
-    dma_port: int = field(default=64, metadata={
-        "help": "TCP port of the U64 Ultimate DMA Service (firmware default 64)."})
+    dma_port: int = field(
+        default=64,
+        metadata={"help": "TCP port of the U64 Ultimate DMA Service (firmware default 64)."},
+    )
     # Precedence: C64CAST_DMA_PASSWORD env var > this field > none. The env
     # var override is applied at merge_cli() time so the same TOML can be
     # committed to a public repo without leaking the password.
-    dma_password: str | None = field(default=None, metadata={
-        "help": "U64 network password, if set. Prefer the C64CAST_DMA_PASSWORD "
-                "env var over committing it here."})
+    dma_password: str | None = field(
+        default=None,
+        metadata={
+            "help": "U64 network password, if set. Prefer the C64CAST_DMA_PASSWORD "
+            "env var over committing it here."
+        },
+    )
 
 
 @dataclass
 class VideoCfg:
-    device: int = field(default=-1, metadata={
-        "help": "Webcam device index; -1 = system default camera (cv2 index 0)."})
+    device: int = field(
+        default=-1,
+        metadata={"help": "Webcam device index; -1 = system default camera (cv2 index 0)."},
+    )
     # REU-staged video push. Bitmap frames (hires/mhires) are staged into
     # REU SRAM off-screen and swapped into the displayed bank by an atomic
     # $DD00 flip at vblank (double-buffer — kills the single-buffer tearing
@@ -167,48 +218,76 @@ class VideoCfg:
     # Pairs cleanly with [audio].use_reu_pump on any scene (the bank-swap
     # installer picks a merged $0314 dispatcher that services both IRQ
     # sources). MCM doesn't support staging yet (separate future-work).
-    use_reu_staged: bool | str = field(default="auto", metadata={
-        "help": "REU bank-swap double-buffer for video push. \"auto\" (default) "
-                "stages bitmap modes (hires/mhires) when the startup probe finds "
-                "the U64's REU enabled, leaving char modes on the cheaper "
-                "host-DMA path; true forces it on for every mode, false off. "
-                "auto silently falls back to host-DMA when REU isn't confirmed."})
+    use_reu_staged: bool | str = field(
+        default="auto",
+        metadata={
+            "help": 'REU bank-swap double-buffer for video push. "auto" (default) '
+            "stages bitmap modes (hires/mhires) when the startup probe finds "
+            "the U64's REU enabled, leaving char modes on the cheaper "
+            "host-DMA path; true forces it on for every mode, false off. "
+            "auto silently falls back to host-DMA when REU isn't confirmed."
+        },
+    )
 
 
 @dataclass
 class AudioCfg:
-    enabled: bool = field(default=False, metadata={
-        "help": "Master switch for SID audio streaming (the 4-bit $D418 DAC). "
-                "Also enabled by the -A CLI flag."})
-    device: int = field(default=-1, metadata={
-        "help": "Audio input device index; -1 = system default microphone."})
-    sample_rate: int = field(default=8000, metadata={
-        "help": "Audio sample rate in Hz fed to the SID DAC."})
-    mic_sensitivity: float = field(default=1.5, metadata={
-        "help": "Microphone input gain multiplier."})
-    noise_gate: float = field(default=0.05, metadata={
-        "help": "Mic level below which input is squelched to silence."})
+    enabled: bool = field(
+        default=False,
+        metadata={
+            "help": "Master switch for SID audio streaming (the 4-bit $D418 DAC). "
+            "Also enabled by the -A CLI flag."
+        },
+    )
+    device: int = field(
+        default=-1, metadata={"help": "Audio input device index; -1 = system default microphone."}
+    )
+    sample_rate: int = field(
+        default=8000, metadata={"help": "Audio sample rate in Hz fed to the SID DAC."}
+    )
+    mic_sensitivity: float = field(
+        default=1.5, metadata={"help": "Microphone input gain multiplier."}
+    )
+    noise_gate: float = field(
+        default=0.05, metadata={"help": "Mic level below which input is squelched to silence."}
+    )
     # A/B tested on a real 6581: dither-off sounds slightly cleaner (the added
     # hiss outweighs the buzz reduction at 4 bits). Flip on if your hardware
     # or source material disagrees.
-    dither: bool = field(default=False, metadata={
-        "help": "TPDF dither on the 4-bit quantization step. Default off; flip on "
-                "for smoother hiss on already-noisy sources."})
+    dither: bool = field(
+        default=False,
+        metadata={
+            "help": "TPDF dither on the 4-bit quantization step. Default off; flip on "
+            "for smoother hiss on already-noisy sources."
+        },
+    )
     # See CLAUDE.md [audio].digi_boost for the full rationale. Essential on
     # 8580s and emulated SIDs; on a 6581 it just raises output level.
-    digi_boost: bool = field(default=False, metadata={
-        "help": "EXPERIMENTAL: lock SID voices to a DC pulse so the ADSR D/As bias "
-                "the master mixer, raising $D418 playback level."})
+    digi_boost: bool = field(
+        default=False,
+        metadata={
+            "help": "EXPERIMENTAL: lock SID voices to a DC pulse so the ADSR D/As bias "
+            "the master mixer, raising $D418 playback level."
+        },
+    )
     # 11-bit cutoff maps roughly 0→200 Hz … 2047→20 kHz on a 6581, but the
     # mapping is non-linear and varies per chip. Start ~1500 and tune by ear.
-    sid_filter_cutoff: int = field(default=0, metadata={
-        "help": "SID low-pass cutoff for the PWM carrier voice (0 = disabled). "
-                "Attenuates the carrier above the audio band."})
+    sid_filter_cutoff: int = field(
+        default=0,
+        metadata={
+            "help": "SID low-pass cutoff for the PWM carrier voice (0 = disabled). "
+            "Attenuates the carrier above the audio band."
+        },
+    )
     # See CLAUDE.md [audio].use_reu_pump. Eliminates the host-DMA 'gurgling'
     # artifact on real hardware by streaming from REU SRAM instead.
-    use_reu_pump: bool = field(default=False, metadata={
-        "help": "EXPERIMENTAL: stream commercial/mic audio from a REU ring "
-                "(bus-clean) instead of per-write host DMA. Requires REU enabled."})
+    use_reu_pump: bool = field(
+        default=False,
+        metadata={
+            "help": "EXPERIMENTAL: stream commercial/mic audio from a REU ring "
+            "(bus-clean) instead of per-write host DMA. Requires REU enabled."
+        },
+    )
     # See CLAUDE.md [audio].use_reu_pump. The C64-side pump (CIA #1 rate) and
     # the NMI reader free-run open-loop; video DMA bus-halts throttle the NMI
     # reader below nominal so the pump out-produces it and laps the ring every
@@ -217,27 +296,39 @@ class AudioCfg:
     # is too far ahead, self-throttling to the consumer with zero host bus
     # writes. Default on per "prefer best quality"; only relevant when
     # use_reu_pump is set. Off = open-loop (original drift/echo) for A/B.
-    reu_pump_governor: bool = field(default=True, metadata={
-        "help": "C64-side rate governor for the REU audio pump: the pump IRQ "
-                "skips a chunk when its write head outruns the reader, stopping "
-                "drift/echo with no host writes. Only active with use_reu_pump."})
+    reu_pump_governor: bool = field(
+        default=True,
+        metadata={
+            "help": "C64-side rate governor for the REU audio pump: the pump IRQ "
+            "skips a chunk when its write head outruns the reader, stopping "
+            "drift/echo with no host writes. Only active with use_reu_pump."
+        },
+    )
     # The host-DMA worker paces ring writes to wall-clock, so the write head W
     # advances at exactly sample_rate while the NMI reader R loses ~4% of its
     # ticks to video DMA bus-halts → W laps the ring every ~26s = echo. The
     # servo reads R once per chunk and runs a PI controller on the worker's
     # sleep so the gap locks near half a ring. Pure host-side timing (no C64
     # writes). Default on per "prefer best quality"; off = open-loop for A/B.
-    host_dma_servo: bool = field(default=True, metadata={
-        "help": "Closed-loop pacing for the host-DMA audio worker (mic / "
-                "commercials): reads the C64 NMI read pointer and adjusts the "
-                "producer's software pace so the ring write head holds a fixed "
-                "gap behind the reader, stopping the ~26s drift/echo. Pure "
-                "host-side timing, no C64 writes. Not the REU pump path."})
+    host_dma_servo: bool = field(
+        default=True,
+        metadata={
+            "help": "Closed-loop pacing for the host-DMA audio worker (mic / "
+            "commercials): reads the C64 NMI read pointer and adjusts the "
+            "producer's software pace so the ring write head holds a fixed "
+            "gap behind the reader, stopping the ~26s drift/echo. Pure "
+            "host-side timing, no C64 writes. Not the REU pump path."
+        },
+    )
     # See c64cast.audio_marker for the find-marker analysis helper. Only the
     # REU-pump path injects the marker; host-DMA scenes are unmarked.
-    source_alignment_marker: bool = field(default=False, metadata={
-        "help": "DEBUG/CAPTURE ONLY: prepend a 100 ms chirp to REU audio as a "
-                "capture-alignment anchor. Turn OFF for production listening."})
+    source_alignment_marker: bool = field(
+        default=False,
+        metadata={
+            "help": "DEBUG/CAPTURE ONLY: prepend a 100 ms chirp to REU audio as a "
+            "capture-alignment anchor. Turn OFF for production listening."
+        },
+    )
     # ---- host-DMA servo pitch compensation ----------------------------------
     # The host-DMA audio servo (eliminates echo) locks playback to the C64 NMI
     # consumer rate R. R runs slightly below the nominal 8000 Hz because the
@@ -255,23 +346,43 @@ class AudioCfg:
     # path and is wrong for the auto-staged default. Values are backend- and
     # standard-coupled: PAL (50fps → fewer halts/sec) and the lower-latency TR+
     # backend want their own ears-on values; override per system.
-    pitch_mult_petscii: float = field(default=1.00, metadata={
-        "help": "Host-DMA servo playback-rate multiplier for PETSCII mode "
-                "(light char-mode load; 1.0 = none. U64-II NTSC: good at 1.0)."})
-    pitch_mult_hires: float = field(default=1.02, metadata={
-        "help": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges "
-                "modes (REU-staged bitmap; bank-swap IRQ residual). U64-II NTSC "
-                "ears-tuned to 1.02; override for TR+ or PAL."})
-    pitch_mult_mhires: float = field(default=1.015, metadata={
-        "help": "Host-DMA servo playback-rate multiplier for MultiHires mode "
-                "(REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC "
-                "ears-tuned to 1.015; override for TR+ or PAL."})
-    pitch_mult_mcm: float = field(default=1.00, metadata={
-        "help": "Host-DMA servo playback-rate multiplier for MCM mode "
-                "(char-based, light load; U64-II NTSC: good at 1.0)."})
-    pitch_mult_blank: float = field(default=1.00, metadata={
-        "help": "Host-DMA servo playback-rate multiplier for Blank mode "
-                "(no video input; 1.0 = none)."})
+    pitch_mult_petscii: float = field(
+        default=1.00,
+        metadata={
+            "help": "Host-DMA servo playback-rate multiplier for PETSCII mode "
+            "(light char-mode load; 1.0 = none. U64-II NTSC: good at 1.0)."
+        },
+    )
+    pitch_mult_hires: float = field(
+        default=1.02,
+        metadata={
+            "help": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges "
+            "modes (REU-staged bitmap; bank-swap IRQ residual). U64-II NTSC "
+            "ears-tuned to 1.02; override for TR+ or PAL."
+        },
+    )
+    pitch_mult_mhires: float = field(
+        default=1.015,
+        metadata={
+            "help": "Host-DMA servo playback-rate multiplier for MultiHires mode "
+            "(REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC "
+            "ears-tuned to 1.015; override for TR+ or PAL."
+        },
+    )
+    pitch_mult_mcm: float = field(
+        default=1.00,
+        metadata={
+            "help": "Host-DMA servo playback-rate multiplier for MCM mode "
+            "(char-based, light load; U64-II NTSC: good at 1.0)."
+        },
+    )
+    pitch_mult_blank: float = field(
+        default=1.00,
+        metadata={
+            "help": "Host-DMA servo playback-rate multiplier for Blank mode "
+            "(no video input; 1.0 = none)."
+        },
+    )
 
 
 @dataclass
@@ -282,283 +393,489 @@ class VisionCfg:
     (mediapipe) + a downloaded HandLandmarker model. The camera is shared with
     any webcam scene through the WebcamSource broker, so no second device is
     needed; gestures work over any scene (blank/commercial/waveform/webcam)."""
-    enabled: bool = field(default=False, metadata={
-        "help": "Enable webcam hand-gesture control (pinch=pause/resume, "
-                "swipe=skip, open-hand=cycle). Needs the 'vision' extra."})
-    model_path: str = field(default="assets/models/hand_landmarker.task",
-                            metadata={
-        "help": "Path to the MediaPipe HandLandmarker .task model bundle "
-                "(download separately; see assets/models/README.md)."})
-    num_hands: int = field(default=1, metadata={
-        "help": "Max hands the tracker detects per frame."})
-    min_detection_confidence: float = field(default=0.7, metadata={
-        "help": "Minimum confidence to detect a hand (0..1). Raise it if your "
-                "torso/face occasionally register as a phantom hand."})
-    min_tracking_confidence: float = field(default=0.5, metadata={
-        "help": "Minimum confidence to keep tracking a hand across frames (0..1)."})
-    poll_interval_s: float = field(default=0.066, metadata={
-        "help": "Seconds between gesture-recognition ticks (~0.066 = 15 Hz)."})
-    pinch_threshold: float = field(default=0.05, metadata={
-        "help": "Thumb-index normalized distance below which a pinch registers."})
-    swipe_velocity: float = field(default=0.4, metadata={
-        "help": "Wrist horizontal speed (frame-widths/sec) that triggers a skip. "
-                "HW-tuned: deliberate swipes peak ~0.5-1.1, drift stays < ~0.2."})
-    gesture_cooldown_s: float = field(default=1.0, metadata={
-        "help": "Minimum seconds between fired gesture events (debounce)."})
-    gesture_dwell_s: float = field(default=0.4, metadata={
-        "help": "Seconds a pose (pinch / open hand) must be held STILL before it "
-                "fires (0 = first frame). With the stillness gate this rejects "
-                "busy/moving hands and poses passing through on the way to a "
-                "swipe. Swipe (motion) ignores it."})
-    hold_threshold_s: float = field(default=3.0, metadata={
-        "help": "Seconds a pinch must be held while paused to resume."})
-    mirror: bool = field(default=True, metadata={
-        "help": "Mirror the frame before tracking so swipe direction matches "
-                "the mirrored webcam view."})
+
+    enabled: bool = field(
+        default=False,
+        metadata={
+            "help": "Enable webcam hand-gesture control (pinch=pause/resume, "
+            "swipe=skip, open-hand=cycle). Needs the 'vision' extra."
+        },
+    )
+    model_path: str = field(
+        default="assets/models/hand_landmarker.task",
+        metadata={
+            "help": "Path to the MediaPipe HandLandmarker .task model bundle "
+            "(download separately; see assets/models/README.md)."
+        },
+    )
+    num_hands: int = field(default=1, metadata={"help": "Max hands the tracker detects per frame."})
+    min_detection_confidence: float = field(
+        default=0.7,
+        metadata={
+            "help": "Minimum confidence to detect a hand (0..1). Raise it if your "
+            "torso/face occasionally register as a phantom hand."
+        },
+    )
+    min_tracking_confidence: float = field(
+        default=0.5,
+        metadata={"help": "Minimum confidence to keep tracking a hand across frames (0..1)."},
+    )
+    poll_interval_s: float = field(
+        default=0.066,
+        metadata={"help": "Seconds between gesture-recognition ticks (~0.066 = 15 Hz)."},
+    )
+    pinch_threshold: float = field(
+        default=0.05,
+        metadata={"help": "Thumb-index normalized distance below which a pinch registers."},
+    )
+    swipe_velocity: float = field(
+        default=0.4,
+        metadata={
+            "help": "Wrist horizontal speed (frame-widths/sec) that triggers a skip. "
+            "HW-tuned: deliberate swipes peak ~0.5-1.1, drift stays < ~0.2."
+        },
+    )
+    gesture_cooldown_s: float = field(
+        default=1.0, metadata={"help": "Minimum seconds between fired gesture events (debounce)."}
+    )
+    gesture_dwell_s: float = field(
+        default=0.4,
+        metadata={
+            "help": "Seconds a pose (pinch / open hand) must be held STILL before it "
+            "fires (0 = first frame). With the stillness gate this rejects "
+            "busy/moving hands and poses passing through on the way to a "
+            "swipe. Swipe (motion) ignores it."
+        },
+    )
+    hold_threshold_s: float = field(
+        default=3.0, metadata={"help": "Seconds a pinch must be held while paused to resume."}
+    )
+    mirror: bool = field(
+        default=True,
+        metadata={
+            "help": "Mirror the frame before tracking so swipe direction matches "
+            "the mirrored webcam view."
+        },
+    )
 
 
 @dataclass
 class InterstitialCfg:
-    duration_s: float = field(default=4.0, metadata={
-        "help": "How long the 'UP NEXT' interstitial shows between scenes."})
-    text_color: str = field(default="rainbow", metadata={
-        "help": "Interstitial text color: a C64 color name, 'rainbow', or 'random'."})
-    background: str = field(default="random", metadata={
-        "help": "Animated parallax background style behind the interstitial text.",
-        "choices": _BACKGROUND_CHOICES})
+    duration_s: float = field(
+        default=4.0, metadata={"help": "How long the 'UP NEXT' interstitial shows between scenes."}
+    )
+    text_color: str = field(
+        default="rainbow",
+        metadata={"help": "Interstitial text color: a C64 color name, 'rainbow', or 'random'."},
+    )
+    background: str = field(
+        default="random",
+        metadata={
+            "help": "Animated parallax background style behind the interstitial text.",
+            "choices": _BACKGROUND_CHOICES,
+        },
+    )
 
 
 @dataclass
 class PlaylistCfg:
-    ads_dir: str = field(default="ads", metadata={
-        "help": "Directory of commercial videos to interleave between scenes."})
-    interleave_ads: bool = field(default=True, metadata={
-        "help": "Insert an ad from ads_dir after each scene (multi-scene playlists "
-                "only; ignored in single-scene mode)."})
-    songlengths_file: str | None = field(default=None, metadata={
-        "help": "Path to an HVSC Songlengths.md5 file; gives waveform scenes their "
-                "true duration when duration_s is unset."})
+    ads_dir: str = field(
+        default="ads",
+        metadata={"help": "Directory of commercial videos to interleave between scenes."},
+    )
+    interleave_ads: bool = field(
+        default=True,
+        metadata={
+            "help": "Insert an ad from ads_dir after each scene (multi-scene playlists "
+            "only; ignored in single-scene mode)."
+        },
+    )
+    songlengths_file: str | None = field(
+        default=None,
+        metadata={
+            "help": "Path to an HVSC Songlengths.md5 file; gives waveform scenes their "
+            "true duration when duration_s is unset."
+        },
+    )
     # See CLAUDE.md 'Playlist loop control' for single- vs multi-scene behavior.
-    loop: bool = field(default=True, metadata={
-        "help": "Loop the playlist after the last scene (--no-loop exits after one "
-                "pass; useful for 'play one commercial and quit')."})
+    loop: bool = field(
+        default=True,
+        metadata={
+            "help": "Loop the playlist after the last scene (--no-loop exits after one "
+            "pass; useful for 'play one commercial and quit')."
+        },
+    )
 
 
 @dataclass
 class SceneCfg:
-    type: str = field(default="webcam", metadata={
-        "help": "Scene kind.",
-        "choices": SCENE_TYPES})
-    display: str = field(default="hires_edges", metadata={
-        "help": "VIC-II display mode. waveform and midi are bitmap-only (both "
-                "ignore this); slideshow also accepts 'random'.",
-        "choices": _DISPLAY_CHOICES,
-        "applies_to": ("webcam", "blank", "commercial", "slideshow")})
-    name: str | None = field(default=None, metadata={
-        "help": "Display name (shown in interstitials/logs; ensemble match key)."})
+    type: str = field(default="webcam", metadata={"help": "Scene kind.", "choices": SCENE_TYPES})
+    display: str = field(
+        default="hires_edges",
+        metadata={
+            "help": "VIC-II display mode. waveform and midi are bitmap-only (both "
+            "ignore this); slideshow also accepts 'random'.",
+            "choices": _DISPLAY_CHOICES,
+            "applies_to": ("webcam", "blank", "commercial", "slideshow"),
+        },
+    )
+    name: str | None = field(
+        default=None,
+        metadata={"help": "Display name (shown in interstitials/logs; ensemble match key)."},
+    )
     # None = scene-type default (30s for webcam/blank, songlengths-or-30s for
     # waveform/midi). Commercial scenes reject any value (video-driven).
-    duration_s: float | None = field(default=None, metadata={
-        "help": "Seconds before auto-advance. Unset = scene-type default. "
-                "Commercial scenes reject this (they run until the file ends). "
-                "For launcher this is the idle timeout (reset by player input).",
-        "applies_to": ("webcam", "blank", "waveform", "midi", "slideshow",
-                       "launcher")})
+    duration_s: float | None = field(
+        default=None,
+        metadata={
+            "help": "Seconds before auto-advance. Unset = scene-type default. "
+            "Commercial scenes reject this (they run until the file ends). "
+            "For launcher this is the idle timeout (reset by player input).",
+            "applies_to": ("webcam", "blank", "waveform", "midi", "slideshow", "launcher"),
+        },
+    )
     # See resolve_file_spec for the comma-separated path/dir/glob grammar.
-    file: str | None = field(default=None, metadata={
-        "help": "Asset spec (comma-separated paths/dirs/globs). Videos for "
-                "commercial, .sid for waveform, images for slideshow, "
-                ".prg/.crt for launcher.",
-        "applies_to": ("commercial", "waveform", "slideshow", "launcher")})
-    image_duration_s: float = field(default=5.0, metadata={
-        "help": "Per-image dwell time before advancing (total runtime is duration_s).",
-        "applies_to": ("slideshow",)})
-    target_fps: float | None = field(default=None, metadata={
-        "help": "Per-scene frame-rate cap; unset = playlist default (60/50), "
-                "except waveform scenes which default to half rate (30/25) to "
-                "stay under the DMA ceiling."})
+    file: str | None = field(
+        default=None,
+        metadata={
+            "help": "Asset spec (comma-separated paths/dirs/globs). Videos for "
+            "commercial, .sid for waveform, images for slideshow, "
+            ".prg/.crt for launcher.",
+            "applies_to": ("commercial", "waveform", "slideshow", "launcher"),
+        },
+    )
+    image_duration_s: float = field(
+        default=5.0,
+        metadata={
+            "help": "Per-image dwell time before advancing (total runtime is duration_s).",
+            "applies_to": ("slideshow",),
+        },
+    )
+    target_fps: float | None = field(
+        default=None,
+        metadata={
+            "help": "Per-scene frame-rate cap; unset = playlist default (60/50), "
+            "except waveform scenes which default to half rate (30/25) to "
+            "stay under the DMA ceiling."
+        },
+    )
     # None = follow global [audio].enabled; False forces off; True is a no-op
     # when the global is off. waveform/midi ignore this (they drive the SID).
-    audio: bool | None = field(default=None, metadata={
-        "help": "Per-scene audio override. Unset follows [audio].enabled; "
-                "false mutes this scene only.",
-        "applies_to": ("webcam", "blank", "commercial")})
+    audio: bool | None = field(
+        default=None,
+        metadata={
+            "help": "Per-scene audio override. Unset follows [audio].enabled; "
+            "false mutes this scene only.",
+            "applies_to": ("webcam", "blank", "commercial"),
+        },
+    )
     # None = use global [dsp].pre_emphasis (which itself may be source-aware
     # auto); a number overrides it for this scene. Only meaningful when
     # [dsp].enabled and the scene has audio.
-    pre_emphasis: float | None = field(default=None, metadata={
-        "help": "Per-scene HF pre-emphasis (0 = off, ~0.3-0.7 typical; "
-                "brightens speech). Unset = global [dsp].pre_emphasis / "
-                "source-aware default. Needs [dsp].enabled + scene audio.",
-        "applies_to": ("webcam", "blank", "commercial")})
+    pre_emphasis: float | None = field(
+        default=None,
+        metadata={
+            "help": "Per-scene HF pre-emphasis (0 = off, ~0.3-0.7 typical; "
+            "brightens speech). Unset = global [dsp].pre_emphasis / "
+            "source-aware default. Needs [dsp].enabled + scene audio.",
+            "applies_to": ("webcam", "blank", "commercial"),
+        },
+    )
     # waveform-specific kwargs — passed straight through to WaveformScene.
-    song: int = field(default=0, metadata={
-        "help": "SID subtune index to play (0-based).",
-        "applies_to": ("waveform",)})
-    color_mode: str = field(default="per_voice", metadata={
-        "help": "Oscilloscope coloring: fixed per voice, or by current waveform type.",
-        "choices": _COLOR_MODE_CHOICES,
-        "applies_to": ("waveform", "midi")})
-    voice_colors: list[str] = field(default_factory=list, metadata={
-        "help": "Per-voice trace colors (C64 color names) for color_mode=per_voice.",
-        "applies_to": ("waveform", "midi")})
-    waveform_colors: dict[str, str] = field(default_factory=dict, metadata={
-        "help": "Per-waveform-type colors (e.g. pulse=cyan) for color_mode=per_waveform.",
-        "applies_to": ("waveform", "midi")})
-    time_base: str = field(default="wallclock", metadata={
-        "help": "Scope time window: 'wallclock' (1 row = 1 frame) or 'auto' "
-                "(per-voice window sized so auto_cycles cycles fit).",
-        "choices": _TIME_BASE_CHOICES,
-        "applies_to": ("waveform", "midi")})
-    auto_cycles: float = field(default=4.0, metadata={
-        "help": "Complete cycles per render window when time_base = 'auto'.",
-        "applies_to": ("waveform", "midi")})
-    persistence: str = field(default="off", metadata={
-        "help": "Trace decay/trail length ('off' redraws each frame).",
-        "choices": _PERSISTENCE_CHOICES,
-        "applies_to": ("waveform", "midi")})
+    song: int = field(
+        default=0,
+        metadata={"help": "SID subtune index to play (0-based).", "applies_to": ("waveform",)},
+    )
+    color_mode: str = field(
+        default="per_voice",
+        metadata={
+            "help": "Oscilloscope coloring: fixed per voice, or by current waveform type.",
+            "choices": _COLOR_MODE_CHOICES,
+            "applies_to": ("waveform", "midi"),
+        },
+    )
+    voice_colors: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "Per-voice trace colors (C64 color names) for color_mode=per_voice.",
+            "applies_to": ("waveform", "midi"),
+        },
+    )
+    waveform_colors: dict[str, str] = field(
+        default_factory=dict,
+        metadata={
+            "help": "Per-waveform-type colors (e.g. pulse=cyan) for color_mode=per_waveform.",
+            "applies_to": ("waveform", "midi"),
+        },
+    )
+    time_base: str = field(
+        default="wallclock",
+        metadata={
+            "help": "Scope time window: 'wallclock' (1 row = 1 frame) or 'auto' "
+            "(per-voice window sized so auto_cycles cycles fit).",
+            "choices": _TIME_BASE_CHOICES,
+            "applies_to": ("waveform", "midi"),
+        },
+    )
+    auto_cycles: float = field(
+        default=4.0,
+        metadata={
+            "help": "Complete cycles per render window when time_base = 'auto'.",
+            "applies_to": ("waveform", "midi"),
+        },
+    )
+    persistence: str = field(
+        default="off",
+        metadata={
+            "help": "Trace decay/trail length ('off' redraws each frame).",
+            "choices": _PERSISTENCE_CHOICES,
+            "applies_to": ("waveform", "midi"),
+        },
+    )
     # Scalar broadcasts to all 3 voices; a list of 3 assigns per voice.
-    scroll_columns: int | list[int] = field(default=0, metadata={
-        "help": "FIFO-scroll the strip left by N columns/frame (0 = redraw). "
-                "Int or a list of 3 per-voice ints.",
-        "applies_to": ("waveform", "midi")})
+    scroll_columns: int | list[int] = field(
+        default=0,
+        metadata={
+            "help": "FIFO-scroll the strip left by N columns/frame (0 = redraw). "
+            "Int or a list of 3 per-voice ints.",
+            "applies_to": ("waveform", "midi"),
+        },
+    )
     # MIDI scene kwargs.
-    midi_port: str | None = field(default=None, metadata={
-        "help": "MIDI input port name substring; unset = first available port.",
-        "applies_to": ("midi",)})
-    midi_waveform: str = field(default="pulse", metadata={
-        "help": "SID waveform for MIDI notes.",
-        "choices": _MIDI_WAVEFORM_CHOICES,
-        "applies_to": ("midi",)})
-    midi_adsr: list[int] = field(default_factory=lambda: [0, 8, 12, 8], metadata={
-        "help": "ADSR envelope as [attack, decay, sustain, release] (4 nibbles 0..15).",
-        "applies_to": ("midi",)})
-    midi_pulse_width: int = field(default=2048, metadata={
-        "help": "SID pulse width (0..4095) when midi_waveform = 'pulse'. "
-                "Swept live by CC1 (mod wheel).",
-        "applies_to": ("midi",)})
-    midi_filter_cutoff: int = field(default=2047, metadata={
-        "help": "SID filter cutoff (0..2047); all voices are routed through "
-                "the filter. Default open (neutral lowpass); swept live by CC74.",
-        "applies_to": ("midi",)})
-    midi_filter_resonance: int = field(default=0, metadata={
-        "help": "SID filter resonance (0..15) for MIDI notes; swept live by CC71.",
-        "applies_to": ("midi",)})
-    midi_filter_mode: str = field(default="lowpass", metadata={
-        "help": "SID filter mode for MIDI notes.",
-        "choices": _MIDI_FILTER_MODE_CHOICES,
-        "applies_to": ("midi",)})
-    midi_master_volume: int = field(default=15, metadata={
-        "help": "SID master volume nibble (0..15) for MIDI notes; CC7.",
-        "applies_to": ("midi",)})
+    midi_port: str | None = field(
+        default=None,
+        metadata={
+            "help": "MIDI input port name substring; unset = first available port.",
+            "applies_to": ("midi",),
+        },
+    )
+    midi_waveform: str = field(
+        default="pulse",
+        metadata={
+            "help": "SID waveform for MIDI notes.",
+            "choices": _MIDI_WAVEFORM_CHOICES,
+            "applies_to": ("midi",),
+        },
+    )
+    midi_adsr: list[int] = field(
+        default_factory=lambda: [0, 8, 12, 8],
+        metadata={
+            "help": "ADSR envelope as [attack, decay, sustain, release] (4 nibbles 0..15).",
+            "applies_to": ("midi",),
+        },
+    )
+    midi_pulse_width: int = field(
+        default=2048,
+        metadata={
+            "help": "SID pulse width (0..4095) when midi_waveform = 'pulse'. "
+            "Swept live by CC1 (mod wheel).",
+            "applies_to": ("midi",),
+        },
+    )
+    midi_filter_cutoff: int = field(
+        default=2047,
+        metadata={
+            "help": "SID filter cutoff (0..2047); all voices are routed through "
+            "the filter. Default open (neutral lowpass); swept live by CC74.",
+            "applies_to": ("midi",),
+        },
+    )
+    midi_filter_resonance: int = field(
+        default=0,
+        metadata={
+            "help": "SID filter resonance (0..15) for MIDI notes; swept live by CC71.",
+            "applies_to": ("midi",),
+        },
+    )
+    midi_filter_mode: str = field(
+        default="lowpass",
+        metadata={
+            "help": "SID filter mode for MIDI notes.",
+            "choices": _MIDI_FILTER_MODE_CHOICES,
+            "applies_to": ("midi",),
+        },
+    )
+    midi_master_volume: int = field(
+        default=15,
+        metadata={
+            "help": "SID master volume nibble (0..15) for MIDI notes; CC7.",
+            "applies_to": ("midi",),
+        },
+    )
     # See CLAUDE.md modes.py for the per-mode palette_mode semantics.
-    palette_mode: str = field(default="percell", metadata={
-        "help": "VIC-II slot-allocation strategy for mcm/mhires display (ignored "
-                "by other modes): percell (default), cheap, vivid, grayscale. "
-                "Color shaping (channel boost + hue corrections, e.g. the purple "
-                "rescue) is the global [color] section, applied to every mode.",
-        "choices": _PALETTE_MODE_CHOICES,
-        "applies_to": ("webcam", "commercial", "slideshow")})
-    style: str = field(default="default", metadata={
-        "help": "PETSCII glyph/color style (only when display = 'petscii'); "
-                "'random' picks one at setup.",
-        "choices": _STYLE_CHOICES,
-        "applies_to": ("webcam", "commercial", "slideshow")})
-    border: int = field(default=0, metadata={
-        "help": "Border palette index 0..15 (blank scenes).",
-        "applies_to": ("blank",)})
-    background: int = field(default=0, metadata={
-        "help": "Background palette index 0..15 (blank scenes).",
-        "applies_to": ("blank",)})
+    palette_mode: str = field(
+        default="percell",
+        metadata={
+            "help": "VIC-II slot-allocation strategy for mcm/mhires display (ignored "
+            "by other modes): percell (default), cheap, vivid, grayscale. "
+            "Color shaping (channel boost + hue corrections, e.g. the purple "
+            "rescue) is the global [color] section, applied to every mode.",
+            "choices": _PALETTE_MODE_CHOICES,
+            "applies_to": ("webcam", "commercial", "slideshow"),
+        },
+    )
+    style: str = field(
+        default="default",
+        metadata={
+            "help": "PETSCII glyph/color style (only when display = 'petscii'); "
+            "'random' picks one at setup.",
+            "choices": _STYLE_CHOICES,
+            "applies_to": ("webcam", "commercial", "slideshow"),
+        },
+    )
+    border: int = field(
+        default=0,
+        metadata={"help": "Border palette index 0..15 (blank scenes).", "applies_to": ("blank",)},
+    )
+    background: int = field(
+        default=0,
+        metadata={
+            "help": "Background palette index 0..15 (blank scenes).",
+            "applies_to": ("blank",),
+        },
+    )
     # Launcher scene kwargs.
-    input_source: str = field(default="cia", metadata={
-        "help": "What counts as player input to reset the idle timeout: "
-                "'cia' (joystick bits at $DC00/$DC01), 'kernal' ($00C5/$00C6, "
-                "only live while the kernal IRQ runs), 'auto' (both), or "
-                "'none' (pure timer, for demos). Never counts C=/SHIFT/CTRL.",
-        "choices": _INPUT_SOURCE_CHOICES,
-        "applies_to": ("launcher",)})
-    max_duration_s: float | None = field(default=None, metadata={
-        "help": "Hard ceiling in seconds — advance regardless of input. "
-                "Unset = no cap (a continuously-played game runs forever).",
-        "applies_to": ("launcher",)})
-    min_duration_s: float = field(default=0.0, metadata={
-        "help": "Floor in seconds before the idle timeout can advance the "
-                "scene, even if no input is seen.",
-        "applies_to": ("launcher",)})
-    reset_before_launch: bool = field(default=True, metadata={
-        "help": "Reset the U64 before launching for a clean machine state.",
-        "applies_to": ("launcher",)})
-    bypass_audio_lock: bool = field(default=False, metadata={
-        "help": "Ensemble: don't contend for the exclusive audio slot — the "
-                "launched program drives its own SID concurrently, so several "
-                "people can play (and hear) their own games at once. No effect "
-                "single-system.",
-        "applies_to": ("launcher",)})
+    input_source: str = field(
+        default="cia",
+        metadata={
+            "help": "What counts as player input to reset the idle timeout: "
+            "'cia' (joystick bits at $DC00/$DC01), 'kernal' ($00C5/$00C6, "
+            "only live while the kernal IRQ runs), 'auto' (both), or "
+            "'none' (pure timer, for demos). Never counts C=/SHIFT/CTRL.",
+            "choices": _INPUT_SOURCE_CHOICES,
+            "applies_to": ("launcher",),
+        },
+    )
+    max_duration_s: float | None = field(
+        default=None,
+        metadata={
+            "help": "Hard ceiling in seconds — advance regardless of input. "
+            "Unset = no cap (a continuously-played game runs forever).",
+            "applies_to": ("launcher",),
+        },
+    )
+    min_duration_s: float = field(
+        default=0.0,
+        metadata={
+            "help": "Floor in seconds before the idle timeout can advance the "
+            "scene, even if no input is seen.",
+            "applies_to": ("launcher",),
+        },
+    )
+    reset_before_launch: bool = field(
+        default=True,
+        metadata={
+            "help": "Reset the U64 before launching for a clean machine state.",
+            "applies_to": ("launcher",),
+        },
+    )
+    bypass_audio_lock: bool = field(
+        default=False,
+        metadata={
+            "help": "Ensemble: don't contend for the exclusive audio slot — the "
+            "launched program drives its own SID concurrently, so several "
+            "people can play (and hear) their own games at once. No effect "
+            "single-system.",
+            "applies_to": ("launcher",),
+        },
+    )
     # Free-form dicts; each overlay class validates its own kwargs.
-    overlays: list[dict[str, Any]] = field(default_factory=list, metadata={
-        "help": "List of overlay tables ([[scenes.overlays]]); see --list-overlays."})
+    overlays: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata={"help": "List of overlay tables ([[scenes.overlays]]); see --list-overlays."},
+    )
     # See CLAUDE.md ensemble coordination for orchestrate/follower_only.
-    orchestrate: bool = field(default=False, metadata={
-        "help": "Ensemble: make this system the conductor and broadcast this scene "
-                "to all others (requires name; ignored single-system)."})
-    follower_only: bool = field(default=False, metadata={
-        "help": "Ensemble: exclude from normal rotation; used only as a broadcast "
-                "follower override (requires name; excludes orchestrate)."})
+    orchestrate: bool = field(
+        default=False,
+        metadata={
+            "help": "Ensemble: make this system the conductor and broadcast this scene "
+            "to all others (requires name; ignored single-system)."
+        },
+    )
+    follower_only: bool = field(
+        default=False,
+        metadata={
+            "help": "Ensemble: exclude from normal rotation; used only as a broadcast "
+            "follower override (requires name; excludes orchestrate)."
+        },
+    )
 
 
 @dataclass
 class DebugCfg:
-    verbose: int = field(default=0, metadata={
-        "help": "Log verbosity (0 = INFO; 1+ = DEBUG). CLI: -v / -vv."})
-    heartbeat: float = field(default=10.0, metadata={
-        "help": "Seconds between health heartbeat log lines (0 disables)."})
-    skip_probe: bool = field(default=False, metadata={
-        "help": "Skip the startup U64 reachability probe."})
-    log_file: str | None = field(default=None, metadata={
-        "help": "Also mirror log output to this file (useful for headless runs)."})
+    verbose: int = field(
+        default=0, metadata={"help": "Log verbosity (0 = INFO; 1+ = DEBUG). CLI: -v / -vv."}
+    )
+    heartbeat: float = field(
+        default=10.0, metadata={"help": "Seconds between health heartbeat log lines (0 disables)."}
+    )
+    skip_probe: bool = field(
+        default=False, metadata={"help": "Skip the startup U64 reachability probe."}
+    )
+    log_file: str | None = field(
+        default=None,
+        metadata={"help": "Also mirror log output to this file (useful for headless runs)."},
+    )
     # Zero overhead when off (every hook resolves to a no-op NullProfiler).
-    profile: bool = field(default=False, metadata={
-        "help": "Emit per-scene frame-timing summaries (render/compose/push/wait)."})
-    profile_interval: float = field(default=10.0, metadata={
-        "help": "Seconds between profiler summary lines."})
+    profile: bool = field(
+        default=False,
+        metadata={"help": "Emit per-scene frame-timing summaries (render/compose/push/wait)."},
+    )
+    profile_interval: float = field(
+        default=10.0, metadata={"help": "Seconds between profiler summary lines."}
+    )
     # Diagnostic aid for video flicker/flash investigation — draws the
     # playback timecode + source frame number into each rendered frame
     # (before quantization) so an on-screen range maps onto a known frame.
-    frame_numbers: bool = field(default=False, metadata={
-        "help": "Overlay the playback timecode + source frame number on "
-                "commercial/slideshow/webcam frames (debug aid for "
-                "locating flashing/flickering frames)."})
+    frame_numbers: bool = field(
+        default=False,
+        metadata={
+            "help": "Overlay the playback timecode + source frame number on "
+            "commercial/slideshow/webcam frames (debug aid for "
+            "locating flashing/flickering frames)."
+        },
+    )
 
 
 @dataclass
 class PreviewCfg:
     """Local pygame window mirroring what the U64 displays. Off by default
     since it requires the `pygame` optional dep."""
-    enabled: bool = field(default=False, metadata={
-        "help": "Open a local pygame window mirroring the U64 display "
-                "(requires the 'preview' extra)."})
+
+    enabled: bool = field(
+        default=False,
+        metadata={
+            "help": "Open a local pygame window mirroring the U64 display "
+            "(requires the 'preview' extra)."
+        },
+    )
     fps: int = field(default=30, metadata={"help": "Preview window refresh rate."})
-    scale: int = field(default=3, metadata={
-        "help": "Integer pixel scale factor for the preview window."})
+    scale: int = field(
+        default=3, metadata={"help": "Integer pixel scale factor for the preview window."}
+    )
     charset_path: str | None = field(
-        default="assets/roms/characters.901225-01.bin", metadata={
-            "help": "C64 character ROM used to render char modes in the preview."})
+        default="assets/roms/characters.901225-01.bin",
+        metadata={"help": "C64 character ROM used to render char modes in the preview."},
+    )
 
 
 @dataclass
 class RecordingCfg:
     """Capture the rendered display to a video file. Uses cv2.VideoWriter,
     so all you need is the `opencv-python` core dep."""
-    enabled: bool = field(default=False, metadata={
-        "help": "Record the rendered display to a video file (cv2.VideoWriter)."})
-    path: str = field(default="recording.mp4", metadata={
-        "help": "Output video file path."})
+
+    enabled: bool = field(
+        default=False,
+        metadata={"help": "Record the rendered display to a video file (cv2.VideoWriter)."},
+    )
+    path: str = field(default="recording.mp4", metadata={"help": "Output video file path."})
     fps: int = field(default=30, metadata={"help": "Recording frame rate."})
-    scale: int = field(default=2, metadata={
-        "help": "Integer pixel scale factor for the recording."})
-    fourcc: str = field(default="mp4v", metadata={
-        "help": "FourCC codec code passed to cv2.VideoWriter."})
+    scale: int = field(
+        default=2, metadata={"help": "Integer pixel scale factor for the recording."}
+    )
+    fourcc: str = field(
+        default="mp4v", metadata={"help": "FourCC codec code passed to cv2.VideoWriter."}
+    )
 
 
 @dataclass
@@ -572,41 +889,74 @@ class ColorCfg:
     gray/blue and never to purple; the built-in default ships a single
     "purple_rescue" hue band that snaps + boosts the violet→magenta range to
     recover it. User bands extend the defaults unless replace is set."""
-    channel_boost: list[float] = field(default_factory=list, metadata={
-        "help": "Per-channel pre-quantize gain [blue, green, red] (OpenCV BGR "
-                "order). Empty = built-in default [1.3, 1.2, 1.0] (blue/green "
-                "lift toward C64-friendly hues; red left neutral)."})
-    hue_corrections: list[dict[str, Any]] = field(default_factory=list, metadata={
-        "help": "List of [[color.hue_corrections]] bands applied before "
-                "quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, "
-                "val_thresh, sat_mult, val_mult, hue_target_deg, name). "
-                "Empty = built-in purple rescue only."})
-    hue_corrections_replace_defaults: bool = field(default=False, metadata={
-        "help": "If true, user hue_corrections REPLACE the built-in defaults "
-                "instead of extending them."})
-    auto_fit: bool = field(default=True, metadata={
-        "help": "Per-source adaptive color fit for commercial + slideshow "
-                "scenes: pre-scan the source and stretch its contrast + "
-                "saturation to fill the C64 gamut (faithful — hue preserved). "
-                "Ignored by webcam scenes (can't pre-scan)."})
-    auto_fit_strength: float = field(default=1.0, metadata={
-        "help": "Strength of the auto_fit transform, 0..1 (1 = full, 0 = off). "
-                "Lerps the derived stretch toward identity."})
-    force_palette: bool = field(default=False, metadata={
-        "help": "EXTREME forced-palette remap for commercial + slideshow "
-                "scenes (mcm/mhires): pre-scan the source, k-means it into N "
-                "clusters, and map each cluster to a DISTINCT C64 color so all "
-                "N colors are used. Deliberate false-color (NOT faithful) — "
-                "off by default; also reachable via the SHIFT cycle's "
-                "'percell+forced' stop once enabled."})
-    force_palette_colors: int = field(default=16, metadata={
-        "help": "Number of distinct C64 colors to spread the source across "
-                "when force_palette is on (2..16). Ignored when "
-                "force_palette_indices is set."})
-    force_palette_indices: list[int] = field(default_factory=list, metadata={
-        "help": "Explicit C64 palette index whitelist (0..15) for "
-                "force_palette; its length sets the color count and overrides "
-                "force_palette_colors. Empty = use all 16 (or the count)."})
+
+    channel_boost: list[float] = field(
+        default_factory=list,
+        metadata={
+            "help": "Per-channel pre-quantize gain [blue, green, red] (OpenCV BGR "
+            "order). Empty = built-in default [1.3, 1.2, 1.0] (blue/green "
+            "lift toward C64-friendly hues; red left neutral)."
+        },
+    )
+    hue_corrections: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata={
+            "help": "List of [[color.hue_corrections]] bands applied before "
+            "quantize (keys: hue_lo_deg, hue_hi_deg, sat_thresh, "
+            "val_thresh, sat_mult, val_mult, hue_target_deg, name). "
+            "Empty = built-in purple rescue only."
+        },
+    )
+    hue_corrections_replace_defaults: bool = field(
+        default=False,
+        metadata={
+            "help": "If true, user hue_corrections REPLACE the built-in defaults "
+            "instead of extending them."
+        },
+    )
+    auto_fit: bool = field(
+        default=True,
+        metadata={
+            "help": "Per-source adaptive color fit for commercial + slideshow "
+            "scenes: pre-scan the source and stretch its contrast + "
+            "saturation to fill the C64 gamut (faithful — hue preserved). "
+            "Ignored by webcam scenes (can't pre-scan)."
+        },
+    )
+    auto_fit_strength: float = field(
+        default=1.0,
+        metadata={
+            "help": "Strength of the auto_fit transform, 0..1 (1 = full, 0 = off). "
+            "Lerps the derived stretch toward identity."
+        },
+    )
+    force_palette: bool = field(
+        default=False,
+        metadata={
+            "help": "EXTREME forced-palette remap for commercial + slideshow "
+            "scenes (mcm/mhires): pre-scan the source, k-means it into N "
+            "clusters, and map each cluster to a DISTINCT C64 color so all "
+            "N colors are used. Deliberate false-color (NOT faithful) — "
+            "off by default; also reachable via the SHIFT cycle's "
+            "'percell+forced' stop once enabled."
+        },
+    )
+    force_palette_colors: int = field(
+        default=16,
+        metadata={
+            "help": "Number of distinct C64 colors to spread the source across "
+            "when force_palette is on (2..16). Ignored when "
+            "force_palette_indices is set."
+        },
+    )
+    force_palette_indices: list[int] = field(
+        default_factory=list,
+        metadata={
+            "help": "Explicit C64 palette index whitelist (0..15) for "
+            "force_palette; its length sets the color count and overrides "
+            "force_palette_colors. Empty = use all 16 (or the count)."
+        },
+    )
 
 
 @dataclass
@@ -619,70 +969,122 @@ class DSPCfg:
     hysteresis). All stages are off until enabled. Defaults are tuned for the
     4-bit DAC. Orthogonal to [audio].dither (which is the quantization step
     itself) and to the REU pump (which is the transport)."""
-    enabled: bool = field(default=True, metadata={
-        "help": "Master switch for the host-side audio DSP chain (ON by "
-                "default — the 4-bit DAC needs it). Set false for the legacy "
-                "linear encode + hard mic gate."})
-    pre_emphasis: float | None = field(default=None, metadata={
-        "help": "High-frequency boost amount; y[n]=x+amt*(x-x[-1]). Brightens "
-                "speech for intelligibility. Unset = source-aware default (mic "
-                "0.7 / line 0.6); a number forces that amount for all sources; "
-                "0 disables. Per-scene [[scenes]].pre_emphasis overrides this."})
-    expander: bool = field(default=True, metadata={
-        "help": "Downward expander with hysteresis (replaces the hard noise "
-                "gate when DSP is enabled). Attenuates below the threshold."})
-    expander_threshold_db: float = field(default=-45.0, metadata={
-        "help": "Level below which the expander attenuates (dBFS)."})
-    expander_ratio: float = field(default=2.0, metadata={
-        "help": "Expansion ratio (>1; larger = more attenuation below thresh)."})
-    expander_hysteresis_db: float = field(default=6.0, metadata={
-        "help": "Gap (dB) below the open threshold before the gate closes — "
-                "prevents chatter on signal hovering at the threshold."})
-    expander_floor_db: float = field(default=-60.0, metadata={
-        "help": "Maximum attenuation the expander applies (dB)."})
-    expander_attack_ms: float = field(default=5.0, metadata={
-        "help": "Expander gain open (attack) time constant in ms."})
-    expander_release_ms: float = field(default=80.0, metadata={
-        "help": "Expander gain close (release) time constant in ms."})
-    compress: bool = field(default=True, metadata={
-        "help": "Soft-knee feed-forward compressor + makeup gain — the main "
-                "win for fitting program dynamics into 4 bits."})
-    comp_threshold_db: float = field(default=-18.0, metadata={
-        "help": "Compression threshold (dBFS); above this, gain reduces."})
-    comp_ratio: float = field(default=3.0, metadata={
-        "help": "Compression ratio (>=1; e.g. 3 = 3:1 above threshold)."})
-    comp_knee_db: float = field(default=6.0, metadata={
-        "help": "Soft-knee width in dB around the threshold (0 = hard knee)."})
-    comp_attack_ms: float = field(default=5.0, metadata={
-        "help": "Compressor attack time constant in ms."})
-    comp_release_ms: float = field(default=120.0, metadata={
-        "help": "Compressor release time constant in ms."})
-    comp_makeup_auto: bool = field(default=True, metadata={
-        "help": "Auto-compute makeup gain so threshold-level signal exits near "
-                "unity. Set false to use comp_makeup_db explicitly."})
-    comp_makeup_db: float = field(default=0.0, metadata={
-        "help": "Explicit makeup gain (dB) when comp_makeup_auto is false."})
-    limiter: bool = field(default=True, metadata={
-        "help": "Fast peak limiter / brickwall ceiling — final safety stage."})
-    limiter_ceiling: float = field(default=0.95, metadata={
-        "help": "Limiter output ceiling, linear 0..1 (just under full scale)."})
-    limiter_release_ms: float = field(default=50.0, metadata={
-        "help": "Limiter gain recovery (release) time constant in ms."})
-    agc: bool = field(default=False, metadata={
-        "help": "Automatic gain control for the MIC path only (line/commercial "
-                "audio is already peak-normalized). Slow gain toward a target. "
-                "EXPERIMENTAL: being level-based it can boost a sustained noise "
-                "floor during long pauses — best on clean mics, or pair with the "
-                "expander / raise agc_noise_floor_db above the floor."})
-    agc_target_db: float = field(default=-18.0, metadata={
-        "help": "AGC target RMS level (dBFS)."})
-    agc_max_gain_db: float = field(default=24.0, metadata={
-        "help": "Maximum AGC gain/attenuation magnitude (dB)."})
-    agc_time_ms: float = field(default=300.0, metadata={
-        "help": "AGC adaptation time constant in ms (larger = slower/steadier)."})
-    agc_noise_floor_db: float = field(default=-60.0, metadata={
-        "help": "Below this input RMS, AGC holds gain instead of amplifying "
-                "the noise floor."})
+
+    enabled: bool = field(
+        default=True,
+        metadata={
+            "help": "Master switch for the host-side audio DSP chain (ON by "
+            "default — the 4-bit DAC needs it). Set false for the legacy "
+            "linear encode + hard mic gate."
+        },
+    )
+    pre_emphasis: float | None = field(
+        default=None,
+        metadata={
+            "help": "High-frequency boost amount; y[n]=x+amt*(x-x[-1]). Brightens "
+            "speech for intelligibility. Unset = source-aware default (mic "
+            "0.7 / line 0.6); a number forces that amount for all sources; "
+            "0 disables. Per-scene [[scenes]].pre_emphasis overrides this."
+        },
+    )
+    expander: bool = field(
+        default=True,
+        metadata={
+            "help": "Downward expander with hysteresis (replaces the hard noise "
+            "gate when DSP is enabled). Attenuates below the threshold."
+        },
+    )
+    expander_threshold_db: float = field(
+        default=-45.0, metadata={"help": "Level below which the expander attenuates (dBFS)."}
+    )
+    expander_ratio: float = field(
+        default=2.0,
+        metadata={"help": "Expansion ratio (>1; larger = more attenuation below thresh)."},
+    )
+    expander_hysteresis_db: float = field(
+        default=6.0,
+        metadata={
+            "help": "Gap (dB) below the open threshold before the gate closes — "
+            "prevents chatter on signal hovering at the threshold."
+        },
+    )
+    expander_floor_db: float = field(
+        default=-60.0, metadata={"help": "Maximum attenuation the expander applies (dB)."}
+    )
+    expander_attack_ms: float = field(
+        default=5.0, metadata={"help": "Expander gain open (attack) time constant in ms."}
+    )
+    expander_release_ms: float = field(
+        default=80.0, metadata={"help": "Expander gain close (release) time constant in ms."}
+    )
+    compress: bool = field(
+        default=True,
+        metadata={
+            "help": "Soft-knee feed-forward compressor + makeup gain — the main "
+            "win for fitting program dynamics into 4 bits."
+        },
+    )
+    comp_threshold_db: float = field(
+        default=-18.0, metadata={"help": "Compression threshold (dBFS); above this, gain reduces."}
+    )
+    comp_ratio: float = field(
+        default=3.0, metadata={"help": "Compression ratio (>=1; e.g. 3 = 3:1 above threshold)."}
+    )
+    comp_knee_db: float = field(
+        default=6.0,
+        metadata={"help": "Soft-knee width in dB around the threshold (0 = hard knee)."},
+    )
+    comp_attack_ms: float = field(
+        default=5.0, metadata={"help": "Compressor attack time constant in ms."}
+    )
+    comp_release_ms: float = field(
+        default=120.0, metadata={"help": "Compressor release time constant in ms."}
+    )
+    comp_makeup_auto: bool = field(
+        default=True,
+        metadata={
+            "help": "Auto-compute makeup gain so threshold-level signal exits near "
+            "unity. Set false to use comp_makeup_db explicitly."
+        },
+    )
+    comp_makeup_db: float = field(
+        default=0.0, metadata={"help": "Explicit makeup gain (dB) when comp_makeup_auto is false."}
+    )
+    limiter: bool = field(
+        default=True,
+        metadata={"help": "Fast peak limiter / brickwall ceiling — final safety stage."},
+    )
+    limiter_ceiling: float = field(
+        default=0.95,
+        metadata={"help": "Limiter output ceiling, linear 0..1 (just under full scale)."},
+    )
+    limiter_release_ms: float = field(
+        default=50.0, metadata={"help": "Limiter gain recovery (release) time constant in ms."}
+    )
+    agc: bool = field(
+        default=False,
+        metadata={
+            "help": "Automatic gain control for the MIC path only (line/commercial "
+            "audio is already peak-normalized). Slow gain toward a target. "
+            "EXPERIMENTAL: being level-based it can boost a sustained noise "
+            "floor during long pauses — best on clean mics, or pair with the "
+            "expander / raise agc_noise_floor_db above the floor."
+        },
+    )
+    agc_target_db: float = field(default=-18.0, metadata={"help": "AGC target RMS level (dBFS)."})
+    agc_max_gain_db: float = field(
+        default=24.0, metadata={"help": "Maximum AGC gain/attenuation magnitude (dB)."}
+    )
+    agc_time_ms: float = field(
+        default=300.0,
+        metadata={"help": "AGC adaptation time constant in ms (larger = slower/steadier)."},
+    )
+    agc_noise_floor_db: float = field(
+        default=-60.0,
+        metadata={
+            "help": "Below this input RMS, AGC holds gain instead of amplifying the noise floor."
+        },
+    )
 
     def to_params(self) -> DSPParams:
         """Build the pure dsp.DSPParams the AudioDSP chain consumes. Maps the
@@ -718,13 +1120,20 @@ class DSPCfg:
 @dataclass
 class ControlPlaneCfg:
     """FastAPI control plane. Off by default; requires the `control` extra."""
-    enabled: bool = field(default=False, metadata={
-        "help": "Run the HTTP control plane (pause/resume/skip/reload); "
-                "requires the 'control' extra."})
-    host: str = field(default="127.0.0.1", metadata={
-        "help": "Bind address for the control-plane HTTP server."})
-    port: int = field(default=8765, metadata={
-        "help": "Bind port for the control-plane HTTP server."})
+
+    enabled: bool = field(
+        default=False,
+        metadata={
+            "help": "Run the HTTP control plane (pause/resume/skip/reload); "
+            "requires the 'control' extra."
+        },
+    )
+    host: str = field(
+        default="127.0.0.1", metadata={"help": "Bind address for the control-plane HTTP server."}
+    )
+    port: int = field(
+        default=8765, metadata={"help": "Bind port for the control-plane HTTP server."}
+    )
 
 
 @dataclass
@@ -732,6 +1141,7 @@ class SystemEntryCfg:
     """One system in an ensemble — name plus the path to its per-system
     standalone TOML. The path is resolved relative to the master TOML's
     directory at load time."""
+
     name: str
     config: str
 
@@ -745,6 +1155,7 @@ class EnsembleCfg:
     arrangement. Order is load-bearing for span-mode orchestrators (e.g.
     BigTextSpan scrolls right-to-left, so the rightmost system is the
     conductor and the leftmost is where the message scrolls off)."""
+
     systems: list[SystemEntryCfg] = field(default_factory=list)
 
 
@@ -781,6 +1192,7 @@ class ConfigError(Exception):
     """Raised by `load()` when the config file is missing or unparseable.
     The message is already formatted for end-user display (multi-line, no
     traceback needed); cli.py prints it via `log.error("%s", e)` and exits."""
+
     pass
 
 
@@ -832,8 +1244,7 @@ def _apply_section(dc: Any, data: dict[str, Any], section_name: str) -> None:
         if k not in valid:
             close = difflib.get_close_matches(k, valid, n=1)
             suggestion = f" — did you mean {close[0]!r}?" if close else ""
-            log.warning("[%s] unknown config key %r%s — ignored",
-                        section_name, k, suggestion)
+            log.warning("[%s] unknown config key %r%s — ignored", section_name, k, suggestion)
             continue
         setattr(dc, k, v)
 
@@ -847,8 +1258,7 @@ def _validate_use_reu_staged(video: VideoCfg) -> None:
     if isinstance(v, bool):
         return
     if v != "auto":
-        raise ValueError(
-            f'[video].use_reu_staged must be true, false, or "auto", got {v!r}')
+        raise ValueError(f'[video].use_reu_staged must be true, false, or "auto", got {v!r}')
 
 
 def _validate_force_palette(color: ColorCfg) -> None:
@@ -856,19 +1266,18 @@ def _validate_force_palette(color: ColorCfg) -> None:
     value surfaces before the playlist runs, not mid-stream at pre-scan."""
     if not (2 <= color.force_palette_colors <= 16):
         raise ValueError(
-            f"color.force_palette_colors must be in 2..16, got "
-            f"{color.force_palette_colors}")
+            f"color.force_palette_colors must be in 2..16, got {color.force_palette_colors}"
+        )
     idx = color.force_palette_indices
     if idx:
         if not (2 <= len(idx) <= 16):
-            raise ValueError(
-                f"color.force_palette_indices must list 2..16 entries, got "
-                f"{len(idx)}")
+            raise ValueError(f"color.force_palette_indices must list 2..16 entries, got {len(idx)}")
         for i in idx:
             if not (0 <= int(i) <= 15):
                 raise ValueError(
                     f"color.force_palette_indices entries must be C64 palette "
-                    f"indices 0..15, got {i}")
+                    f"indices 0..15, got {i}"
+                )
 
 
 def load(path: str | None) -> Config:
@@ -929,8 +1338,7 @@ def load(path: str | None) -> Config:
         _apply_section(cfg.color, raw_color, "color")
         for hc in raw_hc:
             if not isinstance(hc, dict):
-                raise ValueError(
-                    f"color.hue_corrections entry must be a table, got {hc!r}")
+                raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
             cfg.color.hue_corrections.append(dict(hc))
         _validate_force_palette(cfg.color)
 
@@ -942,27 +1350,29 @@ def load(path: str | None) -> Config:
         _apply_section(sc, raw, "scenes")
         for ov_raw in raw_overlays:
             if not isinstance(ov_raw, dict):
-                raise ValueError(
-                    f"scenes.overlays entry must be a table, got {ov_raw!r}")
+                raise ValueError(f"scenes.overlays entry must be a table, got {ov_raw!r}")
             sc.overlays.append(dict(ov_raw))
         if sc.orchestrate and not sc.name:
             raise ConfigError(
                 f"[[scenes]] in {path}: scenes with `orchestrate = true` "
-                "must declare a `name = \"...\"` — the name is the "
+                'must declare a `name = "..."` — the name is the '
                 "cross-system match key followers use to look up their "
-                "own version of this scene in their per-system playlist.")
+                "own version of this scene in their per-system playlist."
+            )
         if sc.follower_only and not sc.name:
             raise ConfigError(
                 f"[[scenes]] in {path}: scenes with `follower_only = true` "
-                "must declare a `name = \"...\"` — the name is what the "
+                'must declare a `name = "..."` — the name is what the '
                 "conductor's orchestrate=true scene matches to find this "
-                "follower override.")
+                "follower override."
+            )
         if sc.follower_only and sc.orchestrate:
             raise ConfigError(
                 f"[[scenes]] in {path}: scenes cannot have both "
                 "`follower_only = true` and `orchestrate = true` — "
                 "follower_only marks a scene that *receives* broadcasts; "
-                "orchestrate marks one that *initiates* them.")
+                "orchestrate marks one that *initiates* them."
+            )
         cfg.scenes.append(sc)
 
     return cfg
@@ -976,29 +1386,27 @@ def _parse_ensemble_section(data: dict[str, Any]) -> EnsembleCfg:
     if not isinstance(raw_systems, list) or not raw_systems:
         raise ConfigError(
             "[ensemble] requires a non-empty `systems` array, e.g.:\n"
-            '  systems = [\n'
+            "  systems = [\n"
             '      { name = "left",  config = "left.toml"  },\n'
             '      { name = "right", config = "right.toml" },\n'
-            '  ]'
+            "  ]"
         )
     entries: list[SystemEntryCfg] = []
     seen: set[str] = set()
     for i, raw in enumerate(raw_systems):
         if not isinstance(raw, dict):
-            raise ConfigError(
-                f"[ensemble].systems[{i}] must be a table, got {raw!r}")
+            raise ConfigError(f"[ensemble].systems[{i}] must be a table, got {raw!r}")
         name = raw.get("name")
         cfg_path = raw.get("config")
         if not isinstance(name, str) or not name:
-            raise ConfigError(
-                f"[ensemble].systems[{i}] needs a non-empty string `name`")
+            raise ConfigError(f"[ensemble].systems[{i}] needs a non-empty string `name`")
         if not isinstance(cfg_path, str) or not cfg_path:
             raise ConfigError(
                 f"[ensemble].systems[{i}] ({name!r}) needs a non-empty "
-                "string `config` (relative path to the per-system TOML)")
+                "string `config` (relative path to the per-system TOML)"
+            )
         if name in seen:
-            raise ConfigError(
-                f"[ensemble].systems: duplicate system name {name!r}")
+            raise ConfigError(f"[ensemble].systems: duplicate system name {name!r}")
         seen.add(name)
         entries.append(SystemEntryCfg(name=name, config=cfg_path))
     return EnsembleCfg(systems=entries)
@@ -1016,18 +1424,18 @@ def _parse_ensemble_section(data: dict[str, Any]) -> EnsembleCfg:
 #   [control]  — there is one control plane shared across the ensemble (see
 #                control_plane refactor), wired from the master config.
 _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("hardware",     frozenset()),
+    ("hardware", frozenset()),
     # serial_port + host are per-system (each TR has its own device/IP),
     # so they never inherit a master default — like ultimate64.url.
-    ("teensyrom",    frozenset({"serial_port", "host"})),
-    ("ultimate64",   frozenset({"url"})),
-    ("audio",        frozenset()),
+    ("teensyrom", frozenset({"serial_port", "host"})),
+    ("ultimate64", frozenset({"url"})),
+    ("audio", frozenset()),
     ("interstitial", frozenset()),
-    ("playlist",     frozenset()),
-    ("debug",        frozenset()),
-    ("preview",      frozenset()),
-    ("recording",    frozenset()),
-    ("color",        frozenset()),
+    ("playlist", frozenset()),
+    ("debug", frozenset()),
+    ("preview", frozenset()),
+    ("recording", frozenset()),
+    ("color", frozenset()),
 )
 
 
@@ -1079,6 +1487,7 @@ class LoadResult:
     `paths = [args.config or None]`, `is_ensemble = False`.
     `master_control` holds the master TOML's [control] section (in
     single-system mode this is just the loaded config's [control])."""
+
     cfgs: list[Config]
     names: list[str]
     paths: list[str | None]
@@ -1099,8 +1508,13 @@ def load_master(path: str | None) -> LoadResult:
     if path is None:
         if not os.path.exists(DEFAULT_CONFIG_PATH):
             cfg = Config()
-            return LoadResult(cfgs=[cfg], names=["system"], paths=[None],
-                              is_ensemble=False, master_control=cfg.control)
+            return LoadResult(
+                cfgs=[cfg],
+                names=["system"],
+                paths=[None],
+                is_ensemble=False,
+                master_control=cfg.control,
+            )
         path = DEFAULT_CONFIG_PATH
 
     try:
@@ -1115,16 +1529,23 @@ def load_master(path: str | None) -> LoadResult:
 
     if "ensemble" not in raw:
         cfg = load(path)
-        return LoadResult(cfgs=[cfg], names=["system"], paths=[path],
-                          is_ensemble=False, master_control=cfg.control)
+        return LoadResult(
+            cfgs=[cfg],
+            names=["system"],
+            paths=[path],
+            is_ensemble=False,
+            master_control=cfg.control,
+        )
 
     log.info("loading ensemble master %s", path)
     ensemble = _parse_ensemble_section(raw["ensemble"])
 
     if "scenes" in raw:
-        log.warning("[%s] ensemble master contains [[scenes]] — ignored "
-                    "(scenes belong in per-system configs, not the master)",
-                    path)
+        log.warning(
+            "[%s] ensemble master contains [[scenes]] — ignored "
+            "(scenes belong in per-system configs, not the master)",
+            path,
+        )
 
     defaults = Config()
     for section, dc in (
@@ -1151,8 +1572,7 @@ def load_master(path: str | None) -> LoadResult:
         _apply_section(defaults.color, raw_color, "color")
         for hc in raw_hc:
             if not isinstance(hc, dict):
-                raise ValueError(
-                    f"color.hue_corrections entry must be a table, got {hc!r}")
+                raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
             defaults.color.hue_corrections.append(dict(hc))
         _validate_force_palette(defaults.color)
 
@@ -1172,13 +1592,16 @@ def load_master(path: str | None) -> LoadResult:
         cfgs.append(sys_cfg)
         paths.append(sub_path)
     _warn_audio_only_ensemble(cfgs, [e.name for e in ensemble.systems])
-    return LoadResult(cfgs=cfgs, names=[e.name for e in ensemble.systems],
-                      paths=paths, is_ensemble=True,
-                      master_control=defaults.control)
+    return LoadResult(
+        cfgs=cfgs,
+        names=[e.name for e in ensemble.systems],
+        paths=paths,
+        is_ensemble=True,
+        master_control=defaults.control,
+    )
 
 
-_AUDIO_BEARING_SCENE_TYPES = frozenset({"commercial", "waveform", "midi",
-                                        "launcher"})
+_AUDIO_BEARING_SCENE_TYPES = frozenset({"commercial", "waveform", "midi", "launcher"})
 
 
 def _scene_contends_for_audio(s: SceneCfg) -> bool:
@@ -1215,36 +1638,38 @@ def _warn_audio_only_ensemble(cfgs: list[Config], names: list[str]) -> None:
                 "[%s] every scene in this system's playlist needs the "
                 "ensemble audio slot — when another system holds it, "
                 "this playlist will idle until the slot frees instead "
-                "of falling through to a non-audio scene", name)
+                "of falling through to a non-audio scene",
+                name,
+            )
 
 
 # Mapping argparse dest → (config section attr, field name). Used by
 # merge_cli to know which CLI flags map onto which config fields.
 CLI_TO_CFG = {
-    "backend":          ("hardware",   "backend"),
-    "tr_transport":     ("teensyrom",  "transport"),
-    "tr_serial_port":   ("teensyrom",  "serial_port"),
-    "tr_host":          ("teensyrom",  "host"),
-    "url":              ("ultimate64", "url"),
-    "system":           ("ultimate64", "system"),
-    "dma_port":         ("ultimate64", "dma_port"),
-    "device":           ("video",      "device"),
-    "audio":            ("audio",      "enabled"),
-    "audio_device":     ("audio",      "device"),
-    "sample_rate":      ("audio",      "sample_rate"),
-    "mic_sensitivity":  ("audio",      "mic_sensitivity"),
-    "noise_gate":       ("audio",      "noise_gate"),
-    "vision":           ("vision",     "enabled"),
-    "vision_model":     ("vision",     "model_path"),
-    "ads":              ("playlist",   "ads_dir"),
-    "loop":             ("playlist",   "loop"),
-    "verbose":          ("debug",      "verbose"),
-    "heartbeat":        ("debug",      "heartbeat"),
-    "skip_probe":       ("debug",      "skip_probe"),
-    "log_file":         ("debug",      "log_file"),
-    "profile":          ("debug",      "profile"),
-    "profile_interval": ("debug",      "profile_interval"),
-    "frame_numbers":    ("debug",      "frame_numbers"),
+    "backend": ("hardware", "backend"),
+    "tr_transport": ("teensyrom", "transport"),
+    "tr_serial_port": ("teensyrom", "serial_port"),
+    "tr_host": ("teensyrom", "host"),
+    "url": ("ultimate64", "url"),
+    "system": ("ultimate64", "system"),
+    "dma_port": ("ultimate64", "dma_port"),
+    "device": ("video", "device"),
+    "audio": ("audio", "enabled"),
+    "audio_device": ("audio", "device"),
+    "sample_rate": ("audio", "sample_rate"),
+    "mic_sensitivity": ("audio", "mic_sensitivity"),
+    "noise_gate": ("audio", "noise_gate"),
+    "vision": ("vision", "enabled"),
+    "vision_model": ("vision", "model_path"),
+    "ads": ("playlist", "ads_dir"),
+    "loop": ("playlist", "loop"),
+    "verbose": ("debug", "verbose"),
+    "heartbeat": ("debug", "heartbeat"),
+    "skip_probe": ("debug", "skip_probe"),
+    "log_file": ("debug", "log_file"),
+    "profile": ("debug", "profile"),
+    "profile_interval": ("debug", "profile_interval"),
+    "frame_numbers": ("debug", "frame_numbers"),
 }
 
 
@@ -1283,8 +1708,7 @@ def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
 _REU_BITMAP_MODES = frozenset({"hires", "hires_edges", "mhires"})
 
 
-def resolve_use_reu_staged(setting: bool | str, display: str, *,
-                           reu_available: bool) -> bool:
+def resolve_use_reu_staged(setting: bool | str, display: str, *, reu_available: bool) -> bool:
     """Resolve the [video].use_reu_staged tri-state to a concrete bool for one
     scene's display mode.
 
@@ -1298,12 +1722,16 @@ def resolve_use_reu_staged(setting: bool | str, display: str, *,
     return bool(setting)
 
 
-def _build_display_mode(name: str, palette_mode: str = "percell",
-                        border: int = 0, background: int = 0,
-                        style: str = "default",
-                        use_reu_staged: bool = False,
-                        audio_reu_pump_active: bool = False,
-                        color: ColorCfg | None = None) -> DisplayMode:
+def _build_display_mode(
+    name: str,
+    palette_mode: str = "percell",
+    border: int = 0,
+    background: int = 0,
+    style: str = "default",
+    use_reu_staged: bool = False,
+    audio_reu_pump_active: bool = False,
+    color: ColorCfg | None = None,
+) -> DisplayMode:
     # Imported inside the function to keep config.py importable in test
     # contexts that stub out the heavy modules.
     from .modes import (
@@ -1313,6 +1741,7 @@ def _build_display_mode(name: str, palette_mode: str = "percell",
         MultiHiresDisplayMode,
         PETSCIIDisplayMode,
     )
+
     # The whole [color] section is threaded through as one object; unpack the
     # static-shaping + forced-palette knobs the chromatic modes need here (a
     # single extraction point keeps the call sites to one `color=` kwarg).
@@ -1323,36 +1752,47 @@ def _build_display_mode(name: str, palette_mode: str = "percell",
     force_palette = color.force_palette
     if name == "hires_edges":
         return HiresDisplayMode(
-            style="edges", use_reu_staged=use_reu_staged,
-            audio_reu_pump_active=audio_reu_pump_active)
+            style="edges",
+            use_reu_staged=use_reu_staged,
+            audio_reu_pump_active=audio_reu_pump_active,
+        )
     if name == "hires":
         return HiresDisplayMode(
-            style="normal", use_reu_staged=use_reu_staged,
-            audio_reu_pump_active=audio_reu_pump_active)
+            style="normal",
+            use_reu_staged=use_reu_staged,
+            audio_reu_pump_active=audio_reu_pump_active,
+        )
     if name == "petscii":
-        return PETSCIIDisplayMode(style=style, use_reu_staged=use_reu_staged,
-                                  channel_boost=channel_boost,
-                                  hue_corrections=hue_corrections,
-                                  hue_corrections_replace=hue_corrections_replace)
+        return PETSCIIDisplayMode(
+            style=style,
+            use_reu_staged=use_reu_staged,
+            channel_boost=channel_boost,
+            hue_corrections=hue_corrections,
+            hue_corrections_replace=hue_corrections_replace,
+        )
     if name == "mcm":
-        return MCMDisplayMode(palette_mode=palette_mode,
-                              channel_boost=channel_boost,
-                              hue_corrections=hue_corrections,
-                              hue_corrections_replace=hue_corrections_replace,
-                              force_palette=force_palette)
+        return MCMDisplayMode(
+            palette_mode=palette_mode,
+            channel_boost=channel_boost,
+            hue_corrections=hue_corrections,
+            hue_corrections_replace=hue_corrections_replace,
+            force_palette=force_palette,
+        )
     if name == "mhires":
         return MultiHiresDisplayMode(
-            palette_mode=palette_mode, use_reu_staged=use_reu_staged,
+            palette_mode=palette_mode,
+            use_reu_staged=use_reu_staged,
             audio_reu_pump_active=audio_reu_pump_active,
             channel_boost=channel_boost,
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
-            force_palette=force_palette)
+            force_palette=force_palette,
+        )
     if name == "blank":
-        return BlankDisplayMode(border=border, background=background,
-                                use_reu_staged=use_reu_staged)
-    raise ValueError(f"unknown display mode {name!r} "
-                     "(want: hires_edges, hires, petscii, mcm, mhires, blank)")
+        return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
+    raise ValueError(
+        f"unknown display mode {name!r} (want: hires_edges, hires, petscii, mcm, mhires, blank)"
+    )
 
 
 _songlengths_cache: dict[str, LengthsDB | None] = {}
@@ -1367,10 +1807,13 @@ def _load_songlengths(path: str | None) -> LengthsDB | None:
         return _songlengths_cache[path]
     try:
         from .songlengths import LengthsDB
+
         db = LengthsDB.load(path)
     except FileNotFoundError:
-        log.warning("playlist.songlengths_file %s not found; "
-                    "waveform scenes will use default duration", path)
+        log.warning(
+            "playlist.songlengths_file %s not found; waveform scenes will use default duration",
+            path,
+        )
         db = None
     except Exception:
         log.exception("failed to load songlengths %s", path)
@@ -1379,14 +1822,16 @@ def _load_songlengths(path: str | None) -> LengthsDB | None:
     return db
 
 
-def _attach_overlays(scene: Scene, overlay_dicts: list[dict[str, Any]],
-                     audio: AudioStreamer | None) -> None:
+def _attach_overlays(
+    scene: Scene, overlay_dicts: list[dict[str, Any]], audio: AudioStreamer | None
+) -> None:
     """Build overlay instances from config dicts and attach to scene.
 
     Validates that each overlay accepts the scene's display mode (e.g.
     REQUIRES_PETSCII). Raises with a clear error on first failure so
     misconfiguration is caught at load time, not 5 frames into the run."""
     from .overlays import build_overlay, validate_for_scene
+
     for ov_cfg in overlay_dicts:
         ov = build_overlay(ov_cfg, audio)
         validate_for_scene(ov, scene.display_mode)
@@ -1402,8 +1847,8 @@ _AUDIO_SENTINEL: Any = object()
 
 
 def _resolve_file_spec_or_explain(
-        s: SceneCfg, default_dir: str, exts: tuple[str, ...],
-        *, label: str, drop_hint: str) -> None:
+    s: SceneCfg, default_dir: str, exts: tuple[str, ...], *, label: str, drop_hint: str
+) -> None:
     """Resolve the scene's `file` spec at validate time, defaulting to
     `default_dir` when unset — and mutating `s.file` to the resolved default
     so `build_scene` downstream (and the doctor/heartbeat) sees it. The scene
@@ -1425,14 +1870,15 @@ def _resolve_file_spec_or_explain(
             raise ValueError(
                 f"{label} scene: no `file =` set and the default directory "
                 f"{default_dir!r} is missing or empty. Drop {drop_hint} into "
-                f"{default_dir}/ or set `file = \"path\"` on the scene "
-                f"(comma-separated paths/dirs/globs accepted).") from e
+                f'{default_dir}/ or set `file = "path"` on the scene '
+                f"(comma-separated paths/dirs/globs accepted)."
+            ) from e
         raise
 
 
-def _display_mode_for_scene(display: str, s: SceneCfg,
-                            cfg: Config, *,
-                            reu_available: bool = False) -> DisplayMode:
+def _display_mode_for_scene(
+    display: str, s: SceneCfg, cfg: Config, *, reu_available: bool = False
+) -> DisplayMode:
     """Build the standard video display mode for a scene, centralizing the
     palette/border/background/style/REU/color kwarg cluster shared by the
     webcam, commercial, and slideshow paths (both the validate and build
@@ -1455,35 +1901,43 @@ def _display_mode_for_scene(display: str, s: SceneCfg,
     jiffy) are serviced through one $0314 hook. MCM doesn't yet support
     use_reu_staged (separate future-work)."""
     return _build_display_mode(
-        display, palette_mode=s.palette_mode,
-        border=s.border, background=s.background,
+        display,
+        palette_mode=s.palette_mode,
+        border=s.border,
+        background=s.background,
         style=s.style,
         use_reu_staged=resolve_use_reu_staged(
-            cfg.video.use_reu_staged, display, reu_available=reu_available),
+            cfg.video.use_reu_staged, display, reu_available=reu_available
+        ),
         audio_reu_pump_active=cfg.audio.use_reu_pump,
-        color=cfg.color)
+        color=cfg.color,
+    )
 
 
 def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
     if s.display not in ("blank", "hires_edges"):
-        raise ValueError(
-            f"blank scene must use display = 'blank', got {s.display!r}")
+        raise ValueError(f"blank scene must use display = 'blank', got {s.display!r}")
     return _build_display_mode(
-        "blank", border=s.border, background=s.background,
+        "blank",
+        border=s.border,
+        background=s.background,
         use_reu_staged=resolve_use_reu_staged(
-            cfg.video.use_reu_staged, "blank", reu_available=False))
+            cfg.video.use_reu_staged, "blank", reu_available=False
+        ),
+    )
 
 
 def _validate_commercial(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
-        s, DEFAULT_COMMERCIAL_DIR, VIDEO_EXTS,
-        label="commercial", drop_hint="a video")
+        s, DEFAULT_COMMERCIAL_DIR, VIDEO_EXTS, label="commercial", drop_hint="a video"
+    )
     if s.duration_s is not None:
         raise ValueError(
             "commercial scene does not accept `duration_s` — the scene "
             "runs until the video file ends. Remove the field from the "
             "config; use a [[scenes]] timeout via a different scene type "
-            "if you want a hard cap.")
+            "if you want a hard cap."
+        )
     return _display_mode_for_scene(s.display, s, cfg)
 
 
@@ -1493,42 +1947,38 @@ def _validate_scope_knobs(s: SceneCfg, label: str) -> None:
     the constructor checks so doctor mode (no scene instance) catches them too."""
     from .voice_scope import BITMAP_W as _SCOPE_BITMAP_W
     from .voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
+
     if s.time_base not in TIME_BASE_NAMES:
         raise ValueError(
-            f"{label}: time_base must be one of "
-            f"{tuple(TIME_BASE_NAMES)}, got {s.time_base!r}")
+            f"{label}: time_base must be one of {tuple(TIME_BASE_NAMES)}, got {s.time_base!r}"
+        )
     if s.auto_cycles <= 0:
-        raise ValueError(
-            f"{label}: auto_cycles must be > 0, got {s.auto_cycles!r}")
+        raise ValueError(f"{label}: auto_cycles must be > 0, got {s.auto_cycles!r}")
     if s.persistence not in PERSISTENCE_NAMES:
         raise ValueError(
-            f"{label}: persistence must be one of "
-            f"{tuple(PERSISTENCE_NAMES)}, got {s.persistence!r}")
+            f"{label}: persistence must be one of {tuple(PERSISTENCE_NAMES)}, got {s.persistence!r}"
+        )
     sc = s.scroll_columns
     if isinstance(sc, list):
         if len(sc) != 3 or not all(isinstance(x, int) for x in sc):
-            raise ValueError(
-                f"{label}: scroll_columns list must have 3 ints, "
-                f"got {sc!r}")
+            raise ValueError(f"{label}: scroll_columns list must have 3 ints, got {sc!r}")
         if any(x < 0 or x > _SCOPE_BITMAP_W for x in sc):
             raise ValueError(
-                f"{label}: scroll_columns entries must be in "
-                f"0..{_SCOPE_BITMAP_W}, got {sc!r}")
+                f"{label}: scroll_columns entries must be in 0..{_SCOPE_BITMAP_W}, got {sc!r}"
+            )
     elif isinstance(sc, int):
         if sc < 0 or sc > _SCOPE_BITMAP_W:
-            raise ValueError(
-                f"{label}: scroll_columns must be in "
-                f"0..{_SCOPE_BITMAP_W}, got {sc!r}")
+            raise ValueError(f"{label}: scroll_columns must be in 0..{_SCOPE_BITMAP_W}, got {sc!r}")
     else:
         raise ValueError(
-            f"{label}: scroll_columns must be an int or list of 3 "
-            f"ints, got {type(sc).__name__}")
+            f"{label}: scroll_columns must be an int or list of 3 ints, got {type(sc).__name__}"
+        )
 
 
 def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
-        s, DEFAULT_WAVEFORM_DIR, SID_EXTS,
-        label="waveform", drop_hint="a .sid")
+        s, DEFAULT_WAVEFORM_DIR, SID_EXTS, label="waveform", drop_hint="a .sid"
+    )
     _validate_scope_knobs(s, "waveform")
     # WaveformScene is bitmap-only — the SceneCfg `display` field is
     # ignored for this scene type. Synthesise a hires display_mode so
@@ -1539,8 +1989,7 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
 
 def _validate_midi(s: SceneCfg) -> DisplayMode:
     if len(s.midi_adsr) != 4:
-        raise ValueError(
-            f"midi scene midi_adsr must have 4 entries, got {s.midi_adsr!r}")
+        raise ValueError(f"midi scene midi_adsr must have 4 entries, got {s.midi_adsr!r}")
     _validate_scope_knobs(s, "midi")
     # MidiScene is bitmap-only (hires oscilloscope) — the SceneCfg `display`
     # field is ignored. Synthesise a hires display_mode so overlay
@@ -1551,12 +2000,10 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
 
 def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
-        s, DEFAULT_SLIDESHOW_DIR, PICTURE_EXTS,
-        label="slideshow", drop_hint="a .jpg/.png")
+        s, DEFAULT_SLIDESHOW_DIR, PICTURE_EXTS, label="slideshow", drop_hint="a .jpg/.png"
+    )
     if s.image_duration_s <= 0:
-        raise ValueError(
-            f"slideshow: image_duration_s must be > 0, "
-            f"got {s.image_duration_s!r}")
+        raise ValueError(f"slideshow: image_duration_s must be > 0, got {s.image_duration_s!r}")
     # Resolve "random" to a concrete mode for overlay-compat validation.
     # The actual scene re-resolves at every setup() so single-scene loops
     # get a fresh mode per iteration.
@@ -1565,7 +2012,8 @@ def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
         raise ValueError(
             "slideshow scene cannot use display = 'blank' (no place "
             "to paint the image — pick mhires/hires/hires_edges/mcm/"
-            "petscii, or use display = 'random').")
+            "petscii, or use display = 'random')."
+        )
     return _display_mode_for_scene(display, s, cfg)
 
 
@@ -1576,37 +2024,35 @@ def _validate_launcher(s: SceneCfg) -> None:
     `validate_scene_cfg` returns immediately after calling it (the shared
     overlay-compat loop assumes a real `mode`, which this scene never has)."""
     _resolve_file_spec_or_explain(
-        s, DEFAULT_PROGRAM_DIR, PROGRAM_EXTS,
-        label="launcher", drop_hint="a .prg/.crt")
+        s, DEFAULT_PROGRAM_DIR, PROGRAM_EXTS, label="launcher", drop_hint="a .prg/.crt"
+    )
     if s.input_source not in _INPUT_SOURCE_CHOICES:
         raise ValueError(
-            f"launcher: input_source must be one of "
-            f"{_INPUT_SOURCE_CHOICES}, got {s.input_source!r}")
+            f"launcher: input_source must be one of {_INPUT_SOURCE_CHOICES}, got {s.input_source!r}"
+        )
     if s.max_duration_s is not None and s.max_duration_s <= 0:
-        raise ValueError(
-            f"launcher: max_duration_s must be > 0, "
-            f"got {s.max_duration_s!r}")
+        raise ValueError(f"launcher: max_duration_s must be > 0, got {s.max_duration_s!r}")
     if s.min_duration_s < 0:
-        raise ValueError(
-            f"launcher: min_duration_s must be >= 0, "
-            f"got {s.min_duration_s!r}")
+        raise ValueError(f"launcher: min_duration_s must be >= 0, got {s.min_duration_s!r}")
     # `display` defaults to "hires_edges" on SceneCfg; reject any value
     # since the program — not c64cast — drives the VIC.
     if s.display != "hires_edges":
         raise ValueError(
             "launcher scene does not use `display` — the launched "
-            "program owns the VIC. Remove the field from the scene.")
+            "program owns the VIC. Remove the field from the scene."
+        )
     if s.overlays:
         raise ValueError(
             "launcher scene cannot carry overlays — the launched program "
-            "owns screen + color RAM, so overlays would be overwritten.")
+            "owns screen + color RAM, so overlays would be overwritten."
+        )
     if s.orchestrate:
         from .orchestrator import resolve_orchestrator
+
         resolve_orchestrator(s)
 
 
-def validate_scene_cfg(s: SceneCfg, cfg: Config, *,
-                       audio_enabled: bool) -> None:
+def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:
     """Pre-construction validation for a SceneCfg.
 
     Runs every check that `build_scene` would surface at load time, without
@@ -1646,7 +2092,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *,
             f"unknown scene type {s.type!r} "
             "(known: webcam, blank, commercial, waveform, midi, "
             "slideshow, launcher). Note: scrolling_text is now an overlay — "
-            "attach it via [[scenes.overlays]].")
+            "attach it via [[scenes.overlays]]."
+        )
 
     audio_proxy = _AUDIO_SENTINEL if audio_enabled else None
     for ov_cfg in s.overlays:
@@ -1655,14 +2102,20 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *,
 
     if s.orchestrate:
         from .orchestrator import resolve_orchestrator
+
         resolve_orchestrator(s)
 
 
-def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
-                audio: AudioStreamer | None,
-                source: WebcamSource | None,
-                *, is_ensemble: bool = False,
-                reu_available: bool = False) -> Scene:
+def build_scene(
+    s: SceneCfg,
+    cfg: Config,
+    api: C64Backend,
+    audio: AudioStreamer | None,
+    source: WebcamSource | None,
+    *,
+    is_ensemble: bool = False,
+    reu_available: bool = False,
+) -> Scene:
     """Build a single Scene from a SceneCfg.
 
     Extracted from `scenes_from_config` so the playlist's broadcast
@@ -1693,9 +2146,9 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
         if source is None:
             raise ValueError(
                 "webcam scene declared but no WebcamSource was provided — "
-                "this should have been caught at cli.py startup")
-        mode = _display_mode_for_scene(s.display, s, cfg,
-                                       reu_available=reu_available)
+                "this should have been caught at cli.py startup"
+            )
+        mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
         name = s.name or f"Webcam {s.display}"
         # Default: follow global [audio].enabled. When `audio` is None here,
         # the streamer wasn't constructed (global is off) so the scene runs
@@ -1704,40 +2157,52 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
         scene_audio = None if s.audio is False else audio
         if is_ensemble and scene_audio is not None:
             if s.audio is True:
-                log.info("[%s] live webcam scene: audio suppressed in "
-                         "ensemble mode (live scenes never hold the audio "
-                         "spotlight)", name)
+                log.info(
+                    "[%s] live webcam scene: audio suppressed in "
+                    "ensemble mode (live scenes never hold the audio "
+                    "spotlight)",
+                    name,
+                )
             scene_audio = None
         scene = WebcamScene(api, scene_audio, mode, source, cfg.audio, name)
     elif s.type == "blank":
         mode = _build_display_mode(
-            "blank", border=s.border, background=s.background,
+            "blank",
+            border=s.border,
+            background=s.background,
             use_reu_staged=resolve_use_reu_staged(
-                cfg.video.use_reu_staged, "blank",
-                reu_available=reu_available))
+                cfg.video.use_reu_staged, "blank", reu_available=reu_available
+            ),
+        )
         name = s.name or "Blank"
         scene_audio = None if s.audio is False else audio
         if is_ensemble and scene_audio is not None:
             if s.audio is True:
-                log.info("[%s] live blank scene: audio suppressed in "
-                         "ensemble mode (live scenes never hold the audio "
-                         "spotlight)", name)
+                log.info(
+                    "[%s] live blank scene: audio suppressed in "
+                    "ensemble mode (live scenes never hold the audio "
+                    "spotlight)",
+                    name,
+                )
             scene_audio = None
         scene = BlankScene(api, scene_audio, mode, cfg.audio, name)
     elif s.type == "commercial":
-        mode = _display_mode_for_scene(s.display, s, cfg,
-                                       reu_available=reu_available)
+        mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
         # Default: audio ON for commercials (it's part of the file).
         # The user can mute one with `audio = false`.
         scene_audio = None if s.audio is False else audio
         assert s.file is not None  # narrowed by validate_scene_cfg
-        scene = CommercialScene(api, scene_audio, mode, s.file,
-                                prepend_alignment_marker=(
-                                    cfg.audio.source_alignment_marker
-                                    and cfg.audio.use_reu_pump),
-                                color=cfg.color)
+        scene = CommercialScene(
+            api,
+            scene_audio,
+            mode,
+            s.file,
+            prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
+            color=cfg.color,
+        )
     elif s.type == "waveform":
         from .waveform import WaveformScene
+
         # If duration_s is unset AND a songlengths DB is configured, let
         # the WaveformScene look up the true length. Explicit duration_s
         # wins over the DB.
@@ -1745,7 +2210,8 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
         db = _load_songlengths(cfg.playlist.songlengths_file)
         assert s.file is not None  # narrowed by validate_scene_cfg
         scene = WaveformScene(
-            api, audio,
+            api,
+            audio,
             file=s.file,
             song=s.song,
             duration_s=user_duration,
@@ -1764,9 +2230,9 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
             scene.name = s.name
     elif s.type == "slideshow":
         from .scenes import SlideshowScene
+
         display = _resolve_slideshow_display(s.display)
-        mode = _display_mode_for_scene(display, s, cfg,
-                                       reu_available=reu_available)
+        mode = _display_mode_for_scene(display, s, cfg, reu_available=reu_available)
         assert s.file is not None  # narrowed by validate_scene_cfg
         # Pass the *original* display spec (may be "random") so the scene
         # can re-resolve at each setup() for fresh variety in single-scene
@@ -1776,35 +2242,43 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
         # resolved bool), so a `display = "random"` rebuild re-decides
         # staging per concrete mode each setup().
         scene = SlideshowScene(
-            api, mode, s.file,
+            api,
+            mode,
+            s.file,
             image_duration_s=s.image_duration_s,
             display_spec=s.display,
             palette_mode=s.palette_mode,
-            border=s.border, background=s.background,
+            border=s.border,
+            background=s.background,
             style=s.style,
             use_reu_staged=cfg.video.use_reu_staged,
             reu_available=reu_available,
             audio_reu_pump_active=audio_reu_pump_active,
-            color=cfg.color)
+            color=cfg.color,
+        )
     elif s.type == "launcher":
         from .scenes import LauncherScene
+
         assert s.file is not None  # narrowed by validate_scene_cfg
         # No audio streamer: the launched program drives the real SID
         # directly. No display mode / overlays: it owns the VIC.
         scene = LauncherScene(
-            api, s.file,
+            api,
+            s.file,
             input_source=s.input_source,
             reset_before_launch=s.reset_before_launch,
             min_duration_s=s.min_duration_s,
-            max_duration_s=(math.inf if s.max_duration_s is None
-                            else s.max_duration_s),
+            max_duration_s=(math.inf if s.max_duration_s is None else s.max_duration_s),
             bypass_audio_lock=s.bypass_audio_lock,
-            name=s.name)
+            name=s.name,
+        )
     else:  # s.type == "midi" (validator already rejected unknown types)
         from .midi_scene import MidiScene
+
         a, d, sus, r = s.midi_adsr
         scene = MidiScene(
-            api, audio,
+            api,
+            audio,
             port=s.midi_port,
             waveform=s.midi_waveform,
             adsr=(a, d, sus, r),
@@ -1840,8 +2314,7 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
     # back to the global [dsp].pre_emphasis (which may itself be None = source-
     # aware auto). The audio-bearing scenes apply this to the shared streamer at
     # setup() via audio.set_pre_emphasis; other scene types ignore it.
-    scene.pre_emphasis = (s.pre_emphasis if s.pre_emphasis is not None
-                          else cfg.dsp.pre_emphasis)
+    scene.pre_emphasis = s.pre_emphasis if s.pre_emphasis is not None else cfg.dsp.pre_emphasis
     # Stamp the source SceneCfg on the instance so the playlist's
     # orchestrator wiring (and overlays that need access to the
     # declarative cfg) can find it without re-iterating cfg.scenes.
@@ -1849,11 +2322,15 @@ def build_scene(s: SceneCfg, cfg: Config, api: C64Backend,
     return scene
 
 
-def scenes_from_config(cfg: Config, api: C64Backend,
-                       audio: AudioStreamer | None,
-                       source: WebcamSource | None,
-                       *, is_ensemble: bool = False,
-                       reu_available: bool = False) -> list[Scene]:
+def scenes_from_config(
+    cfg: Config,
+    api: C64Backend,
+    audio: AudioStreamer | None,
+    source: WebcamSource | None,
+    *,
+    is_ensemble: bool = False,
+    reu_available: bool = False,
+) -> list[Scene]:
     """Build the playlist scene list from cfg.scenes.
 
     Interleaves commercials between scenes when ``cfg.playlist.interleave_ads``
@@ -1881,11 +2358,13 @@ def scenes_from_config(cfg: Config, api: C64Backend,
         if s.follower_only:
             validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
 
-    base: list[Scene] = [build_scene(s, cfg, api, audio, source,
-                                     is_ensemble=is_ensemble,
-                                     reu_available=reu_available)
-                         for s in cfg.scenes
-                         if not s.follower_only]
+    base: list[Scene] = [
+        build_scene(
+            s, cfg, api, audio, source, is_ensemble=is_ensemble, reu_available=reu_available
+        )
+        for s in cfg.scenes
+        if not s.follower_only
+    ]
 
     if not base:
         # Sensible default if user gave us no scenes at all. No audio —
@@ -1893,11 +2372,15 @@ def scenes_from_config(cfg: Config, api: C64Backend,
         if source is None:
             raise ValueError(
                 "no scenes configured and no WebcamSource available — "
-                "configure at least one scene or attach a webcam")
+                "configure at least one scene or attach a webcam"
+            )
         from .modes import HiresDisplayMode
-        base.append(WebcamScene(
-            api, None, HiresDisplayMode(style="edges"),
-            source, cfg.audio, "Live Hi-Res Edges"))
+
+        base.append(
+            WebcamScene(
+                api, None, HiresDisplayMode(style="edges"), source, cfg.audio, "Live Hi-Res Edges"
+            )
+        )
         base[-1].duration_s = 30.0
 
     if not cfg.playlist.interleave_ads:
@@ -1907,30 +2390,39 @@ def scenes_from_config(cfg: Config, api: C64Backend,
         # interstitials, loop forever). Interleaving an ad would silently
         # promote it to a 2-scene multi-scene playlist — surprising. Skip.
         if _gather_ads(cfg.playlist.ads_dir):
-            log.info("interleave_ads skipped: single-scene playlist "
-                     "(loops the one scene; no place to insert ads)")
+            log.info(
+                "interleave_ads skipped: single-scene playlist "
+                "(loops the one scene; no place to insert ads)"
+            )
         return base
 
     ad_files = _gather_ads(cfg.playlist.ads_dir)
     if not ad_files:
         return base
     if not _ensure_pyav():
-        log.warning("Found %d ad files but PyAV is not installed; "
-                    "skipping commercials.", len(ad_files))
+        log.warning(
+            "Found %d ad files but PyAV is not installed; skipping commercials.", len(ad_files)
+        )
         return base
 
     from .modes import HiresDisplayMode
+
     interleaved: list[Scene] = []
     ad_idx = 0
     for built in base:
         interleaved.append(built)
         if not isinstance(built, CommercialScene):
-            interleaved.append(CommercialScene(
-                api, audio, HiresDisplayMode(style="edges"),
-                ad_files[ad_idx],
-                prepend_alignment_marker=(
-                    cfg.audio.source_alignment_marker
-                    and cfg.audio.use_reu_pump)))
+            interleaved.append(
+                CommercialScene(
+                    api,
+                    audio,
+                    HiresDisplayMode(style="edges"),
+                    ad_files[ad_idx],
+                    prepend_alignment_marker=(
+                        cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump
+                    ),
+                )
+            )
             ad_idx = (ad_idx + 1) % len(ad_files)
     return interleaved
 
@@ -1977,16 +2469,14 @@ def _gather_ads(directory: str) -> list[str]:
     if not os.path.isdir(directory):
         return []
     return sorted(
-        os.path.join(directory, f) for f in os.listdir(directory)
-        if f.lower().endswith(VIDEO_EXTS)
+        os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith(VIDEO_EXTS)
     )
 
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
 
 
-def resolve_file_spec(spec: str, extensions: tuple[str, ...], *,
-                      label: str) -> list[str]:
+def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> list[str]:
     """Resolve a comma-separated `file =` spec to a sorted, unique list of
     concrete file paths.
 
@@ -2016,26 +2506,25 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *,
             continue
         if _GLOB_CHARS.search(entry):
             hits = [
-                p for p in glob.glob(entry)
-                if os.path.isfile(p) and p.lower().endswith(extensions)
+                p for p in glob.glob(entry) if os.path.isfile(p) and p.lower().endswith(extensions)
             ]
             if not hits:
                 # A glob with zero hits is almost always a typo — louder
                 # than silently shrinking the candidate pool.
                 raise ValueError(
-                    f"{label}: glob {entry!r} matched no files with "
-                    f"extension {extensions}")
+                    f"{label}: glob {entry!r} matched no files with extension {extensions}"
+                )
             matches.update(hits)
         elif os.path.isdir(entry):
             hits = [
-                os.path.join(entry, f) for f in os.listdir(entry)
-                if os.path.isfile(os.path.join(entry, f))
-                and f.lower().endswith(extensions)
+                os.path.join(entry, f)
+                for f in os.listdir(entry)
+                if os.path.isfile(os.path.join(entry, f)) and f.lower().endswith(extensions)
             ]
             if not hits:
                 raise ValueError(
-                    f"{label}: directory {entry!r} contains no files with "
-                    f"extension {extensions}")
+                    f"{label}: directory {entry!r} contains no files with extension {extensions}"
+                )
             matches.update(hits)
         else:
             # Literal path. Don't require it to exist yet — the scene's
@@ -2044,8 +2533,8 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *,
             # mismatches now (those are typos, not transient issues).
             if not entry.lower().endswith(extensions):
                 raise ValueError(
-                    f"{label}: {entry!r} doesn't match expected extension "
-                    f"{extensions}")
+                    f"{label}: {entry!r} doesn't match expected extension {extensions}"
+                )
             matches.add(entry)
 
     if not matches:

@@ -9,6 +9,7 @@
   position to `current_frame()`, which drops anything behind and returns the
   newest frame whose PTS is ≤ the clock. This is the audio-master sync model.
 """
+
 from __future__ import annotations
 
 import logging
@@ -59,13 +60,14 @@ def _compute_normalization_gain(
     gain = (target_peak * INT16_MAX) / peak_int16
     return min(max(gain, 1.0), max_gain)
 
+
 # PyAV is imported lazily on first AVFileSource construction. On macOS the av
 # wheel bundles a different libavdevice major version than the cv2 wheel, and
 # eagerly importing both at startup triggers the Obj-C runtime's "duplicate
 # class implementation" warnings. Deferring av until a commercial scene
 # actually runs sidesteps the clash entirely when commercials aren't used.
 av: Any = None
-PYAV_AVAILABLE: bool | None = None    # tri-state: None = not yet probed
+PYAV_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
 
 
 def _ensure_pyav() -> bool:
@@ -75,6 +77,7 @@ def _ensure_pyav() -> bool:
         return PYAV_AVAILABLE
     try:
         import av as _av
+
         av = _av
         PYAV_AVAILABLE = True
     except ImportError:
@@ -95,15 +98,13 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     in the container.
     """
     if not _ensure_pyav():
-        raise RuntimeError(
-            "PyAV not installed; install with `pip install c64cast[commercials]`")
+        raise RuntimeError("PyAV not installed; install with `pip install c64cast[commercials]`")
     container = av.open(path)
     try:
         if not container.streams.audio:
             raise RuntimeError(f"no audio stream in {path}")
         a_stream = container.streams.audio[0]
-        resampler = av.AudioResampler(
-            format="s16", layout="mono", rate=target_sample_rate)
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=target_sample_rate)
         chunks: list[np.ndarray] = []
         for packet in container.demux(a_stream):
             for frame in packet.decode():
@@ -118,8 +119,7 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     return np.concatenate(chunks)
 
 
-def _scan_video_samples(path: str, accumulators: list[Any],
-                        max_samples: int = 120) -> bool:
+def _scan_video_samples(path: str, accumulators: list[Any], max_samples: int = 120) -> bool:
     """Decode up to ``max_samples`` frames spread across ``path`` and feed each
     into every accumulator's ``.add(img_bgr)``.
 
@@ -157,7 +157,8 @@ def _scan_video_samples(path: str, accumulators: list[Any],
 
 
 def prescan_source_color(
-    path: str, *,
+    path: str,
+    *,
     fit_strength: float | None = None,
     map_colors: int | None = None,
     map_indices: list[int] | None = None,
@@ -171,15 +172,16 @@ def prescan_source_color(
     so callers can unconditionally pass the results to set_color_fit /
     set_color_map. See palette.ColorFitAccumulator / palette.ColorMapAccumulator.
     """
-    fit_acc = (ColorFitAccumulator(strength=fit_strength)
-               if fit_strength is not None else None)
-    map_acc = (ColorMapAccumulator(n_colors=map_colors or 16, indices=map_indices)
-               if (map_colors is not None or map_indices) else None)
+    fit_acc = ColorFitAccumulator(strength=fit_strength) if fit_strength is not None else None
+    map_acc = (
+        ColorMapAccumulator(n_colors=map_colors or 16, indices=map_indices)
+        if (map_colors is not None or map_indices)
+        else None
+    )
     accs = [a for a in (fit_acc, map_acc) if a is not None]
     if not _scan_video_samples(path, accs):
         return None, None
-    return (fit_acc.result() if fit_acc else None,
-            map_acc.result() if map_acc else None)
+    return (fit_acc.result() if fit_acc else None, map_acc.result() if map_acc else None)
 
 
 def prescan_color_fit(path: str, *, strength: float = 1.0) -> ColorFit | None:
@@ -219,8 +221,7 @@ class WebcamSource:
         self._latest: np.ndarray | None = None
         # manual=True: the grab loop blocks in cap.read() at the device frame
         # rate, so it paces itself — no fixed period needed.
-        self._poll = PollThread(self._grab_loop, name="webcam-grab",
-                                manual=True, join_timeout=1.0)
+        self._poll = PollThread(self._grab_loop, name="webcam-grab", manual=True, join_timeout=1.0)
         self._poll.start()
 
     def _grab_loop(self, stop: threading.Event) -> None:
@@ -257,13 +258,18 @@ class WebcamSource:
 class AVFileSource:
     """PyAV-backed demuxer with shared PTS."""
 
-    def __init__(self, path: str, target_sample_rate: int,
-                 max_video_buffer: int = 240,
-                 source_noise_gate_enabled: bool = False,
-                 scan_audio_peak: bool = True):
+    def __init__(
+        self,
+        path: str,
+        target_sample_rate: int,
+        max_video_buffer: int = 240,
+        source_noise_gate_enabled: bool = False,
+        scan_audio_peak: bool = True,
+    ):
         if not _ensure_pyav():
             raise RuntimeError(
-                "PyAV not installed; install with `pip install c64cast[commercials]`")
+                "PyAV not installed; install with `pip install c64cast[commercials]`"
+            )
 
         self.path = path
         self.target_sr = target_sample_rate
@@ -271,16 +277,15 @@ class AVFileSource:
 
         self.container = av.open(path)
         self.v_stream = self.container.streams.video[0]
-        self.a_stream = (self.container.streams.audio[0]
-                         if self.container.streams.audio else None)
+        self.a_stream = self.container.streams.audio[0] if self.container.streams.audio else None
 
-        self.video_fps = (float(self.v_stream.average_rate)
-                          if self.v_stream.average_rate else 30.0)
+        self.video_fps = float(self.v_stream.average_rate) if self.v_stream.average_rate else 30.0
         self.video_time_base = float(self.v_stream.time_base or 0)
 
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(
-                format="s16", layout="mono", rate=target_sample_rate)
+                format="s16", layout="mono", rate=target_sample_rate
+            )
         else:
             self._resampler = None
 
@@ -317,13 +322,15 @@ class AVFileSource:
             peak = self._scan_audio_peak()
             self.audio_gain = _compute_normalization_gain(peak)
             if source_noise_gate_enabled and self.audio_gain > 1.0:
-                self.audio_noise_gate = int(
-                    NEUTRAL_BAND_INT16 / self.audio_gain)
-            gate_str = (f"±{self.audio_noise_gate}"
-                        if self.audio_noise_gate else "off")
-            log.info("av %s: audio peak=%d → gain=%.2fx, noise gate %s",
-                     os.path.basename(self.path), peak, self.audio_gain,
-                     gate_str)
+                self.audio_noise_gate = int(NEUTRAL_BAND_INT16 / self.audio_gain)
+            gate_str = f"±{self.audio_noise_gate}" if self.audio_noise_gate else "off"
+            log.info(
+                "av %s: audio peak=%d → gain=%.2fx, noise gate %s",
+                os.path.basename(self.path),
+                peak,
+                self.audio_gain,
+                gate_str,
+            )
 
     def _scan_audio_peak(self) -> int:
         """Decode the audio stream end-to-end via a throwaway container +
@@ -340,8 +347,7 @@ class AVFileSource:
             container = av.open(self.path)
             try:
                 a_stream = container.streams.audio[0]
-                resampler = av.AudioResampler(
-                    format="s16", layout="mono", rate=self.target_sr)
+                resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
                 for packet in container.demux(a_stream):
                     for frame in packet.decode():
                         for resampled in resampler.resample(frame):
@@ -353,8 +359,7 @@ class AVFileSource:
             finally:
                 container.close()
         except Exception:
-            log.exception("av %s: audio peak scan failed; using unity gain",
-                          self.path)
+            log.exception("av %s: audio peak scan failed; using unity gain", self.path)
             return 0
         return peak
 
@@ -364,8 +369,7 @@ class AVFileSource:
         has already been pre-decoded into REU and the demuxer shouldn't
         waste CPU decoding + resampling audio just to discard it."""
         self._audio_push = audio_push
-        self._demux_thread = threading.Thread(
-            target=self._demux_loop, daemon=True, name="av-demux")
+        self._demux_thread = threading.Thread(target=self._demux_loop, daemon=True, name="av-demux")
         self._demux_thread.start()
 
     def _demux_loop(self):
@@ -378,8 +382,11 @@ class AVFileSource:
                 if packet.stream.type == "video":
                     for frame in packet.decode():
                         img = frame.to_ndarray(format="bgr24")
-                        pts = (float(frame.pts * self.video_time_base)
-                               if frame.pts is not None else 0.0)
+                        pts = (
+                            float(frame.pts * self.video_time_base)
+                            if frame.pts is not None
+                            else 0.0
+                        )
                         # Backpressure: wait if the buffer is at capacity.
                         # The old behavior (silent-drop oldest frames) was a
                         # safety net under host-DMA mode, where AudioStreamer's
@@ -402,9 +409,11 @@ class AVFileSource:
                                     self._video_buf.append((pts, img))
                                     break
                             time.sleep(0.005)
-                elif (packet.stream.type == "audio" and
-                      self._resampler is not None and
-                      self._audio_push is not None):
+                elif (
+                    packet.stream.type == "audio"
+                    and self._resampler is not None
+                    and self._audio_push is not None
+                ):
                     for frame in packet.decode():
                         for resampled in self._resampler.resample(frame):
                             arr = resampled.to_ndarray().reshape(-1)
@@ -414,14 +423,13 @@ class AVFileSource:
                                 # between NEUTRAL and ±1 at amplified
                                 # noise levels.
                                 arr = np.where(
-                                    np.abs(arr) < self.audio_noise_gate,
-                                    np.int16(0), arr)
+                                    np.abs(arr) < self.audio_noise_gate, np.int16(0), arr
+                                )
                             if self.audio_gain != 1.0:
                                 arr = np.clip(
-                                    arr.astype(np.float32) * self.audio_gain,
-                                    INT16_MIN, INT16_MAX).astype(np.int16)
-                            self._audio_push(
-                                arr.astype(np.int16, copy=False))
+                                    arr.astype(np.float32) * self.audio_gain, INT16_MIN, INT16_MAX
+                                ).astype(np.int16)
+                            self._audio_push(arr.astype(np.int16, copy=False))
             log.debug("demux %s: EOF", self.path)
         except (EOFError, StopIteration):
             log.debug("demux %s: EOF", self.path)

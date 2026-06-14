@@ -4,6 +4,7 @@ These exercise the broadcast-interrupt path with a fake orchestrator
 and fake follower scene factory — no real ensemble, no real orchestrator
 subclass needed. The big_text-driven end-to-end story lives in commits
 13–15."""
+
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false
 from __future__ import annotations
 
@@ -24,10 +25,13 @@ def _fake_ensemble_stack(name: str) -> SystemStack:
         name=name,
         cfg=MagicMock(name=f"cfg-{name}"),
         api=MagicMock(name=f"api-{name}"),
-        audio=None, source=None,
+        audio=None,
+        source=None,
         playlist=MagicMock(name=f"playlist-{name}"),
         key_poller=MagicMock(name=f"keyboard-{name}"),
-        framebuffer=None, preview_window=None, recorder=None,
+        framebuffer=None,
+        preview_window=None,
+        recorder=None,
     )
 
 
@@ -133,10 +137,9 @@ class RunOneFrameTest(unittest.TestCase):
 
 
 class BroadcastInterruptTest(unittest.TestCase):
-
-    def _wire_broadcast(self, pl: Playlist, orch: _FakeOrchestrator,
-                        follower_scene: _FakeScene) -> tuple[
-                            threading.Event, threading.Event]:
+    def _wire_broadcast(
+        self, pl: Playlist, orch: _FakeOrchestrator, follower_scene: _FakeScene
+    ) -> tuple[threading.Event, threading.Event]:
         """Plumb the broadcast events + follower factory onto a playlist
         + a one-stack Ensemble holding `orch` as the active orchestrator.
 
@@ -146,8 +149,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         the follower scene."""
         interrupt = threading.Event()
         resume = threading.Event()
-        ens = Ensemble(stacks=[_fake_ensemble_stack(pl.name)],
-                       stop_event=pl.stop_event)
+        ens = Ensemble(stacks=[_fake_ensemble_stack(pl.name)], stop_event=pl.stop_event)
         ens.active_orchestrator = orch  # type: ignore[assignment]
         pl.ensemble = ens
         pl._broadcast_interrupt = interrupt
@@ -172,6 +174,7 @@ class BroadcastInterruptTest(unittest.TestCase):
             while follower.process_calls < 3:
                 pass
             resume.set()
+
         t = threading.Thread(target=stop_after_three, daemon=True)
         t.start()
 
@@ -195,7 +198,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         follower = _FakeScene("follower")
         orch = _FakeOrchestrator()
         _, resume = self._wire_broadcast(pl, orch, follower)
-        resume.set()   # exit broadcast loop immediately
+        resume.set()  # exit broadcast loop immediately
 
         with self.assertLogs("c64cast.playlist", level="INFO"):
             pl._handle_broadcast_interrupt()
@@ -245,8 +248,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         # build_follower_scene is None — should log + bail without crash.
         with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
             pl._handle_broadcast_interrupt()
-        self.assertTrue(any("no follower scene factory" in line
-                            for line in cap.output))
+        self.assertTrue(any("no follower scene factory" in line for line in cap.output))
 
     def test_follower_with_orchestrate_cfg_does_not_re_install_conductor(self):
         # Regression for the phase-2 verification bug: when a follower's
@@ -256,11 +258,11 @@ class BroadcastInterruptTest(unittest.TestCase):
         # _maybe_install_conductor must skip when scene._orchestrator
         # is already set.
         from c64cast.config import SceneCfg
+
         pl = _build_playlist(name="follower")
         # Build the ensemble with our follower's name in it so the
         # broadcast machinery resolves indices cleanly.
-        ens = Ensemble(stacks=[_fake_ensemble_stack("follower")],
-                       stop_event=pl.stop_event)
+        ens = Ensemble(stacks=[_fake_ensemble_stack("follower")], stop_event=pl.stop_event)
         pl.ensemble = ens
         # Stamp a fake scene as if _handle_broadcast_interrupt already ran.
         scene = _FakeScene("conductor-cfg")
@@ -286,13 +288,12 @@ class BroadcastInterruptTest(unittest.TestCase):
         # stays None on the 2nd+ broadcast and every follower drops the
         # interrupt as "no active orch".
         from c64cast.config import SceneCfg
+
         pl = _build_playlist(name="conductor")
-        ens = Ensemble(stacks=[_fake_ensemble_stack("conductor")],
-                       stop_event=pl.stop_event)
+        ens = Ensemble(stacks=[_fake_ensemble_stack("conductor")], stop_event=pl.stop_event)
         pl.ensemble = ens
         scene = _FakeScene("morning-hello")
-        scene._cfg = SceneCfg(type="blank", name="morning-hello",
-                              orchestrate=True)
+        scene._cfg = SceneCfg(type="blank", name="morning-hello", orchestrate=True)
         # Simulate a prior broadcast: orchestrator wired up, marked active.
         orch = _FakeOrchestrator()
         scene._orchestrator = orch  # type: ignore[attr-defined]
@@ -313,13 +314,12 @@ class BroadcastInterruptTest(unittest.TestCase):
         # screen" bug — followers couldn't see the broadcast because the
         # ensemble slot was empty after the first run).
         from c64cast.config import SceneCfg
+
         pl = _build_playlist(name="conductor")
-        ens = Ensemble(stacks=[_fake_ensemble_stack("conductor")],
-                       stop_event=pl.stop_event)
+        ens = Ensemble(stacks=[_fake_ensemble_stack("conductor")], stop_event=pl.stop_event)
         pl.ensemble = ens
         scene = _FakeScene("morning-hello")
-        scene._cfg = SceneCfg(type="blank", name="morning-hello",
-                              orchestrate=True)
+        scene._cfg = SceneCfg(type="blank", name="morning-hello", orchestrate=True)
 
         # The Playlist's _maybe_install_conductor needs an Orchestrator
         # subclass that claims this cfg. Register a minimal one for the

@@ -7,6 +7,7 @@ color RAM, the duration cutoff, and the _resolve_line_colors policy
 is covered by test_backgrounds.py; here we only check the text overlay lands
 on top of whatever the background produced.
 """
+
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -35,7 +36,6 @@ def _api() -> C64Backend:
 
 
 class ResolveLineColorsTest(unittest.TestCase):
-
     def test_rainbow_cycles_per_line(self):
         colors = _resolve_line_colors("rainbow", 3)
         self.assertEqual(colors, [RAINBOW_COLORS[i] for i in range(3)])
@@ -47,12 +47,11 @@ class ResolveLineColorsTest(unittest.TestCase):
 
     def test_random_is_one_legible_color_for_all_lines(self):
         colors = _resolve_line_colors("random", 4)
-        self.assertEqual(len(set(colors)), 1)        # all lines share the pick
+        self.assertEqual(len(set(colors)), 1)  # all lines share the pick
         self.assertIn(colors[0], LEGIBLE_COLORS)
 
     def test_named_color(self):
-        self.assertEqual(_resolve_line_colors("cyan", 2),
-                         [C64_COLORS["cyan"]] * 2)
+        self.assertEqual(_resolve_line_colors("cyan", 2), [C64_COLORS["cyan"]] * 2)
 
     def test_unknown_color_warns_and_uses_white(self):
         with self.assertLogs("c64cast.interstitial", level="WARNING"):
@@ -61,7 +60,6 @@ class ResolveLineColorsTest(unittest.TestCase):
 
 
 class InterstitialSceneTest(unittest.TestCase):
-
     def _scene(self, **cfg_kw):
         cfg = InterstitialCfg(**cfg_kw)
         api = _api()
@@ -98,16 +96,15 @@ class InterstitialSceneTest(unittest.TestCase):
         # The label glyphs land at its centered position.
         base = scene.line_rows[0] * 40 + scene.line_cols[0]
         encoded = ascii_to_screen(LABEL)
-        self.assertEqual(bytes(screen[base:base + len(encoded)]), encoded)
-        self.assertTrue(np.all(color[base:base + len(encoded)]
-                               == C64_COLORS["cyan"]))
+        self.assertEqual(bytes(screen[base : base + len(encoded)]), encoded)
+        self.assertTrue(np.all(color[base : base + len(encoded)] == C64_COLORS["cyan"]))
 
     def test_process_frame_returns_false_after_duration(self):
         scene, api = self._scene(duration_s=2.0, background="none")
         scene.setup()
         scene.start_time = 100.0
         self.assertTrue(scene.process_frame(101.5))
-        self.assertFalse(scene.process_frame(102.0))   # elapsed >= duration
+        self.assertFalse(scene.process_frame(102.0))  # elapsed >= duration
 
     def test_long_scene_name_is_truncated_to_width(self):
         cfg = InterstitialCfg(background="none")
@@ -118,11 +115,10 @@ class InterstitialSceneTest(unittest.TestCase):
     def test_teardown_is_inert(self):
         scene, _ = self._scene(background="none")
         scene.setup()
-        scene.teardown()   # no audio/source — must not raise
+        scene.teardown()  # no audio/source — must not raise
 
 
 class DefaultFactoryTest(unittest.TestCase):
-
     def test_factory_mints_named_scenes(self):
         api = _api()
         make = default_factory(api, InterstitialCfg(background="none"))

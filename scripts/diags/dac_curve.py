@@ -63,27 +63,27 @@ from c64cast.api import Ultimate64API
 from c64cast.audio import RING_BUFFER_ADDR, RING_BUFFER_SIZE, AudioStreamer
 from c64cast.c64 import SID
 
-SR = 8000               # SID DAC sample rate (audio default)
-CAP_SR = 48000          # Cam Link capture rate
-CAP_DEVICE = 1          # Cam Link 4K sounddevice input index (see local-capture-hardware)
-F0 = 1000.0             # square-wave toggle frequency (8 samples/period @ 8 kHz)
-SEG_S = 1.0             # measurement-segment duration (per code); CLI --seg overrides
-MARKER_S = 1.6          # leading marker duration (longer => unambiguous)
-GAP_S = 0.6             # code-0 silence between segments
-SETTLE_S = 0.25         # skip this at the start of each run (rewrite transient)
-GUARD_S = 0.15          # also skip this at the run's tail
+SR = 8000  # SID DAC sample rate (audio default)
+CAP_SR = 48000  # Cam Link capture rate
+CAP_DEVICE = 1  # Cam Link 4K sounddevice input index (see local-capture-hardware)
+F0 = 1000.0  # square-wave toggle frequency (8 samples/period @ 8 kHz)
+SEG_S = 1.0  # measurement-segment duration (per code); CLI --seg overrides
+MARKER_S = 1.6  # leading marker duration (longer => unambiguous)
+GAP_S = 0.6  # code-0 silence between segments
+SETTLE_S = 0.25  # skip this at the start of each run (rewrite transient)
+GUARD_S = 0.15  # also skip this at the run's tail
 
 
 def ring_pattern(lo: int, hi: int) -> bytes:
     """8 KB of raw DAC codes: a 50%-duty square between codes lo and hi at F0.
     8192 / 8 = 1024 whole periods, so the NMI ring loops seamlessly."""
-    half = int(round(SR / F0 / 2))           # 4 samples per half-period
+    half = int(round(SR / F0 / 2))  # 4 samples per half-period
     period = bytes([hi] * half + [lo] * half)
     reps = RING_BUFFER_SIZE // len(period) + 1
     return (period * reps)[:RING_BUFFER_SIZE]
 
 
-SILENCE = bytes([0] * RING_BUFFER_SIZE)      # volume off => clean gap
+SILENCE = bytes([0] * RING_BUFFER_SIZE)  # volume off => clean gap
 
 
 def segment_order() -> list[dict]:
@@ -113,7 +113,7 @@ def envelope(sig: np.ndarray, sr: int, win_s: float = 0.02) -> tuple[np.ndarray,
     w = max(1, int(win_s * sr))
     n = sig.size // w
     blocks = sig[: n * w].reshape(n, w)
-    return np.sqrt((blocks ** 2).mean(axis=1)), w
+    return np.sqrt((blocks**2).mean(axis=1)), w
 
 
 def find_runs(cap: np.ndarray, sr: int) -> list[tuple[float, float, float]]:
@@ -128,7 +128,7 @@ def find_runs(cap: np.ndarray, sr: int) -> list[tuple[float, float, float]]:
     # a noisy capture can't drive the threshold to zero.
     floor = np.percentile(env, 10)
     thr = max(floor * 4.0, 0.02 * env.max())
-    min_run = int(0.5 / (w / sr))            # blocks
+    min_run = int(0.5 / (w / sr))  # blocks
     loud = env >= thr
     runs, i = [], 0
     while i < env.size:
@@ -162,8 +162,7 @@ def fundamental_mag(slice_: np.ndarray, sr: int) -> float:
 def analyze(cap: np.ndarray, sr: int) -> dict:
     runs = find_runs(cap, sr)
     plan = segment_order()
-    print(f"capture {cap.size/sr:.1f}s; detected {len(runs)} runs "
-          f"(expect {len(plan)})")
+    print(f"capture {cap.size / sr:.1f}s; detected {len(runs)} runs (expect {len(plan)})")
 
     # The marker (full-scale 0<->15) is the FIRST tone after the clean lead-in
     # silence — anchor on it chronologically. (It can't be picked by loudness:
@@ -173,7 +172,7 @@ def analyze(cap: np.ndarray, sr: int) -> dict:
     if not big:
         raise SystemExit("no marker-length run found; capture may be bad")
     start_idx = big[0]
-    seq = runs[start_idx:start_idx + len(plan)]
+    seq = runs[start_idx : start_idx + len(plan)]
     if len(seq) < len(plan):
         print(f"WARNING: only {len(seq)} runs after marker; tail codes missing")
 
@@ -203,8 +202,13 @@ def analyze(cap: np.ndarray, sr: int) -> dict:
         if np.isfinite(mono[n]) and np.isfinite(mono[n - 1]):
             mono[n] = max(mono[n], mono[n - 1])
 
-    return {"mags": {f"{k[0]}:{k[1]}": v for k, v in mags.items()},
-            "tnorm_A": tA, "tnorm_B": tB, "curve_raw": curve, "curve": mono}
+    return {
+        "mags": {f"{k[0]}:{k[1]}": v for k, v in mags.items()},
+        "tnorm_A": tA,
+        "tnorm_B": tB,
+        "curve_raw": curve,
+        "curve": mono,
+    }
 
 
 def report(res: dict) -> None:
@@ -218,8 +222,10 @@ def report(res: dict) -> None:
         inl = (c - ideal) * 15.0 if np.isfinite(c) else float("nan")
         dnl = (c - prev) * 15.0 - 1.0 if n > 0 and np.isfinite(c) else float("nan")
         prev = c if np.isfinite(c) else prev
-        print(f"  {n:2d}  | {tA.get(n, float('nan')):6.3f} {tB.get(n, float('nan')):6.3f} "
-              f"{c:6.3f} | {ideal:6.3f} | {inl:+8.2f}  | {dnl:+7.2f}")
+        print(
+            f"  {n:2d}  | {tA.get(n, float('nan')):6.3f} {tB.get(n, float('nan')):6.3f} "
+            f"{c:6.3f} | {ideal:6.3f} | {inl:+8.2f}  | {dnl:+7.2f}"
+        )
     finite = np.array([curve[n] for n in range(16) if np.isfinite(curve[n])])
     ideals = np.array([n / 15.0 for n in range(16) if np.isfinite(curve[n])])
     if finite.size:
@@ -246,7 +252,7 @@ def set_bias(api: Ultimate64API, voices: int, sustain: int) -> None:
     AudioStreamer's digi-boost, but parameterized so we can vary the bias level
     and check whether the measured curve is bias-dependent => analog saturation,
     or bias-independent => the true volume-DAC nonlinearity)."""
-    ctrl = SID.WAVE_PULSE | SID.TEST | SID.GATE   # $49
+    ctrl = SID.WAVE_PULSE | SID.TEST | SID.GATE  # $49
     for v in range(voices):
         base = SID.voice_base(v)
         api.write_regs(f"{base + SID.OFF_AD:04X}", 0x00, (sustain & 0xF) << 4)
@@ -254,13 +260,12 @@ def set_bias(api: Ultimate64API, voices: int, sustain: int) -> None:
         api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{ctrl:02X}")
 
 
-def play_sequence(streamer: AudioStreamer, voices: int, sustain: int,
-                  seg_s: float) -> None:
+def play_sequence(streamer: AudioStreamer, voices: int, sustain: int, seg_s: float) -> None:
     """Bring up NMI (no worker) and walk the segment order by rewriting the
     ring, with code-0 silence gaps between segments."""
-    streamer._upload_nmi_and_buffers()       # NMI routine + neutral ring (no digiboost)
+    streamer._upload_nmi_and_buffers()  # NMI routine + neutral ring (no digiboost)
     set_bias(streamer.api, voices, sustain)  # parameterized bias
-    streamer._start_nmi_timer()              # arm NMI; ring loops forever
+    streamer._start_nmi_timer()  # arm NMI; ring loops forever
     api = streamer.api
     addr = f"{RING_BUFFER_ADDR:04X}"
 
@@ -269,7 +274,7 @@ def play_sequence(streamer: AudioStreamer, voices: int, sustain: int,
         api.flush()
         time.sleep(secs)
 
-    hold(SILENCE, 1.5)                        # clean lead-in
+    hold(SILENCE, 1.5)  # clean lead-in
     for seg in segment_order():
         dur = MARKER_S if seg["set"] == "marker" else seg_s
         hold(ring_pattern(seg["lo"], seg["hi"]), dur)
@@ -288,23 +293,38 @@ def save_wav(path: str, mono: np.ndarray, sr: int) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--url", default=d.U64_URL)
-    ap.add_argument("--device", type=int, default=CAP_DEVICE,
-                    help=f"sounddevice input index (default {CAP_DEVICE} = Cam Link)")
-    ap.add_argument("--voices", type=int, default=3,
-                    help="SID voices to bias (0-3). More = stronger bias / SNR. "
-                         "0 = production default (residual ADSR leak only).")
-    ap.add_argument("--sustain", type=int, default=15,
-                    help="sustain nibble 0-15 of the bias envelope (lower = "
-                         "weaker bias). Vary with --voices to probe saturation.")
-    ap.add_argument("--seg", type=float, default=SEG_S,
-                    help=f"per-code segment duration (s, default {SEG_S}); longer "
-                         "= lower per-code noise")
+    ap.add_argument(
+        "--device",
+        type=int,
+        default=CAP_DEVICE,
+        help=f"sounddevice input index (default {CAP_DEVICE} = Cam Link)",
+    )
+    ap.add_argument(
+        "--voices",
+        type=int,
+        default=3,
+        help="SID voices to bias (0-3). More = stronger bias / SNR. "
+        "0 = production default (residual ADSR leak only).",
+    )
+    ap.add_argument(
+        "--sustain",
+        type=int,
+        default=15,
+        help="sustain nibble 0-15 of the bias envelope (lower = "
+        "weaker bias). Vary with --voices to probe saturation.",
+    )
+    ap.add_argument(
+        "--seg",
+        type=float,
+        default=SEG_S,
+        help=f"per-code segment duration (s, default {SEG_S}); longer = lower per-code noise",
+    )
     ap.add_argument("--label", default="dac_curve")
     ap.add_argument("--no-reset", action="store_true")
-    ap.add_argument("--analyze", metavar="WAV",
-                    help="skip capture; re-analyze this wav")
+    ap.add_argument("--analyze", metavar="WAV", help="skip capture; re-analyze this wav")
     args = ap.parse_args()
 
     if args.analyze:
@@ -318,11 +338,12 @@ def main() -> int:
     nframes = int(cap_s * CAP_SR)
     wav = str(d.stamped(args.label, "wav"))
 
-    print(f"capturing {cap_s:.1f}s @ device {args.device}; "
-          f"bias = {args.voices} voices, sustain {args.sustain}")
-    rec = sd.rec(nframes, samplerate=CAP_SR, channels=2,
-                 device=args.device, dtype="float32")
-    time.sleep(2.0)          # capture warmup before audio starts
+    print(
+        f"capturing {cap_s:.1f}s @ device {args.device}; "
+        f"bias = {args.voices} voices, sustain {args.sustain}"
+    )
+    rec = sd.rec(nframes, samplerate=CAP_SR, channels=2, device=args.device, dtype="float32")
+    time.sleep(2.0)  # capture warmup before audio starts
 
     api = Ultimate64API(args.url)
     streamer = AudioStreamer(api, SR, "NTSC", dither=False, digi_boost=False)

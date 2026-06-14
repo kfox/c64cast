@@ -1,5 +1,6 @@
 """Tests for the SID emulator + WaveformScene (no real U64, no real SID file
 playback)."""
+
 # Test-internal FakeApi / FakeScene duck-type Ultimate64API / Scene; suppress
 # pyright's argument-type + attribute-access complaints file-wide so the test
 # focus stays on behavior rather than type wrapping.
@@ -28,9 +29,19 @@ from c64cast.waveform import parse_sid_header
 # SID file header parsing
 # ---------------------------------------------------------------------------
 
-def _make_sid_header(magic=b"PSID", version=2, num_songs=4, start_song=1,
-                     name=b"TEST", author=b"AUTHOR", released=b"2026",
-                     flags=0x0000, load_addr=None, data_offset=None):
+
+def _make_sid_header(
+    magic=b"PSID",
+    version=2,
+    num_songs=4,
+    start_song=1,
+    name=b"TEST",
+    author=b"AUTHOR",
+    released=b"2026",
+    flags=0x0000,
+    load_addr=None,
+    data_offset=None,
+):
     h = bytearray(124)
     h[0:4] = magic
     h[4:6] = version.to_bytes(2, "big")
@@ -40,15 +51,14 @@ def _make_sid_header(magic=b"PSID", version=2, num_songs=4, start_song=1,
         h[8:10] = load_addr.to_bytes(2, "big")
     h[14:16] = num_songs.to_bytes(2, "big")
     h[16:18] = start_song.to_bytes(2, "big")
-    h[22:22 + len(name)] = name
-    h[54:54 + len(author)] = author
-    h[86:86 + len(released)] = released
+    h[22 : 22 + len(name)] = name
+    h[54 : 54 + len(author)] = author
+    h[86 : 86 + len(released)] = released
     h[0x76:0x78] = flags.to_bytes(2, "big")
     return bytes(h)
 
 
 class SidHeaderTest(unittest.TestCase):
-
     def test_parses_basic_psid(self):
         h = parse_sid_header(_make_sid_header())
         self.assertEqual(h.magic, "PSID")
@@ -103,34 +113,41 @@ class SidHeaderTest(unittest.TestCase):
 # SID emulator
 # ---------------------------------------------------------------------------
 
+
 class DisplayLayoutTest(unittest.TestCase):
     """_choose_display_layout picks the VIC bank whose display regions clear
     the payload + runtime footprint; refuses when no bank is free."""
 
     def _layout(self, lo, hi, footprint=None):
         from c64cast.waveform import _choose_display_layout
+
         fp = footprint if footprint is not None else bytearray(65536)
         return _choose_display_layout(lo, hi, fp)
 
     def test_default_bank0_when_clear(self):
         from c64cast.c64 import CIA2, VIC_BANK_0
         from c64cast.waveform import D018_HIRES_BITMAP
+
         s, b, d, d018 = self._layout(0x1000, 0x1800)
-        self.assertEqual((s, b, d, d018),
-                         (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP,
-                          CIA2.PORT_A_BANK_0, D018_HIRES_BITMAP))
+        self.assertEqual(
+            (s, b, d, d018),
+            (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_BITMAP),
+        )
 
     def test_bank2_when_payload_overlaps_bank0_bitmap(self):
         from c64cast.c64 import CIA2, VIC_BANK_2
         from c64cast.waveform import D018_HIRES_BITMAP
-        s, b, d, d018 = self._layout(0x1000, 0x2F00)   # crosses $2000
-        self.assertEqual((s, b, d, d018),
-                         (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP,
-                          CIA2.PORT_A_BANK_2, D018_HIRES_BITMAP))
+
+        s, b, d, d018 = self._layout(0x1000, 0x2F00)  # crosses $2000
+        self.assertEqual(
+            (s, b, d, d018),
+            (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_BITMAP),
+        )
 
     def test_bank2_when_footprint_dirties_bank0(self):
         # Payload clears bank 0, but the tune writes $2000 at runtime.
         from c64cast.c64 import CIA2
+
         fp = bytearray(65536)
         fp[0x2000] = 1
         _, _, d, _ = self._layout(0x1000, 0x1800, fp)
@@ -141,12 +158,13 @@ class DisplayLayoutTest(unittest.TestCase):
         # the PLAY footprint reads bank 2's $B400 — only bank 1 is free.
         from c64cast.c64 import CIA2
         from c64cast.waveform import _BANK1_BITMAP, _BANK1_SCREEN, D018_BANK1
+
         fp = bytearray(65536)
-        fp[0xB400] = 1                          # bank 2 PLAY read (song data)
-        s, b, d, d018 = self._layout(0x1D00, 0x5089, fp)   # payload covers bank 0
-        self.assertEqual((s, b, d, d018),
-                         (_BANK1_SCREEN, _BANK1_BITMAP,
-                          CIA2.PORT_A_BANK_1, D018_BANK1))
+        fp[0xB400] = 1  # bank 2 PLAY read (song data)
+        s, b, d, d018 = self._layout(0x1D00, 0x5089, fp)  # payload covers bank 0
+        self.assertEqual(
+            (s, b, d, d018), (_BANK1_SCREEN, _BANK1_BITMAP, CIA2.PORT_A_BANK_1, D018_BANK1)
+        )
 
     def test_raises_when_all_banks_blocked(self):
         # Payload spans banks 0, 1 and 2 displays → no free bank.
@@ -155,6 +173,7 @@ class DisplayLayoutTest(unittest.TestCase):
 
     def test_any_display_bank_fits_payload(self):
         from c64cast.waveform import _any_display_bank_fits_payload
+
         self.assertTrue(_any_display_bank_fits_payload(0x1000, 0x2F00))  # bank2
         self.assertFalse(_any_display_bank_fits_payload(0x2700, 0xCF8F))  # none
 
@@ -176,25 +195,25 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
             return fp
 
         with patch.object(wf, "ram_play_access_footprint", fake_fp):
-            return wf._choose_unified_display_layout(
-                b"", lo, hi, len(per_song))
+            return wf._choose_unified_display_layout(b"", lo, hi, len(per_song))
 
     def test_tol_like_union_pins_bank1(self):
         # Song 1 footprint clears bank 2; songs 2-11 read bank 2's $B400.
         # The union blocks bank 2, payload blocks bank 0 → bank 1 for ALL.
         from c64cast.c64 import CIA2
         from c64cast.waveform import _BANK1_BITMAP, _BANK1_SCREEN, D018_BANK1
+
         per_song = {1: ()}
         for s in range(2, 12):
             per_song[s] = (0xB400,)
-        layout = self._run(per_song, 0x1D00, 0x5089)   # payload covers bank 0
-        self.assertEqual(layout, (_BANK1_SCREEN, _BANK1_BITMAP,
-                                  CIA2.PORT_A_BANK_1, D018_BANK1))
+        layout = self._run(per_song, 0x1D00, 0x5089)  # payload covers bank 0
+        self.assertEqual(layout, (_BANK1_SCREEN, _BANK1_BITMAP, CIA2.PORT_A_BANK_1, D018_BANK1))
 
     def test_union_prefers_earliest_free_bank(self):
         # Nothing dirty + tiny payload → union leaves bank 0 free → bank 0
         # (the unified bank must respect the same preference order).
         from c64cast.c64 import CIA2
+
         layout = self._run({1: (), 2: ()}, 0x1000, 0x1800)
         assert layout is not None
         self.assertEqual(layout[2], CIA2.PORT_A_BANK_0)
@@ -204,6 +223,7 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
         # with the payload covering bank 0, the union blocks every bank.
         from c64cast.c64 import VIC_BANK_2
         from c64cast.waveform import _BANK1_BITMAP
+
         per_song = {1: (VIC_BANK_2.BITMAP,), 2: (_BANK1_BITMAP,)}
         self.assertIsNone(self._run(per_song, 0x1D00, 0x5089))
 
@@ -214,14 +234,16 @@ class PlayBankForFootprintsTest(unittest.TestCase):
 
     def _call(self, write, access):
         from c64cast.waveform import _play_bank_for_footprints
+
         return _play_bank_for_footprints(write, access)
 
     def test_play_reads_written_ram_under_rom_needs_basic_out(self):
         from c64cast.c64 import CPU
+
         write = bytearray(65536)
         access = bytearray(65536)
-        write[0xB400] = 1                       # INIT wrote song data here
-        access[0xB400] = 1                       # PLAY reads it back
+        write[0xB400] = 1  # INIT wrote song data here
+        access[0xB400] = 1  # PLAY reads it back
         self.assertEqual(self._call(write, access), CPU.PORT_BASIC_OUT)
 
     def test_play_reads_basic_rom_as_data_keeps_default(self):
@@ -235,7 +257,7 @@ class PlayBankForFootprintsTest(unittest.TestCase):
     def test_no_access_under_rom_keeps_default(self):
         write = bytearray(65536)
         access = bytearray(65536)
-        write[0x5000] = 1                       # all below BASIC ROM
+        write[0x5000] = 1  # all below BASIC ROM
         access[0x5000] = 1
         self.assertIsNone(self._call(write, access))
 
@@ -246,6 +268,7 @@ class EndOfTuneDetectionTest(unittest.TestCase):
 
     def _scene(self):
         from c64cast.waveform import WaveformScene
+
         s = WaveformScene.__new__(WaveformScene)
         s._ever_sounded = False
         s._silence_since = None
@@ -265,29 +288,25 @@ class EndOfTuneDetectionTest(unittest.TestCase):
         self.assertFalse(s._check_end_of_tune(0.0, [0.5, 0.0, 0.0]))  # sounds
         self.assertFalse(s._check_end_of_tune(1.0, [0.0, 0.0, 0.0]))  # silence starts
         self.assertFalse(s._check_end_of_tune(1.0 + 3.0, [0.0, 0.0, 0.0]))
-        self.assertTrue(s._check_end_of_tune(1.0 + s.END_SILENCE_S,
-                                             [0.0, 0.0, 0.0]))
+        self.assertTrue(s._check_end_of_tune(1.0 + s.END_SILENCE_S, [0.0, 0.0, 0.0]))
 
     def test_brief_rest_does_not_end(self):
         s = self._scene()
-        s._check_end_of_tune(0.0, [0.5, 0.0, 0.0])     # sounds
-        s._check_end_of_tune(1.0, [0.0, 0.0, 0.0])     # rest starts
+        s._check_end_of_tune(0.0, [0.5, 0.0, 0.0])  # sounds
+        s._check_end_of_tune(1.0, [0.0, 0.0, 0.0])  # rest starts
         # A note returns before END_SILENCE_S → window resets.
         self.assertFalse(s._check_end_of_tune(3.0, [0.4, 0.0, 0.0]))
         self.assertIsNone(s._silence_since)
         # Long silence after must restart the clock, not reuse the old one.
         s._check_end_of_tune(4.0, [0.0, 0.0, 0.0])
-        self.assertFalse(s._check_end_of_tune(4.0 + s.END_SILENCE_S - 0.1,
-                                              [0.0, 0.0, 0.0]))
+        self.assertFalse(s._check_end_of_tune(4.0 + s.END_SILENCE_S - 0.1, [0.0, 0.0, 0.0]))
 
 
 class SidEmulatorTest(unittest.TestCase):
-
     def _zero_regs(self):
         return bytes(25)
 
-    def _voice_regs(self, voice_idx, freq=0x1C32, pw=0x0800,
-                    control=0x41, ad=0x00, sr=0xF0):
+    def _voice_regs(self, voice_idx, freq=0x1C32, pw=0x0800, control=0x41, ad=0x00, sr=0xF0):
         regs = bytearray(25)
         base = voice_idx * 7
         regs[base + 0] = freq & 0xFF
@@ -310,16 +329,15 @@ class SidEmulatorTest(unittest.TestCase):
         # Pulse wave, gate ON but envelope_level starts at 0; no advance.
         emu.update_registers(self._voice_regs(0))
         s = emu.voice_samples(0, 320)
-        self.assertTrue(np.all(s == 0.0),
-                        "envelope=0 must zero the output regardless of wave bits")
+        self.assertTrue(np.all(s == 0.0), "envelope=0 must zero the output regardless of wave bits")
 
     def test_gate_edge_triggers_attack(self):
         emu = SIDEmulator()
-        emu.update_registers(self._voice_regs(0, control=0x40))   # pulse, no gate
+        emu.update_registers(self._voice_regs(0, control=0x40))  # pulse, no gate
         self.assertEqual(emu.voices[0].envelope_state, "release")
-        emu.update_registers(self._voice_regs(0, control=0x41))   # pulse + gate
+        emu.update_registers(self._voice_regs(0, control=0x41))  # pulse + gate
         self.assertEqual(emu.voices[0].envelope_state, "attack")
-        emu.update_registers(self._voice_regs(0, control=0x40))   # release
+        emu.update_registers(self._voice_regs(0, control=0x40))  # release
         self.assertEqual(emu.voices[0].envelope_state, "release")
 
     def test_one_tick_gate_pulse_seen_tickwise_sounds(self):
@@ -332,8 +350,9 @@ class SidEmulatorTest(unittest.TestCase):
         off = self._voice_regs(0, control=0x40, ad=0x00, sr=0xF0)
         emu.update_registers(on)
         emu.advance_envelopes(1 / 60)
-        self.assertGreater(emu.voices[0].envelope_level, 0.0,
-                           "tick-wise feed must catch the gate-on edge")
+        self.assertGreater(
+            emu.voices[0].envelope_level, 0.0, "tick-wise feed must catch the gate-on edge"
+        )
         # The subsequent gate-off edge is also seen (no missed transition).
         emu.update_registers(off)
         self.assertEqual(emu.voices[0].envelope_state, "release")
@@ -345,7 +364,7 @@ class SidEmulatorTest(unittest.TestCase):
         # that path was wrong.
         emu = SIDEmulator()
         off = self._voice_regs(0, control=0x40, ad=0x00, sr=0xF0)
-        emu.update_registers(off)        # never saw the gate-on snapshot
+        emu.update_registers(off)  # never saw the gate-on snapshot
         emu.advance_envelopes(1 / 60)
         self.assertEqual(emu.voices[0].envelope_level, 0.0)
 
@@ -353,8 +372,8 @@ class SidEmulatorTest(unittest.TestCase):
         # advance_envelopes runs one state transition per call: attack→decay,
         # then decay→sustain(=0). Two calls land a sustain=0 voice at 0.
         emu.update_registers(regs)
-        emu.advance_envelopes(0.01)   # attack completes → decay
-        emu.advance_envelopes(0.5)    # decay reaches sustain=0
+        emu.advance_envelopes(0.01)  # attack completes → decay
+        emu.advance_envelopes(0.5)  # decay reaches sustain=0
         self.assertEqual(emu.voices[0].envelope_level, 0.0)
 
     def test_retrigger_mask_reattacks_plucked_voice(self):
@@ -367,16 +386,17 @@ class SidEmulatorTest(unittest.TestCase):
         # Same registers (no gate edge) but retrigger flagged for voice 0.
         emu.update_registers(plucked, retrigger=(True, False, False))
         self.assertEqual(emu.voices[0].envelope_state, "attack")
-        emu.advance_envelopes(0.005)          # past the 2ms attack
-        self.assertGreater(emu.voices[0].envelope_level, 0.0,
-                           "retrigger mask must re-attack the plucked voice")
+        emu.advance_envelopes(0.005)  # past the 2ms attack
+        self.assertGreater(
+            emu.voices[0].envelope_level, 0.0, "retrigger mask must re-attack the plucked voice"
+        )
 
     def test_retrigger_mask_none_is_noop(self):
         # Without a mask, behavior is unchanged (held gate, no re-attack).
         emu = SIDEmulator()
         plucked = self._voice_regs(0, control=0x41, ad=0x00, sr=0x00)
         self._decay_plucked_to_zero(emu, plucked)
-        emu.update_registers(plucked)         # no retrigger arg
+        emu.update_registers(plucked)  # no retrigger arg
         self.assertEqual(emu.voices[0].envelope_state, "sustain")
         emu.advance_envelopes(0.005)
         self.assertEqual(emu.voices[0].envelope_level, 0.0)
@@ -385,9 +405,8 @@ class SidEmulatorTest(unittest.TestCase):
         # AD = 0x09 means attack=0 (2ms), decay=9 (750ms).
         # SR = 0xF0 means sustain=15 (1.0), release=0 (6ms).
         emu = SIDEmulator()
-        emu.update_registers(self._voice_regs(0, control=0x41,
-                                              ad=0x09, sr=0xF0))
-        emu.advance_envelopes(0.005)   # 5ms — past 2ms attack
+        emu.update_registers(self._voice_regs(0, control=0x41, ad=0x09, sr=0xF0))
+        emu.advance_envelopes(0.005)  # 5ms — past 2ms attack
         v = emu.voices[0]
         self.assertEqual(v.envelope_state, "decay")
         # Sustain is 15/15 = 1.0; decay should clamp at sustain immediately.
@@ -395,9 +414,9 @@ class SidEmulatorTest(unittest.TestCase):
 
     def test_pulse_waveform_two_levels(self):
         emu = SIDEmulator()
-        emu.update_registers(self._voice_regs(0, freq=0x1C32, pw=0x0800,
-                                              control=0x41,
-                                              ad=0x09, sr=0xF0))
+        emu.update_registers(
+            self._voice_regs(0, freq=0x1C32, pw=0x0800, control=0x41, ad=0x09, sr=0xF0)
+        )
         # Force envelope to a known level.
         emu.advance_envelopes(0.01)
         s = emu.voice_samples(0, 320)
@@ -409,16 +428,21 @@ class SidEmulatorTest(unittest.TestCase):
     def test_sawtooth_monotonic_within_cycle(self):
         emu = SIDEmulator()
         # Sawtooth, gate on, instant envelope to full.
-        emu.update_registers(self._voice_regs(0, freq=0x0100,    # very low freq
-                                              control=0x21,
-                                              ad=0x00, sr=0xF0))
+        emu.update_registers(
+            self._voice_regs(
+                0,
+                freq=0x0100,  # very low freq
+                control=0x21,
+                ad=0x00,
+                sr=0xF0,
+            )
+        )
         emu.advance_envelopes(0.01)
         s = emu.voice_samples(0, 64)
         # At very low freq, 64 samples should be a small portion of one cycle
         # → mostly monotonically rising (with one wrap at the cycle edge maybe).
         rising = np.sum(np.diff(s) > 0)
-        self.assertGreater(rising, 50,
-                           "sawtooth at very low freq should be mostly rising")
+        self.assertGreater(rising, 50, "sawtooth at very low freq should be mostly rising")
 
     def test_priority_noise_over_pulse(self):
         # 0xC0 = noise + pulse. Visualization picks noise.
@@ -432,10 +456,11 @@ class SidEmulatorTest(unittest.TestCase):
 # Text-row layout helpers
 # ---------------------------------------------------------------------------
 
-class LayoutHelpersTest(unittest.TestCase):
 
+class LayoutHelpersTest(unittest.TestCase):
     def test_lr_normal_fit(self):
         from c64cast.waveform import _layout_lr
+
         line = _layout_lr("LEFT", "RIGHT")
         self.assertEqual(len(line), 40)
         self.assertTrue(line.startswith("LEFT"))
@@ -443,6 +468,7 @@ class LayoutHelpersTest(unittest.TestCase):
 
     def test_lr_truncates_long_inputs(self):
         from c64cast.waveform import _layout_lr
+
         line = _layout_lr("A" * 40, "B" * 40)
         self.assertEqual(len(line), 40)
         # Right is capped at half width first.
@@ -452,6 +478,7 @@ class LayoutHelpersTest(unittest.TestCase):
 
     def test_lcr_centers_balanced(self):
         from c64cast.waveform import _layout_lcr
+
         line = _layout_lcr("1985", "6581", "PAL")
         self.assertEqual(len(line), 40)
         self.assertTrue(line.startswith("1985"))
@@ -464,6 +491,7 @@ class LayoutHelpersTest(unittest.TestCase):
     def test_lcr_collision_avoidance(self):
         # Long left field must push the center right, not overlap.
         from c64cast.waveform import _layout_lcr
+
         line = _layout_lcr("A" * 25, "MID", "END")
         self.assertEqual(len(line), 40)
         # Left ends at col 25; center must start at col >= 26.
@@ -515,15 +543,13 @@ class WaveformSceneTest(unittest.TestCase):
         # setup() footprints the tune via the real ram_write_footprint, which
         # builds a real SidHostEmu and rejects these header-only synthetic
         # SIDs (play_addr=0). Stub it to an empty avoid bitmap.
-        fp = patch("c64cast.waveform.ram_write_footprint",
-                   return_value=bytearray(65536))
+        fp = patch("c64cast.waveform.ram_write_footprint", return_value=bytearray(65536))
         self.addCleanup(fp.stop)
         fp.start()
         # setup() also footprints via ram_play_access_footprint for the
         # display-bank choice; stub it too (same reason as ram_write_footprint
         # above — these header-only synthetic SIDs have play_addr=0).
-        afp = patch("c64cast.waveform.ram_play_access_footprint",
-                    return_value=bytearray(65536))
+        afp = patch("c64cast.waveform.ram_play_access_footprint", return_value=bytearray(65536))
         self.addCleanup(afp.stop)
         afp.start()
 
@@ -535,9 +561,9 @@ class WaveformSceneTest(unittest.TestCase):
         not just constructed with default args. Guards against future
         refactors silently dropping the song= forwarding."""
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=2)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=2)
         # The first construction is the scene's real host emu (subsequent
         # ones are the throwaway rate probe in _detect_play_rate_hz — see
         # that method). Both forward sid_bytes + song, but assert on the
@@ -545,17 +571,18 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertGreaterEqual(self.mock_host_emu_cls.call_count, 1)
         call = self.mock_host_emu_cls.call_args_list[0]
         self.assertEqual(call.args[0], scene.sid_bytes)
-        self.assertEqual(call.kwargs.get("song", call.args[1] if
-                         len(call.args) > 1 else None), 2)
+        self.assertEqual(call.kwargs.get("song", call.args[1] if len(call.args) > 1 else None), 2)
 
     def test_cia_multispeed_rate_drives_poll_rate(self):
         """A CIA-timed tune (host emu reports a faster play_rate_hz) makes the
         scene tick the host emulator at that rate so the scope tracks the
         audio — not the fixed video rate."""
         from c64cast.waveform import WaveformScene
+
         self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 90.0
-        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                              song=1, duration_s=10.0, system="NTSC")
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
         self.assertAlmostEqual(scene._reg_poll_hz, 90.0)
         self.assertAlmostEqual(scene._poll_dt, 1.0 / 90.0)
 
@@ -563,10 +590,17 @@ class WaveformSceneTest(unittest.TestCase):
         """An explicit reg_poll_hz pins the rate and skips CIA auto-detection
         (play_rate_hz isn't consulted)."""
         from c64cast.waveform import WaveformScene
+
         self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 90.0
-        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                              song=1, duration_s=10.0, system="NTSC",
-                              reg_poll_hz=25.0)
+        scene = WaveformScene(
+            FakeAPI(),
+            audio=None,
+            file=self.sid_path,
+            song=1,
+            duration_s=10.0,
+            system="NTSC",
+            reg_poll_hz=25.0,
+        )
         self.assertAlmostEqual(scene._reg_poll_hz, 25.0)
         self.mock_host_emu_cls.return_value.play_rate_hz.assert_not_called()
 
@@ -580,26 +614,29 @@ class WaveformSceneTest(unittest.TestCase):
         came in progressively later than the audio (warped + delayed scope).
         _detect_play_rate_hz must run PLAY on its probe before reading."""
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                              song=1, duration_s=10.0, system="NTSC")
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
         emu = self.mock_host_emu_cls.return_value
         emu.reset_mock()  # drop the construction-time PLAY pre-flight ticks
         # play_rate_hz reports the vsync rate until PLAY has run, then the
         # true 2x rate — mirroring a Timer A latch written on the first PLAY.
-        emu.play_rate_hz.side_effect = (
-            lambda video_hz, clock_hz:
-            120.0 if emu.tick_play.call_count > 0 else video_hz)
+        emu.play_rate_hz.side_effect = lambda video_hz, clock_hz: (
+            120.0 if emu.tick_play.call_count > 0 else video_hz
+        )
         detected = scene._detect_play_rate_hz()
-        self.assertAlmostEqual(detected, 120.0,
-                               msg="probe must run PLAY before reading rate")
+        self.assertAlmostEqual(detected, 120.0, msg="probe must run PLAY before reading rate")
         self.assertGreaterEqual(emu.tick_play.call_count, 1)
 
     def test_rate_probe_vsync_tune_returns_video_rate(self):
         """A genuine vsync tune writes no Timer A, so the probe runs all its
         passes and returns the video rate (no false multispeed)."""
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                              song=1, duration_s=10.0, system="NTSC")
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
         emu = self.mock_host_emu_cls.return_value
         emu.reset_mock()
         emu.play_rate_hz.side_effect = None
@@ -607,8 +644,7 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertAlmostEqual(scene._detect_play_rate_hz(), 60.0)
         # Probe exhausts its budget looking for a Timer A write that never
         # comes (bounded by _RATE_PROBE_TICKS).
-        self.assertEqual(emu.tick_play.call_count,
-                         WaveformScene._RATE_PROBE_TICKS)
+        self.assertEqual(emu.tick_play.call_count, WaveformScene._RATE_PROBE_TICKS)
 
     def test_default_target_fps_is_half_video_rate(self):
         """WaveformScene defaults to HALF the system video rate (30 NTSC /
@@ -616,14 +652,17 @@ class WaveformSceneTest(unittest.TestCase):
         full rate (~170 writes/s) power-cycles the U64 on bank-2 tunes
         (HW-verified). The host-emu poll rate stays at the full video rate."""
         from c64cast.waveform import WaveformScene
-        ntsc = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                             song=1, duration_s=10.0, system="NTSC")
+
+        ntsc = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
         assert ntsc.target_fps is not None  # narrows Scene's float | None
         self.assertAlmostEqual(ntsc.target_fps, 30.0)
         self.assertAlmostEqual(ntsc._frame_time_s, 1.0 / 30.0)
         self.assertAlmostEqual(ntsc._video_hz, 60.0)  # poll cadence unchanged
-        pal = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                            song=1, duration_s=10.0, system="PAL")
+        pal = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="PAL"
+        )
         assert pal.target_fps is not None
         self.assertAlmostEqual(pal.target_fps, 25.0)
         self.assertAlmostEqual(pal._video_hz, 50.0)
@@ -632,9 +671,16 @@ class WaveformSceneTest(unittest.TestCase):
         """An explicit target_fps (CLI/TOML) still wins over the half-rate
         default."""
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                              song=1, duration_s=10.0, system="NTSC",
-                              target_fps=60.0)
+
+        scene = WaveformScene(
+            FakeAPI(),
+            audio=None,
+            file=self.sid_path,
+            song=1,
+            duration_s=10.0,
+            system="NTSC",
+            target_fps=60.0,
+        )
         assert scene.target_fps is not None
         self.assertAlmostEqual(scene.target_fps, 60.0)
 
@@ -645,14 +691,16 @@ class WaveformSceneTest(unittest.TestCase):
         2 KB payload at $2700 (the old LN2-style refusal case)."""
         from c64cast.c64 import CIA2, VIC_BANK_2
         from c64cast.waveform import WaveformScene
+
         with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
             f.write(_make_sid_header(load_addr=0x2700, data_offset=124))
             f.write(bytes(2048))
             overlap_sid = f.name
         try:
             api = FakeAPI()
-            scene = WaveformScene(api, audio=None, file=overlap_sid, song=1,
-                                  duration_s=10.0)   # must NOT raise
+            scene = WaveformScene(
+                api, audio=None, file=overlap_sid, song=1, duration_s=10.0
+            )  # must NOT raise
             scene.setup()
             self.assertEqual(scene._dd00, CIA2.PORT_A_BANK_2)
             self.assertEqual(scene._bitmap_base, VIC_BANK_2.BITMAP)
@@ -665,6 +713,7 @@ class WaveformSceneTest(unittest.TestCase):
         and bank 2 (e.g. $2700 through past $A000) leaves no free VIC bank
         and is refused with the new no-free-bank message."""
         from c64cast.waveform import WaveformScene
+
         with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
             # $2700 .. $BF40 spans bank 0 bitmap ($2000) and bank 2 bitmap
             # ($A000) -> no candidate bank is free.
@@ -677,10 +726,8 @@ class WaveformSceneTest(unittest.TestCase):
             # before raising; assertLogs (outer) asserts it and keeps it off
             # the console.
             with self.assertLogs("c64cast.waveform", level="WARNING"):
-                with self.assertRaisesRegex(
-                        ValueError, r"every candidate VIC bank"):
-                    WaveformScene(api, audio=None, file=overlap_sid, song=1,
-                                  duration_s=10.0)
+                with self.assertRaisesRegex(ValueError, r"every candidate VIC bank"):
+                    WaveformScene(api, audio=None, file=overlap_sid, song=1, duration_s=10.0)
         finally:
             os.unlink(overlap_sid)
 
@@ -689,6 +736,7 @@ class WaveformSceneTest(unittest.TestCase):
         bitmap, $2000+8000) should NOT trigger the validation. Catches
         off-by-one regressions in the overlap math."""
         from c64cast.waveform import WaveformScene
+
         with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
             f.write(_make_sid_header(load_addr=0x3F40, data_offset=124))
             f.write(bytes(2048))
@@ -696,25 +744,20 @@ class WaveformSceneTest(unittest.TestCase):
         try:
             api = FakeAPI()
             # Should construct cleanly.
-            WaveformScene(api, audio=None, file=ok_sid, song=1,
-                          duration_s=10.0)
+            WaveformScene(api, audio=None, file=ok_sid, song=1, duration_s=10.0)
         finally:
             os.unlink(ok_sid)
 
     def test_setup_hires_uploads_bitmap_and_calls_run_sid_player(self):
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path,
-                              song=2,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=2, duration_s=10.0)
         scene.setup()
         try:
-            self.assertIsNotNone(api.sid_played,
-                                 "run_sid_player must be called from setup()")
+            self.assertIsNotNone(api.sid_played, "run_sid_player must be called from setup()")
             assert api.sid_played is not None
-            self.assertEqual(api.sid_played[1], 2,
-                             "explicit song must be forwarded")
+            self.assertEqual(api.sid_played[1], 2, "explicit song must be forwarded")
             # Bitmap area zeroed in setup, hires VIC regs poked.
             self.assertEqual(api.memories.get("D018"), "18")
             self.assertEqual(api.memories.get("D011"), "3b")
@@ -728,18 +771,15 @@ class WaveformSceneTest(unittest.TestCase):
         # the bitmap (320 bytes each at cell rows 22 and 23).
         from c64cast.c64 import SCREEN
         from c64cast.waveform import META_ROW, TITLE_ROW, WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=2,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=2, duration_s=10.0)
         scene.setup()
         try:
             title_addr = SCREEN.BITMAP + TITLE_ROW * 320
             meta_addr = SCREEN.BITMAP + META_ROW * 320
-            self.assertIn(title_addr, api.regions,
-                          "title row bitmap must be uploaded")
-            self.assertIn(meta_addr, api.regions,
-                          "metadata row bitmap must be uploaded")
+            self.assertIn(title_addr, api.regions, "title row bitmap must be uploaded")
+            self.assertIn(meta_addr, api.regions, "metadata row bitmap must be uploaded")
             self.assertEqual(len(api.regions[title_addr]), 320)
             self.assertEqual(len(api.regions[meta_addr]), 320)
             # And the corresponding screen-RAM color bytes.
@@ -755,19 +795,18 @@ class WaveformSceneTest(unittest.TestCase):
         # displayed song number reflects the new subtune.
         from c64cast.c64 import SCREEN
         from c64cast.waveform import TITLE_ROW, WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
         scene.setup()
         try:
             title_addr = SCREEN.BITMAP + TITLE_ROW * 320
             before = api.regions[title_addr]
             scene.cycle_style(api)
             after = api.regions[title_addr]
-            self.assertNotEqual(before, after,
-                                "title row bitmap must change when the "
-                                "song number is repainted")
+            self.assertNotEqual(
+                before, after, "title row bitmap must change when the song number is repainted"
+            )
         finally:
             scene.teardown()
 
@@ -776,21 +815,19 @@ class WaveformSceneTest(unittest.TestCase):
         # zero-padded to 2 digits so the SHIFT-update window stays a
         # constant width regardless of which subtune is current.
         from c64cast.waveform import WaveformScene
+
         # Build a SID with num_songs=11 so the pad width is 2.
         wide = bytearray(_make_sid_header(num_songs=11, start_song=3))
-        with tempfile.NamedTemporaryFile("wb", suffix=".sid",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
             f.write(wide)
             f.write(bytes(2048))
             wide_path = f.name
         try:
             api = FakeAPI()
-            scene = WaveformScene(api, audio=None,
-                                  file=wide_path, song=3,
-                                  duration_s=10.0)
+            scene = WaveformScene(api, audio=None, file=wide_path, song=3, duration_s=10.0)
             line, song_col = scene._build_title_line()
             # The song number must appear as "03" (zero-padded), not "3".
-            self.assertEqual(line[song_col:song_col + 2], "03")
+            self.assertEqual(line[song_col : song_col + 2], "03")
             # And the full "(SONG 03/11)" must be present in the line.
             self.assertIn("(SONG 03/11)", line)
         finally:
@@ -798,45 +835,45 @@ class WaveformSceneTest(unittest.TestCase):
 
     def test_invalid_color_mode_raises(self):
         from c64cast.waveform import WaveformScene
+
         with self.assertRaises(ValueError):
-            WaveformScene(MagicMock(), audio=None,
-                          file=self.sid_path,
-                          color_mode="rainbow_per_pixel")
+            WaveformScene(
+                MagicMock(), audio=None, file=self.sid_path, color_mode="rainbow_per_pixel"
+            )
 
     def test_song_out_of_range_raises(self):
         from c64cast.waveform import WaveformScene
+
         # Header set num_songs=4. song=99 must fail. The candidate walk logs
         # a "skipping ... song 99 out of range" warning before raising;
         # assertLogs (outer) asserts it and keeps it off the console.
         with self.assertLogs("c64cast.waveform", level="WARNING"):
             with self.assertRaises(ValueError):
-                WaveformScene(MagicMock(), audio=None,
-                              file=self.sid_path, song=99)
+                WaveformScene(MagicMock(), audio=None, file=self.sid_path, song=99)
 
     def test_song_defaults_to_header_start_song(self):
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(MagicMock(), audio=None,
-                              file=self.sid_path, song=0)
+
+        scene = WaveformScene(MagicMock(), audio=None, file=self.sid_path, song=0)
         # Header start_song was 1.
         self.assertEqual(scene.song, 1)
 
     def test_process_frame_writes_bitmap(self):
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         # Pre-load some non-trivial register state into the API.
         regs = bytearray(25)
-        regs[0] = 0x32   # voice 1 freq lo
+        regs[0] = 0x32  # voice 1 freq lo
         regs[1] = 0x1C
         regs[2] = 0x00
-        regs[3] = 0x08   # pw
-        regs[4] = 0x41   # pulse + gate
+        regs[3] = 0x08  # pw
+        regs[4] = 0x41  # pulse + gate
         regs[5] = 0x09
         regs[6] = 0xF0
         api.canned_regs = bytes(regs)
 
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path,
-                              duration_s=2.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, duration_s=2.0)
         scene.setup()
         # Simulate the poll thread populating the reg snapshot.
         with scene._reg_lock:
@@ -852,25 +889,25 @@ class WaveformSceneTest(unittest.TestCase):
         v1_slice = api.regions.get(0x2000)
         self.assertIsNotNone(v1_slice)
         assert v1_slice is not None
-        self.assertGreater(sum(v1_slice), 0,
-                           "voice with pulse + envelope should paint pixels")
+        self.assertGreater(sum(v1_slice), 0, "voice with pulse + envelope should paint pixels")
 
     def test_duration_ends_scene(self):
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path,
-                              duration_s=0.05)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, duration_s=0.05)
         scene.setup()
         try:
             self.assertTrue(scene.process_frame(scene.start_time + 0.01))
-            self.assertFalse(scene.process_frame(scene.start_time + 1.0),
-                             "scene must end after duration_s")
+            self.assertFalse(
+                scene.process_frame(scene.start_time + 1.0), "scene must end after duration_s"
+            )
         finally:
             scene.teardown()
 
     def test_teardown_silences_and_restores(self):
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         scene = WaveformScene(api, audio=None, file=self.sid_path)
         scene.setup()
@@ -888,10 +925,9 @@ class WaveformSceneTest(unittest.TestCase):
     def test_cycle_style_advances_song(self):
         # Header sets num_songs=4, start_song=1. Cycle should go 1→2.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
         scene.setup()
         try:
             # Reset to drop the setup-time recording so we only inspect
@@ -908,13 +944,13 @@ class WaveformSceneTest(unittest.TestCase):
             # re-call run_sid_player (which would trigger a run_prg →
             # VIC reset → flicker).
             self.assertEqual(api.cue_song_reinits, [2])
-            self.assertIsNone(api.sid_played,
-                              "cycle must NOT re-run the full SID player")
+            self.assertIsNone(api.sid_played, "cycle must NOT re-run the full SID player")
             # Host emulator was rebuilt on the new song so the visualizer
             # tracks the right subtune. Every construction this cycle (the
             # real rebuild + the rate probe) targets the new song.
-            self.assertGreaterEqual(self.mock_host_emu_cls.call_count, 1,
-                                    "host emulator must be rebuilt on cycle")
+            self.assertGreaterEqual(
+                self.mock_host_emu_cls.call_count, 1, "host emulator must be rebuilt on cycle"
+            )
             for call in self.mock_host_emu_cls.call_args_list:
                 self.assertEqual(call.kwargs.get("song"), 2)
         finally:
@@ -927,17 +963,16 @@ class WaveformSceneTest(unittest.TestCase):
         # zero-fill + per-voice color strips on every SHIFT.
         from c64cast.c64 import SCREEN
         from c64cast.waveform import BITMAP_STRIPS, WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
         scene.setup()
         try:
             cache_invalidations_before = api.cache_invalidations
             # Capture each voice strip's color-RAM write address and
             # confirm setup() wrote them (sanity).
             voice_color_addrs = []
-            for (top, _bot) in BITMAP_STRIPS:
+            for top, _bot in BITMAP_STRIPS:
                 addr = SCREEN.RAM + (top // 8) * 40
                 voice_color_addrs.append(addr)
                 self.assertIn(addr, api.regions)
@@ -947,25 +982,24 @@ class WaveformSceneTest(unittest.TestCase):
                 api.regions.pop(addr, None)
 
             scene.cycle_style(api)
-            self.assertEqual(api.cache_invalidations,
-                             cache_invalidations_before,
-                             "cycle must not invalidate_cache — VIC state "
-                             "is preserved across the in-place re-INIT")
-            self.assertNotIn(SCREEN.BITMAP, api.regions,
-                             "cycle must not re-zero the bitmap")
+            self.assertEqual(
+                api.cache_invalidations,
+                cache_invalidations_before,
+                "cycle must not invalidate_cache — VIC state "
+                "is preserved across the in-place re-INIT",
+            )
+            self.assertNotIn(SCREEN.BITMAP, api.regions, "cycle must not re-zero the bitmap")
             for addr in voice_color_addrs:
-                self.assertNotIn(addr, api.regions,
-                                 "cycle must not re-paint voice color strips")
+                self.assertNotIn(addr, api.regions, "cycle must not re-paint voice color strips")
         finally:
             scene.teardown()
 
     def test_cycle_style_wraps_at_last_song(self):
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         # Header has num_songs=4; start at 4 → wrap to 1.
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=4,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=4, duration_s=10.0)
         scene.setup()
         try:
             label = scene.cycle_style(api)
@@ -977,17 +1011,15 @@ class WaveformSceneTest(unittest.TestCase):
     def test_cycle_style_single_song_returns_none(self):
         # Build a SID with num_songs=1 and verify cycle_style is a no-op.
         from c64cast.waveform import WaveformScene
+
         single = bytearray(_make_sid_header(num_songs=1, start_song=1))
-        with tempfile.NamedTemporaryFile("wb", suffix=".sid",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
             f.write(single)
             f.write(bytes(2048))
             single_path = f.name
         try:
             api = FakeAPI()
-            scene = WaveformScene(api, audio=None,
-                                  file=single_path, song=1,
-                                  duration_s=10.0)
+            scene = WaveformScene(api, audio=None, file=single_path, song=1, duration_s=10.0)
             scene.setup()
             try:
                 api.sid_played = None
@@ -1004,19 +1036,20 @@ class WaveformSceneTest(unittest.TestCase):
         # The new song should get its full duration_s — start_time must
         # be reset so the duration check in process_frame starts over.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
         scene.setup()
         try:
             # Pretend the prior song nearly ran its full duration.
             scene.start_time -= 9.5
             old_start = scene.start_time
             scene.cycle_style(api)
-            self.assertGreater(scene.start_time, old_start + 5.0,
-                               "cycle must reset start_time so the new "
-                               "song gets its full duration")
+            self.assertGreater(
+                scene.start_time,
+                old_start + 5.0,
+                "cycle must reset start_time so the new song gets its full duration",
+            )
         finally:
             scene.teardown()
 
@@ -1024,20 +1057,21 @@ class WaveformSceneTest(unittest.TestCase):
         # When duration_s wasn't explicit and a SongLengths DB is present,
         # the new song's duration must be re-resolved from the DB.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         fake_db = MagicMock()
         # First lookup (__init__ for song=1) → 120s; second (cycle to 2) → 45s.
         fake_db.lookup.side_effect = [120.0, 45.0]
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              songlengths_db=fake_db)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
         self.assertAlmostEqual(scene.duration_s, 120.0)
         scene.setup()
         try:
             scene.cycle_style(api)
-            self.assertAlmostEqual(scene.duration_s, 45.0,
-                                   msg="cycle must re-resolve duration "
-                                   "from the SongLengths DB for the new song")
+            self.assertAlmostEqual(
+                scene.duration_s,
+                45.0,
+                msg="cycle must re-resolve duration from the SongLengths DB for the new song",
+            )
             # The DB was queried twice (init + cycle), each time with the
             # song that was current at lookup time.
             self.assertEqual(fake_db.lookup.call_count, 2)
@@ -1049,13 +1083,13 @@ class WaveformSceneTest(unittest.TestCase):
         # A user-set duration_s must NOT be overwritten by a re-lookup —
         # explicit user intent wins, same as __init__'s precedence.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         fake_db = MagicMock()
         fake_db.lookup.return_value = 99.0
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              duration_s=42.0,
-                              songlengths_db=fake_db)
+        scene = WaveformScene(
+            api, audio=None, file=self.sid_path, song=1, duration_s=42.0, songlengths_db=fake_db
+        )
         self.assertAlmostEqual(scene.duration_s, 42.0)
         scene.setup()
         try:
@@ -1068,27 +1102,25 @@ class WaveformSceneTest(unittest.TestCase):
         # Header num_songs=4. From song=1, song 2 is a 2s SFX (skip),
         # song 3 is a 60s tune (take). Cycle should land on song 3.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         fake_db = MagicMock()
         # Init lookup for song 1, then cycle queries: song 2 (skip), song 3.
         fake_db.lookup.side_effect = [120.0, 2.0, 60.0]
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              songlengths_db=fake_db)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
         scene.setup()
         try:
             with self.assertLogs("c64cast.waveform", level="INFO") as cap:
                 label = scene.cycle_style(api)
-            self.assertEqual(scene.song, 3,
-                             "cycle must skip the short song and land on 3")
+            self.assertEqual(scene.song, 3, "cycle must skip the short song and land on 3")
             self.assertEqual(label, "song 3/4")
             self.assertAlmostEqual(scene.duration_s, 60.0)
             # Skip log surfaced the SFX so the operator can see why we
             # jumped two songs instead of one.
             self.assertTrue(
-                any("skipping song 2/4" in line and "2.0s" in line
-                    for line in cap.output),
-                f"expected skip log, got {cap.output!r}")
+                any("skipping song 2/4" in line and "2.0s" in line for line in cap.output),
+                f"expected skip log, got {cap.output!r}",
+            )
         finally:
             scene.teardown()
 
@@ -1096,17 +1128,17 @@ class WaveformSceneTest(unittest.TestCase):
         # No SongLengths DB means we have no basis to call anything "short"
         # — cycle must take the immediate next song regardless of length.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              duration_s=10.0)   # explicit so __init__ skips DB
+        scene = WaveformScene(
+            api, audio=None, file=self.sid_path, song=1, duration_s=10.0
+        )  # explicit so __init__ skips DB
         # No songlengths_db on the scene at all.
         self.assertIsNone(scene.songlengths_db)
         scene.setup()
         try:
             scene.cycle_style(api)
-            self.assertEqual(scene.song, 2,
-                             "no DB → no skip; advance one slot")
+            self.assertEqual(scene.song, 2, "no DB → no skip; advance one slot")
         finally:
             scene.teardown()
 
@@ -1115,22 +1147,21 @@ class WaveformSceneTest(unittest.TestCase):
         # for exactly this long" — cycle must respect it and not skip
         # short subtunes (the user already opted into the duration).
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         fake_db = MagicMock()
         # If the skip logic ran, it would query the DB.
         fake_db.lookup.return_value = 2.0
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              duration_s=10.0,
-                              songlengths_db=fake_db)
+        scene = WaveformScene(
+            api, audio=None, file=self.sid_path, song=1, duration_s=10.0, songlengths_db=fake_db
+        )
         # __init__ doesn't lookup when duration_s is explicit.
         fake_db.lookup.reset_mock()
         scene.setup()
         try:
             scene.cycle_style(api)
             self.assertEqual(scene.song, 2)
-            self.assertAlmostEqual(scene.duration_s, 10.0,
-                                   msg="explicit duration_s must survive")
+            self.assertAlmostEqual(scene.duration_s, 10.0, msg="explicit duration_s must survive")
             fake_db.lookup.assert_not_called()
         finally:
             scene.teardown()
@@ -1139,17 +1170,15 @@ class WaveformSceneTest(unittest.TestCase):
         # DB returns None for the candidate (no entry) → we have no basis
         # to call it short, so take it. (A miss is not the same as short.)
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         fake_db = MagicMock()
-        fake_db.lookup.side_effect = [None, None]   # init + cycle, both miss
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              songlengths_db=fake_db)
+        fake_db.lookup.side_effect = [None, None]  # init + cycle, both miss
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
         scene.setup()
         try:
             scene.cycle_style(api)
-            self.assertEqual(scene.song, 2,
-                             "DB miss must not trigger skip")
+            self.assertEqual(scene.song, 2, "DB miss must not trigger skip")
         finally:
             scene.teardown()
 
@@ -1158,19 +1187,17 @@ class WaveformSceneTest(unittest.TestCase):
         # first candidate anyway (user pressed SHIFT, give a change) and
         # keeps the prior duration_s as the safest fallback.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         fake_db = MagicMock()
         # Init: song 1 → 30s. Cycle: every candidate (2, 3, 4) returns 1s.
         fake_db.lookup.side_effect = [30.0, 1.0, 1.0, 1.0]
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=1,
-                              songlengths_db=fake_db)
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
         self.assertAlmostEqual(scene.duration_s, 30.0)
         scene.setup()
         try:
             scene.cycle_style(api)
-            self.assertEqual(scene.song, 2,
-                             "all-short → land on first candidate (2)")
+            self.assertEqual(scene.song, 2, "all-short → land on first candidate (2)")
             # Cycle queried each of the other 3 songs (n-1 attempts).
             self.assertEqual(fake_db.lookup.call_count, 4)
             # Prior duration kept since no candidate was long enough to
@@ -1184,21 +1211,23 @@ class WaveformSceneTest(unittest.TestCase):
         # SFX as the start song (config song=N or PSID start_song), play
         # it. Skip only kicks in on SHIFT cycle.
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
         fake_db = MagicMock()
-        fake_db.lookup.return_value = 1.5   # short, but explicitly chosen
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, song=2,
-                              songlengths_db=fake_db)
+        fake_db.lookup.return_value = 1.5  # short, but explicitly chosen
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=2, songlengths_db=fake_db)
         self.assertEqual(scene.song, 2)
-        self.assertAlmostEqual(scene.duration_s, 1.5,
-                               msg="startup must honor the configured "
-                               "song's length, no matter how short")
+        self.assertAlmostEqual(
+            scene.duration_s,
+            1.5,
+            msg="startup must honor the configured song's length, no matter how short",
+        )
 
 
 # ---------------------------------------------------------------------------
 # WaveformScene poll-thread wall-clock catch-up
 # ---------------------------------------------------------------------------
+
 
 class WaveformPollCatchupTest(unittest.TestCase):
     """_poll_regs derives the host emulator's PLAY-tick count from wall-clock
@@ -1222,8 +1251,10 @@ class WaveformPollCatchupTest(unittest.TestCase):
 
     def _scene(self):
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path,
-                              song=1, duration_s=10.0, system="NTSC")
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
         # Fresh controllable stubs for the poll path.
         scene._host_emu = MagicMock()
         scene._host_emu.regs.return_value = bytes(25)
@@ -1265,16 +1296,16 @@ class WaveformPollCatchupTest(unittest.TestCase):
         # wakeups.
         with patch("c64cast.waveform.time.time") as now:
             scene._sid_start_time = 1000.0
-            now.return_value = 1000.0 + 100.0   # 6000 frames @ 60 Hz
+            now.return_value = 1000.0 + 100.0  # 6000 frames @ 60 Hz
             scene._poll_regs()
-        self.assertEqual(scene._host_emu.tick_play.call_count,
-                         scene._MAX_CATCHUP_TICKS)
+        self.assertEqual(scene._host_emu.tick_play.call_count, scene._MAX_CATCHUP_TICKS)
         self.assertEqual(scene._ticks_done, scene._MAX_CATCHUP_TICKS)
 
 
 # ---------------------------------------------------------------------------
 # WaveformScene multi-file pool selection
 # ---------------------------------------------------------------------------
+
 
 class WaveformPoolPickTest(unittest.TestCase):
     """`file =` spec accepts directories / globs / comma combinations.
@@ -1292,15 +1323,13 @@ class WaveformPoolPickTest(unittest.TestCase):
         # WaveformSceneTest.setUp) so these synthetic SIDs aren't rejected.
         self.mock_host_emu_cls.return_value.last_routine_capped = False
         self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 60.0
-        fp = patch("c64cast.waveform.ram_write_footprint",
-                   return_value=bytearray(65536))
+        fp = patch("c64cast.waveform.ram_write_footprint", return_value=bytearray(65536))
         self.addCleanup(fp.stop)
         fp.start()
         # setup() also footprints via ram_play_access_footprint for the
         # display-bank choice; stub it too (same reason as ram_write_footprint
         # above — these header-only synthetic SIDs have play_addr=0).
-        afp = patch("c64cast.waveform.ram_play_access_footprint",
-                    return_value=bytearray(65536))
+        afp = patch("c64cast.waveform.ram_play_access_footprint", return_value=bytearray(65536))
         self.addCleanup(afp.stop)
         afp.start()
         self.tmpdir = tempfile.mkdtemp()
@@ -1315,21 +1344,21 @@ class WaveformPoolPickTest(unittest.TestCase):
 
     def test_directory_spec_picks_from_pool(self):
         from c64cast.waveform import WaveformScene
+
         self._write_sid("alpha.sid", name=b"ALPHA")
         self._write_sid("beta.sid", name=b"BETA")
         api = FakeAPI()
         # Force the seed so the pick is deterministic for the assertion;
         # behavior under any seed is "lands on one of the candidates".
         random.seed(0)
-        scene = WaveformScene(api, audio=None, file=self.tmpdir,
-                              duration_s=10.0)
-        self.assertIn(os.path.basename(scene._sid_file),
-                      {"alpha.sid", "beta.sid"})
+        scene = WaveformScene(api, audio=None, file=self.tmpdir, duration_s=10.0)
+        self.assertIn(os.path.basename(scene._sid_file), {"alpha.sid", "beta.sid"})
         # Pool is preserved for re-pick at setup().
         self.assertEqual(len(scene._candidates), 2)
 
     def test_glob_spec_picks_from_matches(self):
         from c64cast.waveform import WaveformScene
+
         self._write_sid("a.sid")
         self._write_sid("b.sid")
         # Drop a non-matching file in the same dir to confirm the glob
@@ -1338,14 +1367,15 @@ class WaveformPoolPickTest(unittest.TestCase):
             f.write("")
         api = FakeAPI()
         random.seed(0)
-        scene = WaveformScene(api, audio=None,
-                              file=os.path.join(self.tmpdir, "*.sid"),
-                              duration_s=10.0)
+        scene = WaveformScene(
+            api, audio=None, file=os.path.join(self.tmpdir, "*.sid"), duration_s=10.0
+        )
         self.assertTrue(scene._sid_file.endswith(".sid"))
         self.assertEqual(len(scene._candidates), 2)
 
     def test_comma_spec_unions_entries(self):
         from c64cast.waveform import WaveformScene
+
         p1 = self._write_sid("solo.sid")
         # A second dir with two more sids — the comma-combined spec should
         # pick from all 3 candidates.
@@ -1358,14 +1388,14 @@ class WaveformPoolPickTest(unittest.TestCase):
             f.write(_make_sid_header())
             f.write(bytes(2048))
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=f"{p1}, {d2}", duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=f"{p1}, {d2}", duration_s=10.0)
         self.assertEqual(len(scene._candidates), 3)
 
     def test_init_retries_when_first_pick_overlaps_bitmap(self):
         """A pool containing one invalid + one valid SID must NOT raise —
         the invalid candidate gets skipped at pick time, valid one wins."""
         from c64cast.waveform import WaveformScene
+
         # Bad: load_addr at $2700 collides with the hires bitmap area.
         self._write_sid("bad.sid", load_addr=0x2700, data_offset=124)
         # Good: load_addr at $1000 sits below the bitmap area.
@@ -1375,12 +1405,12 @@ class WaveformPoolPickTest(unittest.TestCase):
         # retry loop didn't work the construction would raise. (random
         # shuffle of [bad, good] under seed 1 puts bad first.)
         random.seed(1)
-        scene = WaveformScene(api, audio=None, file=self.tmpdir,
-                              duration_s=10.0)
+        scene = WaveformScene(api, audio=None, file=self.tmpdir, duration_s=10.0)
         self.assertTrue(scene._sid_file.endswith("good.sid"))
 
     def test_init_raises_when_every_candidate_invalid(self):
         from c64cast.waveform import WaveformScene
+
         # Both candidates span bank 0's AND bank 2's display ($2700 past
         # $A000), so neither can host the display -> all rejected -> raise.
         big = bytes(0xBF40 - 0x2700)
@@ -1393,18 +1423,17 @@ class WaveformPoolPickTest(unittest.TestCase):
         # raise; assertLogs (outer) asserts it and keeps it off the console.
         with self.assertLogs("c64cast.waveform", level="WARNING"):
             with self.assertRaisesRegex(ValueError, "none could be loaded"):
-                WaveformScene(api, audio=None, file=self.tmpdir,
-                              duration_s=10.0)
+                WaveformScene(api, audio=None, file=self.tmpdir, duration_s=10.0)
 
     def test_single_file_pool_skips_repick_at_setup(self):
         """Single-file specs stay deterministic AND keep cycle_style
         mutations (self.song advances) across setup/teardown cycles — the
         re-pick is suppressed when the pool has exactly one entry."""
         from c64cast.waveform import WaveformScene
+
         path = self._write_sid("only.sid")
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None, file=path,
-                              duration_s=10.0, song=1)
+        scene = WaveformScene(api, audio=None, file=path, duration_s=10.0, song=1)
         scene.setup()
         try:
             scene.cycle_style(api)
@@ -1412,9 +1441,12 @@ class WaveformPoolPickTest(unittest.TestCase):
             # Teardown + re-setup must preserve the cycled subtune.
             scene.teardown()
             scene.setup()
-            self.assertEqual(scene.song, 2,
-                             "single-file pool must NOT re-pick at setup "
-                             "(would reset cycle_style mutations to start_song)")
+            self.assertEqual(
+                scene.song,
+                2,
+                "single-file pool must NOT re-pick at setup "
+                "(would reset cycle_style mutations to start_song)",
+            )
         finally:
             scene.teardown()
 
@@ -1423,42 +1455,54 @@ class WaveformPoolPickTest(unittest.TestCase):
 # Playlist per-scene target_fps + frame drop
 # ---------------------------------------------------------------------------
 
-class TargetFpsTest(unittest.TestCase):
 
+class TargetFpsTest(unittest.TestCase):
     def test_scene_target_fps_overrides_default(self):
         from c64cast.playlist import Playlist
         from tests.test_playlist import FakeApi, FakeScene
+
         scenes = [FakeScene("A", frames_until_done=2)]
         scenes[0].target_fps = 15.0
-        pl = Playlist(scenes, FakeApi(), target_fps=60.0,
-                      heartbeat_interval=0.0,
-                      interstitial_factory=lambda name: FakeScene(
-                          f"t:{name}", frames_until_done=1))
+        pl = Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=60.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=lambda name: FakeScene(f"t:{name}", frames_until_done=1),
+        )
         ft = pl._frame_time_for(scenes[0])
         self.assertAlmostEqual(ft, 1.0 / 15.0)
 
     def test_bitmap_default_to_30fps(self):
         from c64cast.playlist import Playlist
         from tests.test_playlist import FakeApi, FakeScene
+
         s = FakeScene("A")
         # No explicit target_fps, but a "bitmap" display mode (cap = 30).
         s.display_mode = MagicMock(is_bitmapped=True, default_target_fps=30.0)
-        pl = Playlist([s], FakeApi(), target_fps=60.0,
-                      heartbeat_interval=0.0,
-                      interstitial_factory=lambda name: FakeScene(
-                          f"t:{name}", frames_until_done=1))
+        pl = Playlist(
+            [s],
+            FakeApi(),
+            target_fps=60.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=lambda name: FakeScene(f"t:{name}", frames_until_done=1),
+        )
         ft = pl._frame_time_for(s)
         self.assertAlmostEqual(ft, 1.0 / 30.0)
 
     def test_non_bitmap_uses_default(self):
         from c64cast.playlist import Playlist
         from tests.test_playlist import FakeApi, FakeScene
+
         s = FakeScene("A")
         s.display_mode = MagicMock(is_bitmapped=False, default_target_fps=None)
-        pl = Playlist([s], FakeApi(), target_fps=60.0,
-                      heartbeat_interval=0.0,
-                      interstitial_factory=lambda name: FakeScene(
-                          f"t:{name}", frames_until_done=1))
+        pl = Playlist(
+            [s],
+            FakeApi(),
+            target_fps=60.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=lambda name: FakeScene(f"t:{name}", frames_until_done=1),
+        )
         ft = pl._frame_time_for(s)
         self.assertAlmostEqual(ft, 1.0 / 60.0)
 
@@ -1482,15 +1526,13 @@ class WaveformVizKnobsTest(unittest.TestCase):
         # WaveformSceneTest.setUp) so these synthetic SIDs aren't rejected.
         mock_host.return_value.last_routine_capped = False
         mock_host.return_value.play_rate_hz.return_value = 60.0
-        fp = patch("c64cast.waveform.ram_write_footprint",
-                   return_value=bytearray(65536))
+        fp = patch("c64cast.waveform.ram_write_footprint", return_value=bytearray(65536))
         self.addCleanup(fp.stop)
         fp.start()
         # setup() also footprints via ram_play_access_footprint for the
         # display-bank choice; stub it too (same reason as ram_write_footprint
         # above — these header-only synthetic SIDs have play_addr=0).
-        afp = patch("c64cast.waveform.ram_play_access_footprint",
-                    return_value=bytearray(65536))
+        afp = patch("c64cast.waveform.ram_play_access_footprint", return_value=bytearray(65536))
         self.addCleanup(afp.stop)
         afp.start()
 
@@ -1501,10 +1543,9 @@ class WaveformVizKnobsTest(unittest.TestCase):
 
     def test_default_knobs_take_fast_path(self):
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0)
-        self.assertTrue(scene._fast_path,
-                        "default config must keep the fast redraw path")
+
+        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path, duration_s=10.0)
+        self.assertTrue(scene._fast_path, "default config must keep the fast redraw path")
         self.assertEqual(scene.scroll_columns, [0, 0, 0])
         self.assertEqual(scene.persistence, "off")
         self.assertEqual(scene._echo_depth, 0)
@@ -1515,12 +1556,18 @@ class WaveformVizKnobsTest(unittest.TestCase):
     def test_auto_time_window_matches_freq(self):
         from c64cast.sidemu import ACCUMULATOR_RANGE
         from c64cast.waveform import BITMAP_W, WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              time_base="auto", auto_cycles=4.0)
+
+        scene = WaveformScene(
+            FakeAPI(),
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            time_base="auto",
+            auto_cycles=4.0,
+        )
         # Force voice 0 audible with a real freq value.
         v = scene.emulator.voices[0]
-        v.freq = 4400              # arbitrary — picks a real period
+        v.freq = 4400  # arbitrary — picks a real period
         v.control = WAVE_SAWTOOTH  # primary_waveform non-zero
         v.envelope_level = 0.8
         period_s = ACCUMULATOR_RANGE / (v.freq * scene.emulator.clock)
@@ -1535,9 +1582,15 @@ class WaveformVizKnobsTest(unittest.TestCase):
         Without this scaling, a small scroll batch sampled `auto_cycles`
         full periods into a few pixels and the trace went random."""
         from c64cast.waveform import BITMAP_W, WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              time_base="auto", auto_cycles=4.0)
+
+        scene = WaveformScene(
+            FakeAPI(),
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            time_base="auto",
+            auto_cycles=4.0,
+        )
         v = scene.emulator.voices[0]
         v.freq = 4400
         v.control = WAVE_SAWTOOTH
@@ -1549,10 +1602,16 @@ class WaveformVizKnobsTest(unittest.TestCase):
 
     def test_auto_silent_voice_falls_back_to_wallclock(self):
         from c64cast.waveform import BITMAP_W, WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              target_fps=60.0,
-                              time_base="auto", auto_cycles=4.0)
+
+        scene = WaveformScene(
+            FakeAPI(),
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            target_fps=60.0,
+            time_base="auto",
+            auto_cycles=4.0,
+        )
         # freq=0 → fallback. _voice_time_window_s with n_cols=BITMAP_W
         # should equal one full display-frame of audio time.
         scene.emulator.voices[0].freq = 0
@@ -1562,8 +1621,7 @@ class WaveformVizKnobsTest(unittest.TestCase):
         self.assertAlmostEqual(got, 1.0 / 60.0, places=10)
         # Partial-width fallback scales linearly per column.
         got_partial = scene._voice_time_window_s(0, 4)
-        self.assertAlmostEqual(got_partial, (1.0 / 60.0) * 4 / BITMAP_W,
-                               places=10)
+        self.assertAlmostEqual(got_partial, (1.0 / 60.0) * 4 / BITMAP_W, places=10)
 
     # ---- persistence resolution ----
 
@@ -1572,12 +1630,16 @@ class WaveformVizKnobsTest(unittest.TestCase):
             _PERSISTENCE_RANDOM_CHOICES,
             WaveformScene,
         )
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              persistence="random")
-        self.assertIn(scene.persistence, _PERSISTENCE_RANDOM_CHOICES,
-                      f"random must resolve to one of {_PERSISTENCE_RANDOM_CHOICES}, "
-                      f"got {scene.persistence!r}")
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, duration_s=10.0, persistence="random"
+        )
+        self.assertIn(
+            scene.persistence,
+            _PERSISTENCE_RANDOM_CHOICES,
+            f"random must resolve to one of {_PERSISTENCE_RANDOM_CHOICES}, "
+            f"got {scene.persistence!r}",
+        )
         # Original config string is preserved for the setup log.
         self.assertEqual(scene.persistence_config, "random")
         # Resolved preset gives a non-empty echo ramp.
@@ -1586,47 +1648,45 @@ class WaveformVizKnobsTest(unittest.TestCase):
 
     def test_persistence_invalid_raises(self):
         from c64cast.waveform import WaveformScene
+
         with self.assertRaises(ValueError):
-            WaveformScene(FakeAPI(), audio=None,
-                          file=self.sid_path,
-                          persistence="weird")
+            WaveformScene(FakeAPI(), audio=None, file=self.sid_path, persistence="weird")
 
     # ---- scroll_columns normalization + validation ----
 
     def test_scroll_columns_scalar_broadcasts(self):
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              scroll_columns=4)
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, duration_s=10.0, scroll_columns=4
+        )
         self.assertEqual(scene.scroll_columns, [4, 4, 4])
 
     def test_scroll_columns_per_voice_list(self):
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              scroll_columns=[1, 0, 8])
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, duration_s=10.0, scroll_columns=[1, 0, 8]
+        )
         self.assertEqual(scene.scroll_columns, [1, 0, 8])
 
     def test_scroll_columns_bad_length_raises(self):
         from c64cast.waveform import WaveformScene
+
         with self.assertRaises(ValueError):
-            WaveformScene(FakeAPI(), audio=None,
-                          file=self.sid_path,
-                          scroll_columns=[1, 2])
+            WaveformScene(FakeAPI(), audio=None, file=self.sid_path, scroll_columns=[1, 2])
 
     def test_scroll_columns_negative_raises(self):
         from c64cast.waveform import WaveformScene
+
         with self.assertRaises(ValueError):
-            WaveformScene(FakeAPI(), audio=None,
-                          file=self.sid_path,
-                          scroll_columns=-1)
+            WaveformScene(FakeAPI(), audio=None, file=self.sid_path, scroll_columns=-1)
 
     def test_time_base_invalid_raises(self):
         from c64cast.waveform import WaveformScene
+
         with self.assertRaises(ValueError):
-            WaveformScene(FakeAPI(), audio=None,
-                          file=self.sid_path,
-                          time_base="bogus")
+            WaveformScene(FakeAPI(), audio=None, file=self.sid_path, time_base="bogus")
 
     # ---- scroll: actual FIFO behavior ----
 
@@ -1635,10 +1695,16 @@ class WaveformVizKnobsTest(unittest.TestCase):
         (BITMAP_W - 8) columns equal the previous frame's columns 8..end —
         a literal FIFO shift."""
         from c64cast.waveform import BITMAP_W, WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              scroll_columns=8, persistence="off")
+        scene = WaveformScene(
+            api,
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            scroll_columns=8,
+            persistence="off",
+        )
         scene.setup()
         try:
             scene._render_hires()
@@ -1649,7 +1715,7 @@ class WaveformVizKnobsTest(unittest.TestCase):
             strip1 = scene._strips[0]
             assert strip1 is not None
             np.testing.assert_array_equal(
-                strip1[:, :BITMAP_W - 8],
+                strip1[:, : BITMAP_W - 8],
                 strip0[:, 8:],
             )
         finally:
@@ -1662,10 +1728,16 @@ class WaveformVizKnobsTest(unittest.TestCase):
         trace into N-column chunks. _last_y captures the connection
         across frames; _span_mask uses it as the prev-y for column 0."""
         from c64cast.waveform import BITMAP_W, WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              scroll_columns=4, persistence="off")
+        scene = WaveformScene(
+            api,
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            scroll_columns=4,
+            persistence="off",
+        )
         scene.setup()
         try:
             assert scene._last_y is not None
@@ -1673,8 +1745,7 @@ class WaveformVizKnobsTest(unittest.TestCase):
             # gets populated with the last column's y.
             self.assertIsNone(scene._last_y[0])
             scene._render_hires()
-            self.assertIsNotNone(scene._last_y[0],
-                                 "first render must populate _last_y")
+            self.assertIsNotNone(scene._last_y[0], "first render must populate _last_y")
             # Second frame: the new batch should connect to the prior
             # frame's last y via _last_y. We can verify by checking the
             # rightmost-but-N column range (the new cols' x boundary)
@@ -1690,9 +1761,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
             # only have a self-dot. Check that columns 0 and 4 of the
             # new-cols region both have at least 1 lit pixel (i.e. the
             # spans aren't degenerate dots).
-            new_region = strip[:, BITMAP_W - 4:]
-            self.assertGreater(new_region[:, 0].sum(), 0,
-                               "first new column must have a span")
+            new_region = strip[:, BITMAP_W - 4 :]
+            self.assertGreater(new_region[:, 0].sum(), 0, "first new column must have a span")
         finally:
             scene.teardown()
 
@@ -1703,21 +1773,23 @@ class WaveformVizKnobsTest(unittest.TestCase):
         then drops the oldest. After echo_depth+3 renders, len(history)
         should equal echo_depth exactly."""
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              persistence="long")  # depth = 4 echoes
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, duration_s=10.0, persistence="long"
+        )  # depth = 4 echoes
         scene.setup()
         try:
             assert scene._echo_history is not None
             self.assertEqual(scene._echo_depth, 4)
-            self.assertEqual(scene._voice_render_modes,
-                             ["echo", "echo", "echo"])
+            self.assertEqual(scene._voice_render_modes, ["echo", "echo", "echo"])
             for _ in range(scene._echo_depth + 3):
                 scene._render_hires()
             for v_idx in range(3):
-                self.assertEqual(len(scene._echo_history[v_idx]),
-                                 scene._echo_depth,
-                                 f"voice {v_idx} history must cap at depth")
+                self.assertEqual(
+                    len(scene._echo_history[v_idx]),
+                    scene._echo_depth,
+                    f"voice {v_idx} history must cap at depth",
+                )
         finally:
             scene.teardown()
 
@@ -1727,11 +1799,16 @@ class WaveformVizKnobsTest(unittest.TestCase):
         scroll itself supplies the trail; per-frame persistence would
         double-count and kill the trace by overdrawing."""
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              persistence="long", scroll_columns=4)
-        self.assertEqual(scene._voice_render_modes,
-                         ["scroll", "scroll", "scroll"])
+
+        scene = WaveformScene(
+            FakeAPI(),
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            persistence="long",
+            scroll_columns=4,
+        )
+        self.assertEqual(scene._voice_render_modes, ["scroll", "scroll", "scroll"])
         # echo_depth/echo_colors are still resolved from the preset (the
         # render path just doesn't use them when in scroll mode).
         self.assertEqual(scene._echo_depth, 4)
@@ -1740,12 +1817,16 @@ class WaveformVizKnobsTest(unittest.TestCase):
         """Per-voice scroll_columns lets one voice scroll while others
         get the echo treatment, when persistence is set."""
         from c64cast.waveform import WaveformScene
-        scene = WaveformScene(FakeAPI(), audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              persistence="medium",
-                              scroll_columns=[2, 0, 0])
-        self.assertEqual(scene._voice_render_modes,
-                         ["scroll", "echo", "echo"])
+
+        scene = WaveformScene(
+            FakeAPI(),
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            persistence="medium",
+            scroll_columns=[2, 0, 0],
+        )
+        self.assertEqual(scene._voice_render_modes, ["scroll", "echo", "echo"])
 
     # ---- cycle_style zeroes strips so the new song doesn't ghost ----
 
@@ -1755,33 +1836,38 @@ class WaveformVizKnobsTest(unittest.TestCase):
         against both modes in a single scene by setting per-voice modes
         explicitly via scroll_columns."""
         from c64cast.waveform import WaveformScene
+
         api = FakeAPI()
-        scene = WaveformScene(api, audio=None,
-                              file=self.sid_path, duration_s=10.0,
-                              persistence="long",
-                              scroll_columns=[4, 0, 0])
+        scene = WaveformScene(
+            api,
+            audio=None,
+            file=self.sid_path,
+            duration_s=10.0,
+            persistence="long",
+            scroll_columns=[4, 0, 0],
+        )
         scene.setup()
         try:
-            assert (scene._strips is not None
-                    and scene._echo_history is not None
-                    and scene._last_y is not None)
+            assert (
+                scene._strips is not None
+                and scene._echo_history is not None
+                and scene._last_y is not None
+            )
             scroll_strip = scene._strips[0]
             assert scroll_strip is not None
             # Pre-populate to verify cleanup.
             scroll_strip.fill(True)
             scene._last_y[0] = 42
             for v_idx in (1, 2):
-                scene._echo_history[v_idx].append(
-                    np.ones((56, 320), dtype=bool))
+                scene._echo_history[v_idx].append(np.ones((56, 320), dtype=bool))
             label = scene.cycle_style(api)
             self.assertIsNotNone(label, "multi-song SID must cycle")
-            self.assertFalse(scroll_strip.any(),
-                             "scroll-voice strip must be cleared")
-            self.assertIsNone(scene._last_y[0],
-                              "last_y must be reset to None")
+            self.assertFalse(scroll_strip.any(), "scroll-voice strip must be cleared")
+            self.assertIsNone(scene._last_y[0], "last_y must be reset to None")
             for v_idx in (1, 2):
-                self.assertEqual(len(scene._echo_history[v_idx]), 0,
-                                 f"voice {v_idx} echo history must be empty")
+                self.assertEqual(
+                    len(scene._echo_history[v_idx]), 0, f"voice {v_idx} echo history must be empty"
+                )
         finally:
             scene.teardown()
 
@@ -1804,6 +1890,7 @@ class WaveformConfigValidationTest(unittest.TestCase):
 
     def _validate(self, **kwargs):
         from c64cast.config import Config, SceneCfg, validate_scene_cfg
+
         s = SceneCfg(type="waveform", file=self.sid_path, **kwargs)
         validate_scene_cfg(s, Config(), audio_enabled=False)
 
@@ -1831,19 +1918,18 @@ class WaveformConfigValidationTest(unittest.TestCase):
             self._validate(scroll_columns=-1)
 
 
-def _make_playable_sid(init_addr, play_addr, payload, load_addr=0x1000,
-                       num_songs=1):
+def _make_playable_sid(init_addr, play_addr, payload, load_addr=0x1000, num_songs=1):
     """Minimal PSID v2 with real init/play addresses + a payload — enough
     for parse_psid_for_player + SidHostEmu to run INIT/PLAY."""
     h = bytearray(124)
     h[0:4] = b"PSID"
-    h[4:6] = (2).to_bytes(2, "big")        # version
-    h[6:8] = (0x7C).to_bytes(2, "big")     # data offset
+    h[4:6] = (2).to_bytes(2, "big")  # version
+    h[6:8] = (0x7C).to_bytes(2, "big")  # data offset
     h[8:10] = load_addr.to_bytes(2, "big")
     h[10:12] = init_addr.to_bytes(2, "big")
     h[12:14] = play_addr.to_bytes(2, "big")
     h[14:16] = num_songs.to_bytes(2, "big")
-    h[16:18] = (1).to_bytes(2, "big")      # start_song
+    h[16:18] = (1).to_bytes(2, "big")  # start_song
     return bytes(h) + bytes(payload)
 
 
@@ -1853,6 +1939,7 @@ class WaveformPlayPreflightTest(unittest.TestCase):
 
     def _scene(self):
         from c64cast.waveform import WaveformScene
+
         s = WaveformScene.__new__(WaveformScene)
         s._song_arg = 0
         return s
@@ -1868,16 +1955,15 @@ class WaveformPlayPreflightTest(unittest.TestCase):
     def test_rejects_spinning_play(self):
         # init=$1000 RTS; play=$1001 JMP $1001 (infinite) → caps every tick.
         sid = _make_playable_sid(
-            init_addr=0x1000, play_addr=0x1001,
-            payload=[0x60, 0x4C, 0x01, 0x10])
+            init_addr=0x1000, play_addr=0x1001, payload=[0x60, 0x4C, 0x01, 0x10]
+        )
         path = self._write(sid)
         with self.assertRaisesRegex(ValueError, "PLAY never completes"):
             self._scene()._load_sid_file(path)
 
     def test_accepts_returning_play(self):
         # init=$1000 RTS; play=$1001 RTS → returns immediately, never caps.
-        sid = _make_playable_sid(
-            init_addr=0x1000, play_addr=0x1001, payload=[0x60, 0x60])
+        sid = _make_playable_sid(init_addr=0x1000, play_addr=0x1001, payload=[0x60, 0x60])
         path = self._write(sid)
         s = self._scene()
         s._load_sid_file(path)  # must not raise

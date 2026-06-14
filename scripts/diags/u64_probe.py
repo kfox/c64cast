@@ -22,14 +22,16 @@ import _diaglib as d
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--url", default=d.U64_URL,
-                    help=f"U64/U2+ base URL (default {d.U64_URL})")
-    ap.add_argument("--reset", action="store_true",
-                    help="reset the machine after the connectivity checks")
-    ap.add_argument("--reset-only", action="store_true",
-                    help="skip the checks; just reset and exit")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("--url", default=d.U64_URL, help=f"U64/U2+ base URL (default {d.U64_URL})")
+    ap.add_argument(
+        "--reset", action="store_true", help="reset the machine after the connectivity checks"
+    )
+    ap.add_argument(
+        "--reset-only", action="store_true", help="skip the checks; just reset and exit"
+    )
     args = ap.parse_args()
 
     if args.reset_only:
@@ -40,7 +42,9 @@ def main() -> int:
     rest = d.rest_ping(args.url)
     dma = d.dma_service_up(args.url)
     print(f"REST {args.url}/        : {'HTTP ' + str(rest) if rest else 'UNREACHABLE'}")
-    print(f"DMA service (:64)      : {'up' if dma else 'DOWN (enable F2 -> Network Settings -> Ultimate DMA Service)'}")
+    print(
+        f"DMA service (:64)      : {'up' if dma else 'DOWN (enable F2 -> Network Settings -> Ultimate DMA Service)'}"
+    )
 
     if args.reset:
         code = d.rest_reset(args.url)

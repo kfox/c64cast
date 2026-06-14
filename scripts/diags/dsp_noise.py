@@ -24,6 +24,7 @@ What it reports (all at the 8 kHz DAC rate):
 
 Reconstructed wavs for both paths are written to out/ for listening.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,7 +49,7 @@ def _db(x: float) -> float:
 
 
 def _rms(x: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
+    return float(np.sqrt(np.mean(x**2))) if x.size else 0.0
 
 
 def _write_wav(path, mono: np.ndarray, sr: int) -> None:
@@ -71,8 +72,8 @@ def _gap_mask(clean: np.ndarray, sr: int, gap_db: float = -45.0) -> np.ndarray:
     Computed on 20 ms frames of clean RMS, then expanded to per-sample."""
     win = max(1, int(0.02 * sr))
     nwin = len(clean) // win
-    frames = clean[:nwin * win].reshape(-1, win)
-    frame_db = 20.0 * np.log10(np.sqrt(np.mean(frames ** 2, axis=1)) + 1e-9)
+    frames = clean[: nwin * win].reshape(-1, win)
+    frame_db = 20.0 * np.log10(np.sqrt(np.mean(frames**2, axis=1)) + 1e-9)
     gap = np.repeat(frame_db < gap_db, win)
     # Pad the trailing (< win) leftover samples as non-gap so the mask matches
     # the full signal length.
@@ -85,7 +86,7 @@ def _gate_events(gain: np.ndarray, mask: np.ndarray, sr: int) -> float:
     """Transitions of the gain across 0.5 within the masked region, per second.
     A proxy for gate chatter — the hard gate flips 0↔1 on every noise excursion
     past threshold; the hysteresis expander should be far steadier."""
-    g = gain[:len(mask)][mask[:len(gain)]] if mask.any() else gain
+    g = gain[: len(mask)][mask[: len(gain)]] if mask.any() else gain
     if g.size < 2:
         return 0.0
     state = g >= 0.5
@@ -96,22 +97,33 @@ def _gate_events(gain: np.ndarray, mask: np.ndarray, sr: int) -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("pair_id", help="dataset pair id (e.g. 1 → clean_speech/1.wav)")
     ap.add_argument("--sr", type=int, default=8000)
-    ap.add_argument("--gate", type=float, default=0.05,
-                    help="legacy hard-gate threshold (mic noise_gate default)")
-    ap.add_argument("--sens", type=float, default=1.5,
-                    help="legacy mic sensitivity multiplier")
+    ap.add_argument(
+        "--gate",
+        type=float,
+        default=0.05,
+        help="legacy hard-gate threshold (mic noise_gate default)",
+    )
+    ap.add_argument("--sens", type=float, default=1.5, help="legacy mic sensitivity multiplier")
     ap.add_argument("--config", help="pull expander params from this [dsp] block")
     ap.add_argument("--dataset", default=DATASET)
     args = ap.parse_args()
 
-    clean = decode_audio_full(f"{args.dataset}/clean_speech/{args.pair_id}.wav",
-                              args.sr).astype(np.float32) / 32768.0
-    noisy = decode_audio_full(f"{args.dataset}/noisy_speech/{args.pair_id}.wav",
-                              args.sr).astype(np.float32) / 32768.0
+    clean = (
+        decode_audio_full(f"{args.dataset}/clean_speech/{args.pair_id}.wav", args.sr).astype(
+            np.float32
+        )
+        / 32768.0
+    )
+    noisy = (
+        decode_audio_full(f"{args.dataset}/noisy_speech/{args.pair_id}.wav", args.sr).astype(
+            np.float32
+        )
+        / 32768.0
+    )
     n = min(len(clean), len(noisy))
     clean, noisy = clean[:n], noisy[:n]
     if n == 0:
@@ -120,8 +132,10 @@ def main() -> int:
     snr = _db(_rms(clean)) - _db(_rms(noisy - clean))
     gap = _gap_mask(clean, args.sr)
     speech = ~gap
-    print(f"pair {args.pair_id}: {n / args.sr:.1f}s  est_SNR={snr:.1f}dB  "
-          f"gap={100 * gap.mean():.0f}%  speech={100 * speech.mean():.0f}%")
+    print(
+        f"pair {args.pair_id}: {n / args.sr:.1f}s  est_SNR={snr:.1f}dB  "
+        f"gap={100 * gap.mean():.0f}%  speech={100 * speech.mean():.0f}%"
+    )
 
     # --- legacy mic path: sensitivity, then hard gate ---
     leg_in = noisy * args.sens
@@ -130,13 +144,15 @@ def main() -> int:
 
     # --- DSP expander path (the gate replacement) ---
     cfg = load_config(args.config).dsp if args.config else DSPCfg()
-    exp = Expander(sample_rate=args.sr,
-                   threshold_db=cfg.expander_threshold_db,
-                   ratio=cfg.expander_ratio,
-                   hysteresis_db=cfg.expander_hysteresis_db,
-                   floor_db=cfg.expander_floor_db,
-                   attack_ms=cfg.expander_attack_ms,
-                   release_ms=cfg.expander_release_ms)
+    exp = Expander(
+        sample_rate=args.sr,
+        threshold_db=cfg.expander_threshold_db,
+        ratio=cfg.expander_ratio,
+        hysteresis_db=cfg.expander_hysteresis_db,
+        floor_db=cfg.expander_floor_db,
+        attack_ms=cfg.expander_attack_ms,
+        release_ms=cfg.expander_release_ms,
+    )
     dsp_in = noisy * args.sens
     dsp_out = exp.process(dsp_in)
     dsp = _encode_decode(dsp_out)
@@ -152,17 +168,17 @@ def main() -> int:
         ev = _gate_events(gain, gap, args.sr)
         return label, gap_res, sp_out - sp_in, ev
 
-    rows = [block("legacy gate", legacy, leg_gate),
-            block("dsp expander", dsp, dsp_gain)]
-    print(f"\n{'path':<14}{'gap residual dB':>16}{'speech retain dB':>18}"
-          f"{'gate events/s':>15}")
+    rows = [block("legacy gate", legacy, leg_gate), block("dsp expander", dsp, dsp_gain)]
+    print(f"\n{'path':<14}{'gap residual dB':>16}{'speech retain dB':>18}{'gate events/s':>15}")
     print("-" * 63)
     for label, gap_res, retain, ev in rows:
         print(f"{label:<14}{gap_res:>16.1f}{retain:>+18.2f}{ev:>15.1f}")
-    print("\nReading: dsp expander should give a LOWER (cleaner) gap residual or"
-          " comparable,\nFAR fewer gate events/s (hysteresis vs chatter), and "
-          "speech retain near 0\n(the hard gate often eats quiet word onsets → "
-          "more negative retain).")
+    print(
+        "\nReading: dsp expander should give a LOWER (cleaner) gap residual or"
+        " comparable,\nFAR fewer gate events/s (hysteresis vs chatter), and "
+        "speech retain near 0\n(the hard gate often eats quiet word onsets → "
+        "more negative retain)."
+    )
 
     out_leg = d.stamped(f"dsp_noise_{args.pair_id}_legacy", "wav")
     out_dsp = d.stamped(f"dsp_noise_{args.pair_id}_dsp", "wav")

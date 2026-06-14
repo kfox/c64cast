@@ -25,44 +25,86 @@ SR = 48000
 
 
 def _run(cmd: list[str]) -> None:
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *cmd],
-                   check=True)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *cmd], check=True)
 
 
 def tone(freq: float, seconds: float) -> str:
     out = str(d.out_dir() / f"tone_{int(freq)}hz_{int(seconds)}s.wav")
-    _run(["-f", "lavfi", "-i",
-          f"sine=frequency={freq}:sample_rate={SR}:duration={seconds}",
-          "-ar", str(SR), out])
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:sample_rate={SR}:duration={seconds}",
+            "-ar",
+            str(SR),
+            out,
+        ]
+    )
     print(f"wrote {out}")
     return out
 
 
 def clip(freq: float, seconds: float) -> str:
     out = str(d.out_dir() / f"clip_{int(freq)}hz_{int(seconds)}s.mp4")
-    _run(["-f", "lavfi", "-i", f"color=c=red:s=320x180:r=30:d={seconds}",
-          "-f", "lavfi", "-i",
-          f"sine=frequency={freq}:sample_rate={SR}:duration={seconds}",
-          "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-          "-c:a", "aac", "-shortest", out])
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=red:s=320x180:r=30:d={seconds}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:sample_rate={SR}:duration={seconds}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            out,
+        ]
+    )
     print(f"wrote {out}")
     return out
 
 
 def pattern(freq: float, seconds: float) -> str:
     out = str(d.out_dir() / f"pattern_{int(seconds)}s.mp4")
-    _run(["-f", "lavfi", "-i", f"testsrc=size=320x180:rate=30:duration={seconds}",
-          "-f", "lavfi", "-i",
-          f"sine=frequency={freq}:sample_rate={SR}:duration={seconds}",
-          "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-          "-c:a", "aac", "-shortest", out])
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=size=320x180:rate=30:duration={seconds}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:sample_rate={SR}:duration={seconds}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            out,
+        ]
+    )
     print(f"wrote {out}")
     return out
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("kind", choices=["tone", "clip", "pattern", "all"])
     ap.add_argument("--freq", type=float, default=440.0)
     ap.add_argument("-t", "--seconds", type=float, default=30.0)

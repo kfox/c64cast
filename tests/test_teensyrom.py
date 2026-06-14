@@ -5,6 +5,7 @@ on the wire and replies with queued tokens, so the framing (big-endian
 tokens + fields), the ack handshake, and the PostFile/LaunchFile/reset
 workflows are pinned against the firmware protocol.
 """
+
 from __future__ import annotations
 
 import struct
@@ -37,8 +38,8 @@ class LoopbackTransport(TRTransport):
 
     def __init__(self):
         self.sent = bytearray()
-        self._inbox = bytearray()   # binary replies (recv_exact)
-        self._stale = bytearray()   # unsolicited/text (drain_text)
+        self._inbox = bytearray()  # binary replies (recv_exact)
+        self._stale = bytearray()  # unsolicited/text (drain_text)
         self.closed = False
 
     # test helpers
@@ -89,8 +90,7 @@ class FramingTest(unittest.TestCase):
         self.t.queue_token(TOK_ACK)
         self.client.write_segment(0xD020, b"\x0e")
         # 0x64FB, addr $D020, len 1, data 0x0E
-        self.assertEqual(self.t.sent, bytes([0x64, 0xFB, 0xD0, 0x20,
-                                             0x00, 0x01, 0x0E]))
+        self.assertEqual(self.t.sent, bytes([0x64, 0xFB, 0xD0, 0x20, 0x00, 0x01, 0x0E]))
 
     def test_write_segment_nak_raises(self):
         self.t.queue_token(TOK_FAIL)
@@ -99,12 +99,12 @@ class FramingTest(unittest.TestCase):
 
     def test_reply_token_parsed_little_endian(self):
         # Firmware SendU16 emits LSB first: Ack 0x64CC arrives as bytes CC 64.
-        self.t.queue_raw(b"\xCC\x64")
-        self.client.write_segment(0xD020, b"\x02")   # must NOT raise
+        self.t.queue_raw(b"\xcc\x64")
+        self.client.write_segment(0xD020, b"\x02")  # must NOT raise
 
     def test_big_endian_ack_bytes_are_rejected(self):
         # The pre-fix bug: bytes 64 CC parsed little-endian = 0xCC64, not an ack.
-        self.t.queue_raw(b"\x64\xCC")
+        self.t.queue_raw(b"\x64\xcc")
         with self.assertRaises(TRError):
             self.client.write_segment(0xD020, b"\x02")
 
@@ -131,8 +131,8 @@ class FramingTest(unittest.TestCase):
         self.assertEqual(self.t.sent, bytes(expected))
 
     def test_launch_file_framing(self):
-        self.t.queue_token(TOK_ACK)   # open
-        self.t.queue_token(TOK_ACK)   # launch
+        self.t.queue_token(TOK_ACK)  # open
+        self.t.queue_token(TOK_ACK)  # launch
         self.client.launch_file("c64cast/x.prg", DRIVE_SD)
         expected = bytearray([0x64, 0x44, DRIVE_SD])
         expected += b"c64cast/x.prg\x00"
@@ -149,15 +149,14 @@ class FramingTest(unittest.TestCase):
         self.t.queue_stale(b"\x81\x9b")
         for _ in range(3):
             self.t.queue_token(TOK_ACK)
-        self.client.post_file(b"AB", "x.prg", DRIVE_SD)   # must NOT raise
+        self.client.post_file(b"AB", "x.prg", DRIVE_SD)  # must NOT raise
 
 
 class BackendTest(unittest.TestCase):
     def _backend(self):
         t = LoopbackTransport()
-        t.queue_token(TOK_FW_FULL)   # consumed by connect()'s fw_check
-        b = TeensyROMBackend(t, profile=replace(TEENSYROM_PROFILE),
-                             storage="sd")
+        t.queue_token(TOK_FW_FULL)  # consumed by connect()'s fw_check
+        b = TeensyROMBackend(t, profile=replace(TEENSYROM_PROFILE), storage="sd")
         return b, t
 
     def test_emit_chunks_large_writes(self):
@@ -174,7 +173,7 @@ class BackendTest(unittest.TestCase):
 
     def test_emit_absorbs_transport_error(self):
         b, t = self._backend()
-        t.queue_token(TOK_FAIL)   # first segment NAK
+        t.queue_token(TOK_FAIL)  # first segment NAK
         # Must not raise — a blip shouldn't crash the playlist.
         b.write_memory("d020", "0e")
         self.assertEqual(b.stats["errors"], 1)
@@ -210,22 +209,22 @@ class BackendTest(unittest.TestCase):
         self.assertLess(i_del, i_post)
         self.assertLess(i_post, i_launch)
         # The spin MC is written to $C000 (BE address bytes C0 00).
-        self.assertEqual(sent[i_write:i_write + 4], b"\x64\xfb\xc0\x00")
+        self.assertEqual(sent[i_write : i_write + 4], b"\x64\xfb\xc0\x00")
 
     def test_bring_up_tolerates_missing_file_on_delete(self):
         # First-ever run: the file doesn't exist, so DeleteFile NAKs; bring-up
         # must ignore that and still PostFile + LaunchFile.
         b, t = self._backend()
-        t.queue_token(TOK_ACK)    # spin MC write
-        t.queue_token(TOK_ACK)    # delete open
-        t.queue_token(TOK_FAIL)   # delete body -> file not found (ignored)
+        t.queue_token(TOK_ACK)  # spin MC write
+        t.queue_token(TOK_ACK)  # delete open
+        t.queue_token(TOK_FAIL)  # delete body -> file not found (ignored)
         for _ in range(3):
-            t.queue_token(TOK_ACK)   # post open/header/data
+            t.queue_token(TOK_ACK)  # post open/header/data
         for _ in range(2):
-            t.queue_token(TOK_ACK)   # launch open/body
-        t.queue_token(TOK_ACK)       # post-launch screen clear
+            t.queue_token(TOK_ACK)  # launch open/body
+        t.queue_token(TOK_ACK)  # post-launch screen clear
         b.run_basic_clear_loop()
-        self.assertIn(b"\x64\x44", bytes(t.sent))   # launch still happened
+        self.assertIn(b"\x64\x44", bytes(t.sent))  # launch still happened
 
     def test_semantic_helpers_are_pure_writes(self):
         # silence_sid / disable_case_switch are inherited from the buffered
@@ -233,7 +232,7 @@ class BackendTest(unittest.TestCase):
         b, t = self._backend()
         for _ in range(10):
             t.queue_token(TOK_ACK)
-        b.disable_case_switch()   # $0291 = $80
+        b.disable_case_switch()  # $0291 = $80
         # last write_segment frame ends with the value byte 0x80
         self.assertEqual(b.stats["writes"], 1)
 

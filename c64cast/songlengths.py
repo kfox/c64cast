@@ -18,6 +18,7 @@ Usage:
     db = LengthsDB.load("Songlengths.md5")
     secs = db.lookup(sid_bytes, song=1)   # → float or None
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -54,8 +55,7 @@ def md5_of_sid(sid_bytes: bytes) -> str:
         raise ValueError("SID file too short for header")
     data_offset = int.from_bytes(sid_bytes[6:8], "big")
     if data_offset >= len(sid_bytes):
-        raise ValueError(
-            f"SID data_offset {data_offset} >= file size {len(sid_bytes)}")
+        raise ValueError(f"SID data_offset {data_offset} >= file size {len(sid_bytes)}")
     return hashlib.md5(sid_bytes[data_offset:]).hexdigest()
 
 
@@ -64,6 +64,7 @@ class LengthsDB:
     """Loaded HVSC Songlengths.md5 mapping md5_hex → list of per-subtune
     seconds. ``None`` entries inside the list mean "duration unknown for
     that subtune"."""
+
     entries: dict[str, list[float | None]]
 
     @classmethod
@@ -86,8 +87,7 @@ class LengthsDB:
                 for tok in durs_str.split():
                     durs.append(_parse_duration(tok))
                 entries[md5_hex] = durs
-        log.info("songlengths: loaded %d entries from %s",
-                 len(entries), path)
+        log.info("songlengths: loaded %d entries from %s", len(entries), path)
         return cls(entries=entries)
 
     def lookup(self, sid_bytes: bytes, song: int = 1) -> float | None:
@@ -106,8 +106,7 @@ class LengthsDB:
         return durs[idx]
 
 
-def song_length(sid_bytes: bytes, song: int,
-                lengths_path: str | None = None) -> float | None:
+def song_length(sid_bytes: bytes, song: int, lengths_path: str | None = None) -> float | None:
     """Convenience: parse `lengths_path` once-per-call and look up.
 
     For long-lived processes that look up many SIDs, instantiate
