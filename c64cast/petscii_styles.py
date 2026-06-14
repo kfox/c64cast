@@ -10,6 +10,7 @@ glyph, color-only) because the 40×25 grid loses too much detail for
 strict photo-faithfulness anyway. The wild styles compensate by giving
 the eye geometric texture or saturated color blocks instead.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,8 +36,14 @@ log = logging.getLogger(__name__)
 # pick at startup, after which cycling proceeds through the concrete
 # styles from wherever the random pick landed.
 STYLE_NAMES = (
-    "default", "halftone", "random_glyph", "letter_rain",
-    "neon", "inverse_pop", "hatch", "color_only",
+    "default",
+    "halftone",
+    "random_glyph",
+    "letter_rain",
+    "neon",
+    "inverse_pop",
+    "hatch",
+    "color_only",
 )
 
 # Pseudonym for the "pick a concrete style at setup" sentinel.
@@ -48,13 +55,14 @@ def validate_style(name: str) -> None:
         return
     if name not in STYLE_NAMES:
         raise ValueError(
-            f"petscii style must be one of {(*STYLE_NAMES, RANDOM_STYLE)}, "
-            f"got {name!r}")
+            f"petscii style must be one of {(*STYLE_NAMES, RANDOM_STYLE)}, got {name!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _luma(img: np.ndarray) -> np.ndarray:
     """Per-cell grayscale luminance, flattened to (1000,) uint8."""
@@ -103,6 +111,7 @@ def _quantize_to_spectrum(
 # Style base + concrete styles
 # ---------------------------------------------------------------------------
 
+
 class PetsciiStyle:
     """One style for PETSCIIDisplayMode. Subclasses implement compose().
 
@@ -110,6 +119,7 @@ class PetsciiStyle:
     poke to $D020/$D021 when this style becomes active. The mode owns the
     actual VIC writes; styles just declare their preferences.
     """
+
     name = "base"
     border: int = 0
     background: int = 0
@@ -135,6 +145,7 @@ class DefaultStyle(PetsciiStyle):
     """Original luma → 11-char ramp + nearest-palette color per cell.
 
     Faithful, low-key, "live PETSCII feed" look. The other styles are wilder."""
+
     name = "default"
     CHARS = np.array(
         [0x20, 0x2E, 0x3A, 0x2D, 0x3D, 0x2B, 0x2A, 0x23, 0x25, 0x40, 0xA0],
@@ -150,6 +161,7 @@ class DefaultStyle(PetsciiStyle):
 
 class HalftoneStyle(PetsciiStyle):
     """5-level block-coverage ramp. Chunky, high-contrast geometric look."""
+
     name = "halftone"
     # Picked by visual coverage: blank → bottom-quarter → bottom-half →
     # right-half → full. Exact char choices vary by ROM but all read as
@@ -174,18 +186,32 @@ class RandomGlyphStyle(PetsciiStyle):
 
     Curated source set: bullets, arrows, lines, partial blocks, geometric
     chars. Skip ASCII letters/digits (would read as garbled text)."""
+
     name = "random_glyph"
-    GLYPHS = np.array([
-        0x51,           # bullet (Q in upper case)
-        0x57, 0x58,     # W X
-        0x5F,           # back-arrow
-        0x69, 0x6A,     # graphics chars
-        0x71, 0x73, 0x77,
-        0x60, 0x62, 0x64,
-        0xA0,           # full block
-        0xE0, 0xE1, 0xE2,
-        0xF0, 0xF1, 0xF2,
-    ], dtype=np.uint8)
+    GLYPHS = np.array(
+        [
+            0x51,  # bullet (Q in upper case)
+            0x57,
+            0x58,  # W X
+            0x5F,  # back-arrow
+            0x69,
+            0x6A,  # graphics chars
+            0x71,
+            0x73,
+            0x77,
+            0x60,
+            0x62,
+            0x64,
+            0xA0,  # full block
+            0xE0,
+            0xE1,
+            0xE2,
+            0xF0,
+            0xF1,
+            0xF2,
+        ],
+        dtype=np.uint8,
+    )
 
     def __init__(self):
         self._screen: np.ndarray | None = None
@@ -206,6 +232,7 @@ class RandomGlyphStyle(PetsciiStyle):
 
 class LetterRainStyle(PetsciiStyle):
     """Luma → A-Z. Matrix-style cascade. Color is per-cell quantize."""
+
     name = "letter_rain"
     # Screen codes 0x01-0x1A are A-Z in the upper-case ROM.
     CHARS = np.arange(0x01, 0x1B, dtype=np.uint8)
@@ -221,9 +248,10 @@ class NeonStyle(PetsciiStyle):
     """Default char ramp + chromatic-only color picker. No grays/whites in
     the FG; only the 10 chromatic palette entries — even on a desaturated
     frame. Reads as 80s-arcade saturated."""
+
     name = "neon"
     CHARS = DefaultStyle.CHARS
-    background = 0   # black background so neon FG pops
+    background = 0  # black background so neon FG pops
 
     def compose(self, img, channel_boost, hue_corrections):
         screen = _ramp_to_chars(_luma(img), self.CHARS)
@@ -234,17 +262,16 @@ class NeonStyle(PetsciiStyle):
 class InversePopStyle(PetsciiStyle):
     """Every cell is space-or-block by luma threshold; FG limited to a
     curated 4-color pop-art palette."""
+
     name = "inverse_pop"
     # Pop-art-y high-contrast 4-color set: white, light red, cyan, yellow.
     POP_PALETTE_INDICES = np.array([1, 10, 3, 7], dtype=np.uint8)
-    background = 0   # black background; FG colors do all the heavy lifting
+    background = 0  # black background; FG colors do all the heavy lifting
 
     def compose(self, img, channel_boost, hue_corrections):
         luma = _luma(img)
         # Threshold at 128 → all-or-nothing fill.
-        screen = np.where(luma >= 128,
-                          SCREEN.SC_FULL_BLOCK,
-                          SCREEN.SC_SPACE).astype(np.uint8)
+        screen = np.where(luma >= 128, SCREEN.SC_FULL_BLOCK, SCREEN.SC_SPACE).astype(np.uint8)
         # Quantize the boosted color, then map to nearest of the 4 pop
         # picks using a precomputed pairwise distance table.
         boosted = boost_saturation(img, 1.8)
@@ -254,16 +281,19 @@ class InversePopStyle(PetsciiStyle):
         # Cached once at class load; cheap to recompute per-instance if needed.
         if not hasattr(InversePopStyle, "_LUT"):
             from .palette import C64_PALETTE_BGR
+
             pairwise = quantize_distances(C64_PALETTE_BGR)  # (16, 16)
             InversePopStyle._LUT = np.argmin(  # type: ignore[attr-defined]
-                pairwise[:, self.POP_PALETTE_INDICES], axis=1).astype(np.uint8)
-        slot = InversePopStyle._LUT[pix_idx]   # 0..3
+                pairwise[:, self.POP_PALETTE_INDICES], axis=1
+            ).astype(np.uint8)
+        slot = InversePopStyle._LUT[pix_idx]  # 0..3
         color = self.POP_PALETTE_INDICES[slot]
         return screen, color
 
 
 class HatchStyle(PetsciiStyle):
     """Luma → 5-level cross-hatch shading. Sketchy, line-art look."""
+
     name = "hatch"
     # blank → "/" → "\" → "X" → full. Picked from the upper-ROM graphics
     # block; some readers may render these slightly differently but the
@@ -285,6 +315,7 @@ class ColorOnlyStyle(PetsciiStyle):
 
     Pure 40×25 color blocks — the screen becomes an abstract Mondrian of
     the source frame's palette distribution."""
+
     name = "color_only"
     background = 0
 
@@ -300,14 +331,14 @@ class ColorOnlyStyle(PetsciiStyle):
 # ---------------------------------------------------------------------------
 
 _STYLE_REGISTRY: dict[str, type[PetsciiStyle]] = {
-    "default":      DefaultStyle,
-    "halftone":     HalftoneStyle,
+    "default": DefaultStyle,
+    "halftone": HalftoneStyle,
     "random_glyph": RandomGlyphStyle,
-    "letter_rain":  LetterRainStyle,
-    "neon":         NeonStyle,
-    "inverse_pop":  InversePopStyle,
-    "hatch":        HatchStyle,
-    "color_only":   ColorOnlyStyle,
+    "letter_rain": LetterRainStyle,
+    "neon": NeonStyle,
+    "inverse_pop": InversePopStyle,
+    "hatch": HatchStyle,
+    "color_only": ColorOnlyStyle,
 }
 
 
@@ -318,8 +349,8 @@ def make_style(name: str) -> PetsciiStyle:
     cls = _STYLE_REGISTRY.get(name)
     if cls is None:
         raise ValueError(
-            f"unknown petscii style {name!r} "
-            f"(known: {', '.join(sorted(_STYLE_REGISTRY))})")
+            f"unknown petscii style {name!r} (known: {', '.join(sorted(_STYLE_REGISTRY))})"
+        )
     style = cls()
     style.reset()
     return style

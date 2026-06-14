@@ -35,6 +35,7 @@ MODES = [
     ("scripts/diags/out/r_rate_commercial_mhires_30fps.toml", "mhires@30fps"),
 ]
 
+
 def _read_r(url: str) -> int | None:
     """Read R as a ring address, or None if unreadable."""
     b = d.rest_readmem(READ_PTR_ADDR, 2, url)
@@ -42,6 +43,7 @@ def _read_r(url: str) -> int | None:
         return None
     addr = b[0] | (b[1] << 8)
     return addr if RING_BUFFER_ADDR <= addr < RING_BUFFER_END else None
+
 
 def _linfit(ts: list[float], ys: list[float]) -> tuple[float, float]:
     """Least-squares slope and intercept."""
@@ -55,19 +57,22 @@ def _linfit(ts: list[float], ys: list[float]) -> tuple[float, float]:
     slope = sxy / sxx if sxx else 0.0
     return slope, my - slope * mt
 
+
 def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: float = 45.0) -> dict:
     """Measure R_rate for one mode."""
     cfg = Path(config_path)
     if not cfg.exists():
         return {"error": f"config not found: {cfg}"}
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"[{mode_name.upper()}] launching {cfg.name}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
-    app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                            "--config", str(cfg), "--url", url],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    app = subprocess.Popen(
+        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
     boot_wait = 12.0  # commercial takes longer to start
     print(f"[boot] waiting {boot_wait}s for boot + video playback")
@@ -133,14 +138,15 @@ def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: floa
 
     return result
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--url", default=d.U64_URL, help="U64 URL")
-    ap.add_argument("--duration", type=float, default=45.0,
-                    help="poll duration per mode (default 45)")
+    ap.add_argument(
+        "--duration", type=float, default=45.0, help="poll duration per mode (default 45)"
+    )
     args = ap.parse_args()
 
     results: list[dict] = []
@@ -154,9 +160,9 @@ def main() -> int:
         return 1
 
     # Summary
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("[SUMMARY]")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     valid_results = [r for r in results if "error" not in r]
     if not valid_results:
@@ -164,10 +170,12 @@ def main() -> int:
         return 1
 
     print(f"\n{'Mode':<15} {'R_rate (B/s)':<15} {'Slowdown':<12} {'Latch bump':<12}")
-    print(f"{'-'*55}")
+    print(f"{'-' * 55}")
     for r in valid_results:
-        print(f"{r['mode']:<15} {r['r_rate_bps']:>8.1f}       "
-              f"{r['slowdown_pct']:>6.2f}%     {r['nmi_latch_compensation_pct']:>+6.2f}%")
+        print(
+            f"{r['mode']:<15} {r['r_rate_bps']:>8.1f}       "
+            f"{r['slowdown_pct']:>6.2f}%     {r['nmi_latch_compensation_pct']:>+6.2f}%"
+        )
 
     # Analysis
     print("\n[ANALYSIS]")
@@ -177,19 +185,26 @@ def main() -> int:
         if r60 and r30:
             improvement = r60["slowdown_pct"] - r30["slowdown_pct"]
             print("FPS impact on mhires compensation:")
-            print(f"  60 fps: {r60['slowdown_pct']:.2f}% slowdown → latch +{r60['nmi_latch_compensation_pct']:.2f}%")
-            print(f"  30 fps: {r30['slowdown_pct']:.2f}% slowdown → latch +{r30['nmi_latch_compensation_pct']:.2f}%")
+            print(
+                f"  60 fps: {r60['slowdown_pct']:.2f}% slowdown → latch +{r60['nmi_latch_compensation_pct']:.2f}%"
+            )
+            print(
+                f"  30 fps: {r30['slowdown_pct']:.2f}% slowdown → latch +{r30['nmi_latch_compensation_pct']:.2f}%"
+            )
             print(f"  improvement: {improvement:.2f}% (60→30 fps)")
             if improvement > 2.0:
                 print("\n[FINDING] Running mhires at 30 fps gives significant pitch improvement.")
                 print("         Consider: a) set target_fps=30 for commercial scenes")
-                print(f"                 OR b) adaptive latch bump to compensate ~{valid_results[0]['nmi_latch_compensation_pct']:.2f}%")
+                print(
+                    f"                 OR b) adaptive latch bump to compensate ~{valid_results[0]['nmi_latch_compensation_pct']:.2f}%"
+                )
             else:
                 print("\n[FINDING] FPS has minimal effect. Need adaptive latch compensation.")
 
     print("\n[final reset]")
     d.rest_reset(args.url)
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

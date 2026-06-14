@@ -22,6 +22,7 @@ Chord rule: SHIFT is dropped on any tick where C= or CTRL is also held,
 so a user reaching for pause/skip with a thumb on shift doesn't get a
 phantom cycle. C= + CTRL still prefers pause over skip.
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,10 +40,13 @@ BIT_CONTROL = 0x04
 
 
 class CommodoreKeyPoller:
-    def __init__(self, api: C64Backend,
-                 poll_interval_s: float = 0.1,
-                 hold_threshold_s: float = 3.0,
-                 name: str = "system"):
+    def __init__(
+        self,
+        api: C64Backend,
+        poll_interval_s: float = 0.1,
+        hold_threshold_s: float = 3.0,
+        name: str = "system",
+    ):
         self.api = api
         self.name = name
         # Per-instance logger so ensemble runs can tell which system a
@@ -52,17 +56,19 @@ class CommodoreKeyPoller:
         self.log = logging.getLogger(f"c64cast.keyboard.{name}")
         self.poll_interval_s = poll_interval_s
         self.hold_threshold_s = hold_threshold_s
-        self._poll = PollThread(self._loop, name="cbm-key-poll",
-                                manual=True, join_timeout=1.0)
+        self._poll = PollThread(self._loop, name="cbm-key-poll", manual=True, join_timeout=1.0)
         self._pause_event: threading.Event | None = None
         self._resume_event: threading.Event | None = None
         self._skip_event: threading.Event | None = None
         self._cycle_event: threading.Event | None = None
 
-    def start(self, pause_event: threading.Event,
-              resume_event: threading.Event,
-              skip_event: threading.Event | None = None,
-              cycle_event: threading.Event | None = None):
+    def start(
+        self,
+        pause_event: threading.Event,
+        resume_event: threading.Event,
+        skip_event: threading.Event | None = None,
+        cycle_event: threading.Event | None = None,
+    ):
         """Begin polling.
 
         pause_event   set when C= is pressed during normal play.
@@ -99,9 +105,9 @@ class CommodoreKeyPoller:
         assert self._pause_event is not None
         assert self._resume_event is not None
         held_since: float | None = None
-        last_cbm_seen = False     # edge detect for pause trigger
-        last_ctrl_seen = False    # edge detect for skip trigger
-        last_shift_seen = False   # edge detect for cycle trigger
+        last_cbm_seen = False  # edge detect for pause trigger
+        last_ctrl_seen = False  # edge detect for skip trigger
+        last_shift_seen = False  # edge detect for cycle trigger
 
         while not stop.wait(self.poll_interval_s):
             mod = self._read_modifiers()
@@ -119,8 +125,9 @@ class CommodoreKeyPoller:
                     if held_since is None:
                         held_since = time.monotonic()
                     elif time.monotonic() - held_since >= self.hold_threshold_s:
-                        self.log.info("C= held %.1fs while paused — resuming",
-                                 self.hold_threshold_s)
+                        self.log.info(
+                            "C= held %.1fs while paused — resuming", self.hold_threshold_s
+                        )
                         self._resume_event.set()
                         held_since = None
                 else:
@@ -145,8 +152,7 @@ class CommodoreKeyPoller:
                 elif ctrl_edge and self._skip_event is not None:
                     self.log.info("CTRL press detected — skipping to next scene")
                     self._skip_event.set()
-                elif (shift_edge and not cbm and not ctrl
-                      and self._cycle_event is not None):
+                elif shift_edge and not cbm and not ctrl and self._cycle_event is not None:
                     self.log.info("SHIFT press detected — cycling display style")
                     self._cycle_event.set()
                 last_cbm_seen = cbm

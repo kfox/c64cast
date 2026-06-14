@@ -10,6 +10,7 @@ stripped.
 These tests exercise the scene-side hooks (no U64 hardware, no PyAV). cv2 is
 used to write tiny real PNGs for the slideshow path.
 """
+
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
@@ -60,8 +61,7 @@ class CommercialPrepareNextTest(unittest.TestCase):
         scene.prepare_next()
         self.assertTrue(scene._prepared)
         self.assertIn(scene.name, ("Commercial: alpha", "Commercial: beta"))
-        self.assertIn(os.path.basename(scene.filepath),
-                      ("alpha.mp4", "beta.mp4"))
+        self.assertIn(os.path.basename(scene.filepath), ("alpha.mp4", "beta.mp4"))
 
     def test_single_entry_init_name_has_no_extension(self):
         f = os.path.join(self.tmp.name, "alpha.mp4")
@@ -130,6 +130,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
 
     def _bare_scene(self):
         from c64cast.waveform import WaveformScene
+
         scene = WaveformScene.__new__(WaveformScene)
         scene._candidates = ["a.sid", "b.sid"]
         scene._prepared = False
@@ -142,6 +143,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
 
         def fake_load():
             scene.load_calls += 1
+
         scene._pick_and_load_sid = fake_load  # type: ignore[method-assign]
         scene._resolve_duration_for_current_sid = lambda: 42.0  # type: ignore[method-assign]
         return scene
@@ -156,6 +158,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
 
     def test_setup_consumes_prepared_pick_without_reloading(self):
         from c64cast.scenes import Scene
+
         scene = self._bare_scene()
         scene.prepare_next()
         self.assertEqual(scene.load_calls, 1)

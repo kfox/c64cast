@@ -46,7 +46,7 @@ from c64cast.audio import (
 )
 
 # Read-pointer operand: NMI_ROUTINE offset 5/6 -> LDA $00?? operand = $C025/$C026.
-READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5          # $C025 (LO), $C026 (HI)
+READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 (LO), $C026 (HI)
 
 
 def _read_r(url: str) -> int | None:
@@ -75,15 +75,24 @@ def main() -> int:
     )
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--config", help="c64cast TOML (host-DMA audio) to launch")
-    g.add_argument("--attach", action="store_true",
-                   help="probe an already-running c64cast (don't launch/reset)")
-    ap.add_argument("-t", "--seconds", type=float, default=40.0,
-                    help="poll duration after boot (default 40)")
+    g.add_argument(
+        "--attach",
+        action="store_true",
+        help="probe an already-running c64cast (don't launch/reset)",
+    )
+    ap.add_argument(
+        "-t", "--seconds", type=float, default=40.0, help="poll duration after boot (default 40)"
+    )
     ap.add_argument("--hz", type=float, default=50.0, help="poll rate (default 50)")
-    ap.add_argument("--boot", type=float, default=8.0,
-                    help="seconds to wait for boot + first audio (default 8)")
-    ap.add_argument("--sample-rate", type=int, default=8000,
-                    help="nominal W rate = audio sample_rate (default 8000)")
+    ap.add_argument(
+        "--boot", type=float, default=8.0, help="seconds to wait for boot + first audio (default 8)"
+    )
+    ap.add_argument(
+        "--sample-rate",
+        type=int,
+        default=8000,
+        help="nominal W rate = audio sample_rate (default 8000)",
+    )
     ap.add_argument("--label", default="hostdma_drift")
     ap.add_argument("--url", default=d.U64_URL)
     ap.add_argument("--no-reset", action="store_true")
@@ -95,8 +104,9 @@ def main() -> int:
         if not cfg.exists():
             ap.error(f"config not found: {cfg}")
         print(f"[run] python -m c64cast --config {cfg}")
-        app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                                "--config", str(cfg), "--url", args.url])
+        app = subprocess.Popen(
+            [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+        )
         print(f"[boot] waiting {args.boot:g}s for boot + first audio")
         time.sleep(args.boot)
 
@@ -109,8 +119,10 @@ def main() -> int:
     cum = 0
 
     print(f"[probe] polling R($C025/26) for {args.seconds:g}s @ {args.hz:g}Hz")
-    print(f"        ring=${RING_BUFFER_ADDR:04X}-${RING_BUFFER_END - 1:04X} "
-          f"size={RING_BUFFER_SIZE}  nominal W={args.sample_rate} B/s")
+    print(
+        f"        ring=${RING_BUFFER_ADDR:04X}-${RING_BUFFER_END - 1:04X} "
+        f"size={RING_BUFFER_SIZE}  nominal W={args.sample_rate} B/s"
+    )
     t0 = time.time()
     next_t = t0
     try:
@@ -144,8 +156,7 @@ def main() -> int:
             print(f"[reset] machine:reset -> {d.rest_reset(args.url)}")
 
     if len(rows) < 10:
-        print(f"[FAIL] only {len(rows)} samples ({missed} missed). "
-              "Is audio actually playing?")
+        print(f"[FAIL] only {len(rows)} samples ({missed} missed). Is audio actually playing?")
         return 1
 
     with csv_path.open("w") as f:
@@ -162,12 +173,16 @@ def main() -> int:
     print(f"\n[probe] {len(rows)} samples, {missed} missed, span={span:.1f}s")
     print(f"  R_rate (NMI consumer, measured) = {r_rate:8.1f} B/s")
     print(f"  W_rate (host-DMA producer, nom) = {w_rate:8.1f} B/s")
-    print(f"  drift (W - R)                   = {drift:+8.1f} B/s "
-          f"({'W faster -> echo' if drift > 0 else 'R faster -> underrun'})")
+    print(
+        f"  drift (W - R)                   = {drift:+8.1f} B/s "
+        f"({'W faster -> echo' if drift > 0 else 'R faster -> underrun'})"
+    )
     if abs(drift) > 1e-6:
         lap_s = RING_BUFFER_SIZE / abs(drift)
-        print(f"  predicted lap (echo) period     = {lap_s:8.1f} s "
-              f"(ring {RING_BUFFER_SIZE} B / |drift|)")
+        print(
+            f"  predicted lap (echo) period     = {lap_s:8.1f} s "
+            f"(ring {RING_BUFFER_SIZE} B / |drift|)"
+        )
     print(f"  csv -> {csv_path}")
     return 0
 

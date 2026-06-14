@@ -11,6 +11,7 @@ conductor + follower hooks (which actually drive `publish_bits`/
 `advance` from the rightmost system's render path, and consume
 `snapshot()` from the followers') land in commit 14.
 """
+
 from __future__ import annotations
 
 import threading
@@ -68,7 +69,8 @@ class BigTextSpanOrchestrator(Orchestrator):
                 f"big_text span: conductor must be the rightmost system "
                 f"({rightmost_name!r}), got {self.conductor_name!r}. "
                 "Move the orchestrate=true scene to the rightmost "
-                "per-system TOML.")
+                "per-system TOML."
+            )
         # Reset only the scroll counter — `bits` is set by publish_bits
         # which the conductor's big_text overlay calls BEFORE begin() so
         # followers see populated state the moment their interrupt
@@ -84,8 +86,9 @@ class BigTextSpanOrchestrator(Orchestrator):
         with self._state_lock:
             self._bits = None
 
-    def publish_bits(self, *, bits: np.ndarray, color: int, rainbow: bool,
-                     px_per_frame: int) -> None:
+    def publish_bits(
+        self, *, bits: np.ndarray, color: int, rainbow: bool, px_per_frame: int
+    ) -> None:
         """Conductor → orchestrator: install the per-message render
         inputs. Called from the rightmost system's big_text setup()
         once per message; followers consume them via snapshot().
@@ -140,8 +143,7 @@ class BigTextSpanOrchestrator(Orchestrator):
             n = len(self.ensemble.stacks)
             return self._screen_w_px * n + n_src_px * 8
 
-    def local_x_left_px(self, follower_index: int,
-                        abs_scroll_px: int | None = None) -> int:
+    def local_x_left_px(self, follower_index: int, abs_scroll_px: int | None = None) -> int:
         """Compute a follower's local `x_left_px` given its left-to-
         right index (0 = leftmost, N-1 = rightmost) and the current
         abs_scroll_px (defaults to the orchestrator's latest published

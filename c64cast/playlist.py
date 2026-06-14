@@ -6,6 +6,7 @@ the playlist.
 The interstitial is built via an injected ``interstitial_factory(name) ->
 Scene`` so callers can swap in custom designs (e.g. the colorful
 InterstitialScene) or stub it out for tests."""
+
 from __future__ import annotations
 
 import logging
@@ -27,18 +28,22 @@ FollowerSceneFactory = Callable[["SceneCfg"], Scene]
 
 
 class Playlist:
-    def __init__(self, scenes: list[Scene], api: C64Backend,
-                 target_fps: float,
-                 heartbeat_interval: float = 10.0,
-                 stop_event: threading.Event | None = None,
-                 interstitial_factory: InterstitialFactory | None = None,
-                 key_poller: Any = None,
-                 vision_controller: Any = None,
-                 profiler: FrameProfiler | NullProfiler | None = None,
-                 name: str = "system",
-                 loop: bool = True,
-                 audio: Any = None,
-                 audio_calibration: dict[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        scenes: list[Scene],
+        api: C64Backend,
+        target_fps: float,
+        heartbeat_interval: float = 10.0,
+        stop_event: threading.Event | None = None,
+        interstitial_factory: InterstitialFactory | None = None,
+        key_poller: Any = None,
+        vision_controller: Any = None,
+        profiler: FrameProfiler | NullProfiler | None = None,
+        name: str = "system",
+        loop: bool = True,
+        audio: Any = None,
+        audio_calibration: dict[str, float] | None = None,
+    ) -> None:
         if not scenes:
             raise ValueError("Playlist needs at least one scene")
         # Per-instance logger so ensemble runs can tell which system a
@@ -67,9 +72,7 @@ class Playlist:
         self.frame_time = 1.0 / target_fps
         self.heartbeat_interval = heartbeat_interval
         self.stop_event = stop_event or threading.Event()
-        self.interstitial_factory = (
-            interstitial_factory or self._default_interstitial_factory()
-        )
+        self.interstitial_factory = interstitial_factory or self._default_interstitial_factory()
         self.key_poller = key_poller
         # Optional vision controller — a second, camera-driven control surface
         # that sets the same pause/resume/skip/cycle events as the keyboard
@@ -118,8 +121,9 @@ class Playlist:
         self._broadcast_resume: threading.Event | None = None
         self.build_follower_scene: FollowerSceneFactory | None = None
 
-    def request_reload(self, new_scenes: list[Scene],
-                       new_interstitial: InterstitialFactory | None = None) -> None:
+    def request_reload(
+        self, new_scenes: list[Scene], new_interstitial: InterstitialFactory | None = None
+    ) -> None:
         """Queue a playlist swap. The run loop applies it at the next
         natural advance boundary (after the current scene finishes, or
         immediately if the current scene is an interstitial). Pass None
@@ -141,8 +145,7 @@ class Playlist:
             self.reload_event.clear()
         if not new_scenes:
             return
-        self.log.info("playlist: reloading (%d → %d scenes)",
-                 len(self.scenes), len(new_scenes))
+        self.log.info("playlist: reloading (%d → %d scenes)", len(self.scenes), len(new_scenes))
         if self.current is not None:
             self._safe_teardown(self.current)
             self.current = None
@@ -157,6 +160,7 @@ class Playlist:
         # Late import so tests that supply their own factory don't have
         # to pull in backgrounds + InterstitialCfg.
         from .interstitial import InterstitialScene
+
         api = self.api
         return lambda name: InterstitialScene(api, name)
 
@@ -173,9 +177,7 @@ class Playlist:
         if scene_fps is not None and scene_fps > 0:
             return 1.0 / float(scene_fps)
         dm = getattr(scene, "display_mode", None)
-        mode_fps: float | None = (
-            getattr(dm, "default_target_fps", None) if dm else None
-        )
+        mode_fps: float | None = getattr(dm, "default_target_fps", None) if dm else None
         if mode_fps is not None and mode_fps > 0:
             return 1.0 / float(mode_fps)
         return 1.0 / self.default_target_fps
@@ -202,9 +204,11 @@ class Playlist:
                 scene.__dict__["_audio_lock_held"] = True
                 return True
             if first_wait:
-                self.log.info("audio-bearing scene %r waiting — slot "
-                              "held by %s", scene.name,
-                              self.ensemble.audio_holder)
+                self.log.info(
+                    "audio-bearing scene %r waiting — slot held by %s",
+                    scene.name,
+                    self.ensemble.audio_holder,
+                )
                 first_wait = False
             self.stop_event.wait(timeout=poll_interval)
         return False
@@ -240,12 +244,13 @@ class Playlist:
                     scene.__dict__["_audio_lock_held"] = True
                     return idx
                 if first_pass_log:
-                    self.log.info("skipping audio-bearing %r — slot held "
-                                  "by %s", scene.name,
-                                  self.ensemble.audio_holder)
+                    self.log.info(
+                        "skipping audio-bearing %r — slot held by %s",
+                        scene.name,
+                        self.ensemble.audio_holder,
+                    )
             if first_full_wait:
-                self.log.info("all scenes audio-gated; waiting for "
-                              "ensemble audio slot to free")
+                self.log.info("all scenes audio-gated; waiting for ensemble audio slot to free")
                 first_full_wait = False
             self.stop_event.wait(timeout=poll_interval)
         return None
@@ -257,14 +262,15 @@ class Playlist:
                 if not self._wait_for_audio_claim(scene):
                     return
                 self.current = scene
-                self.log.info("scene %r (single-scene mode, %s)",
-                         self.current.name,
-                         "looping" if self.loop else "once-through")
+                self.log.info(
+                    "scene %r (single-scene mode, %s)",
+                    self.current.name,
+                    "looping" if self.loop else "once-through",
+                )
                 self._safe_setup(self.current)
             elif self.current.is_done:
                 if not self.loop:
-                    self.log.info("scene %r finished and loop=False — stopping",
-                                  self.current.name)
+                    self.log.info("scene %r finished and loop=False — stopping", self.current.name)
                     self._safe_teardown(self.current)
                     self.current = None
                     self.stop_event.set()
@@ -289,8 +295,7 @@ class Playlist:
         elif self.transitioning and self.current.is_done:
             self._safe_teardown(self.current)
             self.current = self.scenes[self.index]
-            self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes),
-                     self.current.name)
+            self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
             self._safe_setup(self.current)
             self.transitioning = False
         elif not self.transitioning and self.current.is_done:
@@ -321,8 +326,7 @@ class Playlist:
         # shows the real upcoming content (not a directory spec / stale
         # prior pick). Must run before we read nxt.name.
         self._safe_prepare_next(nxt)
-        self.log.info("interstitial → %r (scene %d/%d)",
-                 nxt.name, self.index + 1, len(self.scenes))
+        self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
         self.current = self.interstitial_factory(nxt.name)
         self._safe_setup(self.current)
         self.transitioning = True
@@ -349,11 +353,15 @@ class Playlist:
             return
         try:
             from .orchestrator import resolve_orchestrator
+
             orch_cls = resolve_orchestrator(cfg)
         except Exception:
-            self.log.exception("orchestrate=true on scene %r: could not "
-                               "resolve orchestrator subclass; running "
-                               "scene as local-only", scene.name)
+            self.log.exception(
+                "orchestrate=true on scene %r: could not "
+                "resolve orchestrator subclass; running "
+                "scene as local-only",
+                scene.name,
+            )
             return
         orch = orch_cls(self.ensemble, self.name)
         self.ensemble.active_orchestrator = orch
@@ -369,8 +377,9 @@ class Playlist:
         try:
             scene.prepare_next()
         except Exception:
-            self.log.exception("prepare_next failed on %r — interstitial "
-                               "will show a stale name", scene.name)
+            self.log.exception(
+                "prepare_next failed on %r — interstitial will show a stale name", scene.name
+            )
 
     def _safe_setup(self, scene: Scene) -> None:
         self._maybe_install_conductor(scene)
@@ -379,8 +388,12 @@ class Playlist:
         # a calibration table). This restores pitch under the host-DMA servo by
         # boosting the NMI consumer rate back toward 8000 Hz after being throttled
         # by video DMA bus-halts.
-        if (self.audio is not None and self.audio_calibration is not None
-                and hasattr(scene, "display_mode") and scene.display_mode is not None):
+        if (
+            self.audio is not None
+            and self.audio_calibration is not None
+            and hasattr(scene, "display_mode")
+            and scene.display_mode is not None
+        ):
             mode_name = getattr(scene.display_mode, "name", None)
             if mode_name:
                 self.audio.set_nmi_latch_for_mode(mode_name, self.audio_calibration)
@@ -390,9 +403,8 @@ class Playlist:
             except Exception:
                 # Overlay failure mustn't strand the scene — log and drop
                 # the offending overlay from the run list for this scene.
-                self.log.exception("overlay %r setup failed on %r — disabling",
-                              ov.name, scene.name)
-                ov._disabled = True   # checked in process_frame loop
+                self.log.exception("overlay %r setup failed on %r — disabling", ov.name, scene.name)
+                ov._disabled = True  # checked in process_frame loop
 
     def _safe_teardown(self, scene: Scene) -> None:
         for ov in getattr(scene, "overlays", ()):
@@ -415,8 +427,7 @@ class Playlist:
         # would make _maybe_install_conductor short-circuit on the next
         # setup, leaving ensemble.active_orchestrator unset — followers
         # would then drop the broadcast interrupt as "no active orch".
-        if (self.ensemble is not None
-                and scene.__dict__.get("_is_conductor", False)):
+        if self.ensemble is not None and scene.__dict__.get("_is_conductor", False):
             self.ensemble.active_orchestrator = None
             scene.__dict__["_orchestrator"] = None
             scene.__dict__["_is_conductor"] = False
@@ -425,8 +436,7 @@ class Playlist:
         # not strand the slot. The flag is reset on the scene so a
         # subsequent re-setup (single-scene loop) re-resolves the claim
         # rather than thinking it still holds the previous one.
-        if (self.ensemble is not None
-                and scene.__dict__.get("_audio_lock_held", False)):
+        if self.ensemble is not None and scene.__dict__.get("_audio_lock_held", False):
             self.ensemble.release_audio(self.name)
             scene.__dict__["_audio_lock_held"] = False
 
@@ -501,8 +511,9 @@ class Playlist:
                     try:
                         ov.process_frame(self.api, scene, t0)
                     except Exception:
-                        self.log.exception("overlay %r raised on %r — disabling",
-                                      ov.name, scene.name)
+                        self.log.exception(
+                            "overlay %r raised on %r — disabling", ov.name, scene.name
+                        )
                         ov._disabled = True
 
             stats_after = self.api.stats
@@ -516,8 +527,9 @@ class Playlist:
             # BigText with an unfinished scroll-off). CTRL skip below
             # still wins — it forces is_done = True regardless.
             if scene.is_done and any(
-                    not getattr(ov, "_disabled", False) and ov.is_busy()
-                    for ov in getattr(scene, "overlays", ())):
+                not getattr(ov, "_disabled", False) and ov.is_busy()
+                for ov in getattr(scene, "overlays", ())
+            ):
                 scene.is_done = False
             # Skip request (CTRL key from poller, or POST /skip from
             # the control plane): force is_done so the next iteration
@@ -527,8 +539,7 @@ class Playlist:
                 if self.single_scene:
                     self.log.debug("skip ignored — single-scene mode")
                 else:
-                    self.log.info("skip requested — advancing past %r",
-                             scene.name)
+                    self.log.info("skip requested — advancing past %r", scene.name)
                     scene.is_done = True
                 self.skip_event.clear()
 
@@ -560,9 +571,12 @@ class Playlist:
             dropped = int((now - next_deadline) / frame_time)
             if dropped > 0:
                 next_deadline += dropped * frame_time
-                self.log.debug("[%s] dropped %d frame(s); behind by %.0fms",
-                          scene.name, dropped,
-                          (now - next_deadline + frame_time) * 1000)
+                self.log.debug(
+                    "[%s] dropped %d frame(s); behind by %.0fms",
+                    scene.name,
+                    dropped,
+                    (now - next_deadline + frame_time) * 1000,
+                )
         return next_deadline
 
     def _handle_broadcast_interrupt(self) -> None:
@@ -583,8 +597,9 @@ class Playlist:
             # continue normally.
             return
         if self.build_follower_scene is None:
-            self.log.error("broadcast interrupt arrived but no follower "
-                           "scene factory wired; ignoring")
+            self.log.error(
+                "broadcast interrupt arrived but no follower scene factory wired; ignoring"
+            )
             return
         orch = self.ensemble.active_orchestrator
 
@@ -610,8 +625,7 @@ class Playlist:
         try:
             follower_scene = self.build_follower_scene(follower_cfg)
         except Exception:
-            self.log.exception("broadcast: follower scene build failed; "
-                               "skipping interrupt")
+            self.log.exception("broadcast: follower scene build failed; skipping interrupt")
             return
         # Stamp orchestrator + role + this system's index in the
         # ensemble (left-to-right) onto the scene so overlays that
@@ -621,23 +635,21 @@ class Playlist:
         # slice of the global content.
         follower_scene._orchestrator = orch
         follower_scene._is_conductor = False
-        follower_scene._system_index = (
-            self.ensemble.system_names().index(self.name))
+        follower_scene._system_index = self.ensemble.system_names().index(self.name)
         self._safe_setup(follower_scene)
         self.current = follower_scene
 
-        self.log.info("broadcast: follower scene %r running until resume",
-                      follower_scene.name)
+        self.log.info("broadcast: follower scene %r running until resume", follower_scene.name)
 
         # Spin frames until the orchestrator releases us or stop fires.
         next_deadline = time.time()
-        while (not self._broadcast_resume.is_set()
-               and not self.stop_event.is_set()):
+        while not self._broadcast_resume.is_set() and not self.stop_event.is_set():
             next_deadline = self._run_one_frame(follower_scene, next_deadline)
         self._broadcast_resume.clear()
 
-        self.log.info("broadcast: resume — tearing down follower, "
-                      "restoring scene index %d", saved_idx)
+        self.log.info(
+            "broadcast: resume — tearing down follower, restoring scene index %d", saved_idx
+        )
         self._safe_teardown(follower_scene)
         self.current = None
         # Defensive: _advance() reads self.index on the next iteration
@@ -648,16 +660,20 @@ class Playlist:
 
     def run(self) -> None:
         self._last_heartbeat = 0.0
-        self.log.info("playlist: starting (%d scene(s), default %.1f fps, "
-                 "heartbeat %.0fs)",
-                 len(self.scenes), self.default_target_fps,
-                 self.heartbeat_interval)
+        self.log.info(
+            "playlist: starting (%d scene(s), default %.1f fps, heartbeat %.0fs)",
+            len(self.scenes),
+            self.default_target_fps,
+            self.heartbeat_interval,
+        )
         for controller in (self.key_poller, self.vision_controller):
             if controller is not None:
                 controller.start(
-                    self.pause_event, self.resume_event,
+                    self.pause_event,
+                    self.resume_event,
                     skip_event=self.skip_event,
-                    cycle_event=self.cycle_event)
+                    cycle_event=self.cycle_event,
+                )
         # Deadline-based pacing: after each frame we advance the deadline by
         # one frame_time. If real wall clock has fallen far behind the
         # deadline, jump it forward (effectively dropping the missed frames)
@@ -673,8 +689,7 @@ class Playlist:
                 if self.reload_event.is_set():
                     self._apply_reload()
                     next_deadline = time.time()
-                if (self._broadcast_interrupt is not None
-                        and self._broadcast_interrupt.is_set()):
+                if self._broadcast_interrupt is not None and self._broadcast_interrupt.is_set():
                     self._handle_broadcast_interrupt()
                     next_deadline = time.time()
                     if self.stop_event.is_set():
@@ -726,8 +741,9 @@ class Playlist:
             try:
                 new_style = scene_cycle(self.api)
             except Exception:
-                self.log.exception("cycle_style failed on scene %r — "
-                              "leaving as-is", self.current.name)
+                self.log.exception(
+                    "cycle_style failed on scene %r — leaving as-is", self.current.name
+                )
                 new_style = None
             if new_style is not None:
                 labels.append(f"scene={new_style}")
@@ -736,8 +752,9 @@ class Playlist:
             try:
                 new_style = dm.cycle_style(self.api)
             except Exception:
-                self.log.exception("cycle_style failed on %r display mode — "
-                              "leaving style as-is", self.current.name)
+                self.log.exception(
+                    "cycle_style failed on %r display mode — leaving style as-is", self.current.name
+                )
                 new_style = None
             if new_style is not None:
                 labels.append(f"display={new_style}")
@@ -747,17 +764,17 @@ class Playlist:
             try:
                 ov_style = ov.cycle_style(self.api, self.current)
             except Exception:
-                self.log.exception("cycle_style failed on overlay %r — leaving "
-                              "style as-is", getattr(ov, "name", ov))
+                self.log.exception(
+                    "cycle_style failed on overlay %r — leaving style as-is",
+                    getattr(ov, "name", ov),
+                )
                 continue
             if ov_style is not None:
                 labels.append(f"{ov.name}={ov_style}")
         if labels:
-            self.log.info("cycle: %r → %s",
-                     self.current.name, ", ".join(labels))
+            self.log.info("cycle: %r → %s", self.current.name, ", ".join(labels))
         else:
-            self.log.debug("cycle ignored: %r has no cyclable styles",
-                      self.current.name)
+            self.log.debug("cycle ignored: %r has no cyclable styles", self.current.name)
 
     def _handle_pause(self) -> None:
         """Tear down the current scene, hard-reset the U64, and wait until

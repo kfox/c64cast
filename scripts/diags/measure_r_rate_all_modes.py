@@ -46,6 +46,7 @@ MODES = [
     ("scripts/diags/out/r_rate_mhires_30fps.toml", "mhires@30fps"),
 ]
 
+
 def _read_r(url: str) -> int | None:
     """Read R as a ring address, or None if unreadable."""
     b = d.rest_readmem(READ_PTR_ADDR, 2, url)
@@ -53,6 +54,7 @@ def _read_r(url: str) -> int | None:
         return None
     addr = b[0] | (b[1] << 8)
     return addr if RING_BUFFER_ADDR <= addr < RING_BUFFER_END else None
+
 
 def _linfit(ts: list[float], ys: list[float]) -> tuple[float, float]:
     """Least-squares slope and intercept."""
@@ -66,19 +68,22 @@ def _linfit(ts: list[float], ys: list[float]) -> tuple[float, float]:
     slope = sxy / sxx if sxx else 0.0
     return slope, my - slope * mt
 
+
 def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: float = 45.0) -> dict:
     """Measure R_rate for one mode. Returns dict with slope, intercept, stats."""
     cfg = Path(config_path)
     if not cfg.exists():
         return {"error": f"config not found: {cfg}"}
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"[{mode_name.upper()}] launching c64cast with {cfg}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
-    app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                            "--config", str(cfg), "--url", url],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    app = subprocess.Popen(
+        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
     # Wait for boot + first audio
     boot_wait = 10.0
@@ -150,16 +155,18 @@ def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: floa
 
     return result
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--url", default=d.U64_URL, help="U64 URL")
-    ap.add_argument("--duration", type=float, default=30.0,
-                    help="poll duration per mode (default 30)")
-    ap.add_argument("--no-reset", action="store_true",
-                    help="don't reset after measurements (for debugging)")
+    ap.add_argument(
+        "--duration", type=float, default=30.0, help="poll duration per mode (default 30)"
+    )
+    ap.add_argument(
+        "--no-reset", action="store_true", help="don't reset after measurements (for debugging)"
+    )
     args = ap.parse_args()
 
     results: list[dict] = []
@@ -174,9 +181,9 @@ def main() -> int:
         return 1
 
     # Summary
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("[SUMMARY]")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     valid_results = [r for r in results if "error" not in r]
     if not valid_results:
@@ -184,33 +191,38 @@ def main() -> int:
         return 1
 
     print(f"\n{'Mode':<12} {'R_rate (B/s)':<15} {'Slowdown':<15}")
-    print(f"{'-'*42}")
+    print(f"{'-' * 42}")
     for r in valid_results:
         print(f"{r['mode']:<12} {r['r_rate_bps']:>8.1f}       {r['slowdown_pct']:>6.1f}%")
 
     # Analysis
     print("\n[analysis]")
-    avg_slowdown = sum(r['slowdown_pct'] for r in valid_results) / len(valid_results)
+    avg_slowdown = sum(r["slowdown_pct"] for r in valid_results) / len(valid_results)
     print(f"Average slowdown across modes: {avg_slowdown:.1f}%")
 
-    max_slowdown = max(r['slowdown_pct'] for r in valid_results)
-    min_slowdown = min(r['slowdown_pct'] for r in valid_results)
+    max_slowdown = max(r["slowdown_pct"] for r in valid_results)
+    min_slowdown = min(r["slowdown_pct"] for r in valid_results)
     print(f"Range: {min_slowdown:.1f}% (lightest) to {max_slowdown:.1f}% (heaviest)")
     print(f"Spread: {max_slowdown - min_slowdown:.1f}% (fixed bump OK if < 0.5%)")
 
     # Recommendation
     if max_slowdown - min_slowdown < 0.5:
-        print(f"\n[recommendation] Fixed NMI latch bump by ~{avg_slowdown:.1f}% "
-              f"should work for all modes.")
+        print(
+            f"\n[recommendation] Fixed NMI latch bump by ~{avg_slowdown:.1f}% "
+            f"should work for all modes."
+        )
     else:
-        print(f"\n[recommendation] Mode-dependent slowdown is {max_slowdown - min_slowdown:.1f}% "
-              f"(too wide for fixed bump). Adaptive servo required.")
+        print(
+            f"\n[recommendation] Mode-dependent slowdown is {max_slowdown - min_slowdown:.1f}% "
+            f"(too wide for fixed bump). Adaptive servo required."
+        )
 
     if not args.no_reset:
         print("\n[final reset]")
         d.rest_reset(args.url)
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

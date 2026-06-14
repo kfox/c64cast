@@ -51,19 +51,18 @@ def save_wav(path: str, mono: np.ndarray, sr: int) -> None:
         w.writeframes(pcm.tobytes())
 
 
-def play(url: str, int16: np.ndarray, params: DSPParams, label: str,
-         out_wav: str, device: int) -> None:
+def play(
+    url: str, int16: np.ndarray, params: DSPParams, label: str, out_wav: str, device: int
+) -> None:
     """Play int16 mono through the host-DMA worker with the given DSP params."""
     dur_s = int16.size / SR
     cap_s = dur_s + 4.0
     print(f"\n=== {label}: {dur_s:.1f}s ===")
-    rec = sd.rec(int(cap_s * CAP_SR), samplerate=CAP_SR, channels=2,
-                 device=device, dtype="float32")
+    rec = sd.rec(int(cap_s * CAP_SR), samplerate=CAP_SR, channels=2, device=device, dtype="float32")
     time.sleep(1.5)
 
     api = Ultimate64API(url)
-    streamer = AudioStreamer(api, SR, "NTSC", dither=False, digi_boost=True,
-                             dsp_params=params)
+    streamer = AudioStreamer(api, SR, "NTSC", dither=False, digi_boost=True, dsp_params=params)
     gain = _compute_normalization_gain(int(np.abs(int16).max()))
     floats = np.clip((int16.astype(np.float32) / 32768.0) * gain, -1.0, 1.0)
     try:
@@ -75,7 +74,7 @@ def play(url: str, int16: np.ndarray, params: DSPParams, label: str,
         # over-feeding laps the ~2 s queue and drops; under-feeding underruns).
         chunk = 512
         for i in range(0, floats.size, chunk):
-            streamer._encode_and_enqueue(floats[i:i + chunk], block_on_full=True)
+            streamer._encode_and_enqueue(floats[i : i + chunk], block_on_full=True)
         deadline = time.time() + dur_s + 3.0
         while streamer.position_seconds() < dur_s - 0.1 and time.time() < deadline:
             time.sleep(0.1)
@@ -93,13 +92,15 @@ def play(url: str, int16: np.ndarray, params: DSPParams, label: str,
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("clip", help="audio file under assets/audio/")
     ap.add_argument("--url", default=d.U64_URL)
     ap.add_argument("--device", type=int, default=CAP_DEVICE)
     ap.add_argument("--secs", type=float, default=15.0)
-    ap.add_argument("--param", default="pre_emphasis",
-                    help="DSPParams field to vary between A and B")
+    ap.add_argument(
+        "--param", default="pre_emphasis", help="DSPParams field to vary between A and B"
+    )
     ap.add_argument("--a", type=float, default=0.0, help="value for pass A")
     ap.add_argument("--b", type=float, default=0.7, help="value for pass B")
     ap.add_argument("--reverse", action="store_true", help="play B first")
@@ -111,16 +112,19 @@ def main() -> int:
         ap.error(f"unknown DSPParams field: {args.param}")
 
     int16 = decode_audio_full(args.clip, SR)[: int(args.secs * SR)]
-    print(f"clip {Path(args.clip).name}: {int16.size/SR:.1f}s; "
-          f"A {args.param}={args.a}  vs  B {args.param}={args.b}")
+    print(
+        f"clip {Path(args.clip).name}: {int16.size / SR:.1f}s; "
+        f"A {args.param}={args.a}  vs  B {args.param}={args.b}"
+    )
 
     def mk(val: float) -> DSPParams:
         return dataclasses.replace(DSPParams(enabled=True), **{args.param: val})
 
-    passes = [(f"B = {args.param} {args.b}", args.b),
-              (f"A = {args.param} {args.a}", args.a)] if args.reverse else \
-             [(f"A = {args.param} {args.a}", args.a),
-              (f"B = {args.param} {args.b}", args.b)]
+    passes = (
+        [(f"B = {args.param} {args.b}", args.b), (f"A = {args.param} {args.a}", args.a)]
+        if args.reverse
+        else [(f"A = {args.param} {args.a}", args.a), (f"B = {args.param} {args.b}", args.b)]
+    )
     for label, val in passes:
         tag = label.split("=")[0].strip()
         wav = str(d.stamped(f"dsp_ab_{tag}", "wav"))

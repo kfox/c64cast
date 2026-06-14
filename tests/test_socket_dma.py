@@ -5,6 +5,7 @@ can drive the protocol without an actual U64 on the network. The fake
 records every sendall byte for wire-format assertions and serves a
 scripted sequence of recv replies for round-trip flows (IDENTIFY,
 AUTHENTICATE)."""
+
 from __future__ import annotations
 
 import struct
@@ -75,20 +76,19 @@ class FakeSocket:
         self.closed = True
 
 
-def _client_with(fake: FakeSocket, *, password: str | None = None,
-                 connect: bool = True) -> SocketDMAClient:
+def _client_with(
+    fake: FakeSocket, *, password: str | None = None, connect: bool = True
+) -> SocketDMAClient:
     """Build a client whose `socket.create_connection` returns `fake`.
     Set connect=False if the test wants to drive the connect() flow itself."""
     c = SocketDMAClient("test-host", port=64, password=password)
     if connect:
-        with patch("c64cast.socket_dma.socket.create_connection",
-                   return_value=fake):
+        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake):
             c.connect()
     return c
 
 
 class ConnectAndIdentifyTest(unittest.TestCase):
-
     def test_connect_without_password_sends_identify_only(self):
         fake = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake)
@@ -98,8 +98,9 @@ class ConnectAndIdentifyTest(unittest.TestCase):
 
     def test_connect_refused_raises_socketdmaerror(self):
         c = SocketDMAClient("test-host", port=64)
-        with patch("c64cast.socket_dma.socket.create_connection",
-                   side_effect=ConnectionRefusedError()):
+        with patch(
+            "c64cast.socket_dma.socket.create_connection", side_effect=ConnectionRefusedError()
+        ):
             with self.assertRaises(SocketDMAError) as ctx:
                 c.connect()
         self.assertIn("Ultimate DMA Service", str(ctx.exception))
@@ -119,8 +120,7 @@ class ConnectAndIdentifyTest(unittest.TestCase):
 
     def test_auth_rejected_raises(self):
         fake = FakeSocket([b"\x00"])  # 0 = rejected
-        with patch("c64cast.socket_dma.socket.create_connection",
-                   return_value=fake):
+        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake):
             c = SocketDMAClient("test-host", port=64, password="wrong")
             with self.assertRaises(SocketDMAError) as ctx:
                 c.connect()
@@ -146,7 +146,7 @@ class WireEncodingTest(unittest.TestCase):
         self.connect_len = len(self.fake.sent)
 
     def _new(self) -> bytes:
-        return bytes(self.fake.sent[self.connect_len:])
+        return bytes(self.fake.sent[self.connect_len :])
 
     def test_dmawrite_border_color(self):
         # The exact bytes a $D020 border write to color $0E should produce.
@@ -154,13 +154,17 @@ class WireEncodingTest(unittest.TestCase):
         self.assertEqual(
             self._new(),
             b"\x06\xff\x03\x00\x20\xd0\x0e",
-            "DMAWRITE bytes don't match — wire format regression!")
+            "DMAWRITE bytes don't match — wire format regression!",
+        )
 
     def test_dmawrite_multi_byte_payload(self):
         # Multi-byte payload → length field includes addr (2) + data.
         self.client.dmawrite(0x0400, b"ABC")
-        expected = (struct.pack("<HH", CMD_DMAWRITE, 5)  # 2 addr + 3 data
-                    + struct.pack("<H", 0x0400) + b"ABC")
+        expected = (
+            struct.pack("<HH", CMD_DMAWRITE, 5)  # 2 addr + 3 data
+            + struct.pack("<H", 0x0400)
+            + b"ABC"
+        )
         self.assertEqual(self._new(), expected)
 
     def test_reset_encoding(self):
@@ -174,7 +178,6 @@ class WireEncodingTest(unittest.TestCase):
 
 
 class FlushTest(unittest.TestCase):
-
     def test_flush_issues_identify_roundtrip(self):
         # Two IDENTIFY replies: one for connect, one for flush.
         fake = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
@@ -186,7 +189,6 @@ class FlushTest(unittest.TestCase):
 
 
 class ReconnectTest(unittest.TestCase):
-
     def test_dmawrite_reconnects_on_broken_pipe(self):
         # connect: serves IDENTIFY. First sendall after connect fails;
         # reconnect serves IDENTIFY again; retry succeeds.
@@ -198,19 +200,16 @@ class ReconnectTest(unittest.TestCase):
         fake2 = FakeSocket([_IDENT_REPLY])
         # The reconnect path logs a WARNING — capture it (so it doesn't
         # spam stderr) and verify the expected message was emitted.
-        with patch("c64cast.socket_dma.socket.create_connection",
-                   return_value=fake2):
+        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake2):
             with self.assertLogs("c64cast.socket_dma", level="WARNING") as cap:
                 c.dmawrite(0xD020, b"\x0e")
         self.assertTrue(
-            any("send failed (scripted failure) — reconnecting" in line
-                for line in cap.output),
+            any("send failed (scripted failure) — reconnecting" in line for line in cap.output),
             f"expected reconnect-warning log, got: {cap.output!r}",
         )
 
         # fake1's failed sendall didn't append anything.
-        self.assertEqual(len(fake1.sent),
-                         struct.pack("<HH", CMD_IDENTIFY, 0).__len__())
+        self.assertEqual(len(fake1.sent), struct.pack("<HH", CMD_IDENTIFY, 0).__len__())
         # fake2 received the IDENTIFY (re-handshake) AND the retried DMAWRITE.
         self.assertIn(b"\x06\xff\x03\x00\x20\xd0\x0e", bytes(fake2.sent))
         self.assertTrue(fake1.closed)
@@ -223,14 +222,12 @@ class ReconnectTest(unittest.TestCase):
 
         fake2 = FakeSocket([_IDENT_REPLY])
         fake2.fail_sendalls_remaining = 1
-        with patch("c64cast.socket_dma.socket.create_connection",
-                   return_value=fake2):
+        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake2):
             with self.assertLogs("c64cast.socket_dma", level="WARNING") as cap:
                 with self.assertRaises(OSError):
                     c.dmawrite(0xD020, b"\x0e")
         self.assertTrue(
-            any("send failed (scripted failure) — reconnecting" in line
-                for line in cap.output),
+            any("send failed (scripted failure) — reconnecting" in line for line in cap.output),
             f"expected reconnect-warning log, got: {cap.output!r}",
         )
 
@@ -244,7 +241,7 @@ class ReconnectTest(unittest.TestCase):
         # on the half-open one.
         fake1 = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake1)
-        fake1.fail_sendalls_remaining = 1   # provoke reconnect
+        fake1.fail_sendalls_remaining = 1  # provoke reconnect
 
         # Reconnect TCP succeeds; recv hangs (simulate by returning b"" so
         # _recv_exact_locked raises ConnectionError, OR by raising
@@ -252,13 +249,13 @@ class ReconnectTest(unittest.TestCase):
         class TimeoutOnRecvSocket(FakeSocket):
             def recv(self, n):
                 raise TimeoutError("timed out")
+
         fake2 = TimeoutOnRecvSocket([])
 
         # Reconnect #2 (for the next dmawrite): clean IDENTIFY this time.
         fake3 = FakeSocket([_IDENT_REPLY])
 
-        with patch("c64cast.socket_dma.socket.create_connection",
-                   side_effect=[fake2, fake3]):
+        with patch("c64cast.socket_dma.socket.create_connection", side_effect=[fake2, fake3]):
             with self.assertLogs("c64cast.socket_dma", level="WARNING"):
                 with self.assertRaises(SocketDMAError):
                     c.dmawrite(0xD020, b"\x0e")
@@ -275,7 +272,6 @@ class ReconnectTest(unittest.TestCase):
 
 
 class ThreadSafetyTest(unittest.TestCase):
-
     def test_two_threads_dont_interleave_commands(self):
         # If the lock weren't held across sendall, threads could write
         # half of one command + half of another, producing a corrupted
@@ -293,8 +289,7 @@ class ThreadSafetyTest(unittest.TestCase):
                 # thread so we can audit ordering later.
                 c.dmawrite(0xC800, bytes([thread_idx, i & 0xFF, 0xAA, 0x55]))
 
-        threads = [threading.Thread(target=burst, args=(t,))
-                   for t in range(N_THREADS)]
+        threads = [threading.Thread(target=burst, args=(t,)) for t in range(N_THREADS)]
         for t in threads:
             t.start()
         for t in threads:
@@ -306,19 +301,17 @@ class ThreadSafetyTest(unittest.TestCase):
         i = 4
         parsed = 0
         while i < len(stream):
-            opcode, length = struct.unpack("<HH", stream[i:i + 4])
+            opcode, length = struct.unpack("<HH", stream[i : i + 4])
             i += 4
             self.assertEqual(opcode, CMD_DMAWRITE)
             self.assertEqual(length, 6)  # 2 addr + 4 data
             i += length
             parsed += 1
-        self.assertEqual(i, len(stream),
-                         "wire bytes don't end on a command boundary")
+        self.assertEqual(i, len(stream), "wire bytes don't end on a command boundary")
         self.assertEqual(parsed, N_PER_THREAD * N_THREADS)
 
 
 class LatencyTest(unittest.TestCase):
-
     def test_latency_summary_empty(self):
         fake = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake)
@@ -347,8 +340,7 @@ class LatencyTest(unittest.TestCase):
         line = c.format_latency()
         self.assertIsNotNone(line)
         assert line is not None
-        for token in ("u64 dma latency", "n=3", "avg=5.0",
-                      "p50=5.0", "max=5.0", "ms"):
+        for token in ("u64 dma latency", "n=3", "avg=5.0", "p50=5.0", "max=5.0", "ms"):
             self.assertIn(token, line)
 
     def test_dmawrite_records_latency(self):

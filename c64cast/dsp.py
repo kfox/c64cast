@@ -36,6 +36,7 @@ with realtime mic blocks (hundreds of samples) this is negligible; the offline
 commercial pre-encode runs it once over the whole track (~1 s for a 2.5-min
 clip), which is acceptable for one-time scene setup.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -81,8 +82,9 @@ def _one_pole_coeff(time_s: float, sample_rate: int) -> float:
     return float(np.exp(-1.0 / (t * sample_rate)))
 
 
-def _ar_envelope(level: np.ndarray, atk: float, rel: float,
-                 init: float) -> tuple[np.ndarray, float]:
+def _ar_envelope(
+    level: np.ndarray, atk: float, rel: float, init: float
+) -> tuple[np.ndarray, float]:
     """Attack/release one-pole envelope follower over a 1-D level signal.
 
     Rising input uses the (fast) attack coefficient, falling input the (slow)
@@ -142,9 +144,17 @@ class Compressor:
     near unity, restoring perceived loudness after the reduction.
     """
 
-    def __init__(self, *, sample_rate: int, threshold_db: float, ratio: float,
-                 knee_db: float = 0.0, attack_ms: float = 5.0,
-                 release_ms: float = 120.0, makeup_db: float | None = None):
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        threshold_db: float,
+        ratio: float,
+        knee_db: float = 0.0,
+        attack_ms: float = 5.0,
+        release_ms: float = 120.0,
+        makeup_db: float | None = None,
+    ):
         self.sample_rate = sample_rate
         self.threshold_db = float(threshold_db)
         self.ratio = max(float(ratio), 1.0)
@@ -170,8 +180,7 @@ class Compressor:
             # Below knee: 0; in knee: quadratic; above knee: linear.
             knee = slope * np.square(over + half) / (2.0 * self.knee_db)
             above = slope * over
-            gain = np.where(over <= -half, 0.0,
-                            np.where(over >= half, above, knee))
+            gain = np.where(over <= -half, 0.0, np.where(over >= half, above, knee))
         else:
             gain = np.where(over > 0.0, slope * over, 0.0)
         return gain.astype(np.float32, copy=False)
@@ -180,8 +189,7 @@ class Compressor:
         if x.size == 0:
             return x
         x = x.astype(np.float32, copy=False)
-        env, self._env = _ar_envelope(np.abs(x), self._atk, self._rel,
-                                      self._env)
+        env, self._env = _ar_envelope(np.abs(x), self._atk, self._rel, self._env)
         level_db = 20.0 * np.log10(np.maximum(env, _EPS))
         gain_db = self._gain_db(level_db) + self.makeup_db
         gain = np.power(10.0, gain_db / 20.0).astype(np.float32)
@@ -197,8 +205,7 @@ class Limiter:
     guards against intra-sample overshoot. Below the ceiling it is transparent.
     """
 
-    def __init__(self, *, sample_rate: int, ceiling: float = 0.95,
-                 release_ms: float = 50.0):
+    def __init__(self, *, sample_rate: int, ceiling: float = 0.95, release_ms: float = 50.0):
         self.sample_rate = sample_rate
         self.ceiling = float(ceiling)
         self._rel = _one_pole_coeff(release_ms / 1000.0, sample_rate)
@@ -213,11 +220,11 @@ class Limiter:
         x = x.astype(np.float32, copy=False)
         # Instant-attack peak detector (atk=0 → env tracks current peak up).
         env, self._env = _ar_envelope(np.abs(x), 0.0, self._rel, self._env)
-        gain = np.where(env > self.ceiling, self.ceiling / np.maximum(env, _EPS),
-                        1.0).astype(np.float32)
+        gain = np.where(env > self.ceiling, self.ceiling / np.maximum(env, _EPS), 1.0).astype(
+            np.float32
+        )
         y = x * gain
-        return np.clip(y, -self.ceiling, self.ceiling).astype(np.float32,
-                                                              copy=False)
+        return np.clip(y, -self.ceiling, self.ceiling).astype(np.float32, copy=False)
 
 
 class Expander:
@@ -231,10 +238,17 @@ class Expander:
     attack/release-smoothed (fast open, slow close).
     """
 
-    def __init__(self, *, sample_rate: int, threshold_db: float,
-                 ratio: float = 2.0, hysteresis_db: float = 6.0,
-                 floor_db: float = -60.0, attack_ms: float = 5.0,
-                 release_ms: float = 80.0):
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        threshold_db: float,
+        ratio: float = 2.0,
+        hysteresis_db: float = 6.0,
+        floor_db: float = -60.0,
+        attack_ms: float = 5.0,
+        release_ms: float = 80.0,
+    ):
         self.sample_rate = sample_rate
         self.open_db = float(threshold_db)
         self.close_db = float(threshold_db) - abs(float(hysteresis_db))
@@ -311,9 +325,15 @@ class AGC:
     the floor at the cost of not lifting genuinely quiet speech.
     """
 
-    def __init__(self, *, sample_rate: int, target_db: float = -18.0,
-                 max_gain_db: float = 24.0, time_ms: float = 300.0,
-                 noise_floor_db: float = -60.0):
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        target_db: float = -18.0,
+        max_gain_db: float = 24.0,
+        time_ms: float = 300.0,
+        noise_floor_db: float = -60.0,
+    ):
         self.sample_rate = sample_rate
         self.target_lin = db_to_lin(target_db)
         self.max_gain = db_to_lin(max_gain_db)
@@ -348,8 +368,7 @@ class AGC:
             if ms < nf2:
                 desired = g  # hold; don't amplify the noise floor
             else:
-                desired = min(max(target / max(np.sqrt(ms), _EPS),
-                                  self.min_gain), self.max_gain)
+                desired = min(max(target / max(np.sqrt(ms), _EPS), self.min_gain), self.max_gain)
             g = c * g + (1.0 - c) * desired
             out[i] = s * g
         self._rms = float(np.sqrt(ms))
@@ -363,6 +382,7 @@ class DSPParams:
     ``config.DSPCfg``, which builds one of these). Defaults are tuned for the
     4-bit DAC: moderate compression, a safety limiter just under full scale, a
     gentle expander floor, source-aware pre-emphasis on by default."""
+
     enabled: bool = False
     # None = source-aware auto (PRE_EMPHASIS_MIC_DEFAULT if is_mic else
     # PRE_EMPHASIS_LINE_DEFAULT, resolved in AudioDSP); a number forces that
@@ -416,31 +436,47 @@ class AudioDSP:
         if pre > 0.0:
             self._chain.append(PreEmphasis(pre))
         if is_mic and params.agc:
-            self._chain.append(AGC(
-                sample_rate=sample_rate, target_db=params.agc_target_db,
-                max_gain_db=params.agc_max_gain_db, time_ms=params.agc_time_ms,
-                noise_floor_db=params.agc_noise_floor_db))
+            self._chain.append(
+                AGC(
+                    sample_rate=sample_rate,
+                    target_db=params.agc_target_db,
+                    max_gain_db=params.agc_max_gain_db,
+                    time_ms=params.agc_time_ms,
+                    noise_floor_db=params.agc_noise_floor_db,
+                )
+            )
         if params.expander:
-            self._chain.append(Expander(
-                sample_rate=sample_rate,
-                threshold_db=params.expander_threshold_db,
-                ratio=params.expander_ratio,
-                hysteresis_db=params.expander_hysteresis_db,
-                floor_db=params.expander_floor_db,
-                attack_ms=params.expander_attack_ms,
-                release_ms=params.expander_release_ms))
+            self._chain.append(
+                Expander(
+                    sample_rate=sample_rate,
+                    threshold_db=params.expander_threshold_db,
+                    ratio=params.expander_ratio,
+                    hysteresis_db=params.expander_hysteresis_db,
+                    floor_db=params.expander_floor_db,
+                    attack_ms=params.expander_attack_ms,
+                    release_ms=params.expander_release_ms,
+                )
+            )
         if params.compress:
-            self._chain.append(Compressor(
-                sample_rate=sample_rate,
-                threshold_db=params.comp_threshold_db,
-                ratio=params.comp_ratio, knee_db=params.comp_knee_db,
-                attack_ms=params.comp_attack_ms,
-                release_ms=params.comp_release_ms,
-                makeup_db=params.comp_makeup_db))
+            self._chain.append(
+                Compressor(
+                    sample_rate=sample_rate,
+                    threshold_db=params.comp_threshold_db,
+                    ratio=params.comp_ratio,
+                    knee_db=params.comp_knee_db,
+                    attack_ms=params.comp_attack_ms,
+                    release_ms=params.comp_release_ms,
+                    makeup_db=params.comp_makeup_db,
+                )
+            )
         if params.limiter:
-            self._chain.append(Limiter(
-                sample_rate=sample_rate, ceiling=params.limiter_ceiling,
-                release_ms=params.limiter_release_ms))
+            self._chain.append(
+                Limiter(
+                    sample_rate=sample_rate,
+                    ceiling=params.limiter_ceiling,
+                    release_ms=params.limiter_release_ms,
+                )
+            )
 
     @property
     def active(self) -> bool:

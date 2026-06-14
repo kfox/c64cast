@@ -10,6 +10,7 @@ Snapshots: tests inspect the last-write-per-address via `regions`, `regs`,
 write_memory_file call as (addr_upper, bytes). Read injection: set
 `canned_regs` to drive read_memory($D400, 25); other reads return None.
 """
+
 from __future__ import annotations
 
 
@@ -81,8 +82,7 @@ class FakeAPI:
             return self.canned_regs
         return None
 
-    def run_sid_player(self, sid_bytes, song=0, timeout=5.0, *, avoid=None,
-                       play_bank=None):
+    def run_sid_player(self, sid_bytes, song=0, timeout=5.0, *, avoid=None, play_bank=None):
         self.sid_played = (bytes(sid_bytes), song)
         self.sid_played_avoid = avoid
         self.sid_played_play_bank = play_bank

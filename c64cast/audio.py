@@ -55,6 +55,7 @@ with NEUTRAL between real samples and the audible output was both ~16 dB
 quieter than the source and modulated at the chunk rate — speech sounded
 muffled with a strong tremolo-buzz on every consonant.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -78,6 +79,7 @@ log = logging.getLogger(__name__)
 # rejects re-declaring a name that an `import as` already bound).
 try:
     import sounddevice as _sounddevice
+
     sd: Any = _sounddevice
     AUDIO_AVAILABLE = True
 except ImportError:
@@ -109,20 +111,20 @@ except ImportError:
 # With a badline (40 stolen cycles): handler takes 81 cycles total — well
 # within the 127-cycle NTSC NMI period, so no NMI stacking occurs.
 NMI_ROUTINE = bytes.fromhex(
-    "48"        # PHA
-    "AD0DDD"    # LDA $DD0D      ; ack NMI
-    "AD0000"    # LDA $00??      ; read sample (HI patched at offset 6)
-    "8D18D4"    # STA $D418      ; write to volume register
-    "EE25C0"    # INC $C025      ; advance pointer LO
-    "D00F"      # BNE +15        ; → $C03E (done)
-    "EE26C0"    # INC $C026      ; advance pointer HI
-    "AD26C0"    # LDA $C026      ; load HI for wrap check
-    "C900"      # CMP #$??       ; wrap-end HI (patched at offset 22)
-    "D005"      # BNE +5         ; → $C03E (done)
-    "A900"      # LDA #$??       ; reset HI = RING_BUFFER_HI (patched at offset 26)
-    "8D26C0"    # STA $C026      ; restore pointer HI
-    "68"        # PLA
-    "40"        # RTI
+    "48"  # PHA
+    "AD0DDD"  # LDA $DD0D      ; ack NMI
+    "AD0000"  # LDA $00??      ; read sample (HI patched at offset 6)
+    "8D18D4"  # STA $D418      ; write to volume register
+    "EE25C0"  # INC $C025      ; advance pointer LO
+    "D00F"  # BNE +15        ; → $C03E (done)
+    "EE26C0"  # INC $C026      ; advance pointer HI
+    "AD26C0"  # LDA $C026      ; load HI for wrap check
+    "C900"  # CMP #$??       ; wrap-end HI (patched at offset 22)
+    "D005"  # BNE +5         ; → $C03E (done)
+    "A900"  # LDA #$??       ; reset HI = RING_BUFFER_HI (patched at offset 26)
+    "8D26C0"  # STA $C026      ; restore pointer HI
+    "68"  # PLA
+    "40"  # RTI
 )
 NMI_ROUTINE_PATCH_OFFSET_READ_HI = 6
 NMI_ROUTINE_PATCH_OFFSET_WRAP_HI = 22
@@ -148,7 +150,7 @@ RING_BUFFER_END = RING_BUFFER_ADDR + RING_BUFFER_SIZE
 RING_BUFFER_HI = RING_BUFFER_ADDR >> 8
 RING_BUFFER_END_HI = RING_BUFFER_END >> 8
 
-NEUTRAL_SAMPLE = 7    # mid-scale 4-bit value; keeps the speaker cone centered
+NEUTRAL_SAMPLE = 7  # mid-scale 4-bit value; keeps the speaker cone centered
 
 # CIA #2 control words for NMI bring-up / teardown.
 #  - DISABLE: clear all five IRQ-source bits in ICR (high bit = 0 → clear).
@@ -164,8 +166,8 @@ CIA2_TIMER_A_CONTINUOUS = 0x11
 # [0, MAX_VOLUME]. Centers a [-1, 1] input on 7.5 → DAC ~half-scale.
 DAC_VOLUME_SCALE = 7.5
 DAC_MAX_VOLUME = 15
-INT16_FULL_SCALE = 32768.0          # divisor to map int16 → float [-1, 1]
-INT16_MAX = 32767                   # int16 saturation bounds (np.iinfo(np.int16))
+INT16_FULL_SCALE = 32768.0  # divisor to map int16 → float [-1, 1]
+INT16_MAX = 32767  # int16 saturation bounds (np.iinfo(np.int16))
 INT16_MIN = -32768
 
 
@@ -197,21 +199,24 @@ def encode_floats_to_dac(
     vol_float = (floats + 1.0) * DAC_VOLUME_SCALE
     if dither:
         if rng is None:
-            d = (np.random.random_sample(floats.shape).astype(np.float32)
-                 - np.random.random_sample(floats.shape).astype(np.float32))
+            d = np.random.random_sample(floats.shape).astype(np.float32) - np.random.random_sample(
+                floats.shape
+            ).astype(np.float32)
         else:
-            d = (rng.random(floats.shape, dtype=np.float32)
-                 - rng.random(floats.shape, dtype=np.float32))
+            d = rng.random(floats.shape, dtype=np.float32) - rng.random(
+                floats.shape, dtype=np.float32
+            )
         d[floats == 0] = 0.0
         vol_float = vol_float + d
     return np.clip(vol_float, 0, DAC_MAX_VOLUME).astype(np.uint8)
 
+
 # Queue + backpressure sizing.
-AUDIO_QUEUE_MAX_BLOBS = 256          # outer cap (per-blob, not per-sample)
-MAX_QUEUED_SAMPLES = 16384           # soft cap (~2 s @ 8 kHz)
-PREBUFFER_CHUNKS = 6                 # chunks to buffer before starting NMI
+AUDIO_QUEUE_MAX_BLOBS = 256  # outer cap (per-blob, not per-sample)
+MAX_QUEUED_SAMPLES = 16384  # soft cap (~2 s @ 8 kHz)
+PREBUFFER_CHUNKS = 6  # chunks to buffer before starting NMI
 QUEUE_PUT_TIMEOUT_S = 0.2
-BACKPRESSURE_SPIN_S = 0.005          # sleep between full-queue retries
+BACKPRESSURE_SPIN_S = 0.005  # sleep between full-queue retries
 
 # Pre-quantization sample tap. Holds the most recent SAMPLE_TAP_SIZE float
 # samples in [-1, 1] for FFT-based overlays (spectrum analyzers). Sized to
@@ -234,9 +239,9 @@ SAMPLE_TAP_SIZE = 2048
 # CommercialScene branch uses it today (whole track known upfront).
 
 REU_PUMP_HANDLER_ADDR = 0xC100  # IRQ handler lives here; $C020 NMI handler stays
-REU_AUDIO_BASE = 0x000000       # REU offset where preloaded audio starts
-REU_PUMP_CHUNK_SIZE = 128       # bytes per IRQ-triggered REU DMA (default)
-REU_UPLOAD_SLICE = 32 * 1024    # bytes per socket REUWRITE (one per slice)
+REU_AUDIO_BASE = 0x000000  # REU offset where preloaded audio starts
+REU_PUMP_CHUNK_SIZE = 128  # bytes per IRQ-triggered REU DMA (default)
+REU_UPLOAD_SLICE = 32 * 1024  # bytes per socket REUWRITE (one per slice)
 
 # Write-behind-read margin for the pump's initial pointer placement.
 #
@@ -313,10 +318,10 @@ CIA1_TIMER_A_LATCH_KERNAL_NTSC = 0x4025
 # >> 8 = 16), matching the bring-up seed, so the gap parks symmetrically with
 # ~4 KB of headroom before either a lap (W catches R) or an underrun (R catches
 # W). Bang-bang control parks the gap just under the threshold.
-REU_GOVERNOR_GAP_THRESHOLD_HI = REU_PUMP_INITIAL_MARGIN >> 8   # 16 (= half ring)
+REU_GOVERNOR_GAP_THRESHOLD_HI = REU_PUMP_INITIAL_MARGIN >> 8  # 16 (= half ring)
 # NMI read pointer HI byte (R_hi): NMI_ROUTINE self-modifying operand at
 # $C026. The plain governor reads this directly on-chip; the host never writes.
-READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6                        # $C026
+READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
 
 # --- Host-DMA pacing servo (closed-loop W->R rate match) -----------------
 # The host-DMA worker (_worker) paces ring writes strictly to wall-clock, so the
@@ -330,16 +335,16 @@ READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6                        # $C026
 # R once per chunk and runs a PI controller that stretches/shrinks the per-chunk
 # pace so the ring gap (W-R) locks near half a ring. See the reu_pump_ring_drift
 # memory + scripts/diags/hostdma_drift_probe.py.
-READ_PTR_LO_ADDR = NMI_ROUTINE_ADDR + 5            # $C025 (R operand low byte)
+READ_PTR_LO_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 (R operand low byte)
 HOST_DMA_SERVO_TARGET_GAP = RING_BUFFER_SIZE // 2  # 4096 B (half ring)
 # Gains are HW-empirical (TUNABLE). Drift to cancel ~310 B/s => a steady period
 # stretch of ~+5 ms/chunk (slows W from 8000 to ~7690 B/s). KP=5e-6 s/byte makes
 # a 1000-byte phase error add +5 ms (recovers in ~1-2 s); KI (an order below)
 # nulls the residual fixed offset proportional control alone would leave, parking
 # the gap at TARGET_GAP rather than at a constant offset.
-HOST_DMA_SERVO_KP = 5e-6                            # s/byte            (HW-TUNABLE)
-HOST_DMA_SERVO_KI = 5e-7                            # s/(byte*chunk)    (HW-TUNABLE)
-HOST_DMA_SERVO_INTEG_CLAMP = 0.5                    # max |ki*integ|, frac of chunk_period
+HOST_DMA_SERVO_KP = 5e-6  # s/byte            (HW-TUNABLE)
+HOST_DMA_SERVO_KI = 5e-7  # s/(byte*chunk)    (HW-TUNABLE)
+HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
 
@@ -382,27 +387,51 @@ REU_CMD_FETCH_EXEC = REU.CMD_FETCH_EXEC  # $91
 # the CPU JAMmed on the `$02` byte (KIL/HLT opcode), silencing all subsequent
 # audio. The assertion below catches length mismatches; if you edit the bytes,
 # verify the branch targets manually.
-REU_IRQ_HANDLER = bytes([
-    0x48,                                  # PHA
-    0xA9, REU_PUMP_CHUNK_SIZE & 0xFF,      # LDA #<chunk_size
-    0x8D, 0x07, 0xDF,                      # STA $DF07
-    0xA9, (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # LDA #>chunk_size
-    0x8D, 0x08, 0xDF,                      # STA $DF08
-    0xA9, REU_CMD_FETCH_EXEC,              # LDA #$91
-    0x8D, 0x01, 0xDF,                      # STA $DF01
-    0xAD, 0x03, 0xDF,                      # LDA $DF03
-    0xC9, RING_BUFFER_END_HI,              # CMP #end_hi
-    0x90, 0x0A,                            # BCC +10 → PLA at offset 33
-    0xA9, RING_BUFFER_HI,                  # LDA #start_hi
-    0x8D, 0x03, 0xDF,                      # STA $DF03
-    0xA9, 0x00,                            # LDA #$00
-    0x8D, 0x02, 0xDF,                      # STA $DF02
-    0x68,                                  # PLA
-    0x4C, 0x31, 0xEA,                      # JMP $EA31
-])
+REU_IRQ_HANDLER = bytes(
+    [
+        0x48,  # PHA
+        0xA9,
+        REU_PUMP_CHUNK_SIZE & 0xFF,  # LDA #<chunk_size
+        0x8D,
+        0x07,
+        0xDF,  # STA $DF07
+        0xA9,
+        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # LDA #>chunk_size
+        0x8D,
+        0x08,
+        0xDF,  # STA $DF08
+        0xA9,
+        REU_CMD_FETCH_EXEC,  # LDA #$91
+        0x8D,
+        0x01,
+        0xDF,  # STA $DF01
+        0xAD,
+        0x03,
+        0xDF,  # LDA $DF03
+        0xC9,
+        RING_BUFFER_END_HI,  # CMP #end_hi
+        0x90,
+        0x0A,  # BCC +10 → PLA at offset 33
+        0xA9,
+        RING_BUFFER_HI,  # LDA #start_hi
+        0x8D,
+        0x03,
+        0xDF,  # STA $DF03
+        0xA9,
+        0x00,  # LDA #$00
+        0x8D,
+        0x02,
+        0xDF,  # STA $DF02
+        0x68,  # PLA
+        0x4C,
+        0x31,
+        0xEA,  # JMP $EA31
+    ]
+)
 assert len(REU_IRQ_HANDLER) == 37, (
     "REU_IRQ_HANDLER length changed — BCC offset (currently +10) may need "
-    "to be recomputed to reach the PLA byte after the wrap block.")
+    "to be recomputed to reach the PLA byte after the wrap block."
+)
 
 
 # --- Plain governor handler (skip-when-ahead, zero host writes) -----------
@@ -428,24 +457,39 @@ assert len(REU_IRQ_HANDLER) == 37, (
 #
 # The skipped PLA balances the offset-0 PHA on both paths. The body's internal
 # BCC (+10 to its PLA) is relative and unchanged by the prefix shift.
-REU_IRQ_HANDLER_GOVERNOR = bytes([
-    0x48,                                          # PHA
-    0xAD, 0x03, 0xDF,                              # LDA $DF03   (dst_hi)
-    0x38,                                          # SEC
-    0xED, READ_PTR_HI_ADDR & 0xFF,
-    (READ_PTR_HI_ADDR >> 8) & 0xFF,               # SBC $C026   (R_hi)
-    0x29, 0x1F,                                    # AND #$1F    (gap_hi)
-    0xC9, REU_GOVERNOR_GAP_THRESHOLD_HI,           # CMP #threshold_hi
-    0x90, 0x04,                                    # BCC +4 → pump body (offset 18)
-    0x68,                                          # PLA  (skip path)
-    0x4C, 0x31, 0xEA,                              # JMP $EA31
-]) + REU_IRQ_HANDLER[1:]                           # pump body, sans leading PHA
+REU_IRQ_HANDLER_GOVERNOR = (
+    bytes(
+        [
+            0x48,  # PHA
+            0xAD,
+            0x03,
+            0xDF,  # LDA $DF03   (dst_hi)
+            0x38,  # SEC
+            0xED,
+            READ_PTR_HI_ADDR & 0xFF,
+            (READ_PTR_HI_ADDR >> 8) & 0xFF,  # SBC $C026   (R_hi)
+            0x29,
+            0x1F,  # AND #$1F    (gap_hi)
+            0xC9,
+            REU_GOVERNOR_GAP_THRESHOLD_HI,  # CMP #threshold_hi
+            0x90,
+            0x04,  # BCC +4 → pump body (offset 18)
+            0x68,  # PLA  (skip path)
+            0x4C,
+            0x31,
+            0xEA,  # JMP $EA31
+        ]
+    )
+    + REU_IRQ_HANDLER[1:]
+)  # pump body, sans leading PHA
 assert len(REU_IRQ_HANDLER_GOVERNOR) == 18 + 36, (
     "REU_IRQ_HANDLER_GOVERNOR length changed — the governor prefix is 18 bytes "
-    "(BCC +4 over the 4-byte skip block) followed by REU_IRQ_HANDLER[1:].")
+    "(BCC +4 over the 4-byte skip block) followed by REU_IRQ_HANDLER[1:]."
+)
 # Pump body must start exactly at offset 18 (the BCC +4 target).
 assert REU_IRQ_HANDLER_GOVERNOR[18] == REU_IRQ_HANDLER[1], (
-    "governor pump-body offset drifted from the BCC +4 target (18)")
+    "governor pump-body offset drifted from the BCC +4 target (18)"
+)
 
 
 # --- Main-RAM REU source tracker (shared between mic + tracked commercial) ---
@@ -538,73 +582,152 @@ REU_PUMP_TICK_DIVIDER = 3
 # Inner BNE at offset 109 with +8 lands on LDA $DC0D at offset 119.
 # Chunk-size patch offsets: 2, 7, 51, 59, 76, 84.
 # Divider N patch offset: 112 (the immediate byte after LDA #).
-REU_IRQ_HANDLER_TRACKED = bytes([
-    0x48,                                                    # PHA
-    # re-set length (auto-decrements during DMA, must reload):
-    0xA9, REU_PUMP_CHUNK_SIZE & 0xFF,                        # LDA #<chunk_size
-    0x8D, 0x07, 0xDF,                                        # STA $DF07
-    0xA9, (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,                 # LDA #>chunk_size
-    0x8D, 0x08, 0xDF,                                        # STA $DF08
-    # load src from main-RAM tracker (works around bank-swap stomping REC):
-    0xAD, _TRK_LO, _TRK_HI_BYTE,                             # LDA src_lo
-    0x8D, 0x04, 0xDF,                                        # STA $DF04
-    0xAD, (_TRK_LO + 1) & 0xFF, _TRK_HI_BYTE,                # LDA src_mi
-    0x8D, 0x05, 0xDF,                                        # STA $DF05
-    0xAD, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # LDA src_hi
-    0x8D, 0x06, 0xDF,                                        # STA $DF06
-    # load dst from main-RAM tracker (same rationale — bank-swap stomps these too):
-    0xAD, (_TRK_LO + 3) & 0xFF, _TRK_HI_BYTE,                # LDA dst_lo
-    0x8D, 0x02, 0xDF,                                        # STA $DF02
-    0xAD, (_TRK_LO + 4) & 0xFF, _TRK_HI_BYTE,                # LDA dst_hi
-    0x8D, 0x03, 0xDF,                                        # STA $DF03
-    # trigger DMA:
-    0xA9, REU_CMD_FETCH_EXEC,                                # LDA #$91
-    0x8D, 0x01, 0xDF,                                        # STA $DF01
-    # advance src tracker by chunk_size:
-    0x18,                                                    # CLC
-    0xAD, _TRK_LO, _TRK_HI_BYTE,                             # LDA src_lo
-    0x69, REU_PUMP_CHUNK_SIZE & 0xFF,                        # ADC #<chunk_size
-    0x8D, _TRK_LO, _TRK_HI_BYTE,                             # STA src_lo
-    0xAD, (_TRK_LO + 1) & 0xFF, _TRK_HI_BYTE,                # LDA src_mi
-    0x69, (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,                 # ADC #>chunk_size
-    0x8D, (_TRK_LO + 1) & 0xFF, _TRK_HI_BYTE,                # STA src_mi
-    0xAD, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # LDA src_hi
-    0x69, 0x00,                                              # ADC #$00 (carry only)
-    0x8D, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # STA src_hi
-    # advance dst tracker by chunk_size:
-    0x18,                                                    # CLC
-    0xAD, (_TRK_LO + 3) & 0xFF, _TRK_HI_BYTE,                # LDA dst_lo
-    0x69, REU_PUMP_CHUNK_SIZE & 0xFF,                        # ADC #<chunk_size
-    0x8D, (_TRK_LO + 3) & 0xFF, _TRK_HI_BYTE,                # STA dst_lo
-    0xAD, (_TRK_LO + 4) & 0xFF, _TRK_HI_BYTE,                # LDA dst_hi
-    0x69, (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,                 # ADC #>chunk_size
-    0x8D, (_TRK_LO + 4) & 0xFF, _TRK_HI_BYTE,                # STA dst_hi
-    # dst wrap check on the tracker value (NOT $DF03 — that's now stale
-    # whenever bank-swap ran between IRQs):
-    0xAD, (_TRK_LO + 4) & 0xFF, _TRK_HI_BYTE,                # LDA dst_hi
-    0xC9, RING_BUFFER_END_HI,                                # CMP #ring_end_hi
-    0x90, 0x0A,                                              # BCC +10 → offset 105 (PLA)
-    0xA9, RING_BUFFER_HI,                                    # LDA #ring_start_hi
-    0x8D, (_TRK_LO + 4) & 0xFF, _TRK_HI_BYTE,                # STA dst_hi
-    0xA9, 0x00,                                              # LDA #$00
-    0x8D, (_TRK_LO + 3) & 0xFF, _TRK_HI_BYTE,                # STA dst_lo
-    # end:
-    0x68,                                                    # PLA (offset 105)
-    # tick divider (offsets 106-124): chain to $EA31 every Nth tick, lean
-    # exit the other N-1. Borrowed from SID player (api.py:089e97a).
-    0xCE, _TCTR_LO, _TCTR_HI_BYTE,                           # DEC counter
-    0xD0, 0x08,                                              # BNE +8 → lean exit (offset 119)
-    0xA9, REU_PUMP_TICK_DIVIDER,                             # LDA #N (offset 112)
-    0x8D, _TCTR_LO, _TCTR_HI_BYTE,                           # STA counter
-    0x4C, 0x31, 0xEA,                                        # JMP $EA31 (full chain)
-    # lean exit (offset 119): ack CIA #1 + JMP to kernal register-restore.
-    0xAD, 0x0D, 0xDC,                                        # LDA $DC0D (ack)
-    0x4C, 0x81, 0xEA,                                        # JMP $EA81 (RTI)
-])
+REU_IRQ_HANDLER_TRACKED = bytes(
+    [
+        0x48,  # PHA
+        # re-set length (auto-decrements during DMA, must reload):
+        0xA9,
+        REU_PUMP_CHUNK_SIZE & 0xFF,  # LDA #<chunk_size
+        0x8D,
+        0x07,
+        0xDF,  # STA $DF07
+        0xA9,
+        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # LDA #>chunk_size
+        0x8D,
+        0x08,
+        0xDF,  # STA $DF08
+        # load src from main-RAM tracker (works around bank-swap stomping REC):
+        0xAD,
+        _TRK_LO,
+        _TRK_HI_BYTE,  # LDA src_lo
+        0x8D,
+        0x04,
+        0xDF,  # STA $DF04
+        0xAD,
+        (_TRK_LO + 1) & 0xFF,
+        _TRK_HI_BYTE,  # LDA src_mi
+        0x8D,
+        0x05,
+        0xDF,  # STA $DF05
+        0xAD,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # LDA src_hi
+        0x8D,
+        0x06,
+        0xDF,  # STA $DF06
+        # load dst from main-RAM tracker (same rationale — bank-swap stomps these too):
+        0xAD,
+        (_TRK_LO + 3) & 0xFF,
+        _TRK_HI_BYTE,  # LDA dst_lo
+        0x8D,
+        0x02,
+        0xDF,  # STA $DF02
+        0xAD,
+        (_TRK_LO + 4) & 0xFF,
+        _TRK_HI_BYTE,  # LDA dst_hi
+        0x8D,
+        0x03,
+        0xDF,  # STA $DF03
+        # trigger DMA:
+        0xA9,
+        REU_CMD_FETCH_EXEC,  # LDA #$91
+        0x8D,
+        0x01,
+        0xDF,  # STA $DF01
+        # advance src tracker by chunk_size:
+        0x18,  # CLC
+        0xAD,
+        _TRK_LO,
+        _TRK_HI_BYTE,  # LDA src_lo
+        0x69,
+        REU_PUMP_CHUNK_SIZE & 0xFF,  # ADC #<chunk_size
+        0x8D,
+        _TRK_LO,
+        _TRK_HI_BYTE,  # STA src_lo
+        0xAD,
+        (_TRK_LO + 1) & 0xFF,
+        _TRK_HI_BYTE,  # LDA src_mi
+        0x69,
+        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # ADC #>chunk_size
+        0x8D,
+        (_TRK_LO + 1) & 0xFF,
+        _TRK_HI_BYTE,  # STA src_mi
+        0xAD,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # LDA src_hi
+        0x69,
+        0x00,  # ADC #$00 (carry only)
+        0x8D,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # STA src_hi
+        # advance dst tracker by chunk_size:
+        0x18,  # CLC
+        0xAD,
+        (_TRK_LO + 3) & 0xFF,
+        _TRK_HI_BYTE,  # LDA dst_lo
+        0x69,
+        REU_PUMP_CHUNK_SIZE & 0xFF,  # ADC #<chunk_size
+        0x8D,
+        (_TRK_LO + 3) & 0xFF,
+        _TRK_HI_BYTE,  # STA dst_lo
+        0xAD,
+        (_TRK_LO + 4) & 0xFF,
+        _TRK_HI_BYTE,  # LDA dst_hi
+        0x69,
+        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # ADC #>chunk_size
+        0x8D,
+        (_TRK_LO + 4) & 0xFF,
+        _TRK_HI_BYTE,  # STA dst_hi
+        # dst wrap check on the tracker value (NOT $DF03 — that's now stale
+        # whenever bank-swap ran between IRQs):
+        0xAD,
+        (_TRK_LO + 4) & 0xFF,
+        _TRK_HI_BYTE,  # LDA dst_hi
+        0xC9,
+        RING_BUFFER_END_HI,  # CMP #ring_end_hi
+        0x90,
+        0x0A,  # BCC +10 → offset 105 (PLA)
+        0xA9,
+        RING_BUFFER_HI,  # LDA #ring_start_hi
+        0x8D,
+        (_TRK_LO + 4) & 0xFF,
+        _TRK_HI_BYTE,  # STA dst_hi
+        0xA9,
+        0x00,  # LDA #$00
+        0x8D,
+        (_TRK_LO + 3) & 0xFF,
+        _TRK_HI_BYTE,  # STA dst_lo
+        # end:
+        0x68,  # PLA (offset 105)
+        # tick divider (offsets 106-124): chain to $EA31 every Nth tick, lean
+        # exit the other N-1. Borrowed from SID player (api.py:089e97a).
+        0xCE,
+        _TCTR_LO,
+        _TCTR_HI_BYTE,  # DEC counter
+        0xD0,
+        0x08,  # BNE +8 → lean exit (offset 119)
+        0xA9,
+        REU_PUMP_TICK_DIVIDER,  # LDA #N (offset 112)
+        0x8D,
+        _TCTR_LO,
+        _TCTR_HI_BYTE,  # STA counter
+        0x4C,
+        0x31,
+        0xEA,  # JMP $EA31 (full chain)
+        # lean exit (offset 119): ack CIA #1 + JMP to kernal register-restore.
+        0xAD,
+        0x0D,
+        0xDC,  # LDA $DC0D (ack)
+        0x4C,
+        0x81,
+        0xEA,  # JMP $EA81 (RTI)
+    ]
+)
 assert len(REU_IRQ_HANDLER_TRACKED) == 125, (
     "REU_IRQ_HANDLER_TRACKED length changed — BCC offset (currently +10), "
     "chunk-size patch offsets (2, 7, 51, 59, 76, 84), and divider patch "
-    "offset (112) must be recomputed.")
+    "offset (112) must be recomputed."
+)
 
 
 # --- Pump body subroutine (for chunked bank-swap inline call) -------------
@@ -630,13 +753,14 @@ assert len(REU_IRQ_HANDLER_TRACKED) == 125, (
 # if never JSR'd.
 REU_PUMP_BODY_SUBROUTINE_ADDR = 0xC180
 REU_PUMP_BODY_SUBROUTINE = (
-    REU_IRQ_HANDLER_TRACKED[1:105] + bytes([0x60])    # RTS
+    REU_IRQ_HANDLER_TRACKED[1:105] + bytes([0x60])  # RTS
 )
 assert len(REU_PUMP_BODY_SUBROUTINE) == 105, (
     "REU_PUMP_BODY_SUBROUTINE length changed — the chunked bank-swap "
     "dispatcher in modes.py JSRs to a fixed address ($C180) and the "
     "subroutine must end with RTS at offset 104 so the BCC at offset "
-    "92 (displacement +10) lands on it correctly.")
+    "92 (displacement +10) lands on it correctly."
+)
 # The trailing byte must be RTS so the BCC's "no-wrap" early-exit
 # returns to the caller correctly.
 assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
@@ -664,8 +788,8 @@ assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
 # before host catches up to pump (then samples drop). For typical short
 # sessions this is invisible; for very long sessions a periodic resync
 # would be needed (future work).
-REU_MIC_BASE = 0x100000        # 1 MB into REU — well above the audio region
-REU_MIC_SIZE = 0x10000          # 64 KB = 8 sec @ 8 kHz
+REU_MIC_BASE = 0x100000  # 1 MB into REU — well above the audio region
+REU_MIC_SIZE = 0x10000  # 64 KB = 8 sec @ 8 kHz
 REU_MIC_END = REU_MIC_BASE + REU_MIC_SIZE
 REU_MIC_BASE_HI = (REU_MIC_BASE >> 16) & 0xFF
 REU_MIC_END_HI = (REU_MIC_END >> 16) & 0xFF
@@ -725,59 +849,123 @@ REU_MIC_BOOTSTRAP_BYTES = 1600  # 200 ms @ 8 kHz; tunes steady-state latency
 #  88    LDA #ring_start_hi / STA $DF03            ┐ reset dst to RING_BUFFER_ADDR
 #  93    LDA #$00 / STA $DF02                      ┘
 #  98    PLA / JMP $EA31                           ; chain to kernal IRQ
-REU_MIC_IRQ_HANDLER = bytes([
-    0x48,                                                    # PHA
-    # re-set length (auto-decrements during DMA, must reload):
-    0xA9, REU_PUMP_CHUNK_SIZE & 0xFF,                        # LDA #<chunk_size
-    0x8D, 0x07, 0xDF,                                        # STA $DF07
-    0xA9, (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,                 # LDA #>chunk_size
-    0x8D, 0x08, 0xDF,                                        # STA $DF08
-    # load src from main-RAM tracker:
-    0xAD, _TRK_LO, _TRK_HI_BYTE,                             # LDA tracker_lo
-    0x8D, 0x04, 0xDF,                                        # STA $DF04
-    0xAD, (_TRK_LO + 1) & 0xFF, _TRK_HI_BYTE,                # LDA tracker_mi
-    0x8D, 0x05, 0xDF,                                        # STA $DF05
-    0xAD, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # LDA tracker_hi
-    0x8D, 0x06, 0xDF,                                        # STA $DF06
-    # trigger DMA:
-    0xA9, REU_CMD_FETCH_EXEC,                                # LDA #$91
-    0x8D, 0x01, 0xDF,                                        # STA $DF01
-    # advance tracker by chunk_size (16-bit add-with-carry across 3 bytes):
-    0x18,                                                    # CLC
-    0xAD, _TRK_LO, _TRK_HI_BYTE,                             # LDA tracker_lo
-    0x69, REU_PUMP_CHUNK_SIZE & 0xFF,                        # ADC #<chunk_size
-    0x8D, _TRK_LO, _TRK_HI_BYTE,                             # STA tracker_lo
-    0xAD, (_TRK_LO + 1) & 0xFF, _TRK_HI_BYTE,                # LDA tracker_mi
-    0x69, (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,                 # ADC #>chunk_size
-    0x8D, (_TRK_LO + 1) & 0xFF, _TRK_HI_BYTE,                # STA tracker_mi
-    0xAD, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # LDA tracker_hi
-    0x69, 0x00,                                              # ADC #$00 (carry only)
-    0x8D, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # STA tracker_hi
-    # src wrap check on tracker_hi:
-    0xAD, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # LDA tracker_hi
-    0xC9, REU_MIC_END_HI,                                    # CMP #reu_end_hi
-    0x90, 0x0F,                                              # BCC +15 → offset 81 (dst wrap)
-    0xA9, REU_MIC_BASE_HI,                                   # LDA #reu_start_hi
-    0x8D, (_TRK_LO + 2) & 0xFF, _TRK_HI_BYTE,                # STA tracker_hi
-    0xA9, 0x00,                                              # LDA #$00
-    0x8D, (_TRK_LO + 1) & 0xFF, _TRK_HI_BYTE,                # STA tracker_mi
-    0xA9, 0x00,                                              # LDA #$00
-    0x8D, _TRK_LO, _TRK_HI_BYTE,                             # STA tracker_lo
-    # dst wrap check on $DF03 (reliable, same as commercial handler):
-    0xAD, 0x03, 0xDF,                                        # LDA $DF03
-    0xC9, RING_BUFFER_END_HI,                                # CMP #ring_end_hi
-    0x90, 0x0A,                                              # BCC +10 → offset 98 (PLA)
-    0xA9, RING_BUFFER_HI,                                    # LDA #ring_start_hi
-    0x8D, 0x03, 0xDF,                                        # STA $DF03
-    0xA9, 0x00,                                              # LDA #$00
-    0x8D, 0x02, 0xDF,                                        # STA $DF02
-    # end:
-    0x68,                                                    # PLA
-    0x4C, 0x31, 0xEA,                                        # JMP $EA31
-])
+REU_MIC_IRQ_HANDLER = bytes(
+    [
+        0x48,  # PHA
+        # re-set length (auto-decrements during DMA, must reload):
+        0xA9,
+        REU_PUMP_CHUNK_SIZE & 0xFF,  # LDA #<chunk_size
+        0x8D,
+        0x07,
+        0xDF,  # STA $DF07
+        0xA9,
+        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # LDA #>chunk_size
+        0x8D,
+        0x08,
+        0xDF,  # STA $DF08
+        # load src from main-RAM tracker:
+        0xAD,
+        _TRK_LO,
+        _TRK_HI_BYTE,  # LDA tracker_lo
+        0x8D,
+        0x04,
+        0xDF,  # STA $DF04
+        0xAD,
+        (_TRK_LO + 1) & 0xFF,
+        _TRK_HI_BYTE,  # LDA tracker_mi
+        0x8D,
+        0x05,
+        0xDF,  # STA $DF05
+        0xAD,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # LDA tracker_hi
+        0x8D,
+        0x06,
+        0xDF,  # STA $DF06
+        # trigger DMA:
+        0xA9,
+        REU_CMD_FETCH_EXEC,  # LDA #$91
+        0x8D,
+        0x01,
+        0xDF,  # STA $DF01
+        # advance tracker by chunk_size (16-bit add-with-carry across 3 bytes):
+        0x18,  # CLC
+        0xAD,
+        _TRK_LO,
+        _TRK_HI_BYTE,  # LDA tracker_lo
+        0x69,
+        REU_PUMP_CHUNK_SIZE & 0xFF,  # ADC #<chunk_size
+        0x8D,
+        _TRK_LO,
+        _TRK_HI_BYTE,  # STA tracker_lo
+        0xAD,
+        (_TRK_LO + 1) & 0xFF,
+        _TRK_HI_BYTE,  # LDA tracker_mi
+        0x69,
+        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # ADC #>chunk_size
+        0x8D,
+        (_TRK_LO + 1) & 0xFF,
+        _TRK_HI_BYTE,  # STA tracker_mi
+        0xAD,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # LDA tracker_hi
+        0x69,
+        0x00,  # ADC #$00 (carry only)
+        0x8D,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # STA tracker_hi
+        # src wrap check on tracker_hi:
+        0xAD,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # LDA tracker_hi
+        0xC9,
+        REU_MIC_END_HI,  # CMP #reu_end_hi
+        0x90,
+        0x0F,  # BCC +15 → offset 81 (dst wrap)
+        0xA9,
+        REU_MIC_BASE_HI,  # LDA #reu_start_hi
+        0x8D,
+        (_TRK_LO + 2) & 0xFF,
+        _TRK_HI_BYTE,  # STA tracker_hi
+        0xA9,
+        0x00,  # LDA #$00
+        0x8D,
+        (_TRK_LO + 1) & 0xFF,
+        _TRK_HI_BYTE,  # STA tracker_mi
+        0xA9,
+        0x00,  # LDA #$00
+        0x8D,
+        _TRK_LO,
+        _TRK_HI_BYTE,  # STA tracker_lo
+        # dst wrap check on $DF03 (reliable, same as commercial handler):
+        0xAD,
+        0x03,
+        0xDF,  # LDA $DF03
+        0xC9,
+        RING_BUFFER_END_HI,  # CMP #ring_end_hi
+        0x90,
+        0x0A,  # BCC +10 → offset 98 (PLA)
+        0xA9,
+        RING_BUFFER_HI,  # LDA #ring_start_hi
+        0x8D,
+        0x03,
+        0xDF,  # STA $DF03
+        0xA9,
+        0x00,  # LDA #$00
+        0x8D,
+        0x02,
+        0xDF,  # STA $DF02
+        # end:
+        0x68,  # PLA
+        0x4C,
+        0x31,
+        0xEA,  # JMP $EA31
+    ]
+)
 assert len(REU_MIC_IRQ_HANDLER) == 102, (
     "REU_MIC_IRQ_HANDLER length changed — BCC offsets (currently +15 src, +10 dst) "
-    "must be recomputed to land on the dst-wrap LDA $DF03 and trailing PLA.")
+    "must be recomputed to land on the dst-wrap LDA $DF03 and trailing PLA."
+)
 
 
 # --- SID digi-boost control bytes ----------------------------------------
@@ -787,8 +975,8 @@ assert len(REU_MIC_IRQ_HANDLER) == 102, (
 # scale. Sustain=$F keeps the ADSR envelope D/A fully open so the DC is at
 # maximum amplitude.
 SID_DIGIBOOST_CONTROL = 0x49  # gate + pulse + test
-SID_DIGIBOOST_SR = 0xF0       # sustain=$F, release=0
-SID_GATE_OFF = 0x40           # pulse waveform, gate=0 → envelope release
+SID_DIGIBOOST_SR = 0xF0  # sustain=$F, release=0
+SID_GATE_OFF = 0x40  # pulse waveform, gate=0 → envelope release
 
 
 def _servo_period(
@@ -820,20 +1008,30 @@ def _servo_period(
         integ_limit = HOST_DMA_SERVO_INTEG_CLAMP * chunk_period / ki
         integ = max(-integ_limit, min(integ_limit, integ))
     period = chunk_period + kp * e + ki * integ
-    period = max(HOST_DMA_SERVO_PERIOD_MIN_FRAC * chunk_period,
-                 min(HOST_DMA_SERVO_PERIOD_MAX_FRAC * chunk_period, period))
+    period = max(
+        HOST_DMA_SERVO_PERIOD_MIN_FRAC * chunk_period,
+        min(HOST_DMA_SERVO_PERIOD_MAX_FRAC * chunk_period, period),
+    )
     return period, integ
 
 
 class AudioStreamer:
     """Threaded NMI audio with anti-underrun pad."""
 
-    def __init__(self, api: C64Backend, sample_rate: int, system: str,
-                 *, dither: bool = True, digi_boost: bool = False,
-                 sid_filter_cutoff: int = 0, use_reu_pump: bool = False,
-                 reu_pump_governor: bool = True,
-                 host_dma_servo: bool = True,
-                 dsp_params: DSPParams | None = None):
+    def __init__(
+        self,
+        api: C64Backend,
+        sample_rate: int,
+        system: str,
+        *,
+        dither: bool = True,
+        digi_boost: bool = False,
+        sid_filter_cutoff: int = 0,
+        use_reu_pump: bool = False,
+        reu_pump_governor: bool = True,
+        host_dma_servo: bool = True,
+        dsp_params: DSPParams | None = None,
+    ):
         # The U64 DMA service accepts only one connection at a time — a
         # second concurrent socket is allowed to TCP-accept but its IDENTIFY
         # never gets answered, and the first connection blocks subsequent
@@ -854,8 +1052,7 @@ class AudioStreamer:
         # the AGC stage activates. Disabled params → an identity chain (active
         # is False), so the encode paths short-circuit to the legacy behavior.
         self._dsp_params = dsp_params if dsp_params is not None else DSPParams()
-        self._dsp = AudioDSP(self._dsp_params, sample_rate=sample_rate,
-                             is_mic=False)
+        self._dsp = AudioDSP(self._dsp_params, sample_rate=sample_rate, is_mic=False)
         # REU-staged audio mode: when True, scenes that know the full track
         # upfront (e.g. CommercialScene) can call start_for_reu_staged() to
         # preload the audio into REU memory and let a C64-side IRQ pump
@@ -962,14 +1159,13 @@ class AudioStreamer:
         nmi[NMI_ROUTINE_PATCH_OFFSET_RESET_HI] = RING_BUFFER_HI
         self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", bytes(nmi))
         self.api.write_memory_file(
-            f"{RING_BUFFER_ADDR:04X}",
-            bytes([NEUTRAL_SAMPLE] * RING_BUFFER_SIZE))
+            f"{RING_BUFFER_ADDR:04X}", bytes([NEUTRAL_SAMPLE] * RING_BUFFER_SIZE)
+        )
         # Disable CIA #2 IRQs, clear ICR, then point NMI vector → $C020.
+        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
         self.api.write_regs(
-            f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
-        self.api.write_regs(
-            f"{VECTORS.NMI:04X}",
-            NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF)
+            f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
+        )
         if self.digi_boost:
             self._enable_digi_boost()
 
@@ -987,13 +1183,9 @@ class AudioStreamer:
         """
         for v in range(SID.N_VOICES):
             base = SID.voice_base(v)
-            self.api.write_regs(
-                f"{base + SID.OFF_AD:04X}", 0x00, SID_DIGIBOOST_SR)
-            self.api.write_regs(
-                f"{base + SID.OFF_PW_LO:04X}", 0x00, 0x08)
-            self.api.write_memory(
-                f"{base + SID.OFF_CONTROL:04X}",
-                f"{SID_DIGIBOOST_CONTROL:02X}")
+            self.api.write_regs(f"{base + SID.OFF_AD:04X}", 0x00, SID_DIGIBOOST_SR)
+            self.api.write_regs(f"{base + SID.OFF_PW_LO:04X}", 0x00, 0x08)
+            self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_DIGIBOOST_CONTROL:02X}")
         log.info("audio: digi-boost engaged (3 voices, test bit locked)")
 
     def _disable_digi_boost(self) -> None:
@@ -1001,9 +1193,7 @@ class AudioStreamer:
         for v in range(SID.N_VOICES):
             base = SID.voice_base(v)
             try:
-                self.api.write_memory(
-                    f"{base + SID.OFF_CONTROL:04X}",
-                    f"{SID_GATE_OFF:02X}")
+                self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_GATE_OFF:02X}")
             except Exception as e:
                 log.debug("digi-boost teardown voice %d failed: %s", v, e)
 
@@ -1041,14 +1231,11 @@ class AudioStreamer:
         self._nmi_timer_started = True
         self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
         # Arm + start timer A, set NMI source.
-        self.api.write_regs(
-            f"{CIA2.ICR:04X}",
-            CIA2_ICR_ENABLE_TIMER_A_NMI,
-            CIA2_TIMER_A_CONTINUOUS)
+        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
 
-    def set_nmi_latch_for_mode(self, display_mode: str,
-                               calibration: dict[str, float] | None = None
-                               ) -> None:
+    def set_nmi_latch_for_mode(
+        self, display_mode: str, calibration: dict[str, float] | None = None
+    ) -> None:
         """Retune the NMI consumer rate for a display mode to restore pitch.
 
         The host-DMA servo locks audio playback speed to the NMI consumer R,
@@ -1075,8 +1262,7 @@ class AudioStreamer:
 
         # `hires_edges` scenes report display_mode.name == "hires" (same VIC
         # fetch), so they already resolve to the `hires` multiplier here.
-        multiplier = 1.0 if calibration is None else calibration.get(
-            display_mode.lower(), 1.0)
+        multiplier = 1.0 if calibration is None else calibration.get(display_mode.lower(), 1.0)
         # Remember it so _start_nmi_timer applies it when the timer first arms.
         # At scene setup the worker is usually still prebuffering (timer not
         # started yet), so we just stash the value and let the timer pick it up.
@@ -1089,13 +1275,15 @@ class AudioStreamer:
         if adjusted_latch == self._nmi_latch:
             return
 
-        log.debug(f"[audio] retune NMI for {display_mode}: latch "
-                  f"{self._nmi_latch} → {adjusted_latch} "
-                  f"(rate ×{multiplier:.4f})")
+        log.debug(
+            f"[audio] retune NMI for {display_mode}: latch "
+            f"{self._nmi_latch} → {adjusted_latch} "
+            f"(rate ×{multiplier:.4f})"
+        )
         self._nmi_latch = adjusted_latch
-        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}",
-                            adjusted_latch & 0xFF,
-                            (adjusted_latch >> 8) & 0xFF)
+        self.api.write_regs(
+            f"{CIA2.TIMER_A_LO:04X}", adjusted_latch & 0xFF, (adjusted_latch >> 8) & 0xFF
+        )
 
     # ---- worker --------------------------------------------------------------
     def _worker(self) -> None:
@@ -1164,8 +1352,7 @@ class AudioStreamer:
 
                 # Block with deadline. Returns early once chunk_buf is
                 # full or once the producer is silent past the deadline.
-                while (n < self.chunk_size and not leftover
-                       and self.running):
+                while n < self.chunk_size and not leftover and self.running:
                     remaining = collect_deadline - time.monotonic()
                     if remaining <= 0:
                         break
@@ -1174,7 +1361,7 @@ class AudioStreamer:
                     except queue.Empty:
                         break
                     take = min(len(piece), self.chunk_size - n)
-                    chunk_buf[n:n + take] = piece[:take]
+                    chunk_buf[n : n + take] = piece[:take]
                     n += take
                     from_queue += take
                     if take < len(piece):
@@ -1188,15 +1375,14 @@ class AudioStreamer:
                         # Idle: no producer data, no NMI to feed.
                         continue
                     # Real underrun: refresh ring with silence.
-                    chunk_buf[:] = bytes(
-                        [NEUTRAL_SAMPLE] * self.chunk_size)
+                    chunk_buf[:] = bytes([NEUTRAL_SAMPLE] * self.chunk_size)
                     n = self.chunk_size
                     self._full_underruns += 1
                 elif n < self.chunk_size and prebuffered:
                     # Partial chunk: pad to keep pace math simple. Pad
                     # bytes are NOT counted in from_queue.
                     pad = self.chunk_size - n
-                    chunk_buf[n:n + pad] = bytes([NEUTRAL_SAMPLE]) * pad
+                    chunk_buf[n : n + pad] = bytes([NEUTRAL_SAMPLE]) * pad
                     n = self.chunk_size
                     self._partial_underruns += 1
 
@@ -1205,11 +1391,9 @@ class AudioStreamer:
                     if sleep_s > 0:
                         time.sleep(sleep_s)
 
-                self.api.write_memory_file(
-                    f"{write_addr:04X}", bytes(chunk_buf[:n]))
+                self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
                 if from_queue:
-                    self._queued_samples = max(
-                        0, self._queued_samples - from_queue)
+                    self._queued_samples = max(0, self._queued_samples - from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1225,11 +1409,9 @@ class AudioStreamer:
                         # Pace the next write one chunk_period out so the
                         # PREBUFFER_CHUNKS slack stays steady instead of
                         # getting eaten up immediately.
-                        next_write_time = (time.monotonic()
-                                           + chunk_period)
+                        next_write_time = time.monotonic() + chunk_period
                 else:
-                    next_write_time += self._next_pace_increment(
-                        write_addr, chunk_period)
+                    next_write_time += self._next_pace_increment(write_addr, chunk_period)
         except Exception:
             # Without this, a thread crash means audio goes silent forever and
             # main loop has no clue why. Mark not-running so callers can detect.
@@ -1260,11 +1442,9 @@ class AudioStreamer:
             return chunk_period
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
         self._servo_gap_last = gap
-        self._servo_gap_min = gap if self._servo_gap_min < 0 else min(
-            self._servo_gap_min, gap)
+        self._servo_gap_min = gap if self._servo_gap_min < 0 else min(self._servo_gap_min, gap)
         self._servo_gap_max = max(self._servo_gap_max, gap)
-        period, self._servo_integ = _servo_period(
-            gap, self._servo_integ, chunk_period=chunk_period)
+        period, self._servo_integ = _servo_period(gap, self._servo_integ, chunk_period=chunk_period)
         return period
 
     # ---- sample tap ----------------------------------------------------------
@@ -1282,11 +1462,11 @@ class AudioStreamer:
         with self._tap_lock:
             end = self._tap_write + n
             if end <= SAMPLE_TAP_SIZE:
-                self._tap_buf[self._tap_write:end] = mono_floats
+                self._tap_buf[self._tap_write : end] = mono_floats
             else:
                 split = SAMPLE_TAP_SIZE - self._tap_write
-                self._tap_buf[self._tap_write:] = mono_floats[:split]
-                self._tap_buf[:end - SAMPLE_TAP_SIZE] = mono_floats[split:]
+                self._tap_buf[self._tap_write :] = mono_floats[:split]
+                self._tap_buf[: end - SAMPLE_TAP_SIZE] = mono_floats[split:]
             self._tap_write = end % SAMPLE_TAP_SIZE
 
     def get_recent_samples(self, n: int) -> np.ndarray:
@@ -1303,10 +1483,10 @@ class AudioStreamer:
             start = (w - n) % SAMPLE_TAP_SIZE
             tail = SAMPLE_TAP_SIZE - start
             if n <= tail:
-                out[:] = self._tap_buf[start:start + n]
+                out[:] = self._tap_buf[start : start + n]
             else:
                 out[:tail] = self._tap_buf[start:]
-                out[tail:] = self._tap_buf[:n - tail]
+                out[tail:] = self._tap_buf[: n - tail]
         return out
 
     # ---- host DSP ------------------------------------------------------------
@@ -1331,8 +1511,7 @@ class AudioStreamer:
         if params is None:
             return
         self._dsp_params = dataclasses.replace(params, pre_emphasis=amount)
-        self._dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate,
-                             is_mic=False)
+        self._dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
 
     def _apply_dsp(self, floats: np.ndarray) -> np.ndarray:
         """Run the host DSP chain over float samples in [-1, 1] before the DAC
@@ -1348,13 +1527,11 @@ class AudioStreamer:
         state untouched. Used by the REU commercial pre-encode so REU-staged
         and host-DMA commercial audio get identical DSP treatment. No-op when
         DSP is disabled."""
-        dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate,
-                       is_mic=False)
+        dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
         return dsp.process(floats) if dsp.active else floats
 
     # ---- shared encode + enqueue ---------------------------------------------
-    def _encode_and_enqueue(self, floats: np.ndarray,
-                             block_on_full: bool = False) -> int:
+    def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
         DAC queue as 4-bit values. Returns the number of samples enqueued.
 
@@ -1382,8 +1559,7 @@ class AudioStreamer:
             if not block_on_full:
                 return 0
             deadline = time.time() + QUEUE_PUT_TIMEOUT_S
-            while (self._queued_samples + n > self._max_queued_samples
-                   and self.running):
+            while self._queued_samples + n > self._max_queued_samples and self.running:
                 if time.time() >= deadline:
                     return 0
                 time.sleep(BACKPRESSURE_SPIN_S)
@@ -1399,8 +1575,7 @@ class AudioStreamer:
         return n
 
     # ---- input sources -------------------------------------------------------
-    def _mic_callback(self, indata: np.ndarray, frames: int,
-                      time_info: Any, status: Any) -> None:
+    def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
         if status or not self.running:
             return
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
@@ -1410,8 +1585,9 @@ class AudioStreamer:
             mono[np.abs(mono) < self.noise_gate] = 0
         self._encode_and_enqueue(mono.astype(np.float32, copy=False))
 
-    def _mic_callback_reu(self, indata: np.ndarray, frames: int,
-                          time_info: Any, status: Any) -> None:
+    def _mic_callback_reu(
+        self, indata: np.ndarray, frames: int, time_info: Any, status: Any
+    ) -> None:
         """Mic callback for REU-pump mode. Encodes float samples to 4-bit
         DAC codes (same pipeline as host-DMA mode) but REUWRITEs them into
         the REU mic ring instead of queuing for the worker thread. The
@@ -1454,9 +1630,14 @@ class AudioStreamer:
         # host-DMA path does via _pushed_count → consumed.
         self._pushed_count += n
 
-    def start_mic(self, device: int, sensitivity: float,
-                  noise_gate: float, *,
-                  skip_irq_vector_hook: bool = False) -> None:
+    def start_mic(
+        self,
+        device: int,
+        sensitivity: float,
+        noise_gate: float,
+        *,
+        skip_irq_vector_hook: bool = False,
+    ) -> None:
         """Start mic capture. When ``use_reu_pump`` is set on the streamer,
         delegates to the REU-staged mic pump (which respects
         ``skip_irq_vector_hook`` the same way start_for_reu_staged does).
@@ -1473,29 +1654,32 @@ class AudioStreamer:
         # getattr-guarded for streamers built via __new__ in tests.
         dsp_params = getattr(self, "_dsp_params", None)
         if dsp_params is not None:
-            self._dsp = AudioDSP(dsp_params, sample_rate=self.sample_rate,
-                                 is_mic=True)
+            self._dsp = AudioDSP(dsp_params, sample_rate=self.sample_rate, is_mic=True)
             if self._dsp.active:
                 log.info("audio: host DSP active (mic chain)")
         if self.use_reu_pump:
-            self._start_mic_for_reu_pump(
-                device, skip_irq_vector_hook=skip_irq_vector_hook)
+            self._start_mic_for_reu_pump(device, skip_irq_vector_hook=skip_irq_vector_hook)
             return
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
         self.running = True
         self._worker_thread = threading.Thread(
-            target=self._worker, daemon=True, name="audio-worker")
+            target=self._worker, daemon=True, name="audio-worker"
+        )
         self._worker_thread.start()
         assert sd is not None
         self.mic_stream = self._open_input_stream(device)
         self.mic_stream.start()
-        log.info("audio: mic device=%d %dHz sensitivity=%.2f noise_gate=%.3f",
-                 device, self.sample_rate, sensitivity, noise_gate)
+        log.info(
+            "audio: mic device=%d %dHz sensitivity=%.2f noise_gate=%.3f",
+            device,
+            self.sample_rate,
+            sensitivity,
+            noise_gate,
+        )
 
     # ---- REU-staged mic (live capture, opt-in via use_reu_pump) -------------
-    def _start_mic_for_reu_pump(self, device: int, *,
-                                 skip_irq_vector_hook: bool = False) -> None:
+    def _start_mic_for_reu_pump(self, device: int, *, skip_irq_vector_hook: bool = False) -> None:
         """Bring up live mic capture using the REU-staged pump.
 
         Same C64-side architecture as start_for_reu_staged() but with a
@@ -1517,8 +1701,9 @@ class AudioStreamer:
         # ~ring-size worth of reads play silence (not stale FPGA SRAM,
         # which could be loud noise). One REUWRITE slice = 32 KB, so two
         # slices cover the 64 KB ring.
-        log.info("audio[reu mic]: prefilling REU ring at $%06X (%d bytes)",
-                 REU_MIC_BASE, REU_MIC_SIZE)
+        log.info(
+            "audio[reu mic]: prefilling REU ring at $%06X (%d bytes)", REU_MIC_BASE, REU_MIC_SIZE
+        )
         pad = bytes([NEUTRAL_SAMPLE] * REU_UPLOAD_SLICE)
         for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
             n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
@@ -1537,20 +1722,21 @@ class AudioStreamer:
         # length = REU_PUMP_CHUNK_SIZE, address-control = 0 (both auto-inc,
         # no autoload). The src registers don't need init since the handler
         # writes them on every trigger.
-        self.api.write_memory_file(
-            f"{REU_PUMP_HANDLER_ADDR:04X}", REU_MIC_IRQ_HANDLER)
+        self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_MIC_IRQ_HANDLER)
         self.api.write_memory(
             f"{REU_MIC_SRC_TRACKER_ADDR:04X}",
             f"{REU_MIC_BASE & 0xFF:02X}"
             f"{(REU_MIC_BASE >> 8) & 0xFF:02X}"
-            f"{(REU_MIC_BASE >> 16) & 0xFF:02X}")
+            f"{(REU_MIC_BASE >> 16) & 0xFF:02X}",
+        )
         self.api.write_memory(
             f"{REU.C64_ADDR_LO:04X}",
-            f"{RING_BUFFER_ADDR & 0xFF:02X}{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}")
+            f"{RING_BUFFER_ADDR & 0xFF:02X}{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}",
+        )
         self.api.write_memory(
             f"{REU.LENGTH_LO:04X}",
-            f"{REU_PUMP_CHUNK_SIZE & 0xFF:02X}"
-            f"{(REU_PUMP_CHUNK_SIZE >> 8) & 0xFF:02X}")
+            f"{REU_PUMP_CHUNK_SIZE & 0xFF:02X}{(REU_PUMP_CHUNK_SIZE >> 8) & 0xFF:02X}",
+        )
         self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
         # 4. Reprogram CIA #1 Timer A latch — matched pump rate vs NMI
@@ -1559,17 +1745,20 @@ class AudioStreamer:
         # is independent of CPU clock.
         self.api.write_memory(
             f"{CIA1.TIMER_A_LO:04X}",
-            f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}"
-            f"{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}")
+            f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}",
+        )
         self.api.flush()
-        log.info("audio[reu mic]: pump installed at $%04X, CIA #1 latch=$%04X",
-                 REU_PUMP_HANDLER_ADDR, REU_PUMP_CIA1_LATCH)
+        log.info(
+            "audio[reu mic]: pump installed at $%04X, CIA #1 latch=$%04X",
+            REU_PUMP_HANDLER_ADDR,
+            REU_PUMP_CIA1_LATCH,
+        )
 
         # 5. Arm NMI (CIA #2 Timer A). NMI now consumes the prebuilt
         # NEUTRAL ring at the consume rate.
         self._reu_pump_start_time = time.monotonic()
         self._start_nmi_timer()
-        time.sleep(0.05)        # let NMI catch a few samples before IRQ arms
+        time.sleep(0.05)  # let NMI catch a few samples before IRQ arms
 
         # 6. Patch IRQ vector → REU mic pump handler. Pump starts on next
         # kernal IRQ (~16 ms). Initially reads NEUTRAL (because the ring
@@ -1578,9 +1767,11 @@ class AudioStreamer:
         # display mode's bank-swap dispatcher owns $0314 and JMPs to
         # $C100 itself.
         if not skip_irq_vector_hook:
-            self.api.write_regs(f"{VECTORS.IRQ:04X}",
-                                REU_PUMP_HANDLER_ADDR & 0xFF,
-                                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF)
+            self.api.write_regs(
+                f"{VECTORS.IRQ:04X}",
+                REU_PUMP_HANDLER_ADDR & 0xFF,
+                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF,
+            )
             self.api.flush()
 
         # 7. State for callback + teardown.
@@ -1595,14 +1786,18 @@ class AudioStreamer:
         # 8. Open the mic input stream with the REU callback. _open_input_stream
         # currently hardcodes self._mic_callback as the callback; swap in the
         # REU variant for this path.
-        self.mic_stream = self._open_input_stream(device,
-                                                  callback=self._mic_callback_reu)
+        self.mic_stream = self._open_input_stream(device, callback=self._mic_callback_reu)
         self.mic_stream.start()
-        log.info("audio[reu mic]: device=%d %dHz sensitivity=%.2f noise_gate=%.3f "
-                 "bootstrap=%dB (%.0fms latency)",
-                 device, self.sample_rate, self.sensitivity, self.noise_gate,
-                 REU_MIC_BOOTSTRAP_BYTES,
-                 1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate)
+        log.info(
+            "audio[reu mic]: device=%d %dHz sensitivity=%.2f noise_gate=%.3f "
+            "bootstrap=%dB (%.0fms latency)",
+            device,
+            self.sample_rate,
+            self.sensitivity,
+            self.noise_gate,
+            REU_MIC_BOOTSTRAP_BYTES,
+            1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate,
+        )
 
     def _resolve_input_device(self, device: int) -> tuple[int | None, str]:
         """Pick an input-capable device.
@@ -1644,11 +1839,12 @@ class AudioStreamer:
             "audio device %d has no input channels; falling back to "
             "%s. Pass --audio-device N (see -L) or set audio.device = -1 "
             "in your config to silence this warning.",
-            device, name)
+            device,
+            name,
+        )
         return fallback, name
 
-    def _open_input_stream(self, device: int,
-                           callback: Any = None) -> Any:
+    def _open_input_stream(self, device: int, callback: Any = None) -> Any:
         """Open an InputStream with sensible channel-count fallback.
 
         CoreAudio (and a few ALSA drivers) reject `channels=1` on devices
@@ -1668,8 +1864,11 @@ class AudioStreamer:
         resolved, dev_name = self._resolve_input_device(device)
 
         try:
-            info = (sd.query_devices(resolved, "input") if resolved is not None
-                    else sd.query_devices(kind="input"))
+            info = (
+                sd.query_devices(resolved, "input")
+                if resolved is not None
+                else sd.query_devices(kind="input")
+            )
             max_in = int(info.get("max_input_channels", 0))
         except Exception as e:
             log.warning("could not query resolved input device: %s", e)
@@ -1693,18 +1892,20 @@ class AudioStreamer:
         for ch in candidates:
             try:
                 stream = sd.InputStream(
-                    device=resolved, samplerate=self.sample_rate,
-                    channels=ch, callback=callback)
+                    device=resolved, samplerate=self.sample_rate, channels=ch, callback=callback
+                )
                 if ch != 1:
-                    log.info(
-                        "mic: opened %r with channels=%d "
-                        "(downmixing to mono)", dev_name, ch)
+                    log.info("mic: opened %r with channels=%d (downmixing to mono)", dev_name, ch)
                 return stream
             except sd.PortAudioError as e:
                 last_err = e
                 log.debug(
                     "mic: device %r rejected channels=%d sr=%d: %s",
-                    dev_name, ch, self.sample_rate, e)
+                    dev_name,
+                    ch,
+                    self.sample_rate,
+                    e,
+                )
         raise RuntimeError(
             f"could not open mic on {dev_name!r} at "
             f"{self.sample_rate} Hz (tried channels {candidates}): "
@@ -1719,15 +1920,19 @@ class AudioStreamer:
         self._pushed_count = 0
         self.running = True
         self._worker_thread = threading.Thread(
-            target=self._worker, daemon=True, name="audio-worker")
+            target=self._worker, daemon=True, name="audio-worker"
+        )
         self._worker_thread.start()
         log.info("audio: external push source → SID @ %dHz", self.sample_rate)
 
     # ---- REU-staged playback (CommercialScene) ------------------------------
-    def start_for_reu_staged(self, audio_4bit: bytes,
-                             chunk_size: int | None = None,
-                             *,
-                             skip_irq_vector_hook: bool = False) -> None:
+    def start_for_reu_staged(
+        self,
+        audio_4bit: bytes,
+        chunk_size: int | None = None,
+        *,
+        skip_irq_vector_hook: bool = False,
+    ) -> None:
         """Bring up audio with the entire track preloaded into REU.
 
         ``audio_4bit`` is a bytes blob of pre-encoded 4-bit DAC volume codes
@@ -1795,14 +2000,15 @@ class AudioStreamer:
         # for a typical 5-second tail and ensures playback decays cleanly
         # to silence after EOF until the scene tears down on video EOF.
         eof_pad_bytes = self.sample_rate * 5
-        log.info("audio: REU upload %d bytes (%.1fs of source) + %d bytes EOF pad",
-                 len(audio_4bit), len(audio_4bit) / self.sample_rate,
-                 eof_pad_bytes)
+        log.info(
+            "audio: REU upload %d bytes (%.1fs of source) + %d bytes EOF pad",
+            len(audio_4bit),
+            len(audio_4bit) / self.sample_rate,
+            eof_pad_bytes,
+        )
         t0 = time.perf_counter()
         for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
-            self.api.reu_write(
-                REU_AUDIO_BASE + off,
-                audio_4bit[off:off + REU_UPLOAD_SLICE])
+            self.api.reu_write(REU_AUDIO_BASE + off, audio_4bit[off : off + REU_UPLOAD_SLICE])
         # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
         # end-of-source plays silence instead of garbage.
         pad_payload = bytes([NEUTRAL_SAMPLE] * REU_UPLOAD_SLICE)
@@ -1810,9 +2016,7 @@ class AudioStreamer:
         pad_end = pad_off + eof_pad_bytes
         while pad_off < pad_end:
             chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
-            self.api.reu_write(
-                REU_AUDIO_BASE + pad_off,
-                pad_payload[:chunk_len])
+            self.api.reu_write(REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len])
             pad_off += chunk_len
         log.info("audio: REU upload took %.2fs", time.perf_counter() - t0)
 
@@ -1849,12 +2053,12 @@ class AudioStreamer:
         #   tracked (109 B): chunk at offsets 2, 7, 51, 59, 76, 84
         if skip_irq_vector_hook:
             handler = bytearray(REU_IRQ_HANDLER_TRACKED)
-            handler[2] = chunk & 0xFF                # length LO
-            handler[7] = (chunk >> 8) & 0xFF         # length HI
-            handler[51] = chunk & 0xFF               # src advance ADC LO
-            handler[59] = (chunk >> 8) & 0xFF        # src advance ADC HI
-            handler[76] = chunk & 0xFF               # dst advance ADC LO
-            handler[84] = (chunk >> 8) & 0xFF        # dst advance ADC HI
+            handler[2] = chunk & 0xFF  # length LO
+            handler[7] = (chunk >> 8) & 0xFF  # length HI
+            handler[51] = chunk & 0xFF  # src advance ADC LO
+            handler[59] = (chunk >> 8) & 0xFF  # src advance ADC HI
+            handler[76] = chunk & 0xFF  # dst advance ADC LO
+            handler[84] = (chunk >> 8) & 0xFF  # dst advance ADC HI
             # Seed src + dst trackers BEFORE uploading the tracked
             # handler bytes — between handler upload and tracker seed,
             # any CIA #1 IRQ via the bank-swap dispatcher would run the
@@ -1870,15 +2074,15 @@ class AudioStreamer:
                 f"{(initial_src_off >> 8) & 0xFF:02X}"
                 f"{(initial_src_off >> 16) & 0xFF:02X}"
                 f"{initial_dst & 0xFF:02X}"
-                f"{(initial_dst >> 8) & 0xFF:02X}")
+                f"{(initial_dst >> 8) & 0xFF:02X}",
+            )
             # Seed tick-divider counter to 1: first IRQ DECs to 0, doesn't
             # branch, reloads to N, chains. Then N-1 lean-exits before the
             # next chain. Without this seed the counter byte is whatever
             # was in main RAM at $C205 (could be 0 → wraps to $FF on DEC
             # → 254 lean-exits before first kernal tail, eating keyboard
             # responsiveness during the first ~2.5 sec of playback).
-            self.api.write_memory(
-                f"{REU_PUMP_TICK_COUNTER_ADDR:04X}", "01")
+            self.api.write_memory(f"{REU_PUMP_TICK_COUNTER_ADDR:04X}", "01")
             # Upload the pump-body subroutine at $C180 BEFORE the entry at
             # $C100. The chunked mhires bank-swap dispatcher JSRs to $C180
             # between every per-frame REC chunk; if the entry at $C100 is
@@ -1887,32 +2091,33 @@ class AudioStreamer:
             # first means the JSR target is always valid by the time the
             # JMP $EA31 stub at $C100 is replaced with the real handler.
             self.api.write_memory_file(
-                f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}",
-                REU_PUMP_BODY_SUBROUTINE)
-            self.api.write_memory_file(
-                f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
+                f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", REU_PUMP_BODY_SUBROUTINE
+            )
+            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
         elif self.reu_pump_governor:
             # Governor handler: 18-byte skip-when-ahead prefix + pump body.
             # The chunk patch sites are shifted by the prefix: the body's
             # LDA #<chunk (plain offset 2) lands at 19, LDA #>chunk (7) at 24.
             handler = bytearray(REU_IRQ_HANDLER_GOVERNOR)
-            handler[19] = chunk & 0xFF               # LDA #<chunk → STA $DF07
-            handler[24] = (chunk >> 8) & 0xFF        # LDA #>chunk → STA $DF08
-            self.api.write_memory_file(
-                f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
+            handler[19] = chunk & 0xFF  # LDA #<chunk → STA $DF07
+            handler[24] = (chunk >> 8) & 0xFF  # LDA #>chunk → STA $DF08
+            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
         else:
             handler = bytearray(REU_IRQ_HANDLER)
-            handler[2] = chunk & 0xFF                # LDA #<chunk → STA $DF07
-            handler[7] = (chunk >> 8) & 0xFF         # LDA #>chunk → STA $DF08
-            self.api.write_memory_file(
-                f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
-        self.api.write_memory(f"{REU.C64_ADDR_LO:04X}",
-            f"{initial_dst & 0xFF:02X}{(initial_dst >> 8) & 0xFF:02X}")
-        self.api.write_memory(f"{REU.REU_ADDR_LO:04X}",
+            handler[2] = chunk & 0xFF  # LDA #<chunk → STA $DF07
+            handler[7] = (chunk >> 8) & 0xFF  # LDA #>chunk → STA $DF08
+            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
+        self.api.write_memory(
+            f"{REU.C64_ADDR_LO:04X}", f"{initial_dst & 0xFF:02X}{(initial_dst >> 8) & 0xFF:02X}"
+        )
+        self.api.write_memory(
+            f"{REU.REU_ADDR_LO:04X}",
             f"{initial_src_off & 0xFF:02X}{(initial_src_off >> 8) & 0xFF:02X}"
-            f"{(initial_src_off >> 16) & 0xFF:02X}")
-        self.api.write_memory(f"{REU.LENGTH_LO:04X}",
-            f"{chunk & 0xFF:02X}{(chunk >> 8) & 0xFF:02X}")
+            f"{(initial_src_off >> 16) & 0xFF:02X}",
+        )
+        self.api.write_memory(
+            f"{REU.LENGTH_LO:04X}", f"{chunk & 0xFF:02X}{(chunk >> 8) & 0xFF:02X}"
+        )
         self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
         # 4. Reprogram CIA #1 Timer A latch for pump rate. The kernal-default
@@ -1920,12 +2125,17 @@ class AudioStreamer:
         # an audible stale-data echo. CIA #1 stays in continuous mode (kernal
         # already set CRA bits); only the latch changes. BASIC's TI$ jiffy
         # clock drifts as a side effect — nothing we depend on.
-        self.api.write_memory(f"{CIA1.TIMER_A_LO:04X}",
-            f"{cia1_latch & 0xFF:02X}{(cia1_latch >> 8) & 0xFF:02X}")
+        self.api.write_memory(
+            f"{CIA1.TIMER_A_LO:04X}", f"{cia1_latch & 0xFF:02X}{(cia1_latch >> 8) & 0xFF:02X}"
+        )
 
         self.api.flush()
-        log.info("audio: REU pump installed at $%04X, chunk=%d, CIA #1 latch=$%04X",
-                 REU_PUMP_HANDLER_ADDR, chunk, cia1_latch)
+        log.info(
+            "audio: REU pump installed at $%04X, chunk=%d, CIA #1 latch=$%04X",
+            REU_PUMP_HANDLER_ADDR,
+            chunk,
+            cia1_latch,
+        )
 
         # 5. Arm NMI (CIA #2 Timer A). NMI now consumes the pre-filled ring.
         # Capture the playback-clock origin RIGHT BEFORE NMI starts firing
@@ -1944,9 +2154,11 @@ class AudioStreamer:
         # IRQ (~16 ms after this write). Skipped when the display mode's
         # bank-swap dispatcher owns $0314 and JMPs to $C100 itself.
         if not skip_irq_vector_hook:
-            self.api.write_regs(f"{VECTORS.IRQ:04X}",
-                                REU_PUMP_HANDLER_ADDR & 0xFF,
-                                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF)
+            self.api.write_regs(
+                f"{VECTORS.IRQ:04X}",
+                REU_PUMP_HANDLER_ADDR & 0xFF,
+                (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF,
+            )
             self.api.flush()
 
         self.running = True
@@ -1954,10 +2166,11 @@ class AudioStreamer:
         self._reu_pump_total_samples = len(audio_4bit)
         self._pushed_count = 0
         log.info(
-            "audio: REU pump armed; NMI consuming @ %d Hz (vector_hook=%s, "
-            "governor=%s)", self.sample_rate,
+            "audio: REU pump armed; NMI consuming @ %d Hz (vector_hook=%s, governor=%s)",
+            self.sample_rate,
             "skipped" if skip_irq_vector_hook else "set",
-            "on" if self.reu_pump_governor else "off")
+            "on" if self.reu_pump_governor else "off",
+        )
 
     def _disarm_reu_pump(self) -> None:
         """Restore IRQ vector to kernal default and CIA #1 Timer A to ~60 Hz.
@@ -1971,17 +2184,17 @@ class AudioStreamer:
         try:
             # Restore IRQ vector → $EA31. Use write_regs (coalesced into
             # one DMA) so $0314 and $0315 atomically point at the kernal.
-            self.api.write_regs(f"{VECTORS.IRQ:04X}",
-                                KERNAL.IRQ_HANDLER & 0xFF,
-                                (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+            self.api.write_regs(
+                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+            )
             # Restore CIA #1 Timer A latch to the NTSC kernal default
             # (CIA1_TIMER_A_LATCH_KERNAL_NTSC). PAL kernal uses a slightly
             # different value but the timer keeps running either way;
             # the kernal will overwrite this if it needs to.
             latch = CIA1_TIMER_A_LATCH_KERNAL_NTSC
             self.api.write_memory(
-                f"{CIA1.TIMER_A_LO:04X}",
-                f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}")
+                f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+            )
             self.api.flush()
         except Exception as e:
             log.debug("REU pump disarm: %s", e)
@@ -2036,14 +2249,13 @@ class AudioStreamer:
         # IRQ vector stops it — no host thread to join.
         self._disarm_reu_pump()
         try:
-            self.api.write_regs(
-                f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+            self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
             self.api.write_memory("D418", "00")
             if self.digi_boost:
                 self._disable_digi_boost()
-            self.api.write_regs(f"{VECTORS.NMI:04X}",
-                                KERNAL.DEFAULT_NMI & 0xFF,
-                                (KERNAL.DEFAULT_NMI >> 8) & 0xFF)
+            self.api.write_regs(
+                f"{VECTORS.NMI:04X}", KERNAL.DEFAULT_NMI & 0xFF, (KERNAL.DEFAULT_NMI >> 8) & 0xFF
+            )
         except Exception as e:
             log.debug("teardown write failed: %s", e)
         # NMI is already silenced; let the worker / mic threads tear down
@@ -2080,7 +2292,9 @@ class AudioStreamer:
             log.warning(
                 "audio: %d full + %d partial underruns this session "
                 "(producer stalled past pace deadline)",
-                self._full_underruns, self._partial_underruns)
+                self._full_underruns,
+                self._partial_underruns,
+            )
         else:
             log.info("audio: clean session (no underruns)")
         self._full_underruns = 0
@@ -2091,10 +2305,13 @@ class AudioStreamer:
         # (it assumes a fixed wall-clock W), so this is the non-ears check.
         if self._servo_gap_last >= 0:
             log.info(
-                "audio: host-DMA servo gap last=%d min=%d max=%d "
-                "(target=%d, lap at 0/%d)",
-                self._servo_gap_last, self._servo_gap_min, self._servo_gap_max,
-                HOST_DMA_SERVO_TARGET_GAP, RING_BUFFER_SIZE)
+                "audio: host-DMA servo gap last=%d min=%d max=%d (target=%d, lap at 0/%d)",
+                self._servo_gap_last,
+                self._servo_gap_min,
+                self._servo_gap_max,
+                HOST_DMA_SERVO_TARGET_GAP,
+                RING_BUFFER_SIZE,
+            )
         self._servo_gap_min = -1
         self._servo_gap_max = -1
         self._servo_gap_last = -1

@@ -11,6 +11,7 @@ codes. The two differ above 0x40; below that the encodings are identical.
 The constants below use values that look right with the default uppercase
 character set (the one in ROM when the chip starts up).
 """
+
 from __future__ import annotations
 
 import random
@@ -22,38 +23,44 @@ import numpy as np
 from .palette import C64_COLORS
 
 # Screen codes for commonly-useful glyphs. (Screen code, not PETSCII.)
-SC_SPACE   = 0x20
-SC_DOT     = 0x2E
-SC_STAR    = 0x2A
-SC_PLUS    = 0x2B
-SC_HYPHEN  = 0x2D
-SC_GT      = 0x3E
-SC_TILDE   = 0x27        # apostrophe; the closest stock screen code to a wave
-SC_FULL    = 0xA0        # reverse-space: solid filled block
-SC_HBLOCK_BOT = 0x64     # lower-half block
-SC_HBLOCK_TOP = 0x77     # upper-half block (approx)
-SC_AT      = 0x00        # @
-SC_W       = 0x17
-SC_V       = 0x16
-SC_O       = 0x0F
+SC_SPACE = 0x20
+SC_DOT = 0x2E
+SC_STAR = 0x2A
+SC_PLUS = 0x2B
+SC_HYPHEN = 0x2D
+SC_GT = 0x3E
+SC_TILDE = 0x27  # apostrophe; the closest stock screen code to a wave
+SC_FULL = 0xA0  # reverse-space: solid filled block
+SC_HBLOCK_BOT = 0x64  # lower-half block
+SC_HBLOCK_TOP = 0x77  # upper-half block (approx)
+SC_AT = 0x00  # @
+SC_W = 0x17
+SC_V = 0x16
+SC_O = 0x0F
 
 # Vibrant palette indices for the "colorful but legible" requirement.
 # Avoids muddy browns/dark grays for the prominent bar styles.
 VIBRANT_COLORS = [
-    C64_COLORS["yellow"], C64_COLORS["cyan"],
-    C64_COLORS["light green"], C64_COLORS["light blue"],
-    C64_COLORS["purple"], C64_COLORS["light red"],
+    C64_COLORS["yellow"],
+    C64_COLORS["cyan"],
+    C64_COLORS["light green"],
+    C64_COLORS["light blue"],
+    C64_COLORS["purple"],
+    C64_COLORS["light red"],
     C64_COLORS["orange"],
 ]
 
 DEPTH_COLORS = [
-    C64_COLORS["light gray"], C64_COLORS["gray"], C64_COLORS["dark gray"],
+    C64_COLORS["light gray"],
+    C64_COLORS["gray"],
+    C64_COLORS["dark gray"],
 ]
 
 
 # ---------------------------------------------------------------------------
 # Base + registry
 # ---------------------------------------------------------------------------
+
 
 class Background:
     name = "base"
@@ -62,8 +69,9 @@ class Background:
         self.rng = random.Random(seed)
         self.np_rng = np.random.default_rng(seed)
 
-    def render(self, t: float, top_rows: range, bottom_rows: range,
-               bg_color: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    def render(
+        self, t: float, top_rows: range, bottom_rows: range, bg_color: int = 0
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Populate top_rows and bottom_rows of a 40×25 screen.
 
         Returns (chars, colors), both uint8 arrays of length 1000.
@@ -76,8 +84,7 @@ class Background:
         self._fill(chars, colors, t, bottom_rows, bg_color)
         return chars, colors
 
-    def _fill(self, chars: np.ndarray, colors: np.ndarray, t: float,
-              rows: range, bg_color: int):
+    def _fill(self, chars: np.ndarray, colors: np.ndarray, t: float, rows: range, bg_color: int):
         raise NotImplementedError
 
 
@@ -93,16 +100,19 @@ def register(name: str) -> Callable[[type[_BgT]], type[_BgT]]:
     one decorator instead of remembering to extend a separate dict at the
     bottom of the file. Generic in the subclass so static analyzers see
     each decorated class's actual identity, not the base class."""
+
     def deco(cls: type[_BgT]) -> type[_BgT]:
         cls.name = name
         REGISTRY[name] = cls
         return cls
+
     return deco
 
 
 # ---------------------------------------------------------------------------
 # Starfield
 # ---------------------------------------------------------------------------
+
 
 @register("starfield")
 class StarfieldBackground(Background):
@@ -114,9 +124,9 @@ class StarfieldBackground(Background):
 
     LAYERS = (
         # (count, speed_cols_per_s, glyph, color)
-        (12, 12.0, SC_DOT,  DEPTH_COLORS[0]),   # near, fast, light
-        (18,  6.0, SC_STAR, DEPTH_COLORS[1]),   # mid
-        (28,  3.0, SC_PLUS, DEPTH_COLORS[2]),   # far, slow, dim
+        (12, 12.0, SC_DOT, DEPTH_COLORS[0]),  # near, fast, light
+        (18, 6.0, SC_STAR, DEPTH_COLORS[1]),  # mid
+        (28, 3.0, SC_PLUS, DEPTH_COLORS[2]),  # far, slow, dim
     )
 
     def __init__(self, seed: int | None = None):
@@ -145,6 +155,7 @@ class StarfieldBackground(Background):
 # PETSCII bars
 # ---------------------------------------------------------------------------
 
+
 @register("petscii_bars")
 class PetsciiBarsBackground(Background):
     """Each row is a strip of block chars whose phase scrolls at a per-row
@@ -167,7 +178,7 @@ class PetsciiBarsBackground(Background):
             # Speed proportional to distance from the centre row of the strip
             # — far rows move faster.
             speed = 2.0 + 1.5 * abs(y - mid)
-            phase = (self.row_phase[y] + speed * t)
+            phase = self.row_phase[y] + speed * t
             glyph = self.GLYPHS[y % len(self.GLYPHS)]
             color = VIBRANT_COLORS[y % len(VIBRANT_COLORS)]
             row_chars = np.full(40, SC_SPACE, dtype=np.uint8)
@@ -177,15 +188,16 @@ class PetsciiBarsBackground(Background):
                 if p < 4.0:
                     row_chars[x] = glyph
             start = y * 40
-            chars[start:start + 40] = row_chars
-            colors[start:start + 40] = np.where(
-                row_chars != SC_SPACE, color, bg_color
-            ).astype(np.uint8)
+            chars[start : start + 40] = row_chars
+            colors[start : start + 40] = np.where(row_chars != SC_SPACE, color, bg_color).astype(
+                np.uint8
+            )
 
 
 # ---------------------------------------------------------------------------
 # Raster bars (copper-bar feel)
 # ---------------------------------------------------------------------------
+
 
 @register("raster_bars")
 class RasterBarsBackground(Background):
@@ -193,9 +205,13 @@ class RasterBarsBackground(Background):
     that drifts over time."""
 
     PALETTE = [
-        C64_COLORS["red"], C64_COLORS["orange"], C64_COLORS["yellow"],
-        C64_COLORS["light green"], C64_COLORS["cyan"],
-        C64_COLORS["light blue"], C64_COLORS["purple"],
+        C64_COLORS["red"],
+        C64_COLORS["orange"],
+        C64_COLORS["yellow"],
+        C64_COLORS["light green"],
+        C64_COLORS["cyan"],
+        C64_COLORS["light blue"],
+        C64_COLORS["purple"],
     ]
 
     def _fill(self, chars, colors, t, rows, bg_color):
@@ -207,13 +223,14 @@ class RasterBarsBackground(Background):
         for y in rows:
             color = self.PALETTE[int(y + offset) % n]
             start = y * 40
-            chars[start:start + 40] = SC_FULL
-            colors[start:start + 40] = color
+            chars[start : start + 40] = SC_FULL
+            colors[start : start + 40] = color
 
 
 # ---------------------------------------------------------------------------
 # Checker
 # ---------------------------------------------------------------------------
+
 
 @register("checker")
 class CheckerBackground(Background):
@@ -239,13 +256,14 @@ class CheckerBackground(Background):
                     row_chars[x] = SC_FULL
                     row_cols[x] = self.COLOR_B
             start = y * 40
-            chars[start:start + 40] = row_chars
-            colors[start:start + 40] = row_cols
+            chars[start : start + 40] = row_chars
+            colors[start : start + 40] = row_cols
 
 
 # ---------------------------------------------------------------------------
 # Nature
 # ---------------------------------------------------------------------------
+
 
 @register("nature")
 class NatureBackground(Background):
@@ -254,7 +272,6 @@ class NatureBackground(Background):
     The visual split between "top behavior" and "bottom behavior" assumes
     top_rows is above the text and bottom_rows is below; the constructor
     samples once and each frame moves things along."""
-
 
     # Cloud glyphs sequence — three-cell fluffy mound.
     CLOUD = (SC_O, SC_AT, SC_O)
@@ -265,14 +282,8 @@ class NatureBackground(Background):
 
     def __init__(self, seed: int | None = None):
         super().__init__(seed)
-        self.clouds = [
-            (self.rng.uniform(0, 40), self.rng.randint(0, 3))
-            for _ in range(5)
-        ]
-        self.birds = [
-            (self.rng.uniform(0, 40), self.rng.randint(0, 4))
-            for _ in range(3)
-        ]
+        self.clouds = [(self.rng.uniform(0, 40), self.rng.randint(0, 3)) for _ in range(5)]
+        self.birds = [(self.rng.uniform(0, 40), self.rng.randint(0, 4)) for _ in range(3)]
 
     def _fill(self, chars, colors, t, rows, bg_color):
         if not rows:
@@ -322,8 +333,8 @@ class NatureBackground(Background):
         for x in range(40):
             if (x + phase) % 4 < 2:
                 lake_colors[x] = C64_COLORS["blue"]
-        chars[lake_y * 40:lake_y * 40 + 40] = lake_chars
-        colors[lake_y * 40:lake_y * 40 + 40] = lake_colors
+        chars[lake_y * 40 : lake_y * 40 + 40] = lake_chars
+        colors[lake_y * 40 : lake_y * 40 + 40] = lake_colors
 
         # Hills: pseudo-random silhouette using a sin sum, static (so they
         # look planted). Use lower-half block for slope, full block where
@@ -332,8 +343,7 @@ class NatureBackground(Background):
         xs = np.arange(40, dtype=np.float32)
         # Two sinusoids for varied skyline; output in [0, len(hill_rows)+1).
         h = (np.sin(xs * 0.4) + np.sin(xs * 0.21 + 1.2)) * 0.5 + 1.0
-        h = np.clip((h * (len(hill_rows) + 0.5)).astype(np.int32),
-                    0, len(hill_rows))
+        h = np.clip((h * (len(hill_rows) + 0.5)).astype(np.int32), 0, len(hill_rows))
         # Bottom of hill_rows is closest to lake.
         for x in range(40):
             top_y = lake_y - h[x]
@@ -350,25 +360,23 @@ class NatureBackground(Background):
 # City
 # ---------------------------------------------------------------------------
 
+
 @register("city")
 class CityBackground(Background):
     """Top: planes scrolling right, satellites blinking. Bottom: skyscraper
     silhouettes with lit windows."""
 
-
     PLANE = SC_HYPHEN
     PLANE_NOSE = SC_GT
-    SAT_ON  = SC_PLUS
+    SAT_ON = SC_PLUS
     SAT_OFF = SC_SPACE
-    WINDOW  = SC_FULL
-    SKY_BG  = 0x20
+    WINDOW = SC_FULL
+    SKY_BG = 0x20
 
     def __init__(self, seed: int | None = None):
         super().__init__(seed)
-        self.planes = [(self.rng.uniform(0, 40), self.rng.randint(0, 4))
-                       for _ in range(2)]
-        self.satellites = [(self.rng.randint(0, 40), self.rng.randint(0, 3))
-                           for _ in range(8)]
+        self.planes = [(self.rng.uniform(0, 40), self.rng.randint(0, 4)) for _ in range(2)]
+        self.satellites = [(self.rng.randint(0, 40), self.rng.randint(0, 3)) for _ in range(8)]
         # Skyscraper heights — pick once per construction.
         # Each "building" is 3-5 cols wide; heights are 3..8 rows.
         self.buildings = []
@@ -419,7 +427,7 @@ class CityBackground(Background):
         # rendered, lit-window pattern blinks every ~1 s.
         blink = int(t * 1.5) & 1
         bottom_y = rows[-1]
-        for (bx, bw, bh) in self.buildings:
+        for bx, bw, bh in self.buildings:
             top_y = bottom_y - bh + 1
             for y in rows:
                 if y < top_y:
@@ -445,9 +453,9 @@ class CityBackground(Background):
 # None / blank
 # ---------------------------------------------------------------------------
 
+
 @register("none")
 class NoneBackground(Background):
-
     def _fill(self, chars, colors, t, rows, bg_color):
         return  # leave the strip filled with space/bg from render()
 
@@ -456,6 +464,7 @@ class NoneBackground(Background):
 # Factory
 # ---------------------------------------------------------------------------
 
+
 def build(name: str, seed: int | None = None) -> Background:
     if name == "random":
         # Exclude 'none' from random rotation — picking the boring one
@@ -463,6 +472,7 @@ def build(name: str, seed: int | None = None) -> Background:
         choices = [k for k in REGISTRY if k != "none"]
         name = random.choice(choices)
     if name not in REGISTRY:
-        raise ValueError(f"unknown background {name!r} "
-                         f"(want one of: {', '.join(REGISTRY)}, random)")
+        raise ValueError(
+            f"unknown background {name!r} (want one of: {', '.join(REGISTRY)}, random)"
+        )
     return REGISTRY[name](seed=seed)

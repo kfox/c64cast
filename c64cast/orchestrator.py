@@ -23,6 +23,7 @@ This module ships the ABC + a process-wide registry. Subclasses live
 in `c64cast/orchestrators/` and register themselves with
 `@register_orchestrator` at import time.
 """
+
 from __future__ import annotations
 
 import threading
@@ -70,13 +71,15 @@ def resolve_orchestrator(scene_cfg: SceneCfg) -> type[Orchestrator]:
             f"no orchestrator subclass claims scene {scene_cfg.name!r} "
             f"(type={scene_cfg.type!r}, overlays="
             f"{[o.get('type') for o in scene_cfg.overlays]}). "
-            f"Registered subclasses: {registered}")
+            f"Registered subclasses: {registered}"
+        )
     if len(matches) > 1:
         names = [cls.__name__ for cls in matches]
         raise OrchestratorError(
             f"ambiguous orchestrator match for scene {scene_cfg.name!r}: "
             f"{names} all claim it. At most one must return True from "
-            "claims().")
+            "claims()."
+        )
     return matches[0]
 
 
@@ -157,16 +160,14 @@ class Orchestrator(ABC):
         Raises KeyError if `name` is the conductor (the conductor has
         no follower event)."""
         if name == self.conductor_name:
-            raise KeyError(
-                f"{name!r} is the conductor — no interrupt event for it")
+            raise KeyError(f"{name!r} is the conductor — no interrupt event for it")
         return self.ensemble.broadcast_interrupt[name]
 
     def resume_event(self, name: str) -> threading.Event:
         """Event a follower playlist waits on inside its broadcast loop.
         Raises KeyError if `name` is the conductor."""
         if name == self.conductor_name:
-            raise KeyError(
-                f"{name!r} is the conductor — no resume event for it")
+            raise KeyError(f"{name!r} is the conductor — no resume event for it")
         return self.ensemble.broadcast_resume[name]
 
     def is_active(self) -> bool:
@@ -181,8 +182,7 @@ class Orchestrator(ABC):
         sensible default."""
         conductor_cfg = self._conductor_cfg
         if conductor_cfg is None:
-            raise OrchestratorError(
-                "follower_scene_cfg_for called while orchestrator is inactive")
+            raise OrchestratorError("follower_scene_cfg_for called while orchestrator is inactive")
         follower_stack = self.ensemble.stack(follower_name)
         for sc in follower_stack.cfg.scenes:
             if sc.name == conductor_cfg.name and not sc.orchestrate:

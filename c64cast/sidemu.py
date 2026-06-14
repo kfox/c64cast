@@ -20,6 +20,7 @@ The real SID ANDs the bit patterns together; the result is a "metallic"
 sound without a clean visual shape. Picking by priority gives a
 recognizable trace per voice.
 """
+
 from __future__ import annotations
 
 import random
@@ -34,26 +35,40 @@ from .c64 import CLOCK_NTSC, CLOCK_PAL, SID
 # working. Authoritative definitions live in c64.SID.
 WAVE_TRIANGLE = SID.WAVE_TRIANGLE
 WAVE_SAWTOOTH = SID.WAVE_SAWTOOTH
-WAVE_PULSE    = SID.WAVE_PULSE
-WAVE_NOISE    = SID.WAVE_NOISE
-GATE          = SID.GATE
+WAVE_PULSE = SID.WAVE_PULSE
+WAVE_NOISE = SID.WAVE_NOISE
+GATE = SID.GATE
 
 # SID ADSR rate table (in seconds to traverse full range, indexed by the
 # 4-bit AD/SR nibble). Decay/Release uses 3× the attack time per the SID
 # spec. From the resid reference.
 ATTACK_TIMES_S = [
-    0.002, 0.008, 0.016, 0.024, 0.038, 0.056, 0.068, 0.080,
-    0.100, 0.250, 0.500, 0.800, 1.000, 3.000, 5.000, 8.000,
+    0.002,
+    0.008,
+    0.016,
+    0.024,
+    0.038,
+    0.056,
+    0.068,
+    0.080,
+    0.100,
+    0.250,
+    0.500,
+    0.800,
+    1.000,
+    3.000,
+    5.000,
+    8.000,
 ]
 DECAY_TIMES_S = [t * 3.0 for t in ATTACK_TIMES_S]
 
-NIBBLE_MASK = 0x0F             # mask off the low 4 bits of an AD/SR byte
-NIBBLE_MAX = 15                # full-scale value of a 4-bit field
-SID_REG_COUNT = 25             # $D400-$D418 (3 voices × 7 + 4 global)
-ACCUMULATOR_BITS = 24          # SID phase accumulator width
+NIBBLE_MASK = 0x0F  # mask off the low 4 bits of an AD/SR byte
+NIBBLE_MAX = 15  # full-scale value of a 4-bit field
+SID_REG_COUNT = 25  # $D400-$D418 (3 voices × 7 + 4 global)
+ACCUMULATOR_BITS = 24  # SID phase accumulator width
 ACCUMULATOR_RANGE = 1 << ACCUMULATOR_BITS
-PULSE_WIDTH_RANGE = 4096       # 12-bit pulse-width register max + 1
-NOISE_SEED_STRIDE = 1337       # arbitrary stride per voice; prime, stable
+PULSE_WIDTH_RANGE = 4096  # 12-bit pulse-width register max + 1
+NOISE_SEED_STRIDE = 1337  # arbitrary stride per voice; prime, stable
 NOISE_SEED_OFFSET = 7
 
 
@@ -76,17 +91,17 @@ def primary_waveform(control: int) -> int:
 @dataclass
 class Voice:
     # Register-derived state. Updated by SIDEmulator.update_registers().
-    freq: int = 0          # 16-bit
-    pulse_width: int = 0   # 12-bit
-    control: int = 0       # 8-bit
-    ad: int = 0            # attack hi nibble, decay lo nibble
-    sr: int = 0            # sustain hi nibble, release lo nibble
+    freq: int = 0  # 16-bit
+    pulse_width: int = 0  # 12-bit
+    control: int = 0  # 8-bit
+    ad: int = 0  # attack hi nibble, decay lo nibble
+    sr: int = 0  # sustain hi nibble, release lo nibble
 
     # Emulator-internal state.
-    accumulator: float = 0.0    # 24-bit phase, kept as float for ease
+    accumulator: float = 0.0  # 24-bit phase, kept as float for ease
     envelope_level: float = 0.0
-    envelope_state: str = "release"   # attack | decay | sustain | release
-    noise_seed: int = 1                # per-voice LFSR-ish seed
+    envelope_state: str = "release"  # attack | decay | sustain | release
+    noise_seed: int = 1  # per-voice LFSR-ish seed
 
     def gated(self) -> bool:
         return bool(self.control & GATE)
@@ -118,14 +133,12 @@ class SIDEmulator:
         # Per-voice deterministic noise sequences so the visualization
         # is stable across reset.
         self._noise_rng = [
-            random.Random(i * NOISE_SEED_STRIDE + NOISE_SEED_OFFSET)
-            for i in range(SID.N_VOICES)
+            random.Random(i * NOISE_SEED_STRIDE + NOISE_SEED_OFFSET) for i in range(SID.N_VOICES)
         ]
 
     # ---- register snapshot --------------------------------------------------
 
-    def update_registers(self, regs: bytes,
-                         retrigger: tuple[bool, ...] | None = None):
+    def update_registers(self, regs: bytes, retrigger: tuple[bool, ...] | None = None):
         """Snapshot the SID's register state. Triggers gate-edge transitions
         on the envelope state machine. `regs` must be 25 bytes starting at
         $D400.
@@ -140,10 +153,10 @@ class SIDEmulator:
         for v_idx in range(SID.N_VOICES):
             base = v_idx * SID.BYTES_PER_VOICE
             v = self.voices[v_idx]
-            v.freq = (regs[base + SID.OFF_FREQ_LO]
-                      | (regs[base + SID.OFF_FREQ_HI] << 8))
-            v.pulse_width = (regs[base + SID.OFF_PW_LO]
-                             | ((regs[base + SID.OFF_PW_HI] & NIBBLE_MASK) << 8))
+            v.freq = regs[base + SID.OFF_FREQ_LO] | (regs[base + SID.OFF_FREQ_HI] << 8)
+            v.pulse_width = regs[base + SID.OFF_PW_LO] | (
+                (regs[base + SID.OFF_PW_HI] & NIBBLE_MASK) << 8
+            )
             new_ctrl = regs[base + SID.OFF_CONTROL]
             was_gated = v.gated()
             v.control = new_ctrl
@@ -196,8 +209,9 @@ class SIDEmulator:
 
     # ---- waveform generation -----------------------------------------------
 
-    def voice_samples(self, voice_idx: int, n: int,
-                      time_window_s: float | None = None) -> np.ndarray:
+    def voice_samples(
+        self, voice_idx: int, n: int, time_window_s: float | None = None
+    ) -> np.ndarray:
         """Generate `n` samples of voice's waveform across `time_window_s`
         seconds. Returns float32 in [-1, 1] (envelope applied).
 
@@ -221,24 +235,20 @@ class SIDEmulator:
         idx = np.arange(n, dtype=np.float64)
         accs = (v.accumulator + idx * step_per_sample) % ACCUMULATOR_RANGE
         # Update stored accumulator past the last sample.
-        v.accumulator = float(
-            (v.accumulator + n * step_per_sample) % ACCUMULATOR_RANGE)
+        v.accumulator = float((v.accumulator + n * step_per_sample) % ACCUMULATOR_RANGE)
 
-        phases = accs / float(ACCUMULATOR_RANGE)   # in [0, 1)
+        phases = accs / float(ACCUMULATOR_RANGE)  # in [0, 1)
 
         if wave == WAVE_SAWTOOTH:
             out = 2.0 * phases - 1.0
         elif wave == WAVE_TRIANGLE:
             # /\ shape spanning [-1, 1].
-            out = np.where(phases < 0.5,
-                           4.0 * phases - 1.0,
-                           3.0 - 4.0 * phases)
+            out = np.where(phases < 0.5, 4.0 * phases - 1.0, 3.0 - 4.0 * phases)
         elif wave == WAVE_PULSE:
             pw_frac = max(1, v.pulse_width) / PULSE_WIDTH_RANGE
             out = np.where(phases < pw_frac, 1.0, -1.0)
-        else:   # WAVE_NOISE
+        else:  # WAVE_NOISE
             rng = self._noise_rng[voice_idx]
-            out = np.array([rng.uniform(-1.0, 1.0) for _ in range(n)],
-                           dtype=np.float64)
+            out = np.array([rng.uniform(-1.0, 1.0) for _ in range(n)], dtype=np.float64)
 
         return (out * v.envelope_level).astype(np.float32)

@@ -17,6 +17,7 @@ The semantic helpers (`silence_sid`, `restore_kernal_irq_vector`,
 `suppress_cursor_blink`, `disable_case_switch`) are inherited from
 `BufferedWriteBackend` — they're pure writes on the standard C64 map.
 """
+
 from __future__ import annotations
 
 import logging
@@ -75,9 +76,7 @@ _SC_SPACE = 0x20
 
 
 class TeensyROMBackend(BufferedWriteBackend):
-    def __init__(self, transport: TRTransport, *,
-                 profile: HardwareProfile,
-                 storage: str = "sd"):
+    def __init__(self, transport: TRTransport, *, profile: HardwareProfile, storage: str = "sd"):
         super().__init__()
         self.profile = profile
         self._drive = DRIVE_SD if storage.lower() == "sd" else DRIVE_USB
@@ -98,7 +97,7 @@ class TeensyROMBackend(BufferedWriteBackend):
         try:
             off, n = 0, len(payload)
             while off < n:
-                chunk = payload[off:off + self.tr.MAX_SEGMENT_BYTES]
+                chunk = payload[off : off + self.tr.MAX_SEGMENT_BYTES]
                 self.tr.write_segment(addr + off, chunk)
                 self._stats["writes"] += 1
                 off += len(chunk)
@@ -149,6 +148,7 @@ class TeensyROMBackend(BufferedWriteBackend):
         Requires the TR menu active (true right after reset()).
         """
         from .api import _build_basic_sys_stub
+
         self.invalidate_cache()
         # DMA the spin MC first; LaunchFile loads the BASIC stub at $0801 and
         # won't touch $C000, so the MC is still there when SYS jumps to it.
@@ -170,17 +170,16 @@ class TeensyROMBackend(BufferedWriteBackend):
                 # the spin stub left on screen (it doesn't PRINT CHR$(147)).
                 # Settle first so the loader's print lands before we blank it.
                 time.sleep(_LAUNCH_SETTLE_S)
-                self.write_memory_file(f"{_SCREEN_RAM:04X}",
-                                       bytes([_SC_SPACE]) * _SCREEN_CELLS)
+                self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
                 self.invalidate_cache()
                 return
             except (OSError, TRError) as e:
                 last_err = e
-                log.debug("TR bring-up attempt %d/%d failed: %s",
-                          attempt, _BRINGUP_ATTEMPTS, e)
+                log.debug("TR bring-up attempt %d/%d failed: %s", attempt, _BRINGUP_ATTEMPTS, e)
                 time.sleep(_BRINGUP_RETRY_S)
-        log.warning("TR spin-stub bring-up failed after %d attempts: %s",
-                    _BRINGUP_ATTEMPTS, last_err)
+        log.warning(
+            "TR spin-stub bring-up failed after %d attempts: %s", _BRINGUP_ATTEMPTS, last_err
+        )
 
     def _upload(self, data: bytes, dest: str) -> None:
         """Upload `data` to `dest`, replacing any existing file. PostFile
@@ -200,7 +199,8 @@ class TeensyROMBackend(BufferedWriteBackend):
         if ext not in (".prg", ".crt"):
             raise ValueError(
                 f"launch_program: unsupported extension {ext!r} for {path!r} "
-                f"(expected .prg or .crt)")
+                f"(expected .prg or .crt)"
+            )
         with open(path, "rb") as fh:
             data = fh.read()
         self.invalidate_cache()

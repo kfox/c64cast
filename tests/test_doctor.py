@@ -1,4 +1,5 @@
 """Tests for c64cast.doctor — collect-all config validation surface."""
+
 from __future__ import annotations
 
 import io
@@ -106,12 +107,8 @@ class CrossSystemOrchestrationTest(unittest.TestCase):
 
     def _master(self, tmp: str, members: dict[str, str]) -> str:
         master_path = os.path.join(tmp, "master.toml")
-        entries = ",\n    ".join(
-            f'{{ name = "{n}", config = "{n}.toml" }}'
-            for n in members)
-        master_body = (
-            "[ensemble]\n"
-            f"systems = [\n    {entries}\n]\n")
+        entries = ",\n    ".join(f'{{ name = "{n}", config = "{n}.toml" }}' for n in members)
+        master_body = f"[ensemble]\nsystems = [\n    {entries}\n]\n"
         _write(master_path, master_body)
         for name, body in members.items():
             _write(os.path.join(tmp, f"{name}.toml"), body)
@@ -146,8 +143,7 @@ class CrossSystemOrchestrationTest(unittest.TestCase):
             with self.assertLogs("c64cast.config", level="INFO"):
                 loaded = cfgmod.load_master(master)
         diags = doctor.validate_load_result(loaded, probe_u64=False)
-        orch_diags = [d for d in diags if d.category == "orchestrator"
-                      and d.level == "warn"]
+        orch_diags = [d for d in diags if d.category == "orchestrator" and d.level == "warn"]
         self.assertEqual(len(orch_diags), 1)
         self.assertEqual(orch_diags[0].subject, "right/morning-hello")
         self.assertIn("left", orch_diags[0].message)
@@ -179,13 +175,11 @@ class CrossSystemOrchestrationTest(unittest.TestCase):
             with self.assertLogs("c64cast.config", level="INFO"):
                 loaded = cfgmod.load_master(master)
         diags = doctor.validate_load_result(loaded, probe_u64=False)
-        orch_warnings = [d for d in diags if d.category == "orchestrator"
-                         and d.level == "warn"]
+        orch_warnings = [d for d in diags if d.category == "orchestrator" and d.level == "warn"]
         self.assertEqual(orch_warnings, [])
 
 
 class ExtrasProbeTest(unittest.TestCase):
-
     def test_missing_extra_reported_with_pip_hint(self):
         # Pretend `av` is not installed; everything else stays real.
         real = doctor.importlib.util.find_spec
@@ -196,26 +190,25 @@ class ExtrasProbeTest(unittest.TestCase):
             return real(name)
 
         loaded = _load("")  # no scenes; we only care about extras
-        with mock.patch.object(doctor.importlib.util, "find_spec",
-                               side_effect=fake):
+        with mock.patch.object(doctor.importlib.util, "find_spec", side_effect=fake):
             diags = doctor.validate_load_result(loaded, probe_u64=False)
-        commercials = [d for d in diags if d.category == "extras"
-                       and d.subject == "commercials"]
+        commercials = [d for d in diags if d.category == "extras" and d.subject == "commercials"]
         self.assertEqual(len(commercials), 1)
         self.assertEqual(commercials[0].level, "warn")
         self.assertEqual(commercials[0].hint, "uv sync --all-extras")
 
 
 class ConnectivityProbeTest(unittest.TestCase):
-
     def test_socket_dma_error_becomes_diagnostic_not_exception(self):
         from c64cast.socket_dma import SocketDMAError
+
         loaded = _load("""
             [ultimate64]
             url = "http://unreachable.example"
         """)
-        with mock.patch("c64cast.api.Ultimate64API.__init__",
-                        side_effect=SocketDMAError("connection refused")):
+        with mock.patch(
+            "c64cast.api.Ultimate64API.__init__", side_effect=SocketDMAError("connection refused")
+        ):
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         conn = [d for d in diags if d.category == "connectivity"]
         self.assertEqual(len(conn), 1)
@@ -261,8 +254,7 @@ class ReuStatusProbeTest(unittest.TestCase):
             api_instance.session.get.return_value = fake_response
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API",
-                            return_value=api_instance):
+            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
                 return doctor.validate_load_result(loaded, probe_u64=True)
 
     def test_no_reu_request_skips_reu_probe(self):
@@ -342,8 +334,7 @@ class ReuStatusProbeTest(unittest.TestCase):
         diags = self._patch_connectivity_to_reu_status(loaded, "Disabled")
         reu = [d for d in diags if d.subject.endswith("(REU)")]
         self.assertEqual(len(reu), 1)
-        self.assertEqual(reu[0].level, "error",
-                         "REU disabled + REU config opt-in must be an error")
+        self.assertEqual(reu[0].level, "error", "REU disabled + REU config opt-in must be an error")
         # Message names which config flag and what fails silently:
         self.assertIn("Disabled", reu[0].message)
         self.assertIn("silently", reu[0].message)
@@ -358,6 +349,7 @@ class ReuStatusProbeTest(unittest.TestCase):
         import requests
 
         from c64cast.api import Ultimate64API
+
         loaded = _load("""
             [ultimate64]
             url = "http://fake"
@@ -375,8 +367,7 @@ class ReuStatusProbeTest(unittest.TestCase):
             api_instance.session.get.side_effect = requests.Timeout("read timeout")
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API",
-                            return_value=api_instance):
+            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
         reu = [d for d in diags if d.subject.endswith("(REU)")]
         self.assertEqual(len(reu), 1)
@@ -391,6 +382,7 @@ class ReuStatusProbeTest(unittest.TestCase):
         REU diagnostic. The single DMA error is the right user feedback —
         adding a redundant REU warn would just be noise."""
         from c64cast.socket_dma import SocketDMAError
+
         loaded = _load("""
             [ultimate64]
             url = "http://fake"
@@ -401,8 +393,9 @@ class ReuStatusProbeTest(unittest.TestCase):
             type = "webcam"
             display = "petscii"
         """)
-        with mock.patch("c64cast.api.Ultimate64API.__init__",
-                        side_effect=SocketDMAError("connection refused")):
+        with mock.patch(
+            "c64cast.api.Ultimate64API.__init__", side_effect=SocketDMAError("connection refused")
+        ):
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         reu = [d for d in diags if d.subject.endswith("(REU)")]
         self.assertEqual(reu, [])
@@ -426,8 +419,10 @@ class ReuIsEnabledHelperTest(unittest.TestCase):
         return api
 
     def _section(self, status):
-        return {"C64 and Cartridge Settings": {
-            "RAM Expansion Unit": status, "REU Size": "16 MB"}, "errors": []}
+        return {
+            "C64 and Cartridge Settings": {"RAM Expansion Unit": status, "REU Size": "16 MB"},
+            "errors": [],
+        }
 
     def test_enabled_true(self):
         api = self._api(json_value=self._section("Enabled"))
@@ -439,6 +434,7 @@ class ReuIsEnabledHelperTest(unittest.TestCase):
 
     def test_query_failure_none(self):
         import requests
+
         api = self._api(get_side_effect=requests.Timeout("read timeout"))
         self.assertIsNone(doctor.reu_is_enabled(api))
 
@@ -477,8 +473,7 @@ class SidStatusProbeTest(unittest.TestCase):
             api_instance.session.get.return_value = fake_response
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API",
-                            return_value=api_instance):
+            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
                 return doctor.validate_load_result(loaded, probe_u64=True)
 
     def test_no_sid_request_skips_sid_probe(self):
@@ -540,8 +535,7 @@ class SidStatusProbeTest(unittest.TestCase):
         diags = self._patch_connectivity_to_sid_status(loaded, "Disabled", "Disabled")
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(len(sid), 1)
-        self.assertEqual(sid[0].level, "warn",
-                         "both SIDs off + SID audio wanted is a warn")
+        self.assertEqual(sid[0].level, "warn", "both SIDs off + SID audio wanted is a warn")
         self.assertIn("silent", sid[0].message)
         assert sid[0].hint is not None
         self.assertIn("Audio Output Settings", sid[0].hint)
@@ -551,6 +545,7 @@ class SidStatusProbeTest(unittest.TestCase):
         import requests
 
         from c64cast.api import Ultimate64API
+
         loaded = _load("""
             [ultimate64]
             url = "http://fake"
@@ -567,8 +562,7 @@ class SidStatusProbeTest(unittest.TestCase):
             api_instance.session.get.side_effect = requests.Timeout("read timeout")
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API",
-                            return_value=api_instance):
+            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(len(sid), 1)
@@ -588,6 +582,7 @@ class SidStatusProbeTest(unittest.TestCase):
             display = "petscii"
         """)
         from c64cast.api import Ultimate64API
+
         fake_response = mock.MagicMock()
         fake_response.json.return_value = {"Audio Output Settings": {}, "errors": []}
         fake_response.raise_for_status = mock.MagicMock()
@@ -598,15 +593,13 @@ class SidStatusProbeTest(unittest.TestCase):
             api_instance.session.get.return_value = fake_response
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API",
-                            return_value=api_instance):
+            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(sid, [])
 
 
 class PrintReportTest(unittest.TestCase):
-
     def test_exit_code_zero_when_no_errors(self):
         diags = [
             doctor.Diagnostic("ok", "scene", "s/a", "fine"),

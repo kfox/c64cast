@@ -42,6 +42,7 @@ Hardware follow-up (separate, uses the user's ears — ASK FIRST): write a confi
 with [audio].enabled + the same [dsp] block, run a commercial scene, and capture
 with audio_capture.py for a real-6581 A/B.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -63,6 +64,7 @@ NEUTRAL = 7.5  # 4-bit DAC midpoint (encode maps float 0 → 7 by truncation)
 
 # ---- source acquisition ---------------------------------------------------
 
+
 def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
     """Synthetic test signals (float [-1, 1]) with realistic dynamics so the
     compressor/expander have something to act on. RNG is seedless-but-fixed via
@@ -79,7 +81,7 @@ def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
             word = int(sr * rng.uniform(0.2, 0.5))
             gap = int(sr * rng.uniform(0.1, 0.4))
             lvl = float(rng.uniform(0.05, 1.0))  # word-to-word level variation
-            env[pos:pos + word] = lvl
+            env[pos : pos + word] = lvl
             pos += word + gap
         # Smooth the envelope and modulate ~150 Hz-centered noise (voice-ish).
         k = np.hanning(int(sr * 0.02))
@@ -106,11 +108,12 @@ def _load_source(path: str, sr: int, secs: float | None) -> np.ndarray:
     if int16.size == 0:
         raise SystemExit(f"no audio decoded from {path}")
     if secs is not None:
-        int16 = int16[:int(secs * sr)]
+        int16 = int16[: int(secs * sr)]
     return int16.astype(np.float32) / 32768.0
 
 
 # ---- the two encode paths -------------------------------------------------
+
 
 def _peak_normalize(floats: np.ndarray) -> np.ndarray:
     """Reproduce AVFileSource's peak-normalization (int16 domain) in float."""
@@ -135,17 +138,18 @@ def _write_wav(path, mono: np.ndarray, sr: int) -> None:
 
 # ---- metrics --------------------------------------------------------------
 
+
 def _db(x: float) -> float:
     return 20.0 * np.log10(max(x, 1e-9))
 
 
 def _metrics(codes: np.ndarray, recon: np.ndarray, sr: int) -> dict[str, float]:
-    rms = float(np.sqrt(np.mean(recon ** 2)))
+    rms = float(np.sqrt(np.mean(recon**2)))
     peak = float(np.max(np.abs(recon))) or 1e-9
     win = max(1, int(0.05 * sr))  # 50 ms windows
     nwin = len(recon) // win
-    trimmed = recon[:nwin * win]
-    code_win = codes[:nwin * win].reshape(-1, win) if nwin else codes[None, :]
+    trimmed = recon[: nwin * win]
+    code_win = codes[: nwin * win].reshape(-1, win) if nwin else codes[None, :]
     if trimmed.size:
         st = np.sqrt(np.mean(trimmed.reshape(-1, win) ** 2, axis=1))
     else:
@@ -165,7 +169,7 @@ def _metrics(codes: np.ndarray, recon: np.ndarray, sr: int) -> dict[str, float]:
         "crest_db": _db(peak) - _db(rms),
         "codes_used": float(len(np.unique(codes))),
         "loud_body_dr_db": _db(p95) - _db(p50),  # compression tightens this
-        "silent_pct": silent * 100.0,            # detail lost to code-7 silence
+        "silent_pct": silent * 100.0,  # detail lost to code-7 silence
     }
 
 
@@ -183,14 +187,15 @@ def _print_table(a: dict[str, float], b: dict[str, float]) -> None:
     print("-" * 58)
     for key, label, fmt in _FMT:
         av, bv = a[key], b[key]
-        print(f"{label:<22}{fmt.format(av):>12}{fmt.format(bv):>12}"
-              f"{bv - av:>+12.3f}")
+        print(f"{label:<22}{fmt.format(av):>12}{fmt.format(bv):>12}{bv - av:>+12.3f}")
     print()
-    print("Reading (the unambiguous 4-bit wins): dsp should show higher RMS\n"
-          "(more average level), more DAC codes used, lower crest (peaks tamed),\n"
-          "tighter loud-body DR (compression evening the body), and FEWER silent\n"
-          "windows (quiet detail rescued above the quantization floor). Whether\n"
-          "the compression pumps audibly is an EARS question — capture + listen.")
+    print(
+        "Reading (the unambiguous 4-bit wins): dsp should show higher RMS\n"
+        "(more average level), more DAC codes used, lower crest (peaks tamed),\n"
+        "tighter loud-body DR (compression evening the body), and FEWER silent\n"
+        "windows (quiet detail rescued above the quantization floor). Whether\n"
+        "the compression pumps audibly is an EARS question — capture + listen."
+    )
 
 
 def _resolve_params(args) -> DSPParams:
@@ -198,8 +203,7 @@ def _resolve_params(args) -> DSPParams:
         cfg = load_config(args.config)
         params = cfg.dsp.to_params()
         if not params.enabled:
-            print(f"note: [dsp].enabled is false in {args.config}; forcing on "
-                  "for the A/B")
+            print(f"note: [dsp].enabled is false in {args.config}; forcing on for the A/B")
             params.enabled = True
         return params
     # Default preset: the shipped DSPCfg defaults, enabled.
@@ -208,17 +212,22 @@ def _resolve_params(args) -> DSPParams:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("source", nargs="?", help="audio/video file (PyAV)")
-    ap.add_argument("--signal", choices=("speech", "music"),
-                    help="use a synthetic test signal instead of a file")
+    ap.add_argument(
+        "--signal",
+        choices=("speech", "music"),
+        help="use a synthetic test signal instead of a file",
+    )
     ap.add_argument("--sr", type=int, default=8000, help="DAC sample rate")
-    ap.add_argument("--seconds", type=float, default=None,
-                    help="truncate source/synth to N seconds")
+    ap.add_argument(
+        "--seconds", type=float, default=None, help="truncate source/synth to N seconds"
+    )
     ap.add_argument("--config", help="pull [dsp] params from this config file")
-    ap.add_argument("--mic", action="store_true",
-                    help="use the mic chain (AGC active) instead of line")
+    ap.add_argument(
+        "--mic", action="store_true", help="use the mic chain (AGC active) instead of line"
+    )
     ap.add_argument("--prefix", default=None, help="output filename prefix")
     args = ap.parse_args()
 
@@ -228,17 +237,19 @@ def main() -> int:
     elif args.source:
         floats = _load_source(args.source, args.sr, args.seconds)
         import os
+
         name = args.prefix or os.path.splitext(os.path.basename(args.source))[0]
     else:
         ap.error("give a SOURCE file or --signal speech|music")
 
     params = _resolve_params(args)
-    print(f"source: {name}  ({floats.size} samples @ {args.sr} Hz, "
-          f"{floats.size / args.sr:.1f}s)")
-    print(f"chain: {'mic (AGC)' if args.mic else 'line'} | "
-          f"compress={params.compress} expander={params.expander} "
-          f"limiter={params.limiter} pre_emphasis={params.pre_emphasis} "
-          f"agc={params.agc and args.mic}")
+    print(f"source: {name}  ({floats.size} samples @ {args.sr} Hz, {floats.size / args.sr:.1f}s)")
+    print(
+        f"chain: {'mic (AGC)' if args.mic else 'line'} | "
+        f"compress={params.compress} expander={params.expander} "
+        f"limiter={params.limiter} pre_emphasis={params.pre_emphasis} "
+        f"agc={params.agc and args.mic}"
+    )
 
     # Both paths share the same peak-normalize front-end (what AVFileSource and
     # the REU pre-encode do). The mic path normally wouldn't peak-normalize, but
@@ -257,11 +268,11 @@ def main() -> int:
     _write_wav(out_legacy, legacy_recon, args.sr)
     _write_wav(out_dsp, dsp_recon, args.sr)
 
-    _print_table(_metrics(legacy_codes, legacy_recon, args.sr),
-                 _metrics(dsp_codes, dsp_recon, args.sr))
+    _print_table(
+        _metrics(legacy_codes, legacy_recon, args.sr), _metrics(dsp_codes, dsp_recon, args.sr)
+    )
     print(f"\nwrote:\n  {out_legacy}\n  {out_dsp}")
-    print("(play both to compare; these are the exact DAC waveforms minus the "
-          "6581 DAC curve)")
+    print("(play both to compare; these are the exact DAC waveforms minus the 6581 DAC curve)")
     return 0
 
 

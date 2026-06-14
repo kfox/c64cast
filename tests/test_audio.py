@@ -1,5 +1,6 @@
 """Tests for the audio sample tap + worker queue (no real U64, no real
 sound device)."""
+
 from __future__ import annotations
 
 import queue
@@ -63,7 +64,6 @@ def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
 
 
 class SampleTapTest(unittest.TestCase):
-
     def test_push_then_get(self):
         s = _new_streamer()
         s._push_to_tap(np.array([0.5, -0.5, 0.25], dtype=np.float32))
@@ -88,7 +88,6 @@ class SampleTapTest(unittest.TestCase):
 
 
 class EncodeAndEnqueueTest(unittest.TestCase):
-
     def test_mid_scale_maps_to_7(self):
         # 0.0 input → (0 + 1) * 7.5 = 7.5 → uint8 truncates to 7 = NEUTRAL_SAMPLE.
         s = _new_streamer()
@@ -114,9 +113,11 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         s = _new_streamer()
         s._encode_and_enqueue(np.zeros(1024, dtype=np.float32))
         blob = s.q.get()
-        self.assertTrue(all(v == 7 for v in blob),
-                        f"exact-zero input should encode to NEUTRAL_SAMPLE=7 "
-                        f"unchanged by dither; got {set(blob)}")
+        self.assertTrue(
+            all(v == 7 for v in blob),
+            f"exact-zero input should encode to NEUTRAL_SAMPLE=7 "
+            f"unchanged by dither; got {set(blob)}",
+        )
 
     def test_dither_disabled_gives_deterministic_quantize(self):
         # With dither off, a constant non-zero input must map to a single
@@ -126,22 +127,21 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         # 0.5 input → (0.5 + 1) * 7.5 = 11.25 → uint8 truncates to 11.
         s._encode_and_enqueue(np.full(64, 0.5, dtype=np.float32))
         blob = s.q.get()
-        self.assertTrue(all(v == 11 for v in blob),
-                        f"dither off + constant input should encode to a "
-                        f"single value; got {set(blob)}")
+        self.assertTrue(
+            all(v == 11 for v in blob),
+            f"dither off + constant input should encode to a single value; got {set(blob)}",
+        )
 
     def test_drops_when_queue_full_without_block(self):
         s = _new_streamer()
         # Saturate the sample-count cap directly (backpressure is by
         # sample count now, not q.full()).
         s._queued_samples = s._max_queued_samples
-        n = s._encode_and_enqueue(np.zeros(100, dtype=np.float32),
-                                   block_on_full=False)
+        n = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0, "drop-on-full path should push 0 samples")
 
 
 class WorkerBatchingTest(unittest.TestCase):
-
     def test_worker_drains_chunk_in_one_post(self):
         s = _new_streamer()
         s.running = True
@@ -154,6 +154,7 @@ class WorkerBatchingTest(unittest.TestCase):
         t.start()
         # Wait for the chunk to be flushed.
         import time
+
         for _ in range(50):
             if cast(Any, s.api).writes:
                 break
@@ -161,8 +162,9 @@ class WorkerBatchingTest(unittest.TestCase):
         s.running = False
         t.join(timeout=1.0)
         # First write should contain at least one POST with a chunk.
-        self.assertGreater(len(cast(Any, s.api).writes), 0,
-                           "worker should have posted at least one chunk")
+        self.assertGreater(
+            len(cast(Any, s.api).writes), 0, "worker should have posted at least one chunk"
+        )
         # Each posted chunk is up to chunk_size bytes.
         for _addr, data in cast(Any, s.api).writes:
             self.assertLessEqual(len(data), s.chunk_size)
@@ -179,6 +181,7 @@ class WorkerBatchingTest(unittest.TestCase):
         t = threading.Thread(target=s._worker, daemon=True)
         t.start()
         import time
+
         for _ in range(50):
             if len(cast(Any, s.api).writes) >= 4:
                 break
@@ -208,7 +211,7 @@ class WorkerBatchingTest(unittest.TestCase):
         s = _new_streamer()
         s.running = True
         s.chunk_size = 64
-        s.sample_rate = 8000           # → chunk_period = 8 ms
+        s.sample_rate = 8000  # → chunk_period = 8 ms
         # Stub the NMI timer start — FakeAPI is happy with the regs writes
         # but we don't care about them for this test.
         s._start_nmi_timer = lambda: None  # type: ignore[method-assign]
@@ -220,7 +223,7 @@ class WorkerBatchingTest(unittest.TestCase):
 
         t = threading.Thread(target=s._worker, daemon=True)
         t.start()
-        time.sleep(0.080)              # 80 ms wall clock
+        time.sleep(0.080)  # 80 ms wall clock
         s.running = False
         t.join(timeout=1.0)
 
@@ -229,9 +232,9 @@ class WorkerBatchingTest(unittest.TestCase):
         # generous cap absorbs scheduler jitter without re-admitting the
         # unbounded-burst regression (which produced 40+ writes in this
         # window).
-        self.assertLess(len(writes), 25,
-                        f"worker wrote {len(writes)} chunks in 80 ms — "
-                        "pacing regression?")
+        self.assertLess(
+            len(writes), 25, f"worker wrote {len(writes)} chunks in 80 ms — pacing regression?"
+        )
         # Sanity: prebuffer must have fired (≥ 3 writes) so we're actually
         # exercising the paced post-prebuffer path.
         self.assertGreaterEqual(len(writes), 3)

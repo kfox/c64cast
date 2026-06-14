@@ -8,6 +8,7 @@ against the U64 — see plan §4.2).
 SystemStack carries typed fields (Ultimate64API, Playlist, ...) — we
 stuff MagicMocks into them, so silence pyright's attribute-access
 complaints file-wide rather than spraying ignores on every assertion."""
+
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
@@ -35,7 +36,6 @@ def _fake_stack(name: str) -> SystemStack:
 
 
 class RunPlaylistsTest(unittest.TestCase):
-
     def test_starts_one_thread_per_stack_and_joins(self):
         stop_event = threading.Event()
         stacks = [_fake_stack("a"), _fake_stack("b")]
@@ -48,8 +48,7 @@ class RunPlaylistsTest(unittest.TestCase):
             st.playlist.run.assert_called_once()
         # Sanity: no thread is left dangling.
         for t in threading.enumerate():
-            self.assertFalse(t.name.startswith("playlist-"),
-                             f"playlist thread leaked: {t.name}")
+            self.assertFalse(t.name.startswith("playlist-"), f"playlist thread leaked: {t.name}")
 
     def test_stop_event_unblocks_blocking_playlists(self):
         # Playlists that block until stop_event is set should also join
@@ -72,7 +71,6 @@ class RunPlaylistsTest(unittest.TestCase):
 
 
 class TeardownStackOrderTest(unittest.TestCase):
-
     def _record_order(self) -> tuple[SystemStack, list[str]]:
         order: list[str] = []
         st = _fake_stack("only")
@@ -94,18 +92,15 @@ class TeardownStackOrderTest(unittest.TestCase):
         # api.reset → api.close; camera release last.
         st, order = self._record_order()
         teardown_stack(st)
-        self.assertEqual(order, [
-            "preview", "recorder", "audio", "reset", "api_close", "source"])
+        self.assertEqual(order, ["preview", "recorder", "audio", "reset", "api_close", "source"])
 
     def test_one_failure_doesnt_strand_remaining_steps(self):
         st, order = self._record_order()
-        st.audio.close.side_effect = lambda: (_ for _ in ()).throw(
-            RuntimeError("audio gone weird"))
+        st.audio.close.side_effect = lambda: (_ for _ in ()).throw(RuntimeError("audio gone weird"))
         with self.assertLogs("c64cast", level="ERROR"):
             teardown_stack(st)
         # The failing step is skipped; everything after it still runs.
-        self.assertEqual(order, ["preview", "recorder", "reset",
-                                 "api_close", "source"])
+        self.assertEqual(order, ["preview", "recorder", "reset", "api_close", "source"])
 
     def test_missing_optional_resources_skipped(self):
         # framebuffer / preview_window / recorder are all None by default.

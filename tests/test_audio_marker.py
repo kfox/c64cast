@@ -8,6 +8,7 @@ Two layers of guarantees:
     real captured audio is mixed in around it. End-to-end smoke for
     the cross-correlation path.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -26,7 +27,6 @@ from c64cast.audio_marker import (
 
 
 class MarkerSynthesisTest(unittest.TestCase):
-
     def test_marker_4bit_length_matches_duration(self):
         # 100 ms at 8 kHz = 800 bytes (one 4-bit code per byte).
         n = marker_duration_samples(8000)
@@ -50,15 +50,15 @@ class MarkerSynthesisTest(unittest.TestCase):
         # No RNG in the synthesis path — re-runs must produce identical
         # bytes, otherwise saved-capture-vs-fresh-reference correlation
         # breaks subtly.
-        self.assertEqual(synthesize_marker_4bit(),
-                         synthesize_marker_4bit())
+        self.assertEqual(synthesize_marker_4bit(), synthesize_marker_4bit())
 
     def test_capture_reference_upsamples_by_integer_ratio(self):
         # 48 kHz capture / 8 kHz playback = 6x sample-and-hold. Total
         # samples in reference = playback_samples * 6.
         ref = synthesize_capture_reference()
         expected = marker_duration_samples(DEFAULT_PLAYBACK_RATE) * (
-            DEFAULT_CAPTURE_RATE // DEFAULT_PLAYBACK_RATE)
+            DEFAULT_CAPTURE_RATE // DEFAULT_PLAYBACK_RATE
+        )
         self.assertEqual(len(ref), expected)
 
 
@@ -71,7 +71,7 @@ class FindMarkerTest(unittest.TestCase):
         ref = synthesize_capture_reference().astype(np.int16)
         # Pad before + after with silence
         sig = np.zeros(DEFAULT_CAPTURE_RATE * 2, dtype=np.int16)
-        sig[5000:5000 + len(ref)] = ref
+        sig[5000 : 5000 + len(ref)] = ref
         peak = find_marker_in_capture(sig)
         self.assertEqual(peak, 5000)
 
@@ -79,7 +79,7 @@ class FindMarkerTest(unittest.TestCase):
         ref = synthesize_capture_reference().astype(np.int16)
         sig = np.zeros(DEFAULT_CAPTURE_RATE * 3, dtype=np.int16)
         offset = 42_321
-        sig[offset:offset + len(ref)] = ref
+        sig[offset : offset + len(ref)] = ref
         self.assertEqual(find_marker_in_capture(sig), offset)
 
     def test_find_under_noise(self):
@@ -88,10 +88,11 @@ class FindMarkerTest(unittest.TestCase):
         # noise is uncorrelated with the chirp.
         rng = np.random.default_rng(42)
         ref = synthesize_capture_reference()
-        sig = (rng.standard_normal(DEFAULT_CAPTURE_RATE * 2)
-               * float(ref.max()) * 3.0).astype(np.float64)
+        sig = (rng.standard_normal(DEFAULT_CAPTURE_RATE * 2) * float(ref.max()) * 3.0).astype(
+            np.float64
+        )
         offset = 12_000
-        sig[offset:offset + len(ref)] += ref
+        sig[offset : offset + len(ref)] += ref
         peak = find_marker_in_capture(sig.astype(np.int16))
         # Allow ±5 samples of slack for FFT correlation discretization.
         self.assertLess(abs(peak - offset), 5)

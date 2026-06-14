@@ -45,12 +45,12 @@ from c64cast.audio import (
     RING_BUFFER_SIZE,
 )
 
-READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5     # $C025 (LO) / $C026 (HI) — NMI read ptr R
-REU_DST_REG_ADDR = 0xDF02                # REU dst reg (plain-path W fallback)
-CIA1_TIMER_A_LO = 0xDD04                 # CIA #1 Timer A latch LO/HI (pump rate)
+READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 (LO) / $C026 (HI) — NMI read ptr R
+REU_DST_REG_ADDR = 0xDF02  # REU dst reg (plain-path W fallback)
+CIA1_TIMER_A_LO = 0xDD04  # CIA #1 Timer A latch LO/HI (pump rate)
 CLOCK_NTSC = 1022727
 CLOCK_PAL = 985248
-CHUNK = 128                              # bytes per pump IRQ (REU_PUMP_CHUNK_SIZE)
+CHUNK = 128  # bytes per pump IRQ (REU_PUMP_CHUNK_SIZE)
 TARGET_PHASE = REU_PUMP_INITIAL_MARGIN  # half ring
 
 
@@ -83,8 +83,10 @@ def _set_latch(url: str, latch: int) -> None:
 
 def d_requests_put(url: str, addr: int, data_hex: str) -> None:
     import requests
-    requests.put(url + "/v1/machine:writemem",
-                 params={"address": f"{addr:04X}", "data": data_hex}, timeout=3)
+
+    requests.put(
+        url + "/v1/machine:writemem", params={"address": f"{addr:04X}", "data": data_hex}, timeout=3
+    )
 
 
 def _rate_window(url: str, secs: float, hz: float) -> tuple[float, float, list[int]]:
@@ -132,7 +134,8 @@ def _rate_window(url: str, secs: float, hz: float) -> tuple[float, float, list[i
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--config")
     src.add_argument("--attach", action="store_true")
@@ -155,8 +158,9 @@ def main() -> int:
         if not cfg.exists():
             ap.error(f"config not found: {cfg}")
         print(f"[run] python -m c64cast --config {cfg}")
-        app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                                "--config", str(cfg), "--url", args.url])
+        app = subprocess.Popen(
+            [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+        )
         print(f"[boot] waiting {args.boot:g}s")
         time.sleep(args.boot)
 
@@ -165,24 +169,27 @@ def main() -> int:
         if args.measure:
             rr, wr, ph = _rate_window(args.url, args.seconds, args.hz)
             drift = wr - rr
-            print(f"[measure] R={rr:.0f} W={wr:.0f} drift={drift:+.0f} B/s "
-                  f"(laps every {RING_BUFFER_SIZE / abs(drift):.1f}s)" if drift else "")
+            print(
+                f"[measure] R={rr:.0f} W={wr:.0f} drift={drift:+.0f} B/s "
+                f"(laps every {RING_BUFFER_SIZE / abs(drift):.1f}s)"
+                if drift
+                else ""
+            )
             if ph:
-                print(f"  phase median={int(statistics.median(ph))} "
-                      f"min={min(ph)} max={max(ph)}")
+                print(f"  phase median={int(statistics.median(ph))} min={min(ph)} max={max(ph)}")
         elif args.sweep:
             latches = [int(x) for x in args.sweep.split(",")]
-            print(f"[sweep] nominal latch=${REU_PUMP_CIA1_LATCH:04X}; "
-                  "measuring W & R per latch")
+            print(f"[sweep] nominal latch=${REU_PUMP_CIA1_LATCH:04X}; measuring W & R per latch")
             results = []
             for L in latches:
                 _set_latch(args.url, L)
                 time.sleep(1.5)  # settle
-                rr, wr, ph = _rate_window(args.url, max(8.0, args.seconds / len(latches)),
-                                          args.hz)
+                rr, wr, ph = _rate_window(args.url, max(8.0, args.seconds / len(latches)), args.hz)
                 results.append((L, rr, wr))
-                print(f"  latch=${L:04X} ({L:5d}): R={rr:.0f} W={wr:.0f} "
-                      f"drift={wr - rr:+.0f} B/s  W_theory={CHUNK * clock / (L + 1):.0f}")
+                print(
+                    f"  latch=${L:04X} ({L:5d}): R={rr:.0f} W={wr:.0f} "
+                    f"drift={wr - rr:+.0f} B/s  W_theory={CHUNK * clock / (L + 1):.0f}"
+                )
             # actuator gain (B/s per latch unit) from first/last
             if len(results) >= 2:
                 (L0, _, W0), (L1, _, W1) = results[0], results[-1]
@@ -192,8 +199,10 @@ def main() -> int:
                 # null-drift latch for the *measured* consumer rate (avg R)
                 avgR = statistics.mean(r for _, r, _ in results if r)
                 null = round(CHUNK * clock / avgR) - 1
-                print(f"  avg consumer R={avgR:.0f} → null-drift latch ≈ "
-                      f"${null:04X} ({null}) vs nominal ${REU_PUMP_CIA1_LATCH:04X}")
+                print(
+                    f"  avg consumer R={avgR:.0f} → null-drift latch ≈ "
+                    f"${null:04X} ({null}) vs nominal ${REU_PUMP_CIA1_LATCH:04X}"
+                )
         elif args.servo:
             rc = _run_servo(args, clock)
     finally:
@@ -212,10 +221,10 @@ def main() -> int:
 def _run_servo(args: argparse.Namespace, clock: int) -> int:
     """Closed loop: feed-forward latch from measured R rate + integral phase trim."""
     url = args.url
-    dt = 0.8                      # control period
-    ki = 0.04                     # integral gain on phase error (latch units / byte)
+    dt = 0.8  # control period
+    ki = 0.04  # integral gain on phase error (latch units / byte)
     latch = REU_PUMP_CIA1_LATCH
-    lo, hi = 8000, 40000          # latch clamp (sane pump rate bounds)
+    lo, hi = 8000, 40000  # latch clamp (sane pump rate bounds)
     # rate estimator state
     prev_r = _read_R(url)
     prev_t = time.time()
@@ -250,14 +259,19 @@ def _run_servo(args: argparse.Namespace, clock: int) -> int:
         ff = (CHUNK * clock / r_rate - 1) if r_rate > 1000 else latch
         latch = int(max(lo, min(hi, ff + ki * err)))
         _set_latch(url, latch)
-        print(f"  t={now - t0:5.1f} R={r_rate:.0f} phase={phase:5d} "
-              f"err={err:+5d} latch=${latch:04X}")
+        print(
+            f"  t={now - t0:5.1f} R={r_rate:.0f} phase={phase:5d} err={err:+5d} latch=${latch:04X}"
+        )
     if phases:
-        print(f"\n[servo] phase: median={int(statistics.median(phases))} "
-              f"min={min(phases)} max={max(phases)} "
-              f"stdev={statistics.pstdev(phases):.0f}")
-        print(f"  near-lap (<512B) events: {near}/{len(phases)} "
-              f"→ {'LOCKED ✓' if near == 0 else 'still lapping ✗'}")
+        print(
+            f"\n[servo] phase: median={int(statistics.median(phases))} "
+            f"min={min(phases)} max={max(phases)} "
+            f"stdev={statistics.pstdev(phases):.0f}"
+        )
+        print(
+            f"  near-lap (<512B) events: {near}/{len(phases)} "
+            f"→ {'LOCKED ✓' if near == 0 else 'still lapping ✗'}"
+        )
     return 0
 
 

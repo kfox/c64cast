@@ -1,4 +1,5 @@
 """Video/audio streaming to Ultimate 64 hardware over the U64 REST API."""
+
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError

@@ -6,6 +6,7 @@ once and reused across playlist loops, the charset MUST be re-uploaded on
 every setup() — an earlier one-time guard left stale bitmap bytes as the
 character set on the second loop (visible as a corrupted charset).
 """
+
 # FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
 # argument-type complaints across the file rather than per-call ignores.
 # pyright: reportArgumentType=false
@@ -26,8 +27,8 @@ def _expected_charset() -> bytes:
         tl, tr, bl, br = (i >> 6) & 3, (i >> 4) & 3, (i >> 2) & 3, i & 3
         row_top = (tl << 6) | (tl << 4) | (tr << 2) | tr
         row_bot = (bl << 6) | (bl << 4) | (br << 2) | br
-        charset[i * 8:i * 8 + 4] = [row_top] * 4
-        charset[i * 8 + 4:i * 8 + 8] = [row_bot] * 4
+        charset[i * 8 : i * 8 + 4] = [row_top] * 4
+        charset[i * 8 + 4 : i * 8 + 8] = [row_bot] * 4
     return bytes(charset)
 
 

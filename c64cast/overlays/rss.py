@@ -5,6 +5,7 @@ via the marquee mechanism.
 Uses stdlib `xml.etree.ElementTree` so there's no new dependency. Handles
 both RSS 2.0 (<item><title>) and Atom (<entry><title>) layouts.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,26 +58,29 @@ class RssOverlay(MarqueeBase):
         "separator": "Text placed between consecutive headlines.",
     }
 
-    def __init__(self, url: str,
-                 row: int = 0,
-                 max_items: int = 10,
-                 refresh_minutes: float = 15.0,
-                 speed_cells_per_s: float = 3.0,
-                 separator: str = "   *   ",
-                 fg_color: str = "light green",
-                 bg_color: str = "black"):
+    def __init__(
+        self,
+        url: str,
+        row: int = 0,
+        max_items: int = 10,
+        refresh_minutes: float = 15.0,
+        speed_cells_per_s: float = 3.0,
+        separator: str = "   *   ",
+        fg_color: str = "light green",
+        bg_color: str = "black",
+    ):
         if not url:
             raise ValueError("rss: url must be non-empty")
-        super().__init__(row=row, speed_cells_per_s=speed_cells_per_s,
-                         fg_color=fg_color, bg_color=bg_color)
+        super().__init__(
+            row=row, speed_cells_per_s=speed_cells_per_s, fg_color=fg_color, bg_color=bg_color
+        )
         self.url = url
         self.max_items = max(1, int(max_items))
         self.poll_interval_s = max(60.0, float(refresh_minutes) * 60.0)
         self.SEPARATOR = separator
         self._titles: list[str] = []
         self._lock = threading.Lock()
-        self._poll = PollThread(self._fetch_once, period=self.poll_interval_s,
-                                name="rss-poll")
+        self._poll = PollThread(self._fetch_once, period=self.poll_interval_s, name="rss-poll")
 
     def setup(self, api, scene):
         super().setup(api, scene)
@@ -87,8 +91,7 @@ class RssOverlay(MarqueeBase):
 
     def _fetch_once(self) -> None:
         try:
-            r = requests.get(self.url, timeout=5.0,
-                             headers={"User-Agent": "c64cast/1.0"})
+            r = requests.get(self.url, timeout=5.0, headers={"User-Agent": "c64cast/1.0"})
             r.raise_for_status()
             titles = _extract_titles(r.text, self.max_items)
             if titles:

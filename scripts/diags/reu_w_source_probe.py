@@ -37,8 +37,8 @@ from c64cast.audio import (
     RING_BUFFER_END,
 )
 
-READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5         # $C025 R
-REU_DST_REG_ADDR = 0xDF02                     # $DF02 plain W
+READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 R
+REU_DST_REG_ADDR = 0xDF02  # $DF02 plain W
 TRK_DST_ADDR = REU_AUDIO_SRC_TRACKER_ADDR + 3  # $C203 tracked W
 
 
@@ -57,19 +57,25 @@ def _summary(name: str, vals: list[int | None]) -> str:
     moves = len(distinct) > 1
     none_n = sum(1 for v in vals if v is None)
     oor_n = len(good) - len(in_ring)
-    verdict = ("USABLE (moves, in-ring)" if moves and in_ring
-               else "STATIC (in-ring but never changes → garbage)"
-               if in_ring and not moves
-               else "UNREADABLE")
-    sample = (f"min=${min(in_ring):04X} max=${max(in_ring):04X} "
-              f"distinct={len(distinct)}" if in_ring else "no in-ring reads")
-    return (f"  {name:<10} {verdict}\n"
-            f"             {sample}  none={none_n} out-of-ring={oor_n}")
+    verdict = (
+        "USABLE (moves, in-ring)"
+        if moves and in_ring
+        else "STATIC (in-ring but never changes → garbage)"
+        if in_ring and not moves
+        else "UNREADABLE"
+    )
+    sample = (
+        f"min=${min(in_ring):04X} max=${max(in_ring):04X} distinct={len(distinct)}"
+        if in_ring
+        else "no in-ring reads"
+    )
+    return f"  {name:<10} {verdict}\n             {sample}  none={none_n} out-of-ring={oor_n}"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--config", required=True)
     ap.add_argument("-t", "--seconds", type=float, default=15.0)
     ap.add_argument("--hz", type=float, default=20.0)
@@ -81,8 +87,9 @@ def main() -> int:
     if not cfg.exists():
         ap.error(f"config not found: {cfg}")
     print(f"[run] python -m c64cast --config {cfg}")
-    app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                            "--config", str(cfg), "--url", args.url])
+    app = subprocess.Popen(
+        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+    )
     print(f"[boot] waiting {args.boot:g}s")
     time.sleep(args.boot)
 
@@ -109,8 +116,10 @@ def main() -> int:
             app.kill()
         print(f"[reset] machine:reset -> {d.rest_reset(args.url)}")
 
-    print(f"\n[w-source] {len(rs)} samples over {args.seconds:g}s "
-          f"(ring=${RING_BUFFER_ADDR:04X}-${RING_BUFFER_END - 1:04X})")
+    print(
+        f"\n[w-source] {len(rs)} samples over {args.seconds:g}s "
+        f"(ring=${RING_BUFFER_ADDR:04X}-${RING_BUFFER_END - 1:04X})"
+    )
     print(_summary("R $C025", rs))
     print(_summary("dst $DF02", dsts))
     print(_summary("trk $C203", trks))

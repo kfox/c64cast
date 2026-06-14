@@ -9,6 +9,7 @@ Config:
 The base CornerTextOverlay change-detects on the rendered string, so
 when only the seconds field updates the delta cache only sends the
 seconds cell(s)."""
+
 from __future__ import annotations
 
 import logging
@@ -39,15 +40,17 @@ class CountdownOverlay(CornerTextOverlay):
         "done_text": "Text shown once the target has passed.",
     }
 
-    def __init__(self, target: str,
-                 format: str = "auto",
-                 done_text: str = "DONE",
-                 corner: str = "bottom-left",
-                 fg_color: str = "yellow",
-                 bg_color: str = "black",
-                 refresh_s: float = 1.0):
-        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color,
-                         refresh_s=refresh_s)
+    def __init__(
+        self,
+        target: str,
+        format: str = "auto",
+        done_text: str = "DONE",
+        corner: str = "bottom-left",
+        fg_color: str = "yellow",
+        bg_color: str = "black",
+        refresh_s: float = 1.0,
+    ):
+        super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color, refresh_s=refresh_s)
         self.target_dt = _parse_target(target)
         self.format = format
         self.done_text = str(done_text)

@@ -9,6 +9,7 @@ libraries happens in these tests.
 Run:    python -m unittest discover tests
    or:  python -m unittest tests.test_playlist
 """
+
 # FakeScene + FakeApi are intentional duck-typed stubs of Scene/Ultimate64API;
 # silence pyright's argument-type / attribute-access complaints across the file
 # rather than spraying per-call ignores on every Playlist(...) construction.
@@ -25,12 +26,19 @@ from c64cast.playlist import Playlist
 # Stubs
 # ---------------------------------------------------------------------------
 
+
 class FakeScene:
     """Mirrors the bits of Scene that Playlist relies on."""
 
-    def __init__(self, name, frames_until_done=3, raise_on_frame=None,
-                 raise_on_setup=False, raise_on_teardown=False,
-                 prepare_renames_to=None):
+    def __init__(
+        self,
+        name,
+        frames_until_done=3,
+        raise_on_frame=None,
+        raise_on_setup=False,
+        raise_on_teardown=False,
+        prepare_renames_to=None,
+    ):
         self.name = name
         self.is_done = False
         self.duration_s = 30.0
@@ -76,7 +84,10 @@ class FakeApi:
 
     def __init__(self):
         self.stats = {
-            "writes": 0, "skipped": 0, "errors": 0, "bytes": 0,
+            "writes": 0,
+            "skipped": 0,
+            "errors": 0,
+            "bytes": 0,
         }
 
     def format_write_latency(self):
@@ -99,19 +110,23 @@ def _transition_factory():
 # Tests
 # ---------------------------------------------------------------------------
 
-class PlaylistTest(unittest.TestCase):
 
-    def _run_briefly(self, scenes, stop_after=0.2, target_fps=10000.0,
-                     heartbeat_interval=0.0, loop=True):
+class PlaylistTest(unittest.TestCase):
+    def _run_briefly(
+        self, scenes, stop_after=0.2, target_fps=10000.0, heartbeat_interval=0.0, loop=True
+    ):
         api = FakeApi()
         stop_event = threading.Event()
         factory, counter = _transition_factory()
-        pl = Playlist(scenes, api,
-                      target_fps=target_fps,
-                      heartbeat_interval=heartbeat_interval,
-                      stop_event=stop_event,
-                      interstitial_factory=factory,
-                      loop=loop)
+        pl = Playlist(
+            scenes,
+            api,
+            target_fps=target_fps,
+            heartbeat_interval=heartbeat_interval,
+            stop_event=stop_event,
+            interstitial_factory=factory,
+            loop=loop,
+        )
         threading.Timer(stop_after, stop_event.set).start()
         pl.run()
         return counter
@@ -125,12 +140,9 @@ class PlaylistTest(unittest.TestCase):
         a = FakeScene("A", frames_until_done=2)
         b = FakeScene("B", frames_until_done=2)
         counter = self._run_briefly([a, b], stop_after=0.3)
-        self.assertGreater(a.setup_count, 1,
-                           "scene A should re-setup on each playlist cycle")
-        self.assertGreater(b.setup_count, 1,
-                           "scene B should re-setup on each playlist cycle")
-        self.assertGreater(counter["n"], 2,
-                           "transitions should fire between cycles")
+        self.assertGreater(a.setup_count, 1, "scene A should re-setup on each playlist cycle")
+        self.assertGreater(b.setup_count, 1, "scene B should re-setup on each playlist cycle")
+        self.assertGreater(counter["n"], 2, "transitions should fire between cycles")
         # Every setup should be matched by a teardown (except possibly the
         # very last one, which the finally block in run() handles).
         self.assertGreaterEqual(a.teardown_count, a.setup_count - 1)
@@ -147,22 +159,29 @@ class PlaylistTest(unittest.TestCase):
             return FakeScene(f"trans:{name}", frames_until_done=1)
 
         a = FakeScene("A", frames_until_done=1)
-        b = FakeScene("B-spec", frames_until_done=1,
-                      prepare_renames_to="B-picked")
+        b = FakeScene("B-spec", frames_until_done=1, prepare_renames_to="B-picked")
         api = FakeApi()
         stop_event = threading.Event()
-        pl = Playlist([a, b], api, target_fps=10000.0, heartbeat_interval=0.0,
-                      stop_event=stop_event, interstitial_factory=factory,
-                      loop=True)
+        pl = Playlist(
+            [a, b],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop_event,
+            interstitial_factory=factory,
+            loop=True,
+        )
         threading.Timer(0.3, stop_event.set).start()
         pl.run()
-        self.assertGreater(b.prepare_next_count, 0,
-                           "prepare_next must be called on the upcoming scene")
-        self.assertIn("B-picked", captured,
-                      "interstitial must announce the prepared name, not the "
-                      "pre-prepare spec")
-        self.assertNotIn("B-spec", captured,
-                         "the stale pre-prepare name must never reach the card")
+        self.assertGreater(
+            b.prepare_next_count, 0, "prepare_next must be called on the upcoming scene"
+        )
+        self.assertIn(
+            "B-picked",
+            captured,
+            "interstitial must announce the prepared name, not the pre-prepare spec",
+        )
+        self.assertNotIn("B-spec", captured, "the stale pre-prepare name must never reach the card")
 
     # --- single-scene mode ------------------------------------------------
 
@@ -171,21 +190,17 @@ class PlaylistTest(unittest.TestCase):
         # must never be called.
         s = FakeScene("A", frames_until_done=2)
         counter = self._run_briefly([s], stop_after=0.3)
-        self.assertEqual(counter["n"], 0,
-                         "interstitial factory must not run in single-scene mode")
-        self.assertGreater(s.setup_count, 0,
-                           "the single scene must still run")
+        self.assertEqual(counter["n"], 0, "interstitial factory must not run in single-scene mode")
+        self.assertGreater(s.setup_count, 0, "the single scene must still run")
 
     def test_single_scene_loops_indefinitely(self):
         # The scene flips is_done after 2 frames; single-scene mode must
         # re-setup it via teardown+setup so it runs again, not just stop.
         s = FakeScene("A", frames_until_done=2)
         self._run_briefly([s], stop_after=0.3)
-        self.assertGreater(s.setup_count, 1,
-                           "scene should re-setup on each loop iteration")
+        self.assertGreater(s.setup_count, 1, "scene should re-setup on each loop iteration")
         # Teardown happens on each loop boundary (and once more in finally).
-        self.assertGreater(s.teardown_count, 1,
-                           "scene should tear down on each loop iteration")
+        self.assertGreater(s.teardown_count, 1, "scene should tear down on each loop iteration")
 
     def test_single_scene_ignores_skip_event(self):
         # Firing skip_event in single-scene mode must NOT cause rapid-fire
@@ -194,33 +209,39 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, counter = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire_skips():
             for _ in range(5):
                 time.sleep(0.02)
                 pl.skip_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire_skips, daemon=True).start()
         pl.run()
-        self.assertEqual(counter["n"], 0,
-                         "interstitial factory must not run on skip in single-scene mode")
+        self.assertEqual(
+            counter["n"], 0, "interstitial factory must not run on skip in single-scene mode"
+        )
         # The scene was never marked done by skip → only the finally
         # teardown fires (count == 1). Tolerate >=1 in case of cleanup races.
-        self.assertLessEqual(s.teardown_count, 1,
-                             "single-scene skip should not churn teardowns")
-        self.assertFalse(pl.skip_event.is_set(),
-                         "skip event still gets cleared so it doesn't accumulate")
+        self.assertLessEqual(s.teardown_count, 1, "single-scene skip should not churn teardowns")
+        self.assertFalse(
+            pl.skip_event.is_set(), "skip event still gets cleared so it doesn't accumulate"
+        )
 
     def test_multi_scene_rotation_starts_each(self):
         scenes = [FakeScene(c, frames_until_done=2) for c in "ABCD"]
         self._run_briefly(scenes, stop_after=0.5)
         for s in scenes:
-            self.assertGreater(s.setup_count, 0,
-                               f"{s.name} never ran in rotation")
+            self.assertGreater(s.setup_count, 0, f"{s.name} never ran in rotation")
 
     # --- loop = False -----------------------------------------------------
 
@@ -231,28 +252,33 @@ class PlaylistTest(unittest.TestCase):
         stop = threading.Event()
         factory, counter = _transition_factory()
         s = FakeScene("ONCE", frames_until_done=2)
-        pl = Playlist([s], api, target_fps=10000.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory,
-                      loop=False)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+            loop=False,
+        )
         # Safety timer in case loop=False is broken and we'd otherwise spin
         # forever (matches the pre-fix commercial scene behavior).
         threading.Timer(2.0, stop.set).start()
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             pl.run()
-        self.assertEqual(s.setup_count, 1,
-                         "scene should set up exactly once with loop=False")
-        self.assertEqual(s.teardown_count, 1,
-                         "scene should tear down exactly once (not in the "
-                         "run() finally — that path's already been taken)")
-        self.assertTrue(stop.is_set(),
-                        "loop=False end-of-playlist must set stop_event")
-        self.assertEqual(counter["n"], 0,
-                         "single-scene mode never builds interstitials")
+        self.assertEqual(s.setup_count, 1, "scene should set up exactly once with loop=False")
+        self.assertEqual(
+            s.teardown_count,
+            1,
+            "scene should tear down exactly once (not in the "
+            "run() finally — that path's already been taken)",
+        )
+        self.assertTrue(stop.is_set(), "loop=False end-of-playlist must set stop_event")
+        self.assertEqual(counter["n"], 0, "single-scene mode never builds interstitials")
         self.assertTrue(
             any("finished and loop=False" in line for line in cap.output),
-            f"expected loop=False exit log, got: {cap.output!r}")
+            f"expected loop=False exit log, got: {cap.output!r}",
+        )
 
     def test_multi_scene_loop_false_exits_after_one_pass(self):
         # loop=False + N scenes: walk A → B → C → exit (no wrap back to A).
@@ -260,34 +286,39 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, counter = _transition_factory()
-        pl = Playlist(scenes, api, target_fps=10000.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory,
-                      loop=False)
+        pl = Playlist(
+            scenes,
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+            loop=False,
+        )
         threading.Timer(2.0, stop.set).start()
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             pl.run()
         for s in scenes:
-            self.assertEqual(s.setup_count, 1,
-                             f"{s.name} should set up exactly once")
-            self.assertEqual(s.teardown_count, 1,
-                             f"{s.name} should tear down exactly once")
-        self.assertTrue(stop.is_set(),
-                        "loop=False end-of-playlist must set stop_event")
+            self.assertEqual(s.setup_count, 1, f"{s.name} should set up exactly once")
+            self.assertEqual(s.teardown_count, 1, f"{s.name} should tear down exactly once")
+        self.assertTrue(stop.is_set(), "loop=False end-of-playlist must set stop_event")
         self.assertTrue(
-            any("playlist finished and loop=False" in line
-                for line in cap.output),
-            f"expected loop=False exit log, got: {cap.output!r}")
+            any("playlist finished and loop=False" in line for line in cap.output),
+            f"expected loop=False exit log, got: {cap.output!r}",
+        )
 
     def test_loop_true_is_default(self):
         # Don't pass loop= — the default must preserve the previous looping
         # behavior, so this would otherwise duplicate the single-scene-loop
         # test. Quick sanity check that the constructor default is True.
         s = FakeScene("A", frames_until_done=2)
-        pl = Playlist([s], FakeApi(), target_fps=10000.0,
-                      heartbeat_interval=0.0,
-                      interstitial_factory=_transition_factory()[0])
+        pl = Playlist(
+            [s],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+        )
         self.assertTrue(pl.loop)
 
     # --- exception handling -----------------------------------------------
@@ -303,10 +334,8 @@ class PlaylistTest(unittest.TestCase):
             any("scene 'BAD' raised; advancing" in line for line in cap.output),
             f"expected scene-crash log, got: {cap.output!r}",
         )
-        self.assertGreater(bad.teardown_count, 0,
-                           "crashed scene must still be torn down")
-        self.assertGreater(good.setup_count, 0,
-                           "playlist must advance to next scene after crash")
+        self.assertGreater(bad.teardown_count, 0, "crashed scene must still be torn down")
+        self.assertGreater(good.setup_count, 0, "playlist must advance to next scene after crash")
 
     def test_teardown_exception_does_not_kill_loop(self):
         bad_td = FakeScene("A", frames_until_done=1, raise_on_teardown=True)
@@ -318,8 +347,7 @@ class PlaylistTest(unittest.TestCase):
             f"expected teardown-failure log, got: {cap.output!r}",
         )
         self.assertGreater(bad_td.setup_count, 0)
-        self.assertGreater(ok.setup_count, 0,
-                           "next scene must still start after teardown raises")
+        self.assertGreater(ok.setup_count, 0, "next scene must still start after teardown raises")
 
     def test_setup_exception_is_caught_in_advance(self):
         # If a scene's setup raises, the playlist logs it and the loop exits
@@ -327,9 +355,13 @@ class PlaylistTest(unittest.TestCase):
         bad_setup = FakeScene("X", raise_on_setup=True)
         api = FakeApi()
         factory, _ = _transition_factory()
-        pl = Playlist([bad_setup], api, target_fps=10000.0,
-                      heartbeat_interval=0.0,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [bad_setup],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=factory,
+        )
         # Should not hang -- _advance catches and breaks.
         with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
             pl.run()
@@ -345,16 +377,19 @@ class PlaylistTest(unittest.TestCase):
         stop = threading.Event()
         api = FakeApi()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=60.0,  # real-ish frame time
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=60.0,  # real-ish frame time
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
         threading.Timer(0.05, stop.set).start()
         t0 = time.time()
         pl.run()
         dt = time.time() - t0
-        self.assertLess(dt, 1.0,
-                        f"stop_event should interrupt within ~50ms, took {dt:.2f}s")
+        self.assertLess(dt, 1.0, f"stop_event should interrupt within ~50ms, took {dt:.2f}s")
         self.assertGreater(s.teardown_count, 0, "current scene must be torn down")
 
     def test_keyboard_interrupt_triggers_clean_teardown(self):
@@ -372,12 +407,13 @@ class PlaylistTest(unittest.TestCase):
 
         api = FakeApi()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=10000.0,
-                      heartbeat_interval=0.0,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s], api, target_fps=10000.0, heartbeat_interval=0.0, interstitial_factory=factory
+        )
         pl.run()  # should NOT re-raise
-        self.assertGreater(s.teardown_count, 0,
-                           "KeyboardInterrupt must still teardown the current scene")
+        self.assertGreater(
+            s.teardown_count, 0, "KeyboardInterrupt must still teardown the current scene"
+        )
 
     # --- heartbeat --------------------------------------------------------
 
@@ -386,10 +422,14 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=10000.0,
-                      heartbeat_interval=0.05,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.05,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
         threading.Timer(0.25, stop.set).start()
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             pl.run()
@@ -405,20 +445,24 @@ class PlaylistTest(unittest.TestCase):
         factory, _ = _transition_factory()
         # Bump a stat so we'd see traffic if the heartbeat ran.
         api.stats["writes"] = 100
-        pl = Playlist([s], api, target_fps=10000.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
         threading.Timer(0.2, stop.set).start()
         # No INFO logs should arrive from the playlist module.
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             # Inject one log so assertLogs doesn't error on "no logs captured".
             import logging
+
             logging.getLogger("c64cast.playlist").info("sentinel")
             pl.run()
         heartbeat_lines = [line for line in cap.output if "writes=" in line]
-        self.assertEqual(heartbeat_lines, [],
-                         "no heartbeat lines expected when interval=0")
+        self.assertEqual(heartbeat_lines, [], "no heartbeat lines expected when interval=0")
 
     # --- skip_event -------------------------------------------------------
 
@@ -430,22 +474,25 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, counter = _transition_factory()
-        pl = Playlist([s, FakeScene("B", frames_until_done=1)],
-                      api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s, FakeScene("B", frames_until_done=1)],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire_skip():
             time.sleep(0.05)
             pl.skip_event.set()
             time.sleep(0.2)
             stop.set()
+
         threading.Thread(target=fire_skip, daemon=True).start()
         pl.run()
-        self.assertGreaterEqual(s.teardown_count, 1,
-                                "skip should tear down the current scene")
-        self.assertGreater(counter["n"], 1,
-                           "skip should land on a new interstitial")
+        self.assertGreaterEqual(s.teardown_count, 1, "skip should tear down the current scene")
+        self.assertGreater(counter["n"], 1, "skip should land on a new interstitial")
 
     # --- busy-deferral (overlay.is_busy() defers scene teardown) ---------
 
@@ -463,33 +510,44 @@ class PlaylistTest(unittest.TestCase):
             setup_count = 0
             teardown_count = 0
             frame_count = 0
-            def setup(self, api, scene): self.setup_count += 1
+
+            def setup(self, api, scene):
+                self.setup_count += 1
+
             def process_frame(self, api, scene, t):
                 self.frame_count += 1
                 # Flip busy off after a few extra frames so the test ends.
                 if self.frame_count >= 5:
                     self._busy = False
-            def teardown(self, api, scene): self.teardown_count += 1
-            def is_busy(self): return self._busy
+
+            def teardown(self, api, scene):
+                self.teardown_count += 1
+
+            def is_busy(self):
+                return self._busy
 
         overlay = FakeOverlay()
         scene.overlays = [overlay]
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([scene], api, target_fps=10000.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [scene],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
         threading.Timer(0.3, stop.set).start()
         pl.run()
         # The overlay's process_frame should have been called more than
         # the scene's frames_until_done (1) — busy deferral let it keep
         # running for at least a few extra frames before teardown.
-        self.assertGreater(overlay.frame_count, 1,
-                           "busy overlay should have deferred teardown")
-        self.assertGreater(overlay.teardown_count, 0,
-                           "overlay should still tear down once unblocked")
+        self.assertGreater(overlay.frame_count, 1, "busy overlay should have deferred teardown")
+        self.assertGreater(
+            overlay.teardown_count, 0, "overlay should still tear down once unblocked"
+        )
 
     def test_ctrl_skip_overrides_busy_overlay(self):
         # When an overlay reports busy AND skip_event is set, CTRL must
@@ -500,33 +558,44 @@ class PlaylistTest(unittest.TestCase):
             name = "stuck"
             PAINTS_INTO_BUFFERS = False
             _disabled = False
-            def setup(self, api, scene): pass
-            def process_frame(self, api, scene, t): pass
-            def teardown(self, api, scene): pass
-            def is_busy(self): return True   # never finishes
+
+            def setup(self, api, scene):
+                pass
+
+            def process_frame(self, api, scene, t):
+                pass
+
+            def teardown(self, api, scene):
+                pass
+
+            def is_busy(self):
+                return True  # never finishes
 
         scene.overlays = [StuckOverlay()]
         api = FakeApi()
         stop = threading.Event()
         factory, counter = _transition_factory()
-        pl = Playlist([scene, FakeScene("B", frames_until_done=1)],
-                      api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [scene, FakeScene("B", frames_until_done=1)],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire_skip():
             time.sleep(0.05)
             pl.skip_event.set()
             time.sleep(0.2)
             stop.set()
+
         threading.Thread(target=fire_skip, daemon=True).start()
         pl.run()
         # CTRL should cut through the busy guard — scene torn down and
         # we landed on a new interstitial.
-        self.assertGreaterEqual(scene.teardown_count, 1,
-                                "CTRL skip should override busy overlay")
-        self.assertGreater(counter["n"], 1,
-                           "CTRL skip should advance to a new interstitial")
+        self.assertGreaterEqual(scene.teardown_count, 1, "CTRL skip should override busy overlay")
+        self.assertGreater(counter["n"], 1, "CTRL skip should advance to a new interstitial")
 
     # --- cycle_event ------------------------------------------------------
 
@@ -536,6 +605,7 @@ class PlaylistTest(unittest.TestCase):
         class FakeMode:
             name = "fake"
             calls = 0
+
             def cycle_style(self, api):
                 self.calls += 1
                 return "palette_mode=vivid"
@@ -546,32 +616,39 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire_cycle():
             time.sleep(0.05)
             pl.cycle_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire_cycle, daemon=True).start()
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             pl.run()
-        self.assertEqual(fake_mode.calls, 1,
-                         "cycle_event should invoke display_mode.cycle_style once")
+        self.assertEqual(
+            fake_mode.calls, 1, "cycle_event should invoke display_mode.cycle_style once"
+        )
         self.assertTrue(
-            any("cycle:" in line and "palette_mode=vivid" in line
-                for line in cap.output),
-            f"expected cycle log line, got {cap.output!r}")
-        self.assertFalse(pl.cycle_event.is_set(),
-                         "cycle event must be cleared after use")
+            any("cycle:" in line and "palette_mode=vivid" in line for line in cap.output),
+            f"expected cycle log line, got {cap.output!r}",
+        )
+        self.assertFalse(pl.cycle_event.is_set(), "cycle event must be cleared after use")
 
     def test_cycle_event_ignored_during_interstitial(self):
         # SHIFT during the interstitial transition is a no-op (cycling the
         # interstitial's bg mid-flight isn't a useful UX).
         class CycleCounter:
             calls = 0
+
             def cycle_style(self, api):
                 self.calls += 1
                 return "x"
@@ -589,10 +666,15 @@ class PlaylistTest(unittest.TestCase):
         def factory(name):
             return FakeScene(f"trans:{name}", frames_until_done=10_000_000)
 
-        pl = Playlist([a, b], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [a, b],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire_cycle():
             # Let the first interstitial start, then fire cycle while it's
             # still active, then stop.
@@ -600,10 +682,10 @@ class PlaylistTest(unittest.TestCase):
             pl.cycle_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire_cycle, daemon=True).start()
         pl.run()
-        self.assertEqual(counter.calls, 0,
-                         "cycle must not dispatch on an interstitial scene")
+        self.assertEqual(counter.calls, 0, "cycle must not dispatch on an interstitial scene")
 
     def test_cycle_event_also_broadcasts_to_overlays(self):
         # SHIFT cycle should reach every attached overlay that opts in.
@@ -616,10 +698,19 @@ class PlaylistTest(unittest.TestCase):
             PAINTS_INTO_BUFFERS = False
             _disabled = False
             cycle_calls = 0
-            def setup(self, api, scene): pass
-            def process_frame(self, api, scene, t): pass
-            def teardown(self, api, scene): pass
-            def is_busy(self): return False
+
+            def setup(self, api, scene):
+                pass
+
+            def process_frame(self, api, scene, t):
+                pass
+
+            def teardown(self, api, scene):
+                pass
+
+            def is_busy(self):
+                return False
+
             def cycle_style(self, api, scene):
                 self.cycle_calls += 1
                 return "ovl_y"
@@ -631,25 +722,30 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire():
             time.sleep(0.05)
             pl.cycle_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire, daemon=True).start()
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             pl.run()
-        self.assertEqual(overlay.cycle_calls, 1,
-                         "cycle_event must dispatch to opt-in overlays")
+        self.assertEqual(overlay.cycle_calls, 1, "cycle_event must dispatch to opt-in overlays")
         # Log should mention both the display and overlay labels.
         self.assertTrue(
-            any("display=mode_x" in line and "decorated=ovl_y" in line
-                for line in cap.output),
-            f"expected combined cycle label, got {cap.output!r}")
+            any("display=mode_x" in line and "decorated=ovl_y" in line for line in cap.output),
+            f"expected combined cycle label, got {cap.output!r}",
+        )
 
     def test_cycle_event_no_op_when_mode_returns_none(self):
         # Default DisplayMode.cycle_style returns None → playlist logs
@@ -663,15 +759,21 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire():
             time.sleep(0.05)
             pl.cycle_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire, daemon=True).start()
         pl.run()  # must not raise
         self.assertFalse(pl.cycle_event.is_set())
@@ -687,23 +789,29 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire():
             time.sleep(0.05)
             pl.cycle_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire, daemon=True).start()
         with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
             pl.run()
         self.assertTrue(
             any("cycle_style failed" in line for line in cap.output),
-            f"expected cycle_style failure log, got {cap.output!r}")
-        self.assertGreater(s.teardown_count, 0,
-                           "scene still tears down cleanly after cycle error")
+            f"expected cycle_style failure log, got {cap.output!r}",
+        )
+        self.assertGreater(s.teardown_count, 0, "scene still tears down cleanly after cycle error")
 
     def test_cycle_event_dispatches_to_scene_when_no_display_mode(self):
         # Scenes without a display_mode (waveform, midi) still participate
@@ -713,6 +821,7 @@ class PlaylistTest(unittest.TestCase):
                 super().__init__(name, frames_until_done=10_000_000)
                 self.display_mode = None
                 self.cycle_calls = 0
+
             def cycle_style(self, api):
                 self.cycle_calls += 1
                 return "song 2/5"
@@ -721,23 +830,29 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire():
             time.sleep(0.05)
             pl.cycle_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire, daemon=True).start()
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             pl.run()
-        self.assertEqual(s.cycle_calls, 1,
-                         "cycle_event must invoke scene.cycle_style once")
+        self.assertEqual(s.cycle_calls, 1, "cycle_event must invoke scene.cycle_style once")
         self.assertTrue(
             any("scene=song 2/5" in line for line in cap.output),
-            f"expected scene cycle log, got {cap.output!r}")
+            f"expected scene cycle log, got {cap.output!r}",
+        )
 
     def test_cycle_event_scene_exception_does_not_crash_loop(self):
         # A scene-level cycle_style raising must be caught — same contract
@@ -746,6 +861,7 @@ class PlaylistTest(unittest.TestCase):
             def __init__(self, name):
                 super().__init__(name, frames_until_done=10_000_000)
                 self.display_mode = None
+
             def cycle_style(self, api):
                 raise RuntimeError("scene cycle kaboom")
 
@@ -753,21 +869,28 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
         def fire():
             time.sleep(0.05)
             pl.cycle_event.set()
             time.sleep(0.1)
             stop.set()
+
         threading.Thread(target=fire, daemon=True).start()
         with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
             pl.run()
         self.assertTrue(
             any("cycle_style failed on scene" in line for line in cap.output),
-            f"expected scene cycle failure log, got {cap.output!r}")
+            f"expected scene cycle failure log, got {cap.output!r}",
+        )
 
     def test_skip_event_is_cleared_after_use(self):
         # Skipping once shouldn't leak into permanently rapid-firing.
@@ -775,10 +898,14 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
         factory, _ = _transition_factory()
-        pl = Playlist([s], api, target_fps=200.0,
-                      heartbeat_interval=0.0,
-                      stop_event=stop,
-                      interstitial_factory=factory)
+        pl = Playlist(
+            [s],
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
         pl.skip_event.set()
         threading.Timer(0.1, stop.set).start()
         pl.run()

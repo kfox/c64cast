@@ -7,6 +7,7 @@ the InterstitialScene can overlay its text. These tests pin that contract
 (shape/dtype, strip-only painting, time variation, the empty-rows guard) for
 every registered style plus the ``build`` factory — no U64, no rendering chip.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -87,8 +88,7 @@ class RenderContractTest(unittest.TestCase):
         for name, cls in REGISTRY.items():
             with self.subTest(background=name):
                 bg = cls(seed=4)
-                chars, colors = bg.render(
-                    1.0, range(0, 0), range(0, 0), bg_color=3)
+                chars, colors = bg.render(1.0, range(0, 0), range(0, 0), bg_color=3)
                 self.assertTrue(np.all(chars == SC_SPACE))
                 self.assertTrue(np.all(colors == 3))
 
@@ -107,8 +107,7 @@ class RenderContractTest(unittest.TestCase):
                 moved = False
                 for t in samples:
                     b_ch, b_co = bg.render(t, TOP_ROWS, BOTTOM_ROWS, bg_color=0)
-                    if not (np.array_equal(a_ch, b_ch)
-                            and np.array_equal(a_co, b_co)):
+                    if not (np.array_equal(a_ch, b_ch) and np.array_equal(a_co, b_co)):
                         moved = True
                         break
                 self.assertTrue(moved, f"{name} never animated across t=0→3.3")
@@ -126,7 +125,6 @@ class RenderContractTest(unittest.TestCase):
 
 
 class FactoryTest(unittest.TestCase):
-
     def test_build_named(self):
         for name, cls in REGISTRY.items():
             with self.subTest(background=name):
@@ -155,7 +153,6 @@ class FactoryTest(unittest.TestCase):
 
 
 class BaseClassTest(unittest.TestCase):
-
     def test_base_fill_is_abstract(self):
         # The base Background._fill must be overridden; calling render on the
         # bare base raises NotImplementedError via _fill.

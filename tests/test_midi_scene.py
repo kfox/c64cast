@@ -10,6 +10,7 @@ message-attribute access is covered.
 Real-hardware behavior (sound out of the SID, the live oscilloscope on the
 HDMI scaler) is covered separately by the Tier-2 smoke script, not here.
 """
+
 from __future__ import annotations
 
 import sys
@@ -25,6 +26,7 @@ from unittest import mock
 # it); HAVE_MIDI gates the tests at runtime.
 try:
     import mido as _mido
+
     mido: Any = _mido
     HAVE_MIDI = True
 except ImportError:
@@ -135,8 +137,7 @@ class NoteFreqTests(_MidiTestCase):
 
     def test_unknown_system_falls_back_to_pal_clock(self):
         # cpu_clock() treats anything that isn't "NTSC" as PAL.
-        self.assertEqual(_note_to_sid_freq(69, "bogus"),
-                         _note_to_sid_freq(69, "PAL"))
+        self.assertEqual(_note_to_sid_freq(69, "bogus"), _note_to_sid_freq(69, "PAL"))
 
 
 class VoiceAllocationTests(_MidiTestCase):
@@ -152,7 +153,7 @@ class VoiceAllocationTests(_MidiTestCase):
     def test_fourth_note_steals_newest_keeps_pad(self):
         scene, _ = _make_scene()
         for n in (60, 64, 67):
-            scene._note_on(n, 100)    # v0=60, v1=64, v2=67
+            scene._note_on(n, 100)  # v0=60, v1=64, v2=67
         scene._note_on(72, 100)
         # The most-recently-started voice (v2=67) is stolen; the older pad
         # (60, 64) survives. 67 is suspended (still held).
@@ -166,9 +167,9 @@ class VoiceAllocationTests(_MidiTestCase):
         scene, _ = _make_scene()
         for n in (60, 64, 67):
             scene._note_on(n, 100)
-        scene._note_on(72, 100)                 # suspends 67 (newest voice)
+        scene._note_on(72, 100)  # suspends 67 (newest voice)
         self.assertEqual({v.note for v in scene.voices if v.on}, {60, 64, 72})
-        scene._note_off(72)                      # 67 resurfaces
+        scene._note_off(72)  # 67 resurfaces
         self.assertEqual({v.note for v in scene.voices if v.on}, {60, 64, 67})
         self.assertTrue(all(v.on for v in scene.voices))
 
@@ -177,13 +178,13 @@ class VoiceAllocationTests(_MidiTestCase):
         # an overlapping (legato) high F→G line repeatedly. The two pad voices
         # must NOT move/restart — only the third voice cycles.
         scene, _ = _make_scene()
-        scene._note_on(41, 100)   # low F  -> v0
-        scene._note_on(48, 100)   # C      -> v1
+        scene._note_on(41, 100)  # low F  -> v0
+        scene._note_on(48, 100)  # C      -> v1
         for _ in range(3):
-            scene._note_on(65, 100)            # high F -> v2
-            scene._note_on(67, 100)            # G overlaps F -> steals v2 (F)
-            scene._note_off(65)                # F lifts (already suspended)
-            scene._note_off(67)                # G lifts -> v2 idle
+            scene._note_on(65, 100)  # high F -> v2
+            scene._note_on(67, 100)  # G overlaps F -> steals v2 (F)
+            scene._note_off(65)  # F lifts (already suspended)
+            scene._note_off(67)  # G lifts -> v2 idle
             # The pad never moved off v0/v1 and stayed gated the whole time.
             self.assertEqual(scene.voices[0].note, 41)
             self.assertEqual(scene.voices[1].note, 48)
@@ -193,23 +194,22 @@ class VoiceAllocationTests(_MidiTestCase):
         # Hold two notes, play single melody notes on top: the held pair stays,
         # the melody note takes the third voice and frees it on release.
         scene, _ = _make_scene()
-        scene._note_on(48, 100)   # held bass
-        scene._note_on(55, 100)   # held fifth
+        scene._note_on(48, 100)  # held bass
+        scene._note_on(55, 100)  # held fifth
         for melody in (60, 62, 64):
             scene._note_on(melody, 100)
-            self.assertEqual({v.note for v in scene.voices if v.on},
-                             {48, 55, melody})
+            self.assertEqual({v.note for v in scene.voices if v.on}, {48, 55, melody})
             scene._note_off(melody)
             self.assertEqual({v.note for v in scene.voices if v.on}, {48, 55})
 
     def test_releasing_suspended_note_is_silent_change(self):
         scene, api = _make_scene()
-        for n in (60, 62, 64, 67):    # 67 steals v2(64); 64 suspended
+        for n in (60, 62, 64, 67):  # 67 steals v2(64); 64 suspended
             scene._note_on(n, 100)
         sounding = {v.note for v in scene.voices if v.on}
         self.assertNotIn(64, sounding)
         api.regs.clear()
-        scene._note_off(64)            # release the suspended (silent) note
+        scene._note_off(64)  # release the suspended (silent) note
         self.assertEqual({v.note for v in scene.voices if v.on}, sounding)
         self.assertNotIn(64, scene._held)
         self.assertEqual(api.regs, {})  # no SID writes — it wasn't sounding
@@ -254,45 +254,46 @@ class HardRestartTests(_MidiTestCase):
 
     def test_re_press_emits_gate_off_edge_before_block(self):
         scene, api = _make_scene(waveform="pulse")
-        scene._note_on(60, 100)        # fresh attack on idle v0 (gate 0→1)
+        scene._note_on(60, 100)  # fresh attack on idle v0 (gate 0→1)
         api.ops.clear()
-        scene._note_on(60, 110)        # re-press same note → hard restart
+        scene._note_on(60, 110)  # re-press same note → hard restart
         gate_off = self._gate_off_op(scene, 0)
         self.assertIn(gate_off, api.ops)
-        block = next(i for i, o in enumerate(api.ops)
-                     if o[0] == "write_regs" and o[1] == "D400")
-        self.assertLess(api.ops.index(gate_off), block)   # edge precedes block
+        block = next(i for i, o in enumerate(api.ops) if o[0] == "write_regs" and o[1] == "D400")
+        self.assertLess(api.ops.index(gate_off), block)  # edge precedes block
 
     def test_steal_emits_gate_off_on_stolen_voice(self):
         scene, api = _make_scene(waveform="pulse")
-        for n in (60, 64, 67):         # fills v0,v1,v2 (67 newest → v2)
+        for n in (60, 64, 67):  # fills v0,v1,v2 (67 newest → v2)
             scene._note_on(n, 100)
         api.ops.clear()
-        scene._note_on(72, 100)        # steals newest voice v2
+        scene._note_on(72, 100)  # steals newest voice v2
         self.assertIn(self._gate_off_op(scene, 2), api.ops)
 
     def test_fresh_note_on_idle_voice_no_gate_off(self):
         scene, api = _make_scene(waveform="pulse")
-        scene._note_on(60, 100)        # idle voice → single gate 0→1, no edge fix
+        scene._note_on(60, 100)  # idle voice → single gate 0→1, no edge fix
         self.assertNotIn(self._gate_off_op(scene, 0), api.ops)
 
 
 class ProgramVoiceTests(_MidiTestCase):
     def test_note_on_writes_full_voice_block(self):
-        scene, api = _make_scene(waveform="sawtooth", pulse_width=2048,
-                                 adsr=(0, 8, 12, 8))
+        scene, api = _make_scene(waveform="sawtooth", pulse_width=2048, adsr=(0, 8, 12, 8))
         scene._note_on(60, 100)
         regs = api.regs["D400"]
         expected_freq = _note_to_sid_freq(60, "NTSC")
-        self.assertEqual(regs, (
-            expected_freq & 0xFF,
-            (expected_freq >> 8) & 0xFF,
-            2048 & 0xFF,
-            (2048 >> 8) & 0x0F,
-            SID.WAVE_SAWTOOTH | SID.GATE,
-            (0 << 4) | 8,
-            (12 << 4) | 8,
-        ))
+        self.assertEqual(
+            regs,
+            (
+                expected_freq & 0xFF,
+                (expected_freq >> 8) & 0xFF,
+                2048 & 0xFF,
+                (2048 >> 8) & 0x0F,
+                SID.WAVE_SAWTOOTH | SID.GATE,
+                (0 << 4) | 8,
+                (12 << 4) | 8,
+            ),
+        )
 
     def test_voices_write_to_distinct_bases(self):
         scene, api = _make_scene()
@@ -306,7 +307,7 @@ class ProgramVoiceTests(_MidiTestCase):
 
 class ControlChangeTests(_MidiTestCase):
     def test_cc7_sets_master_volume(self):
-        scene, api = _make_scene()           # default filter_mode = lowpass (1)
+        scene, api = _make_scene()  # default filter_mode = lowpass (1)
         scene._control_change(7, 127)
         self.assertEqual(scene.master_volume, 15)
         # $D418 = (filter mode << 4) | volume — CC7 preserves the mode nibble.
@@ -318,8 +319,7 @@ class ControlChangeTests(_MidiTestCase):
         self.assertEqual(scene.pulse_width, midi_scene._PW_MAX_AUDIBLE)
         pw = scene.pulse_width
         for base in ("D402", "D409", "D410"):  # base + OFF_PW_LO
-            self.assertEqual(api.regs[base],
-                             (pw & 0xFF, (pw >> 8) & 0x0F))
+            self.assertEqual(api.regs[base], (pw & 0xFF, (pw >> 8) & 0x0F))
 
     def test_cc1_modwheel_to_zero_stays_audible(self):
         # Regression: wheel-to-zero used to set pulse width to 0, which is
@@ -340,8 +340,7 @@ class ControlChangeTests(_MidiTestCase):
         scene._control_change(74, 127)
         expected_fc = (127 << 4) & 0x07FF
         self.assertEqual(scene.filter_cutoff, expected_fc)
-        self.assertEqual(api.regs["D415"],
-                         (expected_fc & 0x07, (expected_fc >> 3) & 0xFF))
+        self.assertEqual(api.regs["D415"], (expected_fc & 0x07, (expected_fc >> 3) & 0xFF))
 
     def test_unmapped_cc_is_ignored(self):
         scene, api = _make_scene()
@@ -358,9 +357,9 @@ class ControlChangeTests(_MidiTestCase):
 
     def test_cc73_72_75_set_adsr(self):
         scene, api = _make_scene(adsr=(0, 8, 12, 8))
-        scene._control_change(midi_scene._CC_ATTACK, 127)   # attack → 15
-        scene._control_change(midi_scene._CC_DECAY, 0)      # decay → 0
-        scene._control_change(midi_scene._CC_RELEASE, 64)   # release → 8
+        scene._control_change(midi_scene._CC_ATTACK, 127)  # attack → 15
+        scene._control_change(midi_scene._CC_DECAY, 0)  # decay → 0
+        scene._control_change(midi_scene._CC_RELEASE, 64)  # release → 8
         self.assertEqual(scene.adsr[0], 15)
         self.assertEqual(scene.adsr[1], 0)
         self.assertEqual(scene.adsr[3], 8)
@@ -372,11 +371,11 @@ class VelocityTests(_MidiTestCase):
     def test_velocity_drives_sustain_nibble(self):
         # Velocity → sustain (loudness): SR high nibble = velocity >> 3.
         scene, api = _make_scene(adsr=(0, 8, 12, 8))
-        scene._note_on(60, 40)            # 40 >> 3 = 5
+        scene._note_on(60, 40)  # 40 >> 3 = 5
         sr = api.regs["D400"][6]
         self.assertEqual((sr >> 4) & 0xF, 5)
-        self.assertEqual(sr & 0xF, 8)     # release unchanged
-        scene._note_on(64, 120)           # 120 >> 3 = 15 (voice 1)
+        self.assertEqual(sr & 0xF, 8)  # release unchanged
+        scene._note_on(64, 120)  # 120 >> 3 = 15 (voice 1)
         self.assertEqual((api.regs["D407"][6] >> 4) & 0xF, 15)
 
     def test_release_keeps_release_nibble(self):
@@ -396,8 +395,8 @@ class WaveformCycleTests(_MidiTestCase):
         self.assertEqual(scene.waveform, "sawtooth")
         self.assertEqual(scene.waveform_bits, SID.WAVE_SAWTOOTH)
         # wraps pulse→saw→tri→noise→pulse
-        scene.cycle_style(scene.api)   # triangle
-        scene.cycle_style(scene.api)   # noise
+        scene.cycle_style(scene.api)  # triangle
+        scene.cycle_style(scene.api)  # noise
         label = scene.cycle_style(scene.api)
         self.assertEqual(scene.waveform, "pulse")
         self.assertEqual(label, "waveform=pulse")
@@ -405,7 +404,7 @@ class WaveformCycleTests(_MidiTestCase):
     def test_cycle_reprograms_held_voice_with_new_waveform(self):
         scene, api = _make_scene(waveform="pulse")
         scene._note_on(60, 100)
-        scene.cycle_style(scene.api)   # → sawtooth
+        scene.cycle_style(scene.api)  # → sawtooth
         ctrl = api.regs["D400"][4]
         # Held voice keeps its gate but switches to the new waveform.
         self.assertEqual(ctrl, SID.WAVE_SAWTOOTH | SID.GATE)
@@ -417,8 +416,7 @@ class PitchWheelTests(_MidiTestCase):
         scene._note_on(60, 100)
         scene._pitchwheel(8192)  # full up = +2 semitones
         bent_freq = _note_to_sid_freq(62, "NTSC")
-        self.assertEqual(api.regs["D400"],
-                         (bent_freq & 0xFF, (bent_freq >> 8) & 0xFF))
+        self.assertEqual(api.regs["D400"], (bent_freq & 0xFF, (bent_freq >> 8) & 0xFF))
 
     def test_pitch_bend_skips_released_voices(self):
         scene, api = _make_scene()
@@ -487,12 +485,12 @@ class ShadowEmulatorTests(_MidiTestCase):
         # with a new note while it is still gated.
         v.envelope_level = 0.0
         v.envelope_state = "sustain"
-        scene._note_on(60, 110)        # reuses voice 0 (note already playing)
+        scene._note_on(60, 110)  # reuses voice 0 (note already playing)
         self.assertEqual(v.envelope_state, "attack")
         self.assertEqual(v.envelope_level, 0.0)
 
     def test_envelope_ticker_advances_held_note(self):
-        scene, _ = _make_scene(adsr=(8, 8, 12, 8))   # slow-ish attack
+        scene, _ = _make_scene(adsr=(8, 8, 12, 8))  # slow-ish attack
         scene._note_on(60, 100)
         v = scene.emulator.voices[0]
         start = v.envelope_level
@@ -527,6 +525,7 @@ class PaintTests(_MidiTestCase):
         # A sounding voice paints its color; once released + decayed it repaints
         # gray. Change-detected via _voice_sounding.
         from c64cast.palette import C64_COLORS
+
         scene, api = _make_scene(voice_colors=["light green", "cyan", "yellow"])
         _bring_up_display(scene)
         scene._voice_sounding = [False, False, False]
@@ -551,7 +550,7 @@ class PaintTests(_MidiTestCase):
         scene._control_change(midi_scene._CC_RESONANCE, 127)
         ctl = scene._build_controller_line()
         self.assertIn(f"RES {scene.filter_resonance:2d}", ctl)
-        self.assertEqual(len(ctl), 40)   # _paint_text_row needs exactly 40
+        self.assertEqual(len(ctl), 40)  # _paint_text_row needs exactly 40
 
     def test_info_rows_repaint_only_when_dirty(self):
         # The scope strips redraw every frame, but the change-detected text
@@ -561,7 +560,7 @@ class PaintTests(_MidiTestCase):
         scene._note_on(60, 100)
         scene.process_frame(0.0)
         api.regions.clear()
-        scene.process_frame(1.0)        # _dirty now False
+        scene.process_frame(1.0)  # _dirty now False
         # Info rows NOT rewritten...
         self.assertNotIn(_TITLE_BITMAP, api.regions)
         self.assertNotIn(_TITLE_SCREEN, api.regions)
@@ -581,9 +580,8 @@ class PaintTests(_MidiTestCase):
         api.regions.clear()
         scene.process_frame(0.0)
         # Voice 0 went from "off" (-1) to pulse → its color cells repaint.
-        self.assertEqual(scene._last_voice_wave[0],
-                         primary_waveform(SID.WAVE_PULSE | SID.GATE))
-        self.assertIn(_SCREEN_BASE, api.regions)   # voice-0 FG nibble block
+        self.assertEqual(scene._last_voice_wave[0], primary_waveform(SID.WAVE_PULSE | SID.GATE))
+        self.assertIn(_SCREEN_BASE, api.regions)  # voice-0 FG nibble block
 
 
 class ValidationTests(_MidiTestCase):
@@ -593,9 +591,9 @@ class ValidationTests(_MidiTestCase):
 
     def test_bad_adsr_rejected(self):
         with self.assertRaises(ValueError):
-            _make_scene(adsr=(0, 8, 12))          # wrong length
+            _make_scene(adsr=(0, 8, 12))  # wrong length
         with self.assertRaises(ValueError):
-            _make_scene(adsr=(0, 8, 12, 16))      # out of 0..15
+            _make_scene(adsr=(0, 8, 12, 16))  # out of 0..15
 
     def test_out_of_range_scalars_rejected(self):
         with self.assertRaises(ValueError):
@@ -622,7 +620,7 @@ class ValidationTests(_MidiTestCase):
         with self.assertRaises(ValueError):
             _make_scene(persistence="weird")
         with self.assertRaises(ValueError):
-            _make_scene(scroll_columns=[1, 2])      # wrong length
+            _make_scene(scroll_columns=[1, 2])  # wrong length
 
 
 class PortSelectionTests(_MidiTestCase):
@@ -675,7 +673,8 @@ class ReaderCoalescingTests(_MidiTestCase):
         # Wait until the batch has been drained + flushed at least once.
         deadline = time.time() + 1.0
         while time.time() < deadline and not any(
-                op[0] == "write_regs" and op[1] == "D402" for op in scene.api.ops):
+            op[0] == "write_regs" and op[1] == "D402" for op in scene.api.ops
+        ):
             time.sleep(0.005)
         scene._stop.set()
         t.join(timeout=1.0)
@@ -683,11 +682,12 @@ class ReaderCoalescingTests(_MidiTestCase):
     def test_modwheel_flood_coalesced_to_few_writes(self):
         scene, api = _make_scene()
         # 256 mod-wheel messages (a fast sweep up and back down).
-        batch = [mido.Message("control_change", control=1, value=v)
-                 for v in list(range(128)) + list(range(127, -1, -1))]
+        batch = [
+            mido.Message("control_change", control=1, value=v)
+            for v in list(range(128)) + list(range(127, -1, -1))
+        ]
         self._drain(scene, _ScriptedPort(batch))
-        pw_writes = [op for op in api.ops
-                     if op[0] == "write_regs" and op[1] == "D402"]
+        pw_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == "D402"]
         # 256 messages must NOT become 256 writes.
         self.assertGreaterEqual(len(pw_writes), 1)
         self.assertLessEqual(len(pw_writes), 5)
@@ -706,8 +706,7 @@ class ReaderCoalescingTests(_MidiTestCase):
         time.sleep(0.1)
         scene._stop.set()
         t.join(timeout=1.0)
-        voice_writes = [op for op in api.ops
-                        if op[0] == "write_regs" and op[1] == "D400"]
+        voice_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
         # Each on/off reprograms voice 0 → ~16 writes, not collapsed to one.
         self.assertGreaterEqual(len(voice_writes), 16)
 
@@ -737,7 +736,8 @@ class LifecycleTests(_MidiTestCase):
         scene, api = _make_scene(filter_mode="lowpass", master_volume=15)
         # Avoid touching real MIDI hardware: install a stub port.
         with mock.patch.object(
-            scene, "_open_port",
+            scene,
+            "_open_port",
             side_effect=lambda: setattr(scene, "_midi_port", _FakePort()),
         ):
             scene.setup()
@@ -755,8 +755,7 @@ class LifecycleTests(_MidiTestCase):
             self.assertTrue(reader.is_alive())
         finally:
             scene.teardown()
-        self.assertFalse(scene._reader_thread is not None
-                         and scene._reader_thread.is_alive())
+        self.assertFalse(scene._reader_thread is not None and scene._reader_thread.is_alive())
 
 
 if __name__ == "__main__":

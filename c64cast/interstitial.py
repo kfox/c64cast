@@ -4,6 +4,7 @@ Renders two centered text lines ("UP NEXT:" then the upcoming scene
 name, separated by a blank row) on top of an animated parallax
 background (see backgrounds.py).
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,17 +24,28 @@ from .scenes import Scene
 log = logging.getLogger(__name__)
 
 RAINBOW_COLORS = [
-    C64_COLORS["yellow"], C64_COLORS["light red"], C64_COLORS["light green"],
-    C64_COLORS["light blue"], C64_COLORS["cyan"], C64_COLORS["purple"],
-    C64_COLORS["white"], C64_COLORS["orange"],
+    C64_COLORS["yellow"],
+    C64_COLORS["light red"],
+    C64_COLORS["light green"],
+    C64_COLORS["light blue"],
+    C64_COLORS["cyan"],
+    C64_COLORS["purple"],
+    C64_COLORS["white"],
+    C64_COLORS["orange"],
 ]
 
 # Solid C64 palette colors that read well on a black background. Used when
 # text_color is "random". Skips dark gray, brown, dark blue.
 LEGIBLE_COLORS = [
-    C64_COLORS["white"], C64_COLORS["yellow"], C64_COLORS["cyan"],
-    C64_COLORS["light green"], C64_COLORS["light blue"], C64_COLORS["orange"],
-    C64_COLORS["light red"], C64_COLORS["purple"], C64_COLORS["light gray"],
+    C64_COLORS["white"],
+    C64_COLORS["yellow"],
+    C64_COLORS["cyan"],
+    C64_COLORS["light green"],
+    C64_COLORS["light blue"],
+    C64_COLORS["orange"],
+    C64_COLORS["light red"],
+    C64_COLORS["purple"],
+    C64_COLORS["light gray"],
 ]
 
 MAX_WIDTH = 40
@@ -58,8 +70,7 @@ def _resolve_line_colors(text_color: str, n_lines: int) -> list[int]:
 class InterstitialScene(Scene):
     """Centered two-line "UP NEXT: <scene>" splash."""
 
-    def __init__(self, api: C64Backend, next_scene_name: str,
-                 cfg: InterstitialCfg | None = None):
+    def __init__(self, api: C64Backend, next_scene_name: str, cfg: InterstitialCfg | None = None):
         super().__init__(api, None, None, "Interstitial")  # type: ignore[arg-type]
         self.cfg = cfg or InterstitialCfg()
         self.next_scene_name = next_scene_name
@@ -75,9 +86,13 @@ class InterstitialScene(Scene):
     def setup(self):
         self.is_done = False
         self.start_time = time.time()
-        log.info("interstitial: UP NEXT %r (bg=%s color=%s, %.1fs)",
-                 self.next_scene_name, self.cfg.background,
-                 self.cfg.text_color, self.duration_s)
+        log.info(
+            "interstitial: UP NEXT %r (bg=%s color=%s, %.1fs)",
+            self.next_scene_name,
+            self.cfg.background,
+            self.cfg.text_color,
+            self.duration_s,
+        )
         # Mode switch — drop the dirty cache or we may suppress a needed
         # frame-0 write that happens to look identical to the last scene.
         self.api.invalidate_cache()
@@ -92,10 +107,8 @@ class InterstitialScene(Scene):
         # Vertically center a 3-row block (label, blank, name).
         top = max(0, (MAX_HEIGHT - 3) // 2)
         self.line_rows = [top, top + 2]
-        self.line_cols = [max(0, (MAX_WIDTH - len(text)) // 2)
-                          for text in self.lines]
-        self.line_colors = _resolve_line_colors(
-            self.cfg.text_color, len(self.lines))
+        self.line_cols = [max(0, (MAX_WIDTH - len(text)) // 2) for text in self.lines]
+        self.line_colors = _resolve_line_colors(self.cfg.text_color, len(self.lines))
 
         self.bg = build_background(self.cfg.background)
 
@@ -115,13 +128,12 @@ class InterstitialScene(Scene):
         chars, colors = self.bg.render(elapsed, top_rows, bot_rows, bg_color=0)
 
         for text, row, col, color in zip(
-                self.lines, self.line_rows, self.line_cols, self.line_colors,
-                strict=True):
+            self.lines, self.line_rows, self.line_cols, self.line_colors, strict=True
+        ):
             encoded = ascii_to_screen(text)
             base = row * MAX_WIDTH + col
-            chars[base:base + len(encoded)] = np.frombuffer(
-                encoded, dtype=np.uint8)
-            colors[base:base + len(encoded)] = color
+            chars[base : base + len(encoded)] = np.frombuffer(encoded, dtype=np.uint8)
+            colors[base : base + len(encoded)] = color
 
         self.api.write_region(0x0400, chars.tobytes(), region_id=RegionID.SCREEN)
         self.api.write_region(0xD800, colors.tobytes(), region_id=RegionID.COLOR)
@@ -136,6 +148,8 @@ def default_factory(api: C64Backend, cfg: InterstitialCfg | None = None):
     """Returns a callable that the Playlist uses to mint a fresh
     InterstitialScene with the next scene's name baked in."""
     cfg = cfg or InterstitialCfg()
+
     def make(next_scene_name: str) -> InterstitialScene:
         return InterstitialScene(api, next_scene_name, cfg)
+
     return make

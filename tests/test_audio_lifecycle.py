@@ -8,6 +8,7 @@ resolution (against a fake sounddevice), and start/stop/position teardown.
 
 No real U64 and no real sound device — FakeAPI plus a fake `sd` module.
 """
+
 from __future__ import annotations
 
 import queue
@@ -34,12 +35,10 @@ from c64cast.c64 import CIA2, SID
 def _make(**kw: Any) -> AudioStreamer:
     """Construct a real AudioStreamer (exercising __init__) over a FakeAPI."""
     api = cast(Ultimate64API, FakeAPI())
-    return AudioStreamer(api, kw.pop("sample_rate", 8000),
-                         kw.pop("system", "NTSC"), **kw)
+    return AudioStreamer(api, kw.pop("sample_rate", 8000), kw.pop("system", "NTSC"), **kw)
 
 
-def _make_worker_streamer(chunk_size: int = 32,
-                          sample_rate: int = 64000) -> AudioStreamer:
+def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> AudioStreamer:
     """A streamer wired for fast, hardware-free worker runs: tiny chunks, a
     high sample rate (sub-ms pace period), and a stubbed NMI timer so the
     prebuffer→pace handoff runs without touching CIA registers."""
@@ -63,7 +62,6 @@ def _run_worker(s: AudioStreamer, until, timeout: float = 2.0) -> threading.Thre
 
 
 class ConstructorTest(unittest.TestCase):
-
     def test_defaults(self):
         s = _make()
         self.assertEqual(s.sample_rate, 8000)
@@ -82,8 +80,9 @@ class ConstructorTest(unittest.TestCase):
         self.assertFalse(s._reu_pump_armed)
 
     def test_flag_passthrough(self):
-        s = _make(dither=False, digi_boost=True, use_reu_pump=True,
-                  sid_filter_cutoff=1200, system="PAL")
+        s = _make(
+            dither=False, digi_boost=True, use_reu_pump=True, sid_filter_cutoff=1200, system="PAL"
+        )
         self.assertFalse(s.dither_enabled)
         self.assertTrue(s.digi_boost)
         self.assertTrue(s.use_reu_pump)
@@ -92,7 +91,6 @@ class ConstructorTest(unittest.TestCase):
 
 
 class WorkerPacingUnderrunTest(unittest.TestCase):
-
     def test_idle_no_data_no_nmi(self):
         # Empty queue, never prebuffered: the worker must spin on the
         # `n == 0 and not prebuffered → continue` path and write nothing.
@@ -113,8 +111,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertGreaterEqual(s._full_underruns, 1)
         writes = cast(Any, s.api).writes
         # The post-prebuffer underrun chunks are all-NEUTRAL, full chunk_size.
-        neutral_chunks = [d for _, d in writes
-                          if d == bytes([NEUTRAL_SAMPLE] * 32)]
+        neutral_chunks = [d for _, d in writes if d == bytes([NEUTRAL_SAMPLE] * 32)]
         self.assertTrue(neutral_chunks, "expected NEUTRAL underrun chunks")
 
     def test_partial_underrun_pads_tail(self):
@@ -143,8 +140,9 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         finally:
             stop.set()
             feeder.join(timeout=1.0)
-        self.assertGreaterEqual(s._partial_underruns, 1,
-                                "expected at least one partial-pad underrun")
+        self.assertGreaterEqual(
+            s._partial_underruns, 1, "expected at least one partial-pad underrun"
+        )
 
     def test_oversized_blob_carried_via_leftover(self):
         # A single blob bigger than chunk_size must split across writes through
@@ -188,8 +186,8 @@ class PitchCompensationLatchTest(unittest.TestCase):
         # at the nominal latch so the guard passes and a change writes through.
         s = _make(**kw)
         s._worker_thread = cast(Any, object())  # truthy → guard passes
-        s._nmi_timer_started = True               # timer already armed
-        s._nmi_latch = s._nmi_latch_value()      # at nominal
+        s._nmi_timer_started = True  # timer already armed
+        s._nmi_latch = s._nmi_latch_value()  # at nominal
         return s
 
     def _latch_write(self, s: AudioStreamer) -> int | None:
@@ -203,11 +201,11 @@ class PitchCompensationLatchTest(unittest.TestCase):
 
     def test_speedup_multiplier_shrinks_latch(self):
         s = self._started()
-        nominal = s._nmi_latch_value()           # NTSC@8kHz → 127 (period 128)
+        nominal = s._nmi_latch_value()  # NTSC@8kHz → 127 (period 128)
         s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
         # period = round(128 / 1.1575) = 111 → latch 110, strictly below nominal.
         self.assertEqual(s._nmi_latch, 110)
-        self.assertLess(s._nmi_latch, nominal)   # faster rate ⇒ smaller latch
+        self.assertLess(s._nmi_latch, nominal)  # faster rate ⇒ smaller latch
         self.assertEqual(self._latch_write(s), 110)
 
     def test_slowdown_multiplier_grows_latch(self):
@@ -227,7 +225,7 @@ class PitchCompensationLatchTest(unittest.TestCase):
     def test_unknown_mode_defaults_to_unity(self):
         s = self._started()
         s.set_nmi_latch_for_mode("hires_edges", {"hires": 1.1})  # no exact key
-        self.assertEqual(s._nmi_latch, s._nmi_latch_value())     # 1.0 fallback
+        self.assertEqual(s._nmi_latch, s._nmi_latch_value())  # 1.0 fallback
         self.assertIsNone(self._latch_write(s))
 
     def test_no_op_without_servo(self):
@@ -250,12 +248,12 @@ class PitchCompensationLatchTest(unittest.TestCase):
         s._worker_thread = cast(Any, object())
         self.assertFalse(s._nmi_timer_started)
         s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        self.assertIsNone(self._latch_write(s))         # deferred, not written
+        self.assertIsNone(self._latch_write(s))  # deferred, not written
         self.assertAlmostEqual(s._pitch_multiplier, 1.1575)
 
-        cast(Any, s)._start_nmi_timer()                 # worker arms the timer
+        cast(Any, s)._start_nmi_timer()  # worker arms the timer
         self.assertTrue(s._nmi_timer_started)
-        self.assertEqual(s._nmi_latch, 110)             # compensation applied
+        self.assertEqual(s._nmi_latch, 110)  # compensation applied
         self.assertEqual(self._latch_write(s), 110)
 
     def test_stop_clears_pitch_state(self):
@@ -269,7 +267,6 @@ class PitchCompensationLatchTest(unittest.TestCase):
 
 
 class DigiBoostTest(unittest.TestCase):
-
     def test_enable_writes_all_voices(self):
         s = _make(digi_boost=True)
         with self.assertLogs("c64cast.audio", level="INFO"):
@@ -300,7 +297,6 @@ class DigiBoostTest(unittest.TestCase):
 
 
 class EncodeBackpressureTest(unittest.TestCase):
-
     def test_block_on_full_times_out_to_zero(self):
         s = _make()
         s.running = True
@@ -308,8 +304,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         orig = audio_mod.QUEUE_PUT_TIMEOUT_S
         audio_mod.QUEUE_PUT_TIMEOUT_S = 0.001  # keep the spin loop instant
         try:
-            n = s._encode_and_enqueue(np.zeros(64, dtype=np.float32),
-                                      block_on_full=True)
+            n = s._encode_and_enqueue(np.zeros(64, dtype=np.float32), block_on_full=True)
         finally:
             audio_mod.QUEUE_PUT_TIMEOUT_S = orig
         self.assertEqual(n, 0)
@@ -318,8 +313,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         s.running = True
         # Under the sample cap → the put path runs (block_on_full timeout arm).
-        n = s._encode_and_enqueue(np.zeros(64, dtype=np.float32),
-                                  block_on_full=True)
+        n = s._encode_and_enqueue(np.zeros(64, dtype=np.float32), block_on_full=True)
         self.assertEqual(n, 64)
         self.assertEqual(s._queued_samples, 64)
 
@@ -327,34 +321,28 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         s.running = True
         s.q = queue.Queue(maxsize=1)
-        s.q.put(b"\x07")              # fill the single blob slot
-        s._queued_samples = 0         # but keep the sample cap clear
-        n = s._encode_and_enqueue(np.zeros(8, dtype=np.float32),
-                                  block_on_full=False)
+        s.q.put(b"\x07")  # fill the single blob slot
+        s._queued_samples = 0  # but keep the sample cap clear
+        n = s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0)
 
     def test_empty_input_returns_zero(self):
         s = _make()
-        self.assertEqual(
-            s._encode_and_enqueue(np.array([], dtype=np.float32)), 0)
+        self.assertEqual(s._encode_and_enqueue(np.array([], dtype=np.float32)), 0)
 
 
 class EncodeDacTest(unittest.TestCase):
-
     def test_explicit_rng_dither_is_reproducible(self):
         # The offline pre-encode path passes a seeded Generator; same seed →
         # identical codes (exercises the rng-provided dither branch).
         floats = np.linspace(-0.9, 0.9, 64, dtype=np.float32)
-        a = encode_floats_to_dac(
-            floats, dither=True, rng=np.random.default_rng(7))
-        b = encode_floats_to_dac(
-            floats, dither=True, rng=np.random.default_rng(7))
+        a = encode_floats_to_dac(floats, dither=True, rng=np.random.default_rng(7))
+        b = encode_floats_to_dac(floats, dither=True, rng=np.random.default_rng(7))
         np.testing.assert_array_equal(a, b)
         self.assertEqual(a.dtype, np.uint8)
 
 
 class SampleTapWrapTest(unittest.TestCase):
-
     def test_split_write_across_buffer_end(self):
         # Write head near the end so a sub-tap push wraps the ring (the
         # two-slice branch in _push_to_tap, distinct from the >= tap-size case).
@@ -367,12 +355,10 @@ class SampleTapWrapTest(unittest.TestCase):
 
 
 class MicCallbackTest(unittest.TestCase):
-
     def test_status_flag_drops_frame(self):
         s = _make()
         s.running = True
-        s._mic_callback(np.ones((10, 1), dtype=np.float32), 10, None,
-                        status="overflow")
+        s._mic_callback(np.ones((10, 1), dtype=np.float32), 10, None, status="overflow")
         self.assertEqual(s._queued_samples, 0)
 
     def test_not_running_drops_frame(self):
@@ -393,6 +379,7 @@ class MicCallbackTest(unittest.TestCase):
 
 
 # --- fake sounddevice for input-device resolution ------------------------
+
 
 class _FakePortAudioError(Exception):
     pass
@@ -423,8 +410,12 @@ class _FakeDefault:
 class _FakeSD:
     PortAudioError = _FakePortAudioError
 
-    def __init__(self, devices: list[dict[str, Any]], default_input: int,
-                 reject_channels: set[int] | None = None):
+    def __init__(
+        self,
+        devices: list[dict[str, Any]],
+        default_input: int,
+        reject_channels: set[int] | None = None,
+    ):
         self._devices = devices
         self.default = _FakeDefault(default_input)
         self.reject_channels = reject_channels or set()
@@ -443,7 +434,6 @@ class _FakeSD:
 
 
 class InputDeviceResolutionTest(unittest.TestCase):
-
     def _patch_sd(self, fake: _FakeSD) -> None:
         self._orig_sd = audio_mod.sd
         self._orig_avail = audio_mod.AUDIO_AVAILABLE
@@ -464,10 +454,13 @@ class InputDeviceResolutionTest(unittest.TestCase):
         self.assertEqual(name, "mic")
 
     def test_valid_device_with_inputs(self):
-        fake = _FakeSD([
-            {"name": "speaker", "max_input_channels": 0},
-            {"name": "usb mic", "max_input_channels": 2},
-        ], 1)
+        fake = _FakeSD(
+            [
+                {"name": "speaker", "max_input_channels": 0},
+                {"name": "usb mic", "max_input_channels": 2},
+            ],
+            1,
+        )
         self._patch_sd(fake)
         s = _make()
         dev, name = s._resolve_input_device(1)
@@ -475,10 +468,13 @@ class InputDeviceResolutionTest(unittest.TestCase):
         self.assertEqual(name, "usb mic")
 
     def test_output_only_device_falls_back(self):
-        fake = _FakeSD([
-            {"name": "default mic", "max_input_channels": 1},
-            {"name": "speaker only", "max_input_channels": 0},
-        ], 0)
+        fake = _FakeSD(
+            [
+                {"name": "default mic", "max_input_channels": 1},
+                {"name": "speaker only", "max_input_channels": 0},
+            ],
+            0,
+        )
         self._patch_sd(fake)
         s = _make()
         with self.assertLogs("c64cast.audio", level="WARNING"):
@@ -488,8 +484,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
 
     def test_open_stream_channel_fallback(self):
         # channels=1 rejected, native channels=2 accepted.
-        fake = _FakeSD([{"name": "stereo mic", "max_input_channels": 2}], 0,
-                       reject_channels={1})
+        fake = _FakeSD([{"name": "stereo mic", "max_input_channels": 2}], 0, reject_channels={1})
         self._patch_sd(fake)
         s = _make()
         with self.assertLogs("c64cast.audio", level="INFO"):
@@ -500,8 +495,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
     def test_open_stream_all_channels_rejected_raises(self):
         # Every candidate channel count is rejected by PortAudio → the final
         # "could not open mic" RuntimeError (debug logs per attempt, no warning).
-        fake = _FakeSD([{"name": "fussy mic", "max_input_channels": 2}], 0,
-                       reject_channels={1, 2})
+        fake = _FakeSD([{"name": "fussy mic", "max_input_channels": 2}], 0, reject_channels={1, 2})
         self._patch_sd(fake)
         s = _make()
         with self.assertLogs("c64cast.audio", level="DEBUG"):
@@ -536,8 +530,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
     def test_start_mic_without_sounddevice_warns(self):
         self._orig_avail = audio_mod.AUDIO_AVAILABLE
         audio_mod.AUDIO_AVAILABLE = False
-        self.addCleanup(
-            lambda: setattr(audio_mod, "AUDIO_AVAILABLE", self._orig_avail))
+        self.addCleanup(lambda: setattr(audio_mod, "AUDIO_AVAILABLE", self._orig_avail))
         s = _make()
         with self.assertLogs("c64cast.audio", level="WARNING"):
             s.start_mic(0, 1.0, 0.05)
@@ -545,7 +538,6 @@ class InputDeviceResolutionTest(unittest.TestCase):
 
 
 class LifecycleTest(unittest.TestCase):
-
     def test_start_external_source_brings_up_worker(self):
         s = _make()
         try:
@@ -582,7 +574,7 @@ class LifecycleTest(unittest.TestCase):
     def test_position_seconds_reu_pump_clamped(self):
         s = _make()
         s._reu_pump_armed = True
-        s._reu_pump_total_samples = 8000      # 1.0 s of source
+        s._reu_pump_total_samples = 8000  # 1.0 s of source
         s._reu_pump_start_time = time.monotonic() - 100.0  # long past
         # Clamped to total source length, not the 100 s of wall clock.
         self.assertAlmostEqual(s.position_seconds(), 1.0, places=2)

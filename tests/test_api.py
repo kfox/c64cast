@@ -3,6 +3,7 @@ and its formatters. Other parts of the API (write_region delta caching,
 listener notifications) are exercised by the higher-level scene/mode
 tests, not duplicated here. Wire-level protocol coverage lives in
 test_socket_dma.py."""
+
 from __future__ import annotations
 
 import unittest
@@ -59,13 +60,11 @@ from c64cast.socket_dma import SocketDMAError
 
 
 class DmaLatencyTest(unittest.TestCase):
-
     def setUp(self):
         # Patch connect() so the constructor doesn't try to open a real
         # TCP socket. dmawrite/flush are also stubbed on the instance
         # below for tests that need to drive latency samples directly.
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect",
-                        autospec=True)
+        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -86,8 +85,15 @@ class DmaLatencyTest(unittest.TestCase):
         line = self.api.format_write_latency()
         self.assertIsNotNone(line)
         assert line is not None  # narrow for type-checker
-        for token in ("u64 dma latency", "n=3", "avg=10.0",
-                      "p50=10.0", "p95=10.0", "max=10.0", "ms"):
+        for token in (
+            "u64 dma latency",
+            "n=3",
+            "avg=10.0",
+            "p50=10.0",
+            "p95=10.0",
+            "max=10.0",
+            "ms",
+        ):
             self.assertIn(token, line)
 
     def test_summary_percentiles(self):
@@ -111,8 +117,7 @@ class DmaWriteErrorHandlingTest(unittest.TestCase):
     crash the active scene and abort the playlist."""
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect",
-                        autospec=True)
+        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -122,8 +127,7 @@ class DmaWriteErrorHandlingTest(unittest.TestCase):
             self.api.close()
 
     def test_oserror_is_absorbed_and_counted(self):
-        with patch.object(self.api.socket_dma, "dmawrite",
-                          side_effect=TimeoutError("timed out")):
+        with patch.object(self.api.socket_dma, "dmawrite", side_effect=TimeoutError("timed out")):
             self.api._emit(0xD020, b"\x0e")
         self.assertEqual(self.api.stats["errors"], 1)
         self.assertEqual(self.api.stats["writes"], 0)
@@ -133,8 +137,9 @@ class DmaWriteErrorHandlingTest(unittest.TestCase):
         # attempt's IDENTIFY also times out and is re-raised as
         # SocketDMAError. _emit must NOT propagate it — the playlist
         # would otherwise tear down the current scene and advance.
-        with patch.object(self.api.socket_dma, "dmawrite",
-                          side_effect=SocketDMAError("no reply to IDENTIFY")):
+        with patch.object(
+            self.api.socket_dma, "dmawrite", side_effect=SocketDMAError("no reply to IDENTIFY")
+        ):
             self.api._emit(0xD020, b"\x0e")
         self.assertEqual(self.api.stats["errors"], 1)
         self.assertEqual(self.api.stats["writes"], 0)
@@ -143,8 +148,7 @@ class DmaWriteErrorHandlingTest(unittest.TestCase):
         # Drive a couple of failures then a success — the consecutive
         # counter feeds the escalating warning ladder, so a recovery
         # must reset it or the user sees stale "200 consecutive" alerts.
-        with patch.object(self.api.socket_dma, "dmawrite",
-                          side_effect=SocketDMAError("boom")):
+        with patch.object(self.api.socket_dma, "dmawrite", side_effect=SocketDMAError("boom")):
             self.api._emit(0xD020, b"\x0e")
             self.api._emit(0xD020, b"\x0e")
         self.assertEqual(self.api._consecutive_errors, 2)
@@ -167,8 +171,7 @@ class RunSidPlayerTest(unittest.TestCase):
     """
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect",
-                        autospec=True)
+        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -176,16 +179,21 @@ class RunSidPlayerTest(unittest.TestCase):
         # against in-process state only.
         self.dma_writes: list[tuple[int, bytes]] = []
         self.api._emit = lambda addr, payload: (  # type: ignore[method-assign]
-            self.dma_writes.append((addr, bytes(payload))))
+            self.dma_writes.append((addr, bytes(payload)))
+        )
         patch.object(self.api, "flush").start()
         self.posts: list[tuple[str, bytes]] = []
+
         def _fake_post(url, files=None, **_):
             payload = files["file"][1] if files else b""
             self.posts.append((url, bytes(payload)))
+
             class _R:
                 def raise_for_status(self):
                     pass
+
             return _R()
+
         patch.object(self.api.session, "post", side_effect=_fake_post).start()
         # _tune_play_divider sleeps + REST-reads CIA #1 after run_sid_player.
         # No-op it here so the per-tune tests stay fast and don't accidentally
@@ -199,8 +207,16 @@ class RunSidPlayerTest(unittest.TestCase):
 
     # ---- header construction helper ----------------------------------
     @staticmethod
-    def _make_sid(*, magic=b"PSID", load=0x1000, init=0x1003, play=0x1006,
-                  num_songs=4, start_song=1, payload_len=64):
+    def _make_sid(
+        *,
+        magic=b"PSID",
+        load=0x1000,
+        init=0x1003,
+        play=0x1006,
+        num_songs=4,
+        start_song=1,
+        payload_len=64,
+    ):
         h = bytearray(124)
         h[0:4] = magic
         h[4:6] = (2).to_bytes(2, "big")
@@ -248,8 +264,9 @@ class RunSidPlayerTest(unittest.TestCase):
         # After JSR init the player restores the resting bank (LDA #$37 /
         # STA $01 at 14-17) THEN the master volume. Offsets 18-22: LDA #$0F
         # (A9 0F) ; STA $D418 (8D 18 D4).
-        self.assertEqual(mc[18:23], b"\xA9\x0F\x8D\x18\xD4",
-                         "MC must restore $D418=$0F after the bank restore")
+        self.assertEqual(
+            mc[18:23], b"\xa9\x0f\x8d\x18\xd4", "MC must restore $D418=$0F after the bank restore"
+        )
 
     def test_rejects_play_addr_zero(self):
         with self.assertRaisesRegex(ValueError, "play_addr=0"):
@@ -263,24 +280,22 @@ class RunSidPlayerTest(unittest.TestCase):
         # Code/data under KERNAL ROM ($E000-$FFFF) can't be exposed —
         # the player keeps KERNAL mapped for its $EA31 IRQ chain.
         with self.assertRaisesRegex(ValueError, "KERNAL ROM"):
-            self.api.run_sid_player(
-                self._make_sid(load=0xE000, init=0xE000, play=0xE003))
+            self.api.run_sid_player(self._make_sid(load=0xE000, init=0xE000, play=0xE003))
 
     # ---- CPU-port (memory bank) selection ----------------------------
     def test_bank_for_addr_hi_rule(self):
         # getBank rule mirrored from the U64 firmware (sidcommon.asm).
-        self.assertEqual(_bank_for_addr_hi(0x10), CPU.PORT_DEFAULT)     # low RAM
-        self.assertEqual(_bank_for_addr_hi(0x9F), CPU.PORT_DEFAULT)     # just below BASIC
-        self.assertEqual(_bank_for_addr_hi(0xA0), CPU.PORT_BASIC_OUT)   # BASIC ROM
+        self.assertEqual(_bank_for_addr_hi(0x10), CPU.PORT_DEFAULT)  # low RAM
+        self.assertEqual(_bank_for_addr_hi(0x9F), CPU.PORT_DEFAULT)  # just below BASIC
+        self.assertEqual(_bank_for_addr_hi(0xA0), CPU.PORT_BASIC_OUT)  # BASIC ROM
         self.assertEqual(_bank_for_addr_hi(0xBF), CPU.PORT_BASIC_OUT)
-        self.assertEqual(_bank_for_addr_hi(0xC0), CPU.PORT_BASIC_OUT)   # $Cxxx -> $36
-        self.assertEqual(_bank_for_addr_hi(0xD4), CPU.PORT_IO_OUT)      # I/O space
+        self.assertEqual(_bank_for_addr_hi(0xC0), CPU.PORT_BASIC_OUT)  # $Cxxx -> $36
+        self.assertEqual(_bank_for_addr_hi(0xD4), CPU.PORT_IO_OUT)  # I/O space
         self.assertEqual(_bank_for_addr_hi(0xE0), CPU.PORT_KERNAL_OUT)  # KERNAL ROM
 
     def test_init_play_bank_default_for_normal_tune(self):
         # A tune in ordinary low RAM keeps the default $37 for both banks.
-        parsed = parse_psid_for_player(
-            self._make_sid(load=0x1000, init=0x1003, play=0x1006))
+        parsed = parse_psid_for_player(self._make_sid(load=0x1000, init=0x1003, play=0x1006))
         self.assertEqual(_init_bank_for(parsed), CPU.PORT_DEFAULT)
         self.assertEqual(_play_bank_for(parsed), CPU.PORT_DEFAULT)
 
@@ -288,8 +303,8 @@ class RunSidPlayerTest(unittest.TestCase):
         # A tune loading from low RAM whose payload extends under BASIC ROM
         # gets $36 for init (load-end page), keyed on the END not the start.
         parsed = parse_psid_for_player(
-            self._make_sid(load=0x9F00, init=0xC000, play=0xC003,
-                           payload_len=0x2000))  # ends ~$BF00
+            self._make_sid(load=0x9F00, init=0xC000, play=0xC003, payload_len=0x2000)
+        )  # ends ~$BF00
         self.assertEqual(_init_bank_for(parsed), CPU.PORT_BASIC_OUT)
         self.assertEqual(_play_bank_for(parsed), CPU.PORT_BASIC_OUT)  # play $C0
 
@@ -297,35 +312,29 @@ class RunSidPlayerTest(unittest.TestCase):
         # Hyperion-2-like: init/play under BASIC ROM. Player MC carries $36
         # for BOTH the init-bank and play-bank slots; re-INIT stub carries
         # $36 for its init-bank slot.
-        self.api.run_sid_player(
-            self._make_sid(load=0xAE2A, init=0xAE2A, play=0xAE32))
+        self.api.run_sid_player(self._make_sid(load=0xAE2A, init=0xAE2A, play=0xAE32))
         _, mc = self.dma_writes[1]
         _, stub = self.dma_writes[2]
         self.assertEqual(mc[_SID_PATCH_INITBANK], CPU.PORT_BASIC_OUT)
         self.assertEqual(mc[_SID_PATCH_PLAYBANK], CPU.PORT_BASIC_OUT)
         self.assertEqual(stub[_REINIT_PATCH_BANK], CPU.PORT_BASIC_OUT)
         # Each bank byte is consumed by an STA $01 immediately after it.
-        self.assertEqual(mc[_SID_PATCH_INITBANK + 1:_SID_PATCH_INITBANK + 3],
-                         bytes([0x85, 0x01]))
-        self.assertEqual(mc[_SID_PATCH_PLAYBANK + 1:_SID_PATCH_PLAYBANK + 3],
-                         bytes([0x85, 0x01]))
+        self.assertEqual(mc[_SID_PATCH_INITBANK + 1 : _SID_PATCH_INITBANK + 3], bytes([0x85, 0x01]))
+        self.assertEqual(mc[_SID_PATCH_PLAYBANK + 1 : _SID_PATCH_PLAYBANK + 3], bytes([0x85, 0x01]))
 
     def test_player_rests_at_default_bank_between_calls(self):
         # The resting bank is $37: restored right after JSR init and after
         # JSR play (LDA #$37 / STA $01 in both spots), even for an under-ROM
         # tune. This is what keeps tunes like Election from crashing.
-        self.api.run_sid_player(
-            self._make_sid(load=0xAE2A, init=0xAE2A, play=0xAE32))
+        self.api.run_sid_player(self._make_sid(load=0xAE2A, init=0xAE2A, play=0xAE32))
         _, mc = self.dma_writes[1]
         # After JSR init (operand at _SID_PATCH_INIT_LO/_HI), bytes are
         # LDA #$37 / STA $01.
         after_init = _SID_PATCH_INIT_HI + 1
-        self.assertEqual(mc[after_init:after_init + 4],
-                         bytes([0xA9, 0x37, 0x85, 0x01]))
+        self.assertEqual(mc[after_init : after_init + 4], bytes([0xA9, 0x37, 0x85, 0x01]))
         # After JSR play (operand at _SID_PATCH_PLAY_LO/_HI), same restore.
         after_play = _SID_PATCH_PLAY_HI + 1
-        self.assertEqual(mc[after_play:after_play + 4],
-                         bytes([0xA9, 0x37, 0x85, 0x01]))
+        self.assertEqual(mc[after_play : after_play + 4], bytes([0xA9, 0x37, 0x85, 0x01]))
 
     # ---- MC patching -------------------------------------------------
     def test_mc_template_byte_offsets_round_trip(self):
@@ -334,27 +343,29 @@ class RunSidPlayerTest(unittest.TestCase):
         # the template; they're filled per-tune by _build_player_mc).
         t = SID_PLAYER_MC_TEMPLATE
         # Leads with SEI then LDA #<initBank> / STA $01 (the CPU-port set).
-        self.assertEqual(t[0], 0x78)                          # SEI
-        self.assertEqual(t[_SID_PATCH_INITBANK - 1], 0xA9)    # LDA #<initBank>
-        self.assertEqual(t[_SID_PATCH_INITBANK], 0x37)        # default $37 seed
-        self.assertEqual(t[_SID_PATCH_INITBANK + 1:_SID_PATCH_INITBANK + 3],
-                         bytes([0x85, 0x01]))                 # STA $01
+        self.assertEqual(t[0], 0x78)  # SEI
+        self.assertEqual(t[_SID_PATCH_INITBANK - 1], 0xA9)  # LDA #<initBank>
+        self.assertEqual(t[_SID_PATCH_INITBANK], 0x37)  # default $37 seed
+        self.assertEqual(
+            t[_SID_PATCH_INITBANK + 1 : _SID_PATCH_INITBANK + 3], bytes([0x85, 0x01])
+        )  # STA $01
         # IRQ handler leads with LDA #<playBank> / STA $01.
-        self.assertEqual(t[_SID_PATCH_PLAYBANK - 1], 0xA9)    # LDA #<playBank>
-        self.assertEqual(t[_SID_PATCH_PLAYBANK], 0x37)        # default seed
-        self.assertEqual(t[_SID_PATCH_PLAYBANK + 1:_SID_PATCH_PLAYBANK + 3],
-                         bytes([0x85, 0x01]))                 # STA $01
-        self.assertEqual(t[_SID_PATCH_SONG - 1], 0xA9)     # LDA #imm
+        self.assertEqual(t[_SID_PATCH_PLAYBANK - 1], 0xA9)  # LDA #<playBank>
+        self.assertEqual(t[_SID_PATCH_PLAYBANK], 0x37)  # default seed
+        self.assertEqual(
+            t[_SID_PATCH_PLAYBANK + 1 : _SID_PATCH_PLAYBANK + 3], bytes([0x85, 0x01])
+        )  # STA $01
+        self.assertEqual(t[_SID_PATCH_SONG - 1], 0xA9)  # LDA #imm
         self.assertEqual(t[_SID_PATCH_INIT_LO - 1], 0x20)  # JSR
         self.assertEqual(t[_SID_PATCH_PLAY_LO - 1], 0x20)  # JSR (in IRQ)
-        self.assertEqual(t[_SID_PATCH_IRQ_LO - 1], 0xA9)   # LDA #<irq
-        self.assertEqual(t[_SID_PATCH_IRQ_HI - 1], 0xA9)   # LDA #>irq
+        self.assertEqual(t[_SID_PATCH_IRQ_LO - 1], 0xA9)  # LDA #<irq
+        self.assertEqual(t[_SID_PATCH_IRQ_HI - 1], 0xA9)  # LDA #>irq
         self.assertEqual(t[_SID_PATCH_SPIN_LO - 1], 0x4C)  # JMP <spin>
         # Tick-divider patch points: DEC counter / LDA #N / STA counter
-        self.assertEqual(t[_SID_PATCH_CTR_INIT_LO - 1], 0x8D)   # STA abs
-        self.assertEqual(t[_SID_PATCH_CTR_DEC_LO - 1], 0xCE)    # DEC abs
-        self.assertEqual(t[_SID_PATCH_CTR_RELOAD_LO - 1], 0x8D) # STA abs
-        self.assertEqual(t[_SID_PATCH_DIVIDER - 1], 0xA9)       # LDA #N
+        self.assertEqual(t[_SID_PATCH_CTR_INIT_LO - 1], 0x8D)  # STA abs
+        self.assertEqual(t[_SID_PATCH_CTR_DEC_LO - 1], 0xCE)  # DEC abs
+        self.assertEqual(t[_SID_PATCH_CTR_RELOAD_LO - 1], 0x8D)  # STA abs
+        self.assertEqual(t[_SID_PATCH_DIVIDER - 1], 0xA9)  # LDA #N
         # Divider seed = 1 (chain-every-tick until host measures rate).
         self.assertEqual(t[_SID_PATCH_DIVIDER], 0x01)
         # Address-bearing offsets must derive from the chosen
@@ -373,21 +384,19 @@ class RunSidPlayerTest(unittest.TestCase):
         # Lean exit at offset 66: LDA $DC0D / JMP $EA81. Without the
         # $DC0D read the CIA #1 IRQ flag never clears and the IRQ
         # re-fires immediately; without $EA81 the CPU never returns.
-        self.assertEqual(t[66:72], bytes([0xAD, 0x0D, 0xDC,
-                                          0x4C, 0x81, 0xEA]))
+        self.assertEqual(t[66:72], bytes([0xAD, 0x0D, 0xDC, 0x4C, 0x81, 0xEA]))
         # Chain path tail (offset 63-65) must chain to kernal $EA31.
         self.assertEqual(t[63:66], bytes([0x4C, 0x31, 0xEA]))
 
     def test_patched_mc_carries_song_init_and_play(self):
         self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006,
-                           num_songs=8, start_song=1),
+            self._make_sid(load=0x2000, init=0x2003, play=0x2006, num_songs=8, start_song=1),
             song=5,
         )
         # The MC write is the second DMA call (payload first, MC second).
         addr, mc = self.dma_writes[1]
         self.assertEqual(addr, SID_PLAYER_MC_ADDR)
-        self.assertEqual(mc[_SID_PATCH_SONG],    5 - 1)
+        self.assertEqual(mc[_SID_PATCH_SONG], 5 - 1)
         self.assertEqual(mc[_SID_PATCH_INIT_LO], 0x03)
         self.assertEqual(mc[_SID_PATCH_INIT_HI], 0x20)
         self.assertEqual(mc[_SID_PATCH_PLAY_LO], 0x06)
@@ -397,23 +406,24 @@ class RunSidPlayerTest(unittest.TestCase):
         expected_irq = SID_PLAYER_MC_ADDR + SID_PLAYER_IRQ_HANDLER_OFFSET
         expected_spin = SID_PLAYER_MC_ADDR + SID_PLAYER_SPIN_OFFSET
         expected_counter = SID_PLAYER_MC_ADDR + SID_PLAYER_COUNTER_OFFSET
-        self.assertEqual(mc[_SID_PATCH_IRQ_LO],  expected_irq & 0xFF)
-        self.assertEqual(mc[_SID_PATCH_IRQ_HI],  (expected_irq >> 8) & 0xFF)
+        self.assertEqual(mc[_SID_PATCH_IRQ_LO], expected_irq & 0xFF)
+        self.assertEqual(mc[_SID_PATCH_IRQ_HI], (expected_irq >> 8) & 0xFF)
         self.assertEqual(mc[_SID_PATCH_SPIN_LO], expected_spin & 0xFF)
         self.assertEqual(mc[_SID_PATCH_SPIN_HI], (expected_spin >> 8) & 0xFF)
         # All three counter-address operands must point at the same byte
         # (the live counter at counter_addr); a desync would crash the
         # IRQ handler since DEC/STA would touch unrelated memory.
-        for lo, hi in [(_SID_PATCH_CTR_INIT_LO, _SID_PATCH_CTR_INIT_HI),
-                       (_SID_PATCH_CTR_DEC_LO, _SID_PATCH_CTR_DEC_HI),
-                       (_SID_PATCH_CTR_RELOAD_LO, _SID_PATCH_CTR_RELOAD_HI)]:
+        for lo, hi in [
+            (_SID_PATCH_CTR_INIT_LO, _SID_PATCH_CTR_INIT_HI),
+            (_SID_PATCH_CTR_DEC_LO, _SID_PATCH_CTR_DEC_HI),
+            (_SID_PATCH_CTR_RELOAD_LO, _SID_PATCH_CTR_RELOAD_HI),
+        ]:
             self.assertEqual(mc[lo], expected_counter & 0xFF)
             self.assertEqual(mc[hi], (expected_counter >> 8) & 0xFF)
 
     def test_song_zero_picks_header_start_song(self):
         self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006,
-                           num_songs=8, start_song=3),
+            self._make_sid(load=0x2000, init=0x2003, play=0x2006, num_songs=8, start_song=3),
             song=0,
         )
         _, mc = self.dma_writes[1]
@@ -423,18 +433,19 @@ class RunSidPlayerTest(unittest.TestCase):
         # After run_sid_player, the POSTed BASIC PRG's SYS argument must
         # be the same decimal address the player MC was uploaded to. If
         # they drift apart, BASIC would SYS into garbage.
-        self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006))
+        self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
         self.assertEqual(len(self.posts), 1)
         _, prg = self.posts[0]
         # Find the SYS token (0x9E) and read the decimal digits after it.
-        sys_idx = prg.index(b"\x9E")
+        sys_idx = prg.index(b"\x9e")
         # Skip 0x9E + 0x20 (space), then ASCII digits, terminator 0x00.
         digits_end = prg.index(b"\x00", sys_idx)
-        digits = prg[sys_idx + 2:digits_end].decode("ascii")
-        self.assertEqual(int(digits), SID_PLAYER_MC_ADDR,
-                         f"BASIC stub SYSes to {digits} but player MC "
-                         f"was uploaded at {SID_PLAYER_MC_ADDR:#06x}")
+        digits = prg[sys_idx + 2 : digits_end].decode("ascii")
+        self.assertEqual(
+            int(digits),
+            SID_PLAYER_MC_ADDR,
+            f"BASIC stub SYSes to {digits} but player MC was uploaded at {SID_PLAYER_MC_ADDR:#06x}",
+        )
 
     def test_build_basic_sys_stub_round_trip(self):
         # The builder must produce a valid one-line `10 SYS <decimal>`
@@ -445,11 +456,11 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(prg[:2], b"\x01\x08")
         # Next-line pointer: 0x0801 + 4 (ptr + line num) + 1 (SYS) + 1
         # (space) + len("50432") + 1 (EOL) = 0x0801 + 4 + 8 = 0x080D.
-        self.assertEqual(prg[2:4], b"\x0D\x08")
+        self.assertEqual(prg[2:4], b"\x0d\x08")
         # Line number 10.
-        self.assertEqual(prg[4:6], b"\x0A\x00")
+        self.assertEqual(prg[4:6], b"\x0a\x00")
         # SYS token + space + "50432" + EOL + end-of-program.
-        self.assertEqual(prg[6:], b"\x9E\x2050432\x00\x00\x00")
+        self.assertEqual(prg[6:], b"\x9e\x2050432\x00\x00\x00")
 
     # ---- re-INIT stub (cue_song_reinit) ------------------------------
     def test_reinit_stub_uploaded_after_player_mc(self):
@@ -457,8 +468,7 @@ class RunSidPlayerTest(unittest.TestCase):
         # (after payload + main MC). cue_song_reinit later assumes it's
         # already in place — patching a non-existent stub would crash
         # the C64 on the next IRQ.
-        self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006))
+        self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
         self.assertEqual(len(self.dma_writes), 3)
         addr, stub = self.dma_writes[2]
         self.assertEqual(addr, REINIT_STUB_ADDR)
@@ -469,31 +479,32 @@ class RunSidPlayerTest(unittest.TestCase):
         # (the address-bearing bytes are 0x00 placeholders in the template).
         t = REINIT_STUB_TEMPLATE
         # Leads with LDA #<bank> / STA $01 (no SEI — already in IRQ ctx).
-        self.assertEqual(t[_REINIT_PATCH_BANK - 1], 0xA9)     # LDA #<bank>
-        self.assertEqual(t[_REINIT_PATCH_BANK], 0x37)         # default seed
-        self.assertEqual(t[_REINIT_PATCH_BANK + 1:_REINIT_PATCH_BANK + 3],
-                         bytes([0x85, 0x01]))                # STA $01
-        self.assertEqual(t[_REINIT_PATCH_SONG - 1], 0xA9)     # LDA #imm
+        self.assertEqual(t[_REINIT_PATCH_BANK - 1], 0xA9)  # LDA #<bank>
+        self.assertEqual(t[_REINIT_PATCH_BANK], 0x37)  # default seed
+        self.assertEqual(
+            t[_REINIT_PATCH_BANK + 1 : _REINIT_PATCH_BANK + 3], bytes([0x85, 0x01])
+        )  # STA $01
+        self.assertEqual(t[_REINIT_PATCH_SONG - 1], 0xA9)  # LDA #imm
         self.assertEqual(t[_REINIT_PATCH_INIT_LO - 1], 0x20)  # JSR
-        self.assertEqual(t[_REINIT_PATCH_IRQ_LO - 1], 0xA9)   # LDA #<play
-        self.assertEqual(t[_REINIT_PATCH_IRQ_HI - 1], 0xA9)   # LDA #>play
+        self.assertEqual(t[_REINIT_PATCH_IRQ_LO - 1], 0xA9)  # LDA #<play
+        self.assertEqual(t[_REINIT_PATCH_IRQ_HI - 1], 0xA9)  # LDA #>play
         # STA $0314 / STA $0315 sandwich the LDAs.
-        self.assertEqual(t[_REINIT_PATCH_IRQ_LO + 1:_REINIT_PATCH_IRQ_LO + 4],
-                         bytes([0x8D, 0x14, 0x03]))
-        self.assertEqual(t[_REINIT_PATCH_IRQ_HI + 1:_REINIT_PATCH_IRQ_HI + 4],
-                         bytes([0x8D, 0x15, 0x03]))
+        self.assertEqual(
+            t[_REINIT_PATCH_IRQ_LO + 1 : _REINIT_PATCH_IRQ_LO + 4], bytes([0x8D, 0x14, 0x03])
+        )
+        self.assertEqual(
+            t[_REINIT_PATCH_IRQ_HI + 1 : _REINIT_PATCH_IRQ_HI + 4], bytes([0x8D, 0x15, 0x03])
+        )
         # Tail must chain to the kernal IRQ at $EA31 — otherwise the
         # CPU would never return to the spin loop after re-INIT.
-        self.assertEqual(t[-3:], bytes([0x4C, 0x31, 0xEA]),
-                         "stub must end with JMP $EA31")
+        self.assertEqual(t[-3:], bytes([0x4C, 0x31, 0xEA]), "stub must end with JMP $EA31")
 
     def test_reinit_stub_uploaded_restores_play_handler_vector(self):
         # The uploaded (patched) stub must re-install $0314/$0315 →
         # player_base + SID_PLAYER_IRQ_HANDLER_OFFSET so subsequent IRQ
         # ticks resume calling PLAY. If the embedded addr drifts from
         # the main player's IRQ entry, subsequent IRQs JMP into garbage.
-        self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006))
+        self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
         _, stub = self.dma_writes[2]
         expected_irq = SID_PLAYER_MC_ADDR + SID_PLAYER_IRQ_HANDLER_OFFSET
         self.assertEqual(stub[_REINIT_PATCH_IRQ_LO], expected_irq & 0xFF)
@@ -506,13 +517,13 @@ class RunSidPlayerTest(unittest.TestCase):
         t = REINIT_STUB_TEMPLATE
         # After JSR init the stub restores the resting bank ($37) at 13-16,
         # then the master volume. Bytes 17-21: LDA #$0F ; STA $D418.
-        self.assertEqual(t[17:22], b"\xA9\x0F\x8D\x18\xD4",
-                         "stub must restore $D418=$0F after JSR init")
+        self.assertEqual(
+            t[17:22], b"\xa9\x0f\x8d\x18\xd4", "stub must restore $D418=$0F after JSR init"
+        )
 
     def test_reinit_stub_carries_song_and_init_at_upload(self):
         self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006,
-                           num_songs=8, start_song=1),
+            self._make_sid(load=0x2000, init=0x2003, play=0x2006, num_songs=8, start_song=1),
             song=5,
         )
         _, stub = self.dma_writes[2]
@@ -528,17 +539,19 @@ class RunSidPlayerTest(unittest.TestCase):
         # Bring the stub up via run_sid_player first (cue assumes it's
         # already in place at REINIT_STUB_ADDR).
         self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006,
-                           num_songs=8, start_song=1))
+            self._make_sid(load=0x2000, init=0x2003, play=0x2006, num_songs=8, start_song=1)
+        )
         # The 3 upload writes are already in self.dma_writes — index past
         # them so we only assert against the cue's writes.
         n_setup_writes = len(self.dma_writes)
         self.api.cue_song_reinit(7)
 
         cue_writes = self.dma_writes[n_setup_writes:]
-        self.assertEqual(len(cue_writes), 3,
-                         "cue must do 3 DMA writes: song patch + playBank "
-                         "restore + vector swap")
+        self.assertEqual(
+            len(cue_writes),
+            3,
+            "cue must do 3 DMA writes: song patch + playBank restore + vector swap",
+        )
         # First: 1-byte patch of REINIT_STUB_ADDR + _REINIT_PATCH_SONG.
         addr1, payload1 = cue_writes[0]
         self.assertEqual(addr1, REINIT_STUB_ADDR + _REINIT_PATCH_SONG)
@@ -551,17 +564,15 @@ class RunSidPlayerTest(unittest.TestCase):
         # Third: 2-byte atomic vector swap to point at the stub.
         addr3, payload3 = cue_writes[2]
         self.assertEqual(addr3, VECTORS.IRQ)
-        self.assertEqual(payload3,
-                         bytes([REINIT_STUB_ADDR & 0xFF,
-                                (REINIT_STUB_ADDR >> 8) & 0xFF]))
+        self.assertEqual(payload3, bytes([REINIT_STUB_ADDR & 0xFF, (REINIT_STUB_ADDR >> 8) & 0xFF]))
 
     def test_cue_song_reinit_play_bank_override_patches_player_mc(self):
         # A subtune that reads RAM under BASIC ROM needs $36; the override
         # must land on the player MC's playBank operand so PLAY of the new
         # subtune banks BASIC out (Times of Lore 2-11).
         self.api.run_sid_player(
-            self._make_sid(load=0x2000, init=0x2003, play=0x2006,
-                           num_songs=8, start_song=1))
+            self._make_sid(load=0x2000, init=0x2003, play=0x2006, num_songs=8, start_song=1)
+        )
         n_setup = len(self.dma_writes)
         self.api.cue_song_reinit(2, play_bank=CPU.PORT_BASIC_OUT)
         cue_writes = self.dma_writes[n_setup:]
@@ -573,8 +584,7 @@ class RunSidPlayerTest(unittest.TestCase):
         # Without a prior run_sid_player, there's no uploaded stub to
         # patch — calling cue would silently DMA into wherever a stale
         # default was, corrupting RAM. Must raise so the bug surfaces.
-        with self.assertRaisesRegex(RuntimeError,
-                                    "before run_sid_player"):
+        with self.assertRaisesRegex(RuntimeError, "before run_sid_player"):
             self.api.cue_song_reinit(2)
 
     # ---- relocation -------------------------------------------------
@@ -583,19 +593,20 @@ class RunSidPlayerTest(unittest.TestCase):
         # $C200-$C9FF — overlapping the default player ($C300-$C322)
         # AND the default stub ($C400-$C419). The picker must relocate
         # both past the payload (page-aligned).
-        sid = self._make_sid(load=0xC200, init=0xC200, play=0xC203,
-                             payload_len=0x800)
+        sid = self._make_sid(load=0xC200, init=0xC200, play=0xC203, payload_len=0x800)
         self.api.run_sid_player(sid)
 
         # Default layout no longer used: the player + stub writes land at
         # non-default addresses.
-        _, _ = self.dma_writes[0]   # SID payload
+        _, _ = self.dma_writes[0]  # SID payload
         player_addr, mc = self.dma_writes[1]
         stub_addr, stub = self.dma_writes[2]
-        self.assertNotEqual(player_addr, SID_PLAYER_MC_ADDR,
-                            "player must relocate off $C300 when payload overlaps")
-        self.assertNotEqual(stub_addr, REINIT_STUB_ADDR,
-                            "stub must relocate off $C400 when payload overlaps")
+        self.assertNotEqual(
+            player_addr, SID_PLAYER_MC_ADDR, "player must relocate off $C300 when payload overlaps"
+        )
+        self.assertNotEqual(
+            stub_addr, REINIT_STUB_ADDR, "stub must relocate off $C400 when payload overlaps"
+        )
         # Both must land past the payload (or anywhere non-overlapping).
         payload_hi = 0xC200 + 0x800
         self.assertGreaterEqual(player_addr, payload_hi)
@@ -616,17 +627,16 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(stub[_REINIT_PATCH_IRQ_HI], (expected_irq >> 8) & 0xFF)
         # The BASIC SYS stub targets the relocated player_base.
         _, prg = self.posts[0]
-        sys_idx = prg.index(b"\x9E")
+        sys_idx = prg.index(b"\x9e")
         digits_end = prg.index(b"\x00", sys_idx)
-        digits = prg[sys_idx + 2:digits_end].decode("ascii")
+        digits = prg[sys_idx + 2 : digits_end].decode("ascii")
         self.assertEqual(int(digits), player_addr)
 
     def test_relocated_cue_song_reinit_uses_relocated_stub_addr(self):
         # After relocation, cue_song_reinit must patch the *relocated*
         # stub address and point $0314/$0315 there — not the default
         # $C400 (which would dispatch into stale/garbage bytes).
-        sid = self._make_sid(load=0xC200, init=0xC200, play=0xC203,
-                             payload_len=0x800)
+        sid = self._make_sid(load=0xC200, init=0xC200, play=0xC203, payload_len=0x800)
         self.api.run_sid_player(sid)
         relocated_player = self.dma_writes[1][0]
         relocated_stub = self.dma_writes[2][0]
@@ -642,9 +652,7 @@ class RunSidPlayerTest(unittest.TestCase):
         # playBank restore lands on the relocated player MC, not $C300.
         self.assertEqual(addr2, relocated_player + _SID_PATCH_PLAYBANK)
         self.assertEqual(addr3, VECTORS.IRQ)
-        self.assertEqual(payload3,
-                         bytes([relocated_stub & 0xFF,
-                                (relocated_stub >> 8) & 0xFF]))
+        self.assertEqual(payload3, bytes([relocated_stub & 0xFF, (relocated_stub >> 8) & 0xFF]))
 
 
 class FootprintLayoutTest(unittest.TestCase):
@@ -661,9 +669,14 @@ class FootprintLayoutTest(unittest.TestCase):
     @staticmethod
     def _parsed(load=0x1000, size=0x100) -> ParsedPsid:
         return ParsedPsid(
-            load_addr=load, init_addr=load, play_addr=load + 3,
-            num_songs=1, start_song=1, song_to_play=1,
-            payload=bytes(size))
+            load_addr=load,
+            init_addr=load,
+            play_addr=load + 3,
+            num_songs=1,
+            start_song=1,
+            song_to_play=1,
+            payload=bytes(size),
+        )
 
     @staticmethod
     def _avoid(*ranges) -> bytearray:
@@ -687,7 +700,7 @@ class FootprintLayoutTest(unittest.TestCase):
         self.assertNotEqual(layout.player_base, SID_PLAYER_MC_ADDR)
         # Chosen region must be footprint-clean.
         end = layout.stub_base + len(REINIT_STUB_TEMPLATE)
-        self.assertFalse(any(avoid[layout.player_base:end]))
+        self.assertFalse(any(avoid[layout.player_base : end]))
 
     def test_beat_dis_shape_relocates_to_largest_hole(self):
         # Beat_Dis-like: payload $A000-$CBD4, tune writes scratch at
@@ -696,8 +709,11 @@ class FootprintLayoutTest(unittest.TestCase):
         parsed = self._parsed(load=0xA000, size=0xCBD4 - 0xA000)
         # Reserved display regions (as WaveformScene marks) + tune scratch.
         avoid = self._avoid(
-            (0x0400, 0x07E8), (0x2000, 0x3F40), (0x4000, 0x6000),  # scene
-            (0xCBFA, 0xCC55))                                      # scratch
+            (0x0400, 0x07E8),
+            (0x2000, 0x3F40),
+            (0x4000, 0x6000),  # scene
+            (0xCBFA, 0xCC55),
+        )  # scratch
         layout = _choose_player_layout(parsed, avoid)
         # Largest free hole below the payload is $6000-$9FFF (16 KB) — bigger
         # than $0820-$1FFF (after bitmap/ring reserved). Expect $6000.
@@ -709,15 +725,14 @@ class FootprintLayoutTest(unittest.TestCase):
         # Everything else blocked. Largest-first picks $5000.
         parsed = self._parsed(load=0x1000, size=0x10)
         avoid = bytearray(b"\x01" * 65536)
-        avoid[0x0900:0x0900 + 200] = b"\x00" * 200
+        avoid[0x0900 : 0x0900 + 200] = b"\x00" * 200
         avoid[0x5000:0x6000] = b"\x00" * 0x1000
         layout = _find_free_layout(parsed, avoid)
         self.assertEqual(layout.player_base, 0x5000)
 
     def test_layout_fits_rejects_avoid_overlap(self):
         parsed = self._parsed(load=0x1000, size=0x10)
-        layout = _PlayerLayout(player_base=0x6000,
-                               stub_base=0x6000 + _RELOCATED_STUB_OFFSET)
+        layout = _PlayerLayout(player_base=0x6000, stub_base=0x6000 + _RELOCATED_STUB_OFFSET)
         clean = self._avoid()
         self.assertTrue(_layout_fits(layout, parsed, clean))
         dirty = self._avoid((0x6010, 0x6020))  # inside the player MC
@@ -746,8 +761,7 @@ class TunePlayDividerTest(unittest.TestCase):
     """
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect",
-                        autospec=True)
+        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -755,10 +769,11 @@ class TunePlayDividerTest(unittest.TestCase):
         patch("c64cast.api.time.sleep").start()
         patch.object(self.api, "flush").start()
         self.divider_writes: list[tuple[str, str]] = []
+
         def _fake_write(address, data_hex):
             self.divider_writes.append((address, data_hex))
-        patch.object(self.api, "write_memory",
-                     side_effect=_fake_write).start()
+
+        patch.object(self.api, "write_memory", side_effect=_fake_write).start()
 
     def tearDown(self):
         patch.stopall()
@@ -779,24 +794,26 @@ class TunePlayDividerTest(unittest.TestCase):
         # Kernal-default PAL latch ~$4292 = 50 Hz PLAY → divider 1
         # (50 / 30 = 1, kernal chain every tick — no change from legacy).
         from c64cast.api import _PlayerLayout
+
         self.api._sid_player_layout = _PlayerLayout(
-            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR)
+            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
+        )
         self._set_latch(0x4292)
         n = self.api._tune_play_divider()
         self.assertEqual(n, 1)
         self.assertEqual(len(self.divider_writes), 1)
         addr, data = self.divider_writes[0]
-        self.assertEqual(
-            addr,
-            f"{SID_PLAYER_MC_ADDR + SID_PLAYER_DIVIDER_OFFSET:04X}")
+        self.assertEqual(addr, f"{SID_PLAYER_MC_ADDR + SID_PLAYER_DIVIDER_OFFSET:04X}")
         self.assertEqual(data, "01")
 
     def test_fast_play_rate_divides_above_1(self):
         # Galway/Wizball-style ~151 Hz PLAY (latch ~$196E ≈ 6510 cycles).
         # rate ≈ 1e6 / 6510 ≈ 154 Hz; 154 / 30 = 5.
         from c64cast.api import _PlayerLayout
+
         self.api._sid_player_layout = _PlayerLayout(
-            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR)
+            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
+        )
         self._set_latch(0x196E)
         n = self.api._tune_play_divider()
         self.assertEqual(n, 5)
@@ -807,8 +824,10 @@ class TunePlayDividerTest(unittest.TestCase):
         # An absurd PLAY rate (latch=$0100, ~3900 Hz) must clamp to
         # _DIVIDER_MAX so a misread can't starve kernal services entirely.
         from c64cast.api import _PlayerLayout
+
         self.api._sid_player_layout = _PlayerLayout(
-            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR)
+            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
+        )
         self._set_latch(0x0100)
         n = self.api._tune_play_divider()
         self.assertEqual(n, self.api._DIVIDER_MAX)
@@ -817,8 +836,10 @@ class TunePlayDividerTest(unittest.TestCase):
         # A REST failure must NOT raise — the player keeps running with
         # whatever divider was already in place (template seeds 1).
         from c64cast.api import _PlayerLayout
+
         self.api._sid_player_layout = _PlayerLayout(
-            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR)
+            player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
+        )
         patch.object(self.api, "read_memory", return_value=None).start()
         self.assertEqual(self.api._tune_play_divider(), 1)
         self.assertEqual(self.divider_writes, [])
@@ -829,8 +850,7 @@ class LaunchProgramTest(unittest.TestCase):
     file as multipart, re-raising failures so LauncherScene can advance."""
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect",
-                        autospec=True)
+        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -842,6 +862,7 @@ class LaunchProgramTest(unittest.TestCase):
 
     def _write(self, tmp, name, data=b"\x01\x08"):
         import os
+
         p = os.path.join(tmp, name)
         with open(p, "wb") as f:
             f.write(data)
@@ -851,6 +872,7 @@ class LaunchProgramTest(unittest.TestCase):
         import tempfile
 
         from c64cast.c64 import U64_API
+
         with tempfile.TemporaryDirectory() as tmp:
             self.api.launch_program(self._write(tmp, "game.prg"))
         self.assertTrue(self.post.call_args.args[0].endswith(U64_API.RUN_PRG))
@@ -859,12 +881,14 @@ class LaunchProgramTest(unittest.TestCase):
         import tempfile
 
         from c64cast.c64 import U64_API
+
         with tempfile.TemporaryDirectory() as tmp:
             self.api.launch_program(self._write(tmp, "cart.CRT"))
         self.assertTrue(self.post.call_args.args[0].endswith(U64_API.RUN_CRT))
 
     def test_unsupported_extension_raises(self):
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(ValueError, "unsupported extension"):
                 self.api.launch_program(self._write(tmp, "disk.d64"))
@@ -874,8 +898,8 @@ class LaunchProgramTest(unittest.TestCase):
         import tempfile
 
         import requests
-        self.post.return_value.raise_for_status.side_effect = (
-            requests.HTTPError("boom"))
+
+        self.post.return_value.raise_for_status.side_effect = requests.HTTPError("boom")
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(requests.HTTPError):
                 self.api.launch_program(self._write(tmp, "game.prg"))

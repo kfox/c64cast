@@ -20,6 +20,7 @@ Two scene families:
   PTS clock — the video reader picks frames against the audio playback
   position rather than wall-clock-from-start, so drift can't accumulate.
 """
+
 from __future__ import annotations
 
 import logging
@@ -76,11 +77,11 @@ def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.nd
     if ar > target_ratio:
         new_w = int(h * target_ratio)
         x0 = (w - new_w) // 2
-        return img[:, x0:x0 + new_w]
+        return img[:, x0 : x0 + new_w]
     if ar < target_ratio:
         new_h = int(w / target_ratio)
         y0 = (h - new_h) // 2
-        return img[y0:y0 + new_h, :]
+        return img[y0 : y0 + new_h, :]
     return img
 
 
@@ -127,8 +128,13 @@ class Scene:
     # ignores this flag entirely (no ensemble → no lock to consult).
     WANTS_AUDIO_LOCK: bool = False
 
-    def __init__(self, api: C64Backend, audio: AudioStreamer | None,
-                 display_mode: DisplayMode | None, name: str):
+    def __init__(
+        self,
+        api: C64Backend,
+        audio: AudioStreamer | None,
+        display_mode: DisplayMode | None,
+        name: str,
+    ):
         self.api = api
         self.audio = audio
         self.display_mode = display_mode
@@ -192,20 +198,16 @@ class Scene:
             self.audio.set_pre_emphasis(self.pre_emphasis)
         if self.display_mode is not None:
             self.display_mode.setup(self.api)
-        mode_name = (type(self.display_mode).__name__
-                     if self.display_mode is not None else "none")
-        fps_str = (f"{self.target_fps:.0f}fps"
-                   if self.target_fps else "auto-fps")
-        overlay_names = [getattr(ov, "name", type(ov).__name__)
-                         for ov in self.overlays]
-        ov_str = (", ".join(overlay_names)
-                  if overlay_names else "no overlays")
+        mode_name = type(self.display_mode).__name__ if self.display_mode is not None else "none"
+        fps_str = f"{self.target_fps:.0f}fps" if self.target_fps else "auto-fps"
+        overlay_names = [getattr(ov, "name", type(ov).__name__) for ov in self.overlays]
+        ov_str = ", ".join(overlay_names) if overlay_names else "no overlays"
         # CommercialScene sets duration_s = math.inf because its lifetime
         # is video-driven; format that distinctly instead of "inf.0s".
-        dur_str = ("video-driven" if math.isinf(self.duration_s)
-                   else f"{self.duration_s:.1f}s")
-        log.info("scene %r: mode=%s duration=%s %s [%s]",
-                 self.name, mode_name, dur_str, fps_str, ov_str)
+        dur_str = "video-driven" if math.isinf(self.duration_s) else f"{self.duration_s:.1f}s"
+        log.info(
+            "scene %r: mode=%s duration=%s %s [%s]", self.name, mode_name, dur_str, fps_str, ov_str
+        )
 
     def apply_smoothing(self, img: np.ndarray) -> np.ndarray:
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -218,8 +220,8 @@ class Scene:
         else:
             alpha = 0.6
             self.prev_frame = cv2.addWeighted(
-                img.astype(np.float32), alpha,
-                self.prev_frame, 1 - alpha, 0)
+                img.astype(np.float32), alpha, self.prev_frame, 1 - alpha, 0
+            )
             img = self.prev_frame.astype(np.uint8)
         return img
 
@@ -255,9 +257,15 @@ class WebcamScene(Scene):
     over a persistent socket without an in-process queue.
     """
 
-    def __init__(self, api: C64Backend, audio: AudioStreamer | None,
-                 display_mode: DisplayMode, source: WebcamSource,
-                 audio_cfg: AudioCfg, name: str):
+    def __init__(
+        self,
+        api: C64Backend,
+        audio: AudioStreamer | None,
+        display_mode: DisplayMode,
+        source: WebcamSource,
+        audio_cfg: AudioCfg,
+        name: str,
+    ):
         super().__init__(api, audio, display_mode, name)
         self.source = source
         self.audio_cfg = audio_cfg
@@ -272,12 +280,13 @@ class WebcamScene(Scene):
             # bank-swap merged dispatcher at $0314 (audio_reu_pump_active
             # flag on a bitmap mode with use_reu_staged), the mic REU pump
             # install must skip its own $0314 hook.
-            skip_hook = bool(getattr(self.display_mode,
-                                      "audio_reu_pump_active", False))
-            self.audio.start_mic(self.audio_cfg.device,
-                                 self.audio_cfg.mic_sensitivity,
-                                 self.audio_cfg.noise_gate,
-                                 skip_irq_vector_hook=skip_hook)
+            skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active", False))
+            self.audio.start_mic(
+                self.audio_cfg.device,
+                self.audio_cfg.mic_sensitivity,
+                self.audio_cfg.noise_gate,
+                skip_irq_vector_hook=skip_hook,
+            )
 
     def _read_frame(self) -> np.ndarray | None:
         img = self.source.read()
@@ -294,12 +303,12 @@ class WebcamScene(Scene):
         if img is not None:
             if self.show_frame_numbers:
                 self._frame_count += 1
-                label = (f"{_timecode(current_time - self.start_time)} "
-                         f"f{self._frame_count}")
+                label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
                 img = _annotate_frame_number(img, label)
             assert self.display_mode is not None
             _render_with_overlays(
-                self.display_mode, self.api, img, self.overlays, current_time, self)
+                self.display_mode, self.api, img, self.overlays, current_time, self
+            )
         return True
 
     def teardown(self) -> None:
@@ -308,9 +317,14 @@ class WebcamScene(Scene):
             self.audio.stop()
 
 
-def _render_with_overlays(display_mode: DisplayMode, api: C64Backend,
-                          frame: np.ndarray | None, overlays: list[Overlay],
-                          t: float, scene: Scene) -> None:
+def _render_with_overlays(
+    display_mode: DisplayMode,
+    api: C64Backend,
+    frame: np.ndarray | None,
+    overlays: list[Overlay],
+    t: float,
+    scene: Scene,
+) -> None:
     """Compose the frame, let buffer-painting overlays mutate it, then push.
 
     For display modes that support compose(): build screen+color buffers,
@@ -343,8 +357,11 @@ def _render_with_overlays(display_mode: DisplayMode, api: C64Backend,
             try:
                 ov.compose(buffers, scene, t)
             except Exception:
-                log.exception("overlay %r compose failed on %r — disabling",
-                              getattr(ov, "name", ov), scene.name)
+                log.exception(
+                    "overlay %r compose failed on %r — disabling",
+                    getattr(ov, "name", ov),
+                    scene.name,
+                )
                 ov._disabled = True
     with prof.stage("push"):
         display_mode.push(api, buffers)
@@ -358,8 +375,14 @@ class BlankScene(Scene):
     where a webcam feed would just compete with the overlays.
     """
 
-    def __init__(self, api: C64Backend, audio: AudioStreamer | None,
-                 display_mode: DisplayMode, audio_cfg: AudioCfg, name: str):
+    def __init__(
+        self,
+        api: C64Backend,
+        audio: AudioStreamer | None,
+        display_mode: DisplayMode,
+        audio_cfg: AudioCfg,
+        name: str,
+    ):
         super().__init__(api, audio, display_mode, name)
         self.audio_cfg = audio_cfg
         self.start_time = 0.0
@@ -370,9 +393,9 @@ class BlankScene(Scene):
         # Only start mic capture if the scene opted in *and* the global
         # audio is enabled — same model as WebcamScene.
         if self.audio:
-            self.audio.start_mic(self.audio_cfg.device,
-                                 self.audio_cfg.mic_sensitivity,
-                                 self.audio_cfg.noise_gate)
+            self.audio.start_mic(
+                self.audio_cfg.device, self.audio_cfg.mic_sensitivity, self.audio_cfg.noise_gate
+            )
 
     def process_frame(self, current_time: float) -> bool:
         # Always paint — the Playlist's busy-defer flips is_done back to
@@ -380,8 +403,7 @@ class BlankScene(Scene):
         # that stopped rendering past duration_s would freeze the screen
         # mid-message until the next teardown+setup cycle.
         assert self.display_mode is not None
-        _render_with_overlays(
-            self.display_mode, self.api, None, self.overlays, current_time, self)
+        _render_with_overlays(self.display_mode, self.api, None, self.overlays, current_time, self)
         return (current_time - self.start_time) < self.duration_s
 
     def teardown(self) -> None:
@@ -411,17 +433,25 @@ class SlideshowScene(Scene):
     produce ugly cross-fades between unrelated stills.
     """
 
-    def __init__(self, api: C64Backend, display_mode: DisplayMode,
-                 file: str, *, image_duration_s: float = 5.0,
-                 display_spec: str = "mhires",
-                 palette_mode: str = "percell",
-                 border: int = 0, background: int = 0,
-                 style: str = "default",
-                 use_reu_staged: bool | str = "auto",
-                 reu_available: bool = False,
-                 audio_reu_pump_active: bool = False,
-                 color: ColorCfg | None = None):
+    def __init__(
+        self,
+        api: C64Backend,
+        display_mode: DisplayMode,
+        file: str,
+        *,
+        image_duration_s: float = 5.0,
+        display_spec: str = "mhires",
+        palette_mode: str = "percell",
+        border: int = 0,
+        background: int = 0,
+        style: str = "default",
+        use_reu_staged: bool | str = "auto",
+        reu_available: bool = False,
+        audio_reu_pump_active: bool = False,
+        color: ColorCfg | None = None,
+    ):
         from .config import PICTURE_EXTS, ColorCfg, resolve_file_spec
+
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
         # The whole [color] section travels as one object — it drives both the
@@ -467,6 +497,7 @@ class SlideshowScene(Scene):
 
     def _resolve_candidates(self) -> list[str]:
         from .config import PICTURE_EXTS, resolve_file_spec
+
         return resolve_file_spec(self.file_spec, PICTURE_EXTS, label="slideshow")
 
     def _maybe_rebuild_display_mode(self) -> None:
@@ -480,23 +511,26 @@ class SlideshowScene(Scene):
             _resolve_slideshow_display,
             resolve_use_reu_staged,
         )
+
         new_name = _resolve_slideshow_display(self.display_spec)
         old = self.display_mode
         if old is not None:
             try:
                 old.teardown(self.api)
             except Exception:
-                log.exception("slideshow: prior display_mode teardown "
-                              "failed; continuing")
+                log.exception("slideshow: prior display_mode teardown failed; continuing")
         self.display_mode = _build_display_mode(
-            new_name, palette_mode=self._palette_mode,
-            border=self._border, background=self._background,
+            new_name,
+            palette_mode=self._palette_mode,
+            border=self._border,
+            background=self._background,
             style=self._style,
             use_reu_staged=resolve_use_reu_staged(
-                self._reu_staged_setting, new_name,
-                reu_available=self._reu_available),
+                self._reu_staged_setting, new_name, reu_available=self._reu_available
+            ),
             audio_reu_pump_active=self._audio_reu_pump_active,
-            color=self._color)
+            color=self._color,
+        )
         log.info("slideshow: display = random → %s", new_name)
 
     def _advance_image(self) -> None:
@@ -504,8 +538,7 @@ class SlideshowScene(Scene):
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error("slideshow: file spec %r failed to resolve at "
-                      "advance: %s", self.file_spec, e)
+            log.error("slideshow: file spec %r failed to resolve at advance: %s", self.file_spec, e)
             self.is_done = True
             return
         while True:
@@ -513,10 +546,11 @@ class SlideshowScene(Scene):
                 self._shuffle_bag = list(candidates)
                 random.shuffle(self._shuffle_bag)
                 # No-immediate-repeat across reshuffle boundaries.
-                if (len(self._shuffle_bag) > 1
-                        and self._shuffle_bag[0] == self._current_path):
+                if len(self._shuffle_bag) > 1 and self._shuffle_bag[0] == self._current_path:
                     self._shuffle_bag[0], self._shuffle_bag[1] = (
-                        self._shuffle_bag[1], self._shuffle_bag[0])
+                        self._shuffle_bag[1],
+                        self._shuffle_bag[0],
+                    )
             path = self._shuffle_bag.pop(0)
             img = cv2.imread(path, cv2.IMREAD_COLOR)
             if img is None:
@@ -542,14 +576,17 @@ class SlideshowScene(Scene):
                     self.display_mode.set_color_fit(fit_acc.result())
                 if c.force_palette:
                     map_acc = ColorMapAccumulator(
-                        n_colors=c.force_palette_colors,
-                        indices=c.force_palette_indices or None)
+                        n_colors=c.force_palette_colors, indices=c.force_palette_indices or None
+                    )
                     map_acc.add(self._current_img)
                     self.display_mode.set_color_map(map_acc.result())
             self.name = f"Slideshow: {_display_name(path)}"
             self._image_start = time.time()
-            log.info("slideshow: showing %s (%d remaining in bag)",
-                     os.path.basename(path), len(self._shuffle_bag))
+            log.info(
+                "slideshow: showing %s (%d remaining in bag)",
+                os.path.basename(path),
+                len(self._shuffle_bag),
+            )
             return
 
     def _pick_first_image(self) -> bool:
@@ -564,8 +601,7 @@ class SlideshowScene(Scene):
         try:
             self._resolve_candidates()
         except ValueError as e:
-            log.error("slideshow: file spec %r failed to resolve at "
-                      "setup: %s", self.file_spec, e)
+            log.error("slideshow: file spec %r failed to resolve at setup: %s", self.file_spec, e)
             return False
         self._advance_image()
         return True
@@ -608,13 +644,13 @@ class SlideshowScene(Scene):
                 return False
         img = self._current_img
         if self.show_frame_numbers:
-            label = (f"{_timecode(current_time - self.start_time)} "
-                     f"{os.path.basename(self._current_path or '')}")
+            label = (
+                f"{_timecode(current_time - self.start_time)} "
+                f"{os.path.basename(self._current_path or '')}"
+            )
             img = _annotate_frame_number(img, label)
         assert self.display_mode is not None
-        _render_with_overlays(
-            self.display_mode, self.api, img,
-            self.overlays, current_time, self)
+        _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
         return True
 
 
@@ -637,16 +673,22 @@ class CommercialScene(Scene):
         # non-audio scene.
         return self.WANTS_AUDIO_LOCK and self.audio is not None
 
-    def __init__(self, api: C64Backend, audio: AudioStreamer | None,
-                 display_mode: DisplayMode, file: str,
-                 prepend_alignment_marker: bool = False,
-                 color: ColorCfg | None = None):
+    def __init__(
+        self,
+        api: C64Backend,
+        audio: AudioStreamer | None,
+        display_mode: DisplayMode,
+        file: str,
+        prepend_alignment_marker: bool = False,
+        color: ColorCfg | None = None,
+    ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
         pool). The candidate pool is resolved here once; each `setup()`
         re-resolves so a directory's contents can change between scene
         repeats. Single-entry pools stay deterministic."""
         from .config import VIDEO_EXTS, resolve_file_spec
+
         self.file_spec = file
         # Initial resolution so __init__ raises on bad specs (mirrors the
         # validate_scene_cfg check; also covers ad-interleaved scenes
@@ -686,6 +728,7 @@ class CommercialScene(Scene):
         # picked file: the adaptive color fit ([color].auto_fit) and the
         # forced-palette remap ([color].force_palette). See prescan_source_color.
         from .config import ColorCfg
+
         self._color = color if color is not None else ColorCfg()
         # Lifetime is video-driven: `process_frame` returns False when the
         # source signals `finished`, advancing the playlist. math.inf
@@ -696,6 +739,7 @@ class CommercialScene(Scene):
 
     def _resolve_candidates(self) -> list[str]:
         from .config import VIDEO_EXTS, resolve_file_spec
+
         return resolve_file_spec(self.file_spec, VIDEO_EXTS, label="commercial")
 
     def _pick_filepath(self) -> bool:
@@ -707,14 +751,16 @@ class CommercialScene(Scene):
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error("commercial: file spec %r failed to resolve at "
-                      "setup: %s", self.file_spec, e)
+            log.error("commercial: file spec %r failed to resolve at setup: %s", self.file_spec, e)
             return False
         self.filepath = random.choice(candidates)
         self.name = f"Commercial: {_display_name(self.filepath)}"
         if len(candidates) > 1:
-            log.info("commercial: picked %s from %d candidates",
-                     os.path.basename(self.filepath), len(candidates))
+            log.info(
+                "commercial: picked %s from %d candidates",
+                os.path.basename(self.filepath),
+                len(candidates),
+            )
         return True
 
     def prepare_next(self) -> None:
@@ -737,15 +783,19 @@ class CommercialScene(Scene):
             return
         super().setup()
         if not _ensure_pyav():
-            log.warning("PyAV unavailable; commercial scene cannot play %s "
-                        "(install with `pip install c64cast[commercials]`)",
-                        self.filepath)
+            log.warning(
+                "PyAV unavailable; commercial scene cannot play %s "
+                "(install with `pip install c64cast[commercials]`)",
+                self.filepath,
+            )
             self.is_done = True
             return
         if not os.path.exists(self.filepath):
-            log.error("commercial: file not found: %s — check the path in "
-                      "your config or the [playlist].ads_dir contents",
-                      self.filepath)
+            log.error(
+                "commercial: file not found: %s — check the path in "
+                "your config or the [playlist].ads_dir contents",
+                self.filepath,
+            )
             self.is_done = True
             return
         sr = self.audio.sample_rate if self.audio else 8000
@@ -754,20 +804,22 @@ class CommercialScene(Scene):
         # (self.audio is None) never pushes; the REU path pre-encodes audio
         # with its own gain and tells the demuxer to skip audio. Skipping the
         # scan in those cases removes a full audio decode from setup.
-        will_push_audio = self.audio is not None and not getattr(
-            self.audio, "use_reu_pump", False)
+        will_push_audio = self.audio is not None and not getattr(self.audio, "use_reu_pump", False)
         try:
-            self.source = AVFileSource(self.filepath, target_sample_rate=sr,
-                                       scan_audio_peak=will_push_audio)
+            self.source = AVFileSource(
+                self.filepath, target_sample_rate=sr, scan_audio_peak=will_push_audio
+            )
         except PermissionError as e:
-            log.error("commercial: permission denied opening %s (%s)",
-                      self.filepath, e)
+            log.error("commercial: permission denied opening %s (%s)", self.filepath, e)
             self.is_done = True
             return
         except Exception as e:
-            log.error("commercial: failed to open %s (%s) — file may be "
-                      "corrupt or in an unsupported codec",
-                      self.filepath, e)
+            log.error(
+                "commercial: failed to open %s (%s) — file may be "
+                "corrupt or in an unsupported codec",
+                self.filepath,
+                e,
+            )
             self.is_done = True
             return
 
@@ -787,29 +839,34 @@ class CommercialScene(Scene):
                     self.filepath,
                     fit_strength=c.auto_fit_strength if c.auto_fit else None,
                     map_colors=c.force_palette_colors,
-                    map_indices=(c.force_palette_indices or None))
+                    map_indices=(c.force_palette_indices or None),
+                )
                 self.display_mode.set_color_fit(fit)
                 self.display_mode.set_color_map(cmap)
                 if fit is not None:
                     log.info("commercial: auto-fit %s", fit)
                 if cmap is not None:
-                    log.info("commercial: forced palette → %d colors %s",
-                             len(cmap.indices), list(cmap.indices))
+                    log.info(
+                        "commercial: forced palette → %d colors %s",
+                        len(cmap.indices),
+                        list(cmap.indices),
+                    )
             elif c.auto_fit:
                 # Rolling/online auto_fit: start neutral, converge during
                 # playback (see process_frame + ONLINE_FIT_WARMUP_FRAMES).
                 self.display_mode.set_color_fit(None)
                 self.display_mode.set_color_map(None)
-                self._online_fit = ColorFitAccumulator(
-                    strength=c.auto_fit_strength)
-                log.info("commercial: auto-fit converging online over first "
-                         "%d frames", ONLINE_FIT_WARMUP_FRAMES)
+                self._online_fit = ColorFitAccumulator(strength=c.auto_fit_strength)
+                log.info(
+                    "commercial: auto-fit converging online over first %d frames",
+                    ONLINE_FIT_WARMUP_FRAMES,
+                )
             else:
                 self.display_mode.set_color_fit(None)
                 self.display_mode.set_color_map(None)
 
         has_audio = (self.source.a_stream is not None) and (self.audio is not None)
-        if has_audio and getattr(self.audio, 'use_reu_pump', False):
+        if has_audio and getattr(self.audio, "use_reu_pump", False):
             # REU-staged path: pre-decode entire audio track, 4-bit encode
             # with the same gain/dither pipeline as the host-DMA path uses
             # per sample, then upload to REU. Video frames still come from
@@ -841,20 +898,21 @@ class CommercialScene(Scene):
             #     halts block both proportionally.
             #   * Char modes (default else branch): no bitmap traffic at
             #     all, default chunk fine.
-            chunk = (REU_PUMP_CHUNK_SIZE_HEAVY_BUS
-                     if isinstance(self.display_mode, BitmapDisplayMode)
-                     else None)
+            chunk = (
+                REU_PUMP_CHUNK_SIZE_HEAVY_BUS
+                if isinstance(self.display_mode, BitmapDisplayMode)
+                else None
+            )
             # When the display mode also installs the bank-swap dispatcher
             # at $0314 (the merged variant JMPs to $C100 on non-raster
             # IRQs), the audio install must skip its own $0314 hook so it
             # doesn't clobber the dispatcher. The dispatcher's installer
             # already pre-uploaded a JMP $EA31 stub at $C100 covering the
             # gap until this method writes real audio bytes there.
-            skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active",
-                                      False))
+            skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active", False))
             self.audio.start_for_reu_staged(
-                audio_4bit, chunk_size=chunk,
-                skip_irq_vector_hook=skip_hook)
+                audio_4bit, chunk_size=chunk, skip_irq_vector_hook=skip_hook
+            )
             self.source.start(audio_push=None)
         elif has_audio:
             assert self.audio is not None
@@ -883,17 +941,16 @@ class CommercialScene(Scene):
         # Decode full audio to int16 mono at sample rate.
         int16 = decode_audio_full(self.filepath, sr)
         if int16.size == 0:
-            log.warning("commercial: empty audio track after decode; "
-                        "REU pump will play silence")
+            log.warning("commercial: empty audio track after decode; REU pump will play silence")
             return b""
         # Apply the same peak-normalization gain AVFileSource computes.
         peak = int(np.abs(int16).max())
         gain = _compute_normalization_gain(peak)
         if gain != 1.0:
-            int16 = np.clip(int16.astype(np.float32) * gain,
-                            -32768, 32767).astype(np.int16)
-        log.info("commercial: REU pre-encode peak=%d → gain=%.2fx (%d samples)",
-                 peak, gain, int16.size)
+            int16 = np.clip(int16.astype(np.float32) * gain, -32768, 32767).astype(np.int16)
+        log.info(
+            "commercial: REU pre-encode peak=%d → gain=%.2fx (%d samples)", peak, gain, int16.size
+        )
         # Float → 4-bit DAC code via the shared encoder (identical math to the
         # mic paths). Use an explicit Generator so this offline pass doesn't
         # perturb the global RNG state the realtime callbacks draw from.
@@ -910,11 +967,15 @@ class CommercialScene(Scene):
         encoded = bytes(vol.tobytes())
         if getattr(self, "prepend_alignment_marker", False):
             from .audio_marker import MARKER_DURATION_S, synthesize_marker_4bit
+
             marker = synthesize_marker_4bit(sr)
-            log.info("commercial: prepending %d-byte alignment marker "
-                     "(%.0f ms chirp) — source content shifts to %.0fms",
-                     len(marker), MARKER_DURATION_S * 1000,
-                     MARKER_DURATION_S * 1000)
+            log.info(
+                "commercial: prepending %d-byte alignment marker "
+                "(%.0f ms chirp) — source content shifts to %.0fms",
+                len(marker),
+                MARKER_DURATION_S * 1000,
+                MARKER_DURATION_S * 1000,
+            )
             encoded = marker + encoded
         return encoded
 
@@ -950,9 +1011,11 @@ class CommercialScene(Scene):
         # the accumulator and refresh the derived fit until the warmup window
         # closes, then freeze. Feeding before annotation keeps the debug
         # digits out of the contrast/saturation stats.
-        if (self._online_fit is not None
-                and self._online_fit_frames < ONLINE_FIT_WARMUP_FRAMES
-                and self.display_mode is not None):
+        if (
+            self._online_fit is not None
+            and self._online_fit_frames < ONLINE_FIT_WARMUP_FRAMES
+            and self.display_mode is not None
+        ):
             self._online_fit.add(img)
             self._online_fit_frames += 1
             self.display_mode.set_color_fit(self._online_fit.result())
@@ -961,8 +1024,7 @@ class CommercialScene(Scene):
             label = f"{_timecode(clock_s)} f{int(round(clock_s * fps))}"
             img = _annotate_frame_number(img, label)
         assert self.display_mode is not None
-        _render_with_overlays(
-            self.display_mode, self.api, img, self.overlays, current_time, self)
+        _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
         return True
 
     def teardown(self) -> None:
@@ -1022,19 +1084,25 @@ class LauncherScene(Scene):
         return self.WANTS_AUDIO_LOCK and not self.bypass_audio_lock
 
     # Bytes to read for each input source (contiguous so one read covers both).
-    _CIA_BASE = CIA1.PORT_A          # $DC00, reads $DC00+$DC01
-    _KERNAL_BASE = SCREEN.LAST_KEY   # $00C5, reads $00C5+$00C6
+    _CIA_BASE = CIA1.PORT_A  # $DC00, reads $DC00+$DC01
+    _KERNAL_BASE = SCREEN.LAST_KEY  # $00C5, reads $00C5+$00C6
 
-    def __init__(self, api: C64Backend, file: str, *,
-                 input_source: str = "cia",
-                 reset_before_launch: bool = True,
-                 min_duration_s: float = 0.0,
-                 max_duration_s: float = math.inf,
-                 bypass_audio_lock: bool = False,
-                 poll_interval_s: float = 0.1,
-                 launch_grace_s: float = 1.5,
-                 name: str | None = None):
+    def __init__(
+        self,
+        api: C64Backend,
+        file: str,
+        *,
+        input_source: str = "cia",
+        reset_before_launch: bool = True,
+        min_duration_s: float = 0.0,
+        max_duration_s: float = math.inf,
+        bypass_audio_lock: bool = False,
+        poll_interval_s: float = 0.1,
+        launch_grace_s: float = 1.5,
+        name: str | None = None,
+    ):
         from .config import PROGRAM_EXTS, resolve_file_spec
+
         self.file_spec = file
         # Resolve once so __init__ raises on a bad spec (mirrors
         # validate_scene_cfg; also covers any scene built without validation).
@@ -1064,13 +1132,13 @@ class LauncherScene(Scene):
         self._last_input_t = 0.0
         self._input_lock = threading.Lock()
         self._baseline: bytes | None = None
-        self._poll = PollThread(self._input_loop, name="launcher-input-poll",
-                                manual=True)
+        self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
         # True when prepare_next() already picked this iteration's file.
         self._prepared = False
 
     def _resolve_candidates(self) -> list[str]:
         from .config import PROGRAM_EXTS, resolve_file_spec
+
         return resolve_file_spec(self.file_spec, PROGRAM_EXTS, label="launcher")
 
     def _pick_filepath(self) -> bool:
@@ -1079,14 +1147,16 @@ class LauncherScene(Scene):
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error("launcher: file spec %r failed to resolve at setup: %s",
-                      self.file_spec, e)
+            log.error("launcher: file spec %r failed to resolve at setup: %s", self.file_spec, e)
             return False
         self.filepath = random.choice(candidates)
         self.name = f"Launcher: {_display_name(self.filepath)}"
         if len(candidates) > 1:
-            log.info("launcher: picked %s from %d candidates",
-                     os.path.basename(self.filepath), len(candidates))
+            log.info(
+                "launcher: picked %s from %d candidates",
+                os.path.basename(self.filepath),
+                len(candidates),
+            )
         return True
 
     def prepare_next(self) -> None:
@@ -1104,8 +1174,11 @@ class LauncherScene(Scene):
             return
         super().setup()
         if not os.path.exists(self.filepath):
-            log.error("launcher: file not found: %s — check the path in your "
-                      "config or the assets/programs/ contents", self.filepath)
+            log.error(
+                "launcher: file not found: %s — check the path in your "
+                "config or the assets/programs/ contents",
+                self.filepath,
+            )
             self.is_done = True
             return
         now = time.time()

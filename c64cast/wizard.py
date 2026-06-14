@@ -26,6 +26,7 @@ The questionary I/O is a thin shell around pure helpers (``make_scene`` /
 buildable logic is unit-testable without a terminal — mirroring how
 ``vision.py`` keeps its pose classifiers pure and camera-free.
 """
+
 from __future__ import annotations
 
 import os
@@ -46,8 +47,9 @@ _ASSET_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
 
 # Scene-field names handled explicitly by the guided flow; the "advanced" walk
 # covers everything else applicable to the chosen type.
-_CORE_SCENE_FIELDS = frozenset({"type", "display", "name", "duration_s",
-                                "file", "overlays", "audio"})
+_CORE_SCENE_FIELDS = frozenset(
+    {"type", "display", "name", "duration_s", "file", "overlays", "audio"}
+)
 
 # Scene types whose audio is driven by the scene/program itself, not the
 # global [audio] streamer — the wizard doesn't ask "enable audio?" for these.
@@ -57,6 +59,7 @@ _SELF_AUDIO_TYPES = frozenset({"waveform", "midi", "launcher"})
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested without questionary)
 # ---------------------------------------------------------------------------
+
 
 def field_kind(type_str: str) -> str:
     """Classify a dataclass/param annotation string into a prompt kind:
@@ -85,8 +88,8 @@ def scan_assets(default_dir: str, exts: tuple[str, ...]) -> list[str]:
     return sorted(
         os.path.join(default_dir, f)
         for f in os.listdir(default_dir)
-        if os.path.isfile(os.path.join(default_dir, f))
-        and f.lower().endswith(exts))
+        if os.path.isfile(os.path.join(default_dir, f)) and f.lower().endswith(exts)
+    )
 
 
 def _mode_runtime_name(display: str) -> str:
@@ -99,8 +102,7 @@ def _mode_runtime_name(display: str) -> str:
     return display
 
 
-def compatible_overlays(display: str, *, audio_enabled: bool
-                        ) -> list[introspect.OverlayDoc]:
+def compatible_overlays(display: str, *, audio_enabled: bool) -> list[introspect.OverlayDoc]:
     """Overlays that attach to a scene painting `display`, honoring the same
     rules as ``overlays.validate_for_scene`` (via ``introspect.overlay_mode_ok``)
     plus the audio requirement. This is what keeps the wizard from offering an
@@ -134,9 +136,9 @@ def scene_field_docs(scene_type: str) -> tuple[introspect.FieldDoc, ...]:
     return ()
 
 
-def make_scene(scene_type: str,
-               scene_fields: dict[str, object],
-               overlays: list[dict[str, object]]) -> cfgmod.SceneCfg:
+def make_scene(
+    scene_type: str, scene_fields: dict[str, object], overlays: list[dict[str, object]]
+) -> cfgmod.SceneCfg:
     """Build one SceneCfg from collected answers (field setattr loop + overlay
     copy). Pure; shared by the single- and multi-scene build paths."""
     scene = cfgmod.SceneCfg(type=scene_type)
@@ -146,11 +148,14 @@ def make_scene(scene_type: str,
     return scene
 
 
-def _apply_globals(cfg: cfgmod.Config, *,
-                   url: str | None = None,
-                   system: str | None = None,
-                   audio_enabled: bool | None = None,
-                   vision_enabled: bool | None = None) -> None:
+def _apply_globals(
+    cfg: cfgmod.Config,
+    *,
+    url: str | None = None,
+    system: str | None = None,
+    audio_enabled: bool | None = None,
+    vision_enabled: bool | None = None,
+) -> None:
     """Overlay the essential global settings onto a Config (in place). Each is
     skipped when None so callers can leave any at its dataclass default."""
     if url:
@@ -163,36 +168,43 @@ def _apply_globals(cfg: cfgmod.Config, *,
         cfg.vision.enabled = vision_enabled
 
 
-def build_config(*, scene_type: str,
-                 scene_fields: dict[str, object],
-                 overlays: list[dict[str, object]],
-                 url: str | None = None,
-                 system: str | None = None,
-                 audio_enabled: bool | None = None,
-                 vision_enabled: bool | None = None) -> cfgmod.Config:
+def build_config(
+    *,
+    scene_type: str,
+    scene_fields: dict[str, object],
+    overlays: list[dict[str, object]],
+    url: str | None = None,
+    system: str | None = None,
+    audio_enabled: bool | None = None,
+    vision_enabled: bool | None = None,
+) -> cfgmod.Config:
     """Assemble a single-scene Config from collected answers. Pure — no I/O —
     so the wizard's terminal shell stays a thin layer over this."""
     cfg = cfgmod.Config()
-    _apply_globals(cfg, url=url, system=system, audio_enabled=audio_enabled,
-                   vision_enabled=vision_enabled)
+    _apply_globals(
+        cfg, url=url, system=system, audio_enabled=audio_enabled, vision_enabled=vision_enabled
+    )
     cfg.scenes = [make_scene(scene_type, scene_fields, overlays)]
     return cfg
 
 
-def build_multi_config(*, scenes: list[cfgmod.SceneCfg],
-                       url: str | None = None,
-                       system: str | None = None,
-                       audio_enabled: bool | None = None,
-                       vision_enabled: bool | None = None,
-                       playlist: dict[str, object] | None = None,
-                       interstitial: dict[str, object] | None = None
-                       ) -> cfgmod.Config:
+def build_multi_config(
+    *,
+    scenes: list[cfgmod.SceneCfg],
+    url: str | None = None,
+    system: str | None = None,
+    audio_enabled: bool | None = None,
+    vision_enabled: bool | None = None,
+    playlist: dict[str, object] | None = None,
+    interstitial: dict[str, object] | None = None,
+) -> cfgmod.Config:
     """Assemble a multi-scene Config. `scenes` is set verbatim (order
     preserved); `playlist`/`interstitial` are dict overrides applied via
     setattr onto the matching section. Pure — no I/O."""
     cfg = cfgmod.Config()
-    _apply_globals(cfg, url=url, system=system, audio_enabled=audio_enabled,
-                   vision_enabled=vision_enabled)
+    _apply_globals(
+        cfg, url=url, system=system, audio_enabled=audio_enabled, vision_enabled=vision_enabled
+    )
     cfg.scenes = list(scenes)
     for key, value in (playlist or {}).items():
         setattr(cfg.playlist, key, value)
@@ -205,8 +217,7 @@ def validate(cfg: cfgmod.Config) -> str | None:
     """Run the loader's pre-construction validation on the wizard's single
     scene. Returns an error message string on failure, else None."""
     try:
-        cfgmod.validate_scene_cfg(cfg.scenes[0], cfg,
-                                  audio_enabled=cfg.audio.enabled)
+        cfgmod.validate_scene_cfg(cfg.scenes[0], cfg, audio_enabled=cfg.audio.enabled)
     except Exception as e:  # ValueError / OrchestratorError — surface verbatim
         return str(e)
     return None
@@ -257,11 +268,13 @@ def schema_directive_for(out_path: str) -> str:
 # Interactive shell (thin; not unit-tested)
 # ---------------------------------------------------------------------------
 
+
 def _ensure_questionary():  # type: ignore[no-untyped-def]
     """Lazy-import questionary so the dep is only needed for `--init` (mirrors
     video.py / vision.py lazy-importing their extras)."""
     try:
         import questionary
+
         return questionary
     except ImportError:
         return None
@@ -276,18 +289,28 @@ def _coerce(kind: str, raw: str) -> object:
     return raw
 
 
-def _prompt_typed(q, *, label: str, kind: str, default: object,  # type: ignore[no-untyped-def]
-                  choices: tuple[str, ...], required: bool, help_: str):
+def _prompt_typed(
+    q,
+    *,
+    label: str,
+    kind: str,
+    default: object,  # type: ignore[no-untyped-def]
+    choices: tuple[str, ...],
+    required: bool,
+    help_: str,
+):
     """Prompt one scalar value. Returns the value, or the sentinel `...`
     (Ellipsis) meaning "leave at default / omit"."""
     instruction = f"  {help_}" if help_ else None
     if choices:
-        return q.select(label, choices=list(choices),
-                        default=default if default in choices else None,
-                        instruction=instruction).ask()
+        return q.select(
+            label,
+            choices=list(choices),
+            default=default if default in choices else None,
+            instruction=instruction,
+        ).ask()
     if kind == "bool":
-        return q.confirm(label, default=bool(default),
-                         instruction=instruction).ask()
+        return q.confirm(label, default=bool(default), instruction=instruction).ask()
 
     def _validate(text: str) -> bool | str:
         text = text.strip()
@@ -300,12 +323,11 @@ def _prompt_typed(q, *, label: str, kind: str, default: object,  # type: ignore[
         return True
 
     shown_default = "" if default is None else str(default)
-    answer = q.text(label, default=shown_default, validate=_validate,
-                    instruction=instruction).ask()
-    if answer is None:           # Ctrl-C
+    answer = q.text(label, default=shown_default, validate=_validate, instruction=instruction).ask()
+    if answer is None:  # Ctrl-C
         return None
     if not answer.strip():
-        return ...               # leave at default
+        return ...  # leave at default
     return _coerce(kind, answer)
 
 
@@ -318,8 +340,15 @@ def _prompt_scene_fields(q, scene_type: str) -> dict[str, object] | None:  # typ
         kind = field_kind(fd.type)
         if kind == "complex":
             continue  # list/dict fields — hand-edit; out of scope for v1 walk
-        val = _prompt_typed(q, label=fd.name, kind=kind, default=fd.default,
-                            choices=fd.choices, required=False, help_=fd.help)
+        val = _prompt_typed(
+            q,
+            label=fd.name,
+            kind=kind,
+            default=fd.default,
+            choices=fd.choices,
+            required=False,
+            help_=fd.help,
+        )
         if val is None:
             return None
         if val is not ... and val != fd.default:
@@ -335,8 +364,15 @@ def _prompt_section_fields(q, section_name: str) -> dict[str, object] | None:  #
         kind = field_kind(fd.type)
         if kind == "complex":
             continue
-        val = _prompt_typed(q, label=fd.name, kind=kind, default=fd.default,
-                            choices=fd.choices, required=False, help_=fd.help)
+        val = _prompt_typed(
+            q,
+            label=fd.name,
+            kind=kind,
+            default=fd.default,
+            choices=fd.choices,
+            required=False,
+            help_=fd.help,
+        )
         if val is None:
             return None
         if val is not ... and val != fd.default:
@@ -351,9 +387,15 @@ def _prompt_overlay_params(q, ov: introspect.OverlayDoc) -> dict[str, object] | 
         if kind == "complex":
             continue
         default = None if p.default is introspect._REQUIRED else p.default
-        val = _prompt_typed(q, label=f"{ov.name}.{p.name}", kind=kind,
-                            default=default, choices=(), required=p.required,
-                            help_=p.help)
+        val = _prompt_typed(
+            q,
+            label=f"{ov.name}.{p.name}",
+            kind=kind,
+            default=default,
+            choices=(),
+            required=p.required,
+            help_=p.help,
+        )
         if val is None:
             return None
         if val is ...:
@@ -369,8 +411,7 @@ def _pick_asset(q, scene_type: str) -> str | None:  # type: ignore[no-untyped-de
     custom = "Type a path / glob myself"
     if files:
         choices = [os.path.relpath(f) for f in files] + [use_dir, custom]
-        pick = q.select(f"Pick a file for the {scene_type} scene",
-                        choices=choices).ask()
+        pick = q.select(f"Pick a file for the {scene_type} scene", choices=choices).ask()
         if pick is None:
             return None
         if pick == use_dir:
@@ -382,15 +423,20 @@ def _pick_asset(q, scene_type: str) -> str | None:  # type: ignore[no-untyped-de
         f"{scene_type} file spec (path / dir / comma-separated globs)",
         default="" if files else default_dir,
         validate=lambda t: True if t.strip() else "required",
-        instruction=f"  accepted: {', '.join(exts)}").ask()
+        instruction=f"  accepted: {', '.join(exts)}",
+    ).ask()
 
 
 _SINGLE_LABEL = "Single scene (loops forever)"
 _MULTI_LABEL = "Multi-scene playlist (UP NEXT between scenes)"
 
 
-def _prompt_one_scene(q, *, audio_enabled: bool | None,  # type: ignore[no-untyped-def]
-                      ask_audio: bool) -> dict[str, object] | None:
+def _prompt_one_scene(
+    q,
+    *,
+    audio_enabled: bool | None,  # type: ignore[no-untyped-def]
+    ask_audio: bool,
+) -> dict[str, object] | None:
     """Question one scene (type → file → display → name → audio → advanced →
     overlays). Returns ``{"scene_type","scene_fields","overlays",
     "audio_enabled"}`` or None on cancel.
@@ -419,16 +465,14 @@ def _prompt_one_scene(q, *, audio_enabled: bool | None,  # type: ignore[no-untyp
     displays = supported_displays(scene_type)
     display_for_overlays = "petscii"  # default assumption for fixed-mode types
     if displays:
-        chosen = q.select("Display mode", choices=list(displays),
-                          default=displays[0]).ask()
+        chosen = q.select("Display mode", choices=list(displays), default=displays[0]).ask()
         if chosen is None:
             return None
         scene_fields["display"] = chosen
         display_for_overlays = chosen
 
     # --- name (optional) ---
-    name = q.text("Scene name (optional, shown in logs/interstitials)",
-                  default="").ask()
+    name = q.text("Scene name (optional, shown in logs/interstitials)", default="").ask()
     if name is None:
         return None
     if name.strip():
@@ -439,8 +483,8 @@ def _prompt_one_scene(q, *, audio_enabled: bool | None,  # type: ignore[no-untyp
         scene_audio: bool | None = None
         if scene_type not in _SELF_AUDIO_TYPES:
             scene_audio = q.confirm(
-                "Enable SID audio streaming for this scene?",
-                default=(scene_type == "commercial")).ask()
+                "Enable SID audio streaming for this scene?", default=(scene_type == "commercial")
+            ).ask()
             if scene_audio is None:
                 return None
         result_audio = scene_audio
@@ -453,12 +497,10 @@ def _prompt_one_scene(q, *, audio_enabled: bool | None,  # type: ignore[no-untyp
                 return None
             if mute:
                 scene_fields["audio"] = False
-        audio_for_overlays = (bool(audio_enabled)
-                              and scene_fields.get("audio") is not False)
+        audio_for_overlays = bool(audio_enabled) and scene_fields.get("audio") is not False
 
     # --- advanced fields ---
-    if q.confirm(f"Configure advanced {scene_type} options?",
-                 default=False).ask():
+    if q.confirm(f"Configure advanced {scene_type} options?", default=False).ask():
         adv = _prompt_scene_fields(q, scene_type)
         if adv is None:
             return None
@@ -466,12 +508,10 @@ def _prompt_one_scene(q, *, audio_enabled: bool | None,  # type: ignore[no-untyp
 
     # --- overlays (compat-filtered) ---
     overlays: list[dict[str, object]] = []
-    candidates = compatible_overlays(
-        display_for_overlays, audio_enabled=audio_for_overlays)
+    candidates = compatible_overlays(display_for_overlays, audio_enabled=audio_for_overlays)
     if candidates and q.confirm("Add overlays?", default=False).ask():
         labels = {f"{ov.name}  —  {ov.help}": ov for ov in candidates}
-        picked = q.checkbox("Select overlays (space to toggle)",
-                            choices=list(labels)).ask()
+        picked = q.checkbox("Select overlays (space to toggle)", choices=list(labels)).ask()
         for lbl in picked or []:
             ov = labels[lbl]
             params = _prompt_overlay_params(q, ov)
@@ -479,8 +519,12 @@ def _prompt_one_scene(q, *, audio_enabled: bool | None,  # type: ignore[no-untyp
                 return None
             overlays.append(params)
 
-    return {"scene_type": scene_type, "scene_fields": scene_fields,
-            "overlays": overlays, "audio_enabled": result_audio}
+    return {
+        "scene_type": scene_type,
+        "scene_fields": scene_fields,
+        "overlays": overlays,
+        "audio_enabled": result_audio,
+    }
 
 
 def _prompt_globals(q) -> tuple[str, str] | None:  # type: ignore[no-untyped-def]
@@ -488,8 +532,7 @@ def _prompt_globals(q) -> tuple[str, str] | None:  # type: ignore[no-untyped-def
     url = q.text("Ultimate 64 URL", default=cfgmod.Ultimate64Cfg().url).ask()
     if url is None:
         return None
-    system = q.select("Video system", choices=list(cfgmod._SYSTEM_CHOICES),
-                      default="NTSC").ask()
+    system = q.select("Video system", choices=list(cfgmod._SYSTEM_CHOICES), default="NTSC").ask()
     if system is None:
         return None
     return url, system
@@ -505,8 +548,11 @@ def _scene_label(scene: dict[str, object]) -> str:
     return f"{base} — {name}" if name else base
 
 
-def _pick_scene_index(q, scenes: list[dict[str, object]],  # type: ignore[no-untyped-def]
-                      prompt: str) -> int | None:
+def _pick_scene_index(
+    q,
+    scenes: list[dict[str, object]],  # type: ignore[no-untyped-def]
+    prompt: str,
+) -> int | None:
     choices = [f"{i + 1}. {_scene_label(s)}" for i, s in enumerate(scenes)]
     pick = q.select(prompt, choices=choices).ask()
     if pick is None:
@@ -514,8 +560,11 @@ def _pick_scene_index(q, scenes: list[dict[str, object]],  # type: ignore[no-unt
     return choices.index(pick)
 
 
-def _manage_playlist(q, *, audio_enabled: bool  # type: ignore[no-untyped-def]
-                     ) -> list[dict[str, object]] | None:
+def _manage_playlist(
+    q,
+    *,
+    audio_enabled: bool,  # type: ignore[no-untyped-def]
+) -> list[dict[str, object]] | None:
     """Add/Remove/Move/Done loop building an ordered scene list. Returns the
     list (≥1 scene) or None on cancel."""
     scenes: list[dict[str, object]] = []
@@ -534,8 +583,7 @@ def _manage_playlist(q, *, audio_enabled: bool  # type: ignore[no-untyped-def]
         if action is None:
             return None
         if action == "Add a scene":
-            s = _prompt_one_scene(q, audio_enabled=audio_enabled,
-                                  ask_audio=False)
+            s = _prompt_one_scene(q, audio_enabled=audio_enabled, ask_audio=False)
             if s is None:
                 return None
             scenes.append(s)
@@ -548,14 +596,14 @@ def _manage_playlist(q, *, audio_enabled: bool  # type: ignore[no-untyped-def]
             idx = _pick_scene_index(q, scenes, "Move which scene?")
             if idx is None:
                 return None
-            remaining = scenes[:idx] + scenes[idx + 1:]
-            pos_choices = [f"before {i + 1}. {_scene_label(s)}"
-                           for i, s in enumerate(remaining)] + ["to the end"]
-            pos = q.select("Move to which position?",
-                           choices=pos_choices).ask()
+            remaining = scenes[:idx] + scenes[idx + 1 :]
+            pos_choices = [
+                f"before {i + 1}. {_scene_label(s)}" for i, s in enumerate(remaining)
+            ] + ["to the end"]
+            pos = q.select("Move to which position?", choices=pos_choices).ask()
             if pos is None:
                 return None
-            j = pos_choices.index(pos)   # == len(remaining) -> append
+            j = pos_choices.index(pos)  # == len(remaining) -> append
             scene = scenes.pop(idx)
             scenes.insert(j, scene)
         else:  # Done
@@ -567,33 +615,35 @@ def _manage_playlist(q, *, audio_enabled: bool  # type: ignore[no-untyped-def]
 
 def _pick_dir(q, label: str, default_dir: str) -> str | None:  # type: ignore[no-untyped-def]
     """Pick a directory (free-text, defaulting to the loader's default dir)."""
-    return q.text(label, default=default_dir,
-                  validate=lambda t: True if t.strip() else "required",
-                  instruction="  a directory of videos").ask()
+    return q.text(
+        label,
+        default=default_dir,
+        validate=lambda t: True if t.strip() else "required",
+        instruction="  a directory of videos",
+    ).ask()
 
 
-def _prompt_playlist_opts(q, scenes: list[dict[str, object]]  # type: ignore[no-untyped-def]
-                          ) -> tuple[dict[str, object], dict[str, object]] | None:
+def _prompt_playlist_opts(
+    q,
+    scenes: list[dict[str, object]],  # type: ignore[no-untyped-def]
+) -> tuple[dict[str, object], dict[str, object]] | None:
     """Ask loop / ad-interleaving / interstitial options. Returns
     (playlist_overrides, interstitial_overrides) — each only the changed
     values — or None on cancel."""
     playlist: dict[str, object] = {}
     interstitial: dict[str, object] = {}
 
-    loop = q.confirm("Loop the playlist after the last scene?",
-                     default=True).ask()
+    loop = q.confirm("Loop the playlist after the last scene?", default=True).ask()
     if loop is None:
         return None
     if loop != cfgmod.PlaylistCfg().loop:
         playlist["loop"] = loop
 
-    do_ads = q.confirm("Interleave commercials between scenes?",
-                       default=False).ask()
+    do_ads = q.confirm("Interleave commercials between scenes?", default=False).ask()
     if do_ads is None:
         return None
     if do_ads:
-        ads_dir = _pick_dir(q, "Commercials directory",
-                            cfgmod.DEFAULT_COMMERCIAL_DIR)
+        ads_dir = _pick_dir(q, "Commercials directory", cfgmod.DEFAULT_COMMERCIAL_DIR)
         if ads_dir is None:
             return None
         playlist["interleave_ads"] = True
@@ -608,8 +658,11 @@ def _prompt_playlist_opts(q, scenes: list[dict[str, object]]  # type: ignore[no-
     return playlist, interstitial
 
 
-def _write_and_offer_launch(q, cfg: cfgmod.Config,  # type: ignore[no-untyped-def]
-                            path_arg: str | None) -> tuple[str, bool] | None:
+def _write_and_offer_launch(
+    q,
+    cfg: cfgmod.Config,  # type: ignore[no-untyped-def]
+    path_arg: str | None,
+) -> tuple[str, bool] | None:
     """Shared tail: preview, confirm path, write the TOML, offer to launch.
     Returns (written_path, launch_now) or None on cancel."""
     out_path = path_arg or "c64cast.toml"
@@ -621,8 +674,10 @@ def _write_and_offer_launch(q, cfg: cfgmod.Config,  # type: ignore[no-untyped-de
     print(toml)
     print("----------------------------------------------------------\n")
 
-    if os.path.exists(out_path) and not q.confirm(
-            f"{out_path} exists — overwrite?", default=False).ask():
+    if (
+        os.path.exists(out_path)
+        and not q.confirm(f"{out_path} exists — overwrite?", default=False).ask()
+    ):
         return None
     if not q.confirm(f"Write {out_path}?", default=True).ask():
         return None
@@ -647,9 +702,11 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
     cfg = build_config(
         scene_type=str(scene["scene_type"]),
         scene_fields=scene["scene_fields"],  # type: ignore[arg-type]
-        overlays=scene["overlays"],          # type: ignore[arg-type]
-        url=url, system=system,
-        audio_enabled=scene["audio_enabled"])  # type: ignore[arg-type]
+        overlays=scene["overlays"],  # type: ignore[arg-type]
+        url=url,
+        system=system,
+        audio_enabled=scene["audio_enabled"],
+    )  # type: ignore[arg-type]
 
     err = validate(cfg)
     if err is not None:
@@ -660,8 +717,7 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
 
 
 def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ignore[no-untyped-def]
-    audio_enabled = q.confirm("Enable SID audio streaming for the playlist?",
-                              default=False).ask()
+    audio_enabled = q.confirm("Enable SID audio streaming for the playlist?", default=False).ask()
     if audio_enabled is None:
         return None
 
@@ -680,12 +736,20 @@ def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ign
     url, system = globals_
 
     cfg = build_multi_config(
-        scenes=[make_scene(str(s["scene_type"]),
-                           s["scene_fields"],   # type: ignore[arg-type]
-                           s["overlays"])       # type: ignore[arg-type]
-                for s in scenes],
-        url=url, system=system, audio_enabled=audio_enabled,
-        playlist=playlist_overrides, interstitial=interstitial_overrides)
+        scenes=[
+            make_scene(
+                str(s["scene_type"]),
+                s["scene_fields"],  # type: ignore[arg-type]
+                s["overlays"],
+            )  # type: ignore[arg-type]
+            for s in scenes
+        ],
+        url=url,
+        system=system,
+        audio_enabled=audio_enabled,
+        playlist=playlist_overrides,
+        interstitial=interstitial_overrides,
+    )
 
     errs = validate_all(cfg)
     if errs:
@@ -703,15 +767,17 @@ def run_init(path_arg: str | None) -> tuple[str, bool] | None:
     successful write, or None if cancelled / dependency missing."""
     q = _ensure_questionary()
     if q is None:
-        print("The config wizard needs the 'wizard' extra:\n"
-              "  uv sync --extra wizard   (or: pip install c64cast[wizard])")
+        print(
+            "The config wizard needs the 'wizard' extra:\n"
+            "  uv sync --extra wizard   (or: pip install c64cast[wizard])"
+        )
         return None
 
-    print("c64cast config wizard.\n"
-          "Press Enter to accept the [default]; Ctrl-C to cancel.\n")
+    print("c64cast config wizard.\nPress Enter to accept the [default]; Ctrl-C to cancel.\n")
 
-    mode = q.select("Build a single scene or a multi-scene playlist?",
-                    choices=[_SINGLE_LABEL, _MULTI_LABEL]).ask()
+    mode = q.select(
+        "Build a single scene or a multi-scene playlist?", choices=[_SINGLE_LABEL, _MULTI_LABEL]
+    ).ask()
     if mode is None:
         return None
     if mode == _MULTI_LABEL:

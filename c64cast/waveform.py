@@ -33,6 +33,7 @@ Cycle skips subtunes the SongLengths DB flags as shorter than
 ``MIN_CYCLE_SUBTUNE_S`` (typically game SFX); startup honors the
 configured ``song`` regardless of length.
 """
+
 from __future__ import annotations
 
 import logging
@@ -124,6 +125,7 @@ _UNIFIED_LAYOUT_MAX_SONGS = 16
 # SID file header
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SidHeader:
     magic: str
@@ -134,8 +136,8 @@ class SidHeader:
     author: str
     released: str
     # Decoded PSID v2+ flags. None on v1 headers (no flags field).
-    clock: str | None         # "PAL", "NTSC", "PAL+NTSC", "?" or None
-    sid_model: str | None     # "6581", "8580", "6581+8580", "?" or None
+    clock: str | None  # "PAL", "NTSC", "PAL+NTSC", "?" or None
+    sid_model: str | None  # "6581", "8580", "6581+8580", "?" or None
 
 
 # PSID v2+ flags byte 1 (low-order) layout — clock at bits 2-3, primary
@@ -169,13 +171,15 @@ def _overlaps(lo: int, hi: int, region_lo: int, region_size: int) -> bool:
     return lo < region_hi and hi > region_lo
 
 
-def _bank_payload_feasible(payload_lo: int, payload_hi: int,
-                           screen_base: int, bitmap_base: int) -> bool:
+def _bank_payload_feasible(
+    payload_lo: int, payload_hi: int, screen_base: int, bitmap_base: int
+) -> bool:
     """True when the SID payload alone clears a bank's screen + bitmap
     regions (a cheap, footprint-free pre-check used by _load_sid_file)."""
-    return not (_overlaps(payload_lo, payload_hi, screen_base, SCREEN.N_CELLS)
-                or _overlaps(payload_lo, payload_hi,
-                             bitmap_base, SCREEN.BITMAP_BYTES))
+    return not (
+        _overlaps(payload_lo, payload_hi, screen_base, SCREEN.N_CELLS)
+        or _overlaps(payload_lo, payload_hi, bitmap_base, SCREEN.BITMAP_BYTES)
+    )
 
 
 def _any_display_bank_fits_payload(payload_lo: int, payload_hi: int) -> bool:
@@ -183,13 +187,14 @@ def _any_display_bank_fits_payload(payload_lo: int, payload_hi: int) -> bool:
     payload. Used by _load_sid_file to refuse only the truly hopeless tunes
     (payload covers every bank's display) — the footprint-aware bank choice
     is deferred to _choose_display_layout at setup()."""
-    return any(_bank_payload_feasible(payload_lo, payload_hi, s, b)
-               for s, b, _, _ in _DISPLAY_BANKS)
+    return any(
+        _bank_payload_feasible(payload_lo, payload_hi, s, b) for s, b, _, _ in _DISPLAY_BANKS
+    )
 
 
-def _choose_display_layout(payload_lo: int, payload_hi: int,
-                           footprint: bytes | bytearray
-                           ) -> tuple[int, int, int, int]:
+def _choose_display_layout(
+    payload_lo: int, payload_hi: int, footprint: bytes | bytearray
+) -> tuple[int, int, int, int]:
     """Pick (screen_base, bitmap_base, dd00, d018) for the waveform display.
 
     Returns the first candidate VIC bank whose screen + bitmap regions are
@@ -203,21 +208,22 @@ def _choose_display_layout(payload_lo: int, payload_hi: int,
         bitmap_hi = bitmap_base + SCREEN.BITMAP_BYTES
         blocked = (
             _overlaps(payload_lo, payload_hi, screen_base, SCREEN.N_CELLS)
-            or _overlaps(payload_lo, payload_hi, bitmap_base,
-                         SCREEN.BITMAP_BYTES)
+            or _overlaps(payload_lo, payload_hi, bitmap_base, SCREEN.BITMAP_BYTES)
             or any(footprint[screen_base:screen_hi])
-            or any(footprint[bitmap_base:bitmap_hi]))
+            or any(footprint[bitmap_base:bitmap_hi])
+        )
         if not blocked:
             return screen_base, bitmap_base, dd00, d018
     raise ValueError(
         f"waveform: SID payload ${payload_lo:04X}-${payload_hi:04X} plus its "
         f"runtime footprint leave no free VIC bank for the display (tried "
-        f"bank 0 $0400/$2000, bank 2 $8400/$A000, bank 1 $5400/$6000)")
+        f"bank 0 $0400/$2000, bank 2 $8400/$A000, bank 1 $5400/$6000)"
+    )
 
 
-def _choose_unified_display_layout(sid_bytes: bytes, payload_lo: int,
-                                   payload_hi: int, num_songs: int
-                                   ) -> tuple[int, int, int, int] | None:
+def _choose_unified_display_layout(
+    sid_bytes: bytes, payload_lo: int, payload_hi: int, num_songs: int
+) -> tuple[int, int, int, int] | None:
     """Pick ONE VIC bank free for the UNION of every subtune's PLAY-access
     footprint, so SHIFT-cycling never has to relocate the display.
 
@@ -238,14 +244,14 @@ def _choose_unified_display_layout(sid_bytes: bytes, payload_lo: int,
         fp = ram_play_access_footprint(sid_bytes, song=song)
         union |= np.frombuffer(bytes(fp), dtype=np.uint8)
     try:
-        return _choose_display_layout(payload_lo, payload_hi,
-                                      union.tobytes())
+        return _choose_display_layout(payload_lo, payload_hi, union.tobytes())
     except ValueError:
         return None
 
 
-def _play_bank_for_footprints(write_fp: bytes | bytearray,
-                              access_fp: bytes | bytearray) -> int | None:
+def _play_bank_for_footprints(
+    write_fp: bytes | bytearray, access_fp: bytes | bytearray
+) -> int | None:
     """Return the $01 CPU-port override the player should use around JSR play,
     or None to let api.run_sid_player's address-keyed heuristic decide.
 
@@ -276,8 +282,7 @@ def parse_sid_header(data: bytes) -> SidHeader:
         raise ValueError("SID file too short to contain a header")
     magic = data[:4]
     if magic not in (b"PSID", b"RSID"):
-        raise ValueError(
-            f"not a SID file (expected PSID/RSID magic, got {magic!r})")
+        raise ValueError(f"not a SID file (expected PSID/RSID magic, got {magic!r})")
     version = int.from_bytes(data[4:6], "big")
     clock: str | None = None
     sid_model: str | None = None
@@ -294,7 +299,9 @@ def parse_sid_header(data: bytes) -> SidHeader:
         start_song=int.from_bytes(data[16:18], "big"),
         name=data[22:54].rstrip(b"\x00").decode("latin-1", "replace"),
         author=data[54:86].rstrip(b"\x00").decode("latin-1", "replace"),
-        released=data[86:118].rstrip(b"\x00").decode("latin-1", "replace") if len(data) >= 118 else "",
+        released=data[86:118].rstrip(b"\x00").decode("latin-1", "replace")
+        if len(data) >= 118
+        else "",
         clock=clock,
         sid_model=sid_model,
     )
@@ -303,6 +310,7 @@ def parse_sid_header(data: bytes) -> SidHeader:
 # ---------------------------------------------------------------------------
 # Waveform scene
 # ---------------------------------------------------------------------------
+
 
 class WaveformScene(VoiceScopeRenderer, Scene):
     WANTS_AUDIO_LOCK = True
@@ -356,21 +364,25 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     # passes (~1 s @ 60 Hz) costs only a few ms on a throwaway host emu.
     _RATE_PROBE_TICKS = 64
 
-    def __init__(self, api: C64Backend, audio: AudioStreamer | None,
-                 file: str,
-                 song: int = 0,
-                 duration_s: float | None = None,
-                 target_fps: float | None = None,
-                 system: str = "NTSC",
-                 color_mode: str = "per_voice",
-                 voice_colors: list | None = None,
-                 waveform_colors: dict | None = None,
-                 time_base: str = TIME_BASE_WALLCLOCK,
-                 auto_cycles: float = 4.0,
-                 persistence: str = "off",
-                 scroll_columns: int | list[int] = 0,
-                 reg_poll_hz: float | None = None,
-                 songlengths_db: LengthsDB | None = None):
+    def __init__(
+        self,
+        api: C64Backend,
+        audio: AudioStreamer | None,
+        file: str,
+        song: int = 0,
+        duration_s: float | None = None,
+        target_fps: float | None = None,
+        system: str = "NTSC",
+        color_mode: str = "per_voice",
+        voice_colors: list | None = None,
+        waveform_colors: dict | None = None,
+        time_base: str = TIME_BASE_WALLCLOCK,
+        auto_cycles: float = 4.0,
+        persistence: str = "off",
+        scroll_columns: int | list[int] = 0,
+        reg_poll_hz: float | None = None,
+        songlengths_db: LengthsDB | None = None,
+    ):
         """Initialize the scene.
 
         file: a `resolve_file_spec` spec — single .sid path, a directory,
@@ -409,10 +421,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._candidates = resolve_file_spec(file, SID_EXTS, label="waveform")
         self._pick_and_load_sid()
 
-        name = (self.header.name.strip()
-                or os.path.splitext(os.path.basename(self._sid_file))[0])
-        super().__init__(api, audio, None,
-                         f"SID: {name} #{self.song}")
+        name = self.header.name.strip() or os.path.splitext(os.path.basename(self._sid_file))[0]
+        super().__init__(api, audio, None, f"SID: {name} #{self.song}")
         # True when prepare_next() has already picked+loaded this
         # iteration's tune (and refreshed self.name); setup() then skips
         # the re-pick to avoid loading the SID twice. See
@@ -531,6 +541,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         """Re-resolve the spec at setup time so directory contents can
         change between iterations (newly dropped SIDs are picked up)."""
         from .config import SID_EXTS, resolve_file_spec
+
         return resolve_file_spec(self.file_spec, SID_EXTS, label="waveform")
 
     def _load_sid_file(self, path: str) -> None:
@@ -543,11 +554,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         with open(path, "rb") as f:
             sid_bytes = f.read()
         header = parse_sid_header(sid_bytes)
-        if self._song_arg < 0 or (self._song_arg > header.num_songs
-                                  and self._song_arg != 0):
+        if self._song_arg < 0 or (self._song_arg > header.num_songs and self._song_arg != 0):
             raise ValueError(
                 f"waveform: song {self._song_arg} out of range "
-                f"0..{header.num_songs} for {os.path.basename(path)}")
+                f"0..{header.num_songs} for {os.path.basename(path)}"
+            )
         # Refuse only SIDs whose payload would clobber EVERY candidate VIC
         # bank's display regions — i.e. no bank can host the hires bitmap +
         # screen RAM. The display relocates to bank 2 ($8400/$A000) or bank 1
@@ -564,7 +575,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 f"overlaps the display regions of every candidate VIC bank "
                 f"(bank 0 $0400/$2000, bank 2 $8400/$A000, bank 1 $5400/$6000); "
                 f"WaveformScene can't place the bitmap + screen RAM without "
-                f"clobbering the tune. Pick a smaller SID.")
+                f"clobbering the tune. Pick a smaller SID."
+            )
 
         self._sid_file = path
         self.sid_bytes = sid_bytes
@@ -592,7 +604,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 f"within the host emulator's cycle cap over "
                 f"{self._PLAY_PREFLIGHT_TICKS} passes — the tune spins on a "
                 f"raster/IRQ the player environment doesn't provide; it would "
-                f"hang the C64-side player (silent + unresponsive). Refused.")
+                f"hang the C64-side player (silent + unresponsive). Refused."
+            )
         # The pre-flight advanced the emulator by up to one non-capped PLAY
         # pass (it breaks on the first that returns). That ~20 ms head start
         # is cosmetically irrelevant to the scope and not worth a rebuild.
@@ -608,17 +621,19 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         pool = list(self._candidates)
         random.shuffle(pool)
         last_error: Exception | None = None
-        for path in pool[:self._MAX_PICK_ATTEMPTS]:
+        for path in pool[: self._MAX_PICK_ATTEMPTS]:
             try:
                 self._load_sid_file(path)
             except ValueError as e:
-                log.warning("waveform: skipping %s: %s",
-                            os.path.basename(path), e)
+                log.warning("waveform: skipping %s: %s", os.path.basename(path), e)
                 last_error = e
                 continue
             if len(self._candidates) > 1:
-                log.info("waveform: picked %s from %d candidates",
-                         os.path.basename(path), len(self._candidates))
+                log.info(
+                    "waveform: picked %s from %d candidates",
+                    os.path.basename(path),
+                    len(self._candidates),
+                )
             return
         # Every attempted candidate failed validation. Re-raise the last
         # error so the caller (validate_scene_cfg or setup) sees a real
@@ -626,7 +641,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         raise ValueError(
             f"waveform: file spec {self.file_spec!r} resolved to "
             f"{len(self._candidates)} candidate(s) but none could be "
-            f"loaded; last error: {last_error}")
+            f"loaded; last error: {last_error}"
+        )
 
     def _resolve_duration_for_current_sid(self) -> float:
         """Compute the playback duration for self.sid_bytes + self.song.
@@ -636,9 +652,12 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if self.songlengths_db is not None:
             looked_up = self.songlengths_db.lookup(self.sid_bytes, self.song)
             if looked_up is not None:
-                log.info("waveform: songlengths matched %s #%d → %.1fs",
-                         os.path.basename(self._sid_file), self.song,
-                         looked_up)
+                log.info(
+                    "waveform: songlengths matched %s #%d → %.1fs",
+                    os.path.basename(self._sid_file),
+                    self.song,
+                    looked_up,
+                )
                 return float(looked_up)
         return 180.0
 
@@ -656,8 +675,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             log.error("waveform: %s", e)
             return False
         self.duration_s = float(self._resolve_duration_for_current_sid())
-        name = (self.header.name.strip()
-                or os.path.splitext(os.path.basename(self._sid_file))[0])
+        name = self.header.name.strip() or os.path.splitext(os.path.basename(self._sid_file))[0]
         self.name = f"SID: {name} #{self.song}"
         return True
 
@@ -688,8 +706,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._last_voice_wave = [-1, -1, -1]
         self._ever_sounded = False
         self._silence_since = None
-        overlay_names = [getattr(ov, "name", type(ov).__name__)
-                         for ov in self.overlays]
+        overlay_names = [getattr(ov, "name", type(ov).__name__) for ov in self.overlays]
         ov_str = ", ".join(overlay_names) if overlay_names else "no overlays"
         # Surface the resolved knobs so a `persistence = "random"` config
         # leaves a trace of which preset actually got picked.
@@ -699,9 +716,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         log.info(
             "scene %r: SID color_mode=%s duration=%.1fs @ %.0ffps "
             "time_base=%s persistence=%s scroll=%s [%s]",
-            self.name, self.color_mode, self.duration_s,
-            self.target_fps, self.time_base, persist_label,
-            self.scroll_columns, ov_str,
+            self.name,
+            self.color_mode,
+            self.duration_s,
+            self.target_fps,
+            self.time_base,
+            persist_label,
+            self.scroll_columns,
+            ov_str,
         )
 
         # Stop our 4-bit DAC streaming if it's running — the SID is about
@@ -724,8 +746,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         #     bank 2's $B400 at INIT and reads it back there on every PLAY;
         #     the write-only view missed that read and clobbered it.
         footprint = ram_write_footprint(self.sid_bytes, song=self.song)
-        display_footprint = ram_play_access_footprint(self.sid_bytes,
-                                                      song=self.song)
+        display_footprint = ram_play_access_footprint(self.sid_bytes, song=self.song)
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
 
         # For a multi-song SID, try to pin ONE display bank free for the union
@@ -740,7 +761,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if 1 < n_songs <= _UNIFIED_LAYOUT_MAX_SONGS:
             if self._unified_layout_for != self._sid_file:
                 self._unified_layout = _choose_unified_display_layout(
-                    self.sid_bytes, payload_lo, payload_hi, n_songs)
+                    self.sid_bytes, payload_lo, payload_hi, n_songs
+                )
                 self._unified_layout_for = self._sid_file
         else:
             self._unified_layout = None
@@ -754,36 +776,50 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # (playlist advances) — same graceful path as a playback failure.
         try:
             if self._unified_layout is not None:
-                (self._screen_base, self._bitmap_base, self._dd00,
-                 self._d018) = self._unified_layout
-                log.info("waveform: display bank pinned for all %d subtunes "
-                         "(screen=$%04X bitmap=$%04X $DD00=$%02X $D018=$%02X) "
-                         "— SHIFT-cycle won't relocate", n_songs,
-                         self._screen_base, self._bitmap_base, self._dd00,
-                         self._d018)
+                (self._screen_base, self._bitmap_base, self._dd00, self._d018) = (
+                    self._unified_layout
+                )
+                log.info(
+                    "waveform: display bank pinned for all %d subtunes "
+                    "(screen=$%04X bitmap=$%04X $DD00=$%02X $D018=$%02X) "
+                    "— SHIFT-cycle won't relocate",
+                    n_songs,
+                    self._screen_base,
+                    self._bitmap_base,
+                    self._dd00,
+                    self._d018,
+                )
             else:
-                (self._screen_base, self._bitmap_base, self._dd00,
-                 self._d018) = _choose_display_layout(payload_lo, payload_hi,
-                                                      display_footprint)
+                (self._screen_base, self._bitmap_base, self._dd00, self._d018) = (
+                    _choose_display_layout(payload_lo, payload_hi, display_footprint)
+                )
         except ValueError as e:
             log.error("waveform: %s — scene aborting.", e)
             self.is_done = True
             return
         if self._dd00 != CIA2.PORT_A_BANK_0:
-            log.info("waveform: display relocated to VIC bank @ "
-                     "screen=$%04X bitmap=$%04X ($DD00=$%02X $D018=$%02X) — "
-                     "payload $%04X-$%04X / PLAY footprint occupies bank 0's "
-                     "display", self._screen_base, self._bitmap_base,
-                     self._dd00, self._d018, payload_lo, payload_hi)
+            log.info(
+                "waveform: display relocated to VIC bank @ "
+                "screen=$%04X bitmap=$%04X ($DD00=$%02X $D018=$%02X) — "
+                "payload $%04X-$%04X / PLAY footprint occupies bank 0's "
+                "display",
+                self._screen_base,
+                self._bitmap_base,
+                self._dd00,
+                self._d018,
+                payload_lo,
+                payload_hi,
+            )
 
         # Build the player "avoid" bitmap: the tune's footprint + this
         # scene's CHOSEN display regions + the audio ring. Slice-assignment
         # keeps it cheap.
         avoid = bytearray(footprint)
         for lo, hi in (
-                (self._screen_base, self._screen_base + SCREEN.N_CELLS),
-                (self._bitmap_base, self._bitmap_base + SCREEN.BITMAP_BYTES),
-                (RING_BUFFER_ADDR, RING_BUFFER_END)):
+            (self._screen_base, self._screen_base + SCREEN.N_CELLS),
+            (self._bitmap_base, self._bitmap_base + SCREEN.BITMAP_BYTES),
+            (RING_BUFFER_ADDR, RING_BUFFER_END),
+        ):
             avoid[lo:hi] = b"\x01" * (hi - lo)
 
         # Decide the PLAY $01 bank: $36 (BASIC out) when this subtune reads
@@ -797,13 +833,17 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # that chains to kernal $EA31, so display + keyboard scan stay
         # under our control. See api.run_sid_player for the layout.
         try:
-            self.api.run_sid_player(self.sid_bytes, song=self.song,
-                                    avoid=avoid, play_bank=play_bank)
+            self.api.run_sid_player(
+                self.sid_bytes, song=self.song, avoid=avoid, play_bank=play_bank
+            )
         except Exception as e:
-            log.error("waveform: SID playback failed to start (%s) — "
-                      "scene aborting. PSID-only; RSIDs, SIDs that load "
-                      "below $0820, and SIDs under KERNAL ROM "
-                      "($E000-$FFFF) are rejected.", e)
+            log.error(
+                "waveform: SID playback failed to start (%s) — "
+                "scene aborting. PSID-only; RSIDs, SIDs that load "
+                "below $0820, and SIDs under KERNAL ROM "
+                "($E000-$FFFF) are rejected.",
+                e,
+            )
             self.is_done = True
             return
 
@@ -849,8 +889,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             # bank-0 display renders (a no-op when we never relocated; the
             # next scene's mode setup also writes $D018, but restore it for
             # symmetry). Mirrors modes.py teardown.
-            self.api.write_memory(f"{CIA2.PORT_A:04X}",
-                                  f"{CIA2.PORT_A_BANK_0:02X}")
+            self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
             self.api.write_memory("d018", f"{D018_HIRES_BITMAP:02X}")
             self.api.flush()
         except Exception:
@@ -927,12 +966,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         candidate = first_candidate
         for _ in range(n - 1):
             looked_up: float | None = None
-            if (self._explicit_duration_s is None
-                    and self.songlengths_db is not None):
-                looked_up = self.songlengths_db.lookup(
-                    self.sid_bytes, candidate)
-                if (looked_up is not None
-                        and looked_up < self.MIN_CYCLE_SUBTUNE_S):
+            if self._explicit_duration_s is None and self.songlengths_db is not None:
+                looked_up = self.songlengths_db.lookup(self.sid_bytes, candidate)
+                if looked_up is not None and looked_up < self.MIN_CYCLE_SUBTUNE_S:
                     skipped_short.append((candidate, looked_up))
                     candidate = (candidate % n) + 1
                     continue
@@ -962,11 +998,19 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # the SHIFT still takes effect and audio plays).
 
         for sn, sl in skipped_short:
-            log.info("waveform: cycle skipping song %d/%d (%.1fs < %.1fs "
-                     "min)", sn, n, sl, self.MIN_CYCLE_SUBTUNE_S)
+            log.info(
+                "waveform: cycle skipping song %d/%d (%.1fs < %.1fs min)",
+                sn,
+                n,
+                sl,
+                self.MIN_CYCLE_SUBTUNE_S,
+            )
         for sn in skipped_unrender:
-            log.info("waveform: cycle skipping song %d/%d (no free VIC bank "
-                     "for its PLAY footprint)", sn, n)
+            log.info(
+                "waveform: cycle skipping song %d/%d (no free VIC bank for its PLAY footprint)",
+                sn,
+                n,
+            )
 
         # Decide the new subtune's PLAY $01 bank (only for a chosen,
         # renderable candidate — the write footprint run is skipped for the
@@ -975,8 +1019,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         chosen_play_bank: int | None = None
         if chosen_access_fp is not None:
             write_fp = ram_write_footprint(self.sid_bytes, song=new_song)
-            chosen_play_bank = _play_bank_for_footprints(
-                write_fp, chosen_access_fp)
+            chosen_play_bank = _play_bank_for_footprints(write_fp, chosen_access_fp)
 
         # Stop the poll thread so it can't tick the host emulator while we
         # rebuild it. (The outgoing subtune was already silenced at the top of
@@ -1000,8 +1043,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.song = new_song
             try:
                 self.api.write_memory_file(
-                    f"{_LOW_RAM_CLEAR_LO:04X}",
-                    bytes(_LOW_RAM_CLEAR_HI - _LOW_RAM_CLEAR_LO))
+                    f"{_LOW_RAM_CLEAR_LO:04X}", bytes(_LOW_RAM_CLEAR_HI - _LOW_RAM_CLEAR_LO)
+                )
                 self.api.flush()
             except Exception:
                 log.exception("waveform: cycle low-RAM clear failed")
@@ -1016,9 +1059,12 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 self.duration_s = float(self._explicit_duration_s)
             elif chosen_duration is not None:
                 self.duration_s = float(chosen_duration)
-            log.info("waveform: cycle hard-relaunched song %d/%d (reads RAM "
-                     "under BASIC ROM — needs $36 + a clean INIT)",
-                     self.song, n)
+            log.info(
+                "waveform: cycle hard-relaunched song %d/%d (reads RAM "
+                "under BASIC ROM — needs $36 + a clean INIT)",
+                self.song,
+                n,
+            )
             return f"song {self.song}/{n}"
 
         # Fast flicker-free path for normal subtunes: cue the C64-side re-INIT
@@ -1032,8 +1078,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         try:
             api.cue_song_reinit(new_song, play_bank=chosen_play_bank)
         except Exception:
-            log.exception("waveform: cycle_style cue_song_reinit failed "
-                          "for song %d", new_song)
+            log.exception("waveform: cycle_style cue_song_reinit failed for song %d", new_song)
             self.is_done = True
             return None
 
@@ -1050,9 +1095,12 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.duration_s = float(self._explicit_duration_s)
         elif chosen_duration is not None:
             self.duration_s = float(chosen_duration)
-            log.info("waveform: songlengths matched %s #%d → %.1fs",
-                     os.path.basename(self._sid_file), self.song,
-                     self.duration_s)
+            log.info(
+                "waveform: songlengths matched %s #%d → %.1fs",
+                os.path.basename(self._sid_file),
+                self.song,
+                self.duration_s,
+            )
 
         # Reset clocks so the new song gets its full duration and the
         # envelope dt doesn't accumulate the cycle-induced gap.
@@ -1099,13 +1147,21 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # just repaint the title row so the song number updates — the delta
         # cache is still valid (bitmap + screen RAM weren't disturbed).
         if chosen_layout is not None and chosen_layout != (
-                self._screen_base, self._bitmap_base, self._dd00, self._d018):
-            (self._screen_base, self._bitmap_base, self._dd00,
-             self._d018) = chosen_layout
-            log.info("waveform: cycle relocated display to screen=$%04X "
-                     "bitmap=$%04X ($DD00=$%02X $D018=$%02X) for song %d",
-                     self._screen_base, self._bitmap_base, self._dd00,
-                     self._d018, self.song)
+            self._screen_base,
+            self._bitmap_base,
+            self._dd00,
+            self._d018,
+        ):
+            (self._screen_base, self._bitmap_base, self._dd00, self._d018) = chosen_layout
+            log.info(
+                "waveform: cycle relocated display to screen=$%04X "
+                "bitmap=$%04X ($DD00=$%02X $D018=$%02X) for song %d",
+                self._screen_base,
+                self._bitmap_base,
+                self._dd00,
+                self._d018,
+                self.song,
+            )
             self.api.invalidate_cache()
             self._apply_display_bank()
         else:
@@ -1167,21 +1223,22 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         host emulator up immediately (covering the _setup_hires bitmap-clear
         gap). See _poll_regs for the wall-clock catch-up model."""
         rate = self._detect_play_rate_hz()
-        if (self._user_reg_poll_hz is None
-                and abs(rate - self._video_hz) > 0.5):
-            log.info("waveform: %s is CIA-timed (multispeed) — host "
-                     "emulator PLAY rate %.1f Hz (%.2fx video) to track "
-                     "the real chip's audio",
-                     os.path.basename(self._sid_file), rate,
-                     rate / self._video_hz)
+        if self._user_reg_poll_hz is None and abs(rate - self._video_hz) > 0.5:
+            log.info(
+                "waveform: %s is CIA-timed (multispeed) — host "
+                "emulator PLAY rate %.1f Hz (%.2fx video) to track "
+                "the real chip's audio",
+                os.path.basename(self._sid_file),
+                rate,
+                rate / self._video_hz,
+            )
         self._reg_poll_hz = float(rate)
         # Per-PLAY-tick dt used to advance the ADSR envelope — must match the
         # tick rate so the envelope tracks wall-clock.
         self._poll_dt = 1.0 / max(rate, 5.0)
-        self._poll = PollThread(self._poll_regs,
-                                period=self._poll_dt,
-                                name="sid-reg-poll",
-                                run_first=True)
+        self._poll = PollThread(
+            self._poll_regs, period=self._poll_dt, name="sid-reg-poll", run_first=True
+        )
 
     def _poll_regs(self) -> None:
         """Advance the host emulator to the PLAY-tick count wall-clock says
@@ -1206,8 +1263,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         envelope would stay stuck at 0 and its strip flat. The render thread
         only reads voice state and advances the display-phase accumulator
         (both under self._reg_lock)."""
-        target = round((time.time() - self._sid_start_time)
-                       * self._reg_poll_hz)
+        target = round((time.time() - self._sid_start_time) * self._reg_poll_hz)
         n = target - self._ticks_done
         if n <= 0:
             # Ahead of (or exactly on) schedule — let wall-clock catch up.
@@ -1275,8 +1331,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._render_hires()
         return True
 
-    def _check_end_of_tune(self, current_time: float,
-                           env_levels: list[float]) -> bool:
+    def _check_end_of_tune(self, current_time: float, env_levels: list[float]) -> bool:
         """Return True when the tune has been silent long enough to end the
         scene. Arms only after the first audible envelope (so a slow-to-start
         tune isn't killed), tracks the start of the current all-silent
@@ -1292,8 +1347,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self._silence_since = current_time
             return False
         if current_time - self._silence_since >= self.END_SILENCE_S:
-            log.info("waveform: %r silent %.1fs after sounding — ending scene",
-                     self.name, self.END_SILENCE_S)
+            log.info(
+                "waveform: %r silent %.1fs after sounding — ending scene",
+                self.name,
+                self.END_SILENCE_S,
+            )
             return True
         return False
 
@@ -1304,8 +1362,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         digit). Song number is always zero-padded to the width of
         num_songs (so "03/11" not "3/11") — keeps the SHIFT-update window
         a constant width and column regardless of which subtune is current."""
-        name = (self.header.name.strip() or
-                os.path.basename(self._sid_file)).upper()
+        name = (self.header.name.strip() or os.path.basename(self._sid_file)).upper()
         author = self.header.author.strip().upper() or "?"
         w = self._song_num_width
         # The space + "(SONG " prefix is included in the suffix so the
@@ -1320,7 +1377,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         fixed_right_w = len(prefix) + w + len(suffix_after_num) + len(author) + 1
         max_name = SCREEN_W_CHARS - fixed_right_w
         if len(name) > max_name:
-            name = name[:max(0, max_name)]
+            name = name[: max(0, max_name)]
         song_str = f"{self.song:0{w}d}"
         left = f"{name}{prefix}{song_str}{suffix_after_num}"
         line = _layout_lr(left, author)
@@ -1339,13 +1396,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         line, song_col = self._build_title_line()
         self._song_num_col = song_col
         fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
-        self._paint_text_row(TITLE_ROW, line, fg,
-                             RegionID.WAVE_TITLE_BITMAP,
-                             RegionID.WAVE_TITLE_SCREEN)
+        self._paint_text_row(
+            TITLE_ROW, line, fg, RegionID.WAVE_TITLE_BITMAP, RegionID.WAVE_TITLE_SCREEN
+        )
 
     def _paint_metadata_row(self) -> None:
         line = self._build_metadata_line()
         fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
-        self._paint_text_row(META_ROW, line, fg,
-                             RegionID.WAVE_META_BITMAP,
-                             RegionID.WAVE_META_SCREEN)
+        self._paint_text_row(
+            META_ROW, line, fg, RegionID.WAVE_META_BITMAP, RegionID.WAVE_META_SCREEN
+        )

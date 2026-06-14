@@ -6,6 +6,7 @@ that the mic hard gate is bypassed when DSP is active (the expander takes over),
 and that the offline (REU pre-encode) path applies the same DSP. No hardware —
 FakeAPI stands in for the U64.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -30,8 +31,9 @@ SR = 8000
 
 
 def _streamer(dsp_params: DSPParams | None) -> AudioStreamer:
-    return AudioStreamer(cast(Ultimate64API, FakeAPI()), SR, "NTSC",
-                         dither=False, dsp_params=dsp_params)
+    return AudioStreamer(
+        cast(Ultimate64API, FakeAPI()), SR, "NTSC", dither=False, dsp_params=dsp_params
+    )
 
 
 def _quiet_sine(amp_db: float, secs: float = 0.5) -> np.ndarray:
@@ -53,9 +55,11 @@ class EncodePathTest(unittest.TestCase):
         # compressor + makeup than the raw linear encode does.
         x = _quiet_sine(-20.0)
         raw = encode_floats_to_dac(x, dither=False)
-        s = _streamer(DSPParams(enabled=True, compress=True,
-                                comp_threshold_db=-24.0, expander=False,
-                                limiter=True))
+        s = _streamer(
+            DSPParams(
+                enabled=True, compress=True, comp_threshold_db=-24.0, expander=False, limiter=True
+            )
+        )
         self.assertTrue(s._dsp_active())
         proc = encode_floats_to_dac(s._apply_dsp(x), dither=False)
         # Spread around the 7/8 midpoint = how much DAC range is used.
@@ -64,8 +68,7 @@ class EncodePathTest(unittest.TestCase):
     def test_offline_dsp_matches_realtime_chain(self):
         # process_offline_dsp must apply the same (line) chain the realtime
         # encode path uses, so REU-staged and host commercial audio agree.
-        params = DSPParams(enabled=True, compress=True, expander=True,
-                           limiter=True)
+        params = DSPParams(enabled=True, compress=True, expander=True, limiter=True)
         x = _quiet_sine(-18.0, secs=0.3)
         realtime = _streamer(params)._apply_dsp(x)
         offline = _streamer(params).process_offline_dsp(x)
@@ -82,8 +85,9 @@ class MicChainTest(unittest.TestCase):
         # The mic chain (is_mic=True) activates AGC; the line chain does not.
         # pre_emphasis=0.0 isolates AGC (the source-aware default would
         # otherwise add a PreEmphasis stage to the line chain too).
-        params = DSPParams(enabled=True, agc=True, compress=False,
-                           expander=False, limiter=False, pre_emphasis=0.0)
+        params = DSPParams(
+            enabled=True, agc=True, compress=False, expander=False, limiter=False, pre_emphasis=0.0
+        )
         s = _streamer(params)  # __init__ builds the line chain (no AGC)
         line_active_only = s._dsp.active
         # start_mic rebuilds with is_mic=True; emulate that rebuild directly
@@ -93,8 +97,7 @@ class MicChainTest(unittest.TestCase):
         boosted = s._apply_dsp(x)
         # Line chain had no enabled stage (AGC is mic-only) → inactive no-op.
         self.assertFalse(line_active_only)
-        self.assertGreater(float(np.sqrt(np.mean(boosted ** 2))),
-                           float(np.sqrt(np.mean(x ** 2))) * 1.5)
+        self.assertGreater(float(np.sqrt(np.mean(boosted**2))), float(np.sqrt(np.mean(x**2))) * 1.5)
 
     def test_no_dsp_params_defaults_to_inactive(self):
         s = AudioStreamer(cast(Ultimate64API, FakeAPI()), SR, "NTSC")

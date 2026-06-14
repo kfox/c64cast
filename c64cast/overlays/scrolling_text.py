@@ -8,6 +8,7 @@ flicker is bounded by the cell-shift rate.
 Paints into the scene's composed screen+color buffers (compose-based
 overlay), so the scene + this overlay produce one upload per frame with
 no flicker."""
+
 from __future__ import annotations
 
 import logging
@@ -39,6 +40,7 @@ class ScrollMessage:
       "scroll"  — slides in from the right, off to the left.
       "static"  — appears centered for the full duration, no scrolling.
     """
+
     text: str
     color: str = "white"
     style: str = "scroll"
@@ -48,7 +50,8 @@ class ScrollMessage:
     def __post_init__(self):
         if self.style not in ("scroll", "static"):
             raise ValueError(
-                f"ScrollMessage: style must be 'scroll' or 'static', got {self.style!r}")
+                f"ScrollMessage: style must be 'scroll' or 'static', got {self.style!r}"
+            )
 
 
 @register("scrolling_text")
@@ -64,17 +67,16 @@ class ScrollingTextOverlay(Overlay):
         "bg_color": "Background color (C64 color name).",
     }
 
-    def __init__(self, messages: list, row: int = 24,
-                 speed_cells_per_s: float = 6.0,
-                 bg_color: str = "black"):
+    def __init__(
+        self, messages: list, row: int = 24, speed_cells_per_s: float = 6.0, bg_color: str = "black"
+    ):
         if not messages:
             raise ValueError("scrolling_text: messages must be non-empty")
         if not (0 <= row < SCREEN_H):
             raise ValueError(f"scrolling_text: row must be 0..{SCREEN_H - 1}")
         self.row = row
         self.speed = float(speed_cells_per_s)
-        self.bg_color = (C64_COLORS[bg_color]
-                         if bg_color in C64_COLORS else C64_COLORS["black"])
+        self.bg_color = C64_COLORS[bg_color] if bg_color in C64_COLORS else C64_COLORS["black"]
         # Accept either ScrollMessage instances or dicts (TOML inline tables).
         self.messages: list[ScrollMessage] = []
         for m in messages:
@@ -151,7 +153,7 @@ class ScrollingTextOverlay(Overlay):
         dst_start = max(0, x)
         copy_n = min(n - src_start, SCREEN_W - dst_start)
         if copy_n > 0:
-            row[dst_start:dst_start + copy_n] = text[src_start:src_start + copy_n]
+            row[dst_start : dst_start + copy_n] = text[src_start : src_start + copy_n]
 
     def compose(self, buffers: dict, scene, t: float) -> None:
         elapsed = t - self.start_time
@@ -162,5 +164,5 @@ class ScrollingTextOverlay(Overlay):
         # so the row reads as a band of bg cells where the text isn't.
         colors = np.where(row != SC_SPACE, color_idx, self.bg_color).astype(np.uint8)
         base = self.row * SCREEN_W
-        buffers["screen"][base:base + SCREEN_W] = row
-        buffers["color"][base:base + SCREEN_W] = colors
+        buffers["screen"][base : base + SCREEN_W] = row
+        buffers["color"][base : base + SCREEN_W] = colors

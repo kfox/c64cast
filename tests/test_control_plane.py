@@ -5,6 +5,7 @@ functions directly and don't depend on fastapi/httpx. The end-to-end
 HTTP tests (`SingleSystemBackCompatTest`, `MultiSystemTest`) drive the
 real FastAPI app via TestClient and skip when httpx isn't available
 (TestClient requires it)."""
+
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock
 
 try:
     import fastapi  # noqa: F401
+
     HAVE_FASTAPI = True
 except ImportError:
     HAVE_FASTAPI = False
@@ -23,6 +25,7 @@ try:
     # extra, so a bare `pip install fastapi` can still leave the import
     # failing at runtime. Catch any ImportError, not just fastapi's.
     from fastapi.testclient import TestClient
+
     HAVE_TESTCLIENT = True
 except (ImportError, RuntimeError):
     HAVE_TESTCLIENT = False
@@ -65,6 +68,7 @@ class ResponseShapeTest(unittest.TestCase):
 
     def test_status_dict_shape(self):
         from c64cast.control_plane import _status_for
+
         pl = _fake_playlist("a")
         body = _status_for(pl)
         self.assertEqual(body["current_scene"], "a-scene-0")
@@ -77,12 +81,14 @@ class ResponseShapeTest(unittest.TestCase):
 
     def test_status_dict_reflects_pause_state(self):
         from c64cast.control_plane import _status_for
+
         pl = _fake_playlist("a")
         pl.pause_event.set()
         self.assertTrue(_status_for(pl)["paused"])
 
     def test_scenes_dict_shape(self):
         from c64cast.control_plane import _scenes_for
+
         pl = _fake_playlist("a", scene_count=3)
         body = _scenes_for(pl)
         self.assertEqual(len(body["scenes"]), 3)
@@ -98,24 +104,25 @@ class BuildAppConstructionTest(unittest.TestCase):
 
     def test_empty_playlists_rejected(self):
         from c64cast.control_plane import build_app
+
         with self.assertRaises(ValueError) as cm:
             build_app(playlists={}, config_loaders={}, interstitial_factories={})
         self.assertIn("at least one playlist", str(cm.exception))
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT,
-                     "fastapi.testclient (httpx) not installed")
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class SingleSystemBackCompatTest(unittest.TestCase):
     """When there's exactly one system, omitting ?system= must return the
     same un-wrapped JSON shape today's clients expect."""
 
     def _client(self):
         from c64cast.control_plane import build_app
+
         pl = _fake_playlist("system")
         app = build_app(
             playlists={"system": pl},
             config_loaders={"system": lambda: pl.scenes},
-            interstitial_factories={"system": lambda: (lambda n: None)},
+            interstitial_factories={"system": lambda: lambda n: None},
         )
         return TestClient(app), pl
 
@@ -160,19 +167,16 @@ class SingleSystemBackCompatTest(unittest.TestCase):
         self.assertTrue(pl.skip_event.is_set())
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT,
-                     "fastapi.testclient (httpx) not installed")
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class MultiSystemTest(unittest.TestCase):
-
     def _client(self):
         from c64cast.control_plane import build_app
+
         playlists = {n: _fake_playlist(n) for n in ("left", "right")}
         app = build_app(
             playlists=playlists,
-            config_loaders={n: (lambda p=p: p.scenes)
-                            for n, p in playlists.items()},
-            interstitial_factories={n: (lambda: lambda nm: None)
-                                    for n in playlists},
+            config_loaders={n: (lambda p=p: p.scenes) for n, p in playlists.items()},
+            interstitial_factories={n: (lambda: lambda nm: None) for n in playlists},
         )
         return TestClient(app), playlists
 
@@ -182,8 +186,7 @@ class MultiSystemTest(unittest.TestCase):
         body = r.json()
         self.assertIn("systems", body)
         self.assertEqual(set(body["systems"].keys()), {"left", "right"})
-        self.assertEqual(body["systems"]["left"]["current_scene"],
-                         "left-scene-0")
+        self.assertEqual(body["systems"]["left"]["current_scene"], "left-scene-0")
 
     def test_status_specific_system_unwraps(self):
         client, _ = self._client()
@@ -228,6 +231,7 @@ class MultiSystemTest(unittest.TestCase):
     def test_reload_per_system_errors_dont_block_others(self):
         # Stub one loader to raise; the other still reloads.
         from c64cast.control_plane import build_app
+
         playlists = {n: _fake_playlist(n) for n in ("a", "b")}
 
         def _boom():
@@ -240,8 +244,8 @@ class MultiSystemTest(unittest.TestCase):
                 "b": lambda: playlists["b"].scenes,
             },
             interstitial_factories={
-                "a": lambda: (lambda nm: None),
-                "b": lambda: (lambda nm: None),
+                "a": lambda: lambda nm: None,
+                "b": lambda: lambda nm: None,
             },
         )
         client = TestClient(app)
@@ -258,12 +262,13 @@ class MultiSystemTest(unittest.TestCase):
         # (e.g. defaults-only single-system mode) must yield a friendly
         # per-system error, not a KeyError → 500.
         from c64cast.control_plane import build_app
+
         playlists = {n: _fake_playlist(n) for n in ("with_path", "no_path")}
         app = build_app(
             playlists=playlists,
             config_loaders={"with_path": lambda: playlists["with_path"].scenes},
             interstitial_factories={
-                "with_path": lambda: (lambda nm: None),
+                "with_path": lambda: lambda nm: None,
             },
         )
         client = TestClient(app)

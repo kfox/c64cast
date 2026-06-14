@@ -1,5 +1,6 @@
 """Tests for the C64 palette quantizer + the colorfulness helpers
 (boost_saturation, make_gray_penalty, pick_diverse_top_n)."""
+
 # FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
 # argument-type complaints in the grayscale MHires test.
 # pyright: reportArgumentType=false
@@ -73,8 +74,7 @@ class GrayPenaltyTest(unittest.TestCase):
         # grayscale palette_mode uses a very large chromatic_strength to
         # force every argmin onto the gray axis. The penalty vector should
         # only touch chromatic indices; gray-axis entries stay untouched.
-        p = make_gray_penalty(gray_strength=0.0, pale_strength=0.0,
-                              chromatic_strength=1000.0)
+        p = make_gray_penalty(gray_strength=0.0, pale_strength=0.0, chromatic_strength=1000.0)
         for i in CHROMATIC_INDICES:
             self.assertEqual(p[i], 1000.0)
         for i in GRAY_INDICES:
@@ -97,8 +97,7 @@ class GrayPenaltyTest(unittest.TestCase):
 
 class BoostSaturationTest(unittest.TestCase):
     def test_identity_when_factor_is_one(self):
-        img = (np.random.default_rng(0).integers(0, 256, (10, 10, 3))
-               .astype(np.uint8))
+        img = np.random.default_rng(0).integers(0, 256, (10, 10, 3)).astype(np.uint8)
         out = boost_saturation(img, 1.0)
         # Identity means same object back (cheap shortcut in the impl).
         self.assertIs(out, img)
@@ -124,13 +123,13 @@ class BoostSaturationTest(unittest.TestCase):
 class DiverseTopNTest(unittest.TestCase):
     def test_picks_most_populated_first(self):
         counts = np.zeros(16, dtype=np.int64)
-        counts[2] = 1000   # red — most populated
-        counts[5] = 500    # green
-        counts[6] = 250    # blue
+        counts[2] = 1000  # red — most populated
+        counts[5] = 500  # green
+        counts[6] = 250  # blue
         picks = pick_diverse_top_n(counts, 3)
         self.assertEqual(picks[0], 2)
         self.assertEqual(len(picks), 3)
-        self.assertEqual(len(set(picks)), 3)   # all unique
+        self.assertEqual(len(set(picks)), 3)  # all unique
 
     def test_skips_near_hue_neighbor_in_favor_of_distant_hue(self):
         # Construct counts where slots 2 (red) and 10 (light red) are most
@@ -138,9 +137,9 @@ class DiverseTopNTest(unittest.TestCase):
         # but far in hue. We expect: red → green → light red — green jumps
         # ahead of light red because of the diversity rule.
         counts = np.zeros(16, dtype=np.int64)
-        counts[2] = 1000     # red
-        counts[10] = 900     # light red (similar hue to red)
-        counts[5] = 100      # green (far hue)
+        counts[2] = 1000  # red
+        counts[10] = 900  # light red (similar hue to red)
+        counts[5] = 100  # green (far hue)
         picks = pick_diverse_top_n(counts, 3, min_hue_gap_deg=45.0)
         self.assertEqual(picks[0], 2)
         self.assertEqual(picks[1], 5, f"expected green after red, got {picks}")
@@ -161,9 +160,9 @@ class DiverseTopNTest(unittest.TestCase):
         # When chromatic entries run out, gray-axis entries should still
         # appear via the fallback path so n slots are always filled.
         counts = np.zeros(16, dtype=np.int64)
-        counts[0] = 500    # black
-        counts[1] = 400    # white
-        counts[12] = 300   # gray
+        counts[0] = 500  # black
+        counts[1] = 400  # white
+        counts[12] = 300  # gray
         picks = pick_diverse_top_n(counts, 3)
         self.assertEqual(sorted(picks), [0, 1, 12])
 
@@ -171,14 +170,16 @@ class DiverseTopNTest(unittest.TestCase):
 class PaletteHueClassificationTest(unittest.TestCase):
     def test_gray_axis_entries_marked_nan(self):
         for i in GRAY_INDICES:
-            self.assertTrue(np.isnan(_PALETTE_HUES_DEG[i]),
-                            f"gray-axis entry {i} should have NaN hue")
+            self.assertTrue(
+                np.isnan(_PALETTE_HUES_DEG[i]), f"gray-axis entry {i} should have NaN hue"
+            )
 
     def test_chromatic_entries_have_real_hue(self):
         chromatic = set(range(16)) - set(GRAY_INDICES)
         for i in chromatic:
-            self.assertFalse(np.isnan(_PALETTE_HUES_DEG[i]),
-                             f"chromatic entry {i} should have a hue")
+            self.assertFalse(
+                np.isnan(_PALETTE_HUES_DEG[i]), f"chromatic entry {i} should have a hue"
+            )
 
 
 class HueCorrectionTest(unittest.TestCase):
@@ -196,10 +197,14 @@ class HueCorrectionTest(unittest.TestCase):
         # A dark, blue-leaning violet (TRON arena-wall glyph color, BGR) maps
         # to blue/gray without correction and to C64 purple (index 4) with it.
         violet = np.array([[[120, 30, 70]]], dtype=np.uint8)  # B=120 G=30 R=70
-        self.assertNotEqual(self._pipeline_index(violet, ()), 4,
-                            "violet should NOT reach purple without correction")
-        self.assertEqual(self._pipeline_index(violet, DEFAULT_HUE_CORRECTIONS), 4,
-                         "violet should reach C64 purple with the default rescue")
+        self.assertNotEqual(
+            self._pipeline_index(violet, ()), 4, "violet should NOT reach purple without correction"
+        )
+        self.assertEqual(
+            self._pipeline_index(violet, DEFAULT_HUE_CORRECTIONS),
+            4,
+            "violet should reach C64 purple with the default rescue",
+        )
 
     def test_empty_table_is_identity(self):
         img = np.array([[[120, 30, 70], [10, 200, 200]]], dtype=np.uint8)
@@ -216,8 +221,9 @@ class HueCorrectionTest(unittest.TestCase):
             np.testing.assert_array_equal(out, img)
 
     def test_parse_validates_and_roundtrips(self):
-        hc = parse_hue_corrections([
-            {"hue_lo_deg": 10, "hue_hi_deg": 40, "sat_mult": 1.5, "name": "x"}])
+        hc = parse_hue_corrections(
+            [{"hue_lo_deg": 10, "hue_hi_deg": 40, "sat_mult": 1.5, "name": "x"}]
+        )
         self.assertEqual(len(hc), 1)
         self.assertIsInstance(hc[0], HueCorrection)
         self.assertEqual(hc[0].name, "x")
@@ -230,12 +236,10 @@ class HueCorrectionTest(unittest.TestCase):
             parse_hue_corrections([{"hue_lo_deg": -5, "hue_hi_deg": 40}])
         # Non-positive multiplier.
         with self.assertRaises(ValueError):
-            parse_hue_corrections([
-                {"hue_lo_deg": 10, "hue_hi_deg": 40, "sat_mult": 0}])
+            parse_hue_corrections([{"hue_lo_deg": 10, "hue_hi_deg": 40, "sat_mult": 0}])
         # Unknown key.
         with self.assertRaises(ValueError):
-            parse_hue_corrections([
-                {"hue_lo_deg": 10, "hue_hi_deg": 40, "bogus": 1}])
+            parse_hue_corrections([{"hue_lo_deg": 10, "hue_hi_deg": 40, "bogus": 1}])
 
 
 class ColorFitTest(unittest.TestCase):
@@ -287,8 +291,8 @@ class ColorFitTest(unittest.TestCase):
         # A frame already spanning black→white (full luma range) needs no fit.
         acc = ColorFitAccumulator(strength=1.0)
         img = np.zeros((40, 40, 3), dtype=np.uint8)
-        img[:, :20] = (0, 0, 0)            # black half
-        img[:, 20:] = (255, 255, 255)      # white half → luma spans 0..255
+        img[:, :20] = (0, 0, 0)  # black half
+        img[:, 20:] = (255, 255, 255)  # white half → luma spans 0..255
         acc.add(img)
         fit = acc.result()
         # Either identity (None) or a fit that is effectively identity.
@@ -355,15 +359,14 @@ class ColorMapTest(unittest.TestCase):
         self.assertFalse(np.array_equal(top, bot))
 
     def test_explicit_indices_constrain_output_palette(self):
-        whitelist = [0, 2, 6]   # black, red, blue
+        whitelist = [0, 2, 6]  # black, red, blue
         acc = ColorMapAccumulator(indices=whitelist)
         acc.add(self._three_region_image())
         cmap = acc.result()
         assert cmap is not None
         self.assertTrue(set(cmap.indices).issubset(set(whitelist)))
         out = cmap.apply(self._three_region_image())
-        allowed = {tuple(C64_PALETTE_BGR[i].astype(np.uint8).tolist())
-                   for i in whitelist}
+        allowed = {tuple(C64_PALETTE_BGR[i].astype(np.uint8).tolist()) for i in whitelist}
         for color in np.unique(out.reshape(-1, 3), axis=0):
             self.assertIn(tuple(int(x) for x in color), allowed)
 
@@ -377,14 +380,15 @@ class DisplayModePaletteTest(unittest.TestCase):
     def _fake_frame(self):
         # 240×320 BGR frame with a few distinct color regions.
         f = np.zeros((240, 320, 3), dtype=np.uint8)
-        f[:, :80] = (40, 40, 200)         # red-ish
-        f[:, 80:160] = (40, 180, 40)      # green-ish
-        f[:, 160:240] = (180, 40, 40)     # blue-ish
-        f[:, 240:] = (180, 180, 180)      # light gray
+        f[:, :80] = (40, 40, 200)  # red-ish
+        f[:, 80:160] = (40, 180, 40)  # green-ish
+        f[:, 160:240] = (180, 40, 40)  # blue-ish
+        f[:, 240:] = (180, 180, 180)  # light gray
         return f
 
     def test_mcm_palette_mode_validation(self):
         from c64cast.modes import MCMDisplayMode
+
         with self.assertRaises(ValueError):
             MCMDisplayMode(palette_mode="bogus")
         # All valid modes construct cleanly. percell is accepted as an
@@ -399,6 +403,7 @@ class DisplayModePaletteTest(unittest.TestCase):
 
     def test_mhires_palette_mode_validation(self):
         from c64cast.modes import MultiHiresDisplayMode
+
         with self.assertRaises(ValueError):
             MultiHiresDisplayMode(palette_mode="bogus")
         for mode in ("cheap", "vivid", "grayscale", "percell"):
@@ -412,13 +417,13 @@ class DisplayModePaletteTest(unittest.TestCase):
         # configurable: bands extend the defaults, replace+[] disables them,
         # and channel_boost overrides the built-in BGR gain.
         from c64cast.modes import MCMDisplayMode, MultiHiresDisplayMode
+
         for cls in (MCMDisplayMode, MultiHiresDisplayMode):
-            extended = cls(palette_mode="percell",
-                           hue_corrections=[{"hue_lo_deg": 10, "hue_hi_deg": 40}])
-            self.assertEqual(len(extended._hue_corrections),
-                             len(DEFAULT_HUE_CORRECTIONS) + 1)
-            disabled = cls(palette_mode="vivid", hue_corrections=[],
-                           hue_corrections_replace=True)
+            extended = cls(
+                palette_mode="percell", hue_corrections=[{"hue_lo_deg": 10, "hue_hi_deg": 40}]
+            )
+            self.assertEqual(len(extended._hue_corrections), len(DEFAULT_HUE_CORRECTIONS) + 1)
+            disabled = cls(palette_mode="vivid", hue_corrections=[], hue_corrections_replace=True)
             self.assertEqual(disabled._hue_corrections, ())
             boosted = cls(palette_mode="cheap", channel_boost=[1.0, 1.0, 1.0])
             self.assertEqual(tuple(boosted._channel_boost), (1.0, 1.0, 1.0))
@@ -431,9 +436,9 @@ class DisplayModePaletteTest(unittest.TestCase):
         self.assertEqual(out.shape, (3,))
         self.assertEqual(out.dtype, np.float32)
         with self.assertRaises(ValueError):
-            parse_channel_boost([1.0, 1.0])            # wrong length
+            parse_channel_boost([1.0, 1.0])  # wrong length
         with self.assertRaises(ValueError):
-            parse_channel_boost([1.0, 0.0, 1.0])       # non-positive
+            parse_channel_boost([1.0, 0.0, 1.0])  # non-positive
 
     def test_mhires_percell_writes_nonconstant_screen_and_color_ram(self):
         # The global modes uploaded one repeated byte to $0400 and $D800.
@@ -453,6 +458,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import MultiHiresDisplayMode
+
         f = np.zeros((240, 320, 3), dtype=np.uint8)
         yy = np.linspace(0, 255, 240, dtype=np.uint8)[:, None]
         xx = np.linspace(0, 255, 320, dtype=np.uint8)[None, :]
@@ -467,10 +473,12 @@ class DisplayModePaletteTest(unittest.TestCase):
         color = api.regions[0xD800]
         self.assertEqual(len(screen), 1000)
         self.assertEqual(len(color), 1000)
-        self.assertGreater(len(set(screen)), 1,
-                           "percell should write varied screen RAM, not constant")
-        self.assertGreater(len(set(color)), 1,
-                           "percell should write varied color RAM, not constant")
+        self.assertGreater(
+            len(set(screen)), 1, "percell should write varied screen RAM, not constant"
+        )
+        self.assertGreater(
+            len(set(color)), 1, "percell should write varied color RAM, not constant"
+        )
 
     def test_mhires_percell_is_stable_on_identical_frames(self):
         # Per-cell EMA on the top-3 picks means rendering the same frame
@@ -481,6 +489,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import MultiHiresDisplayMode
+
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="percell")
         m.setup(api)
@@ -506,6 +515,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import MultiHiresDisplayMode
+
         rng = np.random.default_rng(42)
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="percell")
@@ -523,17 +533,20 @@ class DisplayModePaletteTest(unittest.TestCase):
         noisy = frame.copy()
         mask = rng.random(noisy.shape[:2]) < 0.02
         noise = rng.integers(-1, 2, size=(*noisy.shape[:2], 3), dtype=np.int16)
-        perturbed = np.clip(noisy.astype(np.int16) + noise * mask[..., None],
-                            0, 255).astype(np.uint8)
+        perturbed = np.clip(noisy.astype(np.int16) + noise * mask[..., None], 0, 255).astype(
+            np.uint8
+        )
         m.render(api, perturbed)
         bitmap1 = bytes(api.regions[0x2000])
         # Most bytes should still match — hysteresis filters the noise.
         same = sum(a == b for a, b in zip(bitmap0, bitmap1, strict=True))
         # 8000 bytes total; allow modest drift for cells where the noise
         # genuinely pushes the cell histogram. ≥95% byte match is the bar.
-        self.assertGreaterEqual(same, 7600,
-                                f"hysteresis allowed too many bitmap flips: "
-                                f"{8000 - same} bytes changed under ±1 noise")
+        self.assertGreaterEqual(
+            same,
+            7600,
+            f"hysteresis allowed too many bitmap flips: {8000 - same} bytes changed under ±1 noise",
+        )
 
     def test_mhires_percell_excludes_bg0_from_per_cell_picks(self):
         # The %00 code already addresses bg0 for free, so the per-cell
@@ -542,6 +555,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import MultiHiresDisplayMode
+
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="percell")
         m.setup(api)
@@ -559,6 +573,7 @@ class DisplayModePaletteTest(unittest.TestCase):
 
     def test_mcm_cheap_compose_produces_three_bg_colors(self):
         from c64cast.modes import MCMDisplayMode
+
         m = MCMDisplayMode(palette_mode="cheap")
         out = m.compose(self._fake_frame())
         self.assertIn("screen", out)
@@ -573,6 +588,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         # should reach for the chromatic entries instead of letting any
         # remaining gray-axis variants take 2 of the 3 bg slots.
         from c64cast.modes import MCMDisplayMode
+
         cheap = MCMDisplayMode(palette_mode="cheap").compose(self._fake_frame())
         vivid = MCMDisplayMode(palette_mode="vivid").compose(self._fake_frame())
         cheap_gray = sum(1 for i in cheap["bg"] if int(i) in GRAY_INDICES)
@@ -597,25 +613,27 @@ class GrayscaleModeTest(unittest.TestCase):
 
     def test_mcm_grayscale_picks_only_gray_axis_bgs(self):
         from c64cast.modes import MCMDisplayMode
+
         m = MCMDisplayMode(palette_mode="grayscale")
         out = m.compose(self._fake_frame())
         for slot in out["bg"]:
-            self.assertIn(int(slot), GRAY_INDICES,
-                          f"bg slot {int(slot)} is not on the gray axis")
+            self.assertIn(int(slot), GRAY_INDICES, f"bg slot {int(slot)} is not on the gray axis")
         # Per-cell FG: low 3 bits of color RAM = FG (MCM uses bit 3 as the
         # multicolor flag, so only palette indices 0..7 are reachable as
         # FG). The two gray-axis entries in that range are 0 (black) and
         # 1 (white) — every FG should be one of those.
         gray_in_fg_range = {i for i in GRAY_INDICES if i < 8}
         for i, fg in enumerate(out["color"]):
-            self.assertIn(int(fg) & 0x07, gray_in_fg_range,
-                          f"cell {i} FG {int(fg) & 0x07} is not gray-axis")
+            self.assertIn(
+                int(fg) & 0x07, gray_in_fg_range, f"cell {i} FG {int(fg) & 0x07} is not gray-axis"
+            )
 
     def test_mhires_grayscale_picks_only_gray_axis_globals(self):
         # MultiHires.render() doesn't return buffers; capture via FakeAPI.
         from _fakes import FakeAPI
 
         from c64cast.modes import MultiHiresDisplayMode
+
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="grayscale")
         m.setup(api)
@@ -630,8 +648,7 @@ class GrayscaleModeTest(unittest.TestCase):
         # Color RAM byte = c3 (broadcast across all cells).
         c3 = api.regions[0xD800][0] & 0x0F
         for label, idx in (("c1", c1), ("c2", c2), ("c3", c3)):
-            self.assertIn(idx, GRAY_INDICES,
-                          f"global slot {label}={idx} is not on the gray axis")
+            self.assertIn(idx, GRAY_INDICES, f"global slot {label}={idx} is not on the gray axis")
 
 
 class CycleStyleTest(unittest.TestCase):
@@ -641,6 +658,7 @@ class CycleStyleTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import PALETTE_MODES, MCMDisplayMode
+
         api = FakeAPI()
         m = MCMDisplayMode(palette_mode="cheap")
         # Cycle through every mode + back to the start.
@@ -662,6 +680,7 @@ class CycleStyleTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import MCMDisplayMode
+
         api = FakeAPI()
         m = MCMDisplayMode(palette_mode="vivid")
         self.assertIsNone(m._fixed_bg)
@@ -677,6 +696,7 @@ class CycleStyleTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import MultiHiresDisplayMode
+
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="cheap")
         self.assertIsNone(m._fixed_lut)
@@ -692,6 +712,7 @@ class CycleStyleTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         from c64cast.modes import HIRES_STYLES, HiresDisplayMode
+
         api = FakeAPI()
         m = HiresDisplayMode(style="normal")
         seen = [m.style]
@@ -705,6 +726,7 @@ class CycleStyleTest(unittest.TestCase):
 
     def test_hires_style_validation(self):
         from c64cast.modes import HiresDisplayMode
+
         with self.assertRaises(ValueError):
             HiresDisplayMode(style="bogus")
         HiresDisplayMode(style="normal")

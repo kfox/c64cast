@@ -27,9 +27,11 @@ def grab(index: int, warmup: int = 5):
 
     cap = cv2.VideoCapture(index)
     if not cap.isOpened():
-        raise SystemExit(f"could not open cv2 capture device {index} "
-                         f"(Cam Link default is {d.CAMLINK_CV2_INDEX}; "
-                         f"override with --index or C64_DIAG_CV2)")
+        raise SystemExit(
+            f"could not open cv2 capture device {index} "
+            f"(Cam Link default is {d.CAMLINK_CV2_INDEX}; "
+            f"override with --index or C64_DIAG_CV2)"
+        )
     try:
         for _ in range(max(0, warmup)):  # let exposure/handshake settle
             cap.read()
@@ -42,15 +44,18 @@ def grab(index: int, warmup: int = 5):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--index", type=int, default=d.CAMLINK_CV2_INDEX,
-                    help=f"cv2 capture index (default {d.CAMLINK_CV2_INDEX})")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--index",
+        type=int,
+        default=d.CAMLINK_CV2_INDEX,
+        help=f"cv2 capture index (default {d.CAMLINK_CV2_INDEX})",
+    )
     ap.add_argument("-n", "--count", type=int, default=1, help="frames to grab")
-    ap.add_argument("--delay", type=float, default=0.5,
-                    help="seconds between frames when -n > 1")
-    ap.add_argument("-o", "--out", default=None,
-                    help="explicit output path (only valid with -n 1)")
+    ap.add_argument("--delay", type=float, default=0.5, help="seconds between frames when -n > 1")
+    ap.add_argument("-o", "--out", default=None, help="explicit output path (only valid with -n 1)")
     args = ap.parse_args()
 
     import cv2
@@ -60,8 +65,7 @@ def main() -> int:
 
     for i in range(args.count):
         frame = grab(args.index)
-        path = (args.out if args.out
-                else str(d.stamped(f"hdmi_{i:02d}", "png")))
+        path = args.out if args.out else str(d.stamped(f"hdmi_{i:02d}", "png"))
         cv2.imwrite(path, frame)
         h, w = frame.shape[:2]
         print(f"wrote {path} ({w}x{h})")

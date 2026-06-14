@@ -4,6 +4,7 @@ The blank mode is a standard PETSCII char mode with no video input —
 just SC_SPACE everywhere with configurable border + background. Used
 as a clean canvas for overlays (e.g. big_text title cards).
 """
+
 # FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
 # argument-type complaints across the file rather than spraying per-call
 # ignores. compose(None) is allowed at runtime even though the annotated
@@ -20,7 +21,6 @@ from c64cast.modes import BlankDisplayMode, MCMDisplayMode
 
 
 class BlankDisplayModeTest(unittest.TestCase):
-
     def test_construct_with_defaults(self):
         m = BlankDisplayMode()
         self.assertEqual(m.border, 0)
@@ -77,22 +77,21 @@ class BlankDisplayModeTest(unittest.TestCase):
 
 
 class BlankSceneTest(unittest.TestCase):
-
     def test_scene_constructs_without_source(self):
         from c64cast.scenes import BlankScene
+
         api = FakeAPI()
         mode = BlankDisplayMode()
-        scene = BlankScene(api, audio=None, display_mode=mode,
-                            audio_cfg=MagicMock(), name="Blank")
+        scene = BlankScene(api, audio=None, display_mode=mode, audio_cfg=MagicMock(), name="Blank")
         self.assertEqual(scene.name, "Blank")
         self.assertIsNone(scene.audio)
 
     def test_process_frame_returns_false_after_duration(self):
         from c64cast.scenes import BlankScene
+
         api = FakeAPI()
         mode = BlankDisplayMode()
-        scene = BlankScene(api, audio=None, display_mode=mode,
-                            audio_cfg=MagicMock(), name="Blank")
+        scene = BlankScene(api, audio=None, display_mode=mode, audio_cfg=MagicMock(), name="Blank")
         scene.duration_s = 0.1
         scene.setup()
         # First frame: well under duration.
@@ -109,11 +108,13 @@ class PetsciiCompatibleValidationTest(unittest.TestCase):
 
     def test_blank_mode_accepts_petscii_overlay(self):
         from c64cast.overlays import build_overlay, validate_for_scene
+
         ov = build_overlay({"type": "clock"}, audio=None)
         validate_for_scene(ov, BlankDisplayMode())  # no raise
 
     def test_mcm_still_rejects_petscii_overlay(self):
         from c64cast.overlays import build_overlay, validate_for_scene
+
         ov = build_overlay({"type": "clock"}, audio=None)
         with self.assertRaises(ValueError):
             validate_for_scene(ov, MCMDisplayMode())

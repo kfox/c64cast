@@ -29,18 +29,28 @@ import _diaglib as d
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--config", required=True, help="c64cast TOML config")
-    ap.add_argument("-t", "--seconds", type=float, default=20.0,
-                    help="how long to let the scene run (default 20)")
+    ap.add_argument(
+        "-t",
+        "--seconds",
+        type=float,
+        default=20.0,
+        help="how long to let the scene run (default 20)",
+    )
     ap.add_argument("--label", default="run", help="output filename prefix")
     ap.add_argument("--url", default=d.U64_URL)
-    ap.add_argument("--frames", type=int, default=3,
-                    help="HDMI frames to grab across the run (0 = none)")
+    ap.add_argument(
+        "--frames", type=int, default=3, help="HDMI frames to grab across the run (0 = none)"
+    )
     ap.add_argument("--no-audio", action="store_true", help="skip audio capture")
-    ap.add_argument("--no-reset", action="store_true",
-                    help="leave the machine running for inspection (default: reset)")
+    ap.add_argument(
+        "--no-reset",
+        action="store_true",
+        help="leave the machine running for inspection (default: reset)",
+    )
     ap.add_argument("--cv2-index", type=int, default=d.CAMLINK_CV2_INDEX)
     ap.add_argument("--avf-audio", default=d.CAMLINK_AVF_AUDIO)
     args = ap.parse_args()
@@ -58,16 +68,32 @@ def main() -> int:
         wav = str(d.stamped(f"{args.label}_audio", "wav"))
         # Non-blocking: start the recorder, THEN launch c64cast.
         audio_proc = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-f", "avfoundation", "-i", args.avf_audio,
-             "-t", str(audio_len), "-ac", "1", "-ar", "48000", wav],
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "avfoundation",
+                "-i",
+                args.avf_audio,
+                "-t",
+                str(audio_len),
+                "-ac",
+                "1",
+                "-ar",
+                "48000",
+                wav,
+            ],
         )
         print(f"[audio] recording {audio_len:g}s -> {wav}")
         time.sleep(1.5)  # let the avfoundation stream actually come up
 
     print(f"[run] python -m c64cast --config {cfg}")
-    app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                            "--config", str(cfg), "--url", args.url])
+    app = subprocess.Popen(
+        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+    )
 
     # Grab frames spread across the active window (after boot).
     import cv2
@@ -76,8 +102,7 @@ def main() -> int:
     if args.frames > 0:
         start = boot_margin
         span = max(0.0, args.seconds - 1.0)
-        frame_times = [start + span * (i + 1) / (args.frames + 1)
-                       for i in range(args.frames)]
+        frame_times = [start + span * (i + 1) / (args.frames + 1) for i in range(args.frames)]
 
     t0 = time.time()
     grabbed = 0
@@ -119,6 +144,7 @@ def main() -> int:
     # Analyze audio if we have any.
     if audio_proc is not None:
         from audio_capture import analyze  # reuse the volumedetect summary
+
         analyze(wav)
     return 0
 

@@ -17,6 +17,7 @@ Lives behind the `control` optional dep group (fastapi + uvicorn). The
 server runs in a background thread so it doesn't block any render loop;
 each system's Playlist + per-system reload closures are the shared state.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,18 +48,19 @@ class ControlServer:
         self.host = host
         self.port = port
         self._cfg = uvicorn.Config(
-            app, host=host, port=port, log_level="warning",
+            app,
+            host=host,
+            port=port,
+            log_level="warning",
             access_log=False,
         )
         self._server = uvicorn.Server(self._cfg)
         self._thread: threading.Thread | None = None
 
     def start(self):
-        self._thread = threading.Thread(
-            target=self._server.run, daemon=True, name="control-plane")
+        self._thread = threading.Thread(target=self._server.run, daemon=True, name="control-plane")
         self._thread.start()
-        log.info("control plane: listening on http://%s:%d",
-                 self.host, self.port)
+        log.info("control plane: listening on http://%s:%d", self.host, self.port)
 
     def stop(self):
         self._server.should_exit = True
@@ -82,30 +84,33 @@ def _status_for(pl: Playlist) -> dict[str, Any]:
 
 def _scenes_for(pl: Playlist) -> dict[str, Any]:
     import math
+
     return {
         "scenes": [
-            {"index": i, "name": s.name,
-             # CommercialScene uses math.inf to mean "runs until the file
-             # ends"; JSON can't carry inf, so surface that as None.
-             "duration_s": (None if math.isinf(s.duration_s)
-                            else s.duration_s),
-             "is_current": i == pl.index}
+            {
+                "index": i,
+                "name": s.name,
+                # CommercialScene uses math.inf to mean "runs until the file
+                # ends"; JSON can't carry inf, so surface that as None.
+                "duration_s": (None if math.isinf(s.duration_s) else s.duration_s),
+                "is_current": i == pl.index,
+            }
             for i, s in enumerate(pl.scenes)
         ]
     }
 
 
-def build_app(playlists: Mapping[str, Playlist],
-              config_loaders: Mapping[str, SceneFactory],
-              interstitial_factories: Mapping[str, InterstitialFactory]):
+def build_app(
+    playlists: Mapping[str, Playlist],
+    config_loaders: Mapping[str, SceneFactory],
+    interstitial_factories: Mapping[str, InterstitialFactory],
+):
     """Build the FastAPI app. Split from start_control_server so tests can
     drive it with a TestClient without binding a real socket."""
     try:
         from fastapi import FastAPI, HTTPException, Query
     except ImportError as e:
-        raise RuntimeError(
-            "control plane requires fastapi: pip install c64cast[control]"
-        ) from e
+        raise RuntimeError("control plane requires fastapi: pip install c64cast[control]") from e
 
     if not playlists:
         raise ValueError("control plane needs at least one playlist")
@@ -120,8 +125,7 @@ def build_app(playlists: Mapping[str, Playlist],
             return names
         if system in playlists:
             return [system]
-        raise HTTPException(
-            404, f"unknown system {system!r}; known: {names}")
+        raise HTTPException(404, f"unknown system {system!r}; known: {names}")
 
     app = FastAPI(title="c64cast", version="0.1.0")
 
@@ -168,8 +172,7 @@ def build_app(playlists: Mapping[str, Playlist],
         if not resumed and len(targets) == 1:
             # Preserve the 409 today's single-system clients expect.
             raise HTTPException(409, "not currently paused")
-        return {"ok": True, "resumed": resumed,
-                "skipped_not_paused": skipped}
+        return {"ok": True, "resumed": resumed, "skipped_not_paused": skipped}
 
     @app.post("/skip")
     def skip(system: str | None = Query(default=None)):
@@ -209,11 +212,13 @@ def build_app(playlists: Mapping[str, Playlist],
     return app
 
 
-def start_control_server(host: str, port: int,
-                         playlists: Mapping[str, Playlist],
-                         config_loaders: Mapping[str, SceneFactory],
-                         interstitial_factories: Mapping[str, InterstitialFactory],
-                         ) -> ControlServer:
+def start_control_server(
+    host: str,
+    port: int,
+    playlists: Mapping[str, Playlist],
+    config_loaders: Mapping[str, SceneFactory],
+    interstitial_factories: Mapping[str, InterstitialFactory],
+) -> ControlServer:
     """Build the FastAPI app + start a uvicorn server. Returns the server
     handle (caller calls `.stop()` at shutdown)."""
     app = build_app(playlists, config_loaders, interstitial_factories)

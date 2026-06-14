@@ -9,6 +9,7 @@ aligns the way the author drew it. Lines wider than 40 chars are
 truncated (with a warning) so weird files don't silently corrupt the
 display.
 """
+
 from __future__ import annotations
 
 import logging
@@ -58,8 +59,7 @@ def _load_art(path: str) -> list[str]:
     out = []
     for ln in lines:
         if len(ln) > SCREEN_W:
-            log.warning("logo: line %d exceeds %d cols, truncating",
-                        len(out) + 1, SCREEN_W)
+            log.warning("logo: line %d exceeds %d cols, truncating", len(out) + 1, SCREEN_W)
             ln = ln[:SCREEN_W]
         out.append(ln)
     width = max(len(ln) for ln in out)
@@ -81,12 +81,15 @@ class LogoOverlay(Overlay):
         "bg_color": "Background color, or 'none' to leave the scene showing through.",
     }
 
-    def __init__(self, file: str,
-                 corner: str | None = None,
-                 row: int | None = None,
-                 col: int | None = None,
-                 fg_color: str = "white",
-                 bg_color: str = "black"):
+    def __init__(
+        self,
+        file: str,
+        corner: str | None = None,
+        row: int | None = None,
+        col: int | None = None,
+        fg_color: str = "white",
+        bg_color: str = "black",
+    ):
         # Missing file → render a friendly placeholder instead of crashing.
         # Lets the example config "just work" even before the user has
         # dropped their own art into assets/logos/.
@@ -94,11 +97,9 @@ class LogoOverlay(Overlay):
         if self._placeholder:
             log.warning("logo: file %r not found — using placeholder", file)
         if corner is None and (row is None or col is None):
-            raise ValueError(
-                "logo: must specify either `corner` or both `row` + `col`")
+            raise ValueError("logo: must specify either `corner` or both `row` + `col`")
         if corner is not None and corner not in VALID_CORNERS:
-            raise ValueError(
-                f"logo: corner must be one of {VALID_CORNERS}")
+            raise ValueError(f"logo: corner must be one of {VALID_CORNERS}")
         self.file = file
         self.corner = corner
         self.row = row
@@ -112,8 +113,7 @@ class LogoOverlay(Overlay):
             self.lines = _load_art(file)
         # Limit total rows to the screen height.
         if len(self.lines) > SCREEN_H:
-            log.warning("logo: %d rows exceeds %d; truncating",
-                        len(self.lines), SCREEN_H)
+            log.warning("logo: %d rows exceeds %d; truncating", len(self.lines), SCREEN_H)
             self.lines = self.lines[:SCREEN_H]
         self._h = len(self.lines)
         self._w = max(len(ln) for ln in self.lines)
@@ -125,12 +125,12 @@ class LogoOverlay(Overlay):
             self._col = int(self.col)
         if self._row < 0 or self._row + self._h > SCREEN_H:
             raise ValueError(
-                f"logo: rows {self._row}..{self._row + self._h - 1} "
-                f"don't fit in 0..{SCREEN_H - 1}")
+                f"logo: rows {self._row}..{self._row + self._h - 1} don't fit in 0..{SCREEN_H - 1}"
+            )
         if self._col < 0 or self._col + self._w > SCREEN_W:
             raise ValueError(
-                f"logo: cols {self._col}..{self._col + self._w - 1} "
-                f"don't fit in 0..{SCREEN_W - 1}")
+                f"logo: cols {self._col}..{self._col + self._w - 1} don't fit in 0..{SCREEN_W - 1}"
+            )
         # Pre-encode once; logo is static so this never changes.
         self._encoded = [ascii_to_screen(ln) for ln in self.lines]
 
@@ -141,5 +141,5 @@ class LogoOverlay(Overlay):
             y = self._row + i
             base = y * SCREEN_W + self._col
             row_chars = np.frombuffer(encoded, dtype=np.uint8)
-            screen[base:base + self._w] = row_chars
-            color[base:base + self._w] = self.fg
+            screen[base : base + self._w] = row_chars
+            color[base : base + self._w] = self.fg

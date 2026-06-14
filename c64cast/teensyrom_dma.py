@@ -39,6 +39,7 @@ Two transports share the framing via the `TRTransport` byte-I/O interface:
 socket, port 2112). pyserial is imported lazily so the module loads without
 the extra installed.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -52,26 +53,26 @@ from collections import deque
 log = logging.getLogger(__name__)
 
 DEFAULT_TCP_PORT = 2112
-DEFAULT_BAUD = 2_000_000      # 2 Mbaud 8N1, per the firmware author
+DEFAULT_BAUD = 2_000_000  # 2 Mbaud 8N1, per the firmware author
 
 # ---- protocol tokens (Common_Defs.h) --------------------------------------
 TOK_WRITE_C64_MEM = 0x64FB
-TOK_RESET_C64     = 0x64EE
-TOK_LAUNCH_FILE   = 0x6444
-TOK_POST_FILE     = 0x64BB
-TOK_DELETE_FILE   = 0x64CF
-TOK_PING          = 0x6455
-TOK_FW_CHECK      = 0x64E0
-TOK_ACK           = 0x64CC
-TOK_FAIL          = 0x9B7F
-TOK_RETRY         = 0x9B7E
-TOK_FW_MINIMAL    = 0x64E1
-TOK_FW_FULL       = 0x64E2
+TOK_RESET_C64 = 0x64EE
+TOK_LAUNCH_FILE = 0x6444
+TOK_POST_FILE = 0x64BB
+TOK_DELETE_FILE = 0x64CF
+TOK_PING = 0x6455
+TOK_FW_CHECK = 0x64E0
+TOK_ACK = 0x64CC
+TOK_FAIL = 0x9B7F
+TOK_RETRY = 0x9B7E
+TOK_FW_MINIMAL = 0x64E1
+TOK_FW_FULL = 0x64E2
 
 # PostFile / LaunchFile storage selector (RegMenuTypes). PostFile supports
 # USB + SD only; Teensy is launch-target-only.
-DRIVE_USB    = 0
-DRIVE_SD     = 1
+DRIVE_USB = 0
+DRIVE_SD = 1
 # (RegMenuTypes also defines Teensy = 2, but it's launch-target-only — never a
 # PostFile destination — so c64cast has no use for it.)
 
@@ -117,8 +118,7 @@ class TRTransport(ABC):
 class SerialTransport(TRTransport):
     """USB-serial link via pyserial (the ``tr`` extra). 2 Mbaud 8N1."""
 
-    def __init__(self, port: str, baud: int = DEFAULT_BAUD,
-                 io_timeout: float = 2.0):
+    def __init__(self, port: str, baud: int = DEFAULT_BAUD, io_timeout: float = 2.0):
         self.port = port
         self.baud = baud
         self.io_timeout = io_timeout
@@ -131,21 +131,28 @@ class SerialTransport(TRTransport):
             raise TRError(
                 "pyserial is not installed — install the 'tr' extra "
                 "(uv sync --extra tr) to use the TeensyROM serial "
-                "transport.") from e
+                "transport."
+            ) from e
         try:
             self._ser = serial.Serial(
-                self.port, baudrate=self.baud, bytesize=8,
-                parity="N", stopbits=1,
-                timeout=self.io_timeout, write_timeout=self.io_timeout)
+                self.port,
+                baudrate=self.baud,
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+                timeout=self.io_timeout,
+                write_timeout=self.io_timeout,
+            )
         except serial.SerialException as e:
             raise TRError(
                 f"could not open serial port {self.port!r}: {e}. Check the "
-                "USB cable to the TR's micro-USB-B port and the port name.") from e
+                "USB cable to the TR's micro-USB-B port and the port name."
+            ) from e
 
     def send_all(self, data: bytes) -> None:
         assert self._ser is not None
-        self._ser.write(data)   # type: ignore[attr-defined]
-        self._ser.flush()       # type: ignore[attr-defined]
+        self._ser.write(data)  # type: ignore[attr-defined]
+        self._ser.flush()  # type: ignore[attr-defined]
 
     def recv_exact(self, n: int) -> bytes:
         assert self._ser is not None
@@ -156,8 +163,7 @@ class SerialTransport(TRTransport):
             if chunk:
                 buf.extend(chunk)
             elif time.monotonic() > deadline:
-                raise TRError(
-                    f"serial read timed out ({len(buf)}/{n} bytes)")
+                raise TRError(f"serial read timed out ({len(buf)}/{n} bytes)")
         return bytes(buf)
 
     def drain_text(self, quiet_s: float = 0.2) -> str:
@@ -185,8 +191,13 @@ class SerialTransport(TRTransport):
 class TcpTransport(TRTransport):
     """Raw-TCP link to the TR's TCP listener (port 2112). No extra dep."""
 
-    def __init__(self, host: str, port: int = DEFAULT_TCP_PORT,
-                 connect_timeout: float = 5.0, io_timeout: float = 2.0):
+    def __init__(
+        self,
+        host: str,
+        port: int = DEFAULT_TCP_PORT,
+        connect_timeout: float = 5.0,
+        io_timeout: float = 2.0,
+    ):
         self.host = host
         self.port = port
         self.connect_timeout = connect_timeout
@@ -195,12 +206,12 @@ class TcpTransport(TRTransport):
 
     def connect(self) -> None:
         try:
-            sock = socket.create_connection(
-                (self.host, self.port), timeout=self.connect_timeout)
+            sock = socket.create_connection((self.host, self.port), timeout=self.connect_timeout)
         except OSError as e:
             raise TRError(
                 f"could not connect to {self.host}:{self.port}: {e}. Enable "
-                "'Enable TCP Listener' in the TR setup and reboot it.") from e
+                "'Enable TCP Listener' in the TR setup and reboot it."
+            ) from e
         sock.settimeout(self.io_timeout)
         # No Nagle — small ack-gated commands must ship immediately.
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -217,8 +228,7 @@ class TcpTransport(TRTransport):
             try:
                 chunk = self._sock.recv(n - len(buf))
             except TimeoutError as e:
-                raise TRError(
-                    f"tcp read timed out ({len(buf)}/{n} bytes)") from e
+                raise TRError(f"tcp read timed out ({len(buf)}/{n} bytes)") from e
             if not chunk:
                 raise TRError("tcp socket closed mid-read")
             buf.extend(chunk)
@@ -273,7 +283,7 @@ class TRClient:
         self.transport = transport
         self._lock = threading.Lock()
         self._latencies: deque[float] = deque(maxlen=256)
-        self.firmware = "unknown"   # "full" | "minimal" | "unknown"
+        self.firmware = "unknown"  # "full" | "minimal" | "unknown"
 
     # ---- connect / close -------------------------------------------------
     def connect(self) -> None:
@@ -289,8 +299,9 @@ class TRClient:
             self.firmware = self._fw_check_unlocked()
         except TRError:
             self.firmware = "unknown"
-        log.info("teensyrom: connected via %s (firmware: %s)",
-                 self.transport.description, self.firmware)
+        log.info(
+            "teensyrom: connected via %s (firmware: %s)", self.transport.description, self.firmware
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -311,8 +322,9 @@ class TRClient:
 
     @staticmethod
     def _u32(value: int) -> bytes:
-        return bytes([(value >> 24) & 0xFF, (value >> 16) & 0xFF,
-                      (value >> 8) & 0xFF, value & 0xFF])
+        return bytes(
+            [(value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]
+        )
 
     def _read_token(self) -> int:
         """Read a 16-bit reply token. Replies are little-endian (LSB first)."""
@@ -327,8 +339,9 @@ class TRClient:
         writing produces exactly one ack per command."""
         stale = self.transport.drain_text(quiet_s)
         if stale:
-            log.debug("teensyrom: drained %d stale bytes before command: %r",
-                      len(stale), stale[:32])
+            log.debug(
+                "teensyrom: drained %d stale bytes before command: %r", len(stale), stale[:32]
+            )
 
     def _expect_ack(self, what: str) -> None:
         tok = self._read_token()
@@ -359,10 +372,9 @@ class TRClient:
     def write_segment(self, addr: int, data: bytes) -> None:
         """One WriteC64Mem command: token + addr(BE) + len(BE) + data, then
         read and verify the ack. Raises TRError on NAK/timeout."""
-        frame = (self._u16(TOK_WRITE_C64_MEM)
-                 + self._u16(addr & 0xFFFF)
-                 + self._u16(len(data))
-                 + data)
+        frame = (
+            self._u16(TOK_WRITE_C64_MEM) + self._u16(addr & 0xFFFF) + self._u16(len(data)) + data
+        )
         with self._lock:
             t0 = time.perf_counter()
             self.transport.send_all(frame)
@@ -391,8 +403,7 @@ class TRClient:
             self.transport.send_all(payload)
             self._expect_ack(f"DeleteFile {path!r}")
 
-    def post_file(self, data: bytes, dest_path: str,
-                  drive: int = DRIVE_SD) -> None:
+    def post_file(self, data: bytes, dest_path: str, drive: int = DRIVE_SD) -> None:
         """Upload `data` to `dest_path` on the given storage (DRIVE_SD /
         DRIVE_USB). Requires the TR menu to be the active handler, else the
         firmware replies "Busy!". Checksum = sum(bytes) mod 2^16.
@@ -406,10 +417,9 @@ class TRClient:
         """
         checksum = sum(data) & 0xFFFF
         path_bytes = dest_path.encode("ascii") + b"\x00"
-        header = (self._u32(len(data)) + self._u16(checksum)
-                  + bytes([drive & 0xFF]) + path_bytes)
+        header = self._u32(len(data)) + self._u16(checksum) + bytes([drive & 0xFF]) + path_bytes
         with self._lock:
-            self._drain_stale()   # clear post-reset/menu boot chatter
+            self._drain_stale()  # clear post-reset/menu boot chatter
             self.transport.send_all(self._u16(TOK_POST_FILE))
             self._expect_ack("PostFile (open)")
             self.transport.send_all(header)
@@ -422,7 +432,7 @@ class TRClient:
         drive(1)+path\\0 -> ack -> C64 launches."""
         path_bytes = bytes([drive & 0xFF]) + path.encode("ascii") + b"\x00"
         with self._lock:
-            self._drain_stale()   # clear post-reset/menu boot chatter
+            self._drain_stale()  # clear post-reset/menu boot chatter
             self.transport.send_all(self._u16(TOK_LAUNCH_FILE))
             self._expect_ack("LaunchFile (open)")
             self.transport.send_all(path_bytes)
@@ -457,6 +467,8 @@ class TRClient:
         avg, p50, p95, mx, n = self.latency_summary()
         if n == 0:
             return None
-        return (f"tr write latency: n={n} avg={avg * 1000:.1f} "
-                f"p50={p50 * 1000:.1f} p95={p95 * 1000:.1f} "
-                f"max={mx * 1000:.1f} ms")
+        return (
+            f"tr write latency: n={n} avg={avg * 1000:.1f} "
+            f"p50={p50 * 1000:.1f} p95={p95 * 1000:.1f} "
+            f"max={mx * 1000:.1f} ms"
+        )

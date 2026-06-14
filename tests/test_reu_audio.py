@@ -3,6 +3,7 @@
 These tests don't require a real U64 — they verify the bring-up sequence
 (REU upload, NMI install, IRQ vector patch order) against the FakeAPI's
 recorded write log."""
+
 from __future__ import annotations
 
 import queue
@@ -106,25 +107,31 @@ class RingBufferRelocationTest(unittest.TestCase):
         # mode (banks 0 + 2 have kernal char-ROM mapped at $1000/$9000).
         # If the ring address drifts into bank 0 or 2, REU-staged display
         # mode would race against VIC and draw audio samples as garbage.
-        self.assertGreaterEqual(RING_BUFFER_ADDR, 0x4000,
-                                "ring must not overlap VIC bank 0 ($0000-$3FFF)")
-        self.assertLess(RING_BUFFER_ADDR + RING_BUFFER_SIZE, 0x8000,
-                        "ring must not extend into VIC bank 2 ($8000+)")
+        self.assertGreaterEqual(
+            RING_BUFFER_ADDR, 0x4000, "ring must not overlap VIC bank 0 ($0000-$3FFF)"
+        )
+        self.assertLess(
+            RING_BUFFER_ADDR + RING_BUFFER_SIZE,
+            0x8000,
+            "ring must not extend into VIC bank 2 ($8000+)",
+        )
 
     def test_nmi_handler_read_hi_matches_ring_addr(self):
         # The patch site at offset READ_HI gets RING_BUFFER_HI written into
         # the LDA $???? operand. Verify the surrounding bytes form a valid
         # LDA absolute (the opcode is the byte before the patch offset).
-        self.assertEqual(NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_READ_HI - 2],
-                         0xAD, "LDA absolute opcode")
+        self.assertEqual(
+            NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_READ_HI - 2], 0xAD, "LDA absolute opcode"
+        )
 
     def test_nmi_handler_wrap_hi_matches_ring_end(self):
         # The patch site at offset WRAP_HI is the immediate operand of a
         # CMP #imm — the opcode at offset WRAP_HI-1 must be $C9. Catches a
         # future routine edit that shifts byte layouts without updating the
         # patch offsets (would silently compare against a junk byte).
-        self.assertEqual(NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_WRAP_HI - 1],
-                         0xC9, "CMP immediate opcode")
+        self.assertEqual(
+            NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_WRAP_HI - 1], 0xC9, "CMP immediate opcode"
+        )
 
     def test_nmi_handler_reset_hi_matches_ring_addr(self):
         # The wrap-reset literal (LDA #start_hi) at offset RESET_HI gets
@@ -132,8 +139,9 @@ class RingBufferRelocationTest(unittest.TestCase):
         # wrap back to a stale $80 even after the constant moved, audibly
         # silent if $8000+ is uninitialized RAM. Opcode at RESET_HI-1 must
         # be $A9 (LDA immediate).
-        self.assertEqual(NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_RESET_HI - 1],
-                         0xA9, "LDA immediate opcode")
+        self.assertEqual(
+            NMI_ROUTINE[NMI_ROUTINE_PATCH_OFFSET_RESET_HI - 1], 0xA9, "LDA immediate opcode"
+        )
 
     def test_reu_handler_wrap_check_uses_relocated_end(self):
         # The REU IRQ handler embeds RING_BUFFER_END_HI directly in its
@@ -165,9 +173,9 @@ class ReuIrqHandlerTest(unittest.TestCase):
         # from post-branch PC (=23) targets offset 33 (the PLA). Verify
         # those exact bytes — a wrong displacement landed in the middle of
         # STA $DF02 during dev and silently JAMmed the CPU at runtime.
-        self.assertEqual(REU_IRQ_HANDLER[21], 0x90)   # BCC opcode
-        self.assertEqual(REU_IRQ_HANDLER[22], 0x0A)   # +10 displacement
-        self.assertEqual(REU_IRQ_HANDLER[33], 0x68)   # PLA at branch target
+        self.assertEqual(REU_IRQ_HANDLER[21], 0x90)  # BCC opcode
+        self.assertEqual(REU_IRQ_HANDLER[22], 0x0A)  # +10 displacement
+        self.assertEqual(REU_IRQ_HANDLER[33], 0x68)  # PLA at branch target
 
     def test_handler_ends_in_jmp_kernal_irq(self):
         # Last 3 bytes must be JMP $EA31 (chain to kernal IRQ for keyboard
@@ -200,8 +208,9 @@ class StartForReuStagedTest(unittest.TestCase):
         s.start_for_reu_staged(audio)
         offsets = [off for off, _ in fake.socket_dma.reuwrites]
         # First 4 writes are the source itself.
-        self.assertEqual(offsets[:4], [0, REU_UPLOAD_SLICE,
-                                       2 * REU_UPLOAD_SLICE, 3 * REU_UPLOAD_SLICE])
+        self.assertEqual(
+            offsets[:4], [0, REU_UPLOAD_SLICE, 2 * REU_UPLOAD_SLICE, 3 * REU_UPLOAD_SLICE]
+        )
         # Source bytes are exactly preserved across the first 4 writes.
         source_bytes = b"".join(d for _, d in fake.socket_dma.reuwrites[:4])
         self.assertEqual(source_bytes, audio)
@@ -213,8 +222,9 @@ class StartForReuStagedTest(unittest.TestCase):
         self.assertEqual(first_pad_off, len(audio))
         # Pad payload is all NEUTRAL_SAMPLE.
         for _, data in pad_writes:
-            self.assertTrue(all(b == NEUTRAL_SAMPLE for b in data),
-                            "EOF pad must be all NEUTRAL_SAMPLE")
+            self.assertTrue(
+                all(b == NEUTRAL_SAMPLE for b in data), "EOF pad must be all NEUTRAL_SAMPLE"
+            )
 
     def test_handler_lands_at_c100(self):
         s = _new_streamer()
@@ -230,14 +240,13 @@ class StartForReuStagedTest(unittest.TestCase):
     def test_ring_is_prefilled_with_first_bytes_of_audio(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        audio = bytes(range(256)) * 64    # 16384 bytes, distinct pattern
+        audio = bytes(range(256)) * 64  # 16384 bytes, distinct pattern
         s.start_for_reu_staged(audio)
         ring_key = f"{RING_BUFFER_ADDR:04X}"
         # The pre-fill of the ring is the LAST write to $8000 (after the
         # initial NEUTRAL fill from _upload_nmi_and_buffers).
         ring_writes = [b for k, b in fake.writes if k == ring_key]
-        self.assertGreaterEqual(len(ring_writes), 2,
-                                "expected NEUTRAL fill THEN audio prefill")
+        self.assertGreaterEqual(len(ring_writes), 2, "expected NEUTRAL fill THEN audio prefill")
         self.assertEqual(ring_writes[-1], audio[:RING_BUFFER_SIZE])
 
     def test_short_audio_is_padded_to_ring_size(self):
@@ -252,8 +261,7 @@ class StartForReuStagedTest(unittest.TestCase):
         prefill = ring_writes[-1]
         self.assertEqual(len(prefill), RING_BUFFER_SIZE)
         self.assertEqual(prefill[:1024], audio)
-        self.assertEqual(prefill[1024:], bytes([NEUTRAL_SAMPLE] *
-                                               (RING_BUFFER_SIZE - 1024)))
+        self.assertEqual(prefill[1024:], bytes([NEUTRAL_SAMPLE] * (RING_BUFFER_SIZE - 1024)))
 
     def test_cia1_latch_is_reprogrammed(self):
         """The CIA #1 Timer A latch must be set to REU_PUMP_CIA1_LATCH so
@@ -264,9 +272,9 @@ class StartForReuStagedTest(unittest.TestCase):
         # $DC04 LO + HI written as a 4-hex-char packed value.
         self.assertIn("DC04", fake.memories)
         latch_str = fake.memories["DC04"]
-        self.assertEqual(latch_str,
-                         f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}"
-                         f"{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}")
+        self.assertEqual(
+            latch_str, f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}"
+        )
 
     def test_irq_vector_patched_last(self):
         """The IRQ vector must be the LAST significant write — patching it
@@ -280,9 +288,9 @@ class StartForReuStagedTest(unittest.TestCase):
         # write_regs stores under the base key; the vector patch is at $0314.
         self.assertIn("0314", fake.regs)
         # Confirm value is REU_PUMP_HANDLER_ADDR ($C100).
-        self.assertEqual(fake.regs["0314"],
-                         (REU_PUMP_HANDLER_ADDR & 0xFF,
-                          (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF))
+        self.assertEqual(
+            fake.regs["0314"], (REU_PUMP_HANDLER_ADDR & 0xFF, (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF)
+        )
 
     def test_reu_pump_armed_state_is_set(self):
         s = _new_streamer()
@@ -298,6 +306,7 @@ class ReuPumpChunkSizeOverrideTest(unittest.TestCase):
 
     def test_default_chunk_uses_module_constant(self):
         from c64cast.audio import REU_PUMP_CHUNK_SIZE
+
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
@@ -307,9 +316,10 @@ class ReuPumpChunkSizeOverrideTest(unittest.TestCase):
         self.assertEqual(handler[2], REU_PUMP_CHUNK_SIZE & 0xFF)
         self.assertEqual(handler[7], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
         # CIA #1 latch = chunk*128 - 1; default chunk=128 → latch=$3FFF.
-        self.assertEqual(fake.memories["DC04"],
-                         f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}"
-                         f"{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}")
+        self.assertEqual(
+            fake.memories["DC04"],
+            f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}",
+        )
 
     def test_custom_chunk_patches_handler_and_latch(self):
         s = _new_streamer()
@@ -342,14 +352,13 @@ class ReuPumpInitialMarginTest(unittest.TestCase):
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
         # $DF02 (C64_ADDR_LO) = dest = ring start + margin = $5000 → "0050".
         dst = RING_BUFFER_ADDR + REU_PUMP_INITIAL_MARGIN
-        self.assertEqual(
-            fake.memories["DF02"],
-            f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}")
+        self.assertEqual(fake.memories["DF02"], f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}")
         # $DF04 (REU_ADDR_LO) = src 24-bit = REU base + margin = $1000.
         src = REU_AUDIO_BASE + REU_PUMP_INITIAL_MARGIN
         self.assertEqual(
             fake.memories["DF04"],
-            f"{src & 0xFF:02X}{(src >> 8) & 0xFF:02X}{(src >> 16) & 0xFF:02X}")
+            f"{src & 0xFF:02X}{(src >> 8) & 0xFF:02X}{(src >> 16) & 0xFF:02X}",
+        )
 
     def test_src_offset_congruent_to_dst_position(self):
         # Data continuity invariant: REU sample N must land at ring position
@@ -362,20 +371,18 @@ class ReuPumpInitialMarginTest(unittest.TestCase):
     def test_tracked_path_seeds_half_ring_in_tracker(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         # Tracker at $C200 = src LO/MI/HI then dst LO/HI, all at half-ring.
         src = REU_AUDIO_BASE + REU_PUMP_INITIAL_MARGIN
         dst = RING_BUFFER_ADDR + REU_PUMP_INITIAL_MARGIN
         expected = (
             f"{src & 0xFF:02X}{(src >> 8) & 0xFF:02X}{(src >> 16) & 0xFF:02X}"
-            f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}")
-        self.assertEqual(
-            fake.memories[f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}"], expected)
+            f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}"
+        )
+        self.assertEqual(fake.memories[f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}"], expected)
 
 
 class ReuStopTeardownTest(unittest.TestCase):
-
     def test_stop_restores_irq_vector_when_pump_armed(self):
         """After stop(), $0314 must point back at the kernal handler ($EA31)
         so the next scene's kernal IRQ continues to work cleanly."""
@@ -383,9 +390,9 @@ class ReuStopTeardownTest(unittest.TestCase):
         fake = cast(FakeAPI, s.api)
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
         # Pre-condition: $0314 points at our handler
-        self.assertEqual(fake.regs["0314"],
-                         (REU_PUMP_HANDLER_ADDR & 0xFF,
-                          (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF))
+        self.assertEqual(
+            fake.regs["0314"], (REU_PUMP_HANDLER_ADDR & 0xFF, (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF)
+        )
         s.stop()
         # After stop: $0314 points at $EA31 (kernal IRQ handler).
         self.assertEqual(fake.regs["0314"], (0x31, 0xEA))
@@ -429,8 +436,7 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
     def test_skip_hook_leaves_vector_alone(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         self.assertNotIn("0314", fake.regs)
 
     def test_skip_hook_uploads_tracked_handler(self):
@@ -442,10 +448,10 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
             REU_AUDIO_SRC_TRACKER_ADDR,
             REU_IRQ_HANDLER_TRACKED,
         )
+
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         self.assertIn(f"{REU_PUMP_HANDLER_ADDR:04X}", fake.mem_files)
         uploaded = fake.mem_files[f"{REU_PUMP_HANDLER_ADDR:04X}"]
         # Same length as the tracked variant; only chunk-size patches differ.
@@ -459,20 +465,17 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
-        self.assertEqual(len(fake.mem_files[f"{REU_PUMP_HANDLER_ADDR:04X}"]),
-                         len(REU_IRQ_HANDLER))
+        self.assertEqual(len(fake.mem_files[f"{REU_PUMP_HANDLER_ADDR:04X}"]), len(REU_IRQ_HANDLER))
 
     def test_skip_hook_still_reprograms_cia1_latch(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         self.assertIn("DC04", fake.memories)
 
     def test_skip_hook_still_arms_pump_state(self):
         s = _new_streamer()
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         self.assertTrue(s._reu_pump_armed)
         self.assertTrue(s.running)
 
@@ -485,10 +488,10 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
             REU_PUMP_BODY_SUBROUTINE,
             REU_PUMP_BODY_SUBROUTINE_ADDR,
         )
+
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         key = f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}"
         self.assertIn(key, fake.mem_files)
         self.assertEqual(fake.mem_files[key], REU_PUMP_BODY_SUBROUTINE)
@@ -500,18 +503,22 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         # write would JSR into uninitialized RAM. Easiest correct order
         # is body upload first.
         from c64cast.audio import REU_PUMP_BODY_SUBROUTINE_ADDR
+
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         body_key = f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}"
         entry_key = f"{REU_PUMP_HANDLER_ADDR:04X}"
-        body_idx = next(i for i, op in enumerate(fake.ops)
-                        if op[0] == "write_memory_file"
-                        and op[1].upper() == body_key)
-        entry_idx = next(i for i, op in enumerate(fake.ops)
-                         if op[0] == "write_memory_file"
-                         and op[1].upper() == entry_key)
+        body_idx = next(
+            i
+            for i, op in enumerate(fake.ops)
+            if op[0] == "write_memory_file" and op[1].upper() == body_key
+        )
+        entry_idx = next(
+            i
+            for i, op in enumerate(fake.ops)
+            if op[0] == "write_memory_file" and op[1].upper() == entry_key
+        )
         self.assertLess(body_idx, entry_idx)
 
 
@@ -524,11 +531,13 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
 
     def test_handler_length_is_125(self):
         from c64cast.audio import REU_IRQ_HANDLER_TRACKED
+
         # 109 (pre-lean-exit) + 16 bytes for the divider/lean-exit tail = 125.
         self.assertEqual(len(REU_IRQ_HANDLER_TRACKED), 125)
 
     def test_pla_at_offset_105(self):
         from c64cast.audio import REU_IRQ_HANDLER_TRACKED
+
         # PLA (0x68) at offset 105 — same as pre-lean-exit. BCC +10 at
         # offset 93 still lands here.
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[105], 0x68)
@@ -538,15 +547,15 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
             REU_IRQ_HANDLER_TRACKED,
             REU_PUMP_TICK_COUNTER_ADDR,
         )
+
         # DEC $C205 (CE 05 C2)
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[106], 0xCE)
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[107],
-                         REU_PUMP_TICK_COUNTER_ADDR & 0xFF)
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[108],
-                         (REU_PUMP_TICK_COUNTER_ADDR >> 8) & 0xFF)
+        self.assertEqual(REU_IRQ_HANDLER_TRACKED[107], REU_PUMP_TICK_COUNTER_ADDR & 0xFF)
+        self.assertEqual(REU_IRQ_HANDLER_TRACKED[108], (REU_PUMP_TICK_COUNTER_ADDR >> 8) & 0xFF)
 
     def test_bne_to_lean_exit_at_offset_109(self):
         from c64cast.audio import REU_IRQ_HANDLER_TRACKED
+
         # BNE +8 (D0 08) — branches past the reload + chain block to the
         # lean exit at offset 119.
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[109], 0xD0)
@@ -557,6 +566,7 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
             REU_IRQ_HANDLER_TRACKED,
             REU_PUMP_TICK_DIVIDER,
         )
+
         # LDA #N (A9 N) — the divider value reloaded into the counter on
         # each chain tick.
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[111], 0xA9)
@@ -564,31 +574,29 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
 
     def test_chain_jmp_at_offset_116(self):
         from c64cast.audio import REU_IRQ_HANDLER_TRACKED
+
         # JMP $EA31 (4C 31 EA) — full kernal IRQ tail.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[116:119],
-                         bytes([0x4C, 0x31, 0xEA]))
+        self.assertEqual(REU_IRQ_HANDLER_TRACKED[116:119], bytes([0x4C, 0x31, 0xEA]))
 
     def test_lean_exit_at_offset_119(self):
         from c64cast.audio import REU_IRQ_HANDLER_TRACKED
+
         # LDA $DC0D (AD 0D DC) — ack CIA #1 ICR.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[119:122],
-                         bytes([0xAD, 0x0D, 0xDC]))
+        self.assertEqual(REU_IRQ_HANDLER_TRACKED[119:122], bytes([0xAD, 0x0D, 0xDC]))
         # JMP $EA81 (4C 81 EA) — kernal register-restore + RTI.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[122:125],
-                         bytes([0x4C, 0x81, 0xEA]))
+        self.assertEqual(REU_IRQ_HANDLER_TRACKED[122:125], bytes([0x4C, 0x81, 0xEA]))
 
     def test_skip_hook_seeds_tick_counter_to_one(self):
         # First IRQ must DEC the counter to 0, trigger reload+chain, then
         # N-1 lean exits follow. Seeding to 1 guarantees that on-cycle
         # right from the start regardless of what byte was at $C205.
         from c64cast.audio import REU_PUMP_TICK_COUNTER_ADDR
+
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
-        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE,
-                                skip_irq_vector_hook=True)
+        s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
         self.assertIn(f"{REU_PUMP_TICK_COUNTER_ADDR:04X}", fake.memories)
-        self.assertEqual(
-            fake.memories[f"{REU_PUMP_TICK_COUNTER_ADDR:04X}"], "01")
+        self.assertEqual(fake.memories[f"{REU_PUMP_TICK_COUNTER_ADDR:04X}"], "01")
 
 
 class ReuPositionSecondsTest(unittest.TestCase):
@@ -607,9 +615,10 @@ class ReuPositionSecondsTest(unittest.TestCase):
         s = _new_streamer()
         s._reu_pump_armed = True
         s._reu_pump_total_samples = 8000  # 1 second worth
-        s._reu_pump_start_time = 0.0      # arbitrary; clamped at 1.0
+        s._reu_pump_start_time = 0.0  # arbitrary; clamped at 1.0
         # Patch monotonic clock by manipulating start_time to be 100 s ago.
         import time as time_mod
+
         s._reu_pump_start_time = time_mod.monotonic() - 100.0
         # Expected: min(100s, 1s) = 1.0
         self.assertAlmostEqual(s.position_seconds(), 1.0, places=2)
@@ -629,33 +638,36 @@ class GovernorHandlerTest(unittest.TestCase):
 
     def test_reads_dst_hi_then_r_hi(self):
         # LDA $DF03 (dst HI), then SEC, then SBC $C026 (R HI).
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[1:4],
-                         bytes([0xAD, 0x03, 0xDF]), "LDA $DF03 (dst_hi)")
+        self.assertEqual(
+            REU_IRQ_HANDLER_GOVERNOR[1:4], bytes([0xAD, 0x03, 0xDF]), "LDA $DF03 (dst_hi)"
+        )
         self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[4], 0x38, "SEC")
         self.assertEqual(
             REU_IRQ_HANDLER_GOVERNOR[5:8],
             bytes([0xED, READ_PTR_HI_ADDR & 0xFF, (READ_PTR_HI_ADDR >> 8) & 0xFF]),
-            "SBC $C026 (R_hi)")
+            "SBC $C026 (R_hi)",
+        )
 
     def test_masks_gap_and_compares_threshold(self):
         # AND #$1F masks gap to 5 bits (32 ring HI values + discards REU
         # read-back garbage); CMP #threshold tests the half-ring skip point.
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[8:10], bytes([0x29, 0x1F]),
-                         "AND #$1F")
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[10:12],
-                         bytes([0xC9, REU_GOVERNOR_GAP_THRESHOLD_HI]),
-                         "CMP #threshold_hi")
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[8:10], bytes([0x29, 0x1F]), "AND #$1F")
+        self.assertEqual(
+            REU_IRQ_HANDLER_GOVERNOR[10:12],
+            bytes([0xC9, REU_GOVERNOR_GAP_THRESHOLD_HI]),
+            "CMP #threshold_hi",
+        )
         self.assertEqual(REU_GOVERNOR_GAP_THRESHOLD_HI, REU_PUMP_INITIAL_MARGIN >> 8)
 
     def test_bcc_skips_over_skip_block_to_pump_body(self):
         # BCC +4 (offset 12) jumps over the 4-byte skip block (PLA + JMP $EA31)
         # to the pump body at offset 18. A wrong displacement lands mid-JMP and
         # JAMs the CPU.
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[12:14], bytes([0x90, 0x04]),
-                         "BCC +4")
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[12:14], bytes([0x90, 0x04]), "BCC +4")
         self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[14], 0x68, "skip-path PLA")
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[15:18],
-                         bytes([0x4C, 0x31, 0xEA]), "skip-path JMP $EA31")
+        self.assertEqual(
+            REU_IRQ_HANDLER_GOVERNOR[15:18], bytes([0x4C, 0x31, 0xEA]), "skip-path JMP $EA31"
+        )
         # Pump body (offset 18) is REU_IRQ_HANDLER without its leading PHA.
         self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[18:], REU_IRQ_HANDLER[1:])
 
@@ -689,7 +701,7 @@ class GovernorSelectionTest(unittest.TestCase):
         handler = self._handler_at_c100(cast(FakeAPI, s.api))
         self.assertEqual(len(handler), len(REU_IRQ_HANDLER))
         self.assertEqual(handler[0], 0x48)
-        self.assertEqual(handler[1], 0xA9)            # straight into LDA #<chunk
+        self.assertEqual(handler[1], 0xA9)  # straight into LDA #<chunk
         self.assertEqual(handler[2], REU_PUMP_CHUNK_SIZE & 0xFF)
 
 
@@ -699,48 +711,47 @@ class HostDmaServoTest(unittest.TestCase):
     threads or hardware — the controller was factored out specifically so this
     is testable without a U64."""
 
-    CHUNK_PERIOD = 1024 / 8000.0      # 0.128 s, matches the worker default
+    CHUNK_PERIOD = 1024 / 8000.0  # 0.128 s, matches the worker default
 
     def test_at_target_gap_is_nominal(self):
         # Gap exactly at target, no accumulated history → no correction.
         period, integ = _servo_period(
-            HOST_DMA_SERVO_TARGET_GAP, 0.0, chunk_period=self.CHUNK_PERIOD)
+            HOST_DMA_SERVO_TARGET_GAP, 0.0, chunk_period=self.CHUNK_PERIOD
+        )
         self.assertAlmostEqual(period, self.CHUNK_PERIOD)
         self.assertEqual(integ, 0.0)
 
     def test_ahead_lengthens_behind_shortens(self):
         # W too far ahead (gap > target) → slow down (longer period).
         ahead, _ = _servo_period(
-            HOST_DMA_SERVO_TARGET_GAP + 1000, 0.0, chunk_period=self.CHUNK_PERIOD)
+            HOST_DMA_SERVO_TARGET_GAP + 1000, 0.0, chunk_period=self.CHUNK_PERIOD
+        )
         self.assertGreater(ahead, self.CHUNK_PERIOD)
         # W too close behind (gap < target) → speed up (shorter period).
         behind, _ = _servo_period(
-            HOST_DMA_SERVO_TARGET_GAP - 1000, 0.0, chunk_period=self.CHUNK_PERIOD)
+            HOST_DMA_SERVO_TARGET_GAP - 1000, 0.0, chunk_period=self.CHUNK_PERIOD
+        )
         self.assertLess(behind, self.CHUNK_PERIOD)
-        self.assertGreaterEqual(
-            behind, HOST_DMA_SERVO_PERIOD_MIN_FRAC * self.CHUNK_PERIOD)
+        self.assertGreaterEqual(behind, HOST_DMA_SERVO_PERIOD_MIN_FRAC * self.CHUNK_PERIOD)
 
     def test_period_is_clamped(self):
         # Extreme errors saturate at [MIN, MAX]·chunk_period.
-        hi, _ = _servo_period(
-            RING_BUFFER_SIZE - 1, 1e9, chunk_period=self.CHUNK_PERIOD)
-        self.assertAlmostEqual(
-            hi, HOST_DMA_SERVO_PERIOD_MAX_FRAC * self.CHUNK_PERIOD)
+        hi, _ = _servo_period(RING_BUFFER_SIZE - 1, 1e9, chunk_period=self.CHUNK_PERIOD)
+        self.assertAlmostEqual(hi, HOST_DMA_SERVO_PERIOD_MAX_FRAC * self.CHUNK_PERIOD)
         lo, _ = _servo_period(0, -1e9, chunk_period=self.CHUNK_PERIOD)
-        self.assertAlmostEqual(
-            lo, HOST_DMA_SERVO_PERIOD_MIN_FRAC * self.CHUNK_PERIOD)
+        self.assertAlmostEqual(lo, HOST_DMA_SERVO_PERIOD_MIN_FRAC * self.CHUNK_PERIOD)
 
     def test_integrator_anti_windup(self):
         # A large constant error for many iters must not let the integral's
         # contribution exceed INTEG_CLAMP·chunk_period.
         integ = 0.0
         for _ in range(10_000):
-            _, integ = _servo_period(
-                RING_BUFFER_SIZE - 1, integ, chunk_period=self.CHUNK_PERIOD)
+            _, integ = _servo_period(RING_BUFFER_SIZE - 1, integ, chunk_period=self.CHUNK_PERIOD)
         from c64cast.audio import HOST_DMA_SERVO_KI
+
         self.assertLessEqual(
-            abs(HOST_DMA_SERVO_KI * integ),
-            HOST_DMA_SERVO_INTEG_CLAMP * self.CHUNK_PERIOD + 1e-12)
+            abs(HOST_DMA_SERVO_KI * integ), HOST_DMA_SERVO_INTEG_CLAMP * self.CHUNK_PERIOD + 1e-12
+        )
 
     def test_constant_drift_converges(self):
         # Closed-loop sim: R consumes at the measured ~7690 B/s while W advances
@@ -759,8 +770,8 @@ class HostDmaServoTest(unittest.TestCase):
         for _ in range(400):
             gap = int(w - r) % ring
             gaps.append(gap)
-            self.assertGreater(gap, 0)          # never lapped
-            self.assertLess(gap, ring)          # never underran
+            self.assertGreater(gap, 0)  # never lapped
+            self.assertLess(gap, ring)  # never underran
             period, integ = _servo_period(gap, integ, chunk_period=self.CHUNK_PERIOD)
             # Advance the model one chunk: W by chunk_size, R by its rate × the
             # (servo-chosen) elapsed period.
@@ -781,21 +792,19 @@ class HostDmaServoTest(unittest.TestCase):
 
         # Servo off → always open-loop regardless of what R reads.
         s.host_dma_servo = False
-        self.assertEqual(
-            s._next_pace_increment(write_addr, self.CHUNK_PERIOD), self.CHUNK_PERIOD)
+        self.assertEqual(s._next_pace_increment(write_addr, self.CHUNK_PERIOD), self.CHUNK_PERIOD)
 
         s.host_dma_servo = True
         cases = {
-            None: self.CHUNK_PERIOD,                       # read failed
-            b"\x00": self.CHUNK_PERIOD,                    # short read (len 1)
-            bytes([0x00, 0x00]): self.CHUNK_PERIOD,        # $0000 out of ring
-            bytes([0x00, 0x70]): self.CHUNK_PERIOD,        # $7000 out of ring
+            None: self.CHUNK_PERIOD,  # read failed
+            b"\x00": self.CHUNK_PERIOD,  # short read (len 1)
+            bytes([0x00, 0x00]): self.CHUNK_PERIOD,  # $0000 out of ring
+            bytes([0x00, 0x70]): self.CHUNK_PERIOD,  # $7000 out of ring
         }
         for ret, expect in cases.items():
             s._servo_integ = 0.0
             s.api.read_memory = lambda a, n, timeout=1.0, _r=ret: _r  # type: ignore[method-assign]
-            self.assertEqual(
-                s._next_pace_increment(write_addr, self.CHUNK_PERIOD), expect)
+            self.assertEqual(s._next_pace_increment(write_addr, self.CHUNK_PERIOD), expect)
 
         # In-ring read: R=$4200, W=$4000+6000 → gap=(22384-16896)%8192=5488,
         # well above target, so the controller lengthens the period. Telemetry
@@ -805,8 +814,7 @@ class HostDmaServoTest(unittest.TestCase):
         s.api.read_memory = lambda a, n, timeout=1.0: bytes([0x00, 0x42])  # type: ignore[method-assign]
         period = s._next_pace_increment(ahead_addr, self.CHUNK_PERIOD)
         self.assertGreater(period, self.CHUNK_PERIOD)
-        self.assertEqual(s._servo_gap_last,
-                         (ahead_addr - 0x4200) % RING_BUFFER_SIZE)
+        self.assertEqual(s._servo_gap_last, (ahead_addr - 0x4200) % RING_BUFFER_SIZE)
 
 
 if __name__ == "__main__":

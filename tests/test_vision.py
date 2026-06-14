@@ -2,6 +2,7 @@
 poller. No camera and no mediapipe needed — classification runs on synthetic
 landmark fixtures, and the controller is driven by a scripted fake recognizer
 (the visual analogue of test_keyboard.py's scripted `$028D` FakeApi)."""
+
 from __future__ import annotations
 
 import threading
@@ -46,19 +47,27 @@ def make_hand(points: dict[int, tuple[float, float]]) -> HandState:
 # (smaller y → farther from the wrist) than its PIP joint.
 _OPEN_POINTS = {
     WRIST: (0.5, 0.9),
-    THUMB_TIP: (0.2, 0.6),     # far from the index tip → not a pinch
-    INDEX_PIP: (0.50, 0.6), INDEX_TIP: (0.50, 0.35),
-    MIDDLE_PIP: (0.55, 0.6), MIDDLE_TIP: (0.55, 0.30),
-    RING_PIP: (0.60, 0.6), RING_TIP: (0.60, 0.35),
-    PINKY_PIP: (0.65, 0.6), PINKY_TIP: (0.65, 0.40),
+    THUMB_TIP: (0.2, 0.6),  # far from the index tip → not a pinch
+    INDEX_PIP: (0.50, 0.6),
+    INDEX_TIP: (0.50, 0.35),
+    MIDDLE_PIP: (0.55, 0.6),
+    MIDDLE_TIP: (0.55, 0.30),
+    RING_PIP: (0.60, 0.6),
+    RING_TIP: (0.60, 0.35),
+    PINKY_PIP: (0.65, 0.6),
+    PINKY_TIP: (0.65, 0.40),
 }
 _FIST_POINTS = {
     WRIST: (0.5, 0.9),
     THUMB_TIP: (0.2, 0.8),
-    INDEX_PIP: (0.50, 0.6), INDEX_TIP: (0.50, 0.7),   # tip curled toward wrist
-    MIDDLE_PIP: (0.55, 0.6), MIDDLE_TIP: (0.55, 0.72),
-    RING_PIP: (0.60, 0.6), RING_TIP: (0.60, 0.72),
-    PINKY_PIP: (0.65, 0.6), PINKY_TIP: (0.65, 0.70),
+    INDEX_PIP: (0.50, 0.6),
+    INDEX_TIP: (0.50, 0.7),  # tip curled toward wrist
+    MIDDLE_PIP: (0.55, 0.6),
+    MIDDLE_TIP: (0.55, 0.72),
+    RING_PIP: (0.60, 0.6),
+    RING_TIP: (0.60, 0.72),
+    PINKY_PIP: (0.65, 0.6),
+    PINKY_TIP: (0.65, 0.70),
 }
 # Open-hand geometry but thumb tip brought onto the index tip → a pinch.
 _PINCH_POINTS = {**_OPEN_POINTS, THUMB_TIP: (0.49, 0.36)}
@@ -83,7 +92,6 @@ def pinch(x: float = 0.5) -> HandState:
 
 
 class ClassifyStaticTest(unittest.TestCase):
-
     def test_pinch_detected(self):
         self.assertTrue(is_pinch(pinch(), 0.05))
         self.assertFalse(is_pinch(open_hand(), 0.05))
@@ -93,24 +101,20 @@ class ClassifyStaticTest(unittest.TestCase):
         self.assertEqual(count_extended_fingers(fist()), 0)
 
     def test_classify(self):
-        self.assertEqual(classify_static(pinch(), pinch_threshold=0.05),
-                         Gesture.PINCH)
-        self.assertEqual(classify_static(open_hand(), pinch_threshold=0.05),
-                         Gesture.OPEN_HAND)
-        self.assertEqual(classify_static(fist(), pinch_threshold=0.05),
-                         Gesture.NONE)
+        self.assertEqual(classify_static(pinch(), pinch_threshold=0.05), Gesture.PINCH)
+        self.assertEqual(classify_static(open_hand(), pinch_threshold=0.05), Gesture.OPEN_HAND)
+        self.assertEqual(classify_static(fist(), pinch_threshold=0.05), Gesture.NONE)
 
     def test_pinch_wins_over_open(self):
         # A pinch curls the index, but be explicit that precedence is pinch.
-        self.assertEqual(classify_static(pinch(), pinch_threshold=0.05),
-                         Gesture.PINCH)
+        self.assertEqual(classify_static(pinch(), pinch_threshold=0.05), Gesture.PINCH)
 
     def test_closed_fist_with_thumb_on_index_is_not_pinch(self):
         # A fist also has thumb near index, but the other fingers are curled.
         # It must NOT classify as a pinch (the raise-a-closed-hand misfire).
         h = make_hand({**_FIST_POINTS, THUMB_TIP: (0.49, 0.69)})
-        self.assertTrue(is_pinch(h, 0.05))                 # thumb IS near index
-        self.assertEqual(count_extended_fingers(h), 0)     # but hand is closed
+        self.assertTrue(is_pinch(h, 0.05))  # thumb IS near index
+        self.assertEqual(count_extended_fingers(h), 0)  # but hand is closed
         self.assertEqual(classify_static(h, pinch_threshold=0.05), Gesture.NONE)
 
 
@@ -156,16 +160,17 @@ def _controller(script, *, loop=False, **kw):
     # Most tests want immediate firing; gesture_dwell_s=0 -> a 1-frame pose
     # fires. The dwell-gate tests override this explicitly.
     kw.setdefault("gesture_dwell_s", 0.0)
-    kw.setdefault("mirror", False)    # don't cv2.flip the dummy frame needlessly
+    kw.setdefault("mirror", False)  # don't cv2.flip the dummy frame needlessly
     # FakeSource/FakeRecognizer are structural stand-ins (not subclasses), so
     # cast for the type checker — same pattern as test_keyboard.py's FakeApi.
-    return VisionController(cast(WebcamSource, FakeSource()),
-                           cast(GestureRecognizer, FakeRecognizer(script, loop=loop)),
-                           **kw)
+    return VisionController(
+        cast(WebcamSource, FakeSource()),
+        cast(GestureRecognizer, FakeRecognizer(script, loop=loop)),
+        **kw,
+    )
 
 
 class VisionControllerTest(unittest.TestCase):
-
     def test_pinch_sets_pause(self):
         # Start neutral, then a sustained pinch (script's last entry repeats).
         ctl = _controller([fist(), open_hand(), pinch()])
@@ -189,8 +194,9 @@ class VisionControllerTest(unittest.TestCase):
         # An open hand for a single frame, then gone — with a multi-frame dwell
         # gate it must NOT cycle (this is the "raising hand flickers a stray
         # cycle" case the gate exists to kill).
-        ctl = _controller([open_hand(), None, None, None],
-                          gesture_dwell_s=0.05)    # 0.05/0.005 = 10 frames
+        ctl = _controller(
+            [open_hand(), None, None, None], gesture_dwell_s=0.05
+        )  # 0.05/0.005 = 10 frames
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
         ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
@@ -199,7 +205,7 @@ class VisionControllerTest(unittest.TestCase):
         ctl.stop()
 
     def test_dwell_gate_fires_on_held_pose(self):
-        ctl = _controller([open_hand()], gesture_dwell_s=0.03)   # 6 frames
+        ctl = _controller([open_hand()], gesture_dwell_s=0.03)  # 6 frames
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
         ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
@@ -212,8 +218,7 @@ class VisionControllerTest(unittest.TestCase):
         # swipe_velocity huge so the motion can't fire a skip either; loop so the
         # hand keeps jumping instead of settling into a held pose.
         moving = [open_hand(0.2), open_hand(0.6)]
-        ctl = _controller(moving, loop=True, gesture_dwell_s=0.02,
-                          swipe_velocity=100.0)
+        ctl = _controller(moving, loop=True, gesture_dwell_s=0.02, swipe_velocity=100.0)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
         ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
@@ -224,8 +229,7 @@ class VisionControllerTest(unittest.TestCase):
     def test_fast_swipe_skips(self):
         # Sustained horizontal wrist motion (x flips across the frame) past the
         # settle window → skip. Needs >SWIPE_SETTLE_FRAMES frames of motion.
-        ctl = _controller([fist(0.1), fist(0.9), fist(0.1), fist(0.9)],
-                          swipe_velocity=1.0)
+        ctl = _controller([fist(0.1), fist(0.9), fist(0.1), fist(0.9)], swipe_velocity=1.0)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
         ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
@@ -237,8 +241,7 @@ class VisionControllerTest(unittest.TestCase):
         # Raising the hand = fast VERTICAL motion (x constant, y changes). Must
         # not register a swipe — the |dx|>|dy| gate is what makes "raise your
         # hand to open it" not skip.
-        raise_up = [make_hand({**_FIST_POINTS, WRIST: (0.5, y)})
-                    for y in (0.9, 0.7, 0.5, 0.3, 0.1)]
+        raise_up = [make_hand({**_FIST_POINTS, WRIST: (0.5, y)}) for y in (0.9, 0.7, 0.5, 0.3, 0.1)]
         ctl = _controller(raise_up, swipe_velocity=1.0)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
@@ -259,10 +262,9 @@ class VisionControllerTest(unittest.TestCase):
     def test_pinch_hold_resumes_while_paused(self):
         ctl = _controller([pinch()], hold_threshold_s=0.05)
         pause, resume = threading.Event(), threading.Event()
-        pause.set()    # simulate already paused
+        pause.set()  # simulate already paused
         ctl.start(pause, resume)
-        self.assertTrue(resume.wait(0.5),
-                        "sustained pinch while paused should resume")
+        self.assertTrue(resume.wait(0.5), "sustained pinch while paused should resume")
         ctl.stop()
 
     def test_no_pause_while_paused_on_swipe(self):
@@ -291,9 +293,9 @@ class VisionControllerTest(unittest.TestCase):
 
     def test_stop_closes_recognizer(self):
         rec = FakeRecognizer([None])
-        ctl = VisionController(cast(WebcamSource, FakeSource()),
-                               cast(GestureRecognizer, rec),
-                               poll_interval_s=0.005)
+        ctl = VisionController(
+            cast(WebcamSource, FakeSource()), cast(GestureRecognizer, rec), poll_interval_s=0.005
+        )
         pause, resume = threading.Event(), threading.Event()
         ctl.start(pause, resume)
         ctl.stop()
@@ -312,6 +314,7 @@ class WebcamSourceBrokerTest(unittest.TestCase):
 
     def test_read_returns_independent_copies(self):
         from c64cast import video
+
         frame = np.arange(48, dtype=np.uint8).reshape(4, 4, 3)
         cap = self._fake_cap(frame)
         with mock.patch.object(video.cv2, "VideoCapture", return_value=cap):

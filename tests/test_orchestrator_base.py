@@ -4,6 +4,7 @@ Subclasses (BigTextSpanOrchestrator etc.) get their own files; this
 file covers the framework: registration, claims-based dispatch, begin/
 end event flow, follower scene cfg resolution. We define throwaway
 test-only subclasses inline since no production subclasses exist yet."""
+
 # pyright: reportAttributeAccessIssue=false
 from __future__ import annotations
 
@@ -27,18 +28,20 @@ def _fake_stack(name: str, scenes: list[SceneCfg] | None = None) -> SystemStack:
     cfg = MagicMock(name=f"cfg-{name}")
     cfg.scenes = scenes or []
     return SystemStack(
-        name=name, cfg=cfg,
+        name=name,
+        cfg=cfg,
         api=MagicMock(name=f"api-{name}"),
-        audio=None, source=None,
+        audio=None,
+        source=None,
         playlist=MagicMock(name=f"playlist-{name}"),
         key_poller=MagicMock(name=f"keyboard-{name}"),
-        framebuffer=None, preview_window=None, recorder=None,
+        framebuffer=None,
+        preview_window=None,
+        recorder=None,
     )
 
 
-def _ensemble(*names: str,
-              stacks_overrides: dict[str, list[SceneCfg]] | None = None
-              ) -> Ensemble:
+def _ensemble(*names: str, stacks_overrides: dict[str, list[SceneCfg]] | None = None) -> Ensemble:
     overrides = stacks_overrides or {}
     stacks = [_fake_stack(n, overrides.get(n, [])) for n in names]
     return Ensemble(stacks=stacks, stop_event=threading.Event())
@@ -57,7 +60,6 @@ class _StubSpan(Orchestrator):
 
 
 class RegistryTest(unittest.TestCase):
-
     def setUp(self):
         # Snapshot + clear the registry so subclasses defined elsewhere
         # don't leak into these tests, and our test-only registrations
@@ -86,7 +88,7 @@ class RegistryTest(unittest.TestCase):
         class _OtherSpan(Orchestrator):
             @classmethod
             def claims(cls, scene_cfg: SceneCfg) -> bool:
-                return True   # claims everything → conflicts with _StubSpan
+                return True  # claims everything → conflicts with _StubSpan
 
             def snapshot(self) -> dict[str, Any]:
                 return {}
@@ -113,7 +115,6 @@ class RegistryTest(unittest.TestCase):
 
 
 class BeginEndProtocolTest(unittest.TestCase):
-
     def _orch(self, conductor: str = "right") -> _StubSpan:
         ens = _ensemble("left", "middle", "right")
         return _StubSpan(ens, conductor)
@@ -166,17 +167,13 @@ class BeginEndProtocolTest(unittest.TestCase):
 
 
 class FollowerSceneResolutionTest(unittest.TestCase):
-
     def test_follower_with_matching_name_uses_local_cfg(self):
         # The follower has its own scene named "broadcast" — orchestrator
         # should return that one so per-system visual overrides apply.
-        local = SceneCfg(type="blank", name="broadcast",
-                         border=5, background=7)
-        ens = _ensemble("left", "right",
-                        stacks_overrides={"left": [local]})
+        local = SceneCfg(type="blank", name="broadcast", border=5, background=7)
+        ens = _ensemble("left", "right", stacks_overrides={"left": [local]})
         orch = _StubSpan(ens, "right")
-        conductor_cfg = SceneCfg(type="blank", name="broadcast",
-                                 border=0, background=0)
+        conductor_cfg = SceneCfg(type="blank", name="broadcast", border=0, background=0)
         orch.begin(conductor_cfg)
         self.assertIs(orch.follower_scene_cfg_for("left"), local)
 
@@ -193,8 +190,7 @@ class FollowerSceneResolutionTest(unittest.TestCase):
         # with the same name, that scene is NOT picked as the override —
         # we don't want two conductors. Fall back to the broadcast cfg.
         local = SceneCfg(type="blank", name="broadcast", orchestrate=True)
-        ens = _ensemble("left", "right",
-                        stacks_overrides={"left": [local]})
+        ens = _ensemble("left", "right", stacks_overrides={"left": [local]})
         orch = _StubSpan(ens, "right")
         conductor_cfg = SceneCfg(type="blank", name="broadcast")
         orch.begin(conductor_cfg)
@@ -204,10 +200,8 @@ class FollowerSceneResolutionTest(unittest.TestCase):
         # The recommended pattern: the follower's local "broadcast" cfg
         # is marked follower_only=true so it stays out of the regular
         # rotation, but follower_scene_cfg_for still finds it by name.
-        local = SceneCfg(type="blank", name="broadcast",
-                         border=5, follower_only=True)
-        ens = _ensemble("left", "right",
-                        stacks_overrides={"left": [local]})
+        local = SceneCfg(type="blank", name="broadcast", border=5, follower_only=True)
+        ens = _ensemble("left", "right", stacks_overrides={"left": [local]})
         orch = _StubSpan(ens, "right")
         conductor_cfg = SceneCfg(type="blank", name="broadcast")
         orch.begin(conductor_cfg)

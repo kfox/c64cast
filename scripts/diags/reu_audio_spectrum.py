@@ -30,15 +30,30 @@ from pathlib import Path
 import _diaglib as d
 import numpy as np
 
-AUDIO_DEV = ":3"        # Cam Link 4K audio (avfoundation index 3); see memory
+AUDIO_DEV = ":3"  # Cam Link 4K audio (avfoundation index 3); see memory
 CAP_RATE = 48000
 
 
 def _capture(wav_path: Path, seconds: float) -> bool:
     """Record `seconds` of Cam Link audio to wav_path via ffmpeg. False on fail."""
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-           "-f", "avfoundation", "-i", AUDIO_DEV,
-           "-t", f"{seconds:g}", "-ac", "1", "-ar", str(CAP_RATE), str(wav_path)]
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "avfoundation",
+        "-i",
+        AUDIO_DEV,
+        "-t",
+        f"{seconds:g}",
+        "-ac",
+        "1",
+        "-ar",
+        str(CAP_RATE),
+        str(wav_path),
+    ]
     r = subprocess.run(cmd, capture_output=True)
     if r.returncode != 0:
         print(f"[ffmpeg] FAILED: {r.stderr.decode(errors='replace')[:400]}")
@@ -92,15 +107,18 @@ def _report(label: str, sig: np.ndarray, sr: int) -> None:
     band = freqs >= 2.0
     fb, sb = freqs[band], spec[band]
     med = float(np.median(sb)) or 1.0
-    print(f"\n[{label}] audio RMS={rms:.0f}, top envelope-modulation peaks "
-          f"(2-400 Hz, strength = ×median):")
+    print(
+        f"\n[{label}] audio RMS={rms:.0f}, top envelope-modulation peaks "
+        f"(2-400 Hz, strength = ×median):"
+    )
     for i in np.argsort(sb)[::-1][:6]:
         print(f"    {fb[i]:6.1f} Hz   {sb[i] / med:6.1f}×")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--config", required=True)
     ap.add_argument("--label", default="cap")
     ap.add_argument("-t", "--seconds", type=float, default=12.0)
@@ -120,8 +138,9 @@ def main() -> int:
     wav_path = d.stamped(f"audiocap_{args.label}", "wav")
 
     print(f"[run] python -m c64cast --config {cfg}")
-    app = subprocess.Popen([d.python_exe(), "-m", "c64cast",
-                            "--config", str(cfg), "--url", args.url])
+    app = subprocess.Popen(
+        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+    )
     rc = 0
     try:
         print(f"[boot] waiting {args.boot:g}s")

@@ -3,6 +3,7 @@
 
 Prefer:    python -m c64cast [args...]
 """
+
 import sys
 
 from c64cast.cli import main

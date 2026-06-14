@@ -2,6 +2,7 @@
 
 The orchestrator-related Ensemble methods land in phase 2; this file
 covers the bare registry shape (stacks list + stop_event + name lookup)."""
+
 from __future__ import annotations
 
 import threading
@@ -29,14 +30,16 @@ def _fake_stack(name: str) -> SystemStack:
 
 
 class EnsembleRegistryTest(unittest.TestCase):
-
     def test_system_names_preserves_order(self):
         stop = threading.Event()
-        ens = Ensemble(stacks=[
-            _fake_stack("left"),
-            _fake_stack("middle"),
-            _fake_stack("right"),
-        ], stop_event=stop)
+        ens = Ensemble(
+            stacks=[
+                _fake_stack("left"),
+                _fake_stack("middle"),
+                _fake_stack("right"),
+            ],
+            stop_event=stop,
+        )
         self.assertEqual(ens.system_names(), ["left", "middle", "right"])
 
     def test_stack_lookup_returns_named_stack(self):
@@ -48,8 +51,7 @@ class EnsembleRegistryTest(unittest.TestCase):
         self.assertIs(ens.stack("right"), right)
 
     def test_stack_lookup_raises_key_error_on_unknown(self):
-        ens = Ensemble(stacks=[_fake_stack("left")],
-                       stop_event=threading.Event())
+        ens = Ensemble(stacks=[_fake_stack("left")], stop_event=threading.Event())
         with self.assertRaises(KeyError) as cm:
             ens.stack("nope")
         self.assertIn("nope", str(cm.exception))

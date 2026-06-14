@@ -9,6 +9,7 @@ The `--doctor` CLI flag dispatches here and prints the resulting report.
 The validation surface is shared with `config.build_scene` via
 `config.validate_scene_cfg` — there is no parallel registry of probes.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -25,8 +26,8 @@ Level = Literal["ok", "warn", "error"]
 @dataclass(frozen=True)
 class Diagnostic:
     level: Level
-    category: str           # "scene" | "orchestrator" | "extras" | "connectivity"
-    subject: str            # "<system>/<scene-name>" or "<extras-name>"
+    category: str  # "scene" | "orchestrator" | "extras" | "connectivity"
+    subject: str  # "<system>/<scene-name>" or "<extras-name>"
     message: str
     hint: str | None = None
 
@@ -34,19 +35,18 @@ class Diagnostic:
 # (extras_name, top-level module name, one-line description of what uses it).
 # Keep in sync with [project.optional-dependencies] in pyproject.toml.
 _EXTRAS: tuple[tuple[str, str, str], ...] = (
-    ("mic",         "sounddevice",  "[audio] enabled, mic capture"),
-    ("commercials", "av",           "commercial scenes, ad interleaving"),
-    ("preview",     "pygame",       "[preview] enabled local window"),
-    ("control",     "fastapi",      "[control] enabled HTTP plane"),
-    ("obs",         "obsws_python", "obs_status overlay"),
-    ("midi",        "mido",         "midi scenes"),
-    ("logging",     "rich",         "colored log output"),
-    ("vision",      "mediapipe",    "[vision] enabled gesture control"),
+    ("mic", "sounddevice", "[audio] enabled, mic capture"),
+    ("commercials", "av", "commercial scenes, ad interleaving"),
+    ("preview", "pygame", "[preview] enabled local window"),
+    ("control", "fastapi", "[control] enabled HTTP plane"),
+    ("obs", "obsws_python", "obs_status overlay"),
+    ("midi", "mido", "midi scenes"),
+    ("logging", "rich", "colored log output"),
+    ("vision", "mediapipe", "[vision] enabled gesture control"),
 )
 
 
-def validate_load_result(loaded: LoadResult, *,
-                         probe_u64: bool = True) -> list[Diagnostic]:
+def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[Diagnostic]:
     """Run every config + environment check and collect the results.
 
     Per-scene validation runs `validate_scene_cfg` inside try/except so a
@@ -76,25 +76,29 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
             try:
                 validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
             except OrchestratorError as e:
-                out.append(Diagnostic(
-                    level="error", category="orchestrator",
-                    subject=subject, message=str(e)))
+                out.append(
+                    Diagnostic(
+                        level="error", category="orchestrator", subject=subject, message=str(e)
+                    )
+                )
             except ValueError as e:
-                out.append(Diagnostic(
-                    level="error", category="scene",
-                    subject=subject, message=str(e)))
+                out.append(
+                    Diagnostic(level="error", category="scene", subject=subject, message=str(e))
+                )
             else:
                 role = " (follower-only)" if s.follower_only else ""
-                out.append(Diagnostic(
-                    level="ok", category="scene",
-                    subject=subject,
-                    message=f"{s.type}/{s.display}, "
-                    f"{len(s.overlays)} overlay(s){role}"))
+                out.append(
+                    Diagnostic(
+                        level="ok",
+                        category="scene",
+                        subject=subject,
+                        message=f"{s.type}/{s.display}, {len(s.overlays)} overlay(s){role}",
+                    )
+                )
     return out
 
 
-def _validate_cross_system_orchestration(
-        loaded: LoadResult) -> list[Diagnostic]:
+def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]:
     """Each `orchestrate=true` scene must have a same-name follower in
     every other system. If not, the Playlist falls back to building the
     follower from the conductor's cfg — usually surprising."""
@@ -114,16 +118,22 @@ def _validate_cross_system_orchestration(
             present = coverage.get(s.name, set())
             missing = all_systems - present
             if missing:
-                out.append(Diagnostic(
-                    level="warn", category="orchestrator",
-                    subject=f"{sys_name}/{s.name}",
-                    message=(
-                        f"conductor scene has no same-name follower in: "
-                        f"{', '.join(sorted(missing))}. Followers will be "
-                        "built from the conductor's cfg instead."),
-                    hint=(
-                        f"Add a `[[scenes]]` with `name = \"{s.name}\"` to "
-                        "each missing system's TOML to control its appearance.")))
+                out.append(
+                    Diagnostic(
+                        level="warn",
+                        category="orchestrator",
+                        subject=f"{sys_name}/{s.name}",
+                        message=(
+                            f"conductor scene has no same-name follower in: "
+                            f"{', '.join(sorted(missing))}. Followers will be "
+                            "built from the conductor's cfg instead."
+                        ),
+                        hint=(
+                            f'Add a `[[scenes]]` with `name = "{s.name}"` to '
+                            "each missing system's TOML to control its appearance."
+                        ),
+                    )
+                )
     return out
 
 
@@ -135,16 +145,21 @@ def _probe_extras() -> list[Diagnostic]:
         except (ImportError, ValueError):
             spec = None
         if spec is None:
-            out.append(Diagnostic(
-                level="warn", category="extras",
-                subject=extra,
-                message=f"not installed (used for: {used_for})",
-                hint="uv sync --all-extras"))
+            out.append(
+                Diagnostic(
+                    level="warn",
+                    category="extras",
+                    subject=extra,
+                    message=f"not installed (used for: {used_for})",
+                    hint="uv sync --all-extras",
+                )
+            )
         else:
-            out.append(Diagnostic(
-                level="ok", category="extras",
-                subject=extra,
-                message=f"installed ({module})"))
+            out.append(
+                Diagnostic(
+                    level="ok", category="extras", subject=extra, message=f"installed ({module})"
+                )
+            )
     return out
 
 
@@ -164,28 +179,42 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
         try:
             api = make_backend(cfg)
         except SocketDMAError as e:
-            out.append(Diagnostic(
-                level="error", category="connectivity",
-                subject=name,
-                message=f"DMA connect to {url} failed: {e}",
-                hint=("Enable F2 -> Network Settings -> Ultimate DMA Service. "
-                      "If a password is set, supply it via "
-                      "C64CAST_DMA_PASSWORD or [ultimate64].dma_password.")))
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="connectivity",
+                    subject=name,
+                    message=f"DMA connect to {url} failed: {e}",
+                    hint=(
+                        "Enable F2 -> Network Settings -> Ultimate DMA Service. "
+                        "If a password is set, supply it via "
+                        "C64CAST_DMA_PASSWORD or [ultimate64].dma_password."
+                    ),
+                )
+            )
             continue
         try:
             status = api.probe()
             if status is None:
-                out.append(Diagnostic(
-                    level="warn", category="connectivity",
-                    subject=name,
-                    message=f"DMA reachable at {url} but REST probe failed",
-                    hint="REST is only used for reads + runners; writes "
-                         "still work via DMA. Check Command Interface toggle."))
+                out.append(
+                    Diagnostic(
+                        level="warn",
+                        category="connectivity",
+                        subject=name,
+                        message=f"DMA reachable at {url} but REST probe failed",
+                        hint="REST is only used for reads + runners; writes "
+                        "still work via DMA. Check Command Interface toggle.",
+                    )
+                )
             else:
-                out.append(Diagnostic(
-                    level="ok", category="connectivity",
-                    subject=name,
-                    message=f"DMA + REST reachable at {url} ({status})"))
+                out.append(
+                    Diagnostic(
+                        level="ok",
+                        category="connectivity",
+                        subject=name,
+                        message=f"DMA + REST reachable at {url} ({status})",
+                    )
+                )
                 # Probe REU status when the config opts into any REU-staged
                 # path. Skipped when REST already failed (the REU probe
                 # would just fail with the same error).
@@ -235,10 +264,12 @@ def reu_is_enabled(api: object) -> bool | None:
     treated as "not available" there so auto degrades to host-DMA rather than
     staging into a REU that might be off (which would silently freeze video)."""
     section, _data, err = _fetch_config_section(
-        api, _REU_CONFIG_CATEGORY, field_hint=_REU_ENABLED_FIELD)
+        api, _REU_CONFIG_CATEGORY, field_hint=_REU_ENABLED_FIELD
+    )
     if err is not None or not section:
         return None
     return section.get(_REU_ENABLED_FIELD) == "Enabled"
+
 
 # The Ultimate's emulated-SID enable lives here. Both U64 and U2+ expose it.
 _AUDIO_CONFIG_CATEGORY = "Audio Output Settings"
@@ -266,7 +297,10 @@ def _wants_sid_audio(cfg: object) -> tuple[bool, list[str]]:
 
 
 def _fetch_config_section(
-    api: object, category: str, *, field_hint: str,
+    api: object,
+    category: str,
+    *,
+    field_hint: str,
 ) -> tuple[dict[str, object], object, Exception | None]:
     """GET /v1/configs/<category> from the Ultimate and normalize the reply
     to its settings dict. Returns (section, raw_data, None) on success —
@@ -286,10 +320,11 @@ def _fetch_config_section(
     from urllib.parse import quote
 
     import requests
+
     try:
         # `api` is a real Ultimate64API; reuse its REST session + base URL.
         base_url = api.base_url  # type: ignore[attr-defined]
-        session = api.session    # type: ignore[attr-defined]
+        session = api.session  # type: ignore[attr-defined]
         url = f"{base_url}/v1/configs/{quote(category)}"
         r = session.get(url, timeout=3.0)
         r.raise_for_status()
@@ -309,8 +344,7 @@ def _fetch_config_section(
     return section, data, None
 
 
-def _probe_sid_status(name: str, cfg: object,
-                      api: object) -> list[Diagnostic]:
+def _probe_sid_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
     """If the config will drive the SID, check the Ultimate's emulated-SID
     enable state via REST. On a U64 the internal SID is normally on; on a
     U2+ the emulated SID that snoops $D400 ships *disabled*, which makes
@@ -332,15 +366,22 @@ def _probe_sid_status(name: str, cfg: object,
     reason_str = ", ".join(reasons)
 
     section, _data, err = _fetch_config_section(
-        api, _AUDIO_CONFIG_CATEGORY, field_hint=_SID_LEFT_FIELD)
+        api, _AUDIO_CONFIG_CATEGORY, field_hint=_SID_LEFT_FIELD
+    )
     if err is not None:
-        return [Diagnostic(
-            level="warn", category="connectivity",
-            subject=subject,
-            message=f"REST query for SID status failed: {err}",
-            hint=(f"Cannot confirm the SID is enabled. Config drives the SID "
-                  f"({reason_str}). If audio is silent, check F2 -> "
-                  "Audio Output Settings -> SID Left / SID Right."))]
+        return [
+            Diagnostic(
+                level="warn",
+                category="connectivity",
+                subject=subject,
+                message=f"REST query for SID status failed: {err}",
+                hint=(
+                    f"Cannot confirm the SID is enabled. Config drives the SID "
+                    f"({reason_str}). If audio is silent, check F2 -> "
+                    "Audio Output Settings -> SID Left / SID Right."
+                ),
+            )
+        ]
 
     left = section.get(_SID_LEFT_FIELD)
     right = section.get(_SID_RIGHT_FIELD)
@@ -350,27 +391,38 @@ def _probe_sid_status(name: str, cfg: object,
         return []
 
     if left == "Enabled" or right == "Enabled":
-        return [Diagnostic(
-            level="ok", category="connectivity",
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message=f"SID enabled (Left={left}, Right={right}) ({reason_str})",
+            )
+        ]
+
+    return [
+        Diagnostic(
+            level="warn",
+            category="connectivity",
             subject=subject,
-            message=f"SID enabled (Left={left}, Right={right}) ({reason_str})")]
+            message=(
+                f"both SIDs disabled (Left={left!r}, Right={right!r}) but "
+                f"config drives the SID ({reason_str}). The Ultimate's "
+                "emulated SID won't sound $D400 writes — every tune is "
+                "silent unless a physical SID chip is producing the audio."
+            ),
+            hint=(
+                "On the Ultimate: F2 Menu -> Audio Output Settings -> "
+                "SID Left -> Enabled (keep 'SID Left Base = Snoop $D400', "
+                "Vol EmuSid1 above OFF). A U64's internal SID is on by default; "
+                "a U2+ ships its emulated SID disabled. A working physical SID "
+                "chip can sound without this."
+            ),
+        )
+    ]
 
-    return [Diagnostic(
-        level="warn", category="connectivity",
-        subject=subject,
-        message=(f"both SIDs disabled (Left={left!r}, Right={right!r}) but "
-                 f"config drives the SID ({reason_str}). The Ultimate's "
-                 "emulated SID won't sound $D400 writes — every tune is "
-                 "silent unless a physical SID chip is producing the audio."),
-        hint=("On the Ultimate: F2 Menu -> Audio Output Settings -> "
-              "SID Left -> Enabled (keep 'SID Left Base = Snoop $D400', "
-              "Vol EmuSid1 above OFF). A U64's internal SID is on by default; "
-              "a U2+ ships its emulated SID disabled. A working physical SID "
-              "chip can sound without this."))]
 
-
-def _probe_reu_status(name: str, cfg: object,
-                      api: object) -> list[Diagnostic]:
+def _probe_reu_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
     """If the config wants REU, check the U64's REU setting via REST.
     Returns an empty list when REU isn't requested. Emits:
       * ok    — REU enabled, with the configured size
@@ -385,40 +437,63 @@ def _probe_reu_status(name: str, cfg: object,
     reason_str = ", ".join(reasons)
 
     section, data, err = _fetch_config_section(
-        api, _REU_CONFIG_CATEGORY, field_hint=_REU_ENABLED_FIELD)
+        api, _REU_CONFIG_CATEGORY, field_hint=_REU_ENABLED_FIELD
+    )
     if err is not None:
-        return [Diagnostic(
-            level="warn", category="connectivity",
-            subject=subject,
-            message=f"REST query for REU status failed: {err}",
-            hint=(f"Cannot confirm REU is enabled. Config requests REU "
-                  f"({reason_str}). If audio is silent / video is garbled, "
-                  "check F2 -> C64 and Cartridge Settings -> "
-                  "RAM Expansion Unit on the U64."))]
+        return [
+            Diagnostic(
+                level="warn",
+                category="connectivity",
+                subject=subject,
+                message=f"REST query for REU status failed: {err}",
+                hint=(
+                    f"Cannot confirm REU is enabled. Config requests REU "
+                    f"({reason_str}). If audio is silent / video is garbled, "
+                    "check F2 -> C64 and Cartridge Settings -> "
+                    "RAM Expansion Unit on the U64."
+                ),
+            )
+        ]
     if not section:
-        return [Diagnostic(
-            level="warn", category="connectivity",
-            subject=subject,
-            message=f"REU config endpoint returned unexpected shape: {type(data).__name__}",
-            hint="Likely a U64 firmware mismatch — c64cast expects "
-                 "Ultimate firmware 3.x+. Check the firmware version.")]
+        return [
+            Diagnostic(
+                level="warn",
+                category="connectivity",
+                subject=subject,
+                message=f"REU config endpoint returned unexpected shape: {type(data).__name__}",
+                hint="Likely a U64 firmware mismatch — c64cast expects "
+                "Ultimate firmware 3.x+. Check the firmware version.",
+            )
+        ]
 
     enabled = section.get(_REU_ENABLED_FIELD)
     size = section.get(_REU_SIZE_FIELD, "?")
     if enabled == "Enabled":
-        return [Diagnostic(
-            level="ok", category="connectivity",
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message=f"REU enabled, size {size} ({reason_str})",
+            )
+        ]
+    return [
+        Diagnostic(
+            level="error",
+            category="connectivity",
             subject=subject,
-            message=f"REU enabled, size {size} ({reason_str})")]
-    return [Diagnostic(
-        level="error", category="connectivity",
-        subject=subject,
-        message=(f"REU is {enabled!r} but config requests REU ({reason_str}). "
-                 "REU-staged audio/video paths fail silently when REU is off: "
-                 "audio plays silence, video stays unchanged."),
-        hint=("On the U64: F2 Menu -> C64 and Cartridge Settings -> "
-              "RAM Expansion Unit -> Enabled (size 1 MB+ is fine). Save and "
-              "reboot. Alternatively, turn off the REU opt-in in your TOML."))]
+            message=(
+                f"REU is {enabled!r} but config requests REU ({reason_str}). "
+                "REU-staged audio/video paths fail silently when REU is off: "
+                "audio plays silence, video stays unchanged."
+            ),
+            hint=(
+                "On the U64: F2 Menu -> C64 and Cartridge Settings -> "
+                "RAM Expansion Unit -> Enabled (size 1 MB+ is fine). Save and "
+                "reboot. Alternatively, turn off the REU opt-in in your TOML."
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +504,7 @@ _LEVEL_ORDER = {"error": 0, "warn": 1, "ok": 2}
 _LEVEL_GLYPH = {"ok": "[ ok ]", "warn": "[WARN]", "error": "[ERR ]"}
 
 
-def print_report(diagnostics: list[Diagnostic],
-                 file: IO[str] | None = None) -> int:
+def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> int:
     """Print a grouped report and return an exit code (0 if no errors,
     1 if any error-level Diagnostic)."""
     out = file if file is not None else sys.stdout

@@ -23,6 +23,7 @@ Scope (v1): a single standalone/per-system Config. Ensemble *master* TOMLs
 (``[ensemble]`` + ``systems``) are rejected — they're authored across multiple
 files and aren't what the wizard produces.
 """
+
 from __future__ import annotations
 
 import math
@@ -45,14 +46,19 @@ _SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
 # List-of-table fields that must render as [[parent.child]] blocks AFTER the
 # parent's scalar keys (TOML forbids scalar keys after a sub-table header is
 # opened). Handled out-of-band by the section/scene emitters below.
-_COLOR_TABLE_ARRAY = "hue_corrections"   # under [color]
-_SCENE_TABLE_ARRAY = "overlays"          # under [[scenes]]
+_COLOR_TABLE_ARRAY = "hue_corrections"  # under [color]
+_SCENE_TABLE_ARRAY = "overlays"  # under [[scenes]]
 
 _BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _STR_ESCAPES = {
-    "\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t",
-    "\n": "\\n", "\f": "\\f", "\r": "\\r",
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
 }
 
 
@@ -64,6 +70,7 @@ class SerializeError(Exception):
 # ---------------------------------------------------------------------------
 # Scalar formatting
 # ---------------------------------------------------------------------------
+
 
 def _fmt_str(s: str) -> str:
     out = []
@@ -94,8 +101,7 @@ def _fmt_value(v: object) -> str:
         return str(v)
     if isinstance(v, float):
         if not math.isfinite(v):
-            raise SerializeError(
-                f"cannot serialize non-finite float {v!r} to TOML")
+            raise SerializeError(f"cannot serialize non-finite float {v!r} to TOML")
         return repr(v)
     if isinstance(v, str):
         return _fmt_str(v)
@@ -104,16 +110,15 @@ def _fmt_value(v: object) -> str:
     if isinstance(v, dict):
         if not v:
             return "{}"
-        inner = ", ".join(
-            f"{_fmt_key(str(k))} = {_fmt_value(val)}" for k, val in v.items())
+        inner = ", ".join(f"{_fmt_key(str(k))} = {_fmt_value(val)}" for k, val in v.items())
         return "{ " + inner + " }"
-    raise SerializeError(
-        f"cannot serialize value of type {type(v).__name__}: {v!r}")
+    raise SerializeError(f"cannot serialize value of type {type(v).__name__}: {v!r}")
 
 
 # ---------------------------------------------------------------------------
 # Field selection
 # ---------------------------------------------------------------------------
+
 
 def _should_emit(value: object, default: object, *, minimal: bool) -> bool:
     """A field is written when it carries information: never None (TOML can't
@@ -124,8 +129,7 @@ def _should_emit(value: object, default: object, *, minimal: bool) -> bool:
     return not (minimal and value == default)
 
 
-def _comment_lines(help_text: str, choices: tuple[str, ...],
-                   indent: str) -> list[str]:
+def _comment_lines(help_text: str, choices: tuple[str, ...], indent: str) -> list[str]:
     if not help_text and not choices:
         return []
     text = help_text
@@ -139,8 +143,8 @@ def _comment_lines(help_text: str, choices: tuple[str, ...],
 # Section + scene emitters
 # ---------------------------------------------------------------------------
 
-def _emit_table_array(header: str, rows: list[dict[str, object]],
-                      annotate: bool) -> list[str]:
+
+def _emit_table_array(header: str, rows: list[dict[str, object]], annotate: bool) -> list[str]:
     """Render a list of plain dicts as repeated [[header]] blocks (used for
     [[color.hue_corrections]] and [[scenes.overlays]]). `type` floats to the
     top of an overlay block for readability; otherwise insertion order."""
@@ -156,8 +160,9 @@ def _emit_table_array(header: str, rows: list[dict[str, object]],
     return lines
 
 
-def _emit_section(cfg: cfgmod.Config, sd: introspect.SectionDoc,
-                  *, annotate: bool, minimal: bool) -> list[str]:
+def _emit_section(
+    cfg: cfgmod.Config, sd: introspect.SectionDoc, *, annotate: bool, minimal: bool
+) -> list[str]:
     section = getattr(cfg, sd.name)
     body: list[str] = []
     for fd in sd.fields:
@@ -190,10 +195,14 @@ def _emit_section(cfg: cfgmod.Config, sd: introspect.SectionDoc,
     return lines
 
 
-def _emit_scene(s: cfgmod.SceneCfg,
-                field_docs: dict[str, tuple[introspect.FieldDoc, ...]],
-                all_fields: tuple[introspect.FieldDoc, ...],
-                *, annotate: bool, minimal: bool) -> list[str]:
+def _emit_scene(
+    s: cfgmod.SceneCfg,
+    field_docs: dict[str, tuple[introspect.FieldDoc, ...]],
+    all_fields: tuple[introspect.FieldDoc, ...],
+    *,
+    annotate: bool,
+    minimal: bool,
+) -> list[str]:
     # Only the fields that apply to this scene's type (introspect already did
     # the applies_to filtering); fall back to every field for an unknown type.
     fields = field_docs.get(s.type, all_fields)
@@ -212,8 +221,7 @@ def _emit_scene(s: cfgmod.SceneCfg,
         lines.append(f"{_fmt_key(fd.name)} = {_fmt_value(value)}")
     lines.append("")
     if s.overlays:
-        lines += _emit_table_array("scenes.overlays", list(s.overlays),
-                                   annotate)
+        lines += _emit_table_array("scenes.overlays", list(s.overlays), annotate)
     return lines
 
 
@@ -221,8 +229,14 @@ def _emit_scene(s: cfgmod.SceneCfg,
 # Public API
 # ---------------------------------------------------------------------------
 
-def dumps(cfg: cfgmod.Config, *, annotate: bool = True, minimal: bool = True,
-          schema_path: str | None = DEFAULT_SCHEMA_PATH) -> str:
+
+def dumps(
+    cfg: cfgmod.Config,
+    *,
+    annotate: bool = True,
+    minimal: bool = True,
+    schema_path: str | None = DEFAULT_SCHEMA_PATH,
+) -> str:
     """Serialize `cfg` to a TOML string.
 
     annotate    — prepend the schema directive + per-section/-field help
@@ -237,7 +251,8 @@ def dumps(cfg: cfgmod.Config, *, annotate: bool = True, minimal: bool = True,
         raise SerializeError(
             "ensemble master configs aren't serializable yet — dump each "
             "per-system Config separately, or hand-author the [ensemble] "
-            "master.")
+            "master."
+        )
 
     lines: list[str] = []
     if schema_path:
@@ -258,8 +273,7 @@ def dumps(cfg: cfgmod.Config, *, annotate: bool = True, minimal: bool = True,
                     all_fields += (fd,)
                     seen.add(fd.name)
         for s in cfg.scenes:
-            lines += _emit_scene(s, field_docs, all_fields,
-                                 annotate=annotate, minimal=minimal)
+            lines += _emit_scene(s, field_docs, all_fields, annotate=annotate, minimal=minimal)
 
     # Collapse the trailing blank line; guarantee a single terminating newline.
     text = "\n".join(lines).rstrip("\n")
