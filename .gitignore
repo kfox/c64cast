@@ -13,6 +13,7 @@ dist/
 .coverage.*
 coverage.xml
 htmlcov/
+test-results/
 .pytest_cache/
 .tox/
 .ruff_cache/

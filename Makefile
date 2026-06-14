@@ -4,7 +4,7 @@
 #   make            # = make help
 #   make lint       # ruff
 #   make test       # unittest suite
-#   make coverage   # tests under coverage + HTML report
+#   make coverage   # tests under coverage -> report + HTML + coverage.xml + JUnit XML
 #   make typecheck  # mypy --strict on hot modules + pyright across the tree
 #   make bench      # async write-pipeline benchmark
 #   make check      # lint + typecheck + test (pre-PR gate)
@@ -20,7 +20,7 @@ help:
 	@echo "targets:"
 	@echo "  lint       ruff check"
 	@echo "  test       unittest discover"
-	@echo "  coverage   coverage report + HTML"
+	@echo "  coverage   coverage report + HTML + coverage.xml + JUnit XML"
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
 	@echo "  bench      scripts/bench.py — async write pipeline"
 	@echo "  schema     regenerate c64cast.schema.json from the config metadata"

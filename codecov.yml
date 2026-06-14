@@ -1,0 +1,22 @@
+# Codecov configuration.
+#
+# Coverage targets are tuned for a hardware-bridge project: large parts of
+# the codebase (live MIDI input, SID playback, REU/DMA streaming, the VIC
+# hires bring-up) can only be exercised on a real Ultimate-64, so the unit
+# suite mocks the hardware and 100% patch coverage is not a realistic goal.
+# See CLAUDE.md "Target test coverage = 80%" — ~75% project coverage today,
+# ratcheting toward 80%.
+coverage:
+  status:
+    project:
+      default:
+        target: auto      # never regress below current project coverage…
+        threshold: 1%      # …but tolerate 1% of noise without failing
+    patch:
+      default:
+        target: 60%        # realistic floor for new hardware-path code
+        threshold: 5%
+
+# Test Analytics ingests the JUnit XML uploaded by codecov/test-results-action
+# in the CI coverage job (produced via unittest-xml-reporting).
+# https://docs.codecov.com/docs/test-analytics

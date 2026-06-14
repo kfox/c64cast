@@ -98,6 +98,11 @@ dev = [
     # declares it optional, so the `control` extra doesn't pull it; without it
     # those 13 tests skip. Dev-only; the runtime never imports it.
     "httpx>=0.27",
+    # JUnit XML reporter for the unittest suite (a unittest.TestRunner
+    # subclass, NOT a different test framework). CI runs the suite through
+    # `python -m xmlrunner discover` so Codecov Test Analytics can ingest the
+    # results. Dev/CI-only; the runtime never imports it.
+    "unittest-xml-reporting>=3",
 ]
 
 [project.scripts]
