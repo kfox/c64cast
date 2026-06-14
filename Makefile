@@ -2,8 +2,10 @@
 #
 # Usage:
 #   make            # = make help
-#   make lint       # ruff
-#   make test       # unittest suite
+#   make lint       # ruff check
+#   make fmt        # ruff format
+#   make test       # unittest suite (whole tree)
+#   make test T=tests.test_midi_scene   # just that module/class/method
 #   make coverage   # tests under coverage -> report + HTML + coverage.xml + JUnit XML
 #   make typecheck  # mypy --strict on hot modules + pyright across the tree
 #   make bench      # async write-pipeline benchmark
@@ -14,12 +16,13 @@ PY ?= python
 
 .DEFAULT_GOAL := help
 
-.PHONY: help lint test coverage typecheck bench check clean schema
+.PHONY: help lint fmt test coverage typecheck bench check clean schema
 
 help:
 	@echo "targets:"
 	@echo "  lint       ruff check"
-	@echo "  test       unittest discover"
+	@echo "  fmt        ruff format"
+	@echo "  test       unittest discover (T=tests.test_foo runs just that)"
 	@echo "  coverage   coverage report + HTML + coverage.xml + JUnit XML"
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
 	@echo "  bench      scripts/bench.py — async write pipeline"
@@ -30,8 +33,13 @@ help:
 lint:
 	ruff check .
 
+fmt:
+	ruff format .
+
+# `make test` runs the whole suite; `make test T=tests.test_midi_scene` (or a
+# class/method, e.g. T=tests.test_midi_scene.MidiSceneTest.test_x) runs just that.
 test:
-	$(PY) -m unittest discover tests
+	$(PY) -m unittest $(if $(T),$(T),discover tests)
 
 coverage:
 	scripts/coverage.sh
