@@ -705,8 +705,8 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
         overlays=scene["overlays"],  # type: ignore[arg-type]
         url=url,
         system=system,
-        audio_enabled=scene["audio_enabled"],
-    )  # type: ignore[arg-type]
+        audio_enabled=scene["audio_enabled"],  # type: ignore[arg-type]
+    )
 
     err = validate(cfg)
     if err is not None:
@@ -740,8 +740,8 @@ def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ign
             make_scene(
                 str(s["scene_type"]),
                 s["scene_fields"],  # type: ignore[arg-type]
-                s["overlays"],
-            )  # type: ignore[arg-type]
+                s["overlays"],  # type: ignore[arg-type]
+            )
             for s in scenes
         ],
         url=url,

@@ -611,9 +611,14 @@ class ColorMapAccumulator:
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
         # bestLabels=None is the documented "let OpenCV allocate" form; the cv2
         # stubs type it as a required MatLike, so suppress the false positive.
-        _compactness, _labels, centers = cv2.kmeans(  # type: ignore[arg-type]
-            samples, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
-        )  # pyright: ignore[reportCallIssue, reportArgumentType]
+        _compactness, _labels, centers = cv2.kmeans(
+            samples,
+            k,
+            None,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+            criteria,
+            3,
+            cv2.KMEANS_PP_CENTERS,
+        )
         centers = centers.astype(np.float32)  # (k, 3) Lab
 
         # Optimal cluster→distinct-C64-color bijection (min total Lab error).
