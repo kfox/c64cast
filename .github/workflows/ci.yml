@@ -6,6 +6,23 @@ on:
   pull_request:
 
 jobs:
+  # Runs the SAME hooks as a local `pre-commit run --all-files`: the hygiene
+  # checks (trailing whitespace, EOF, line endings, YAML/TOML, large files,
+  # merge markers) plus ruff lint + ruff format. This is the single style/
+  # hygiene gate. The pyright + unittest hooks are SKIPped here because the
+  # lint-and-test job below already runs them across the Python matrix.
+  pre-commit:
+    name: pre-commit (lint + format + hygiene)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: pre-commit/action@v3.0.1
+        env:
+          SKIP: pyright,unittest
+
   lint-and-test:
     name: lint + test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -48,9 +65,8 @@ jobs:
         # --group dev: pull in the dev dependency group
         run: uv sync --frozen --no-default-groups --group dev --extra midi
 
-      - name: Ruff (lint)
-        run: uv run ruff check .
-
+      # Ruff lint + format are enforced in the `pre-commit` job above (single
+      # style gate), so they're intentionally not repeated here.
       - name: Mypy --strict (hot modules)
         run: uv run mypy c64cast/api.py c64cast/audio.py c64cast/playlist.py
 
@@ -121,9 +137,12 @@ jobs:
       # Test Analytics: ingest the JUnit XML produced by `make coverage`.
       # `!cancelled()` so results upload even when the suite is red (xmlrunner
       # writes the XML before exiting non-zero). https://docs.codecov.com/docs/test-analytics
+      # NOTE: this action versions INDEPENDENTLY of codecov/codecov-action — its
+      # latest major is v1 (no v5/v7). The earlier @v5 pin didn't exist and
+      # failed the job at action-resolution time. Don't "sync" it to v7.
       - name: Upload test results to Codecov
         if: ${{ !cancelled() && matrix.python-version == '3.13' }}
-        uses: codecov/test-results-action@v5
+        uses: codecov/test-results-action@v1
         with:
           files: ./test-results/*.xml
           token: ${{ secrets.CODECOV_TOKEN }}
