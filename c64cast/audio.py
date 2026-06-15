@@ -180,7 +180,7 @@ def encode_floats_to_dac(
     """Quantize float audio samples in [-1, 1] to 4-bit SID DAC codes (the
     0..15 volume nibble), as a uint8 array. Single source of truth for the
     DAC encoding shared by every input path (host-DMA mic, REU mic, offline
-    commercial pre-encode) — the quantization math must stay identical across
+    video pre-encode) — the quantization math must stay identical across
     them or REU-mode and host-mode levels would silently diverge.
 
     TPDF dither (``dither=True``): a triangular ±1 DAC-LSB random offset added
@@ -236,7 +236,7 @@ SAMPLE_TAP_SIZE = 2048
 # produces perceptually cleaner audio.
 #
 # REU mode is opt-in via [audio].use_reu_pump in TOML, and only the
-# CommercialScene branch uses it today (whole track known upfront).
+# VideoScene branch uses it today (whole track known upfront).
 
 REU_PUMP_HANDLER_ADDR = 0xC100  # IRQ handler lives here; $C020 NMI handler stays
 REU_AUDIO_BASE = 0x000000  # REU offset where preloaded audio starts
@@ -492,9 +492,9 @@ assert REU_IRQ_HANDLER_GOVERNOR[18] == REU_IRQ_HANDLER[1], (
 )
 
 
-# --- Main-RAM REU source tracker (shared between mic + tracked commercial) ---
+# --- Main-RAM REU source tracker (shared between mic + tracked video) ---
 # Lives in the $C200 slot just past the audio handler region ($C100-$C1FF).
-# Both the mic pump and the tracked commercial pump load $DF04/$DF05/$DF06
+# Both the mic pump and the tracked video pump load $DF04/$DF05/$DF06
 # from this 3-byte tracker every IRQ. A single scene runs at most one of
 # the two pumps, so the shared address is safe.
 REU_AUDIO_SRC_TRACKER_ADDR = 0xC200
@@ -529,7 +529,7 @@ _TCTR_HI_BYTE = (REU_PUMP_TICK_COUNTER_ADDR >> 8) & 0xFF
 REU_PUMP_TICK_DIVIDER = 3
 
 
-# --- Tracked commercial REU pump (coexists with REU bank-swap video) -----
+# --- Tracked video REU pump (coexists with REU bank-swap video) -----
 # The plain REU_IRQ_HANDLER above relies on REU source ($DF04-$DF06) AND
 # C64 dest ($DF02-$DF03) auto-incrementing across triggers — works in
 # isolation, FAILS when the REU bank-swap video pipeline ALSO uses the
@@ -767,12 +767,12 @@ assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
 
 
 # --- REU-staged live-mic pump --------------------------------------------
-# Same architecture as the commercial REU pump above, but the REU source
+# Same architecture as the video REU pump above, but the REU source
 # side is also a ring (the mic produces samples in real time, so we can't
 # preload). Host's sounddevice callback REUWRITEs each encoded chunk into
 # the REU mic ring at `_mic_reu_write_pos`, wrapping at REU_MIC_SIZE. The
 # C64-side IRQ handler reads from the same ring at the matched pump rate
-# (CIA #1 latch = REU_PUMP_CIA1_LATCH, same as commercial), wrapping its
+# (CIA #1 latch = REU_PUMP_CIA1_LATCH, same as video), wrapping its
 # REU source pointer at REU_MIC_END_HI.
 #
 # Bootstrap: the entire REU ring is pre-filled with NEUTRAL_SAMPLE so the
@@ -937,7 +937,7 @@ REU_MIC_IRQ_HANDLER = bytes(
         0x8D,
         _TRK_LO,
         _TRK_HI_BYTE,  # STA tracker_lo
-        # dst wrap check on $DF03 (reliable, same as commercial handler):
+        # dst wrap check on $DF03 (reliable, same as video handler):
         0xAD,
         0x03,
         0xDF,  # LDA $DF03
@@ -1047,14 +1047,14 @@ class AudioStreamer:
         self.digi_boost = digi_boost
         self.sid_filter_cutoff = sid_filter_cutoff
         # Host-side DSP applied to float samples before the 4-bit DAC encode.
-        # Built per input source: line sources (commercial/WAV) default to a
+        # Built per input source: line sources (video/WAV) default to a
         # line chain here; the mic start methods rebuild it with is_mic=True so
         # the AGC stage activates. Disabled params → an identity chain (active
         # is False), so the encode paths short-circuit to the legacy behavior.
         self._dsp_params = dsp_params if dsp_params is not None else DSPParams()
         self._dsp = AudioDSP(self._dsp_params, sample_rate=sample_rate, is_mic=False)
         # REU-staged audio mode: when True, scenes that know the full track
-        # upfront (e.g. CommercialScene) can call start_for_reu_staged() to
+        # upfront (e.g. VideoScene) can call start_for_reu_staged() to
         # preload the audio into REU memory and let a C64-side IRQ pump
         # refill the ring instead of the host-DMA worker thread. See module
         # docstring + REU_IRQ_HANDLER constants. False = default host-DMA
@@ -1505,7 +1505,7 @@ class AudioStreamer:
         per-scene value (or None = source-aware/global default) at setup(). We
         update _dsp_params and rebuild the line chain now; mic scenes rebuild
         with is_mic=True in start_mic() from the updated params, and the REU
-        commercial path reads _dsp_params via process_offline_dsp(). No-op for
+        video path reads _dsp_params via process_offline_dsp(). No-op for
         __new__-built test streamers without _dsp_params."""
         params = getattr(self, "_dsp_params", None)
         if params is None:
@@ -1524,8 +1524,8 @@ class AudioStreamer:
     def process_offline_dsp(self, floats: np.ndarray) -> np.ndarray:
         """Run the configured DSP over a COMPLETE offline buffer using a fresh
         line chain (is_mic=False), leaving the realtime streamer's own chain
-        state untouched. Used by the REU commercial pre-encode so REU-staged
-        and host-DMA commercial audio get identical DSP treatment. No-op when
+        state untouched. Used by the REU video pre-encode so REU-staged
+        and host-DMA video audio get identical DSP treatment. No-op when
         DSP is disabled."""
         dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
         return dsp.process(floats) if dsp.active else floats
@@ -1741,7 +1741,7 @@ class AudioStreamer:
 
         # 4. Reprogram CIA #1 Timer A latch — matched pump rate vs NMI
         # consume rate. Same value (REU_PUMP_CIA1_LATCH = $3FFF) as the
-        # commercial REU path because the ratio (chunk × NMI_period)
+        # video REU path because the ratio (chunk × NMI_period)
         # is independent of CPU clock.
         self.api.write_memory(
             f"{CIA1.TIMER_A_LO:04X}",
@@ -1925,7 +1925,7 @@ class AudioStreamer:
         self._worker_thread.start()
         log.info("audio: external push source → SID @ %dHz", self.sample_rate)
 
-    # ---- REU-staged playback (CommercialScene) ------------------------------
+    # ---- REU-staged playback (VideoScene) ------------------------------
     def start_for_reu_staged(
         self,
         audio_4bit: bytes,
@@ -2286,7 +2286,7 @@ class AudioStreamer:
         # Report underrun telemetry. Each full underrun is an audible
         # click; partials are less audible but still indicate producer
         # stalls. Deterministic, source-correlated counts (same numbers
-        # across reruns of the same commercial) point at PyAV decode
+        # across reruns of the same video) point at PyAV decode
         # stalls rather than DMA timing.
         if self._full_underruns or self._partial_underruns:
             log.warning(

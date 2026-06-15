@@ -17,7 +17,7 @@ Five composable, stateful processors (see CLAUDE.md `[dsp]`):
 * :class:`Compressor` — soft-knee feed-forward compressor + makeup gain; the
   headline win, evening out dynamics so quiet detail survives quantization.
 * :class:`Limiter` — fast peak limiter / brickwall ceiling, final safety.
-* :class:`AGC` — slow automatic gain control for the mic path (line/commercial
+* :class:`AGC` — slow automatic gain control for the mic path (line/video
   audio is already peak-normalized upstream, so AGC is mic-only).
 
 :class:`AudioDSP` wires the enabled processors into the right order for a mic or
@@ -33,7 +33,7 @@ asserts this continuity directly for each processor.
 genuinely recursive (per-sample state, attack≠release branch), so they use a
 Python loop rather than a vectorized form — no scipy in the dep set. At 8 kHz
 with realtime mic blocks (hundreds of samples) this is negligible; the offline
-commercial pre-encode runs it once over the whole track (~1 s for a 2.5-min
+video pre-encode runs it once over the whole track (~1 s for a 2.5-min
 clip), which is acceptable for one-time scene setup.
 """
 
@@ -49,7 +49,7 @@ _EPS = 1e-9
 # Source-aware pre-emphasis defaults, used when DSPParams.pre_emphasis is None
 # ("auto"). The mic/voice path gets a stronger HF lift than the line path: pure
 # voice benefits most from the consonant/upper-formant boost (intelligibility),
-# while line content (commercials = mixed speech + music) wants a gentler one so
+# while line content (videos = mixed speech + music) wants a gentler one so
 # music doesn't get over-bright. HW-A/B-tuned on a real 6581 (2026-06-12).
 PRE_EMPHASIS_MIC_DEFAULT = 0.7
 PRE_EMPHASIS_LINE_DEFAULT = 0.6

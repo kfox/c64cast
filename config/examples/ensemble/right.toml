@@ -6,7 +6,7 @@
 url = "http://u64-right.lan"
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 # Quiet idle scene — the rightmost system runs this most of the time.
 [[scenes]]

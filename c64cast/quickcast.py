@@ -2,21 +2,21 @@
 
 Build an **in-memory-only** :class:`~c64cast.config.Config` from a list of
 file / directory / glob / URL arguments and run it — no TOML on disk. One scene
-per argument, in the order given, no ad interleaving, no loop (override with
+per argument, in the order given, no video interleaving, no loop (override with
 ``--loop``). This is a thin convenience layer over the normal run path
 (:func:`c64cast.cli.build_stack` → ``_run_playlists`` → ``teardown_stack``); it
 adds no new playback machinery.
 
 Argument → scene type mapping:
 
-* video file (``.mp4`` …) → ``commercial``
+* video file (``.mp4`` …) → ``video``
 * ``.sid``                → ``waveform``
 * image (``.jpg`` …)      → ``slideshow``
 * ``.prg`` / ``.crt``     → ``launcher``
 * directory / glob        → the single scene type its contents imply
   (the dir/glob spec is passed straight through, so the scene random-picks
   at setup — "a directory of SIDs plays a random SID")
-* URL                     → ``commercial`` (direct media URLs play as-is;
+* URL                     → ``video`` (direct media URLs play as-is;
   YouTube and other sites are resolved via the optional ``yt-dlp`` extra)
 
 Audio-only files (``.mp3`` …) are recognized but **not yet supported** (a
@@ -57,7 +57,7 @@ AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus")
 
 # Extension group → scene type. The first match wins; groups are disjoint.
 _GROUP_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
-    (VIDEO_EXTS, "commercial"),
+    (VIDEO_EXTS, "video"),
     (SID_EXTS, "waveform"),
     (PICTURE_EXTS, "slideshow"),
     (PROGRAM_EXTS, "launcher"),
@@ -72,7 +72,7 @@ _GLOB_CHARS = re.compile(r"[*?\[]")
 _DEFAULT_VIDEO_DISPLAY = "mhires"
 
 # Scene types that accept a `duration_s` override from `-t/--duration`.
-# Commercial rejects it (video-driven); launcher treats it as an idle timeout
+# Video rejects it (video-driven); launcher treats it as an idle timeout
 # (surprising for a playback shortcut), so both are excluded.
 _DURATION_TYPES = ("waveform", "slideshow")
 
@@ -147,7 +147,7 @@ def _make_scene(
     """Construct a SceneCfg, applying the display + duration overrides only
     where they're meaningful for that scene type."""
     scene = SceneCfg(type=scene_type, file=file_spec, name=name)
-    if scene_type in ("commercial", "slideshow"):
+    if scene_type in ("video", "slideshow"):
         scene.display = display or _DEFAULT_VIDEO_DISPLAY
     if duration_s is not None and scene_type in _DURATION_TYPES:
         scene.duration_s = duration_s
@@ -236,7 +236,7 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
 
 
 def classify_url(arg: str, *, display: str | None) -> SceneCfg:
-    """Turn a URL argument into a commercial SceneCfg (the only supported URL
+    """Turn a URL argument into a video SceneCfg (the only supported URL
     kind today). Audio-only URLs raise the deferred-support message."""
     stream_url, kind, title = resolve_media_url(arg)
     if kind != "video":
@@ -244,16 +244,16 @@ def classify_url(arg: str, *, display: str | None) -> SceneCfg:
             f"{arg!r} resolves to audio only, which isn't supported yet "
             "(test-pattern-over-audio is a planned follow-up)."
         )
-    return _make_scene("commercial", stream_url, display=display, duration_s=None, name=title)
+    return _make_scene("video", stream_url, display=display, duration_s=None, name=title)
 
 
 def build_config(args: argparse.Namespace) -> Config:
     """Build the in-memory Config: defaults, plus one scene per input argument,
     plus the runtime overrides from the parsed flags."""
     cfg = Config()
-    # Each argument plays once, in order — no ads, no loop (unless --loop).
+    # Each argument plays once, in order — no videos, no loop (unless --loop).
     cfg.playlist.loop = args.loop
-    cfg.playlist.interleave_ads = False
+    cfg.playlist.interleave_videos = False
 
     if args.url:
         cfg.ultimate64.url = args.url
@@ -280,8 +280,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="cast",
         description=(
             "Quick playback: one scene per file/URL argument, in order, no loop. "
-            "video->commercial, .sid->waveform, image->slideshow, .prg/.crt->launcher, "
-            "URL->commercial (yt-dlp resolves YouTube et al.)."
+            "video->video, .sid->waveform, image->slideshow, .prg/.crt->launcher, "
+            "URL->video (yt-dlp resolves YouTube et al.)."
         ),
     )
     p.add_argument("inputs", nargs="+", help="files, directories, globs, or URLs to play")

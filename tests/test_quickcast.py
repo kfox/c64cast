@@ -40,8 +40,8 @@ class ClassifyLiteralFileTest(unittest.TestCase):
         return quickcast.classify_local(name, display=None, duration_s=None).type
 
     def test_extension_to_scene_type(self):
-        self.assertEqual(self._classify("a.mp4"), "commercial")
-        self.assertEqual(self._classify("a.MKV"), "commercial")  # case-insensitive
+        self.assertEqual(self._classify("a.mp4"), "video")
+        self.assertEqual(self._classify("a.MKV"), "video")  # case-insensitive
         self.assertEqual(self._classify("tune.sid"), "waveform")
         self.assertEqual(self._classify("pic.png"), "slideshow")
         self.assertEqual(self._classify("game.prg"), "launcher")
@@ -69,10 +69,10 @@ class ClassifyLiteralFileTest(unittest.TestCase):
         scene = quickcast.classify_local("clip.mp4", display="hires", duration_s=None)
         self.assertEqual(scene.display, "hires")
 
-    def test_duration_applies_to_waveform_not_commercial(self):
+    def test_duration_applies_to_waveform_not_video(self):
         wav = quickcast.classify_local("t.sid", display=None, duration_s=42.0)
         self.assertEqual(wav.duration_s, 42.0)
-        # Commercial rejects duration_s (video-driven) — must stay unset.
+        # Video rejects duration_s (video-driven) — must stay unset.
         com = quickcast.classify_local("c.mp4", display=None, duration_s=42.0)
         self.assertIsNone(com.duration_s)
 
@@ -141,7 +141,7 @@ class ClassifyDirAndGlobTest(unittest.TestCase):
         self._touch(name)
         path = os.path.join(self.tmp, name)
         scene = quickcast.classify_local(path, display=None, duration_s=None)
-        self.assertEqual(scene.type, "commercial")
+        self.assertEqual(scene.type, "video")
         self.assertEqual(scene.file, path)
 
 
@@ -149,7 +149,7 @@ class BuildConfigTest(unittest.TestCase):
     def test_playlist_semantics(self):
         cfg = quickcast.build_config(_parse(["a.mp4", "b.sid"]))
         self.assertFalse(cfg.playlist.loop)
-        self.assertFalse(cfg.playlist.interleave_ads)
+        self.assertFalse(cfg.playlist.interleave_videos)
 
     def test_loop_flag(self):
         cfg = quickcast.build_config(_parse(["--loop", "a.mp4"]))
@@ -157,7 +157,7 @@ class BuildConfigTest(unittest.TestCase):
 
     def test_scene_order_preserved(self):
         cfg = quickcast.build_config(_parse(["a.mp4", "b.sid", "c.png"]))
-        self.assertEqual([s.type for s in cfg.scenes], ["commercial", "waveform", "slideshow"])
+        self.assertEqual([s.type for s in cfg.scenes], ["video", "waveform", "slideshow"])
 
     def test_audio_on_by_default(self):
         self.assertTrue(quickcast.build_config(_parse(["a.mp4"])).audio.enabled)
@@ -246,9 +246,9 @@ class ResolveMediaUrlTest(unittest.TestCase):
 
 
 class ClassifyUrlTest(unittest.TestCase):
-    def test_video_url_becomes_commercial(self):
+    def test_video_url_becomes_video(self):
         scene = quickcast.classify_url("http://host/clip.mp4", display=None)
-        self.assertEqual(scene.type, "commercial")
+        self.assertEqual(scene.type, "video")
         self.assertEqual(scene.file, "http://host/clip.mp4")
         self.assertEqual(scene.display, "mhires")
 
@@ -259,7 +259,7 @@ class ClassifyUrlTest(unittest.TestCase):
 
     def test_build_config_routes_url(self):
         cfg = quickcast.build_config(_parse(["http://host/clip.mp4"]))
-        self.assertEqual(cfg.scenes[0].type, "commercial")
+        self.assertEqual(cfg.scenes[0].type, "video")
         self.assertEqual(cfg.scenes[0].file, "http://host/clip.mp4")
 
 
@@ -269,11 +269,11 @@ class ResolveFileSpecUrlTest(unittest.TestCase):
 
     def test_url_passthrough(self):
         url = "https://host/stream.m3u8?token=abc"
-        self.assertEqual(resolve_file_spec(url, (".mp4",), label="commercial"), [url])
+        self.assertEqual(resolve_file_spec(url, (".mp4",), label="video"), [url])
 
     def test_url_mixed_with_local(self):
         url = "http://host/clip.mp4"
-        out = resolve_file_spec(f"{url}, also.mp4", (".mp4",), label="commercial")
+        out = resolve_file_spec(f"{url}, also.mp4", (".mp4",), label="video")
         self.assertIn(url, out)
         self.assertIn("also.mp4", out)
 
@@ -281,7 +281,7 @@ class ResolveFileSpecUrlTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "clip [abc123].mp4")
             open(path, "w").close()
-            self.assertEqual(resolve_file_spec(path, (".mp4",), label="commercial"), [path])
+            self.assertEqual(resolve_file_spec(path, (".mp4",), label="video"), [path])
 
 
 if __name__ == "__main__":

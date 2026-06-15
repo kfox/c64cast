@@ -426,7 +426,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # True when prepare_next() has already picked+loaded this
         # iteration's tune (and refreshed self.name); setup() then skips
         # the re-pick to avoid loading the SID twice. See
-        # CommercialScene._prepared for the full rationale.
+        # VideoScene._prepared for the full rationale.
         self._prepared = False
         # Default to HALF the system video rate (30 NTSC / 25 PAL). An
         # oscilloscope reads fine at half-rate (see the Cam Link captures in

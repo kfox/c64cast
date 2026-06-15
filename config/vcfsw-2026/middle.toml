@@ -4,7 +4,7 @@
 # ============================================================================
 # Standalone-runnable: `python -m c64cast --config config/vcfsw-2026/middle.toml`.
 # Same scene mix as the other screens, but it OPENS on a still gallery
-# image (left opens on the webcam, right opens on a commercial) so the
+# image (left opens on the webcam, right opens on a video) so the
 # three screens stay out of phase. SID composers carried by this screen:
 # Martin Galway, Matt Gray, Chris Hülsbeck (plus a wildcard random SID).
 #
@@ -37,12 +37,12 @@ time_base = "auto"
 persistence = "random"
 target_fps = 30
 
-# --- Commercial (muted), multi-hires per-cell ---
+# --- Video (muted), multi-hires per-cell ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "mhires"
 palette_mode = "percell"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"
 audio = false
 target_fps = 30
@@ -85,11 +85,11 @@ target_fps = 30
     { text = "WELCOME TO VCFSW 2026!", color = "rainbow" },
   ]
 
-# --- Commercial (muted), Canny edges ---
+# --- Video (muted), Canny edges ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "hires_edges"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"
 audio = false
 target_fps = 30
@@ -139,12 +139,12 @@ voice_colors = ["cyan", "purple", "light green"]
 persistence = "random"
 target_fps = 30
 
-# --- Commercial (muted), multi-hires per-cell ---
+# --- Video (muted), multi-hires per-cell ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "mhires"
 palette_mode = "percell"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"
 audio = false
 target_fps = 30

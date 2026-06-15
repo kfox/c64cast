@@ -395,12 +395,12 @@ change, that's why (hires ignores it).
 
 `channel_boost` and `hue_corrections` are the *same* nudge for every video.
 `auto_fit` (default **true**) is their per-source adaptive sibling: for
-**commercial and slideshow scenes only**, c64cast pre-scans the source (a
+**video and slideshow scenes only**, c64cast pre-scans the source (a
 quick downscaled decode → one luma histogram + mean saturation) and derives a
 contrast (levels) stretch plus a gentle saturation lift that expands the content
 to *fill* the C64 tonal + chroma range. The quantizer's target is always the
 fixed 16 colors and content that huddles in a corner of the gamut (dark, flat,
-or low-chroma — the common case for vintage commercials) otherwise leaves most
+or low-chroma — the common case for vintage videos) otherwise leaves most
 of the 16 colors unused and reads as muddy and monochromatic; the fit pushes it
 out so more of the palette gets used.
 
@@ -414,7 +414,7 @@ well-exposed source resolves to an identity fit (no-op). `auto_fit_strength`
 (0..1) lerps the whole transform toward identity — `auto_fit_strength = 0.0` is
 equivalent to off, handy for an A/B.
 
-**Where it runs:** the scene computes one `ColorFit` per video (commercial) or
+**Where it runs:** the scene computes one `ColorFit` per video (video) or
 per image (slideshow) and installs it on the display mode via `set_color_fit`;
 the mode applies it as the first step of `compose`/`render`, *after* the cheap
 downscale, so per-frame cost is two LUT passes. Webcam scenes never call
@@ -452,7 +452,7 @@ c64cast ships **none** of the following — you provide them:
   permits free non-commercial use; commercial use requires per-tune
   permission from each composer. Don't blindly include HVSC tunes in
   a Twitch VOD if you ever plan to monetize.
-* **Commercial videos** (the `commercial` scene type) — your problem.
+* **Videos** (the `video` scene type) — your problem.
   If you're playing a Coca-Cola ad at VCFSW for nostalgia, fair use is
   probably defensible; on a recorded stream the publisher may disagree.
 * **CHARGEN ROM** (`characters.901225-01.bin`) — Commodore copyright.
@@ -478,9 +478,9 @@ most features are disabled. Failure modes:
 
 * `[audio] enabled = true` without `[mic]` extra → `AudioStreamer`
   raises `ImportError` at scene setup.
-* `type = "commercial"` without `[commercials]` extra → loader logs
-  "Found N ad files but PyAV is not installed; skipping commercials"
-  and the playlist runs without ads.
+* `type = "video"` without `[video]` extra → loader logs
+  "Found N video files but PyAV is not installed; skipping videos"
+  and the playlist runs without videos.
 * `[preview]` enabled without `[preview]` extra → preview window
   silently disabled with a warning.
 * `[control]` enabled without `[control]` extra → control plane
@@ -500,12 +500,12 @@ silently dropped), and the one scene loops forever via teardown+setup.
 
 Two surprises:
 
-1. `[playlist] interleave_ads = true` with a single-scene config and a
-   populated ads directory **does not insert ads** — the loader logs an
-   info line and short-circuits because inserting an ad would promote
+1. `[playlist] interleave_videos = true` with a single-scene config and a
+   populated videos directory **does not insert videos** — the loader logs an
+   info line and short-circuits because inserting a video would promote
    the playlist to 2 scenes and silently defeat the mode.
 2. CTRL key presses (and HTTP `POST /skip`) are no-ops while running. C=
    pause/resume still works.
 
-If you want ads or CTRL-skip back, define at least 2 scenes in your
+If you want videos or CTRL-skip back, define at least 2 scenes in your
 config.

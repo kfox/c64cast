@@ -91,7 +91,7 @@ class Ensemble:
     doesn't have to re-wire its event reference on every broadcast.
 
     `audio_holder` is the name of the system currently allowed to drive
-    audio (commercial / waveform / midi). Only one system may hold it at
+    audio (video / waveform / midi). Only one system may hold it at
     a time; others whose playlist lands on an audio-bearing scene skip
     it until the holder releases. `audio_lock` guards the claim/release
     transaction so concurrent claims can't both win. Live scenes

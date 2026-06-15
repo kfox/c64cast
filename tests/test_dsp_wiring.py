@@ -67,7 +67,7 @@ class EncodePathTest(unittest.TestCase):
 
     def test_offline_dsp_matches_realtime_chain(self):
         # process_offline_dsp must apply the same (line) chain the realtime
-        # encode path uses, so REU-staged and host commercial audio agree.
+        # encode path uses, so REU-staged and host video audio agree.
         params = DSPParams(enabled=True, compress=True, expander=True, limiter=True)
         x = _quiet_sine(-18.0, secs=0.3)
         realtime = _streamer(params)._apply_dsp(x)

@@ -2,7 +2,7 @@
 
 The "UP NEXT" interstitial is built from the upcoming scene's `.name` BEFORE
 that scene's setup() runs (playlist.py). Randomized scenes (Slideshow,
-Commercial, Waveform) used to leave `.name` showing the directory spec or a
+Video, Waveform) used to leave `.name` showing the directory spec or a
 stale prior pick at that moment; `prepare_next()` now performs the random pick
 up front so the card shows the real upcoming file, with file extensions
 stripped.
@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 import cv2
 import numpy as np
 
-from c64cast.scenes import CommercialScene, SlideshowScene, _display_name
+from c64cast.scenes import SlideshowScene, VideoScene, _display_name
 
 
 class DisplayNameTest(unittest.TestCase):
@@ -38,7 +38,7 @@ class DisplayNameTest(unittest.TestCase):
         self.assertEqual(_display_name("archive.tar.gz"), "archive.tar")
 
 
-class CommercialPrepareNextTest(unittest.TestCase):
+class VideoPrepareNextTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -48,25 +48,25 @@ class CommercialPrepareNextTest(unittest.TestCase):
             open(os.path.join(self.tmp.name, n), "wb").close()
 
     def _scene(self):
-        return CommercialScene(MagicMock(), None, MagicMock(), self.tmp.name)
+        return VideoScene(MagicMock(), None, MagicMock(), self.tmp.name)
 
     def test_init_name_is_dir_spec_for_multi_pool(self):
         # Before prepare_next, a multi-entry pool can't know its pick.
         scene = self._scene()
-        self.assertEqual(scene.name, f"Commercial: {self.tmp.name}")
+        self.assertEqual(scene.name, f"Video: {self.tmp.name}")
         self.assertFalse(scene._prepared)
 
     def test_prepare_next_picks_real_file_without_extension(self):
         scene = self._scene()
         scene.prepare_next()
         self.assertTrue(scene._prepared)
-        self.assertIn(scene.name, ("Commercial: alpha", "Commercial: beta"))
+        self.assertIn(scene.name, ("Video: alpha", "Video: beta"))
         self.assertIn(os.path.basename(scene.filepath), ("alpha.mp4", "beta.mp4"))
 
     def test_single_entry_init_name_has_no_extension(self):
         f = os.path.join(self.tmp.name, "alpha.mp4")
-        scene = CommercialScene(MagicMock(), None, MagicMock(), f)
-        self.assertEqual(scene.name, "Commercial: alpha")
+        scene = VideoScene(MagicMock(), None, MagicMock(), f)
+        self.assertEqual(scene.name, "Video: alpha")
 
     def test_pick_filepath_failure_returns_false(self):
         scene = self._scene()

@@ -28,7 +28,7 @@ serial_port = "/dev/tty.usbmodem1234"   # <-- set to your device
 storage = "sd"
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
 type = "blank"

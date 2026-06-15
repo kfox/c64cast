@@ -11,7 +11,7 @@
 # music / video / stills / a playable program so it stays out of phase
 # with the middle and right screens. SID composers carried by this
 # screen: Rob Hubbard, Jeroen Tel, Tim Follin (plus a wildcard random
-# SID). Muted commercials are interleaved throughout.
+# SID). Muted videos are interleaved throughout.
 
 [ultimate64]
 url = "http://192.168.2.66"          # <-- set to the LEFT U64's IP/hostname
@@ -62,12 +62,12 @@ color_mode = "per_waveform"
 time_base = "auto"
 persistence = "random"
 
-# --- Commercial (muted), multi-hires per-cell ---
+# --- Video (muted), multi-hires per-cell ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "mhires"
 palette_mode = "percell"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"               # random clip each loop
 audio = false
 
@@ -107,11 +107,11 @@ file = "assets/programs"             # random .prg/.crt each setup
 duration_s = 120.0                   # idle timeout — resets on player input
 input_source = "cia"                 # joystick at $DC00/$DC01
 
-# --- Commercial (muted), Canny edges ---
+# --- Video (muted), Canny edges ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "hires_edges"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"
 audio = false
 
@@ -182,12 +182,12 @@ color_mode = "per_voice"
 voice_colors = ["cyan", "purple", "light green"]
 persistence = "random"
 
-# --- Commercial (muted), multi-hires per-cell ---
+# --- Video (muted), multi-hires per-cell ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "mhires"
 palette_mode = "percell"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"
 audio = false
 

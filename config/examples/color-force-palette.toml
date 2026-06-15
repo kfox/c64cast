@@ -1,8 +1,8 @@
 #:schema ../../c64cast.schema.json
 # Single-scene demo: the EXTREME forced-palette remap ([color].force_palette).
 #
-# Requires the `commercials` extra (PyAV):
-#   pip install -e .[commercials]
+# Requires the `video` extra (PyAV):
+#   pip install -e .[video]
 #
 # Every other [color] stage is FAITHFUL — pixels map to their nearest of the 16
 # C64 colors, so a source clustered in one gamut region (TRON = black + dark
@@ -32,10 +32,10 @@ force_palette_colors = 16     # spread the source across all 16 C64 colors
 # force_palette_indices = [0, 2, 4, 6, 14]   # or pin an explicit palette
 
 [playlist]
-interleave_ads = false        # the single scene IS the demo
+interleave_videos = false        # the single scene IS the demo
 
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "mhires"            # forced palette applies to mcm / mhires
 palette_mode = "percell"     # forced pairs with percell (the recommended combo)
 # Drop a high-contrast, color-clustered clip here (TRON is the canonical test).

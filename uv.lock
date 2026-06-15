@@ -146,9 +146,6 @@ all = [
     { name = "uvicorn" },
     { name = "yt-dlp" },
 ]
-commercials = [
-    { name = "av" },
-]
 control = [
     { name = "fastapi" },
     { name = "uvicorn" },
@@ -171,6 +168,9 @@ preview = [
 ]
 tr = [
     { name = "pyserial" },
+]
+video = [
+    { name = "av" },
 ]
 vision = [
     { name = "mediapipe" },
@@ -197,7 +197,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'all'", specifier = ">=10" },
-    { name = "av", marker = "extra == 'commercials'", specifier = ">=10" },
+    { name = "av", marker = "extra == 'video'", specifier = ">=10" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.100" },
     { name = "fastapi", marker = "extra == 'control'", specifier = ">=0.100" },
     { name = "mediapipe", marker = "extra == 'all'", specifier = ">=0.10" },
@@ -227,7 +227,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2024.1" },
     { name = "yt-dlp", marker = "extra == 'yt'", specifier = ">=2024.1" },
 ]
-provides-extras = ["mic", "commercials", "preview", "control", "obs", "midi", "logging", "tr", "vision", "wizard", "yt", "all"]
+provides-extras = ["mic", "video", "preview", "control", "obs", "midi", "logging", "tr", "vision", "wizard", "yt", "all"]
 
 [package.metadata.requires-dev]
 dev = [

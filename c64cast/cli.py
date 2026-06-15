@@ -175,11 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     pl = p.add_argument_group("playlist")
     pl.add_argument(
-        "--ads",
+        "--videos",
         default=None,
-        help=f"Directory containing commercials "
+        help=f"Directory containing videos "
         f"({', '.join(cfgmod.VIDEO_EXTS)}) "
-        f"(default: {playlist_def.ads_dir})",
+        f"(default: {playlist_def.videos_dir})",
     )
     pl.add_argument(
         "--loop",
@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Loop the playlist after the last scene finishes "
         "(--no-loop = exit after one pass; useful for "
-        f'"play one commercial and quit") (default: {playlist_def.loop})',
+        f'"play one video and quit") (default: {playlist_def.loop})',
     )
 
     intro = p.add_argument_group("introspection")

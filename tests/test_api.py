@@ -255,7 +255,7 @@ class RunSidPlayerTest(unittest.TestCase):
     def test_mc_restores_master_volume_after_init(self):
         # The player MC must write $D418=$0F right after JSR init returns,
         # so the SID is audible regardless of whether an earlier
-        # audio.stop() zeroed $D418 (clean cutoff for commercials) or
+        # audio.stop() zeroed $D418 (clean cutoff for videos) or
         # whether INIT itself touched $D418. Verify the literal bytes
         # land at the documented offsets — a regression here would
         # silently mute the SID.

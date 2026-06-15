@@ -3,11 +3,11 @@
 Clean, known-good audio test clips for the **audio-quality initiative** — the
 host DSP A/B work (compressor/limiter, expander, AGC, pre-emphasis) on the
 4-bit `$D418` DAC path. Used by [`scripts/diags/dsp_ab.py`](../../scripts/diags/dsp_ab.py)
-for offline analysis and by hand-written commercial-scene configs for the
+for offline analysis and by hand-written video-scene configs for the
 real-hardware A/B.
 
 These are deliberately **clean source recordings** (unlike the vintage
-commercials in [`../videos/`](../videos/), whose own noisy/band-limited audio
+videos in [`../videos/`](../videos/), whose own noisy/band-limited audio
 would confound a measurement of what the DSP itself does). The clips here are
 the controlled material: any artifact you hear is the DSP + the 6581 DAC, not
 the source.

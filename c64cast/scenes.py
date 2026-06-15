@@ -16,7 +16,7 @@ Two scene families:
   The Playlist's deadline-based frame dropping handles congestion; no
   per-scene backpressure check needed under DMA.
 
-* Recorded (file): CommercialScene. Uses PyAV for A/V demux with a shared
+* Recorded (file): VideoScene. Uses PyAV for A/V demux with a shared
   PTS clock — the video reader picks frames against the audio playback
   position rather than wall-clock-from-start, so drift can't accumulate.
 """
@@ -67,7 +67,7 @@ _C64_ASPECT = 320 / 200
 # ColorFitAccumulator before freezing the derived fit. The accumulator is
 # additive, so the fit converges and stabilises over this window (~2s at
 # 24 fps) — replacing the old blocking full-source pre-scan with a brief
-# on-screen settle and no startup pause. See CommercialScene.setup.
+# on-screen settle and no startup pause. See VideoScene.setup.
 ONLINE_FIT_WARMUP_FRAMES = 48
 
 
@@ -120,7 +120,7 @@ def _timecode(seconds: float) -> str:
 
 
 class Scene:
-    # Subclasses that drive audible content (commercial PyAV, native
+    # Subclasses that drive audible content (video PyAV, native
     # sidplay, MIDI → SID) flip this to True so the Playlist consults
     # the ensemble audio lock before setup. Live scenes (webcam, blank)
     # leave it False — in ensemble mode their audio is suppressed at
@@ -175,7 +175,7 @@ class Scene:
         """Whether THIS instance contends for the ensemble audio slot.
         `WANTS_AUDIO_LOCK` declares the capability at the class level;
         instances opt out when their audio is actually disabled (e.g. a
-        muted commercial), so a silent scene is selectable like any
+        muted video), so a silent scene is selectable like any
         non-audio scene. SID-driving scenes (waveform/midi) always
         compete — they output through the chip regardless of the
         AudioStreamer, so they don't override this."""
@@ -192,7 +192,7 @@ class Scene:
         self.is_done = False
         self.prev_frame = None
         # Apply this scene's pre-emphasis to the shared streamer before the
-        # subclass brings audio up (mic start / commercial pre-encode read the
+        # subclass brings audio up (mic start / video pre-encode read the
         # updated DSP params). No-op when the scene has no audio.
         if self.audio is not None:
             self.audio.set_pre_emphasis(self.pre_emphasis)
@@ -202,7 +202,7 @@ class Scene:
         fps_str = f"{self.target_fps:.0f}fps" if self.target_fps else "auto-fps"
         overlay_names = [getattr(ov, "name", type(ov).__name__) for ov in self.overlays]
         ov_str = ", ".join(overlay_names) if overlay_names else "no overlays"
-        # CommercialScene sets duration_s = math.inf because its lifetime
+        # VideoScene sets duration_s = math.inf because its lifetime
         # is video-driven; format that distinctly instead of "inf.0s".
         dur_str = "video-driven" if math.isinf(self.duration_s) else f"{self.duration_s:.1f}s"
         log.info(
@@ -276,7 +276,7 @@ class WebcamScene(Scene):
         super().setup()
         self.start_time = time.time()
         if self.audio:
-            # Mirror CommercialScene: when the display mode installs the
+            # Mirror VideoScene: when the display mode installs the
             # bank-swap merged dispatcher at $0314 (audio_reu_pump_active
             # flag on a bitmap mode with use_reu_staged), the mic REU pump
             # install must skip its own $0314 hook.
@@ -415,7 +415,7 @@ class BlankScene(Scene):
 class SlideshowScene(Scene):
     """Cycle through still images for the scene's duration.
 
-    File spec mirrors CommercialScene's grammar (comma-separated paths,
+    File spec mirrors VideoScene's grammar (comma-separated paths,
     directories, and globs — see `resolve_file_spec`). Each `setup()`
     re-resolves so directory contents can change between iterations. A
     shuffle-and-walk picker guarantees every image in the pool gets shown
@@ -492,7 +492,7 @@ class SlideshowScene(Scene):
         self.start_time: float = 0.0
         # True when prepare_next() has already loaded the opening slide (and
         # updated self.name); setup() then skips the re-pick. See
-        # CommercialScene._prepared for the full rationale.
+        # VideoScene._prepared for the full rationale.
         self._prepared = False
 
     def _resolve_candidates(self) -> list[str]:
@@ -654,7 +654,7 @@ class SlideshowScene(Scene):
         return True
 
 
-class CommercialScene(Scene):
+class VideoScene(Scene):
     """PyAV-driven A/V playback with audio-master sync.
 
     The demuxer runs on its own thread, pushing resampled audio straight into
@@ -667,7 +667,7 @@ class CommercialScene(Scene):
     WANTS_AUDIO_LOCK = True
 
     def competes_for_audio_lock(self) -> bool:
-        # A muted commercial (audio = false, or global [audio].enabled
+        # A muted video (audio = false, or global [audio].enabled
         # off) has self.audio is None and produces no sound — it doesn't
         # need the ensemble audio slot and should be selectable like any
         # non-audio scene.
@@ -691,15 +691,15 @@ class CommercialScene(Scene):
 
         self.file_spec = file
         # Initial resolution so __init__ raises on bad specs (mirrors the
-        # validate_scene_cfg check; also covers ad-interleaved scenes
+        # validate_scene_cfg check; also covers auto-interleaved scenes
         # built without going through validate). Picked again at setup.
-        candidates = resolve_file_spec(file, VIDEO_EXTS, label="commercial")
+        candidates = resolve_file_spec(file, VIDEO_EXTS, label="video")
         # Display the spec in the scene name when the pool has multiple
         # entries — the picked file's basename gets prefixed at setup.
         if len(candidates) == 1:
-            scene_name = f"Commercial: {_display_name(candidates[0])}"
+            scene_name = f"Video: {_display_name(candidates[0])}"
         else:
-            scene_name = f"Commercial: {file}"
+            scene_name = f"Video: {file}"
         super().__init__(api, audio, display_mode, scene_name)
         # True when prepare_next() has already chosen this iteration's file
         # (and updated self.name) so setup() consumes that pick instead of
@@ -740,7 +740,7 @@ class CommercialScene(Scene):
     def _resolve_candidates(self) -> list[str]:
         from .config import VIDEO_EXTS, resolve_file_spec
 
-        return resolve_file_spec(self.file_spec, VIDEO_EXTS, label="commercial")
+        return resolve_file_spec(self.file_spec, VIDEO_EXTS, label="video")
 
     def _pick_filepath(self) -> bool:
         """Re-resolve the spec (directories rescan between iterations so
@@ -751,13 +751,13 @@ class CommercialScene(Scene):
         try:
             candidates = self._resolve_candidates()
         except ValueError as e:
-            log.error("commercial: file spec %r failed to resolve at setup: %s", self.file_spec, e)
+            log.error("video: file spec %r failed to resolve at setup: %s", self.file_spec, e)
             return False
         self.filepath = random.choice(candidates)
-        self.name = f"Commercial: {_display_name(self.filepath)}"
+        self.name = f"Video: {_display_name(self.filepath)}"
         if len(candidates) > 1:
             log.info(
-                "commercial: picked %s from %d candidates",
+                "video: picked %s from %d candidates",
                 os.path.basename(self.filepath),
                 len(candidates),
             )
@@ -784,8 +784,8 @@ class CommercialScene(Scene):
         super().setup()
         if not _ensure_pyav():
             log.warning(
-                "PyAV unavailable; commercial scene cannot play %s "
-                "(install with `pip install c64cast[commercials]`)",
+                "PyAV unavailable; video scene cannot play %s "
+                "(install with `pip install c64cast[video]`)",
                 self.filepath,
             )
             self.is_done = True
@@ -793,8 +793,8 @@ class CommercialScene(Scene):
         is_url = self.filepath.lower().startswith(("http://", "https://"))
         if not is_url and not os.path.exists(self.filepath):
             log.error(
-                "commercial: file not found: %s — check the path in "
-                "your config or the [playlist].ads_dir contents",
+                "video: file not found: %s — check the path in "
+                "your config or the [playlist].videos_dir contents",
                 self.filepath,
             )
             self.is_done = True
@@ -811,13 +811,12 @@ class CommercialScene(Scene):
                 self.filepath, target_sample_rate=sr, scan_audio_peak=will_push_audio
             )
         except PermissionError as e:
-            log.error("commercial: permission denied opening %s (%s)", self.filepath, e)
+            log.error("video: permission denied opening %s (%s)", self.filepath, e)
             self.is_done = True
             return
         except Exception as e:
             log.error(
-                "commercial: failed to open %s (%s) — file may be "
-                "corrupt or in an unsupported codec",
+                "video: failed to open %s (%s) — file may be corrupt or in an unsupported codec",
                 self.filepath,
                 e,
             )
@@ -845,10 +844,10 @@ class CommercialScene(Scene):
                 self.display_mode.set_color_fit(fit)
                 self.display_mode.set_color_map(cmap)
                 if fit is not None:
-                    log.info("commercial: auto-fit %s", fit)
+                    log.info("video: auto-fit %s", fit)
                 if cmap is not None:
                     log.info(
-                        "commercial: forced palette → %d colors %s",
+                        "video: forced palette → %d colors %s",
                         len(cmap.indices),
                         list(cmap.indices),
                     )
@@ -859,7 +858,7 @@ class CommercialScene(Scene):
                 self.display_mode.set_color_map(None)
                 self._online_fit = ColorFitAccumulator(strength=c.auto_fit_strength)
                 log.info(
-                    "commercial: auto-fit converging online over first %d frames",
+                    "video: auto-fit converging online over first %d frames",
                     ONLINE_FIT_WARMUP_FRAMES,
                 )
             else:
@@ -942,22 +941,20 @@ class CommercialScene(Scene):
         # Decode full audio to int16 mono at sample rate.
         int16 = decode_audio_full(self.filepath, sr)
         if int16.size == 0:
-            log.warning("commercial: empty audio track after decode; REU pump will play silence")
+            log.warning("video: empty audio track after decode; REU pump will play silence")
             return b""
         # Apply the same peak-normalization gain AVFileSource computes.
         peak = int(np.abs(int16).max())
         gain = _compute_normalization_gain(peak)
         if gain != 1.0:
             int16 = np.clip(int16.astype(np.float32) * gain, -32768, 32767).astype(np.int16)
-        log.info(
-            "commercial: REU pre-encode peak=%d → gain=%.2fx (%d samples)", peak, gain, int16.size
-        )
+        log.info("video: REU pre-encode peak=%d → gain=%.2fx (%d samples)", peak, gain, int16.size)
         # Float → 4-bit DAC code via the shared encoder (identical math to the
         # mic paths). Use an explicit Generator so this offline pass doesn't
         # perturb the global RNG state the realtime callbacks draw from.
         floats = int16.astype(np.float32) / INT16_FULL_SCALE
         # Apply the host DSP chain (compressor/limiter/expander/pre-emphasis)
-        # over the whole track so REU-staged commercial audio matches the
+        # over the whole track so REU-staged video audio matches the
         # host-DMA path, which applies the same DSP per chunk in
         # _encode_and_enqueue. No-op when [dsp].enabled is false.
         floats = self.audio.process_offline_dsp(floats)
@@ -971,7 +968,7 @@ class CommercialScene(Scene):
 
             marker = synthesize_marker_4bit(sr)
             log.info(
-                "commercial: prepending %d-byte alignment marker "
+                "video: prepending %d-byte alignment marker "
                 "(%.0f ms chirp) — source content shifts to %.0fms",
                 len(marker),
                 MARKER_DURATION_S * 1000,

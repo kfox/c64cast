@@ -325,7 +325,7 @@ def parse_channel_boost(
 # ---------------------------------------------------------------------------
 # The static [color] stage above (channel_boost + hue_corrections) is the same
 # nudge for every video. auto_fit is its per-source adaptive sibling: a scene
-# pre-scans its source (commercial video / slideshow image), derives a contrast
+# pre-scans its source (video video / slideshow image), derives a contrast
 # (levels) stretch + a gentle saturation lift that expands the content to FILL
 # the C64 tonal + chroma range, and the display mode applies it as the first
 # shaping step. Faithful (hue preserved) — it stretches what's there, it does

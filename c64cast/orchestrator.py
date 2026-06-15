@@ -15,7 +15,7 @@ Two patterns are supported through the same Orchestrator interface:
   glyph bits, ...) flows through `snapshot()`.
 
 * **Mirror** (future): each follower renders the *same* content as the
-  conductor in lockstep. Used for synchronized commercials / SID
+  conductor in lockstep. Used for synchronized videos / SID
   playback / a webcam input only one system is wired to. Same protocol;
   the snapshot just carries different state (a master clock, a frame).
 

@@ -170,7 +170,7 @@
         },
         "use_reu_pump": {
           "type": "boolean",
-          "description": "EXPERIMENTAL: stream commercial/mic audio from a REU ring (bus-clean) instead of per-write host DMA. Requires REU enabled.",
+          "description": "EXPERIMENTAL: stream video/mic audio from a REU ring (bus-clean) instead of per-write host DMA. Requires REU enabled.",
           "default": false
         },
         "reu_pump_governor": {
@@ -180,7 +180,7 @@
         },
         "host_dma_servo": {
           "type": "boolean",
-          "description": "Closed-loop pacing for the host-DMA audio worker (mic / commercials): reads the C64 NMI read pointer and adjusts the producer's software pace so the ring write head holds a fixed gap behind the reader, stopping the ~26s drift/echo. Pure host-side timing, no C64 writes. Not the REU pump path.",
+          "description": "Closed-loop pacing for the host-DMA audio worker (mic / videos): reads the C64 NMI read pointer and adjusts the producer's software pace so the ring write head holds a fixed gap behind the reader, stopping the ~26s drift/echo. Pure host-side timing, no C64 writes. Not the REU pump path.",
           "default": true
         },
         "source_alignment_marker": {
@@ -316,17 +316,17 @@
     },
     "playlist": {
       "type": "object",
-      "description": "Playlist behavior + ad interleaving.",
+      "description": "Playlist behavior + video interleaving.",
       "additionalProperties": false,
       "properties": {
-        "ads_dir": {
+        "videos_dir": {
           "type": "string",
-          "description": "Directory of commercial videos to interleave between scenes.",
-          "default": "ads"
+          "description": "Directory of videos to interleave between scenes.",
+          "default": "assets/videos"
         },
-        "interleave_ads": {
+        "interleave_videos": {
           "type": "boolean",
-          "description": "Insert an ad from ads_dir after each scene (multi-scene playlists only; ignored in single-scene mode).",
+          "description": "Insert a video from videos_dir after each scene (multi-scene playlists only; ignored in single-scene mode).",
           "default": true
         },
         "songlengths_file": {
@@ -338,7 +338,7 @@
         },
         "loop": {
           "type": "boolean",
-          "description": "Loop the playlist after the last scene (--no-loop exits after one pass; useful for 'play one commercial and quit').",
+          "description": "Loop the playlist after the last scene (--no-loop exits after one pass; useful for 'play one video and quit').",
           "default": true
         }
       }
@@ -382,7 +382,7 @@
         },
         "frame_numbers": {
           "type": "boolean",
-          "description": "Overlay the playback timecode + source frame number on commercial/slideshow/webcam frames (debug aid for locating flashing/flickering frames).",
+          "description": "Overlay the playback timecode + source frame number on video/slideshow/webcam frames (debug aid for locating flashing/flickering frames).",
           "default": false
         }
       }
@@ -451,7 +451,7 @@
     },
     "color": {
       "type": "object",
-      "description": "Global pre-quantize color shaping for mcm/mhires/petscii: static channel boost + hue corrections, plus per-source adaptive auto_fit (commercial/slideshow).",
+      "description": "Global pre-quantize color shaping for mcm/mhires/petscii: static channel boost + hue corrections, plus per-source adaptive auto_fit (video/slideshow).",
       "additionalProperties": false,
       "properties": {
         "channel_boost": {
@@ -471,7 +471,7 @@
         },
         "auto_fit": {
           "type": "boolean",
-          "description": "Per-source adaptive color fit for commercial + slideshow scenes: pre-scan the source and stretch its contrast + saturation to fill the C64 gamut (faithful \u2014 hue preserved). Ignored by webcam scenes (can't pre-scan).",
+          "description": "Per-source adaptive color fit for video + slideshow scenes: pre-scan the source and stretch its contrast + saturation to fill the C64 gamut (faithful \u2014 hue preserved). Ignored by webcam scenes (can't pre-scan).",
           "default": true
         },
         "auto_fit_strength": {
@@ -481,7 +481,7 @@
         },
         "force_palette": {
           "type": "boolean",
-          "description": "EXTREME forced-palette remap for commercial + slideshow scenes (mcm/mhires): pre-scan the source, k-means it into N clusters, and map each cluster to a DISTINCT C64 color so all N colors are used. Deliberate false-color (NOT faithful) \u2014 off by default; also reachable via the SHIFT cycle's 'percell+forced' stop once enabled.",
+          "description": "EXTREME forced-palette remap for video + slideshow scenes (mcm/mhires): pre-scan the source, k-means it into N clusters, and map each cluster to a DISTINCT C64 color so all N colors are used. Deliberate false-color (NOT faithful) \u2014 off by default; also reachable via the SHIFT cycle's 'percell+forced' stop once enabled.",
           "default": false
         },
         "force_palette_colors": {
@@ -605,7 +605,7 @@
         },
         "agc": {
           "type": "boolean",
-          "description": "Automatic gain control for the MIC path only (line/commercial audio is already peak-normalized). Slow gain toward a target. EXPERIMENTAL: being level-based it can boost a sustained noise floor during long pauses \u2014 best on clean mics, or pair with the expander / raise agc_noise_floor_db above the floor.",
+          "description": "Automatic gain control for the MIC path only (line/video audio is already peak-normalized). Slow gain toward a target. EXPERIMENTAL: being level-based it can boost a sustained noise floor during long pauses \u2014 best on clean mics, or pair with the expander / raise agc_noise_floor_db above the floor.",
           "default": false
         },
         "agc_target_db": {
@@ -665,7 +665,7 @@
             "enum": [
               "webcam",
               "blank",
-              "commercial",
+              "video",
               "waveform",
               "midi",
               "slideshow",
@@ -699,7 +699,7 @@
               "number",
               "null"
             ],
-            "description": "Seconds before auto-advance. Unset = scene-type default. Commercial scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input)."
+            "description": "Seconds before auto-advance. Unset = scene-type default. Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input)."
           },
           "target_fps": {
             "type": [
@@ -1462,7 +1462,7 @@
               "string",
               "null"
             ],
-            "description": "Asset spec (comma-separated paths/dirs/globs). Videos for commercial, .sid for waveform, images for slideshow, .prg/.crt for launcher."
+            "description": "Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher."
           },
           "song": {
             "type": "integer",
@@ -1672,7 +1672,7 @@
             "if": {
               "properties": {
                 "type": {
-                  "const": "commercial"
+                  "const": "video"
                 }
               },
               "required": [

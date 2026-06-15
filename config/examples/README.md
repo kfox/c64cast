@@ -41,7 +41,7 @@ When a config defines exactly one scene, the Playlist enters
   up to run again.
 - CTRL key skip events are ignored (there's nowhere to skip *to*).
 - The C= (Commodore key) pause/resume still works.
-- `[playlist] interleave_ads` is ignored (an inserted ad would
+- `[playlist] interleave_videos` is ignored (an inserted video would
   promote the playlist to multi-scene mode and defeat the demo).
 
 Exit with `Ctrl+C`.
@@ -61,7 +61,7 @@ Exit with `Ctrl+C`.
 | `scene-webcam-audio.toml`         | PETSCII webcam + live mic through the SID DAC.             |
 | `scene-blank.toml`                | Blank PETSCII canvas + a `big_text` overlay.               |
 | `scene-slideshow.toml`            | Cycle through still images from a directory/glob.          |
-| `scene-commercial.toml`           | Video + soundtrack playback. Requires `commercials` extra. |
+| `scene-video.toml`           | Video + soundtrack playback. Requires `video` extra. |
 | `scene-waveform.toml`             | SID jukebox + oscilloscope. Requires a `.sid` file.        |
 | `scene-midi.toml`                 | MIDI → SID synth. Requires `midi` extra + MIDI source.     |
 | `scene-launcher.toml`             | Launch a native `.prg`/`.crt` and hand over the machine.   |
@@ -106,7 +106,7 @@ Five files exercise the audio path; the first three require `[audio] enabled = t
 |-----------------------------------|--------------------------------------------------|
 | `scene-webcam-audio.toml`         | Mic capture → SID DAC (needs `mic` extra)        |
 | `overlay-spectrum_petscii.toml`   | Mic capture + visual 8-band FFT (needs `mic`)    |
-| `scene-commercial.toml`           | Video-file soundtrack (needs `commercials`)      |
+| `scene-video.toml`           | Video-file soundtrack (needs `video`)      |
 | `scene-waveform.toml`             | Native SID playback of a `.sid` file             |
 | `scene-midi.toml`                 | MIDI input → in-process SID synth (needs `midi`) |
 

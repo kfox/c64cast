@@ -12,7 +12,7 @@ Drop your own files in here and reference them from `c64cast.toml`:
 | [roms/](roms/)           | preview, framebuffer   | `*.bin` (CHARGEN)                                           |
 | [sids/](sids/)           | waveform scene         | `*.sid` (HVSC unpack includes `DOCUMENTS/Songlengths.md5`)  |
 | [logos/](logos/)         | logo overlay           | `*.txt`                                                     |
-| [videos/](videos/)       | commercial scene       | `*.mp4`, `*.webm`, `*.mkv`…                                 |
+| [videos/](videos/)       | video scene       | `*.mp4`, `*.webm`, `*.mkv`…                                 |
 | [audio/](audio/)         | DSP A/B test clips     | clean CC/public speech + music (`scripts/diags/dsp_ab.py`)  |
 | [pictures/](pictures/)   | slideshow scene        | `*.jpg`, `*.png`, `*.bmp`, `*.webp`                         |
 | [programs/](programs/)   | launcher scene         | `*.prg`, `*.crt`                                            |

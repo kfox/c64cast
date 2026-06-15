@@ -112,14 +112,14 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
     ("audio", cfgmod.AudioCfg, "SID audio streaming."),
     ("vision", cfgmod.VisionCfg, "Webcam hand-gesture control (extra)."),
     ("interstitial", cfgmod.InterstitialCfg, "The 'UP NEXT' card shown between scenes."),
-    ("playlist", cfgmod.PlaylistCfg, "Playlist behavior + ad interleaving."),
+    ("playlist", cfgmod.PlaylistCfg, "Playlist behavior + video interleaving."),
     ("debug", cfgmod.DebugCfg, "Logging, heartbeat, profiling."),
     ("preview", cfgmod.PreviewCfg, "Local pygame mirror window (extra)."),
     ("recording", cfgmod.RecordingCfg, "Record the rendered display to a file."),
     (
         "color",
         cfgmod.ColorCfg,
-        "Global pre-quantize color shaping for mcm/mhires/petscii: static channel boost + hue corrections, plus per-source adaptive auto_fit (commercial/slideshow).",
+        "Global pre-quantize color shaping for mcm/mhires/petscii: static channel boost + hue corrections, plus per-source adaptive auto_fit (video/slideshow).",
     ),
     (
         "dsp",
@@ -169,7 +169,7 @@ _SCENE_TYPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     ("blank", "Empty canvas (no video) — a foundation for overlays.", ("blank", "hires_edges")),
     (
-        "commercial",
+        "video",
         "Play a video file with synced audio until it ends.",
         ("hires_edges", "hires", "mhires", "mcm", "petscii", "blank"),
     ),

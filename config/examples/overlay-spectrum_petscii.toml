@@ -23,7 +23,7 @@ device = -1                   # -1 = system default mic; -L lists indices
 mic_sensitivity = 1.5
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
 type = "webcam"

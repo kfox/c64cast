@@ -301,7 +301,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "blank scene must use"):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
-    def test_commercial_scene_falls_back_to_default_dir(self):
+    def test_video_scene_falls_back_to_default_dir(self):
         # No `file =` set → resolve from assets/videos/. Tests must run
         # from a tmp cwd so the dev's real assets/videos doesn't satisfy
         # the fallback silently.
@@ -312,36 +312,36 @@ class ValidateSceneCfgTest(unittest.TestCase):
                 f.write("")
             os.chdir(tmp)
             try:
-                s = cfgmod.SceneCfg(type="commercial")
+                s = cfgmod.SceneCfg(type="video")
                 cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
                 # validate_scene_cfg normalizes s.file to the default dir.
-                self.assertEqual(s.file, cfgmod.DEFAULT_COMMERCIAL_DIR)
+                self.assertEqual(s.file, cfgmod.DEFAULT_VIDEO_DIR)
             finally:
                 os.chdir(cwd)
 
-    def test_commercial_scene_no_file_and_no_default_dir_raises(self):
+    def test_video_scene_no_file_and_no_default_dir_raises(self):
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)
             try:
-                s = cfgmod.SceneCfg(type="commercial")
+                s = cfgmod.SceneCfg(type="video")
                 with self.assertRaisesRegex(ValueError, "default directory .* is missing or empty"):
                     cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
             finally:
                 os.chdir(cwd)
 
-    def test_commercial_scene_rejects_duration_s(self):
-        # Commercial lifetime is video-driven; a finite duration_s would
+    def test_video_scene_rejects_duration_s(self):
+        # Video lifetime is video-driven; a finite duration_s would
         # either be a silent no-op or truncate the file. Loader must reject
         # it at config time rather than letting the inconsistency lurk.
-        s = cfgmod.SceneCfg(type="commercial", file="ad.mp4", duration_s=30.0)
+        s = cfgmod.SceneCfg(type="video", file="video.mp4", duration_s=30.0)
         with self.assertRaisesRegex(ValueError, "does not accept .*duration_s"):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
-    def test_commercial_scene_without_duration_s_passes(self):
+    def test_video_scene_without_duration_s_passes(self):
         # The default (None) means "no duration_s declared" and must pass
         # validation cleanly — that's the supported config shape.
-        s = cfgmod.SceneCfg(type="commercial", file="ad.mp4")
+        s = cfgmod.SceneCfg(type="video", file="video.mp4")
         cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_waveform_scene_falls_back_to_default_dir(self):
@@ -531,7 +531,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
 
 class ResolveFileSpecTest(unittest.TestCase):
     """Direct tests for `resolve_file_spec` — the comma/dir/glob expander
-    that backs the `file =` field on commercial + waveform scenes."""
+    that backs the `file =` field on video + waveform scenes."""
 
     EXTS = (".sid",)
 
@@ -600,19 +600,19 @@ class ResolveFileSpecTest(unittest.TestCase):
             # Trailing comma + a whitespace-only entry shouldn't break it.
             self.assertEqual(cfgmod.resolve_file_spec(f"{p}, , ", self.EXTS, label="waveform"), [p])
 
-    def test_commercial_scene_resolves_glob_at_validate_time(self):
+    def test_video_scene_resolves_glob_at_validate_time(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._make_files(tmp, ["a.mp4", "b.mp4"])
-            s = cfgmod.SceneCfg(type="commercial", file=os.path.join(tmp, "*.mp4"))
+            s = cfgmod.SceneCfg(type="video", file=os.path.join(tmp, "*.mp4"))
             # Should NOT raise.
             cfgmod.validate_scene_cfg(s, cfgmod.Config(), audio_enabled=False)
 
-    def test_commercial_scene_rejects_dir_with_no_videos(self):
+    def test_video_scene_rejects_dir_with_no_videos(self):
         with tempfile.TemporaryDirectory() as tmp:
-            # Put only SIDs in a directory the commercial scene points at.
+            # Put only SIDs in a directory the video scene points at.
             with open(os.path.join(tmp, "nope.sid"), "w") as f:
                 f.write("")
-            s = cfgmod.SceneCfg(type="commercial", file=tmp)
+            s = cfgmod.SceneCfg(type="video", file=tmp)
             with self.assertRaisesRegex(ValueError, "contains no files with extension"):
                 cfgmod.validate_scene_cfg(s, cfgmod.Config(), audio_enabled=False)
 
@@ -713,7 +713,7 @@ class FollowerOnlyRotationFilterTest(unittest.TestCase):
 
         self.api = cast(Ultimate64API, FakeAPI())
         self.cfg = cfgmod.Config()
-        self.cfg.playlist.interleave_ads = False
+        self.cfg.playlist.interleave_videos = False
 
     def test_follower_only_excluded_from_rotation(self):
         self.cfg.scenes = [

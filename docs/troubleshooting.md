@@ -40,7 +40,7 @@ a queue percentage.) Possible causes:
   network or U64 is congested.
 - `[audio] sample_rate` raised past 8 kHz. Set it back (the C64-side NMI
   is sized for 8 kHz; nothing resamples).
-- For a `commercial` scene stuck at `writes=4/s bytes=4KiB/s` for
+- For a `video` scene stuck at `writes=4/s bytes=4KiB/s` for
   minutes after the clip should have ended, the demuxer hit EOF but the
   video buffer never cleared — that's a known edge handled in
   `AVFileSource.current_frame`; update to a build that includes the fix.
@@ -144,19 +144,19 @@ mode` in `-vv` logs. See
 
 If your config defines exactly one scene, the Playlist enters
 single-scene mode and the interstitial path is bypassed entirely. Add a
-second scene to bring it back. Same applies if `[playlist] interleave_ads`
+second scene to bring it back. Same applies if `[playlist] interleave_videos`
 is your only source of additional scenes — single-scene mode short-
-circuits ad interleaving (you'll see `interleave_ads skipped: single-scene
+circuits video interleaving (you'll see `interleave_videos skipped: single-scene
 playlist` in the logs).
 
 ## Scenes
 
-### "`commercial` scene type is rejected at load time"
+### "`video` scene type is rejected at load time"
 
-You didn't install the `commercials` extra
-(`pip install -e .[commercials]`). The loader emits "Found N ad files
-but PyAV is not installed; skipping commercials" and continues
-without ads.
+You didn't install the `video` extra
+(`pip install -e .[video]`). The loader emits "Found N video files
+but PyAV is not installed; skipping videos" and continues
+without videos.
 
 ### "`waveform` scene plays for 180 s and stops, but the tune is longer"
 
@@ -246,7 +246,7 @@ macOS warning, not an error. Both `opencv-python` and `av` (PyAV) bundle
 their own copy of FFmpeg's `libavdevice` dylib, and each registers the
 same `AVFFrameReceiver` / `AVFAudioReceiver` Objective-C classes on
 import. The runtime warns about the duplicate; the second registration
-is ignored. Triggers when a `commercial` scene loads PyAV after OpenCV
+is ignored. Triggers when a `video` scene loads PyAV after OpenCV
 is already imported. In this project neither library uses AVFoundation
 capture (OpenCV reads UVC devices, PyAV reads files), so the warning is
 harmless. Suppression would require building OpenCV against system

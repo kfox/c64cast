@@ -39,7 +39,7 @@ class Diagnostic:
 # Keep in sync with [project.optional-dependencies] in pyproject.toml.
 _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("mic", "sounddevice", "[audio] enabled, mic capture"),
-    ("commercials", "av", "commercial scenes, ad interleaving"),
+    ("video", "av", "video scenes, video interleaving"),
     ("preview", "pygame", "[preview] enabled local window"),
     ("control", "fastapi", "[control] enabled HTTP plane"),
     ("obs", "obsws_python", "obs_status overlay"),
@@ -275,7 +275,7 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
     """Try `Ultimate64API(...)` once per system. Catches SocketDMAError
     so doctor mode completes even when no U64 is powered on. Also probes
     REU enable status when the per-system config opts into a REU-staged
-    path (mic, commercial audio, or char-mode video) — those silently
+    path (mic, video audio, or char-mode video) — those silently
     produce silent audio / garbled video when REU is disabled at the U64.
     """
     from .backend import make_backend
@@ -388,7 +388,7 @@ _SID_RIGHT_FIELD = "SID Right"
 def _wants_sid_audio(cfg: object) -> tuple[bool, list[str]]:
     """Return (wants_sid, reasons). Any of these means c64cast will try to
     produce sound through the C64 SID ($D4xx): global audio streaming (the
-    4-bit DAC / commercial audio), or any waveform/midi scene (which DMA a
+    4-bit DAC / video audio), or any waveform/midi scene (which DMA a
     SID player and drive the chip even when [audio].enabled is false)."""
     reasons: list[str] = []
     # Duck-type to avoid a circular doctor<->config import (see _wants_reu).

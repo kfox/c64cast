@@ -200,7 +200,7 @@ _SID_PATCH_CTR_RELOAD_HI = 62  # STA counter (reload) operand high
 #
 # The `LDA #$0F / STA $D418` after JSR init restores the SID master volume
 # nibble. Two scenarios make it necessary:
-#  1. An earlier audio.stop() zeroed $D418 for a clean commercial cutoff —
+#  1. An earlier audio.stop() zeroed $D418 for a clean video cutoff —
 #     PSID INIT routines conventionally don't touch $D418 (they assume the
 #     host already set it to $0F), so without this restore the SID would
 #     run with PLAY writing voice registers but master volume stuck at 0,

@@ -25,10 +25,10 @@ Some features have been much more thoroughly tested than others.
   to 30 fps for bitmap modes and 50/60 fps for char modes over a LAN.
   `blank` is a no-video PETSCII canvas built for title cards + overlays.
 * **Playlist + scenes** — TOML-defined sequence of scenes (webcam,
-  commercial video, still-image slideshow, SID waveform visualizer,
-  MIDI → SID synth, blank canvas). Auto-interleaves commercial spots if
+  video, still-image slideshow, SID waveform visualizer,
+  MIDI → SID synth, blank canvas). Auto-interleaves video spots if
   you drop video files into
-  an ads directory. **Single-scene mode** kicks in automatically when the
+  the videos directory. **Single-scene mode** kicks in automatically when the
   playlist defines exactly one scene: no interstitial, no CTRL skip, and
   the scene loops forever — perfect for the per-feature demo configs in
   [`config/examples/`](config/examples/).
@@ -85,7 +85,7 @@ python -m c64cast --config config/examples/overlay-clock.toml
 
 # Build your own config the easy way — the interactive wizard walks you
 # through either a single scene or a multi-scene playlist (with the "UP NEXT"
-# interstitial, ad interleaving, and loop control) and writes a c64cast.toml
+# interstitial, video interleaving, and loop control) and writes a c64cast.toml
 # (needs the 'wizard' extra; auto-loaded when no --config is given):
 python -m c64cast --init
 
@@ -258,7 +258,7 @@ UI); see [docs/caveats.md](docs/caveats.md) for the PSID-only limitation.
   hardware and firmware.
 * The [HVSC](https://hvsc.c64.org/) team for the SID archive and the
   Songlengths database.
-* [PyAV](https://github.com/PyAV-Org/PyAV) for the commercial video path.
+* [PyAV](https://github.com/PyAV-Org/PyAV) for the video path.
 
 ## License
 

@@ -77,7 +77,7 @@ class AVFileSourceEOFTest(unittest.TestCase):
     """Regression: pre-fix, `current_frame` kept the last-consumed frame in
     `_video_buf` as stall protection. That kept the buffer at size-1 forever
     after demux EOF, so `finished` (which checks `_eof and not _video_buf`)
-    never flipped True. CommercialScene.process_frame kept returning True,
+    never flipped True. VideoScene.process_frame kept returning True,
     the playlist never advanced, and the audio worker padded NEUTRAL for
     minutes (visible in audio logs as a sustained `writes=4/s bytes=4KiB/s`
     streak after the demux EOF debug line). Fix: when EOF is observed AND

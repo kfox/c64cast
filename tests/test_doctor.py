@@ -60,11 +60,11 @@ class ValidateScenesTest(unittest.TestCase):
         """The whole point of doctor mode: scene 1's failure must not hide
         scene 2's failure. Use explicit-but-missing globs so the test is
         independent of whether the dev's repo has populated default
-        asset dirs (commercial -> assets/videos, waveform -> assets/sids
+        asset dirs (video -> assets/videos, waveform -> assets/sids
         would otherwise satisfy the no-file fallback)."""
         loaded = _load("""
             [[scenes]]
-            type = "commercial"
+            type = "video"
             name = "bad-file"
             display = "hires"
             file = "/nonexistent/*.mp4"
@@ -192,10 +192,10 @@ class ExtrasProbeTest(unittest.TestCase):
         loaded = _load("")  # no scenes; we only care about extras
         with mock.patch.object(doctor.importlib.util, "find_spec", side_effect=fake):
             diags = doctor.validate_load_result(loaded, probe_u64=False)
-        commercials = [d for d in diags if d.category == "extras" and d.subject == "commercials"]
-        self.assertEqual(len(commercials), 1)
-        self.assertEqual(commercials[0].level, "warn")
-        self.assertEqual(commercials[0].hint, "uv sync --all-extras")
+        video_diags = [d for d in diags if d.category == "extras" and d.subject == "video"]
+        self.assertEqual(len(video_diags), 1)
+        self.assertEqual(video_diags[0].level, "warn")
+        self.assertEqual(video_diags[0].hint, "uv sync --all-extras")
 
 
 class ConnectivityProbeTest(unittest.TestCase):
@@ -278,7 +278,7 @@ class ReuStatusProbeTest(unittest.TestCase):
             [video]
             use_reu_staged = "auto"
             [[scenes]]
-            type = "commercial"
+            type = "video"
             display = "mhires"
             file = "x.mp4"
         """)
