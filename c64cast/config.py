@@ -24,6 +24,7 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
+from .c64 import nmi_rate_safety
 from .dsp import DSPParams
 
 if TYPE_CHECKING:
@@ -243,7 +244,14 @@ class AudioCfg:
         default=-1, metadata={"help": "Audio input device index; -1 = system default microphone."}
     )
     sample_rate: int = field(
-        default=8000, metadata={"help": "Audio sample rate in Hz fed to the SID DAC."}
+        default=10500,
+        metadata={
+            "help": "Audio sample rate in Hz fed to the SID DAC. Default 10500 lifts "
+            "the Nyquist to ~5.25 kHz so fricatives/sibilants survive (8000 lost "
+            "them); HW-verified safe on NTSC + PAL with no NMI handler overrun. NTSC "
+            "can go to ~11025; keep PAL <= ~10500. Rates that overrun the handler are "
+            "rejected at load (see c64.nmi_rate_safety)."
+        },
     )
     mic_sensitivity: float = field(
         default=1.5, metadata={"help": "Microphone input gain multiplier."}
@@ -320,6 +328,24 @@ class AudioCfg:
             "host-side timing, no C64 writes. Not the REU pump path."
         },
     )
+    # The static host_dma_servo locks playback to the bus-halt-throttled NMI
+    # consumer R, so video plays slow (content-dependent: motion → VIC DMA →
+    # stolen NMI ticks). This adaptive loop instead RAISES the nominal NMI rate
+    # until the measured R lands back at sample_rate — correct speed + pitch,
+    # full bandwidth (vs resampling down to R), auto-tracking the load. Clamped
+    # to the handler cycle budget (never overruns). Supersedes the static
+    # pitch_mult_* below (they apply only when this is false). Default on per
+    # "prefer best quality". Host-DMA path only (REU pump has its own governor).
+    nmi_rate_adaptive: bool = field(
+        default=True,
+        metadata={
+            "help": "Adaptive NMI-rate compensation: closed-loop on the measured "
+            "C64 consumer rate, raises the NMI rate so bus-halt-throttled "
+            "playback stays at the authored sample_rate (fixes the video "
+            "slowdown, keeps full bandwidth). Supersedes pitch_mult_* (which "
+            "apply only when this is false). Host-DMA path only."
+        },
+    )
     # See c64cast.audio_marker for the find-marker analysis helper. Only the
     # REU-pump path injects the marker; host-DMA scenes are unmarked.
     source_alignment_marker: bool = field(
@@ -329,7 +355,12 @@ class AudioCfg:
             "capture-alignment anchor. Turn OFF for production listening."
         },
     )
-    # ---- host-DMA servo pitch compensation ----------------------------------
+    # ---- host-DMA servo pitch compensation (static; legacy path) ------------
+    # NOTE: these STATIC per-mode multipliers apply only when
+    # nmi_rate_adaptive = false. The default adaptive loop above supersedes them
+    # (it tracks the content-dependent loss a fixed constant can't). Kept for the
+    # adaptive-off path and for PAL/TR+ hand-tuning where adaptive headroom is
+    # tight.
     # The host-DMA audio servo (eliminates echo) locks playback to the C64 NMI
     # consumer rate R. R runs slightly below the nominal 8000 Hz because the
     # display steals NMI ticks (VIC badlines + any host-DMA video writes +, for
@@ -2050,6 +2081,23 @@ def _validate_launcher(s: SceneCfg) -> None:
         from .orchestrator import resolve_orchestrator
 
         resolve_orchestrator(s)
+
+
+def validate_nmi_sample_rate(cfg: Config) -> None:
+    """Guard [audio].sample_rate against the NMI handler's cycle budget.
+
+    Raises ConfigError when the configured rate would overrun the $D418 DAC NMI
+    handler on the target system (NMIs queue → pitch drop); logs a warning for
+    rates inside the entry-latency margin. Thin pass-through to
+    `c64.nmi_rate_safety` so the rule lives in one place (shared with --doctor).
+    No-op when audio is disabled."""
+    if not cfg.audio.enabled:
+        return
+    level, message = nmi_rate_safety(cfg.ultimate64.system, cfg.audio.sample_rate)
+    if level == "error":
+        raise ConfigError(f"[audio].sample_rate: {message}")
+    if level == "warn":
+        log.warning("[audio].sample_rate: %s", message)
 
 
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:

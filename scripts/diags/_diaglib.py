@@ -141,3 +141,87 @@ def rest_reset(url: str = U64_URL, timeout: float = 5.0) -> int | None:
         return requests.put(url + "/v1/machine:reset", timeout=timeout).status_code
     except requests.RequestException:
         return None
+
+
+def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float = 2.0) -> bool:
+    """POST /v1/machine:writemem?address=HHHH&data=<hex> — write raw bytes to C64
+    memory over REST. Address WITHOUT a `$` prefix (the recurring gotcha).
+    Returns True on HTTP 2xx. Coexists with c64cast's DMA socket (separate
+    transport), like rest_readmem — fine to poke concurrently with a running app."""
+    import requests
+
+    try:
+        r = requests.post(
+            url + "/v1/machine:writemem",
+            params={"address": f"{address:04X}", "data": data.hex()},
+            timeout=timeout,
+        )
+        return r.ok
+    except requests.RequestException:
+        return False
+
+
+def flash_border(url: str = U64_URL, color: int = 1, timeout: float = 2.0) -> bool:
+    """Set the VIC border colour register $D020 to `color` (0-15) over REST — the
+    primitive behind the border-flash A/V sync marker (see the border-flash
+    auto-memory): poke a bright colour at known wall-clock times during a capture,
+    then align the visible flashes to the source to measure playback tempo / A/V
+    drift. $D020 is bus-clean to poke (one byte) and visible regardless of display
+    mode. Returns True on success."""
+    return rest_writemem(0xD020, bytes([color & 0x0F]), url, timeout)
+
+
+def rest_reboot(url: str = U64_URL, timeout: float = 5.0) -> int | None:
+    """PUT /v1/machine:reboot — full Ultimate reboot (re-applies FPGA-level
+    settings like ``System Mode`` PAL/NTSC that a bare C64 reset won't pick up).
+    Returns the status code, or None on failure. Caller must then poll
+    ``rest_ping`` until the unit comes back."""
+    import requests
+
+    try:
+        return requests.put(url + "/v1/machine:reboot", timeout=timeout).status_code
+    except requests.RequestException:
+        return None
+
+
+def rest_get_config(category: str, url: str = U64_URL, timeout: float = 8.0) -> dict | None:
+    """GET /v1/configs/<category> → the inner ``{setting: value}`` dict (the
+    firmware nests it under the category name), or None on failure. Reusable
+    for any config probe (REU enabled, System Mode, etc.)."""
+    from urllib.parse import quote
+
+    import requests
+
+    try:
+        r = requests.get(f"{url}/v1/configs/{quote(category)}", timeout=timeout)
+        r.raise_for_status()
+        body = r.json()
+    except (requests.RequestException, ValueError):
+        return None
+    inner = body.get(category)
+    return inner if isinstance(inner, dict) else body
+
+
+def rest_set_config(
+    category: str, setting: str, value: str, url: str = U64_URL, timeout: float = 10.0
+) -> bool:
+    """PUT /v1/configs/<category>/<setting>?value=<value>. The firmware verb is
+    setting-in-path + a ``value`` query param (a flat ``?setting=value`` is
+    rejected with "Function none requires parameter value"). Returns True when
+    the reply carries an empty ``errors`` list. Persists to flash — restore any
+    machine-wide setting (e.g. System Mode → NTSC) at end of session."""
+    from urllib.parse import quote
+
+    import requests
+
+    try:
+        r = requests.put(
+            f"{url}/v1/configs/{quote(category)}/{quote(setting)}",
+            params={"value": value},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        errs = r.json().get("errors", ["<no errors key>"])
+    except (requests.RequestException, ValueError):
+        return False
+    return errs == []

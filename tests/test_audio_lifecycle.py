@@ -266,6 +266,183 @@ class PitchCompensationLatchTest(unittest.TestCase):
         self.assertAlmostEqual(s._pitch_multiplier, 1.0)
 
 
+class NmiRateSafetyTest(unittest.TestCase):
+    """The NMI sample-rate guard (c64.nmi_rate_safety) + its config wiring.
+
+    The handler completes in <=81 cycles (badline worst case); a sample period
+    shorter than that queues NMIs and drops pitch. PAL's slower clock = tighter
+    ceiling than NTSC. See [[project-nmi-rate-intelligibility]]."""
+
+    def test_default_rate_is_safe_both_standards(self):
+        from c64cast.c64 import nmi_rate_safety
+        from c64cast.config import AudioCfg
+
+        self.assertEqual(AudioCfg().sample_rate, 10500)
+        for system in ("NTSC", "PAL"):
+            self.assertEqual(nmi_rate_safety(system, 10500)[0], "ok")
+
+    def test_legacy_and_candidate_rates_ok(self):
+        from c64cast.c64 import nmi_rate_safety
+
+        self.assertEqual(nmi_rate_safety("NTSC", 8000)[0], "ok")
+        self.assertEqual(nmi_rate_safety("NTSC", 11025)[0], "ok")  # NTSC headroom
+        self.assertEqual(nmi_rate_safety("PAL", 10500)[0], "ok")
+
+    def test_overrun_is_error(self):
+        from c64cast.c64 import nmi_rate_safety
+
+        for system in ("NTSC", "PAL"):
+            level, msg = nmi_rate_safety(system, 16000)
+            self.assertEqual(level, "error")
+            self.assertIn("queue", msg.lower())
+
+    def test_marginal_rate_warns(self):
+        from c64cast.c64 import nmi_rate_safety
+
+        # 12000 → period ~85 (NTSC) / ~82 (PAL): above the 81-cycle handler but
+        # inside the 88-cycle entry-latency margin → warn, not error.
+        for system in ("NTSC", "PAL"):
+            self.assertEqual(nmi_rate_safety(system, 12000)[0], "warn")
+
+    def test_pal_ceiling_below_ntsc(self):
+        from c64cast.c64 import max_safe_sample_rate
+
+        self.assertLess(max_safe_sample_rate("PAL"), max_safe_sample_rate("NTSC"))
+
+    def test_nonpositive_rate_is_error(self):
+        from c64cast.c64 import nmi_rate_safety
+
+        self.assertEqual(nmi_rate_safety("NTSC", 0)[0], "error")
+
+    def test_config_validate_raises_on_overrun_when_audio_enabled(self):
+        import dataclasses
+
+        from c64cast.config import Config, ConfigError, validate_nmi_sample_rate
+
+        cfg = Config()
+        cfg = dataclasses.replace(
+            cfg, audio=dataclasses.replace(cfg.audio, enabled=True, sample_rate=16000)
+        )
+        with self.assertRaises(ConfigError):
+            validate_nmi_sample_rate(cfg)
+
+    def test_config_validate_noop_when_audio_disabled(self):
+        import dataclasses
+
+        from c64cast.config import Config, validate_nmi_sample_rate
+
+        cfg = Config()  # audio disabled by default
+        cfg = dataclasses.replace(
+            cfg, audio=dataclasses.replace(cfg.audio, enabled=False, sample_rate=16000)
+        )
+        validate_nmi_sample_rate(cfg)  # must not raise
+
+    def test_config_validate_passes_default(self):
+        from c64cast.config import Config, validate_nmi_sample_rate
+
+        validate_nmi_sample_rate(Config())  # default 10500, no raise
+
+
+class NmiRateAdaptiveStepTest(unittest.TestCase):
+    """The pure adaptive-rate control step (`audio._nmi_rate_step`) + its wiring.
+
+    Drives the measured consumer rate toward target by stepping the CIA #2 latch.
+    Rate/latch are inverse, so R too slow → SMALLER latch (faster). NTSC@10500:
+    nominal_latch=96 (period 97), ceiling_latch=87 (period 88, the handler budget).
+    See [[project-nmi-rate-intelligibility]] / [[project-hostdma-servo-pitch-compensation]]."""
+
+    NOMINAL = 96  # _nmi_latch_value() for NTSC @ 10500
+    CEILING = 87  # NMI_SAFE_MIN_PERIOD_CYCLES (88) - 1
+    TARGET = 10500.0
+
+    def _step(self, r_rate: float, latch: int) -> int:
+        return audio_mod._nmi_rate_step(
+            r_rate,
+            latch,
+            nominal_latch=self.NOMINAL,
+            ceiling_latch=self.CEILING,
+            target_rate=self.TARGET,
+        )
+
+    def test_too_slow_shrinks_latch(self):  # the sign pin
+        out = self._step(9456.0, self.NOMINAL)  # ~9.9% slow
+        self.assertLess(out, self.NOMINAL)  # faster NMI ⇒ smaller latch
+
+    def test_too_fast_grows_latch(self):
+        out = self._step(10800.0, 90)  # consumer above target
+        self.assertGreater(out, 90)  # slower NMI ⇒ larger latch
+
+    def test_deadband_holds(self):
+        # within ~1% of target (< 1.3% deadband) ⇒ no change (no limit cycle)
+        self.assertEqual(self._step(10440.0, 92), 92)
+
+    def test_fixed_point_at_target(self):
+        self.assertEqual(self._step(self.TARGET, 92), 92)
+
+    def test_fine_zone_single_step(self):
+        # 1.9% error (deadband < e < coarse 3%) ⇒ exactly one latch step
+        out = self._step(10300.0, 92)
+        self.assertEqual(abs(out - 92), 1)
+
+    def test_coarse_zone_bigger_step_but_capped(self):
+        out = self._step(9456.0, self.NOMINAL)  # ~9.9% ⇒ capped coarse step (4)
+        self.assertEqual(self.NOMINAL - out, 4)
+
+    def test_clamp_at_ceiling(self):
+        # huge error near the ceiling must never push past it (overrun guard)
+        self.assertEqual(self._step(5000.0, self.CEILING + 1), self.CEILING)
+
+    def test_clamp_at_nominal(self):
+        # too-fast at nominal must not exceed nominal (can only slow back to it)
+        self.assertEqual(self._step(11500.0, self.NOMINAL), self.NOMINAL)
+
+    def test_nonpositive_rate_no_change(self):
+        self.assertEqual(self._step(0.0, 92), 92)
+        self.assertEqual(self._step(-1.0, 92), 92)
+
+    # ---- wiring ----
+    def test_adaptive_mode_disables_static_multiplier(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._worker_thread = cast(Any, object())
+        s._nmi_timer_started = True
+        s._nmi_latch = s._nmi_latch_value()
+        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
+        # adaptive owns the latch → static path is a no-op, multiplier stays 1.0
+        self.assertEqual(s._pitch_multiplier, 1.0)
+        self.assertNotIn(f"{CIA2.TIMER_A_LO:04X}", cast(Any, s.api).regs)
+
+    def test_loop_retunes_latch_when_slow(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._nmi_timer_started = True
+        s._nmi_latch = s._nmi_latch_value()  # 96
+        s._r_rate_ema = 9456.0  # ~9.9% slow, pre-seeded
+        s._last_r_addr = -1  # skip the EMA update this call (use the seed)
+        decide_every = max(1, round(s.sample_rate / s.chunk_size))
+        s._nmi_loop_chunk_count = decide_every - 1  # next call triggers a decision
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s._nmi_latch, 92)  # 96 - capped coarse step 4
+        regs = cast(Any, s.api).regs[f"{CIA2.TIMER_A_LO:04X}"]
+        self.assertEqual(regs[0] | (regs[1] << 8), 92)
+
+    def test_loop_discards_torn_read(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s._last_r_time = time.monotonic() - 0.1
+        s._r_rate_ema = -1.0
+        # a half-ring forward jump = a torn self-modify read, not real advance
+        torn = audio_mod.RING_BUFFER_ADDR + audio_mod.RING_BUFFER_SIZE // 2 + 16
+        s._update_nmi_rate_loop(torn)
+        self.assertEqual(s._r_rate_ema, -1.0)  # estimate left unseeded
+
+    def test_loop_seeds_rate_on_valid_read(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s._last_r_time = time.monotonic() - 0.1  # ~0.1 s ago
+        s._r_rate_ema = -1.0
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)  # ~1000 B in ~0.1 s
+        self.assertGreater(s._r_rate_ema, 0.0)  # seeded to ~10 kB/s (timing-slop)
+
+
 class DigiBoostTest(unittest.TestCase):
     def test_enable_writes_all_voices(self):
         s = _make(digi_boost=True)

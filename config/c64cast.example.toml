@@ -152,7 +152,7 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
 [audio]
 enabled = false                     # true ≡ passing -A on the CLI
 device = -1                         # -1 = system default input; -L lists indices
-sample_rate = 8000                  # SID DAC rate; leave at 8 kHz
+sample_rate = 10500                 # SID DAC rate; 10500 keeps fricatives (>8000 Nyquist). NTSC≤~11025, PAL≤~10500
 mic_sensitivity = 1.5
 noise_gate = 0.05
 dither = false                      # TPDF dither pre-quantize. false (default
@@ -243,6 +243,20 @@ host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
                                     # a ring. Pure host-side timing — no C64
                                     # writes, so none of the REU servo's glitch.
                                     # On by default; false = open-loop A/B.
+nmi_rate_adaptive = true            # Adaptive NMI-rate compensation. The
+                                    # host_dma_servo above stops the echo but
+                                    # locks playback to the bus-halt-throttled
+                                    # consumer R → video plays slow (more on
+                                    # high-motion content). This closed loop
+                                    # instead RAISES the nominal NMI rate until
+                                    # the measured R lands back at sample_rate,
+                                    # so playback keeps correct speed + pitch AND
+                                    # full bandwidth (vs resampling down to R),
+                                    # auto-tracking the load. Clamped to the
+                                    # handler cycle budget so it never overruns.
+                                    # Supersedes pitch_mult_* below (those apply
+                                    # only when this is false). Host-DMA path
+                                    # only; on by default.
 source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # 100 ms 200→3500 Hz linear chirp to the
                                     # pre-encoded REU audio so Cam Link
@@ -256,7 +270,10 @@ source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # listening. Only honored on the REU pump
                                     # path; host-DMA scenes are unmarked.
 
-# --- host-DMA servo pitch compensation ---
+# --- host-DMA servo pitch compensation (static; legacy) ---
+# NOTE: these apply ONLY when nmi_rate_adaptive = false. The default adaptive
+# loop above supersedes them (it tracks the content-dependent loss a fixed
+# constant can't); keep them for the adaptive-off path and PAL/TR+ hand-tuning.
 # The host_dma_servo (above) kills the echo but locks playback to the C64 NMI
 # consumer rate R, which runs slightly below the nominal 8000 Hz because the
 # display steals NMI ticks (VIC badlines + host-DMA video writes + the REU

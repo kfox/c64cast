@@ -140,8 +140,8 @@
         },
         "sample_rate": {
           "type": "integer",
-          "description": "Audio sample rate in Hz fed to the SID DAC.",
-          "default": 8000
+          "description": "Audio sample rate in Hz fed to the SID DAC. Default 10500 lifts the Nyquist to ~5.25 kHz so fricatives/sibilants survive (8000 lost them); HW-verified safe on NTSC + PAL with no NMI handler overrun. NTSC can go to ~11025; keep PAL <= ~10500. Rates that overrun the handler are rejected at load (see c64.nmi_rate_safety).",
+          "default": 10500
         },
         "mic_sensitivity": {
           "type": "number",
@@ -181,6 +181,11 @@
         "host_dma_servo": {
           "type": "boolean",
           "description": "Closed-loop pacing for the host-DMA audio worker (mic / videos): reads the C64 NMI read pointer and adjusts the producer's software pace so the ring write head holds a fixed gap behind the reader, stopping the ~26s drift/echo. Pure host-side timing, no C64 writes. Not the REU pump path.",
+          "default": true
+        },
+        "nmi_rate_adaptive": {
+          "type": "boolean",
+          "description": "Adaptive NMI-rate compensation: closed-loop on the measured C64 consumer rate, raises the NMI rate so bus-halt-throttled playback stays at the authored sample_rate (fixes the video slowdown, keeps full bandwidth). Supersedes pitch_mult_* (which apply only when this is false). Host-DMA path only.",
           "default": true
         },
         "source_alignment_marker": {
