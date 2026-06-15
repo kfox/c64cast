@@ -158,11 +158,11 @@ def classify_local(arg: str, *, display: str | None, duration_s: float | None) -
     """Turn a local file / directory / glob argument into a SceneCfg. The
     original dir/glob spec is preserved as ``file`` so the scene re-resolves and
     random-picks at setup."""
-    if _GLOB_CHARS.search(arg):
-        paths = [p for p in glob.glob(arg) if os.path.isfile(p)]
-        if not paths:
-            raise ValueError(f"glob {arg!r} matched no files")
-        scene_type = _scene_type_for_paths(paths, label=f"glob {arg!r}")
+    # An existing file wins over glob interpretation — filenames containing
+    # `[`/`]`/`*`/`?` (e.g. YouTube-style `name [videoid].mp4`) would otherwise
+    # be mistaken for glob patterns. Mirrors resolve_file_spec's ordering.
+    if os.path.isfile(arg):
+        scene_type = _scene_type_for_file(arg)
         return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
     if os.path.isdir(arg):
         entries = [os.path.join(arg, f) for f in os.listdir(arg)]
@@ -171,8 +171,14 @@ def classify_local(arg: str, *, display: str | None, duration_s: float | None) -
             raise ValueError(f"directory {arg!r} is empty")
         scene_type = _scene_type_for_paths(paths, label=f"directory {arg!r}")
         return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
-    # Literal file. It needn't exist yet — the scene's setup() reports a clear
-    # "file not found" if it's missing (mirrors resolve_file_spec's behavior).
+    if _GLOB_CHARS.search(arg):
+        paths = [p for p in glob.glob(arg) if os.path.isfile(p)]
+        if not paths:
+            raise ValueError(f"glob {arg!r} matched no files")
+        scene_type = _scene_type_for_paths(paths, label=f"glob {arg!r}")
+        return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
+    # Non-existent literal path: classify by extension and let the scene's
+    # setup() report a clear "file not found" if it's still missing at play time.
     scene_type = _scene_type_for_file(arg)
     return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
 

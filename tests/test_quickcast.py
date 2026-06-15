@@ -134,6 +134,16 @@ class ClassifyDirAndGlobTest(unittest.TestCase):
             quickcast.classify_local(pattern, display=None, duration_s=None)
         self.assertIn("matched no files", str(cm.exception))
 
+    def test_existing_file_with_glob_chars_is_literal(self):
+        # YouTube-style names contain [videoid]; an existing file must win over
+        # glob interpretation rather than being read as a character class.
+        name = "1983 Commodore ad [gO8P3oMijWs].mp4"
+        self._touch(name)
+        path = os.path.join(self.tmp, name)
+        scene = quickcast.classify_local(path, display=None, duration_s=None)
+        self.assertEqual(scene.type, "commercial")
+        self.assertEqual(scene.file, path)
+
 
 class BuildConfigTest(unittest.TestCase):
     def test_playlist_semantics(self):
@@ -266,6 +276,12 @@ class ResolveFileSpecUrlTest(unittest.TestCase):
         out = resolve_file_spec(f"{url}, also.mp4", (".mp4",), label="commercial")
         self.assertIn(url, out)
         self.assertIn("also.mp4", out)
+
+    def test_existing_file_with_glob_chars_is_literal(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "clip [abc123].mp4")
+            open(path, "w").close()
+            self.assertEqual(resolve_file_spec(path, (".mp4",), label="commercial"), [path])
 
 
 if __name__ == "__main__":

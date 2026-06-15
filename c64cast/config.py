@@ -2510,6 +2510,15 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
             # local extension and must not be globbed or existence-checked;
             # AVFileSource opens http(s) directly via PyAV.
             matches.add(entry)
+        elif os.path.isfile(entry):
+            # An existing file wins over glob interpretation — filenames with
+            # `[`/`]`/`*`/`?` (e.g. YouTube-style `name [videoid].mp4`) would
+            # otherwise be mistaken for glob patterns and match nothing.
+            if not entry.lower().endswith(extensions):
+                raise ValueError(
+                    f"{label}: {entry!r} doesn't match expected extension {extensions}"
+                )
+            matches.add(entry)
         elif _GLOB_CHARS.search(entry):
             hits = [
                 p for p in glob.glob(entry) if os.path.isfile(p) and p.lower().endswith(extensions)
