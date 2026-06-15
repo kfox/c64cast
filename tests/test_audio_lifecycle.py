@@ -405,11 +405,14 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
         s._worker_thread = cast(Any, object())
         s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()
+        s._nmi_latch = s._nmi_latch_value()  # nominal
         s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        # adaptive owns the latch → static path is a no-op, multiplier stays 1.0
+        # Adaptive ignores the static multiplier (stays 1.0) and instead records
+        # the mode + re-seeds the latch to the mode seed (here: ceiling), NOT the
+        # static-multiplier latch (110).
         self.assertEqual(s._pitch_multiplier, 1.0)
-        self.assertNotIn(f"{CIA2.TIMER_A_LO:04X}", cast(Any, s.api).regs)
+        self.assertEqual(s._nmi_mode, "mhires")
+        self.assertEqual(s._nmi_latch, s._ceiling_latch())
 
     def test_loop_retunes_latch_when_slow(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
@@ -423,6 +426,51 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         self.assertEqual(s._nmi_latch, 92)  # 96 - capped coarse step 4
         regs = cast(Any, s.api).regs[f"{CIA2.TIMER_A_LO:04X}"]
         self.assertEqual(regs[0] | (regs[1] << 8), 92)
+
+    def test_loop_exits_acquisition_on_settle(self):
+        # When a decision needs no change (R at target ⇒ deadband), the fast
+        # acquisition phase flips off so steady-state uses the gentle fine loop.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._nmi_timer_started = True
+        s._nmi_latch = s._nmi_latch_value()
+        s._r_rate_ema = 10500.0  # already at target → step returns no change
+        s._last_r_addr = -1
+        s._nmi_loop_chunk_count = audio_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        self.assertTrue(s._nmi_loop_acquiring)
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertFalse(s._nmi_loop_acquiring)  # settled → fine loop
+
+    def test_seed_bitmap_mode_near_ceiling(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        self.assertEqual(s._seed_latch_for_mode("mhires"), s._ceiling_latch())
+        self.assertEqual(s._seed_latch_for_mode("hires"), s._ceiling_latch())
+
+    def test_seed_char_mode_at_nominal(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        self.assertEqual(s._seed_latch_for_mode("petscii"), s._nmi_latch_value())
+        self.assertEqual(s._seed_latch_for_mode(None), s._nmi_latch_value())  # unknown → nominal
+
+    def test_seed_prefers_learned_value(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._nmi_learned_latch["mhires"] = 90
+        self.assertEqual(s._seed_latch_for_mode("mhires"), 90)  # learned beats the class default
+
+    def test_start_timer_arms_at_mode_seed(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._nmi_mode = "mhires"
+        s._start_nmi_timer()
+        self.assertEqual(s._nmi_latch, s._ceiling_latch())  # no glide-up from nominal
+
+    def test_settle_records_learned_latch(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._nmi_timer_started = True
+        s._nmi_mode = "mhires"
+        s._nmi_latch = 88
+        s._r_rate_ema = 10500.0  # at target → settles without a change
+        s._last_r_addr = -1
+        s._nmi_loop_chunk_count = audio_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s._nmi_learned_latch["mhires"], 88)
 
     def test_loop_discards_torn_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)

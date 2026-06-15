@@ -381,7 +381,22 @@ HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
 NMI_RATE_LOOP_DEADBAND_FRAC = 0.013  # > one latch step (~1%); avoids limit cycle
 NMI_RATE_LOOP_COARSE_ZONE_FRAC = 0.03  # above this error, take a proportional step
 NMI_RATE_LOOP_MAX_COARSE_STEP = 4  # cap acquisition step (latch units)
-NMI_RATE_LOOP_EMA_ALPHA = 0.04  # per-chunk EMA weight for the R-rate estimate
+NMI_RATE_LOOP_EMA_ALPHA = 0.04  # per-chunk EMA weight for the R-rate estimate (fine)
+# Initial ACQUISITION phase: converge fast so the start-of-playback pitch glide
+# (NMI ramps from nominal up to the converged rate) is brief instead of a ~3 s
+# audible rise. While acquiring, a more responsive EMA + a short decision cadence
+# walk the latch to convergence in ~0.5 s; the first decision that needs no change
+# (deadband or clamped at the ceiling) flips to the gentle fine loop above, whose
+# slow ±1 steps keep steady-state pitch corrections inaudible. The coarse-step cap
+# bounds each move so even fast acquisition glides rather than jumps.
+NMI_RATE_LOOP_ACQUIRE_ALPHA = 0.4  # responsive EMA during acquisition
+NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS = 2  # decide every ~2 chunks while acquiring
+# Per-mode-class seed for the loop's starting latch, so playback begins near the
+# converged rate (minimal/zero start glide) instead of ramping up from nominal.
+# Bitmap modes lose ~10% of NMI ticks to the REU bank-swap + badline DMA →
+# converge near the ceiling; char/light modes lose ~0 → converge near nominal.
+# Refined per mode by the in-session learned-latch cache as scenes converge.
+NMI_BITMAP_SEED_MODES = frozenset({"hires", "mhires"})
 
 # REC command byte for REU DMA: bit 7 = exec, bit 4 = FF00 disable (execute
 # immediately, no $FF00 trigger needed), bits 1:0 = 01 = REU → C64 fetch.
@@ -1168,6 +1183,14 @@ class AudioStreamer:
         self._last_r_addr = -1
         self._last_r_time = 0.0
         self._nmi_loop_chunk_count = 0
+        self._nmi_loop_acquiring = True
+        # Current display mode (set by set_nmi_latch_for_mode) + an in-session
+        # cache of each mode's converged latch. The loop SEEDS the starting latch
+        # from these so playback begins at ~the right rate (no start-of-playback
+        # pitch glide) and re-converges fast on a mode change. The cache persists
+        # across scenes/loops (deliberately NOT reset in stop()); per-process only.
+        self._nmi_mode: str | None = None
+        self._nmi_learned_latch: dict[str, int] = {}
         # Host-DMA servo gap telemetry (write head's lead over R, in bytes),
         # for non-ears verification via the drift probe / stop() summary. -1 =
         # no servo sample taken yet this session.
@@ -1309,6 +1332,22 @@ class AudioStreamer:
         without overrunning the handler. System-independent (a cycle count)."""
         return max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
 
+    def _seed_latch_for_mode(self, mode: str | None) -> int:
+        """Starting CIA #2 latch for the adaptive loop, chosen so playback begins
+        near the converged rate (minimal start glide). Uses the in-session learned
+        value for `mode` if known; else a per-mode-class default — bitmap modes
+        (heavy bus-halt loss) seed at the ceiling, char/light/unknown modes at
+        nominal. Clamped to the safe [ceiling, nominal] range."""
+        nominal = self._nmi_latch_value()
+        ceiling = self._ceiling_latch()
+        if mode is not None and mode in self._nmi_learned_latch:
+            seed = self._nmi_learned_latch[mode]
+        elif mode in NMI_BITMAP_SEED_MODES:
+            seed = ceiling
+        else:
+            seed = nominal
+        return max(ceiling, min(nominal, seed))
+
     def _compensated_latch(self) -> int:
         """The CIA #2 Timer A latch for the current pitch multiplier.
 
@@ -1321,11 +1360,16 @@ class AudioStreamer:
         return max(1, adjusted_period - 1)
 
     def _start_nmi_timer(self) -> None:
-        # Apply any pitch multiplier already chosen for this scene — the timer
-        # arms from the worker after prebuffer, i.e. AFTER set_nmi_latch_for_mode
-        # ran at scene setup, so honoring it here is what makes the compensation
-        # stick (otherwise this would reset the latch to nominal).
-        latch = self._compensated_latch()
+        # Adaptive mode: arm at the per-mode seed (learned value or class default)
+        # so playback starts near the converged rate — the loop trims from there
+        # instead of gliding up from nominal. Static mode: apply the pitch
+        # multiplier chosen for this scene (the timer arms from the worker after
+        # prebuffer, i.e. AFTER set_nmi_latch_for_mode, so honoring it here is what
+        # makes the static compensation stick instead of resetting to nominal).
+        if getattr(self, "nmi_rate_adaptive", False):
+            latch = self._seed_latch_for_mode(self._nmi_mode)
+        else:
+            latch = self._compensated_latch()
         self._nmi_latch = latch
         self._nmi_timer_started = True
         self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
@@ -1359,9 +1403,17 @@ class AudioStreamer:
             # REU pump has its own governor; open-loop doesn't need adjustment.
             return
         if self.nmi_rate_adaptive:
-            # Adaptive mode owns the latch via the closed loop (from nominal);
-            # the static per-mode multiplier would fight it, so it's a no-op here
-            # and _pitch_multiplier stays 1.0 (timer arms at nominal).
+            # Adaptive mode owns the latch via the closed loop, so the static
+            # multiplier stays 1.0. But record the mode here so the loop SEEDS its
+            # starting latch from a close per-mode estimate (no start glide). On a
+            # mid-stream mode change (timer already running), re-seed + re-acquire.
+            self._nmi_mode = display_mode.lower()
+            if self._nmi_timer_started:
+                seed = self._seed_latch_for_mode(self._nmi_mode)
+                if seed != self._nmi_latch:
+                    self._nmi_latch = seed
+                    self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", seed & 0xFF, (seed >> 8) & 0xFF)
+                self._nmi_loop_acquiring = True
             return
 
         # `hires_edges` scenes report display_mode.name == "hires" (same VIC
@@ -1514,6 +1566,7 @@ class AudioStreamer:
                         self._last_r_addr = -1
                         self._last_r_time = 0.0
                         self._nmi_loop_chunk_count = 0
+                        self._nmi_loop_acquiring = True
                         # Pace the next write one chunk_period out so the
                         # PREBUFFER_CHUNKS slack stays steady instead of
                         # getting eaten up immediately.
@@ -1563,8 +1616,9 @@ class AudioStreamer:
         return period
 
     def _update_nmi_rate_loop(self, r_addr: int) -> None:
-        """Estimate the NMI consumer's byte rate (dR/dt) and, once per ~second,
-        step the CIA #2 Timer A latch toward making it equal sample_rate.
+        """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2
+        Timer A latch toward making it equal sample_rate — fast at first
+        (acquisition, ~0.5 s, so the start glide is brief), then ~once per second.
 
         Called per chunk from _next_pace_increment with the already-read R
         address, so it adds no REST traffic and only runs on the host-DMA path
@@ -1573,6 +1627,10 @@ class AudioStreamer:
         guard) gives the rate the gap can't; an EMA rejects the noisy 16-bit
         self-modifying-operand read. The actual latch move is the pure
         _nmi_rate_step (clamped to the handler budget)."""
+        # Acquisition uses a responsive EMA + short cadence so the start-of-
+        # playback pitch glide is brief; the fine loop uses the slow values.
+        acquiring = self._nmi_loop_acquiring
+        alpha = NMI_RATE_LOOP_ACQUIRE_ALPHA if acquiring else NMI_RATE_LOOP_EMA_ALPHA
         now = time.monotonic()
         if self._last_r_addr >= 0 and self._last_r_time > 0.0:
             dt = now - self._last_r_time
@@ -1584,12 +1642,16 @@ class AudioStreamer:
                 if self._r_rate_ema < 0:
                     self._r_rate_ema = inst  # seed (no ramp-from-zero)
                 else:
-                    self._r_rate_ema += NMI_RATE_LOOP_EMA_ALPHA * (inst - self._r_rate_ema)
+                    self._r_rate_ema += alpha * (inst - self._r_rate_ema)
         self._last_r_addr = r_addr
         self._last_r_time = now
 
         self._nmi_loop_chunk_count += 1
-        decide_every = max(1, round(self.sample_rate / self.chunk_size))
+        decide_every = (
+            NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS
+            if acquiring
+            else max(1, round(self.sample_rate / self.chunk_size))
+        )
         if self._nmi_loop_chunk_count < decide_every or self._r_rate_ema < 0:
             return
         self._nmi_loop_chunk_count = 0
@@ -1602,16 +1664,25 @@ class AudioStreamer:
             ceiling_latch=self._ceiling_latch(),
             target_rate=float(self.sample_rate),
         )
-        if new_latch != self._nmi_latch:
-            log.debug(
-                "[audio] adaptive NMI rate: R≈%.0f / %d Hz target, latch %d → %d",
-                self._r_rate_ema,
-                self.sample_rate,
-                self._nmi_latch,
-                new_latch,
-            )
-            self._nmi_latch = new_latch
-            self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", new_latch & 0xFF, (new_latch >> 8) & 0xFF)
+        if new_latch == self._nmi_latch:
+            # No change → within deadband or clamped at the ceiling: converged.
+            # Leave fast acquisition for the gentle fine loop (slow ±1 steps), and
+            # remember this mode's converged latch so the next scene/loop in this
+            # mode seeds dead-on (no start glide).
+            self._nmi_loop_acquiring = False
+            if self._nmi_mode is not None:
+                self._nmi_learned_latch[self._nmi_mode] = self._nmi_latch
+            return
+        log.debug(
+            "[audio] adaptive NMI rate%s: R≈%.0f / %d Hz target, latch %d → %d",
+            " (acquire)" if acquiring else "",
+            self._r_rate_ema,
+            self.sample_rate,
+            self._nmi_latch,
+            new_latch,
+        )
+        self._nmi_latch = new_latch
+        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", new_latch & 0xFF, (new_latch >> 8) & 0xFF)
 
     # ---- sample tap ----------------------------------------------------------
     def _push_to_tap(self, mono_floats: np.ndarray) -> None:
@@ -2455,6 +2526,7 @@ class AudioStreamer:
         self._last_r_addr = -1
         self._last_r_time = 0.0
         self._nmi_loop_chunk_count = 0
+        self._nmi_loop_acquiring = True
         # Report underrun telemetry. Each full underrun is an audible
         # click; partials are less audible but still indicate producer
         # stalls. Deterministic, source-correlated counts (same numbers
