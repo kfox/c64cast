@@ -64,7 +64,7 @@ Optional-dep groups in [pyproject.toml](../pyproject.toml):
 | Group         | What it pulls in                      | Why you'd want it                                      |
 |---------------|---------------------------------------|--------------------------------------------------------|
 | `mic`         | `sounddevice`                         | Live microphone input (the SID DAC streaming path)     |
-| `commercials` | `av` (PyAV)                           | `commercial` scenes — plays MP4/MKV/etc. through SID   |
+| `video` | `av` (PyAV)                           | `video` scenes — plays MP4/MKV/etc. through SID   |
 | `preview`     | `pygame`                              | Local preview window mirroring the U64 + recording     |
 | `control`     | `fastapi`, `uvicorn`                  | HTTP control plane (pause/resume/skip/reload)          |
 | `obs`         | `obsws-python`                        | `obs_status` overlay — polls OBS WebSocket v5          |
@@ -92,7 +92,7 @@ overrides; everything has a sensible config-file equivalent.
 | `video input`       | `-d N`                                | Webcam index.                                               |
 | `audio`             | `-A`, `-D N`, `--sample-rate`,        | `-A` is the shortcut for `[audio] enabled = true`.          |
 |                     | `--mic-sensitivity`, `--noise-gate`   |                                                             |
-| `playlist`          | `--ads DIR`                           | Directory of commercial videos for auto-interleaving        |
+| `playlist`          | `--videos DIR`                           | Directory of videos for auto-interleaving        |
 | `debug`             | `-v`, `-vv`, `--heartbeat S`,         | `-v` info, `-vv` debug, `--skip-probe` skips the U64 reachability check. |
 |                     | `--skip-probe`, `--list-devices`      | `--list-devices` enumerates audio + video devices and exits. |
 
@@ -119,12 +119,12 @@ Each argument is mapped to a scene type:
 
 | Argument                | Scene type   |
 |-------------------------|--------------|
-| video (`.mp4`, `.mkv` …) | `commercial` |
+| video (`.mp4`, `.mkv` …) | `video` |
 | `.sid`                  | `waveform`   |
 | image (`.jpg`, `.png` …) | `slideshow`  |
 | `.prg` / `.crt`         | `launcher`   |
 | directory or glob       | inferred from the contents (a single kind); the spec is passed through, so the scene random-picks at setup |
-| URL                     | `commercial` (direct media plays as-is; YouTube/others resolved by yt-dlp) |
+| URL                     | `video` (direct media plays as-is; YouTube/others resolved by yt-dlp) |
 
 Audio is **on by default** — pass `--no-audio` to mute. Flags:
 `-u/--url`, `-s/--system`, `--display MODE` (default `mhires` for video/slideshow),
@@ -157,8 +157,8 @@ Three ways to get a working `c64cast.toml`, easiest first:
      add / remove / reorder scenes in a small management loop (each scene is
      questioned exactly like the single-scene flow, with a per-scene "mute
      this scene?" option when global audio is on). After the scene list you're
-     asked the playlist options: loop-after-last-scene, optional commercial
-     interleaving (`interleave_ads` + `ads_dir`), and an optional pass to
+     asked the playlist options: loop-after-last-scene, optional video
+     interleaving (`interleave_videos` + `videos_dir`), and an optional pass to
      customize the "UP NEXT" `[interstitial]`. The output is N `[[scenes]]`
      plus `[playlist]`/`[interstitial]`, run in order with the interstitial
      between scenes.
@@ -254,7 +254,7 @@ any `error` row is present (so it's safe to gate CI pipelines on).
 What it surfaces:
 
 * **scene** — unknown display modes, unresolvable `file =` specs on
-  commercial / waveform scenes (bad globs, empty directories, wrong
+  video / waveform scenes (bad globs, empty directories, wrong
   extensions), missing required fields (`midi.midi_adsr` length),
   overlay/display-mode incompatibilities (e.g. a PETSCII-only overlay
   attached to an mhires scene).
@@ -262,7 +262,7 @@ What it surfaces:
   registered subclass claims; ensemble conductors with no same-name
   follower in every other system (warn-level: the Playlist will fall
   back to the conductor's cfg, but rarely by design).
-* **extras** — per-extra `[mic, commercials, preview, control, obs,
+* **extras** — per-extra `[mic, video, preview, control, obs,
   midi, logging]` install status; warn rows include the exact
   `pip install c64cast[<name>]` command.
 * **connectivity** — per-system DMA + REST reach to the Ultimate 64. The
@@ -305,7 +305,7 @@ from `len(scenes) == 1`):
 * On `is_done` (e.g. `duration_s` expires, or the scene's `process_frame`
   returns False), the scene tears down and sets up again so it loops
   forever. Works for every scene type — webcam re-opens the camera,
-  commercial re-opens the file, waveform restarts the SID.
+  video re-opens the file, waveform restarts the SID.
 * CTRL skip events are ignored (with a debug log line); the event is
   still cleared so it doesn't accumulate.
 * C= pause/resume still works — useful for blanking the display
@@ -313,8 +313,8 @@ from `len(scenes) == 1`):
 * SHIFT cycle still works — the cycled style persists across the
   loop's teardown+setup iterations because the display_mode instance
   survives the loop.
-* `[playlist] interleave_ads` is short-circuited when the user-defined
-  playlist is a single scene (an inserted ad would promote the playlist
+* `[playlist] interleave_videos` is short-circuited when the user-defined
+  playlist is a single scene (an inserted video would promote the playlist
   to 2 scenes and silently defeat the mode).
 
 ## Config file
@@ -368,24 +368,24 @@ background = "random"               # starfield|petscii_bars|raster_bars|checker
 
 ```toml
 [playlist]
-ads_dir = "ads"
-interleave_ads = true
+videos_dir = "assets/videos"
+interleave_videos = true
 loop = true                                              # false = exit after one pass
 songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"  # optional, for waveform scenes
 ```
 
-When `interleave_ads` is true and `ads_dir` contains any video files (and
-PyAV is installed), a commercial scene is inserted between every pair of
-non-commercial scenes. The ad file rotates round-robin per insertion.
+When `interleave_videos` is true and `videos_dir` contains any video files (and
+PyAV is installed), a video scene is inserted between every pair of
+non-video scenes. The video file rotates round-robin per insertion.
 
 `loop` (also `--loop` / `--no-loop` on the CLI) controls what happens
 after the last scene finishes. Default `true` restarts from scene 1 —
 in single-scene mode, the one scene loops back-to-back forever. Set to
 `false` to exit the streamer cleanly after one full pass; the common
-use case is "play one commercial and quit":
+use case is "play one video and quit":
 
 ```bash
-python -m c64cast --config one-ad.toml --no-loop
+python -m c64cast --config one-video.toml --no-loop
 ```
 
 ### `[preview]`
@@ -472,9 +472,9 @@ resolves to a no-op).
 Each `[[scenes]]` block is a scene; they run in declaration order and
 each plays for `duration_s` seconds, then advances. Common fields:
 
-* `type` — `"webcam"`, `"commercial"`, `"slideshow"`, `"waveform"`,
+* `type` — `"webcam"`, `"video"`, `"slideshow"`, `"waveform"`,
   `"midi"`, `"blank"`, or `"launcher"`
-* `duration_s` — seconds before advancing. Rejected on `commercial`
+* `duration_s` — seconds before advancing. Rejected on `video`
   scenes — they run until the video file ends.
 * `name` — display name (shown in the interstitial). Optional.
 * `target_fps` — per-scene FPS cap. Default: system rate (60 NTSC /
@@ -519,7 +519,7 @@ palette_mode = "percell"              # percell (default) | cheap | vivid | gray
   non-`bg0` colors by population. VIC-II MCBM lets `c1`/`c2`/`c3` vary
   per-cell via screen RAM + color RAM, so a frame carries up to
   `bg0 + 3×1000 = 3001` distinct colors instead of the global 4 the
-  older modes assumed. Webcam/commercial content gains substantially:
+  older modes assumed. Webcam/video content gains substantially:
   cells without `bg0` stop wasting one of their 4 slots on it, and cells
   in unrelated regions of the frame stop being forced to share a 4-color
   set tuned for the dominant subject. For `mcm`, `percell` is accepted
@@ -567,7 +567,7 @@ violets quantize to gray/blue and never to purple. The built-in
 set `hue_corrections_replace_defaults = true` with no bands to disable it.
 
 `channel_boost` and `hue_corrections` are static (the same for every source).
-`auto_fit` (on by default) is the **adaptive** counterpart: for `commercial`
+`auto_fit` (on by default) is the **adaptive** counterpart: for `video`
 and `slideshow` scenes it pre-scans the source and stretches its contrast +
 saturation to fill the C64 gamut, so dark/flat content stops looking muddy and
 monochromatic. It's faithful (hue preserved) and do-no-harm (well-exposed
@@ -609,16 +609,16 @@ Each concrete style declares its own preferred border + background
 (both default to black); the mode pokes them on setup and on every
 SHIFT cycle.
 
-### `type = "commercial"`
+### `type = "video"`
 
 ```toml
 [[scenes]]
-type = "commercial"
-file = "assets/videos/cool-ad.mp4"  # see "file spec" below
+type = "video"
+file = "assets/videos/cool-video.mp4"  # see "file spec" below
 display = "hires_edges"             # any display mode
 ```
 
-Requires the `commercials` extra. Audio is fed through the SID DAC; video
+Requires the `video` extra. Audio is fed through the SID DAC; video
 is keyed off the audio-master clock so drift can't accumulate.
 
 **`file =` spec** — accepts a comma-separated list of any of: literal
@@ -640,11 +640,11 @@ default directory `assets/videos/`. Recognised extensions:
 
 The scene's lifetime is video-driven — it runs until the file's last frame
 is decoded, then the playlist advances. `duration_s` is **rejected** by
-the config loader on commercial scenes: a finite value would silently
+the config loader on video scenes: a finite value would silently
 either truncate a long clip or do nothing on a short one. To loop a single
-commercial as the entire playlist (single-scene mode), simply omit any
+video as the entire playlist (single-scene mode), simply omit any
 other `[[scenes]]` entries; the playlist tears the scene down at EOF and
-immediately restarts it. To play a single commercial **once** and exit,
+immediately restarts it. To play a single video **once** and exit,
 set `[playlist] loop = false` (or pass `--no-loop`).
 
 On scene setup the file's audio stream is scanned end-to-end to find its
@@ -669,7 +669,7 @@ color_mode = "per_voice"            # per_voice | per_waveform
 voice_colors = ["cyan", "yellow", "light green"]
 ```
 
-**`file =` spec** — same grammar as the `commercial` scene: a
+**`file =` spec** — same grammar as the `video` scene: a
 comma-separated list of literal paths, directories, and/or globs. Each
 scene `setup()` picks a random `.sid` from the resolved pool. Candidates
 that fail validation (PSID payload would clobber the visualizer's hires
@@ -780,7 +780,7 @@ total runtime). The picker is shuffle-and-walk: every image plays once
 before any repeats, and no image appears twice back-to-back across
 reshuffle boundaries.
 
-**`file =` spec** — same grammar as `commercial` / `waveform`: a
+**`file =` spec** — same grammar as `video` / `waveform`: a
 comma-separated list of literal paths, directories, and/or globs. Omitted
 entirely, it falls back to the default directory `assets/pictures/`.
 Loaded via `cv2.imread`, so any format OpenCV decodes works
@@ -1141,6 +1141,6 @@ locked into the broadcast loop until the conductor releases it).
 
 The framework also supports a future **mirror** pattern (same scene
 played in lockstep across systems — useful for synchronized
-commercial playback, SID playback, or a webcam input only one
+video playback, SID playback, or a webcam input only one
 system is wired to). The contract is in
 [`c64cast/orchestrator.py`](../c64cast/orchestrator.py).

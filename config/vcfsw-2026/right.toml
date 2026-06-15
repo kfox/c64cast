@@ -3,11 +3,11 @@
 # VCFSW 2026 — RIGHT screen
 # ============================================================================
 # Standalone-runnable: `python -m c64cast --config config/vcfsw-2026/right.toml`.
-# Same scene mix as the other screens, but it OPENS on a commercial so it
+# Same scene mix as the other screens, but it OPENS on a video so it
 # stays out of phase with left (webcam) and middle (gallery). SID
 # composers carried by this screen: Ben Daglish, Charles Deenen (plus a
 # wildcard random SID). A playable launcher scene and interleaved muted
-# commercials round out the loop.
+# videos round out the loop.
 
 [ultimate64]
 url = "http://192.168.2.64"         # <-- set to the RIGHT U64's IP/hostname
@@ -15,12 +15,12 @@ url = "http://192.168.2.64"         # <-- set to the RIGHT U64's IP/hostname
 [video]
 device = 0                           # see left.toml for the camera-index note
 
-# --- Commercial (muted), multi-hires per-cell ---
+# --- Video (muted), multi-hires per-cell ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "mhires"
 palette_mode = "percell"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"
 audio = false
 
@@ -127,11 +127,11 @@ duration_s = 60
     { text = "CENTRAL TEXAS COMMODORE USERS GROUP", color = "orange"     },
   ]
 
-# --- Commercial (muted), Canny edges ---
+# --- Video (muted), Canny edges ---
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "hires_edges"
-name = "Commercial Break"
+name = "Video Break"
 file = "assets/videos"
 audio = false
 

@@ -12,7 +12,7 @@ This module synthesizes a brief, content-unique marker waveform that:
     the real audio. Marker artifacts mirror real-audio artifacts.
   * Has a sharp autocorrelation peak (linear chirp), so cross-correlation
     against the capture finds it unambiguously.
-  * Won't appear in natural commercial source material (no music or
+  * Won't appear in natural video source material (no music or
     speech sweeps through 200 → 3500 Hz in 100 ms).
 
 Usage at capture-analysis time:

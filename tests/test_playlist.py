@@ -262,7 +262,7 @@ class PlaylistTest(unittest.TestCase):
             loop=False,
         )
         # Safety timer in case loop=False is broken and we'd otherwise spin
-        # forever (matches the pre-fix commercial scene behavior).
+        # forever (matches the pre-fix video scene behavior).
         threading.Timer(2.0, stop.set).start()
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
             pl.run()

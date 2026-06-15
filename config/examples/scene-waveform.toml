@@ -15,7 +15,7 @@
 url = "http://ultimate-64-ii.lan"
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 # Uncomment + point at the HVSC SongLengths.md5 to auto-pick a duration:
 # songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"
 

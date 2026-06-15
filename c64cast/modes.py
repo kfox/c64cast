@@ -232,7 +232,7 @@ REU_VIDEO_SCREEN_LEN = SCREEN.N_CELLS  # 1000 bytes of PETSCII screen codes
 #
 # Coexistence: shares the REC controller with the REU audio pump. Mutex
 # is enforced at validate_scene_cfg — REU video on a hires scene cannot
-# coexist with REU audio (mic on webcam OR commercial pre-encode), because
+# coexist with REU audio (mic on webcam OR video pre-encode), because
 # both arm IRQ handlers via $0314.
 REU_VIDEO_BITMAP_BASE = 0xE10000
 REU_VIDEO_BITMAP_LEN = SCREEN.BITMAP_BYTES  # 8000 bytes
@@ -519,7 +519,7 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 # --- Merged dispatcher: bank-swap + audio REU pump fall-through ----------
 # Today the bank-swap handler at $C500 chains to $EA31 on non-raster IRQs
 # (i.e. CIA #1 jiffy). When the scene ALSO opted into REU audio, the
-# audio pump handler at $C100 (37 B commercial / 102 B mic) wants every
+# audio pump handler at $C100 (37 B video / 102 B mic) wants every
 # CIA #1 IRQ to run its REU→ring drain. The two handlers can't both own
 # $0314 — historically `validate_scene_cfg` rejected the combination.
 #
@@ -1260,7 +1260,7 @@ class DisplayMode:
 
     # Per-source adaptive color fit ([color].auto_fit). None = disabled (the
     # default for every mode); a scene that can pre-scan its source
-    # (commercial / slideshow) installs one via set_color_fit. The chromatic
+    # (video / slideshow) installs one via set_color_fit. The chromatic
     # modes apply it as the first shaping step in compose()/render(); webcam
     # scenes never set it, so this stays None and the path is a no-op.
     _color_fit: ColorFit | None = None
@@ -1299,7 +1299,7 @@ class DisplayMode:
         Modes that install a C64-side IRQ handler (currently:
         HiresDisplayMode with use_reu_staged) MUST override this to
         unhook $0314 before the next scene runs, or the next scene's
-        IRQ-using code (e.g. an audio REU pump on a commercial that
+        IRQ-using code (e.g. an audio REU pump on a video that
         followed) vectors into the stale handler.
 
         Called by Scene.teardown before audio.stop() and any
@@ -1850,7 +1850,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         by population. The hardware allows c1/c2/c3 to vary per cell via
         screen RAM + color RAM, so a frame can carry up to bg0 + 3×1000
         distinct colors instead of the global-4 the older modes assume.
-        Webcam/commercial content gains substantially: cells that don't
+        Webcam/video content gains substantially: cells that don't
         contain bg0 stop wasting one of their 4 slots on it, and cells in
         very different regions of the frame stop being forced to share a
         4-color set picked for the dominant subject.

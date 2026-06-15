@@ -27,7 +27,7 @@ systems = [
 
 [audio]
 # Master switch. Required so the waveform scenes can drive the real SID.
-# Live webcam + commercial scenes are muted per-scene (audio = false) and,
+# Live webcam + video scenes are muted per-scene (audio = false) and,
 # in ensemble mode, live scenes never hold the audio spotlight anyway.
 # Only ONE system across the wall may drive audio at a time — the
 # ensemble audio lock arbitrates, so the SID-playing waveform scenes
@@ -35,10 +35,10 @@ systems = [
 enabled = true
 
 [playlist]
-# Commercials are placed explicitly in each playlist (as muted
-# `commercial` scenes pointed at assets/videos/), so the automatic
-# ad-interleaver stays off.
-interleave_ads = false
+# Videos are placed explicitly in each playlist (as muted
+# `video` scenes pointed at assets/videos/), so the automatic
+# video-interleaver stays off.
+interleave_videos = false
 loop = true
 # Gives every waveform scene its true length straight from HVSC instead
 # of a flat 180 s default. Comment out if you don't have the file.

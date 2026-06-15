@@ -2,7 +2,7 @@
 
 The host-side mechanism (REUWRITE wrap, callback encoding, host write
 position tracking) is exercised directly. The C64-side IRQ handler bytes
-get the same shape verification as the commercial REU pump handler so a
+get the same shape verification as the video REU pump handler so a
 hand-assembled regression can't pass tests."""
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ class ReuMicIrqHandlerTest(unittest.TestCase):
     constraint trips a test."""
 
     def test_handler_length_is_known(self):
-        # The handler is bigger than the commercial pump because it
+        # The handler is bigger than the video pump because it
         # reloads src from a 3-byte tracker each trigger and increments
         # the tracker (instead of trusting $DF06 auto-increment + read-back).
         self.assertEqual(len(REU_MIC_IRQ_HANDLER), 102)
@@ -100,7 +100,7 @@ class ReuMicIrqHandlerTest(unittest.TestCase):
 
     def test_dst_wrap_bcc_lands_on_trailing_pla(self):
         # BCC +10 at offset 86 → PLA at offset 98 (opcode 0x68). Same
-        # constraint as the commercial pump's BCC; pinned to catch any
+        # constraint as the video pump's BCC; pinned to catch any
         # future edit to the dst-wrap block that doesn't recompute the
         # displacement.
         self.assertEqual(REU_MIC_IRQ_HANDLER[86], 0x90)  # BCC
@@ -289,7 +289,7 @@ class StartMicForReuPumpTest(unittest.TestCase):
         self.assertEqual(fake.memories["DF07"], expected)
 
     def test_cia1_latch_is_reprogrammed(self):
-        # Same matched-rate latch as the commercial REU path.
+        # Same matched-rate latch as the video REU path.
         s = self._start()
         fake = cast(FakeAPI, s.api)
         expected = f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}"

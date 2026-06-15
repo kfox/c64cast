@@ -29,7 +29,7 @@
 url = "http://ultimate-64-ii.lan"
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
 type = "midi"

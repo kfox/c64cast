@@ -85,7 +85,7 @@ _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
 # The scene types (mirrors validate_scene_cfg). Used by the introspection
 # layer's `applies_to` filtering; declared here so SceneCfg metadata can name
 # them symbolically.
-SCENE_TYPES = ("webcam", "blank", "commercial", "waveform", "midi", "slideshow", "launcher")
+SCENE_TYPES = ("webcam", "blank", "video", "waveform", "midi", "slideshow", "launcher")
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +284,7 @@ class AudioCfg:
     use_reu_pump: bool = field(
         default=False,
         metadata={
-            "help": "EXPERIMENTAL: stream commercial/mic audio from a REU ring "
+            "help": "EXPERIMENTAL: stream video/mic audio from a REU ring "
             "(bus-clean) instead of per-write host DMA. Requires REU enabled."
         },
     )
@@ -314,7 +314,7 @@ class AudioCfg:
         default=True,
         metadata={
             "help": "Closed-loop pacing for the host-DMA audio worker (mic / "
-            "commercials): reads the C64 NMI read pointer and adjusts the "
+            "videos): reads the C64 NMI read pointer and adjusts the "
             "producer's software pace so the ring write head holds a fixed "
             "gap behind the reader, stopping the ~26s drift/echo. Pure "
             "host-side timing, no C64 writes. Not the REU pump path."
@@ -392,7 +392,7 @@ class VisionCfg:
     See [c64cast/vision.py](c64cast/vision.py). Needs the `vision` extra
     (mediapipe) + a downloaded HandLandmarker model. The camera is shared with
     any webcam scene through the WebcamSource broker, so no second device is
-    needed; gestures work over any scene (blank/commercial/waveform/webcam)."""
+    needed; gestures work over any scene (blank/video/waveform/webcam)."""
 
     enabled: bool = field(
         default=False,
@@ -479,14 +479,14 @@ class InterstitialCfg:
 
 @dataclass
 class PlaylistCfg:
-    ads_dir: str = field(
-        default="ads",
-        metadata={"help": "Directory of commercial videos to interleave between scenes."},
+    videos_dir: str = field(
+        default="assets/videos",
+        metadata={"help": "Directory of videos to interleave between scenes."},
     )
-    interleave_ads: bool = field(
+    interleave_videos: bool = field(
         default=True,
         metadata={
-            "help": "Insert an ad from ads_dir after each scene (multi-scene playlists "
+            "help": "Insert a video from videos_dir after each scene (multi-scene playlists "
             "only; ignored in single-scene mode)."
         },
     )
@@ -502,7 +502,7 @@ class PlaylistCfg:
         default=True,
         metadata={
             "help": "Loop the playlist after the last scene (--no-loop exits after one "
-            "pass; useful for 'play one commercial and quit')."
+            "pass; useful for 'play one video and quit')."
         },
     )
 
@@ -516,7 +516,7 @@ class SceneCfg:
             "help": "VIC-II display mode. waveform and midi are bitmap-only (both "
             "ignore this); slideshow also accepts 'random'.",
             "choices": _DISPLAY_CHOICES,
-            "applies_to": ("webcam", "blank", "commercial", "slideshow"),
+            "applies_to": ("webcam", "blank", "video", "slideshow"),
         },
     )
     name: str | None = field(
@@ -524,12 +524,12 @@ class SceneCfg:
         metadata={"help": "Display name (shown in interstitials/logs; ensemble match key)."},
     )
     # None = scene-type default (30s for webcam/blank, songlengths-or-30s for
-    # waveform/midi). Commercial scenes reject any value (video-driven).
+    # waveform/midi). Video scenes reject any value (video-driven).
     duration_s: float | None = field(
         default=None,
         metadata={
             "help": "Seconds before auto-advance. Unset = scene-type default. "
-            "Commercial scenes reject this (they run until the file ends). "
+            "Video scenes reject this (they run until the file ends). "
             "For launcher this is the idle timeout (reset by player input).",
             "applies_to": ("webcam", "blank", "waveform", "midi", "slideshow", "launcher"),
         },
@@ -539,9 +539,9 @@ class SceneCfg:
         default=None,
         metadata={
             "help": "Asset spec (comma-separated paths/dirs/globs). Videos for "
-            "commercial, .sid for waveform, images for slideshow, "
+            "video, .sid for waveform, images for slideshow, "
             ".prg/.crt for launcher.",
-            "applies_to": ("commercial", "waveform", "slideshow", "launcher"),
+            "applies_to": ("video", "waveform", "slideshow", "launcher"),
         },
     )
     image_duration_s: float = field(
@@ -566,7 +566,7 @@ class SceneCfg:
         metadata={
             "help": "Per-scene audio override. Unset follows [audio].enabled; "
             "false mutes this scene only.",
-            "applies_to": ("webcam", "blank", "commercial"),
+            "applies_to": ("webcam", "blank", "video"),
         },
     )
     # None = use global [dsp].pre_emphasis (which itself may be source-aware
@@ -578,7 +578,7 @@ class SceneCfg:
             "help": "Per-scene HF pre-emphasis (0 = off, ~0.3-0.7 typical; "
             "brightens speech). Unset = global [dsp].pre_emphasis / "
             "source-aware default. Needs [dsp].enabled + scene audio.",
-            "applies_to": ("webcam", "blank", "commercial"),
+            "applies_to": ("webcam", "blank", "video"),
         },
     )
     # waveform-specific kwargs — passed straight through to WaveformScene.
@@ -711,7 +711,7 @@ class SceneCfg:
             "Color shaping (channel boost + hue corrections, e.g. the purple "
             "rescue) is the global [color] section, applied to every mode.",
             "choices": _PALETTE_MODE_CHOICES,
-            "applies_to": ("webcam", "commercial", "slideshow"),
+            "applies_to": ("webcam", "video", "slideshow"),
         },
     )
     style: str = field(
@@ -720,7 +720,7 @@ class SceneCfg:
             "help": "PETSCII glyph/color style (only when display = 'petscii'); "
             "'random' picks one at setup.",
             "choices": _STYLE_CHOICES,
-            "applies_to": ("webcam", "commercial", "slideshow"),
+            "applies_to": ("webcam", "video", "slideshow"),
         },
     )
     border: int = field(
@@ -831,7 +831,7 @@ class DebugCfg:
         default=False,
         metadata={
             "help": "Overlay the playback timecode + source frame number on "
-            "commercial/slideshow/webcam frames (debug aid for "
+            "video/slideshow/webcam frames (debug aid for "
             "locating flashing/flickering frames)."
         },
     )
@@ -917,7 +917,7 @@ class ColorCfg:
     auto_fit: bool = field(
         default=True,
         metadata={
-            "help": "Per-source adaptive color fit for commercial + slideshow "
+            "help": "Per-source adaptive color fit for video + slideshow "
             "scenes: pre-scan the source and stretch its contrast + "
             "saturation to fill the C64 gamut (faithful — hue preserved). "
             "Ignored by webcam scenes (can't pre-scan)."
@@ -933,7 +933,7 @@ class ColorCfg:
     force_palette: bool = field(
         default=False,
         metadata={
-            "help": "EXTREME forced-palette remap for commercial + slideshow "
+            "help": "EXTREME forced-palette remap for video + slideshow "
             "scenes (mcm/mhires): pre-scan the source, k-means it into N "
             "clusters, and map each cluster to a DISTINCT C64 color so all "
             "N colors are used. Deliberate false-color (NOT faithful) — "
@@ -1064,7 +1064,7 @@ class DSPCfg:
     agc: bool = field(
         default=False,
         metadata={
-            "help": "Automatic gain control for the MIC path only (line/commercial "
+            "help": "Automatic gain control for the MIC path only (line/video "
             "audio is already peak-normalized). Slow gain toward a target. "
             "EXPERIMENTAL: being level-based it can boost a sustained noise "
             "floor during long pauses — best on clean mics, or pair with the "
@@ -1601,20 +1601,20 @@ def load_master(path: str | None) -> LoadResult:
     )
 
 
-_AUDIO_BEARING_SCENE_TYPES = frozenset({"commercial", "waveform", "midi", "launcher"})
+_AUDIO_BEARING_SCENE_TYPES = frozenset({"video", "waveform", "midi", "launcher"})
 
 
 def _scene_contends_for_audio(s: SceneCfg) -> bool:
     """Whether a scene cfg will actually contend for the ensemble audio
     slot at runtime — mirrors Scene.competes_for_audio_lock(). A muted
-    commercial (`audio = false`) produces no sound and falls through
+    video (`audio = false`) produces no sound and falls through
     like a non-audio scene, so it doesn't count. waveform/midi have no
     per-scene audio override (they drive the SID directly), so they
     always count."""
     if s.type not in _AUDIO_BEARING_SCENE_TYPES:
         return False
-    # A muted commercial falls through like a non-audio scene.
-    if s.type == "commercial" and s.audio is False:
+    # A muted video falls through like a non-audio scene.
+    if s.type == "video" and s.audio is False:
         return False
     # A launcher with bypass_audio_lock never waits on the slot (it plays
     # its own SID concurrently), so it doesn't contend either.
@@ -1661,7 +1661,7 @@ CLI_TO_CFG = {
     "noise_gate": ("audio", "noise_gate"),
     "vision": ("vision", "enabled"),
     "vision_model": ("vision", "model_path"),
-    "ads": ("playlist", "ads_dir"),
+    "videos": ("playlist", "videos_dir"),
     "loop": ("playlist", "loop"),
     "verbose": ("debug", "verbose"),
     "heartbeat": ("debug", "heartbeat"),
@@ -1858,7 +1858,7 @@ def _resolve_file_spec_or_explain(
 
     On a resolve failure with the default still in place, raise the friendly
     "no `file =` set / drop one in the dir" guidance; otherwise re-raise
-    resolve_file_spec's error verbatim. Shared by the commercial / waveform /
+    resolve_file_spec's error verbatim. Shared by the video / waveform /
     slideshow / launcher branches, which differ only in dir, extensions, and
     the file-kind hint."""
     if not s.file:
@@ -1881,7 +1881,7 @@ def _display_mode_for_scene(
 ) -> DisplayMode:
     """Build the standard video display mode for a scene, centralizing the
     palette/border/background/style/REU/color kwarg cluster shared by the
-    webcam, commercial, and slideshow paths (both the validate and build
+    webcam, video, and slideshow paths (both the validate and build
     passes). `display` is passed explicitly because slideshow resolves
     "random" to a concrete mode first.
 
@@ -1927,13 +1927,13 @@ def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
     )
 
 
-def _validate_commercial(s: SceneCfg, cfg: Config) -> DisplayMode:
+def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
-        s, DEFAULT_COMMERCIAL_DIR, VIDEO_EXTS, label="commercial", drop_hint="a video"
+        s, DEFAULT_VIDEO_DIR, VIDEO_EXTS, label="video", drop_hint="a video"
     )
     if s.duration_s is not None:
         raise ValueError(
-            "commercial scene does not accept `duration_s` — the scene "
+            "video scene does not accept `duration_s` — the scene "
             "runs until the video file ends. Remove the field from the "
             "config; use a [[scenes]] timeout via a different scene type "
             "if you want a hard cap."
@@ -2076,8 +2076,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         mode = _display_mode_for_scene(s.display, s, cfg)
     elif s.type == "blank":
         mode = _validate_blank(s, cfg)
-    elif s.type == "commercial":
-        mode = _validate_commercial(s, cfg)
+    elif s.type == "video":
+        mode = _validate_video(s, cfg)
     elif s.type == "waveform":
         mode = _validate_waveform(s, cfg)
     elif s.type == "midi":
@@ -2090,7 +2090,7 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     else:
         raise ValueError(
             f"unknown scene type {s.type!r} "
-            "(known: webcam, blank, commercial, waveform, midi, "
+            "(known: webcam, blank, video, waveform, midi, "
             "slideshow, launcher). Note: scrolling_text is now an overlay — "
             "attach it via [[scenes.overlays]]."
         )
@@ -2129,14 +2129,14 @@ def build_scene(
     `is_ensemble=True` forces live-scene (webcam, blank) audio off so the
     mic capture can't compete with the one system holding the ensemble
     audio lock for that scheduling window. Audio-bearing scene types
-    (commercial, waveform, midi) still receive the streamer — the lock
+    (video, waveform, midi) still receive the streamer — the lock
     arbitrates which one actually drives the SID at any moment.
 
     `reu_available` is the startup probe's verdict on whether the U64's REU
     is enabled; it resolves the [video].use_reu_staged "auto" setting (see
     resolve_use_reu_staged). Callers that build scenes without a live probe
     (validation, doctor) leave it False so auto degrades to host-DMA."""
-    from .scenes import BlankScene, CommercialScene, WebcamScene
+    from .scenes import BlankScene, VideoScene, WebcamScene
 
     validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
 
@@ -2186,13 +2186,13 @@ def build_scene(
                 )
             scene_audio = None
         scene = BlankScene(api, scene_audio, mode, cfg.audio, name)
-    elif s.type == "commercial":
+    elif s.type == "video":
         mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
-        # Default: audio ON for commercials (it's part of the file).
+        # Default: audio ON for videos (it's part of the file).
         # The user can mute one with `audio = false`.
         scene_audio = None if s.audio is False else audio
         assert s.file is not None  # narrowed by validate_scene_cfg
-        scene = CommercialScene(
+        scene = VideoScene(
             api,
             scene_audio,
             mode,
@@ -2298,10 +2298,10 @@ def build_scene(
             system=cfg.ultimate64.system,
             name=s.name or "MIDI",
         )
-    # Commercial scenes set their own video-driven duration in __init__
+    # Video scenes set their own video-driven duration in __init__
     # (math.inf) — `validate_scene_cfg` above already rejected any explicit
     # duration_s on them, so honor that by not overwriting it here.
-    if s.duration_s is not None and s.type != "commercial":
+    if s.duration_s is not None and s.type != "video":
         scene.duration_s = s.duration_s
     if s.target_fps is not None:
         scene.target_fps = float(s.target_fps)
@@ -2333,8 +2333,8 @@ def scenes_from_config(
 ) -> list[Scene]:
     """Build the playlist scene list from cfg.scenes.
 
-    Interleaves commercials between scenes when ``cfg.playlist.interleave_ads``
-    is true and the ads directory contains video files (and PyAV is available).
+    Interleaves videos between scenes when ``cfg.playlist.interleave_videos``
+    is true and the videos directory contains video files (and PyAV is available).
 
     Scenes marked `follower_only = true` are skipped here — they exist only
     to be picked up as follower overrides during a cross-system broadcast
@@ -2347,7 +2347,7 @@ def scenes_from_config(
 
     `reu_available` propagates to `build_scene` to resolve the
     [video].use_reu_staged "auto" setting (see resolve_use_reu_staged)."""
-    from .scenes import CommercialScene, WebcamScene
+    from .scenes import VideoScene, WebcamScene
     from .video import _ensure_pyav
 
     # Validate follower-only scenes here too — they're built lazily at
@@ -2383,47 +2383,47 @@ def scenes_from_config(
         )
         base[-1].duration_s = 30.0
 
-    if not cfg.playlist.interleave_ads:
+    if not cfg.playlist.interleave_videos:
         return base
     if len(base) <= 1:
         # Single-scene playlists run in Playlist's single-scene mode (no
-        # interstitials, loop forever). Interleaving an ad would silently
+        # interstitials, loop forever). Interleaving a video would silently
         # promote it to a 2-scene multi-scene playlist — surprising. Skip.
-        if _gather_ads(cfg.playlist.ads_dir):
+        if _gather_videos(cfg.playlist.videos_dir):
             log.info(
-                "interleave_ads skipped: single-scene playlist "
-                "(loops the one scene; no place to insert ads)"
+                "interleave_videos skipped: single-scene playlist "
+                "(loops the one scene; no place to insert videos)"
             )
         return base
 
-    ad_files = _gather_ads(cfg.playlist.ads_dir)
-    if not ad_files:
+    video_files = _gather_videos(cfg.playlist.videos_dir)
+    if not video_files:
         return base
     if not _ensure_pyav():
         log.warning(
-            "Found %d ad files but PyAV is not installed; skipping commercials.", len(ad_files)
+            "Found %d video files but PyAV is not installed; skipping videos.", len(video_files)
         )
         return base
 
     from .modes import HiresDisplayMode
 
     interleaved: list[Scene] = []
-    ad_idx = 0
+    video_idx = 0
     for built in base:
         interleaved.append(built)
-        if not isinstance(built, CommercialScene):
+        if not isinstance(built, VideoScene):
             interleaved.append(
-                CommercialScene(
+                VideoScene(
                     api,
                     audio,
                     HiresDisplayMode(style="edges"),
-                    ad_files[ad_idx],
+                    video_files[video_idx],
                     prepend_alignment_marker=(
                         cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump
                     ),
                 )
             )
-            ad_idx = (ad_idx + 1) % len(ad_files)
+            video_idx = (video_idx + 1) % len(video_files)
     return interleaved
 
 
@@ -2437,7 +2437,7 @@ PROGRAM_EXTS = (".prg", ".crt")
 # directory spec). Missing/empty default dirs surface as a clear
 # validate-time error pointing the user at the dir to populate or the
 # `file =` field to override.
-DEFAULT_COMMERCIAL_DIR = "assets/videos"
+DEFAULT_VIDEO_DIR = "assets/videos"
 DEFAULT_WAVEFORM_DIR = "assets/sids"
 DEFAULT_SLIDESHOW_DIR = "assets/pictures"
 DEFAULT_PROGRAM_DIR = "assets/programs"
@@ -2465,7 +2465,7 @@ def _resolve_slideshow_display(spec: str) -> str:
     return spec
 
 
-def _gather_ads(directory: str) -> list[str]:
+def _gather_videos(directory: str) -> list[str]:
     if not os.path.isdir(directory):
         return []
     return sorted(
@@ -2483,14 +2483,14 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
     Each comma-separated entry is one of:
       * a literal file path — included as-is (extension-checked).
       * a directory path — every file inside whose extension is in
-        `extensions` is included (non-recursive; mirrors `_gather_ads`).
+        `extensions` is included (non-recursive; mirrors `_gather_videos`).
       * a glob pattern (containing `*`, `?`, or `[`) — expanded via
         `glob.glob`; matches whose extension is in `extensions` are kept.
 
     Whitespace around commas is stripped. Empty entries (e.g. a trailing
     comma) are ignored. Raises ValueError when the spec resolves to zero
     files or when a literal-path entry has the wrong extension — the
-    `label` (e.g. "commercial" / "waveform") is woven into the message so
+    `label` (e.g. "video" / "waveform") is woven into the message so
     `validate_scene_cfg` surfaces an actionable error.
 
     Returns paths sorted lexically for stable test/log output. The

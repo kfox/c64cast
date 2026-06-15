@@ -90,7 +90,7 @@ def _scenes_for(pl: Playlist) -> dict[str, Any]:
             {
                 "index": i,
                 "name": s.name,
-                # CommercialScene uses math.inf to mean "runs until the file
+                # VideoScene uses math.inf to mean "runs until the file
                 # ends"; JSON can't carry inf, so surface that as None.
                 "duration_s": (None if math.isinf(s.duration_s) else s.duration_s),
                 "is_current": i == pl.index,

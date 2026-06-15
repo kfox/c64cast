@@ -4,7 +4,7 @@
 url = "http://u64-middle.lan"
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
 type = "blank"

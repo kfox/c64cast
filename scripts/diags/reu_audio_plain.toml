@@ -22,9 +22,9 @@ use_reu_pump = true       # REU-staged audio ring pump (the path under test)
 
 [playlist]
 loop = true
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "petscii"       # char mode → plain pump path, no video bank-swap
 # file omitted → scans assets/videos/ and picks one at random

@@ -2,7 +2,7 @@
 # Single-scene demo: cycle through still images on the C64 display.
 #
 # `file =` is a comma-separated list of paths, directories, and/or globs
-# (same grammar as `commercial` / `waveform` scenes). Each setup picks
+# (same grammar as `video` / `waveform` scenes). Each setup picks
 # from the resolved pool with a shuffle-and-walk picker — every image is
 # shown once before any repeats; no image appears twice back-to-back
 # across reshuffle boundaries.
@@ -18,7 +18,7 @@
 url = "http://ultimate-64-ii.lan"
 
 [playlist]
-interleave_ads = false   # single-scene mode — loops the slideshow forever
+interleave_videos = false   # single-scene mode — loops the slideshow forever
 
 [[scenes]]
 type = "slideshow"

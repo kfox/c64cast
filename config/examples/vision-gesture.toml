@@ -35,7 +35,7 @@ enabled = true
 # model_path defaults to assets/models/hand_landmarker.task
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
 type = "webcam"

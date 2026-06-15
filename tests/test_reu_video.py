@@ -261,7 +261,7 @@ class ReuBlankPushTest(unittest.TestCase):
 
 class ReuCoexistenceTest(unittest.TestCase):
     """Sanity that validate_scene_cfg accepts every REU flag combination
-    on commercial scenes. The earlier `_raises` variants are obsolete: the
+    on video scenes. The earlier `_raises` variants are obsolete: the
     bank-swap install now picks a merged $C500 dispatcher whose non-raster
     branch JMPs to the audio pump at $C100, so both REU users share one
     $0314 hook and serialize REC access naturally."""
@@ -272,7 +272,7 @@ class ReuCoexistenceTest(unittest.TestCase):
         cfg = Config()
         cfg.video.use_reu_staged = True
         cfg.audio.use_reu_pump = False
-        sc = SceneCfg(type="commercial", display="petscii", file="x.mp4")
+        sc = SceneCfg(type="video", display="petscii", file="x.mp4")
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_audio_alone_is_ok(self):
@@ -281,10 +281,10 @@ class ReuCoexistenceTest(unittest.TestCase):
         cfg = Config()
         cfg.video.use_reu_staged = False
         cfg.audio.use_reu_pump = True
-        sc = SceneCfg(type="commercial", display="petscii", file="x.mp4")
+        sc = SceneCfg(type="video", display="petscii", file="x.mp4")
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
-    def test_both_on_commercial_petscii_is_ok(self):
+    def test_both_on_video_petscii_is_ok(self):
         # Char-mode REU video is host-triggered single-buffer (no $0314
         # hook), so the merged-dispatcher branch isn't even taken — but
         # the combination must still build cleanly.
@@ -293,19 +293,19 @@ class ReuCoexistenceTest(unittest.TestCase):
         cfg = Config()
         cfg.video.use_reu_staged = True
         cfg.audio.use_reu_pump = True
-        sc = SceneCfg(type="commercial", display="petscii", file="x.mp4")
+        sc = SceneCfg(type="video", display="petscii", file="x.mp4")
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
-    def test_both_on_commercial_mhires_is_ok(self):
+    def test_both_on_video_mhires_is_ok(self):
         # The interesting case the merge enables: REU audio + REU bank-
-        # swap video on the same commercial scene. Before the merge this
+        # swap video on the same video scene. Before the merge this
         # raised ValueError; after, it builds.
         from c64cast.config import SceneCfg, validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
         cfg.audio.use_reu_pump = True
-        sc = SceneCfg(type="commercial", display="mhires", file="x.mp4")
+        sc = SceneCfg(type="video", display="mhires", file="x.mp4")
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_both_on_webcam_is_ok(self):
@@ -1446,7 +1446,7 @@ class MergedDispatcherSetupTest(unittest.TestCase):
 
 class MergedDispatcherFlagWiringTest(unittest.TestCase):
     """The audio_reu_pump_active flag must reach the display mode whenever
-    both REU flags are set in the Config, on both webcam and commercial
+    both REU flags are set in the Config, on both webcam and video
     scene types. Verified through the _build_display_mode entry point."""
 
     def test_hires_receives_audio_flag(self):

@@ -40,8 +40,8 @@ dependencies = [
 [project.optional-dependencies]
 # Mic capture (the 4-bit SID DAC streaming path).
 mic = ["sounddevice>=0.4"]
-# Commercial playback uses PyAV for container demux + audio resampling.
-commercials = ["av>=10"]
+# Video playback uses PyAV for container demux + audio resampling.
+video = ["av>=10"]
 # Local preview window + stream recording (preview uses pygame, recording
 # uses cv2's VideoWriter which ships in opencv-python).
 preview = ["pygame>=2.5"]

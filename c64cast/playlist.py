@@ -189,7 +189,7 @@ class Playlist:
         fires first. Stamps the scene with `_audio_lock_held = True` on
         success so the matching `_safe_teardown` releases. Always
         returns True for non-ensemble runs or scenes that don't
-        compete for audio (including a muted commercial).
+        compete for audio (including a muted video).
 
         Used by single-scene mode (which can't skip itself, so the
         only sensible option is to wait). Multi-scene playlists use
@@ -217,7 +217,7 @@ class Playlist:
         """Walk forward from self.index in ensemble mode to find the
         next scene we can actually run. Scenes that actually contend for
         audio (`competes_for_audio_lock()`) whose lock is held by another
-        system are skipped; a muted commercial passes through like any
+        system are skipped; a muted video passes through like any
         non-audio scene. If every scene is gated,
         blocks (stop_event-aware) until the lock frees and a candidate
         becomes claimable. Returns the resolved index, or None only if
@@ -276,7 +276,7 @@ class Playlist:
                     self.stop_event.set()
                     return
                 # Loop the same scene back-to-back: teardown + setup. Works
-                # for every scene type — webcam re-reads source, commercial
+                # for every scene type — webcam re-reads source, video
                 # re-opens the file, waveform restarts the SID.
                 scene = self.current
                 self._safe_teardown(scene)
@@ -432,7 +432,7 @@ class Playlist:
             scene.__dict__["_orchestrator"] = None
             scene.__dict__["_is_conductor"] = False
         # Release the ensemble audio lock if this scene held it. Runs
-        # even when teardown raised — a crashing CommercialScene must
+        # even when teardown raised — a crashing VideoScene must
         # not strand the slot. The flag is reset on the scene so a
         # subsequent re-setup (single-scene loop) re-resolves the claim
         # rather than thinking it still holds the previous one.

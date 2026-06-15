@@ -24,7 +24,7 @@ still mid-upload behind it):
     flash on high-motion / scene-cut frames.
 
 Reported flips are printed with their source-video timestamp so they map onto
-ranges you eyeball on the U64 (`--frame-numbers` on the commercial scene gives
+ranges you eyeball on the U64 (`--frame-numbers` on the video scene gives
 the matching on-screen counter)."""
 
 from __future__ import annotations

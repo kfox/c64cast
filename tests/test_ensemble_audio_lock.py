@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 from c64cast import config as cfgmod
 from c64cast.ensemble import Ensemble, SystemStack
 from c64cast.playlist import Playlist
-from c64cast.scenes import BlankScene, CommercialScene, Scene, WebcamScene
+from c64cast.scenes import BlankScene, Scene, VideoScene, WebcamScene
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402
@@ -177,8 +177,8 @@ class WantsAudioLockFlagTest(unittest.TestCase):
     def test_blank_scene_does_not_claim(self):
         self.assertFalse(BlankScene.WANTS_AUDIO_LOCK)
 
-    def test_commercial_scene_claims(self):
-        self.assertTrue(CommercialScene.WANTS_AUDIO_LOCK)
+    def test_video_scene_claims(self):
+        self.assertTrue(VideoScene.WANTS_AUDIO_LOCK)
 
     def test_waveform_scene_claims(self):
         # Local import — waveform pulls in songlengths which is heavier
@@ -200,7 +200,7 @@ class WantsAudioLockFlagTest(unittest.TestCase):
 
 class CompetesForAudioLockTest(unittest.TestCase):
     """The class flag declares the capability; the instance predicate
-    decides whether THIS scene actually contends. A muted commercial
+    decides whether THIS scene actually contends. A muted video
     (audio=None) opts out; SID-driving scenes always compete."""
 
     def test_base_scene_follows_flag(self):
@@ -211,13 +211,13 @@ class CompetesForAudioLockTest(unittest.TestCase):
         scene.WANTS_AUDIO_LOCK = True
         self.assertTrue(scene.competes_for_audio_lock())
 
-    def test_commercial_with_audio_competes(self):
-        comm = CommercialScene.__new__(CommercialScene)
+    def test_video_with_audio_competes(self):
+        comm = VideoScene.__new__(VideoScene)
         comm.audio = MagicMock(name="streamer")
         self.assertTrue(comm.competes_for_audio_lock())
 
-    def test_muted_commercial_does_not_compete(self):
-        comm = CommercialScene.__new__(CommercialScene)
+    def test_muted_video_does_not_compete(self):
+        comm = VideoScene.__new__(VideoScene)
         comm.audio = None
         self.assertFalse(comm.competes_for_audio_lock())
 
@@ -312,7 +312,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertEqual(pl._resolve_next_index(), 0)
 
     def test_audio_scene_claims_lock_when_free(self):
-        scene = FakePlaylistScene("commercial", wants_audio=True)
+        scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
         self.assertEqual(pl._resolve_next_index(), 0)
@@ -320,9 +320,9 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertTrue(scene.__dict__["_audio_lock_held"])
 
     def test_audio_scene_skipped_when_lock_held_elsewhere(self):
-        # Two scenes: a held-elsewhere commercial then a live scene.
+        # Two scenes: a held-elsewhere video then a live scene.
         # Helper must skip past slot 0 and land on slot 1.
-        comm = FakePlaylistScene("commercial", wants_audio=True)
+        comm = FakePlaylistScene("video", wants_audio=True)
         live = FakePlaylistScene("live", wants_audio=False)
         pl = _build_playlist([comm, live])
         pl.ensemble = Ensemble(
@@ -338,7 +338,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         # An audio-capable scene with audio disabled (audio=None) does
         # not contend — even with the slot held elsewhere it's returned
         # directly and never claims the lock.
-        muted = FakePlaylistScene("muted-commercial", wants_audio=True, audio=None)
+        muted = FakePlaylistScene("muted-video", wants_audio=True, audio=None)
         pl = _build_playlist([muted])
         pl.ensemble = Ensemble(
             stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
@@ -351,7 +351,7 @@ class ResolveNextIndexTest(unittest.TestCase):
     def test_all_gated_waits_then_returns_when_freed(self):
         # Single audio-bearing scene, lock held elsewhere. Free it from
         # another thread after a short delay; helper should pick it up.
-        scene = FakePlaylistScene("commercial", wants_audio=True)
+        scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(
             stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
@@ -373,7 +373,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertEqual(pl.ensemble.audio_holder, "sys")
 
     def test_stop_event_exits_wait_loop(self):
-        scene = FakePlaylistScene("commercial", wants_audio=True)
+        scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(
             stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
@@ -388,7 +388,7 @@ class ResolveNextIndexTest(unittest.TestCase):
 
 class SafeTeardownReleasesLockTest(unittest.TestCase):
     def test_teardown_releases_audio_slot_when_flag_set(self):
-        scene = FakePlaylistScene("commercial", wants_audio=True)
+        scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
         pl.ensemble.try_claim_audio("sys")
@@ -399,7 +399,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         self.assertFalse(scene.__dict__["_audio_lock_held"])
 
     def test_teardown_does_not_release_when_flag_unset(self):
-        scene = FakePlaylistScene("commercial", wants_audio=True)
+        scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(
             stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
@@ -415,7 +415,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
             def teardown(self):
                 raise RuntimeError("boom")
 
-        scene = Boom("commercial", wants_audio=True)
+        scene = Boom("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
         pl.ensemble.try_claim_audio("sys")
@@ -438,8 +438,8 @@ class AudioOnlyEnsembleWarningTest(unittest.TestCase):
         cfg_a.scenes = [cfgmod.SceneCfg(type="webcam", display="petscii")]
         cfg_b = cfgmod.Config()
         cfg_b.scenes = [
-            cfgmod.SceneCfg(type="commercial", file="x.mp4"),
-            cfgmod.SceneCfg(type="commercial", file="y.mp4"),
+            cfgmod.SceneCfg(type="video", file="x.mp4"),
+            cfgmod.SceneCfg(type="video", file="y.mp4"),
         ]
         with self.assertLogs("c64cast.config", level="WARNING") as cap:
             cfgmod._warn_audio_only_ensemble([cfg_a, cfg_b], ["a", "b"])
@@ -451,7 +451,7 @@ class AudioOnlyEnsembleWarningTest(unittest.TestCase):
         cfg = cfgmod.Config()
         cfg.scenes = [
             cfgmod.SceneCfg(type="webcam", display="petscii"),
-            cfgmod.SceneCfg(type="commercial", file="x.mp4"),
+            cfgmod.SceneCfg(type="video", file="x.mp4"),
         ]
         # `assertNoLogs` is 3.10+; fall back to capturing and asserting empty.
         with self.assertLogs("c64cast.config", level="WARNING") as cap:

@@ -24,9 +24,9 @@ use_reu_staged = true     # bank-swap double-buffer → tracked pump, $C200 mirr
 
 [playlist]
 loop = true
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
-type = "commercial"
+type = "video"
 display = "mhires"        # bitmap mode → REU bank-swap video path
 # file omitted → scans assets/videos/ at random

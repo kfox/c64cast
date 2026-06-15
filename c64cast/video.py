@@ -28,7 +28,7 @@ from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulato
 
 log = logging.getLogger(__name__)
 
-# Peak-normalization for commercial-scene audio. The SID volume DAC is 4-bit;
+# Peak-normalization for video-scene audio. The SID volume DAC is 4-bit;
 # `(float + 1) * 7.5` puts samples within ±0.067 of zero on NEUTRAL_SAMPLE,
 # so a source peaking below ~30% of int16 full scale plays as silence-with-
 # clicks. AVFileSource pre-scans each file and scales every pushed frame to
@@ -64,8 +64,8 @@ def _compute_normalization_gain(
 # PyAV is imported lazily on first AVFileSource construction. On macOS the av
 # wheel bundles a different libavdevice major version than the cv2 wheel, and
 # eagerly importing both at startup triggers the Obj-C runtime's "duplicate
-# class implementation" warnings. Deferring av until a commercial scene
-# actually runs sidesteps the clash entirely when commercials aren't used.
+# class implementation" warnings. Deferring av until a video scene
+# actually runs sidesteps the clash entirely when videos aren't used.
 av: Any = None
 PYAV_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
 
@@ -90,15 +90,15 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     ``target_sample_rate``. Returns a single contiguous np.ndarray.
 
     Blocking — call before scene paint starts. Used by the REU-staged audio
-    path in CommercialScene where the whole track must be preloaded into
+    path in VideoScene where the whole track must be preloaded into
     REU before playback begins.
 
-    Cost: ~100-200 ms for a 30-sec commercial via PyAV on this hardware.
+    Cost: ~100-200 ms for a 30-sec video via PyAV on this hardware.
     Raises RuntimeError if PyAV isn't available or there's no audio stream
     in the container.
     """
     if not _ensure_pyav():
-        raise RuntimeError("PyAV not installed; install with `pip install c64cast[commercials]`")
+        raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
     container = av.open(path)
     try:
         if not container.streams.audio:
@@ -267,9 +267,7 @@ class AVFileSource:
         scan_audio_peak: bool = True,
     ):
         if not _ensure_pyav():
-            raise RuntimeError(
-                "PyAV not installed; install with `pip install c64cast[commercials]`"
-            )
+            raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
 
         self.path = path
         self.target_sr = target_sample_rate
@@ -339,8 +337,8 @@ class AVFileSource:
         empty or decoding fails — caller treats 0 as "no normalization."
 
         Cost: one extra full-decode of audio packets per scene setup,
-        typically <1 s for a 60 s commercial. The playlist's interstitial
-        already gives us several seconds of cover before a commercial paints
+        typically <1 s for a 60 s video. The playlist's interstitial
+        already gives us several seconds of cover before a video paints
         its first frame."""
         peak = 0
         try:

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Measure how target_fps affects R_rate in mhires commercial playback.
+"""Measure how target_fps affects R_rate in mhires video playback.
 
-Focused measurement: the main use case is commercial playback in mhires. This script
+Focused measurement: the main use case is video playback in mhires. This script
 tests how varying target_fps (which controls DMA write frequency) affects the R_rate
 compensation needed. If 30 fps dramatically improves R_rate compared to 60 fps, then
-we could suggest running commercials at 30 fps as a simple pitch fix.
+we could suggest running videos at 30 fps as a simple pitch fix.
 
 Run from c64cast project root:
     python scripts/diags/measure_mhires_fps_compensation.py
@@ -31,8 +31,8 @@ from c64cast.audio import (
 READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5
 
 MODES = [
-    ("scripts/diags/out/r_rate_commercial_mhires_60fps.toml", "mhires@60fps"),
-    ("scripts/diags/out/r_rate_commercial_mhires_30fps.toml", "mhires@30fps"),
+    ("scripts/diags/out/r_rate_video_mhires_60fps.toml", "mhires@60fps"),
+    ("scripts/diags/out/r_rate_video_mhires_30fps.toml", "mhires@30fps"),
 ]
 
 
@@ -74,7 +74,7 @@ def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: floa
         stderr=subprocess.PIPE,
     )
 
-    boot_wait = 12.0  # commercial takes longer to start
+    boot_wait = 12.0  # video takes longer to start
     print(f"[boot] waiting {boot_wait}s for boot + video playback")
     time.sleep(boot_wait)
 
@@ -194,7 +194,7 @@ def main() -> int:
             print(f"  improvement: {improvement:.2f}% (60→30 fps)")
             if improvement > 2.0:
                 print("\n[FINDING] Running mhires at 30 fps gives significant pitch improvement.")
-                print("         Consider: a) set target_fps=30 for commercial scenes")
+                print("         Consider: a) set target_fps=30 for video scenes")
                 print(
                     f"                 OR b) adaptive latch bump to compensate ~{valid_results[0]['nmi_latch_compensation_pct']:.2f}%"
                 )

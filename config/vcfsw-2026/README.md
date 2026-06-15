@@ -44,7 +44,7 @@ python -m c64cast --config config/vcfsw-2026/left.toml
 
 Every screen runs the same *kinds* of scenes — live webcam, SID
 oscilloscope, single-image gallery cards, big-text greetings, muted
-commercials, and (on the left/right) a playable launcher — but with
+videos, and (on the left/right) a playable launcher — but with
 different content, display modes, and a different **starting scene** so
 the wall stays visually varied:
 
@@ -52,7 +52,7 @@ the wall stays visually varied:
 |--------|-----------|---------------------------------------|----------|--------------|
 | left   | webcam    | Rob Hubbard, Jeroen Tel, Tim Follin   | yes      | Hackaday     |
 | middle | gallery   | Martin Galway, Matt Gray, C. Hülsbeck | no       | —            |
-| right  | commercial| Ben Daglish, Charles Deenen           | yes      | Ars Technica |
+| right  | video| Ben Daglish, Charles Deenen           | yes      | Ars Technica |
 
 Eight of the most celebrated SID composers are spread across the wall
 (no screen repeats one), and **every** screen also carries one wildcard
@@ -60,7 +60,7 @@ Eight of the most celebrated SID composers are spread across the wall
 MUSICIANS tree. The waveform scenes all use `persistence = "random"` so
 each trail length is picked fresh per loop.
 
-**Commercials** are muted (`audio = false`), pull a random clip from
+**Videos** are muted (`audio = false`), pull a random clip from
 `assets/videos/` each loop, and render only as multi-hires per-cell or
 Canny edges (`mhires`/`percell` or `hires_edges`) — interleaved
 throughout every screen's playlist.
@@ -77,9 +77,9 @@ comfortable; the left/right U64s run at the full system rate.
 
 - `[audio].enabled = true` (in `master.toml`) so the **waveform scenes
   play the real SID**.
-- **Live webcam and commercial scenes are muted** (`audio = false`).
+- **Live webcam and video scenes are muted** (`audio = false`).
 - The ensemble allows **one** audio-driving scene across the wall at a
-  time. Waveform (and even muted commercial) scenes claim that slot; a
+  time. Waveform (and even muted video) scenes claim that slot; a
   system that can't get it **skips that scene** and moves on. The result
   is that the SID-playing screen takes turns around the wall and the
   music never overlaps — which is exactly the staggering you want.

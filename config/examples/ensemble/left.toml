@@ -6,7 +6,7 @@
 url = "http://u64-left.lan"        # replace with your leftmost U64's URL
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 # A perfectly mundane scene that gets interrupted by the cross-system
 # big_text broadcast whenever the rightmost system's playlist enters

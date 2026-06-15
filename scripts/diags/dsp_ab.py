@@ -39,7 +39,7 @@ u64-reu-socket-dma records repeatedly that spectra mislead on this hardware. The
 metrics here establish "the transform does the right thing"; the ears decide.
 
 Hardware follow-up (separate, uses the user's ears — ASK FIRST): write a config
-with [audio].enabled + the same [dsp] block, run a commercial scene, and capture
+with [audio].enabled + the same [dsp] block, run a video scene, and capture
 with audio_capture.py for a real-6581 A/B.
 """
 

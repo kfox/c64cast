@@ -40,7 +40,7 @@ These are **dev tools, not part of the shipped package** — they live under
 | [`hdmi_capture.py`](hdmi_capture.py) | Grab still frame(s) from the Cam Link (VIC ground-truth) → `out/`. |
 | [`audio_capture.py`](audio_capture.py) | Record Cam Link audio via ffmpeg/avfoundation + `volumedetect` level summary. |
 | [`run_and_capture.py`](run_and_capture.py) | Launch c64cast with a config, capture A/V across the run, then stop + reset. |
-| [`make_fixtures.py`](make_fixtures.py) | Generate synthetic tone/clip/test-pattern A/V fixtures for the commercial path. |
+| [`make_fixtures.py`](make_fixtures.py) | Generate synthetic tone/clip/test-pattern A/V fixtures for the video path. |
 | [`video_render_probe.py`](video_render_probe.py) | Render a video through a display mode offline (no HW); reports per-frame bg0/$D021 flips + bitmap full-upload churn for flash/flicker diagnosis. |
 | [`dsp_ab.py`](dsp_ab.py) | Offline A/B of the host audio DSP chain on the 4-bit DAC stream (no HW): legacy vs `[dsp]` encode, objective metrics (RMS/crest/codes/loud-body DR/silence%) + reconstructed wavs to `out/`. Tune DSP params before spending a hardware capture. |
 | [`dsp_noise.py`](dsp_noise.py) | Noise-stage A/B (no HW): legacy mic hard gate vs the DSP expander on the Kaggle speech-noise-dataset's matched clean↔noisy pairs. Reports gap residual, gate chatter (events/s), and speech retention; writes both reconstructed wavs to `out/`. |

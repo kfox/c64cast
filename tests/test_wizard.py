@@ -157,7 +157,7 @@ class BuildMultiConfigTest(unittest.TestCase):
             url="http://example.lan",
             system="PAL",
             audio_enabled=True,
-            playlist={"loop": False, "interleave_ads": True, "ads_dir": "assets/videos"},
+            playlist={"loop": False, "interleave_videos": True, "videos_dir": "assets/videos"},
             interstitial={"duration_s": 2.0, "background": "starfield"},
         )
         self.assertEqual([s.type for s in cfg.scenes], ["webcam", "blank"])
@@ -165,8 +165,8 @@ class BuildMultiConfigTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.system, "PAL")
         self.assertTrue(cfg.audio.enabled)
         self.assertIs(cfg.playlist.loop, False)
-        self.assertTrue(cfg.playlist.interleave_ads)
-        self.assertEqual(cfg.playlist.ads_dir, "assets/videos")
+        self.assertTrue(cfg.playlist.interleave_videos)
+        self.assertEqual(cfg.playlist.videos_dir, "assets/videos")
         self.assertEqual(cfg.interstitial.duration_s, 2.0)
         self.assertEqual(cfg.interstitial.background, "starfield")
 
@@ -356,19 +356,19 @@ class RunInitShellTest(unittest.TestCase):
                 "Enable SID audio": False,  # global audio off
                 # Two adds, one move, then done.
                 "Playlist action": ["Add a scene", "Add a scene", "Move a scene", "Done"],
-                # First add = webcam, second = commercial.
+                # First add = webcam, second = video.
                 "Scene type": [
                     lambda choices: next(c for c in choices if c.startswith("webcam")),
-                    lambda choices: next(c for c in choices if c.startswith("commercial")),
+                    lambda choices: next(c for c in choices if c.startswith("video")),
                 ],
-                # commercial file picker (select branch -> custom -> text).
+                # video file picker (select branch -> custom -> text).
                 "Pick a file": lambda choices: next(c for c in choices if "Type a path" in c),
                 "file spec": "assets/videos/clip.mp4",
                 "Display mode": lambda choices: choices[0],
                 "Scene name": "",
                 "advanced": False,
                 "Add overlays": False,
-                # Move webcam (scene 1) to the end -> [commercial, webcam].
+                # Move webcam (scene 1) to the end -> [video, webcam].
                 "Move which": lambda choices: choices[0],
                 "Move to which": lambda choices: next(c for c in choices if "to the end" in c),
                 "Loop the playlist": False,
@@ -393,7 +393,7 @@ class RunInitShellTest(unittest.TestCase):
             self.assertEqual(path, out)
             self.assertFalse(launch)
             cfg = cfgmod.load(out)
-            self.assertEqual([s.type for s in cfg.scenes], ["commercial", "webcam"])
+            self.assertEqual([s.type for s in cfg.scenes], ["video", "webcam"])
             self.assertIs(cfg.playlist.loop, False)
             self.assertEqual(cfg.scenes[0].file, "assets/videos/clip.mp4")
             self.assertEqual(wizard.validate_all(cfg), [])

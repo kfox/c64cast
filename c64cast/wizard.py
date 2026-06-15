@@ -13,7 +13,7 @@ Two build modes:
   Playlist runs in single-scene loop mode) — a scene plus its overlays and the
   essential globals (U64 URL, video system, audio).
 * **Multi-scene playlist** — several scenes in order with the "UP NEXT"
-  interstitial, optional ad interleaving, and loop-vs-play-once behavior.
+  interstitial, optional video interleaving, and loop-vs-play-once behavior.
 
 Either result is validated with ``config.validate_scene_cfg`` and written via
 ``config_serialize.dumps`` as annotated, ``#:schema``-tagged TOML. The serializer
@@ -39,7 +39,7 @@ from . import introspect
 # Mirrors the DEFAULT_*_DIR / *_EXTS constants the loader resolves against, so
 # the wizard suggests exactly the directory build_scene will search.
 _ASSET_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "commercial": (cfgmod.DEFAULT_COMMERCIAL_DIR, cfgmod.VIDEO_EXTS),
+    "video": (cfgmod.DEFAULT_VIDEO_DIR, cfgmod.VIDEO_EXTS),
     "waveform": (cfgmod.DEFAULT_WAVEFORM_DIR, cfgmod.SID_EXTS),
     "slideshow": (cfgmod.DEFAULT_SLIDESHOW_DIR, cfgmod.PICTURE_EXTS),
     "launcher": (cfgmod.DEFAULT_PROGRAM_DIR, cfgmod.PROGRAM_EXTS),
@@ -483,7 +483,7 @@ def _prompt_one_scene(
         scene_audio: bool | None = None
         if scene_type not in _SELF_AUDIO_TYPES:
             scene_audio = q.confirm(
-                "Enable SID audio streaming for this scene?", default=(scene_type == "commercial")
+                "Enable SID audio streaming for this scene?", default=(scene_type == "video")
             ).ask()
             if scene_audio is None:
                 return None
@@ -627,7 +627,7 @@ def _prompt_playlist_opts(
     q,
     scenes: list[dict[str, object]],  # type: ignore[no-untyped-def]
 ) -> tuple[dict[str, object], dict[str, object]] | None:
-    """Ask loop / ad-interleaving / interstitial options. Returns
+    """Ask loop / video-interleaving / interstitial options. Returns
     (playlist_overrides, interstitial_overrides) — each only the changed
     values — or None on cancel."""
     playlist: dict[str, object] = {}
@@ -639,15 +639,15 @@ def _prompt_playlist_opts(
     if loop != cfgmod.PlaylistCfg().loop:
         playlist["loop"] = loop
 
-    do_ads = q.confirm("Interleave commercials between scenes?", default=False).ask()
+    do_ads = q.confirm("Interleave videos between scenes?", default=False).ask()
     if do_ads is None:
         return None
     if do_ads:
-        ads_dir = _pick_dir(q, "Commercials directory", cfgmod.DEFAULT_COMMERCIAL_DIR)
-        if ads_dir is None:
+        videos_dir = _pick_dir(q, "Videos directory", cfgmod.DEFAULT_VIDEO_DIR)
+        if videos_dir is None:
             return None
-        playlist["interleave_ads"] = True
-        playlist["ads_dir"] = ads_dir.strip()
+        playlist["interleave_videos"] = True
+        playlist["videos_dir"] = videos_dir.strip()
 
     if q.confirm("Customize the 'UP NEXT' interstitial?", default=False).ask():
         inter = _prompt_section_fields(q, "interstitial")

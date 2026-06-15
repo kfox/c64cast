@@ -89,7 +89,7 @@ display its placeholder text standalone.
   declaring the same `[audio].device` will fail at hardware-open
   (sounddevice can't open the same input twice).
 - Audio coordination: at most one system in the ensemble plays
-  audio-bearing content (`commercial`, `waveform`, `midi`) at a time.
+  audio-bearing content (`video`, `waveform`, `midi`) at a time.
   When the slot is held, other systems skip those scenes in their
   playlist and move on to the next entry. Live scenes (`webcam`,
   `blank`) build with audio suppressed in ensemble mode regardless of

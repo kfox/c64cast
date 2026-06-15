@@ -29,7 +29,7 @@ mic_sensitivity = 1.5
 noise_gate = 0.05
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 
 [[scenes]]
 type = "webcam"

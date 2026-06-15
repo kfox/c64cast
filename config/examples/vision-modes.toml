@@ -34,7 +34,7 @@ device = -1
 enabled = true
 
 [playlist]
-interleave_ads = false
+interleave_videos = false
 loop = true                # swipe past the last mode wraps back to the first
 
 [interstitial]

@@ -9,7 +9,7 @@
 # `--config config/c64cast.example.toml`. Out of the box this runs on a
 # webcam + no extra assets — overlays that normally need a file (logo)
 # fall back to friendly placeholders. Sections that REQUIRE external
-# assets (waveform/SID, commercial/video, MIDI, OBS) are commented out
+# assets (waveform/SID, video/video, MIDI, OBS) are commented out
 # below with hints on how to enable them.
 
 # ===========================================================================
@@ -132,7 +132,7 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     #     branch JMPs to the audio pump at
                                     #     $C100. This lifts the older mutex
                                     #     against use_reu_staged + use_reu_pump
-                                    #     on commercial scenes and on webcam
+                                    #     on video scenes and on webcam
                                     #     scenes using bitmap display modes.
                                     #   * Per-frame bus halt: char modes ~1
                                     #     ms for a full screen push; hires
@@ -176,7 +176,7 @@ sid_filter_cutoff = 0               # SID LP filter for PWM carrier rejection.
                                     # Attenuates PWM carrier; may saturate on
                                     # some 6581 variants (reduce if distorted).
 use_reu_pump = false                # **EXPERIMENTAL** — REU-staged audio path
-                                    # for CommercialScene. Preloads the entire
+                                    # for VideoScene. Preloads the entire
                                     # audio track into the U64's REU FPGA SRAM
                                     # at scene start, then a C64-side IRQ
                                     # handler streams it from REU into the ring
@@ -210,7 +210,7 @@ use_reu_pump = false                # **EXPERIMENTAL** — REU-staged audio path
                                     # C64-side IRQ pump drains them into the
                                     # audio ring at the matched rate, with a
                                     # ~200 ms bootstrap buffer. Same SID-perf
-                                    # win as the commercial path, applied to
+                                    # win as the video path, applied to
                                     # live audio.
 reu_pump_governor = true            # C64-side rate governor for the REU audio
                                     # pump (only matters with use_reu_pump).
@@ -230,7 +230,7 @@ reu_pump_governor = true            # C64-side rate governor for the REU audio
                                     # default; set false to A/B the open-loop
                                     # (drift/echo) behavior.
 host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
-                                    # audio worker (mic + commercials, i.e.
+                                    # audio worker (mic + videos, i.e.
                                     # use_reu_pump = false). That worker paces
                                     # ring writes to wall-clock, so its write
                                     # head advances at exactly sample_rate while
@@ -305,12 +305,12 @@ background = "random"               # starfield | petscii_bars | raster_bars
                                     # | checker | nature | city | none | random
 
 [playlist]
-ads_dir = "assets/commercials"
-interleave_ads = true               # auto-insert ads between non-ad scenes
+videos_dir = "assets/videos"
+interleave_videos = true               # auto-insert videos between scenes
 loop = true                         # restart from scene 1 after the last
                                     # scene finishes. false = exit the
                                     # streamer cleanly after one pass
-                                    # (useful for "play one commercial and
+                                    # (useful for "play one video and
                                     # quit"). CLI: --loop / --no-loop.
 # songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"   # optional;
 #                                    waveform scenes use this to auto-pick a
@@ -341,7 +341,7 @@ fourcc = "mp4v"
 channel_boost = [1.3, 1.2, 1.0]
 #
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
-# above are the same for every video; this adapts to each one). For commercial
+# above are the same for every video; this adapts to each one). For video
 # and slideshow scenes only (webcam can't pre-scan), c64cast pre-scans the
 # source, then stretches its contrast + saturation to FILL the C64 tonal +
 # chroma range — dark/flat content stops looking muddy and monochromatic.
@@ -357,7 +357,7 @@ auto_fit_strength = 1.0
 # most of the 16 colors unused and looks monochromatic. force_palette instead
 # pre-scans the source, k-means it into N clusters, and assigns each cluster to a
 # DISTINCT C64 color (optimal min-error bijection) so all N colors get used and
-# the assignment is consistent across the whole source (no flicker). Commercial +
+# the assignment is consistent across the whole source (no flicker). Video +
 # slideshow only (needs a pre-scan), mcm/mhires only. Also reachable at runtime
 # via the SHIFT cycle's "percell+forced" stop once enabled.
 force_palette = false
@@ -393,12 +393,12 @@ hue_corrections_replace_defaults = false
 # AM radio and telephony. ON by default (the 4-bit DAC needs it); set
 # enabled=false for the legacy linear encode + hard mic gate. Orthogonal to
 # [audio].dither (the quantizer step) and [audio].use_reu_pump (the transport).
-# Applies to mic, commercial, and WAV paths; the AGC stage is mic-only (line
+# Applies to mic, video, and WAV paths; the AGC stage is mic-only (line
 # audio is already normalized).
 enabled = true
 # HF boost amount; y[n]=x+amt*(x-x[-1]). Brightens speech for intelligibility.
 # Unset (commented) = source-aware default: 0.7 for the mic/voice path, 0.6 for
-# line/commercial. A number here forces that amount for ALL sources; 0 disables.
+# line/video. A number here forces that amount for ALL sources; 0 disables.
 # Per-scene [[scenes]].pre_emphasis overrides this.
 # pre_emphasis = 0.5
 # Expander (downward, with hysteresis) — replaces the hard noise gate when DSP
@@ -424,7 +424,7 @@ comp_makeup_db = 0.0                # explicit makeup (dB) when auto = false
 limiter = true
 limiter_ceiling = 0.95              # output ceiling, linear 0..1 (just under FS)
 limiter_release_ms = 50.0           # limiter recovery (ms)
-# AGC — MIC PATH ONLY (line/commercial audio is already peak-normalized).
+# AGC — MIC PATH ONLY (line/video audio is already peak-normalized).
 agc = false
 agc_target_db = -18.0               # target RMS level (dBFS)
 agc_max_gain_db = 24.0              # max gain/attenuation magnitude (dB)
@@ -454,8 +454,8 @@ profile_interval = 10.0             # seconds between profiler summary lines
 #
 # Scenes run in declaration order; each plays for `duration_s` seconds,
 # then advances. Common fields:
-#   type        — "webcam" | "commercial" | "waveform" | "midi"
-#   duration_s  — seconds before advancing. Rejected on `commercial`
+#   type        — "webcam" | "video" | "waveform" | "midi"
+#   duration_s  — seconds before advancing. Rejected on `video`
 #                 scenes (they run until the video file ends).
 #   name        — display name (used by the interstitial). Optional.
 #   target_fps  — per-scene FPS cap. Default: system rate
@@ -464,7 +464,7 @@ profile_interval = 10.0             # seconds between profiler summary lines
 #                 under the DMA ceiling (see docs/caveats.md).
 #   audio       — opt out of audio for this scene. Default: when
 #                 [audio].enabled is on (or -A is passed), every webcam,
-#                 blank, and commercial scene plays its audio. Set
+#                 blank, and video scene plays its audio. Set
 #                 `audio = false` to silence one without disabling the
 #                 streamer globally. Waveform/MIDI scenes ignore this
 #                 (they drive the SID directly).
@@ -804,26 +804,26 @@ palette_mode = "grayscale"
 #                                       # scene ends when duration_s expires).
 # palette_mode = "percell"             # percell | cheap | vivid | grayscale
 
-# --- Commercial / video playback ------------------------------------------
-# Requires the `commercials` extra (PyAV). Drop video files into
-# assets/commercials/ to have the playlist auto-interleave them between
-# other scenes (see [playlist].interleave_ads). For an explicit commercial
+# --- Video playback ------------------------------------------
+# Requires the `video` extra (PyAV). Drop video files into
+# assets/videos/ to have the playlist auto-interleave them between
+# other scenes (see [playlist].interleave_videos). For an explicit video
 # scene anywhere in the playlist:
 #
 # [[scenes]]
-# type = "commercial"
+# type = "video"
 # # `file` accepts a single video path, a directory, a glob, or any
 # # comma-separated combination of those. Each scene setup() picks a
 # # random match. Omit the field entirely to fall back to scanning
 # # assets/videos/.
-# #   file = "assets/videos/your-ad.mp4"
+# #   file = "assets/videos/your-video.mp4"
 # #   file = "assets/videos"  # whole directory
 # #   file = "assets/videos/*.mkv"
 # #   file = "assets/videos, assets/extra/promo.mp4"
-# file = "assets/videos/your-ad.mp4"
+# file = "assets/videos/your-video.mp4"
 # display = "hires_edges"
 #
-# Commercial scenes run until the video file ends — `duration_s` is
+# Video scenes run until the video file ends — `duration_s` is
 # rejected by the config loader (the playlist advances when the source
 # reports `finished`, so a duration field would silently be a no-op or
 # truncate the clip).

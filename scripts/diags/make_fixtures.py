@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate synthetic A/V fixtures for testing the commercial / audio paths
+"""Generate synthetic A/V fixtures for testing the video / audio paths
 without depending on a real clip. Replaces the pile of one-off ffmpeg
 ``lavfi`` invocations that kept accumulating in settings.local.json.
 
@@ -9,8 +9,8 @@ without depending on a real clip. Replaces the pile of one-off ffmpeg
     scripts/diags/make_fixtures.py all
     scripts/diags/make_fixtures.py tone --freq 1000 -t 10
 
-All outputs land under scripts/diags/out/. The mp4s are commercial-scene
-inputs (point a `type = "commercial"` config's `file` at them).
+All outputs land under scripts/diags/out/. The mp4s are video-scene
+inputs (point a `type = "video"` config's `file` at them).
 """
 
 from __future__ import annotations
