@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: these jobs only read the repo and upload to Codecov via a
+# token, so the default read/write GITHUB_TOKEN is more than they need.
+permissions:
+  contents: read
+
+# Cancel a superseded run when new commits land on the same ref (e.g. rapid
+# pushes to a PR) instead of letting a stale full matrix run to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Runs the SAME hooks as a local `pre-commit run --all-files`: the hygiene
   # checks (trailing whitespace, EOF, line endings, YAML/TOML, large files,
@@ -15,11 +26,21 @@ jobs:
     name: pre-commit (lint + format + hygiene)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.13"
-      - uses: pre-commit/action@v3.0.1
+      # pre-commit/action@v3.0.1 is unmaintained (last release Feb 2024) and
+      # pins actions/cache@v4 internally, which runs on the now-deprecated
+      # Node 20. Run pre-commit directly and cache its hook environments with a
+      # Node 24 actions/cache instead. SKIP mirrors the wrapper's old behaviour:
+      # pyright + unittest run across the matrix in lint-and-test, not here.
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: pip install pre-commit
+      - run: pre-commit run --all-files --show-diff-on-failure --color=always
         env:
           SKIP: pyright,unittest
 
@@ -32,15 +53,15 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
             python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -83,17 +104,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # lint-and-test already runs the full suite on every supported version;
+        # coverage is version-independent (the report is identical across them),
+        # so it runs once on the primary toolchain version (matches mise.toml)
+        # and that single leg is what feeds Codecov below.
+        python-version: ["3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
             python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -116,19 +141,19 @@ jobs:
         run: uv run make coverage
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-xml-py${{ matrix.python-version }}
           path: coverage.xml
           if-no-files-found: ignore
 
-      # Push to Codecov once (from a single matrix leg — the report is
-      # identical across Python versions) so the live README badge updates.
-      # Tokenless upload works for public repos; set the CODECOV_TOKEN secret
-      # to lift the rate limits / cover a private repo.
+      # Push to Codecov so the live README badge updates. Tokenless upload works
+      # for public repos; set the CODECOV_TOKEN secret to lift the rate limits /
+      # cover a private repo. The `if` guard is defensive — it keeps the upload
+      # single-leg should more versions ever be re-added to this matrix.
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.13'
-        uses: codecov/codecov-action@v7
+        if: matrix.python-version == '3.14'
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -137,12 +162,15 @@ jobs:
       # Test Analytics: ingest the JUnit XML produced by `make coverage`.
       # `!cancelled()` so results upload even when the suite is red (xmlrunner
       # writes the XML before exiting non-zero). https://docs.codecov.com/docs/test-analytics
-      # NOTE: this action versions INDEPENDENTLY of codecov/codecov-action — its
-      # latest major is v1 (no v5/v7). The earlier @v5 pin didn't exist and
-      # failed the job at action-resolution time. Don't "sync" it to v7.
+      # Test-result upload now goes through codecov-action with
+      # `report_type: test_results` (same action as the coverage upload above,
+      # one step earlier with the default `coverage` type). The standalone
+      # codecov/test-results-action@v1 was deprecated in favour of this and ran
+      # on the now-deprecated Node 20.
       - name: Upload test results to Codecov
-        if: ${{ !cancelled() && matrix.python-version == '3.13' }}
-        uses: codecov/test-results-action@v1
+        if: ${{ !cancelled() && matrix.python-version == '3.14' }}
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
+          report_type: test_results
           files: ./test-results/*.xml
           token: ${{ secrets.CODECOV_TOKEN }}
