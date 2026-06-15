@@ -338,6 +338,18 @@ def main(argv: list[str] | None = None) -> int:
         log.error("%s", e)
         return 2
 
+    # Connection target comes from -u/--url, else $C64CAST_URL, else the
+    # built-in default. When neither was given, warn (but proceed) so the
+    # user knows where we're pointing and how to redirect it.
+    if not args.url:
+        log.warning(
+            "no Ultimate 64 URL given — using the built-in default %s. "
+            "Point cast at your hardware with -u/--url or the C64CAST_URL "
+            "env var (e.g. -u http://192.168.2.64).",
+            cfg.ultimate64.url,
+        )
+    log.info("cast: target %s (%s)", cfg.ultimate64.url, cfg.ultimate64.system)
+
     profiler = NullProfiler()
     set_profiler(profiler)
     stop_event = threading.Event()
