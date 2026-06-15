@@ -64,6 +64,10 @@ vision = ["mediapipe>=0.10"]
 # Interactive config builder (`c64cast --init`). questionary pulls in
 # prompt_toolkit; both are small pure-Python deps.
 wizard = ["questionary>=2.0"]
+# URL playback for the `cast` shortcut (scripts/cast.sh). yt-dlp resolves
+# YouTube and other streaming sites to a directly-playable stream URL;
+# direct media URLs play without it (PyAV opens http(s) natively).
+yt = ["yt-dlp>=2024.1"]
 # Everything optional, for users who want the full experience.
 all = [
     "sounddevice>=0.4",
@@ -78,6 +82,7 @@ all = [
     "pyserial>=3.5",
     "mediapipe>=0.10",
     "questionary>=2.0",
+    "yt-dlp>=2024.1",
 ]
 [dependency-groups]
 # Dev tools — not published to PyPI. Installed by default via
@@ -169,6 +174,7 @@ files = [
     "c64cast/config.py",
     "c64cast/ensemble.py",
     "c64cast/dsp.py",
+    "c64cast/quickcast.py",
 ]
 strict = true
 # Untyped helpers in the rest of the package are fine as-is; don't

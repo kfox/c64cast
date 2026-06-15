@@ -144,6 +144,7 @@ all = [
     { name = "rich" },
     { name = "sounddevice" },
     { name = "uvicorn" },
+    { name = "yt-dlp" },
 ]
 commercials = [
     { name = "av" },
@@ -176,6 +177,9 @@ vision = [
 ]
 wizard = [
     { name = "questionary" },
+]
+yt = [
+    { name = "yt-dlp" },
 ]
 
 [package.dev-dependencies]
@@ -220,8 +224,10 @@ requires-dist = [
     { name = "sounddevice", marker = "extra == 'mic'", specifier = ">=0.4" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.23" },
     { name = "uvicorn", marker = "extra == 'control'", specifier = ">=0.23" },
+    { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2024.1" },
+    { name = "yt-dlp", marker = "extra == 'yt'", specifier = ">=2024.1" },
 ]
-provides-extras = ["mic", "commercials", "preview", "control", "obs", "midi", "logging", "tr", "vision", "wizard", "all"]
+provides-extras = ["mic", "commercials", "preview", "control", "obs", "midi", "logging", "tr", "vision", "wizard", "yt", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2042,4 +2048,13 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/2c/41/aa4bf9664e4cda14c3b39865b12251e8e7d239f4cd0e3cc1b6c2ccde25c1/websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98", size = 70576, upload-time = "2025-10-07T21:16:36.495Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/34/db/b10e48aa8fff7407e67470363eac595018441cf32d5e1001567a7aeba5d2/websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef", size = 82616, upload-time = "2025-10-07T21:16:34.951Z" },
+]
+
+[[package]]
+name = "yt-dlp"
+version = "2026.6.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/a4/1b0979d28f87774bb67fbbc66bce44f9dd1aa0e547a99e22985fac945c33/yt_dlp-2026.6.9.tar.gz", hash = "sha256:d50fcb95f48d61bedde33e408c1881d4c279e51c31354a599ce09e96ba0f4b86", size = 3030590, upload-time = "2026-06-09T23:27:14.831Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/ee/188a3dadf9dfdac713243521f919feca1cd091d4358c9ea7e8ebb710a7cc/yt_dlp-2026.6.9-py3-none-any.whl", hash = "sha256:442ba4c75724b9496144c8434b617962ee08d0ee7c26ec663848fe9b78d5a3e4", size = 3169035, upload-time = "2026-06-09T23:27:12.58Z" },
 ]

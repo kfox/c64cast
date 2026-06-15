@@ -16,6 +16,17 @@ coverage:
       default:
         target: 60%        # realistic floor for new hardware-path code
         threshold: 5%
+        # The uncovered lines in a patch are almost always the hardware/run
+        # path (main(), live device I/O) the suite deliberately mocks-and-
+        # skips. Report patch coverage informationally — never fail the PR or
+        # render a ❌ "please review" nag — while the 60% floor stays as a
+        # visible signal. https://docs.codecov.com/docs/commit-status#informational
+        informational: true
+
+# Keep the PR comment quiet: only post/update when coverage actually changes,
+# so an unchanged-coverage push doesn't re-nag. https://docs.codecov.com/docs/pull-request-comments
+comment:
+  require_changes: true
 
 # Test Analytics ingests the JUnit XML uploaded by codecov/test-results-action
 # in the CI coverage job (produced via unittest-xml-reporting).

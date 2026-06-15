@@ -2504,7 +2504,22 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
         entry = raw.strip()
         if not entry:
             continue
-        if _GLOB_CHARS.search(entry):
+        if entry.lower().startswith(("http://", "https://")):
+            # A URL (e.g. a direct media link, or a yt-dlp-resolved stream URL
+            # from quickcast). Pass through untouched — URLs have no meaningful
+            # local extension and must not be globbed or existence-checked;
+            # AVFileSource opens http(s) directly via PyAV.
+            matches.add(entry)
+        elif os.path.isfile(entry):
+            # An existing file wins over glob interpretation — filenames with
+            # `[`/`]`/`*`/`?` (e.g. YouTube-style `name [videoid].mp4`) would
+            # otherwise be mistaken for glob patterns and match nothing.
+            if not entry.lower().endswith(extensions):
+                raise ValueError(
+                    f"{label}: {entry!r} doesn't match expected extension {extensions}"
+                )
+            matches.add(entry)
+        elif _GLOB_CHARS.search(entry):
             hits = [
                 p for p in glob.glob(entry) if os.path.isfile(p) and p.lower().endswith(extensions)
             ]

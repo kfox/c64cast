@@ -100,6 +100,38 @@ overrides; everything has a sensible config-file equivalent.
 flags. Every overridable CLI option has `default=None` so the merge can
 tell "user passed the default" from "user didn't pass it."
 
+## Quick playback (`cast`)
+
+For ad-hoc testing without writing a TOML, use the `cast` shortcut
+([scripts/cast.sh](../scripts/cast.sh), or `python -m c64cast.quickcast`). It
+builds an **in-memory-only** config — nothing is written to disk — with one
+scene per argument, in the order given, and **plays through once** (no loop).
+
+```bash
+# A video, then a SID, then a slideshow of a folder of pictures:
+scripts/cast.sh -u http://192.168.2.64 clip.mp4 tune.sid assets/pictures/
+
+# Direct play a YouTube URL (needs the `yt` extra: `uv sync --extra yt`):
+scripts/cast.sh -u http://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ'
+```
+
+Each argument is mapped to a scene type:
+
+| Argument                | Scene type   |
+|-------------------------|--------------|
+| video (`.mp4`, `.mkv` …) | `commercial` |
+| `.sid`                  | `waveform`   |
+| image (`.jpg`, `.png` …) | `slideshow`  |
+| `.prg` / `.crt`         | `launcher`   |
+| directory or glob       | inferred from the contents (a single kind); the spec is passed through, so the scene random-picks at setup |
+| URL                     | `commercial` (direct media plays as-is; YouTube/others resolved by yt-dlp) |
+
+Audio is **on by default** — pass `--no-audio` to mute. Flags:
+`-u/--url`, `-s/--system`, `--display MODE` (default `mhires` for video/slideshow),
+`-t/--duration S` (for scenes that honor it — waveform/slideshow), `--loop`,
+`--skip-probe`, `-v`/`-vv`. Audio-only files (mp3/wav over a test pattern) are
+recognized but not yet supported.
+
 ## Creating a config
 
 Three ways to get a working `c64cast.toml`, easiest first:

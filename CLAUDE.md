@@ -17,6 +17,13 @@ scripts/c64cast.sh --config c64cast.toml
 scripts/c64cast.sh --doctor --skip-probe
 ```
 
+[scripts/cast.sh](scripts/cast.sh) (logic in [c64cast/quickcast.py](c64cast/quickcast.py), `python -m c64cast.quickcast`) is the **quick-playback shortcut** for testing without hand-writing a throwaway TOML: it builds an **in-memory-only** `Config` (no file on disk) with one scene per argument, in order, **no loop** (override with `--loop`). Each argument is mapped to a scene type by extension — video → `commercial`, `.sid` → `waveform`, image → `slideshow`, `.prg`/`.crt` → `launcher` — and a directory/glob is passed straight through as the scene's `file` spec (so the scene random-picks at setup, e.g. a dir of SIDs plays a random one). A URL becomes a `commercial`: direct media URLs play as-is (PyAV opens http(s)), and YouTube/other sites are resolved by yt-dlp (the optional `yt` extra) to a single progressive stream. Audio is **on by default** (`--no-audio` to mute); audio-only files (mp3/wav over a test pattern) are recognized but deferred to a follow-up. It reuses the normal run path (`build_stack` → `_run_playlists` → `teardown_stack`), so behavior matches a config-driven run.
+
+```bash
+scripts/cast.sh -u http://192.168.2.64 clip.mp4 tune.sid assets/pictures/
+scripts/cast.sh 'https://youtu.be/...'   # needs the `yt` extra
+```
+
 Flag groups (`-h` shows them grouped): `hardware`, `ultimate 64`, `video input`, `audio`, `playlist`, `introspection`, `debug`.
 Notable additions: `--config`, `--dma-port`, `-v` / `-vv` (info / debug logging), `--log-file PATH` (mirror logs to disk for headless runs). Terminal logging uses `rich.logging.RichHandler` (colored + timestamped) when the `logging` extra is installed; falls back to plain stdlib `StreamHandler` otherwise.
 

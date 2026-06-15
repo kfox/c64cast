@@ -790,7 +790,8 @@ class CommercialScene(Scene):
             )
             self.is_done = True
             return
-        if not os.path.exists(self.filepath):
+        is_url = self.filepath.lower().startswith(("http://", "https://"))
+        if not is_url and not os.path.exists(self.filepath):
             log.error(
                 "commercial: file not found: %s — check the path in "
                 "your config or the [playlist].ads_dir contents",
