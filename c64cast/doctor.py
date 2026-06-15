@@ -13,8 +13,11 @@ The validation surface is shared with `config.build_scene` via
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO, Literal
 
 from .config import LoadResult, validate_scene_cfg
@@ -43,7 +46,26 @@ _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("midi", "mido", "midi scenes"),
     ("logging", "rich", "colored log output"),
     ("vision", "mediapipe", "[vision] enabled gesture control"),
+    ("tr", "serial", "TeensyROM serial backend"),
+    ("wizard", "questionary", "--init config wizard"),
+    ("yt", "yt_dlp", "cast URL playback (YouTube et al.)"),
 )
+
+# Hard dependencies (top-level module, what uses it). These are declared in
+# [project].dependencies and MUST import — a missing one means the active
+# interpreter isn't the synced project env (the classic "No module named cv2"
+# time-sink: bare `python` resolving to a non-.venv interpreter, or a partially
+# synced .venv).
+_HARD_DEPS: tuple[tuple[str, str], ...] = (
+    ("cv2", "opencv-python: video decode + palette quantize"),
+    ("numpy", "array math everywhere"),
+    ("requests", "U64 REST transport"),
+    ("py65", "host-side SID emulator"),
+)
+
+# Repo root (parent of the package dir). Used to locate the project .venv and
+# run `uv lock --check` from the right directory.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[Diagnostic]:
@@ -57,6 +79,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     """
     out: list[Diagnostic] = []
 
+    out.extend(_probe_environment())
     out.extend(_validate_scenes(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
@@ -65,6 +88,91 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
         out.extend(_probe_connectivity(loaded))
 
     return out
+
+
+def _probe_environment() -> list[Diagnostic]:
+    """Catch the dev-environment failure that costs the most time: the active
+    interpreter isn't the synced project env, so a hard dependency (cv2, …)
+    won't import. Reports the interpreter, asserts every hard dep imports, and
+    best-effort checks uv.lock vs pyproject.toml. Offline; runs in every doctor
+    invocation (including `--skip-probe`)."""
+    out: list[Diagnostic] = []
+
+    # Active interpreter vs the project .venv. Only flag a mismatch when a
+    # project .venv actually exists — a pip-installed package legitimately runs
+    # from some other prefix and has nothing to compare against.
+    venv = _REPO_ROOT / ".venv"
+    if venv.exists():
+        if Path(sys.prefix).resolve() == venv.resolve():
+            out.append(
+                Diagnostic("ok", "environment", "interpreter", f"project .venv ({sys.executable})")
+            )
+        else:
+            out.append(
+                Diagnostic(
+                    "warn",
+                    "environment",
+                    "interpreter",
+                    f"{sys.executable} is not the project .venv ({venv})",
+                    hint=(
+                        "Run via `uv run` / `make` (or let direnv+mise activate "
+                        ".venv) so tools and the app use the synced project env."
+                    ),
+                )
+            )
+    else:
+        out.append(Diagnostic("ok", "environment", "interpreter", sys.executable))
+
+    # Hard deps must import. A miss here is the root of the cv2-missing sessions.
+    for module, used_for in _HARD_DEPS:
+        try:
+            spec = importlib.util.find_spec(module)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            out.append(
+                Diagnostic(
+                    "error",
+                    "environment",
+                    module,
+                    f"hard dependency not importable (used for: {used_for})",
+                    hint="Env is out of sync — run `make sync` (uv sync --all-extras).",
+                )
+            )
+        else:
+            out.append(Diagnostic("ok", "environment", module, "importable"))
+
+    out.extend(_probe_uv_lock())
+    return out
+
+
+def _probe_uv_lock() -> list[Diagnostic]:
+    """Best-effort `uv lock --check` — warns when uv.lock has drifted from
+    pyproject.toml (CI installs `--frozen`, so drift breaks CI). Skips cleanly
+    when the uv CLI isn't on PATH."""
+    if shutil.which("uv") is None:
+        return [Diagnostic("ok", "environment", "uv.lock", "skipped (uv not on PATH)")]
+    try:
+        r = subprocess.run(
+            ["uv", "lock", "--check"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return [Diagnostic("warn", "environment", "uv.lock", f"could not check ({e})")]
+    if r.returncode == 0:
+        return [Diagnostic("ok", "environment", "uv.lock", "up to date with pyproject.toml")]
+    return [
+        Diagnostic(
+            "warn",
+            "environment",
+            "uv.lock",
+            "out of date with pyproject.toml",
+            hint="Run `uv lock`, then `make sync` (uv sync --all-extras).",
+        )
+    ]
 
 
 def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
@@ -514,7 +622,7 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         by_category.setdefault(d.category, []).append(d)
 
     # Stable ordering by category, then error > warn > ok within each.
-    category_order = ["scene", "orchestrator", "extras", "connectivity"]
+    category_order = ["environment", "scene", "orchestrator", "extras", "connectivity"]
     for cat in category_order:
         rows = by_category.get(cat)
         if not rows:
