@@ -588,6 +588,7 @@ def build_stack(
             use_reu_pump=cfg.audio.use_reu_pump,
             reu_pump_governor=cfg.audio.reu_pump_governor,
             host_dma_servo=cfg.audio.host_dma_servo,
+            nmi_rate_adaptive=cfg.audio.nmi_rate_adaptive,
             dsp_params=cfg.dsp.to_params(),
         )
         if cfg.audio.enabled
@@ -903,6 +904,13 @@ def main(argv=None) -> int:
                 "the whole session."
             )
             return 3
+        # Reject a sample rate that would overrun the NMI DAC handler on the
+        # target system (broken/pitch-dropped audio) before the playlist runs.
+        try:
+            cfgmod.validate_nmi_sample_rate(cfg)
+        except cfgmod.ConfigError as e:
+            log.error("%s", e)
+            return 5
 
     # Install the profiler (or NullProfiler if disabled) before constructing
     # the Playlists so the module-global accessor is correct for the first

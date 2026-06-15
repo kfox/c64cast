@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal
 
+from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .config import LoadResult, validate_scene_cfg
 from .orchestrator import OrchestratorError
 
@@ -81,6 +82,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
 
     out.extend(_probe_environment())
     out.extend(_validate_scenes(loaded))
+    out.extend(_validate_audio_nmi_rate(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
     out.extend(_probe_extras())
@@ -201,6 +203,57 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
                         category="scene",
                         subject=subject,
                         message=f"{s.type}/{s.display}, {len(s.overlays)} overlay(s){role}",
+                    )
+                )
+    return out
+
+
+def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag [audio].sample_rate values that overrun (error) or risk overrunning
+    (warn) the $D418 NMI handler on each system's target standard. Offline —
+    pure cycle-budget math via c64.nmi_rate_safety, no hardware needed."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        if not cfg.audio.enabled:
+            continue
+        system = cfg.ultimate64.system
+        rate = cfg.audio.sample_rate
+        level, message = nmi_rate_safety(system, rate)
+        if level != "ok":
+            out.append(
+                Diagnostic(
+                    level=level,
+                    category="audio",
+                    subject=f"{name}/sample_rate",
+                    message=message,
+                    hint=(
+                        "Lower [audio].sample_rate — default 10500 is safe on NTSC + "
+                        "PAL; NTSC tolerates ~11025, keep PAL <= ~10500."
+                    ),
+                )
+            )
+            continue
+        # Adaptive compensation needs latch headroom (max_safe_rate above the
+        # configured rate) to raise the NMI rate over bus-halt loss. Too little
+        # → it can't fully cancel the video slowdown (acute on PAL's tighter
+        # clock). Warn so the user lowers the rate or accepts residual slowness.
+        if cfg.audio.nmi_rate_adaptive:
+            headroom = max_safe_sample_rate(system) / rate - 1.0
+            if headroom < 0.03:
+                out.append(
+                    Diagnostic(
+                        level="warn",
+                        category="audio",
+                        subject=f"{name}/sample_rate",
+                        message=(
+                            f"nmi_rate_adaptive has only {headroom * 100:.1f}% NMI "
+                            f"headroom at {rate} Hz on {system} — it can't fully "
+                            f"compensate heavy-video slowdown."
+                        ),
+                        hint=(
+                            f"Lower [audio].sample_rate (more headroom) — {system} "
+                            f"max safe is ~{max_safe_sample_rate(system)} Hz."
+                        ),
                     )
                 )
     return out

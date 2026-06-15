@@ -16,7 +16,7 @@ Group constants by chip / subsystem:
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, Literal
 
 # ---------------------------------------------------------------------------
 # VIC-II — video chip
@@ -360,6 +360,66 @@ CLOCK_PAL: Final = 985248
 def cpu_clock(system: str) -> int:
     """Return the CPU clock in Hz for the given system ('NTSC' or 'PAL')."""
     return CLOCK_NTSC if system.upper() == "NTSC" else CLOCK_PAL
+
+
+# ---------------------------------------------------------------------------
+# NMI audio sample-rate safety budget.
+# ---------------------------------------------------------------------------
+# The $D418 DAC NMI handler (audio.NMI_ROUTINE) pulls one sample per fire. It
+# completes in 41 cycles on the fast path and 81 cycles when a VIC-II badline
+# steals 40 cycles mid-handler. The NMI also can't be serviced until the
+# in-progress instruction finishes (up to ~7 cycles). If the sample PERIOD
+# (= cpu_clock / sample_rate) is shorter than the handler can complete, NMIs
+# queue and fire back-to-back — samples stretch and pitch drops (the measured
+# 16 kHz failure shifted a 440 Hz tone to 421 Hz; see the audio.py docstring).
+#
+# PAL is tighter than NTSC: its slower clock means fewer cycles per period at
+# the same rate, so the safe ceiling is lower (~10.5 kHz PAL vs ~11.6 kHz NTSC).
+# HW-measured 2026-06-15: NTSC@11025 and PAL@10500 both ran with the NMI
+# consumer tracking ~98% of the configured rate (no overrun); 8 kHz→~10.5 kHz
+# recovers the 4-5.5 kHz fricative band the old 4 kHz Nyquist discarded.
+NMI_HANDLER_WORST_CYCLES: Final = 81  # 41 work + 40 badline steal
+NMI_ENTRY_LATENCY_CYCLES: Final = 7  # worst-case wait for the in-progress instr
+NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 88
+
+
+def max_safe_sample_rate(system: str) -> int:
+    """Highest sample rate whose NMI period stays at/above the safe minimum
+    (handler worst case + entry latency) for `system`. ~11.6 kHz NTSC / ~11.1
+    kHz PAL — but ears/HW put the comfortable default lower (10.5 kHz)."""
+    return int(cpu_clock(system) // NMI_SAFE_MIN_PERIOD_CYCLES)
+
+
+def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "warn", "error"], str]:
+    """Classify an audio sample rate against the NMI handler's cycle budget for
+    `system`. Returns ``(level, message)`` where level is "ok" | "warn" |
+    "error" — pure (no I/O), so config validation, --doctor, and tests share
+    one source of truth. "error" = period below the handler worst case (NMIs
+    WILL queue, pitch drops); "warn" = inside entry-latency margin (may glitch
+    under badline-heavy scenes); "ok" = clear."""
+    if sample_rate <= 0:
+        return ("error", f"sample_rate must be positive, got {sample_rate}")
+    period = cpu_clock(system) / sample_rate
+    safe_max = max_safe_sample_rate(system)
+    if period < NMI_HANDLER_WORST_CYCLES:
+        return (
+            "error",
+            f"sample_rate {sample_rate} Hz → NMI period {period:.0f} cycles on "
+            f"{system}, below the {NMI_HANDLER_WORST_CYCLES}-cycle handler worst "
+            f"case: NMIs queue and pitch drops. Max safe on {system} ≈ {safe_max} Hz.",
+        )
+    if period < NMI_SAFE_MIN_PERIOD_CYCLES:
+        return (
+            "warn",
+            f"sample_rate {sample_rate} Hz → NMI period {period:.0f} cycles on "
+            f"{system}, within entry-latency margin of the {NMI_HANDLER_WORST_CYCLES}-"
+            f"cycle handler — may glitch under badline-heavy scenes. Safe max ≈ {safe_max} Hz.",
+        )
+    return (
+        "ok",
+        f"sample_rate {sample_rate} Hz → NMI period {period:.0f} cycles on "
+        f"{system} (safe; handler ≤ {NMI_HANDLER_WORST_CYCLES}).",
+    )
 
 
 # ---------------------------------------------------------------------------

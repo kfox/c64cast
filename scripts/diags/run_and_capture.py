@@ -20,12 +20,35 @@ Uses the same interpreter (.venv) to spawn `-m c64cast`.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import _diaglib as d
+
+
+def _flash_loop(
+    url: str, hz: float, color: int, t0: float, stop: threading.Event, marks: list[float]
+) -> None:
+    """Pulse the VIC border ($D020) bright at `hz` while the scene plays, logging
+    each pulse's wall-clock offset from t0. The captured video then carries timed
+    markers to align against the source (border-flash A/V sync marker — measures
+    playback tempo / A/V drift). Bus-clean REST pokes; coexists with the app."""
+    period = 1.0 / hz
+    nxt = time.monotonic()
+    while not stop.is_set():
+        now = time.monotonic()
+        if now < nxt:
+            stop.wait(min(nxt - now, period))
+            continue
+        nxt += period
+        if d.flash_border(url, color):  # bright pulse
+            marks.append(round(time.time() - t0, 4))
+        stop.wait(0.06)  # ~60 ms visible pulse
+        d.flash_border(url, 0)  # back to black (the run owns the border as a marker)
 
 
 def main() -> int:
@@ -53,6 +76,17 @@ def main() -> int:
     )
     ap.add_argument("--cv2-index", type=int, default=d.CAMLINK_CV2_INDEX)
     ap.add_argument("--avf-audio", default=d.CAMLINK_AVF_AUDIO)
+    ap.add_argument(
+        "--border-flash",
+        type=float,
+        default=0.0,
+        metavar="HZ",
+        help="flash the VIC border at HZ during the run as an A/V sync marker; "
+        "pulse times are written to <label>_flashes.json (0 = off)",
+    )
+    ap.add_argument(
+        "--flash-color", type=int, default=1, help="border colour for the flash pulse (0-15)"
+    )
     args = ap.parse_args()
 
     cfg = Path(args.config)
@@ -106,6 +140,17 @@ def main() -> int:
 
     t0 = time.time()
     grabbed = 0
+    flash_stop = threading.Event()
+    flash_marks: list[float] = []
+    flash_thread: threading.Thread | None = None
+    if args.border_flash > 0:
+        flash_thread = threading.Thread(
+            target=_flash_loop,
+            args=(args.url, args.border_flash, args.flash_color, t0, flash_stop, flash_marks),
+            daemon=True,
+        )
+        flash_thread.start()
+        print(f"[flash] border marker at {args.border_flash:g} Hz")
     try:
         for ft in frame_times:
             wait = ft - (time.time() - t0)
@@ -126,6 +171,12 @@ def main() -> int:
         if remaining > 0:
             time.sleep(remaining)
     finally:
+        if flash_thread is not None:
+            flash_stop.set()
+            flash_thread.join(timeout=2.0)
+            fp = out / f"{args.label}_flashes.json"
+            fp.write_text(json.dumps({"t0_epoch": t0, "flash_offsets_s": flash_marks}, indent=1))
+            print(f"[flash] {len(flash_marks)} pulses -> {fp}")
         print("[run] stopping c64cast")
         app.terminate()
         try:
