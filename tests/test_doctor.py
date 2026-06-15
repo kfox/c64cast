@@ -619,5 +619,76 @@ class PrintReportTest(unittest.TestCase):
         self.assertIn("[ERR ]", buf.getvalue())
 
 
+class EnvironmentProbeTest(unittest.TestCase):
+    """The env probe is the dev-environment guard: it catches the desynced
+    .venv / wrong-interpreter case where a hard dependency won't import."""
+
+    def test_reports_interpreter_and_every_hard_dep(self):
+        # Skip the uv subprocess; this test is about the import surface.
+        with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
+            diags = doctor._probe_environment()
+        self.assertTrue(diags)
+        self.assertTrue(all(d.category == "environment" for d in diags))
+        subjects = {d.subject for d in diags}
+        self.assertIn("interpreter", subjects)
+        for dep, _ in doctor._HARD_DEPS:
+            self.assertIn(dep, subjects)
+
+    def test_hard_deps_import_ok_in_synced_env(self):
+        with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
+            diags = doctor._probe_environment()
+        dep_levels = {d.subject: d.level for d in diags if d.subject in dict(doctor._HARD_DEPS)}
+        self.assertTrue(all(lvl == "ok" for lvl in dep_levels.values()), dep_levels)
+
+    def test_missing_hard_dep_is_error_with_sync_hint(self):
+        with (
+            mock.patch.object(doctor, "_HARD_DEPS", (("no_such_module_xyz", "test only"),)),
+            mock.patch.object(doctor, "_probe_uv_lock", return_value=[]),
+        ):
+            diags = doctor._probe_environment()
+        errs = [d for d in diags if d.level == "error"]
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0].subject, "no_such_module_xyz")
+        self.assertIn("make sync", errs[0].hint or "")
+
+    def test_interpreter_mismatch_warns(self):
+        # A live but wrong interpreter (not the project .venv) should warn — the
+        # exact "bare python resolved somewhere else" trap. Only meaningful when
+        # the project .venv exists to compare against (it does in dev/CI).
+        if not (doctor._REPO_ROOT / ".venv").exists():
+            self.skipTest("no project .venv to compare against")
+        with (
+            mock.patch.object(doctor.sys, "prefix", "/tmp/definitely-not-the-venv"),
+            mock.patch.object(doctor, "_probe_uv_lock", return_value=[]),
+        ):
+            diags = doctor._probe_environment()
+        interp = [d for d in diags if d.subject == "interpreter"]
+        self.assertEqual(len(interp), 1)
+        self.assertEqual(interp[0].level, "warn")
+        self.assertIsNotNone(interp[0].hint)
+
+    def test_uv_lock_skipped_when_uv_absent(self):
+        with mock.patch.object(doctor.shutil, "which", return_value=None):
+            diags = doctor._probe_uv_lock()
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("skipped", diags[0].message)
+
+    def test_uv_lock_drift_warns(self):
+        fake = mock.MagicMock(returncode=1, stdout="", stderr="")
+        with (
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/uv"),
+            mock.patch.object(doctor.subprocess, "run", return_value=fake),
+        ):
+            diags = doctor._probe_uv_lock()
+        self.assertEqual(diags[0].level, "warn")
+        self.assertIn("out of date", diags[0].message)
+
+    def test_environment_runs_in_validate_load_result(self):
+        with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
+            diags = doctor.validate_load_result(_load(""), probe_u64=False)
+        self.assertTrue(any(d.category == "environment" for d in diags))
+
+
 if __name__ == "__main__":
     unittest.main()
