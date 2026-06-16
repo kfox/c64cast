@@ -80,6 +80,7 @@ from .c64 import (
     REU,
     SID,
     VECTORS,
+    max_safe_sample_rate,
 )
 from .dsp import AudioDSP, DSPParams
 
@@ -397,6 +398,26 @@ NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS = 2  # decide every ~2 chunks while acquirin
 # converge near the ceiling; char/light modes lose ~0 → converge near nominal.
 # Refined per mode by the in-session learned-latch cache as scenes converge.
 NMI_BITMAP_SEED_MODES = frozenset({"hires", "mhires"})
+
+# --- Resample-of-residual pitch compensation (host-DMA path) --------------
+# The adaptive loop above can run out of headroom: on heavy bitmap content the
+# consumer R parks below sample_rate even with the latch at the ceiling, so a
+# residual slowdown remains (and pushing the latch harder risks the firmware
+# DMA/badline wedge). This stage closes that residual on the HOST side, with no
+# extra C64 stress: it resamples the float stream DOWN to the measured R rate
+# before the 4-bit encode, so source audio authored at sample_rate is consumed
+# in real time at whatever rate the C64 actually runs — correct tempo + pitch.
+# It composes with the adaptive loop rather than fighting it: as the loop closes
+# the gap the ratio rises to 1.0 and this becomes a bit-exact passthrough; the
+# residual the loop CAN'T close is exactly what this decimates. numpy-only
+# linear interpolation (no scipy runtime dep) — at 4-bit output (~24 dB) the
+# alias/droop floor of linear sits far below the quantization floor, and the
+# ratios are mild (>= RESAMPLE_RATIO_MIN), so a polyphase kernel buys nothing
+# audible. The ratio is EMA-smoothed (slower than the rate loop) so it can't
+# chase the loop into an audible pitch wobble.
+RESAMPLE_RATIO_ALPHA = 0.05  # per-chunk EMA weight for the resample ratio (slow)
+RESAMPLE_RATIO_MIN = 0.85  # never decimate harder than ~15% (sanity floor)
+RESAMPLE_DEADBAND = 0.002  # within 0.2% of 1.0 → passthrough (loop has it covered)
 
 # REC command byte for REU DMA: bit 7 = exec, bit 4 = FF00 disable (execute
 # immediately, no $FF00 trigger needed), bits 1:0 = 01 = REU → C64 fetch.
@@ -1121,6 +1142,8 @@ class AudioStreamer:
         reu_pump_governor: bool = True,
         host_dma_servo: bool = True,
         nmi_rate_adaptive: bool = False,
+        nmi_rate_resample: bool = False,
+        nmi_rate_max_hz: int = 0,
         dsp_params: DSPParams | None = None,
     ):
         # The U64 DMA service accepts only one connection at a time — a
@@ -1174,6 +1197,15 @@ class AudioStreamer:
         # stays 1.0 and the loop owns the latch from nominal. See the
         # NMI_RATE_LOOP_* constants + _nmi_rate_step.
         self.nmi_rate_adaptive = nmi_rate_adaptive
+        # Resample-of-residual pitch compensation + the adaptive-loop ceiling
+        # clamp (see the RESAMPLE_* constants + _resample_residual + _ceiling_latch).
+        # nmi_rate_max_hz = 0 means "full safe ceiling" (today's behavior); a value
+        # == sample_rate collapses the loop's range so the NMI never speeds up
+        # (pure resample). The resampler reads the loop's measured _r_rate_ema, so
+        # it needs R-measurement to run even when the latch isn't moving — handled
+        # in _next_pace_increment by gating measurement on adaptive OR resample.
+        self.nmi_rate_resample = nmi_rate_resample
+        self.nmi_rate_max_hz = nmi_rate_max_hz
         # PI integrator state for the host-DMA servo (worker-thread-only, so no
         # lock needed). Reset to 0 each time the NMI consumer starts.
         self._servo_integ = 0.0
@@ -1184,6 +1216,15 @@ class AudioStreamer:
         self._last_r_time = 0.0
         self._nmi_loop_chunk_count = 0
         self._nmi_loop_acquiring = True
+        # Resample-of-residual state (worker-thread-only; reset with the rate-loop
+        # state at consumer start + in stop()). _resample_ratio_ema = -1.0 is the
+        # unseeded sentinel (→ passthrough until R is measured). _resample_phase is
+        # the fractional source position carried across chunks so the decimation
+        # is phase-continuous (no per-chunk seam); _resample_prev_tail holds the
+        # last source sample so linear interpolation spans the chunk boundary.
+        self._resample_ratio_ema = -1.0
+        self._resample_phase = 0.0
+        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
         # Current display mode (set by set_nmi_latch_for_mode) + an in-session
         # cache of each mode's converged latch. The loop SEEDS the starting latch
         # from these so playback begins at ~the right rate (no start-of-playback
@@ -1243,7 +1284,12 @@ class AudioStreamer:
         # tracked separately in self._queued_samples since q.qsize() now
         # counts blobs, not samples; q.full() is unused because the cap
         # below is in bytes, not items.
-        self.q: queue.Queue[bytes] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
+        # Each item is (payload, src_weight): the pre-encoded 4-bit byte blob
+        # plus the number of SOURCE samples it represents. src_weight == len(
+        # payload) on the 1:1 path; when resample-of-residual decimates, the
+        # payload is shorter than src_weight. The worker credits _queued_samples
+        # (a SOURCE-sample tally for position_seconds) by src_weight, not bytes.
+        self.q: queue.Queue[tuple[bytes, int]] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
         self._queued_samples = 0
         # Cap the buffered audio at ~2 s @ 8 kHz so a stalled consumer
         # doesn't accumulate a wall of stale audio.
@@ -1325,12 +1371,31 @@ class AudioStreamer:
         return max(1, round(clock / self.sample_rate) - 1)
 
     def _ceiling_latch(self) -> int:
-        """Smallest (fastest) CIA #2 Timer A latch the adaptive loop may use: the
-        latch whose NMI period equals the safe handler budget
-        (c64.NMI_SAFE_MIN_PERIOD_CYCLES). period = latch+1, so latch = budget-1.
-        Bounds how far the loop can speed the NMI to overcome bus-halt tick loss
-        without overrunning the handler. System-independent (a cycle count)."""
-        return max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
+        """Smallest (fastest) CIA #2 Timer A latch the adaptive loop may use.
+
+        The hard floor is the latch whose NMI period equals the safe handler
+        budget (c64.NMI_SAFE_MIN_PERIOD_CYCLES; period = latch+1 → latch =
+        budget-1). `nmi_rate_max_hz` raises that floor (caps how fast the loop may
+        push the NMI), trading bandwidth for less HW stress — set it = sample_rate
+        and the floor collapses to nominal, so the loop never speeds up at all
+        (pure resample; the residual is then carried entirely by _resample_residual).
+        0 = no cap → the hard safe floor (max-bandwidth, today's behavior).
+
+        PAL-aware for free: an out-of-range cap is clamped to the system's safe
+        max, which derives from cpu_clock(system) (PAL's slower clock → lower
+        ceiling than NTSC)."""
+        hw_floor = max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)  # fastest safe latch
+        nominal = self._nmi_latch_value()  # slowest = authored sample_rate
+        cap_hz = getattr(self, "nmi_rate_max_hz", 0) or 0
+        if cap_hz <= 0:
+            return hw_floor
+        # Clamp the requested cap to [sample_rate, system safe max], then convert
+        # to a latch (higher Hz → smaller latch). Return value stays within
+        # [hw_floor, nominal] so the loop's [ceiling, nominal] range is always valid.
+        cap_hz = min(max(cap_hz, self.sample_rate), max_safe_sample_rate(self.system))
+        clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
+        cap_latch = max(1, round(clock / cap_hz) - 1)
+        return min(nominal, max(hw_floor, cap_latch))
 
     def _seed_latch_for_mode(self, mode: str | None) -> int:
         """Starting CIA #2 latch for the adaptive loop, chosen so playback begins
@@ -1482,7 +1547,12 @@ class AudioStreamer:
             prebuffered = False
             bytes_prebuffered = 0
             chunk_buf = bytearray(self.chunk_size)
-            leftover = b""
+            # A partially-consumed queue blob carried to the next chunk, as
+            # (remaining_bytes, src_weight). The weight is credited to
+            # _queued_samples (a SOURCE-sample tally) only when the blob's last
+            # byte is consumed, so resample's byte≠source-sample ratio can't
+            # drift the position clock. None = nothing carried.
+            leftover: tuple[bytes, int] | None = None
             chunk_period = self.chunk_size / self.sample_rate
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
             # Pace + collect deadlines. Zero until NMI starts.
@@ -1497,31 +1567,38 @@ class AudioStreamer:
                     collect_deadline = time.monotonic() + chunk_period
 
                 n = 0
-                from_queue = 0
+                src_from_queue = 0  # source samples whose blobs fully drained
 
-                if leftover:
-                    take = min(len(leftover), self.chunk_size)
-                    chunk_buf[:take] = leftover[:take]
+                if leftover is not None:
+                    lbytes, lweight = leftover
+                    take = min(len(lbytes), self.chunk_size)
+                    chunk_buf[:take] = lbytes[:take]
                     n = take
-                    from_queue = take
-                    leftover = leftover[take:]
+                    if take < len(lbytes):
+                        leftover = (lbytes[take:], lweight)  # still partial; defer
+                    else:
+                        src_from_queue += lweight  # fully drained → credit weight
+                        leftover = None
 
                 # Block with deadline. Returns early once chunk_buf is
                 # full or once the producer is silent past the deadline.
-                while n < self.chunk_size and not leftover and self.running:
+                while n < self.chunk_size and leftover is None and self.running:
                     remaining = collect_deadline - time.monotonic()
                     if remaining <= 0:
                         break
                     try:
-                        piece = self.q.get(timeout=remaining)
+                        payload, weight = self.q.get(timeout=remaining)
                     except queue.Empty:
                         break
-                    take = min(len(piece), self.chunk_size - n)
-                    chunk_buf[n : n + take] = piece[:take]
+                    take = min(len(payload), self.chunk_size - n)
+                    chunk_buf[n : n + take] = payload[:take]
                     n += take
-                    from_queue += take
-                    if take < len(piece):
-                        leftover = piece[take:]
+                    if take < len(payload):
+                        leftover = (payload[take:], weight)  # partial; defer weight
+                    else:
+                        # Fully consumed (covers a 0-byte resampler-stash blob,
+                        # which credits its source weight immediately).
+                        src_from_queue += weight
 
                 if not self.running:
                     break
@@ -1536,7 +1613,7 @@ class AudioStreamer:
                     self._full_underruns += 1
                 elif n < self.chunk_size and prebuffered:
                     # Partial chunk: pad to keep pace math simple. Pad
-                    # bytes are NOT counted in from_queue.
+                    # bytes carry no source weight (not from the queue).
                     pad = self.chunk_size - n
                     chunk_buf[n : n + pad] = bytes([NEUTRAL_SAMPLE]) * pad
                     n = self.chunk_size
@@ -1548,8 +1625,8 @@ class AudioStreamer:
                         time.sleep(sleep_s)
 
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
-                if from_queue:
-                    self._queued_samples = max(0, self._queued_samples - from_queue)
+                if src_from_queue:
+                    self._queued_samples = max(0, self._queued_samples - src_from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1567,6 +1644,12 @@ class AudioStreamer:
                         self._last_r_time = 0.0
                         self._nmi_loop_chunk_count = 0
                         self._nmi_loop_acquiring = True
+                        # Re-seed the resampler with the rate loop: drop the stale
+                        # ratio + seam so it re-acquires against the new consumer's
+                        # measured R (sentinel -1 → passthrough until R is known).
+                        self._resample_ratio_ema = -1.0
+                        self._resample_phase = 0.0
+                        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
                         # Pace the next write one chunk_period out so the
                         # PREBUFFER_CHUNKS slack stays steady instead of
                         # getting eaten up immediately.
@@ -1610,7 +1693,10 @@ class AudioStreamer:
         # already read above — no extra REST traffic. Reads the rate, not the gap
         # (the gap servo below nulls the gap, so it carries no rate signal).
         # getattr-guarded so __new__-built test streamers read as adaptive-off.
-        if getattr(self, "nmi_rate_adaptive", False):
+        # Resample-of-residual also needs the measured R rate (_r_rate_ema), so
+        # run the estimator when EITHER consumer is enabled; the actual latch MOVE
+        # stays gated on adaptive inside the loop (resample never moves the latch).
+        if getattr(self, "nmi_rate_adaptive", False) or getattr(self, "nmi_rate_resample", False):
             self._update_nmi_rate_loop(r_addr)
         period, self._servo_integ = _servo_period(gap, self._servo_integ, chunk_period=chunk_period)
         return period
@@ -1645,6 +1731,13 @@ class AudioStreamer:
                     self._r_rate_ema += alpha * (inst - self._r_rate_ema)
         self._last_r_addr = r_addr
         self._last_r_time = now
+
+        # The EMA update above is all resample-only mode needs (it reads
+        # _r_rate_ema). The latch decision/move below is adaptive's job — skip it
+        # when adaptive is off so resample-without-adaptive measures R but leaves
+        # the latch where _start_nmi_timer put it.
+        if not getattr(self, "nmi_rate_adaptive", False):
+            return
 
         self._nmi_loop_chunk_count += 1
         decide_every = (
@@ -1767,6 +1860,68 @@ class AudioStreamer:
         dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
         return dsp.process(floats) if dsp.active else floats
 
+    def _resample_residual(self, floats: np.ndarray) -> np.ndarray:
+        """Decimate float samples to the measured C64 consumer rate R so playback
+        holds correct tempo/pitch when the adaptive loop can't fully close the
+        bus-halt slowdown. ratio = R / sample_rate (EMA-smoothed); a ratio < 1.0
+        drops the residual fraction of samples. Returns the input UNCHANGED (bit-
+        exact) when disabled, when R isn't measured yet, or when the ratio is
+        within RESAMPLE_DEADBAND of 1.0 (the adaptive loop has it covered).
+
+        Linear interpolation with a fractional phase accumulator carried across
+        chunks (``_resample_phase``) plus the previous chunk's last sample
+        (``_resample_prev_tail``) so the decimation is seam-free — concatenating
+        the per-chunk outputs equals a one-shot resample of the concatenated
+        input. numpy-only (no scipy runtime dep); see the RESAMPLE_* constants."""
+        if not getattr(self, "nmi_rate_resample", False) or floats.size == 0:
+            return floats
+        r_ema = getattr(self, "_r_rate_ema", -1.0)
+        sr = self.sample_rate
+        if r_ema < 0 or sr <= 0:
+            return floats  # R not measured yet → bit-exact passthrough
+        raw = r_ema / sr
+        if self._resample_ratio_ema < 0:
+            self._resample_ratio_ema = raw  # seed (no ramp-from-zero)
+        else:
+            self._resample_ratio_ema += RESAMPLE_RATIO_ALPHA * (raw - self._resample_ratio_ema)
+        # Never upsample (R <= sample_rate always) and never decimate past the floor.
+        ratio = min(1.0, max(RESAMPLE_RATIO_MIN, self._resample_ratio_ema))
+        if ratio >= 1.0 - RESAMPLE_DEADBAND:
+            # Loop has the gap; passthrough. Drop the seam state so a later
+            # decimation phase starts clean instead of from a stale tail.
+            self._resample_phase = 0.0
+            self._resample_prev_tail = np.zeros(0, dtype=np.float32)
+            return floats
+        floats = floats.astype(np.float32, copy=False)
+        x = (
+            np.concatenate((self._resample_prev_tail, floats))
+            if self._resample_prev_tail.size
+            else floats
+        )
+        if x.size < 2:
+            # Can't interpolate across <2 samples; stash and emit nothing. Phase
+            # stays valid (x[0] is unchanged as the next chunk's index 0).
+            self._resample_prev_tail = x
+            return np.zeros(0, dtype=np.float32)
+        inv = 1.0 / ratio  # source samples advanced per output sample (> 1.0)
+        p0 = self._resample_phase
+        last = x.size - 1
+        # Count outputs whose source position pos = p0 + inv*k stays <= the last
+        # interpolable index. The next chunk's index 0 is x[-1], so carry the
+        # phase relative to that sample.
+        m = int(np.floor((last - p0) / inv)) + 1
+        if m <= 0:
+            self._resample_phase = p0 - last
+            self._resample_prev_tail = x[-1:]
+            return np.zeros(0, dtype=np.float32)
+        pos = p0 + inv * np.arange(m, dtype=np.float64)
+        idx = np.minimum(np.floor(pos).astype(np.int64), last - 1)
+        frac = (pos - idx).astype(np.float32)
+        out: np.ndarray = x[idx] * (1.0 - frac) + x[idx + 1] * frac
+        self._resample_phase = (p0 + inv * m) - last
+        self._resample_prev_tail = x[-1:]
+        return out.astype(np.float32, copy=False)
+
     # ---- shared encode + enqueue ---------------------------------------------
     def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
@@ -1781,35 +1936,46 @@ class AudioStreamer:
         by the PyAV push path so the demuxer naturally throttles). If
         False, drop the whole blob when full (mic path, where the
         sounddevice callback is real-time and can't block). Backpressure
-        is counted in samples (not blobs) against self._max_queued_samples."""
+        is counted in samples (not blobs) against self._max_queued_samples.
+
+        Counter-split for resample-of-residual: _pushed_count / _queued_samples
+        and the queue blob's weight are all in SOURCE samples (n_src), so
+        position_seconds + the demuxer backpressure stay on the source timeline
+        regardless of decimation; only the encoded PAYLOAD shrinks to the
+        measured consumer rate. The two counters are 1:1 with bytes when resample
+        is off or a no-op."""
         if floats.size == 0:
             return 0
         floats = self._apply_dsp(floats)
+        # Source-sample count drives all accounting (the A/V master clock); the
+        # tap shows source-rate audio (spectrally ~identical to the decimated
+        # output). Resample to the measured consumer rate AFTER both.
+        n_src = int(floats.size)
         self._push_to_tap(floats.astype(np.float32, copy=False))
-        vol = encode_floats_to_dac(floats, dither=self.dither_enabled)
-        n = int(vol.size)
+        resampled = self._resample_residual(floats)
+        vol = encode_floats_to_dac(resampled, dither=self.dither_enabled)
         payload = vol.tobytes()
-        # Sample-count backpressure. Reading _queued_samples without the GIL
-        # is racy with the worker decrement, but the worst case is putting
-        # one blob over the cap — harmless given the cap is a soft ceiling.
-        if self._queued_samples + n > self._max_queued_samples:
+        # Sample-count backpressure (in SOURCE samples). Reading _queued_samples
+        # without the GIL is racy with the worker decrement, but the worst case
+        # is putting one blob over the cap — harmless given the soft ceiling.
+        if self._queued_samples + n_src > self._max_queued_samples:
             if not block_on_full:
                 return 0
             deadline = time.time() + QUEUE_PUT_TIMEOUT_S
-            while self._queued_samples + n > self._max_queued_samples and self.running:
+            while self._queued_samples + n_src > self._max_queued_samples and self.running:
                 if time.time() >= deadline:
                     return 0
                 time.sleep(BACKPRESSURE_SPIN_S)
         try:
             if block_on_full:
-                self.q.put(payload, timeout=QUEUE_PUT_TIMEOUT_S)
+                self.q.put((payload, n_src), timeout=QUEUE_PUT_TIMEOUT_S)
             else:
-                self.q.put_nowait(payload)
+                self.q.put_nowait((payload, n_src))
         except queue.Full:
             return 0
-        self._queued_samples += n
-        self._pushed_count += n
-        return n
+        self._queued_samples += n_src
+        self._pushed_count += n_src
+        return n_src
 
     # ---- input sources -------------------------------------------------------
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
@@ -2527,6 +2693,11 @@ class AudioStreamer:
         self._last_r_time = 0.0
         self._nmi_loop_chunk_count = 0
         self._nmi_loop_acquiring = True
+        # Clear resample-of-residual state so the next consumer re-acquires its
+        # ratio + seam from scratch (sentinel -1 → passthrough until R is known).
+        self._resample_ratio_ema = -1.0
+        self._resample_phase = 0.0
+        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
         # Report underrun telemetry. Each full underrun is an audible
         # click; partials are less audible but still indicate producer
         # stalls. Deterministic, source-correlated counts (same numbers

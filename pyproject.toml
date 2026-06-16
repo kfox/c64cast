@@ -108,6 +108,10 @@ dev = [
     # `python -m xmlrunner discover` so Codecov Test Analytics can ingest the
     # results. Dev/CI-only; the runtime never imports it.
     "unittest-xml-reporting>=3",
+    # Signal processing for the scripts/diags/ A/V analysis tools
+    # (av_sync_probe.py: resample_poly / correlate / find_peaks). Dev-only —
+    # the runtime audio path is numpy-only and never imports scipy.
+    "scipy>=1.11",
 ]
 
 [project.scripts]

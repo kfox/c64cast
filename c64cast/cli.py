@@ -589,6 +589,8 @@ def build_stack(
             reu_pump_governor=cfg.audio.reu_pump_governor,
             host_dma_servo=cfg.audio.host_dma_servo,
             nmi_rate_adaptive=cfg.audio.nmi_rate_adaptive,
+            nmi_rate_resample=cfg.audio.nmi_rate_resample,
+            nmi_rate_max_hz=cfg.audio.nmi_rate_max_hz,
             dsp_params=cfg.dsp.to_params(),
         )
         if cfg.audio.enabled

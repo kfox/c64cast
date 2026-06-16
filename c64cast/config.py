@@ -24,7 +24,7 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
-from .c64 import nmi_rate_safety
+from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .dsp import DSPParams
 
 if TYPE_CHECKING:
@@ -344,6 +344,33 @@ class AudioCfg:
             "playback stays at the authored sample_rate (fixes the video "
             "slowdown, keeps full bandwidth). Supersedes pitch_mult_* (which "
             "apply only when this is false). Host-DMA path only."
+        },
+    )
+    nmi_rate_resample: bool = field(
+        default=True,
+        metadata={
+            "help": "Resample-of-residual pitch compensation (host-DMA path only). "
+            "Decimates source audio to the MEASURED C64 consumer rate before the "
+            "4-bit encode, so playback holds correct tempo/pitch even when the "
+            "adaptive NMI loop can't fully close the bus-halt slowdown (e.g. heavy "
+            "mhires parked at the safe ceiling). Combine with nmi_rate_max_hz to "
+            "pick a posture: ceiling=sample_rate -> pure resample; ceiling below "
+            "the safe max -> HW-safe hybrid; ceiling=0 (safe max) -> max-bandwidth "
+            "hybrid. On by default (best quality). No effect on the REU pump path."
+        },
+    )
+    nmi_rate_max_hz: int = field(
+        default=0,
+        metadata={
+            "help": "Ceiling for the adaptive NMI-rate loop, in Hz (0 = the "
+            "system's full safe maximum). The loop may speed the NMI consumer up "
+            "to this rate to overcome bus-halt slowdown; anything beyond is left "
+            "to nmi_rate_resample. Set = sample_rate for PURE resample (NMI never "
+            "speeds up, zero extra HW stress); set below the safe max for a "
+            "HW-SAFE hybrid (lower on PAL whose safe ceiling is ~11.1 kHz vs NTSC "
+            "~11.6 kHz); leave 0 for MAX-BANDWIDTH hybrid. An over-ceiling value "
+            "is clamped down (with a warning) via c64.nmi_rate_safety. Host-DMA "
+            "path only."
         },
     )
     # See c64cast.audio_marker for the find-marker analysis helper. Only the
@@ -2098,6 +2125,26 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
         raise ConfigError(f"[audio].sample_rate: {message}")
     if level == "warn":
         log.warning("[audio].sample_rate: %s", message)
+    # The adaptive-loop ceiling is advisory (the runtime clamps it defensively),
+    # so an out-of-range value WARNS rather than erroring — every posture must
+    # stay reachable. 0 = "full safe max" and needs no check.
+    cap = cfg.audio.nmi_rate_max_hz
+    if cap:
+        system = cfg.ultimate64.system
+        if cap < cfg.audio.sample_rate:
+            log.warning(
+                "[audio].nmi_rate_max_hz=%d is below sample_rate=%d; the adaptive "
+                "loop floors at sample_rate, so this acts as pure resample.",
+                cap,
+                cfg.audio.sample_rate,
+            )
+        cap_level, cap_message = nmi_rate_safety(system, cap)
+        if cap_level != "ok":
+            log.warning(
+                "[audio].nmi_rate_max_hz: %s Clamping to the safe max (%d Hz).",
+                cap_message,
+                max_safe_sample_rate(system),
+            )
 
 
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:

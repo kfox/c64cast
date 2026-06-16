@@ -50,16 +50,16 @@ def _new_streamer(monkeypatch_api=True) -> AudioStreamer:
     return s
 
 
-def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
+def _drain_queue_to_samples(q: queue.Queue[tuple[bytes, int]]) -> list[int]:
     """Pop every blob from `q` and concatenate into a list of sample bytes.
 
     Tests below used to do `s.q.get()` per sample; now each get returns a
-    bytes blob of N samples. This helper bridges that for the simple
-    cases."""
+    (payload, src_weight) tuple — the payload is the bytes blob of N samples.
+    This helper bridges that for the simple cases."""
     out: list[int] = []
     while not q.empty():
-        blob = q.get()
-        out.extend(blob)
+        payload, _weight = q.get()
+        out.extend(payload)
     return out
 
 
@@ -101,7 +101,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         # +1.0 → 15; -1.0 → 0.
         s = _new_streamer()
         s._encode_and_enqueue(np.array([1.0, -1.0], dtype=np.float32))
-        blob = s.q.get()
+        blob, _ = s.q.get()
         # TPDF dither can shift full-scale by ±1 LSB pre-clip.
         self.assertIn(blob[0], (14, 15))
         self.assertIn(blob[1], (0, 1))
@@ -112,7 +112,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         # noise floor; dither must not re-introduce noise there.
         s = _new_streamer()
         s._encode_and_enqueue(np.zeros(1024, dtype=np.float32))
-        blob = s.q.get()
+        blob, _ = s.q.get()
         self.assertTrue(
             all(v == 7 for v in blob),
             f"exact-zero input should encode to NEUTRAL_SAMPLE=7 "
@@ -126,7 +126,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         s.dither_enabled = False
         # 0.5 input → (0.5 + 1) * 7.5 = 11.25 → uint8 truncates to 11.
         s._encode_and_enqueue(np.full(64, 0.5, dtype=np.float32))
-        blob = s.q.get()
+        blob, _ = s.q.get()
         self.assertTrue(
             all(v == 11 for v in blob),
             f"dither off + constant input should encode to a single value; got {set(blob)}",
@@ -147,7 +147,7 @@ class WorkerBatchingTest(unittest.TestCase):
         s.running = True
         s.chunk_size = 64
         # Pre-load the queue with one full chunk's worth as a single blob.
-        s.q.put(bytes([7] * 64))
+        s.q.put((bytes([7] * 64), 64))
         s._queued_samples = 64
         # Run the worker briefly.
         t = threading.Thread(target=s._worker, daemon=True)
@@ -176,7 +176,7 @@ class WorkerBatchingTest(unittest.TestCase):
         s.running = True
         s.chunk_size = 16
         # 50 samples = 3 full chunks + 2 leftover.
-        s.q.put(bytes(range(50)))
+        s.q.put((bytes(range(50)), 50))
         s._queued_samples = 50
         t = threading.Thread(target=s._worker, daemon=True)
         t.start()
@@ -218,7 +218,7 @@ class WorkerBatchingTest(unittest.TestCase):
         # 100 full chunks of real audio queued ahead — far more than the
         # worker can ship in the test window if it actually paces itself.
         for _ in range(100):
-            s.q.put(bytes(range(64)))
+            s.q.put((bytes(range(64)), 64))
             s._queued_samples += 64
 
         t = threading.Thread(target=s._worker, daemon=True)

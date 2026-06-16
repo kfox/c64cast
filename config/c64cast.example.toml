@@ -257,6 +257,29 @@ nmi_rate_adaptive = true            # Adaptive NMI-rate compensation. The
                                     # Supersedes pitch_mult_* below (those apply
                                     # only when this is false). Host-DMA path
                                     # only; on by default.
+nmi_rate_resample = true            # Resample-of-residual pitch compensation
+                                    # (host-DMA path only; on by default). The
+                                    # adaptive loop above can run out of headroom
+                                    # on heavy bitmap content (R parks below
+                                    # sample_rate even at the safe ceiling). This
+                                    # closes that residual host-side with no extra
+                                    # C64 stress: it decimates source audio to the
+                                    # MEASURED R before the 4-bit encode, so audio
+                                    # authored at sample_rate plays at correct
+                                    # tempo/pitch whatever rate the C64 runs. It
+                                    # composes with the loop — as the loop closes
+                                    # the gap this fades to a no-op. No effect on
+                                    # the REU pump path.
+nmi_rate_max_hz = 0                 # Ceiling for the adaptive NMI-rate loop, in
+                                    # Hz (0 = the system's full safe maximum).
+                                    # Combine with the two toggles above to pick a
+                                    # posture: = sample_rate → PURE resample (NMI
+                                    # never speeds up, zero extra HW stress);
+                                    # below the safe max → HW-SAFE hybrid (lower on
+                                    # PAL whose ceiling is ~11.1 kHz vs NTSC ~11.6
+                                    # kHz); 0 → MAX-BANDWIDTH hybrid (today's
+                                    # behavior). Out-of-range values are clamped
+                                    # (with a warning). Host-DMA path only.
 source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # 100 ms 200→3500 Hz linear chirp to the
                                     # pre-encoded REU audio so Cam Link
