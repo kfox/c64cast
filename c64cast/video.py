@@ -22,6 +22,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from ._native_io import silence_native_stderr
 from ._pollthread import PollThread
 from .audio import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator
@@ -62,10 +63,14 @@ def _compute_normalization_gain(
 
 
 # PyAV is imported lazily on first AVFileSource construction. On macOS the av
-# wheel bundles a different libavdevice major version than the cv2 wheel, and
-# eagerly importing both at startup triggers the Obj-C runtime's "duplicate
-# class implementation" warnings. Deferring av until a video scene
-# actually runs sidesteps the clash entirely when videos aren't used.
+# wheel bundles a different libavdevice major version than the cv2 wheel, so the
+# moment av's libavdevice loads on top of cv2's, the Obj-C runtime prints a
+# one-time "Class AVFFrameReceiver/AVFAudioReceiver is implemented in both ..."
+# warning to fd 2 (it's the duplicated AVFoundation device classes; harmless,
+# neither file-decode path touches the avfoundation input device). Deferring av
+# until a video scene actually runs keeps that import off the startup path when
+# videos aren't used, and the import itself is wrapped in silence_native_stderr
+# so the warning never reaches the user even when a video does run.
 av: Any = None
 PYAV_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
 
@@ -76,7 +81,10 @@ def _ensure_pyav() -> bool:
     if PYAV_AVAILABLE is not None:
         return PYAV_AVAILABLE
     try:
-        import av as _av
+        # fd-level mute: the duplicate-libavdevice objc warning is printed by
+        # the runtime as the native libs load during import, below Python.
+        with silence_native_stderr():
+            import av as _av
 
         av = _av
         PYAV_AVAILABLE = True

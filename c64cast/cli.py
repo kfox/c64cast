@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import shutil
 import signal
 import subprocess
@@ -24,6 +23,7 @@ from . import (
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
 )
 from . import config as cfgmod
+from ._native_io import silence_native_stderr
 from .api import SocketDMAError
 from .audio import AUDIO_AVAILABLE, AudioStreamer
 from .backend import C64Backend, make_backend
@@ -404,11 +404,7 @@ def list_devices() -> int:
     # / FFmpeg backends underneath it) print to stderr at the C level. Mute
     # those for the duration of the probe via fd-level redirection.
     sys.stdout.flush()
-    sys.stderr.flush()
-    saved_stderr_fd = os.dup(2)
-    devnull_fd = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull_fd, 2)
-    try:
+    with silence_native_stderr():
         for idx in range(8):
             cap = cv2.VideoCapture(idx)
             try:
@@ -419,10 +415,6 @@ def list_devices() -> int:
             finally:
                 if cap is not None:
                     cap.release()
-    finally:
-        os.dup2(saved_stderr_fd, 2)
-        os.close(saved_stderr_fd)
-        os.close(devnull_fd)
     if found:
         for idx, w, h in found:
             print(f"   [{idx}] {w}x{h}")
