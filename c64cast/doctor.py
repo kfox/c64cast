@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal
 
-from .c64 import max_safe_sample_rate, nmi_rate_safety
+from .c64 import nmi_rate_safety
 from .config import LoadResult, validate_scene_cfg
 from .orchestrator import OrchestratorError
 
@@ -232,30 +232,6 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
                     ),
                 )
             )
-            continue
-        # Adaptive compensation needs latch headroom (max_safe_rate above the
-        # configured rate) to raise the NMI rate over bus-halt loss. Too little
-        # → it can't fully cancel the video slowdown (acute on PAL's tighter
-        # clock). Warn so the user lowers the rate or accepts residual slowness.
-        if cfg.audio.nmi_rate_adaptive:
-            headroom = max_safe_sample_rate(system) / rate - 1.0
-            if headroom < 0.03:
-                out.append(
-                    Diagnostic(
-                        level="warn",
-                        category="audio",
-                        subject=f"{name}/sample_rate",
-                        message=(
-                            f"nmi_rate_adaptive has only {headroom * 100:.1f}% NMI "
-                            f"headroom at {rate} Hz on {system} — it can't fully "
-                            f"compensate heavy-video slowdown."
-                        ),
-                        hint=(
-                            f"Lower [audio].sample_rate (more headroom) — {system} "
-                            f"max safe is ~{max_safe_sample_rate(system)} Hz."
-                        ),
-                    )
-                )
     return out
 
 

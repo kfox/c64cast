@@ -3,9 +3,7 @@
 A small 6502 routine at $C020 pulls one sample per NMI from an 8 KB ring
 buffer at $4000-$5FFF, writing the low nibble to $D418. Python feeds the
 ring buffer via Socket DMA. CIA #2 Timer A fires NMIs at the configured
-sample rate (default 10.5 kHz — lifts the Nyquist to ~5.25 kHz so fricatives
-survive; HW-verified to stay under the handler's badline cycle budget on both
-NTSC and PAL. c64.nmi_rate_safety guards against rates that would overrun it).
+sample rate (default 8 kHz).
 
 The ring lives at $4000 (not $8000) so it sits outside VIC banks 0 and 2
 — the two banks with kernal char-ROM mapped at $1000/$9000, which is what
@@ -70,18 +68,7 @@ from typing import Any
 import numpy as np
 
 from .backend import C64Backend
-from .c64 import (
-    CIA1,
-    CIA2,
-    CLOCK_NTSC,
-    CLOCK_PAL,
-    KERNAL,
-    NMI_SAFE_MIN_PERIOD_CYCLES,
-    REU,
-    SID,
-    VECTORS,
-    max_safe_sample_rate,
-)
+from .c64 import CIA1, CIA2, CLOCK_NTSC, CLOCK_PAL, KERNAL, REU, SID, VECTORS
 from .dsp import AudioDSP, DSPParams
 
 log = logging.getLogger(__name__)
@@ -360,64 +347,6 @@ HOST_DMA_SERVO_KI = 5e-7  # s/(byte*chunk)    (HW-TUNABLE)
 HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
-
-# --- Adaptive NMI-rate compensation (closed loop on measured R rate) ------
-# The gap servo above keeps the ring centered but locks playback to the
-# bus-halt-throttled consumer R, so video plays slow (R < sample_rate; loss is
-# content-dependent: motion → VIC DMA → stolen NMI ticks). This SLOW outer loop
-# raises the nominal NMI rate (shrinks the CIA #2 Timer A latch) until the
-# *measured* R rate lands back at sample_rate — correct speed + pitch, full
-# bandwidth preserved (unlike resampling down to R). It servos on an R-RATE
-# estimate (dR/dt over wall-clock), NOT the gap (the gap servo nulls the gap, so
-# it carries no rate info — using it would make the two loops fight). Clamped to
-# the handler cycle budget (c64.NMI_SAFE_MIN_PERIOD_CYCLES) so it never overruns.
-#
-# Deadband MUST be >= one latch quantum (~1% rate/step): the latch is integer, so
-# a narrower deadband limit-cycles ±1 step = an audible ~1% pitch wobble. The EMA
-# alpha sets the rate-estimator time constant (~chunk_period/alpha ≈ 2.5 s at
-# 10.5 kHz / 1024-byte chunks) — long enough to reject the torn-16-bit-read
-# noise, short enough to re-acquire after a scene cut. The coarse zone allows a
-# bigger acquisition step so a cold start converges in ~2-3 s instead of ~9 s;
-# inside the fine zone it moves ±1 so steady-state pitch steps are inaudible.
-NMI_RATE_LOOP_DEADBAND_FRAC = 0.013  # > one latch step (~1%); avoids limit cycle
-NMI_RATE_LOOP_COARSE_ZONE_FRAC = 0.03  # above this error, take a proportional step
-NMI_RATE_LOOP_MAX_COARSE_STEP = 4  # cap acquisition step (latch units)
-NMI_RATE_LOOP_EMA_ALPHA = 0.04  # per-chunk EMA weight for the R-rate estimate (fine)
-# Initial ACQUISITION phase: converge fast so the start-of-playback pitch glide
-# (NMI ramps from nominal up to the converged rate) is brief instead of a ~3 s
-# audible rise. While acquiring, a more responsive EMA + a short decision cadence
-# walk the latch to convergence in ~0.5 s; the first decision that needs no change
-# (deadband or clamped at the ceiling) flips to the gentle fine loop above, whose
-# slow ±1 steps keep steady-state pitch corrections inaudible. The coarse-step cap
-# bounds each move so even fast acquisition glides rather than jumps.
-NMI_RATE_LOOP_ACQUIRE_ALPHA = 0.4  # responsive EMA during acquisition
-NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS = 2  # decide every ~2 chunks while acquiring
-# Per-mode-class seed for the loop's starting latch, so playback begins near the
-# converged rate (minimal/zero start glide) instead of ramping up from nominal.
-# Bitmap modes lose ~10% of NMI ticks to the REU bank-swap + badline DMA →
-# converge near the ceiling; char/light modes lose ~0 → converge near nominal.
-# Refined per mode by the in-session learned-latch cache as scenes converge.
-NMI_BITMAP_SEED_MODES = frozenset({"hires", "mhires"})
-
-# --- Resample-of-residual pitch compensation (host-DMA path) --------------
-# The adaptive loop above can run out of headroom: on heavy bitmap content the
-# consumer R parks below sample_rate even with the latch at the ceiling, so a
-# residual slowdown remains (and pushing the latch harder risks the firmware
-# DMA/badline wedge). This stage closes that residual on the HOST side, with no
-# extra C64 stress: it resamples the float stream DOWN to the measured R rate
-# before the 4-bit encode, so source audio authored at sample_rate is consumed
-# in real time at whatever rate the C64 actually runs — correct tempo + pitch.
-# It composes with the adaptive loop rather than fighting it: as the loop closes
-# the gap the ratio rises to 1.0 and this becomes a bit-exact passthrough; the
-# residual the loop CAN'T close is exactly what this decimates. numpy-only
-# linear interpolation (no scipy runtime dep) — at 4-bit output (~24 dB) the
-# alias/droop floor of linear sits far below the quantization floor, and the
-# ratios are mild (>= RESAMPLE_RATIO_MIN), so a polyphase kernel buys nothing
-# audible. The ratio is EMA-smoothed (slower than the rate loop) so it can't
-# chase the loop into an audible pitch wobble.
-RESAMPLE_RATIO_ALPHA = 0.05  # per-chunk EMA weight for the resample ratio (slow)
-RESAMPLE_RATIO_MIN = 0.85  # never decimate harder than ~15% (sanity floor)
-RESAMPLE_DEADBAND = 0.002  # within 0.2% of 1.0 → passthrough (loop has it covered)
 
 # REC command byte for REU DMA: bit 7 = exec, bit 4 = FF00 disable (execute
 # immediately, no $FF00 trigger needed), bits 1:0 = 01 = REU → C64 fetch.
@@ -1086,46 +1015,6 @@ def _servo_period(
     return period, integ
 
 
-def _nmi_rate_step(
-    r_rate_ema: float,
-    latch: int,
-    *,
-    nominal_latch: int,
-    ceiling_latch: int,
-    target_rate: float,
-    deadband_frac: float = NMI_RATE_LOOP_DEADBAND_FRAC,
-    coarse_zone_frac: float = NMI_RATE_LOOP_COARSE_ZONE_FRAC,
-    max_coarse_step: int = NMI_RATE_LOOP_MAX_COARSE_STEP,
-) -> int:
-    """One decision of the adaptive NMI-rate loop: nudge ``latch`` so the measured
-    consumer rate ``r_rate_ema`` moves toward ``target_rate`` (= sample_rate).
-
-    Rate and latch are INVERSE (NMI period = latch+1 cycles), so R too slow
-    (positive error) ⇒ DECREASE latch (faster NMI). The clamp range is
-    ``[ceiling_latch, nominal_latch]``: ``nominal_latch`` is the rate floor (the
-    latch for sample_rate, reached when there are no bus halts) and
-    ``ceiling_latch`` is the fastest safe latch (handler cycle budget). The loop
-    can therefore only SPEED UP from nominal toward the ceiling to overcome
-    halt-induced tick loss; it can never push past the overrun guard.
-
-    Deadband (≥ one latch quantum) parks the integer latch instead of
-    limit-cycling. Outside ``coarse_zone_frac`` a proportional step (capped)
-    acquires fast; inside it moves ±1 so steady-state pitch steps are inaudible.
-    Pure (no I/O) for unit testing — mirrors ``_servo_period``."""
-    if r_rate_ema <= 0 or target_rate <= 0:
-        return latch
-    err_frac = (target_rate - r_rate_ema) / target_rate
-    if abs(err_frac) <= deadband_frac:
-        return latch
-    if abs(err_frac) > coarse_zone_frac:
-        step = min(max_coarse_step, max(1, round(abs(err_frac) * (latch + 1))))
-    else:
-        step = 1
-    # positive err (consumer too slow) → smaller latch (faster NMI)
-    new_latch = latch - step if err_frac > 0 else latch + step
-    return max(ceiling_latch, min(nominal_latch, new_latch))
-
-
 class AudioStreamer:
     """Threaded NMI audio with anti-underrun pad."""
 
@@ -1141,9 +1030,6 @@ class AudioStreamer:
         use_reu_pump: bool = False,
         reu_pump_governor: bool = True,
         host_dma_servo: bool = True,
-        nmi_rate_adaptive: bool = False,
-        nmi_rate_resample: bool = False,
-        nmi_rate_max_hz: int = 0,
         dsp_params: DSPParams | None = None,
     ):
         # The U64 DMA service accepts only one connection at a time — a
@@ -1188,50 +1074,9 @@ class AudioStreamer:
         # host-side timing — no C64 writes. False = open-loop wall-clock pacing
         # (original drift/echo) for A/B. Does not affect the REU pump path.
         self.host_dma_servo = host_dma_servo
-        # Adaptive NMI-rate compensation (closed loop on measured R rate). When
-        # True, the worker runs the slow outer loop (_update_nmi_rate_loop) that
-        # raises the nominal NMI rate so the bus-halt-throttled consumer lands at
-        # sample_rate — fixing the content-dependent video slowdown while keeping
-        # full bandwidth. Mutually exclusive with the static pitch_mult_* path:
-        # in adaptive mode set_nmi_latch_for_mode no-ops so _pitch_multiplier
-        # stays 1.0 and the loop owns the latch from nominal. See the
-        # NMI_RATE_LOOP_* constants + _nmi_rate_step.
-        self.nmi_rate_adaptive = nmi_rate_adaptive
-        # Resample-of-residual pitch compensation + the adaptive-loop ceiling
-        # clamp (see the RESAMPLE_* constants + _resample_residual + _ceiling_latch).
-        # nmi_rate_max_hz = 0 means "full safe ceiling" (today's behavior); a value
-        # == sample_rate collapses the loop's range so the NMI never speeds up
-        # (pure resample). The resampler reads the loop's measured _r_rate_ema, so
-        # it needs R-measurement to run even when the latch isn't moving — handled
-        # in _next_pace_increment by gating measurement on adaptive OR resample.
-        self.nmi_rate_resample = nmi_rate_resample
-        self.nmi_rate_max_hz = nmi_rate_max_hz
         # PI integrator state for the host-DMA servo (worker-thread-only, so no
         # lock needed). Reset to 0 each time the NMI consumer starts.
         self._servo_integ = 0.0
-        # Adaptive NMI-rate loop state (worker-thread-only). _r_rate_ema = -1.0
-        # is the unseeded sentinel; all reset with _servo_integ at consumer start.
-        self._r_rate_ema = -1.0
-        self._last_r_addr = -1
-        self._last_r_time = 0.0
-        self._nmi_loop_chunk_count = 0
-        self._nmi_loop_acquiring = True
-        # Resample-of-residual state (worker-thread-only; reset with the rate-loop
-        # state at consumer start + in stop()). _resample_ratio_ema = -1.0 is the
-        # unseeded sentinel (→ passthrough until R is measured). _resample_phase is
-        # the fractional source position carried across chunks so the decimation
-        # is phase-continuous (no per-chunk seam); _resample_prev_tail holds the
-        # last source sample so linear interpolation spans the chunk boundary.
-        self._resample_ratio_ema = -1.0
-        self._resample_phase = 0.0
-        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
-        # Current display mode (set by set_nmi_latch_for_mode) + an in-session
-        # cache of each mode's converged latch. The loop SEEDS the starting latch
-        # from these so playback begins at ~the right rate (no start-of-playback
-        # pitch glide) and re-converges fast on a mode change. The cache persists
-        # across scenes/loops (deliberately NOT reset in stop()); per-process only.
-        self._nmi_mode: str | None = None
-        self._nmi_learned_latch: dict[str, int] = {}
         # Host-DMA servo gap telemetry (write head's lead over R, in bytes),
         # for non-ears verification via the drift probe / stop() summary. -1 =
         # no servo sample taken yet this session.
@@ -1284,12 +1129,7 @@ class AudioStreamer:
         # tracked separately in self._queued_samples since q.qsize() now
         # counts blobs, not samples; q.full() is unused because the cap
         # below is in bytes, not items.
-        # Each item is (payload, src_weight): the pre-encoded 4-bit byte blob
-        # plus the number of SOURCE samples it represents. src_weight == len(
-        # payload) on the 1:1 path; when resample-of-residual decimates, the
-        # payload is shorter than src_weight. The worker credits _queued_samples
-        # (a SOURCE-sample tally for position_seconds) by src_weight, not bytes.
-        self.q: queue.Queue[tuple[bytes, int]] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
+        self.q: queue.Queue[bytes] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
         self._queued_samples = 0
         # Cap the buffered audio at ~2 s @ 8 kHz so a stalled consumer
         # doesn't accumulate a wall of stale audio.
@@ -1370,49 +1210,6 @@ class AudioStreamer:
         clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
         return max(1, round(clock / self.sample_rate) - 1)
 
-    def _ceiling_latch(self) -> int:
-        """Smallest (fastest) CIA #2 Timer A latch the adaptive loop may use.
-
-        The hard floor is the latch whose NMI period equals the safe handler
-        budget (c64.NMI_SAFE_MIN_PERIOD_CYCLES; period = latch+1 → latch =
-        budget-1). `nmi_rate_max_hz` raises that floor (caps how fast the loop may
-        push the NMI), trading bandwidth for less HW stress — set it = sample_rate
-        and the floor collapses to nominal, so the loop never speeds up at all
-        (pure resample; the residual is then carried entirely by _resample_residual).
-        0 = no cap → the hard safe floor (max-bandwidth, today's behavior).
-
-        PAL-aware for free: an out-of-range cap is clamped to the system's safe
-        max, which derives from cpu_clock(system) (PAL's slower clock → lower
-        ceiling than NTSC)."""
-        hw_floor = max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)  # fastest safe latch
-        nominal = self._nmi_latch_value()  # slowest = authored sample_rate
-        cap_hz = getattr(self, "nmi_rate_max_hz", 0) or 0
-        if cap_hz <= 0:
-            return hw_floor
-        # Clamp the requested cap to [sample_rate, system safe max], then convert
-        # to a latch (higher Hz → smaller latch). Return value stays within
-        # [hw_floor, nominal] so the loop's [ceiling, nominal] range is always valid.
-        cap_hz = min(max(cap_hz, self.sample_rate), max_safe_sample_rate(self.system))
-        clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
-        cap_latch = max(1, round(clock / cap_hz) - 1)
-        return min(nominal, max(hw_floor, cap_latch))
-
-    def _seed_latch_for_mode(self, mode: str | None) -> int:
-        """Starting CIA #2 latch for the adaptive loop, chosen so playback begins
-        near the converged rate (minimal start glide). Uses the in-session learned
-        value for `mode` if known; else a per-mode-class default — bitmap modes
-        (heavy bus-halt loss) seed at the ceiling, char/light/unknown modes at
-        nominal. Clamped to the safe [ceiling, nominal] range."""
-        nominal = self._nmi_latch_value()
-        ceiling = self._ceiling_latch()
-        if mode is not None and mode in self._nmi_learned_latch:
-            seed = self._nmi_learned_latch[mode]
-        elif mode in NMI_BITMAP_SEED_MODES:
-            seed = ceiling
-        else:
-            seed = nominal
-        return max(ceiling, min(nominal, seed))
-
     def _compensated_latch(self) -> int:
         """The CIA #2 Timer A latch for the current pitch multiplier.
 
@@ -1425,16 +1222,11 @@ class AudioStreamer:
         return max(1, adjusted_period - 1)
 
     def _start_nmi_timer(self) -> None:
-        # Adaptive mode: arm at the per-mode seed (learned value or class default)
-        # so playback starts near the converged rate — the loop trims from there
-        # instead of gliding up from nominal. Static mode: apply the pitch
-        # multiplier chosen for this scene (the timer arms from the worker after
-        # prebuffer, i.e. AFTER set_nmi_latch_for_mode, so honoring it here is what
-        # makes the static compensation stick instead of resetting to nominal).
-        if getattr(self, "nmi_rate_adaptive", False):
-            latch = self._seed_latch_for_mode(self._nmi_mode)
-        else:
-            latch = self._compensated_latch()
+        # Apply any pitch multiplier already chosen for this scene — the timer
+        # arms from the worker after prebuffer, i.e. AFTER set_nmi_latch_for_mode
+        # ran at scene setup, so honoring it here is what makes the compensation
+        # stick (otherwise this would reset the latch to nominal).
+        latch = self._compensated_latch()
         self._nmi_latch = latch
         self._nmi_timer_started = True
         self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
@@ -1466,19 +1258,6 @@ class AudioStreamer:
         """
         if not self.host_dma_servo or not self._worker_thread:
             # REU pump has its own governor; open-loop doesn't need adjustment.
-            return
-        if self.nmi_rate_adaptive:
-            # Adaptive mode owns the latch via the closed loop, so the static
-            # multiplier stays 1.0. But record the mode here so the loop SEEDS its
-            # starting latch from a close per-mode estimate (no start glide). On a
-            # mid-stream mode change (timer already running), re-seed + re-acquire.
-            self._nmi_mode = display_mode.lower()
-            if self._nmi_timer_started:
-                seed = self._seed_latch_for_mode(self._nmi_mode)
-                if seed != self._nmi_latch:
-                    self._nmi_latch = seed
-                    self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", seed & 0xFF, (seed >> 8) & 0xFF)
-                self._nmi_loop_acquiring = True
             return
 
         # `hires_edges` scenes report display_mode.name == "hires" (same VIC
@@ -1547,12 +1326,7 @@ class AudioStreamer:
             prebuffered = False
             bytes_prebuffered = 0
             chunk_buf = bytearray(self.chunk_size)
-            # A partially-consumed queue blob carried to the next chunk, as
-            # (remaining_bytes, src_weight). The weight is credited to
-            # _queued_samples (a SOURCE-sample tally) only when the blob's last
-            # byte is consumed, so resample's byte≠source-sample ratio can't
-            # drift the position clock. None = nothing carried.
-            leftover: tuple[bytes, int] | None = None
+            leftover = b""
             chunk_period = self.chunk_size / self.sample_rate
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
             # Pace + collect deadlines. Zero until NMI starts.
@@ -1567,38 +1341,31 @@ class AudioStreamer:
                     collect_deadline = time.monotonic() + chunk_period
 
                 n = 0
-                src_from_queue = 0  # source samples whose blobs fully drained
+                from_queue = 0
 
-                if leftover is not None:
-                    lbytes, lweight = leftover
-                    take = min(len(lbytes), self.chunk_size)
-                    chunk_buf[:take] = lbytes[:take]
+                if leftover:
+                    take = min(len(leftover), self.chunk_size)
+                    chunk_buf[:take] = leftover[:take]
                     n = take
-                    if take < len(lbytes):
-                        leftover = (lbytes[take:], lweight)  # still partial; defer
-                    else:
-                        src_from_queue += lweight  # fully drained → credit weight
-                        leftover = None
+                    from_queue = take
+                    leftover = leftover[take:]
 
                 # Block with deadline. Returns early once chunk_buf is
                 # full or once the producer is silent past the deadline.
-                while n < self.chunk_size and leftover is None and self.running:
+                while n < self.chunk_size and not leftover and self.running:
                     remaining = collect_deadline - time.monotonic()
                     if remaining <= 0:
                         break
                     try:
-                        payload, weight = self.q.get(timeout=remaining)
+                        piece = self.q.get(timeout=remaining)
                     except queue.Empty:
                         break
-                    take = min(len(payload), self.chunk_size - n)
-                    chunk_buf[n : n + take] = payload[:take]
+                    take = min(len(piece), self.chunk_size - n)
+                    chunk_buf[n : n + take] = piece[:take]
                     n += take
-                    if take < len(payload):
-                        leftover = (payload[take:], weight)  # partial; defer weight
-                    else:
-                        # Fully consumed (covers a 0-byte resampler-stash blob,
-                        # which credits its source weight immediately).
-                        src_from_queue += weight
+                    from_queue += take
+                    if take < len(piece):
+                        leftover = piece[take:]
 
                 if not self.running:
                     break
@@ -1613,7 +1380,7 @@ class AudioStreamer:
                     self._full_underruns += 1
                 elif n < self.chunk_size and prebuffered:
                     # Partial chunk: pad to keep pace math simple. Pad
-                    # bytes carry no source weight (not from the queue).
+                    # bytes are NOT counted in from_queue.
                     pad = self.chunk_size - n
                     chunk_buf[n : n + pad] = bytes([NEUTRAL_SAMPLE]) * pad
                     n = self.chunk_size
@@ -1625,8 +1392,8 @@ class AudioStreamer:
                         time.sleep(sleep_s)
 
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
-                if src_from_queue:
-                    self._queued_samples = max(0, self._queued_samples - src_from_queue)
+                if from_queue:
+                    self._queued_samples = max(0, self._queued_samples - from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1637,19 +1404,8 @@ class AudioStreamer:
                         self._start_nmi_timer()
                         prebuffered = True
                         # R only becomes meaningful now that the NMI consumes;
-                        # start the servo integrator + adaptive-rate loop clean.
+                        # start the servo integrator clean.
                         self._servo_integ = 0.0
-                        self._r_rate_ema = -1.0
-                        self._last_r_addr = -1
-                        self._last_r_time = 0.0
-                        self._nmi_loop_chunk_count = 0
-                        self._nmi_loop_acquiring = True
-                        # Re-seed the resampler with the rate loop: drop the stale
-                        # ratio + seam so it re-acquires against the new consumer's
-                        # measured R (sentinel -1 → passthrough until R is known).
-                        self._resample_ratio_ema = -1.0
-                        self._resample_phase = 0.0
-                        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
                         # Pace the next write one chunk_period out so the
                         # PREBUFFER_CHUNKS slack stays steady instead of
                         # getting eaten up immediately.
@@ -1688,94 +1444,8 @@ class AudioStreamer:
         self._servo_gap_last = gap
         self._servo_gap_min = gap if self._servo_gap_min < 0 else min(self._servo_gap_min, gap)
         self._servo_gap_max = max(self._servo_gap_max, gap)
-        # Slow outer loop: track R's *rate* and retune the NMI latch so the
-        # consumer lands at sample_rate (correct speed/pitch). Reuses the r_addr
-        # already read above — no extra REST traffic. Reads the rate, not the gap
-        # (the gap servo below nulls the gap, so it carries no rate signal).
-        # getattr-guarded so __new__-built test streamers read as adaptive-off.
-        # Resample-of-residual also needs the measured R rate (_r_rate_ema), so
-        # run the estimator when EITHER consumer is enabled; the actual latch MOVE
-        # stays gated on adaptive inside the loop (resample never moves the latch).
-        if getattr(self, "nmi_rate_adaptive", False) or getattr(self, "nmi_rate_resample", False):
-            self._update_nmi_rate_loop(r_addr)
         period, self._servo_integ = _servo_period(gap, self._servo_integ, chunk_period=chunk_period)
         return period
-
-    def _update_nmi_rate_loop(self, r_addr: int) -> None:
-        """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2
-        Timer A latch toward making it equal sample_rate — fast at first
-        (acquisition, ~0.5 s, so the start glide is brief), then ~once per second.
-
-        Called per chunk from _next_pace_increment with the already-read R
-        address, so it adds no REST traffic and only runs on the host-DMA path
-        (the REU pump never starts the worker; open-loop returns before this).
-        Differencing R over wall-clock (with the drift-probe's torn/backward-read
-        guard) gives the rate the gap can't; an EMA rejects the noisy 16-bit
-        self-modifying-operand read. The actual latch move is the pure
-        _nmi_rate_step (clamped to the handler budget)."""
-        # Acquisition uses a responsive EMA + short cadence so the start-of-
-        # playback pitch glide is brief; the fine loop uses the slow values.
-        acquiring = self._nmi_loop_acquiring
-        alpha = NMI_RATE_LOOP_ACQUIRE_ALPHA if acquiring else NMI_RATE_LOOP_EMA_ALPHA
-        now = time.monotonic()
-        if self._last_r_addr >= 0 and self._last_r_time > 0.0:
-            dt = now - self._last_r_time
-            dr = (r_addr - self._last_r_addr) % RING_BUFFER_SIZE
-            # Discard a torn/backward read (half-ring jump = a read tear mid
-            # self-modify, not real advance) — same guard as hostdma_drift_probe.
-            if dt > 0 and dr < RING_BUFFER_SIZE // 2:
-                inst = dr / dt
-                if self._r_rate_ema < 0:
-                    self._r_rate_ema = inst  # seed (no ramp-from-zero)
-                else:
-                    self._r_rate_ema += alpha * (inst - self._r_rate_ema)
-        self._last_r_addr = r_addr
-        self._last_r_time = now
-
-        # The EMA update above is all resample-only mode needs (it reads
-        # _r_rate_ema). The latch decision/move below is adaptive's job — skip it
-        # when adaptive is off so resample-without-adaptive measures R but leaves
-        # the latch where _start_nmi_timer put it.
-        if not getattr(self, "nmi_rate_adaptive", False):
-            return
-
-        self._nmi_loop_chunk_count += 1
-        decide_every = (
-            NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS
-            if acquiring
-            else max(1, round(self.sample_rate / self.chunk_size))
-        )
-        if self._nmi_loop_chunk_count < decide_every or self._r_rate_ema < 0:
-            return
-        self._nmi_loop_chunk_count = 0
-        if not self._nmi_timer_started:
-            return
-        new_latch = _nmi_rate_step(
-            self._r_rate_ema,
-            self._nmi_latch,
-            nominal_latch=self._nmi_latch_value(),
-            ceiling_latch=self._ceiling_latch(),
-            target_rate=float(self.sample_rate),
-        )
-        if new_latch == self._nmi_latch:
-            # No change → within deadband or clamped at the ceiling: converged.
-            # Leave fast acquisition for the gentle fine loop (slow ±1 steps), and
-            # remember this mode's converged latch so the next scene/loop in this
-            # mode seeds dead-on (no start glide).
-            self._nmi_loop_acquiring = False
-            if self._nmi_mode is not None:
-                self._nmi_learned_latch[self._nmi_mode] = self._nmi_latch
-            return
-        log.debug(
-            "[audio] adaptive NMI rate%s: R≈%.0f / %d Hz target, latch %d → %d",
-            " (acquire)" if acquiring else "",
-            self._r_rate_ema,
-            self.sample_rate,
-            self._nmi_latch,
-            new_latch,
-        )
-        self._nmi_latch = new_latch
-        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", new_latch & 0xFF, (new_latch >> 8) & 0xFF)
 
     # ---- sample tap ----------------------------------------------------------
     def _push_to_tap(self, mono_floats: np.ndarray) -> None:
@@ -1860,68 +1530,6 @@ class AudioStreamer:
         dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
         return dsp.process(floats) if dsp.active else floats
 
-    def _resample_residual(self, floats: np.ndarray) -> np.ndarray:
-        """Decimate float samples to the measured C64 consumer rate R so playback
-        holds correct tempo/pitch when the adaptive loop can't fully close the
-        bus-halt slowdown. ratio = R / sample_rate (EMA-smoothed); a ratio < 1.0
-        drops the residual fraction of samples. Returns the input UNCHANGED (bit-
-        exact) when disabled, when R isn't measured yet, or when the ratio is
-        within RESAMPLE_DEADBAND of 1.0 (the adaptive loop has it covered).
-
-        Linear interpolation with a fractional phase accumulator carried across
-        chunks (``_resample_phase``) plus the previous chunk's last sample
-        (``_resample_prev_tail``) so the decimation is seam-free — concatenating
-        the per-chunk outputs equals a one-shot resample of the concatenated
-        input. numpy-only (no scipy runtime dep); see the RESAMPLE_* constants."""
-        if not getattr(self, "nmi_rate_resample", False) or floats.size == 0:
-            return floats
-        r_ema = getattr(self, "_r_rate_ema", -1.0)
-        sr = self.sample_rate
-        if r_ema < 0 or sr <= 0:
-            return floats  # R not measured yet → bit-exact passthrough
-        raw = r_ema / sr
-        if self._resample_ratio_ema < 0:
-            self._resample_ratio_ema = raw  # seed (no ramp-from-zero)
-        else:
-            self._resample_ratio_ema += RESAMPLE_RATIO_ALPHA * (raw - self._resample_ratio_ema)
-        # Never upsample (R <= sample_rate always) and never decimate past the floor.
-        ratio = min(1.0, max(RESAMPLE_RATIO_MIN, self._resample_ratio_ema))
-        if ratio >= 1.0 - RESAMPLE_DEADBAND:
-            # Loop has the gap; passthrough. Drop the seam state so a later
-            # decimation phase starts clean instead of from a stale tail.
-            self._resample_phase = 0.0
-            self._resample_prev_tail = np.zeros(0, dtype=np.float32)
-            return floats
-        floats = floats.astype(np.float32, copy=False)
-        x = (
-            np.concatenate((self._resample_prev_tail, floats))
-            if self._resample_prev_tail.size
-            else floats
-        )
-        if x.size < 2:
-            # Can't interpolate across <2 samples; stash and emit nothing. Phase
-            # stays valid (x[0] is unchanged as the next chunk's index 0).
-            self._resample_prev_tail = x
-            return np.zeros(0, dtype=np.float32)
-        inv = 1.0 / ratio  # source samples advanced per output sample (> 1.0)
-        p0 = self._resample_phase
-        last = x.size - 1
-        # Count outputs whose source position pos = p0 + inv*k stays <= the last
-        # interpolable index. The next chunk's index 0 is x[-1], so carry the
-        # phase relative to that sample.
-        m = int(np.floor((last - p0) / inv)) + 1
-        if m <= 0:
-            self._resample_phase = p0 - last
-            self._resample_prev_tail = x[-1:]
-            return np.zeros(0, dtype=np.float32)
-        pos = p0 + inv * np.arange(m, dtype=np.float64)
-        idx = np.minimum(np.floor(pos).astype(np.int64), last - 1)
-        frac = (pos - idx).astype(np.float32)
-        out: np.ndarray = x[idx] * (1.0 - frac) + x[idx + 1] * frac
-        self._resample_phase = (p0 + inv * m) - last
-        self._resample_prev_tail = x[-1:]
-        return out.astype(np.float32, copy=False)
-
     # ---- shared encode + enqueue ---------------------------------------------
     def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
@@ -1936,46 +1544,35 @@ class AudioStreamer:
         by the PyAV push path so the demuxer naturally throttles). If
         False, drop the whole blob when full (mic path, where the
         sounddevice callback is real-time and can't block). Backpressure
-        is counted in samples (not blobs) against self._max_queued_samples.
-
-        Counter-split for resample-of-residual: _pushed_count / _queued_samples
-        and the queue blob's weight are all in SOURCE samples (n_src), so
-        position_seconds + the demuxer backpressure stay on the source timeline
-        regardless of decimation; only the encoded PAYLOAD shrinks to the
-        measured consumer rate. The two counters are 1:1 with bytes when resample
-        is off or a no-op."""
+        is counted in samples (not blobs) against self._max_queued_samples."""
         if floats.size == 0:
             return 0
         floats = self._apply_dsp(floats)
-        # Source-sample count drives all accounting (the A/V master clock); the
-        # tap shows source-rate audio (spectrally ~identical to the decimated
-        # output). Resample to the measured consumer rate AFTER both.
-        n_src = int(floats.size)
         self._push_to_tap(floats.astype(np.float32, copy=False))
-        resampled = self._resample_residual(floats)
-        vol = encode_floats_to_dac(resampled, dither=self.dither_enabled)
+        vol = encode_floats_to_dac(floats, dither=self.dither_enabled)
+        n = int(vol.size)
         payload = vol.tobytes()
-        # Sample-count backpressure (in SOURCE samples). Reading _queued_samples
-        # without the GIL is racy with the worker decrement, but the worst case
-        # is putting one blob over the cap — harmless given the soft ceiling.
-        if self._queued_samples + n_src > self._max_queued_samples:
+        # Sample-count backpressure. Reading _queued_samples without the GIL
+        # is racy with the worker decrement, but the worst case is putting
+        # one blob over the cap — harmless given the cap is a soft ceiling.
+        if self._queued_samples + n > self._max_queued_samples:
             if not block_on_full:
                 return 0
             deadline = time.time() + QUEUE_PUT_TIMEOUT_S
-            while self._queued_samples + n_src > self._max_queued_samples and self.running:
+            while self._queued_samples + n > self._max_queued_samples and self.running:
                 if time.time() >= deadline:
                     return 0
                 time.sleep(BACKPRESSURE_SPIN_S)
         try:
             if block_on_full:
-                self.q.put((payload, n_src), timeout=QUEUE_PUT_TIMEOUT_S)
+                self.q.put(payload, timeout=QUEUE_PUT_TIMEOUT_S)
             else:
-                self.q.put_nowait((payload, n_src))
+                self.q.put_nowait(payload)
         except queue.Full:
             return 0
-        self._queued_samples += n_src
-        self._pushed_count += n_src
-        return n_src
+        self._queued_samples += n
+        self._pushed_count += n
+        return n
 
     # ---- input sources -------------------------------------------------------
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
@@ -2686,18 +2283,6 @@ class AudioStreamer:
         # mode, so a stale multiplier must not leak across scenes).
         self._nmi_timer_started = False
         self._pitch_multiplier = 1.0
-        # Clear adaptive-rate loop state too, so the next consumer re-acquires
-        # from nominal rather than carrying a stale R-rate estimate.
-        self._r_rate_ema = -1.0
-        self._last_r_addr = -1
-        self._last_r_time = 0.0
-        self._nmi_loop_chunk_count = 0
-        self._nmi_loop_acquiring = True
-        # Clear resample-of-residual state so the next consumer re-acquires its
-        # ratio + seam from scratch (sentinel -1 → passthrough until R is known).
-        self._resample_ratio_ema = -1.0
-        self._resample_phase = 0.0
-        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
         # Report underrun telemetry. Each full underrun is an audible
         # click; partials are less audible but still indicate producer
         # stalls. Deterministic, source-correlated counts (same numbers

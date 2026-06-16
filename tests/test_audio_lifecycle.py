@@ -25,12 +25,11 @@ from c64cast.api import Ultimate64API
 from c64cast.audio import (
     NEUTRAL_SAMPLE,
     PREBUFFER_CHUNKS,
-    RESAMPLE_RATIO_MIN,
     SAMPLE_TAP_SIZE,
     AudioStreamer,
     encode_floats_to_dac,
 )
-from c64cast.c64 import CIA2, NMI_SAFE_MIN_PERIOD_CYCLES, SID, max_safe_sample_rate
+from c64cast.c64 import CIA2, SID
 
 
 def _make(**kw: Any) -> AudioStreamer:
@@ -106,7 +105,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # underruns.
         s = _make_worker_streamer(chunk_size=32)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put((bytes([NEUTRAL_SAMPLE] * 32), 32))
+            s.q.put(bytes([NEUTRAL_SAMPLE] * 32))
             s._queued_samples += 32
         _run_worker(s, until=lambda: s._full_underruns >= 3)
         self.assertGreaterEqual(s._full_underruns, 1)
@@ -120,7 +119,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # window closes with a partial chunk → NEUTRAL tail pad.
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put((bytes([1] * 64), 64))
+            s.q.put(bytes([1] * 64))
             s._queued_samples += 64
 
         stop = threading.Event()
@@ -130,7 +129,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             # assembles within a single collect window.
             period = s.chunk_size / s.sample_rate
             while not stop.is_set():
-                s.q.put((bytes([2] * (s.chunk_size // 2)), s.chunk_size // 2))
+                s.q.put(bytes([2] * (s.chunk_size // 2)))
                 s._queued_samples += s.chunk_size // 2
                 time.sleep(period)
 
@@ -149,7 +148,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # A single blob bigger than chunk_size must split across writes through
         # the `leftover` carry, preserving byte order.
         s = _make_worker_streamer(chunk_size=16, sample_rate=64000)
-        s.q.put((bytes(range(50)), 50))
+        s.q.put(bytes(range(50)))
         s._queued_samples += 50
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 4)
         body = b"".join(d for _, d in cast(Any, s.api).writes)
@@ -160,7 +159,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.
         s = _make_worker_streamer(chunk_size=8)
-        s.q.put((bytes([7] * 8), 8))
+        s.q.put(bytes([7] * 8))
         s._queued_samples += 8
 
         def boom(addr: str, data: bytes) -> None:
@@ -267,146 +266,12 @@ class PitchCompensationLatchTest(unittest.TestCase):
         self.assertAlmostEqual(s._pitch_multiplier, 1.0)
 
 
-class ResampleResidualTest(unittest.TestCase):
-    """Resample-of-residual decimates source audio to the measured consumer rate
-    R so playback keeps correct tempo/pitch when the adaptive loop can't close
-    the bus-halt slowdown. These pin: the resampler's length + cross-chunk phase
-    continuity, its bit-exact passthrough guards, the source-time accounting
-    invariant (position_seconds must NOT drift when bytes are decimated), and the
-    PAL-aware ceiling clamp that selects the three compensation postures."""
-
-    # ---- the resampler ------------------------------------------------------
-    def test_length_and_phase_continuity(self):
-        # Two consecutive chunks must equal a one-shot resample of the whole
-        # input (proves the persistent fractional-phase accumulator is seam-free).
-        ratio = 0.9
-        full = np.linspace(-1.0, 1.0, 4000, dtype=np.float32)
-
-        one = _make(nmi_rate_resample=True)
-        one._r_rate_ema = one.sample_rate * ratio
-        one_shot = one._resample_residual(full)
-
-        split = _make(nmi_rate_resample=True)
-        split._r_rate_ema = split.sample_rate * ratio
-        a = split._resample_residual(full[:1500])
-        b = split._resample_residual(full[1500:])
-        two_chunk = np.concatenate([a, b])
-
-        self.assertAlmostEqual(len(one_shot) / len(full), ratio, delta=0.01)
-        self.assertEqual(len(two_chunk), len(one_shot))
-        np.testing.assert_allclose(two_chunk, one_shot, atol=1e-5)
-
-    def test_passthrough_when_unseeded(self):
-        # R not measured yet (_r_rate_ema == -1.0) → bit-exact passthrough.
-        s = _make(nmi_rate_resample=True)
-        x = np.linspace(-1.0, 1.0, 256, dtype=np.float32)
-        np.testing.assert_array_equal(s._resample_residual(x), x)
-
-    def test_passthrough_within_deadband(self):
-        # ratio within RESAMPLE_DEADBAND of 1.0 (loop closed the gap) → no-op.
-        s = _make(nmi_rate_resample=True)
-        s._r_rate_ema = float(s.sample_rate)  # ratio 1.0
-        x = np.linspace(-1.0, 1.0, 256, dtype=np.float32)
-        np.testing.assert_array_equal(s._resample_residual(x), x)
-
-    def test_passthrough_when_disabled(self):
-        # Toggle off → bit-exact passthrough even with a decimating ratio set.
-        s = _make(nmi_rate_resample=False)
-        s._r_rate_ema = s.sample_rate * 0.9
-        x = np.linspace(-1.0, 1.0, 256, dtype=np.float32)
-        np.testing.assert_array_equal(s._resample_residual(x), x)
-
-    def test_ratio_floor_clamp(self):
-        # A wildly-low R must not decimate past RESAMPLE_RATIO_MIN.
-        s = _make(nmi_rate_resample=True)
-        s._r_rate_ema = s.sample_rate * 0.2  # would be 80% drop, unclamped
-        out = s._resample_residual(np.linspace(-1.0, 1.0, 1000, dtype=np.float32))
-        self.assertGreaterEqual(len(out) / 1000, RESAMPLE_RATIO_MIN - 0.02)
-
-    # ---- source-time accounting (the counter-split) -------------------------
-    def test_position_stays_source_time_after_decimation(self):
-        # Push source samples with resample active, drain through the worker, and
-        # assert the position clock + queue tally stayed on the SOURCE timeline
-        # (pushed counts source samples; queued returns to 0 despite fewer bytes).
-        s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
-        s.nmi_rate_resample = True
-        s._r_rate_ema = s.sample_rate * 0.9
-        total_src = 0
-        for _ in range(PREBUFFER_CHUNKS + 4):
-            n = s._encode_and_enqueue(np.linspace(-1.0, 1.0, 200, dtype=np.float32))
-            total_src += n
-        self.assertEqual(s._pushed_count, total_src)
-        _run_worker(s, until=lambda: s.q.empty() and s._queued_samples == 0, timeout=2.0)
-        self.assertEqual(s._queued_samples, 0)
-        self.assertAlmostEqual(s.position_seconds(), total_src / s.sample_rate, places=6)
-
-    def test_encode_enqueue_resample_off_is_byte_identical(self):
-        # Resample off → the queued payload is byte-for-byte the plain encode,
-        # and the blob weight equals the source-sample count.
-        s = _make(nmi_rate_resample=False, dither=False)
-        s._r_rate_ema = s.sample_rate * 0.9  # would decimate IF enabled
-        s.running = True
-        x = np.linspace(-1.0, 1.0, 300, dtype=np.float32)
-        n = s._encode_and_enqueue(x)
-        payload, weight = s.q.get_nowait()
-        self.assertEqual(payload, encode_floats_to_dac(x, dither=False).tobytes())
-        self.assertEqual(weight, x.size)
-        self.assertEqual(n, x.size)
-
-    def test_encode_enqueue_decimates_payload_keeps_source_weight(self):
-        # Resample on → fewer payload bytes than source samples, but the blob
-        # weight (and _pushed_count) stay in source units.
-        s = _make(nmi_rate_resample=True, dither=False)
-        s._r_rate_ema = s.sample_rate * 0.9
-        s.running = True
-        x = np.linspace(-1.0, 1.0, 1000, dtype=np.float32)
-        n = s._encode_and_enqueue(x)
-        payload, weight = s.q.get_nowait()
-        self.assertEqual(n, 1000)
-        self.assertEqual(weight, 1000)  # source units
-        self.assertLess(len(payload), 1000)  # decimated bytes
-        self.assertAlmostEqual(len(payload) / 1000, 0.9, delta=0.02)
-
-    # ---- PAL-aware ceiling clamp → the three postures -----------------------
-    def test_ceiling_default_is_hardware_floor(self):
-        # nmi_rate_max_hz=0 → max-bandwidth hybrid: full safe ceiling (today).
-        s = _make(sample_rate=8000)
-        self.assertEqual(s._ceiling_latch(), NMI_SAFE_MIN_PERIOD_CYCLES - 1)
-
-    def test_ceiling_capped_at_sample_rate_is_nominal(self):
-        # nmi_rate_max_hz == sample_rate → pure resample: range collapses to
-        # nominal, so the loop never speeds the NMI up.
-        s = _make(sample_rate=8000, nmi_rate_max_hz=8000)
-        self.assertEqual(s._ceiling_latch(), s._nmi_latch_value())
-
-    def test_ceiling_hybrid_between_floor_and_nominal(self):
-        # A mid cap → HW-safe hybrid: between the floor and nominal.
-        s = _make(sample_rate=8000, nmi_rate_max_hz=10000)
-        floor = NMI_SAFE_MIN_PERIOD_CYCLES - 1
-        self.assertLess(floor, s._ceiling_latch())
-        self.assertLess(s._ceiling_latch(), s._nmi_latch_value())
-
-    def test_ceiling_over_safe_max_clamps_to_floor(self):
-        # An impossible cap is clamped to the system safe max → the floor, never
-        # below it (no handler overrun).
-        s = _make(sample_rate=8000, nmi_rate_max_hz=99999)
-        self.assertEqual(s._ceiling_latch(), NMI_SAFE_MIN_PERIOD_CYCLES - 1)
-
-    def test_ceiling_clamp_is_pal_aware(self):
-        # PAL's slower clock gives a lower safe max, so a cap that NTSC can honor
-        # but PAL cannot gets floored on PAL.
-        self.assertLess(max_safe_sample_rate("PAL"), max_safe_sample_rate("NTSC"))
-        cap = 11400  # above PAL's safe max (~11.2 kHz), below NTSC's (~11.6 kHz)
-        pal = _make(sample_rate=8000, system="PAL", nmi_rate_max_hz=cap)
-        self.assertEqual(pal._ceiling_latch(), NMI_SAFE_MIN_PERIOD_CYCLES - 1)
-
-
 class NmiRateSafetyTest(unittest.TestCase):
     """The NMI sample-rate guard (c64.nmi_rate_safety) + its config wiring.
 
     The handler completes in <=81 cycles (badline worst case); a sample period
     shorter than that queues NMIs and drops pitch. PAL's slower clock = tighter
-    ceiling than NTSC. See [[project-nmi-rate-intelligibility]]."""
+    ceiling than NTSC."""
 
     def test_default_rate_is_safe_both_standards(self):
         from c64cast.c64 import nmi_rate_safety
@@ -478,154 +343,6 @@ class NmiRateSafetyTest(unittest.TestCase):
         validate_nmi_sample_rate(Config())  # default 10500, no raise
 
 
-class NmiRateAdaptiveStepTest(unittest.TestCase):
-    """The pure adaptive-rate control step (`audio._nmi_rate_step`) + its wiring.
-
-    Drives the measured consumer rate toward target by stepping the CIA #2 latch.
-    Rate/latch are inverse, so R too slow → SMALLER latch (faster). NTSC@10500:
-    nominal_latch=96 (period 97), ceiling_latch=87 (period 88, the handler budget).
-    See [[project-nmi-rate-intelligibility]] / [[project-hostdma-servo-pitch-compensation]]."""
-
-    NOMINAL = 96  # _nmi_latch_value() for NTSC @ 10500
-    CEILING = 87  # NMI_SAFE_MIN_PERIOD_CYCLES (88) - 1
-    TARGET = 10500.0
-
-    def _step(self, r_rate: float, latch: int) -> int:
-        return audio_mod._nmi_rate_step(
-            r_rate,
-            latch,
-            nominal_latch=self.NOMINAL,
-            ceiling_latch=self.CEILING,
-            target_rate=self.TARGET,
-        )
-
-    def test_too_slow_shrinks_latch(self):  # the sign pin
-        out = self._step(9456.0, self.NOMINAL)  # ~9.9% slow
-        self.assertLess(out, self.NOMINAL)  # faster NMI ⇒ smaller latch
-
-    def test_too_fast_grows_latch(self):
-        out = self._step(10800.0, 90)  # consumer above target
-        self.assertGreater(out, 90)  # slower NMI ⇒ larger latch
-
-    def test_deadband_holds(self):
-        # within ~1% of target (< 1.3% deadband) ⇒ no change (no limit cycle)
-        self.assertEqual(self._step(10440.0, 92), 92)
-
-    def test_fixed_point_at_target(self):
-        self.assertEqual(self._step(self.TARGET, 92), 92)
-
-    def test_fine_zone_single_step(self):
-        # 1.9% error (deadband < e < coarse 3%) ⇒ exactly one latch step
-        out = self._step(10300.0, 92)
-        self.assertEqual(abs(out - 92), 1)
-
-    def test_coarse_zone_bigger_step_but_capped(self):
-        out = self._step(9456.0, self.NOMINAL)  # ~9.9% ⇒ capped coarse step (4)
-        self.assertEqual(self.NOMINAL - out, 4)
-
-    def test_clamp_at_ceiling(self):
-        # huge error near the ceiling must never push past it (overrun guard)
-        self.assertEqual(self._step(5000.0, self.CEILING + 1), self.CEILING)
-
-    def test_clamp_at_nominal(self):
-        # too-fast at nominal must not exceed nominal (can only slow back to it)
-        self.assertEqual(self._step(11500.0, self.NOMINAL), self.NOMINAL)
-
-    def test_nonpositive_rate_no_change(self):
-        self.assertEqual(self._step(0.0, 92), 92)
-        self.assertEqual(self._step(-1.0, 92), 92)
-
-    # ---- wiring ----
-    def test_adaptive_mode_disables_static_multiplier(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._worker_thread = cast(Any, object())
-        s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()  # nominal
-        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        # Adaptive ignores the static multiplier (stays 1.0) and instead records
-        # the mode + re-seeds the latch to the mode seed (here: ceiling), NOT the
-        # static-multiplier latch (110).
-        self.assertEqual(s._pitch_multiplier, 1.0)
-        self.assertEqual(s._nmi_mode, "mhires")
-        self.assertEqual(s._nmi_latch, s._ceiling_latch())
-
-    def test_loop_retunes_latch_when_slow(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()  # 96
-        s._r_rate_ema = 9456.0  # ~9.9% slow, pre-seeded
-        s._last_r_addr = -1  # skip the EMA update this call (use the seed)
-        decide_every = max(1, round(s.sample_rate / s.chunk_size))
-        s._nmi_loop_chunk_count = decide_every - 1  # next call triggers a decision
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s._nmi_latch, 92)  # 96 - capped coarse step 4
-        regs = cast(Any, s.api).regs[f"{CIA2.TIMER_A_LO:04X}"]
-        self.assertEqual(regs[0] | (regs[1] << 8), 92)
-
-    def test_loop_exits_acquisition_on_settle(self):
-        # When a decision needs no change (R at target ⇒ deadband), the fast
-        # acquisition phase flips off so steady-state uses the gentle fine loop.
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()
-        s._r_rate_ema = 10500.0  # already at target → step returns no change
-        s._last_r_addr = -1
-        s._nmi_loop_chunk_count = audio_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
-        self.assertTrue(s._nmi_loop_acquiring)
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertFalse(s._nmi_loop_acquiring)  # settled → fine loop
-
-    def test_seed_bitmap_mode_near_ceiling(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        self.assertEqual(s._seed_latch_for_mode("mhires"), s._ceiling_latch())
-        self.assertEqual(s._seed_latch_for_mode("hires"), s._ceiling_latch())
-
-    def test_seed_char_mode_at_nominal(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        self.assertEqual(s._seed_latch_for_mode("petscii"), s._nmi_latch_value())
-        self.assertEqual(s._seed_latch_for_mode(None), s._nmi_latch_value())  # unknown → nominal
-
-    def test_seed_prefers_learned_value(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_learned_latch["mhires"] = 90
-        self.assertEqual(s._seed_latch_for_mode("mhires"), 90)  # learned beats the class default
-
-    def test_start_timer_arms_at_mode_seed(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_mode = "mhires"
-        s._start_nmi_timer()
-        self.assertEqual(s._nmi_latch, s._ceiling_latch())  # no glide-up from nominal
-
-    def test_settle_records_learned_latch(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_mode = "mhires"
-        s._nmi_latch = 88
-        s._r_rate_ema = 10500.0  # at target → settles without a change
-        s._last_r_addr = -1
-        s._nmi_loop_chunk_count = audio_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s._nmi_learned_latch["mhires"], 88)
-
-    def test_loop_discards_torn_read(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
-        s._last_r_time = time.monotonic() - 0.1
-        s._r_rate_ema = -1.0
-        # a half-ring forward jump = a torn self-modify read, not real advance
-        torn = audio_mod.RING_BUFFER_ADDR + audio_mod.RING_BUFFER_SIZE // 2 + 16
-        s._update_nmi_rate_loop(torn)
-        self.assertEqual(s._r_rate_ema, -1.0)  # estimate left unseeded
-
-    def test_loop_seeds_rate_on_valid_read(self):
-        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
-        s._last_r_time = time.monotonic() - 0.1  # ~0.1 s ago
-        s._r_rate_ema = -1.0
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)  # ~1000 B in ~0.1 s
-        self.assertGreater(s._r_rate_ema, 0.0)  # seeded to ~10 kB/s (timing-slop)
-
-
 class DigiBoostTest(unittest.TestCase):
     def test_enable_writes_all_voices(self):
         s = _make(digi_boost=True)
@@ -681,7 +398,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         s.running = True
         s.q = queue.Queue(maxsize=1)
-        s.q.put((b"\x07", 1))  # fill the single blob slot
+        s.q.put(b"\x07")  # fill the single blob slot
         s._queued_samples = 0  # but keep the sample cap clear
         n = s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0)
@@ -980,7 +697,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_stop_drains_leftover_queue(self):
         s = _make()
-        s.q.put((b"\x07\x07", 2))
+        s.q.put(b"\x07\x07")
         s._queued_samples = 2
         s.stop()
         self.assertTrue(s.q.empty())

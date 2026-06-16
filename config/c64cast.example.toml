@@ -243,43 +243,6 @@ host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
                                     # a ring. Pure host-side timing — no C64
                                     # writes, so none of the REU servo's glitch.
                                     # On by default; false = open-loop A/B.
-nmi_rate_adaptive = true            # Adaptive NMI-rate compensation. The
-                                    # host_dma_servo above stops the echo but
-                                    # locks playback to the bus-halt-throttled
-                                    # consumer R → video plays slow (more on
-                                    # high-motion content). This closed loop
-                                    # instead RAISES the nominal NMI rate until
-                                    # the measured R lands back at sample_rate,
-                                    # so playback keeps correct speed + pitch AND
-                                    # full bandwidth (vs resampling down to R),
-                                    # auto-tracking the load. Clamped to the
-                                    # handler cycle budget so it never overruns.
-                                    # Supersedes pitch_mult_* below (those apply
-                                    # only when this is false). Host-DMA path
-                                    # only; on by default.
-nmi_rate_resample = true            # Resample-of-residual pitch compensation
-                                    # (host-DMA path only; on by default). The
-                                    # adaptive loop above can run out of headroom
-                                    # on heavy bitmap content (R parks below
-                                    # sample_rate even at the safe ceiling). This
-                                    # closes that residual host-side with no extra
-                                    # C64 stress: it decimates source audio to the
-                                    # MEASURED R before the 4-bit encode, so audio
-                                    # authored at sample_rate plays at correct
-                                    # tempo/pitch whatever rate the C64 runs. It
-                                    # composes with the loop — as the loop closes
-                                    # the gap this fades to a no-op. No effect on
-                                    # the REU pump path.
-nmi_rate_max_hz = 0                 # Ceiling for the adaptive NMI-rate loop, in
-                                    # Hz (0 = the system's full safe maximum).
-                                    # Combine with the two toggles above to pick a
-                                    # posture: = sample_rate → PURE resample (NMI
-                                    # never speeds up, zero extra HW stress);
-                                    # below the safe max → HW-SAFE hybrid (lower on
-                                    # PAL whose ceiling is ~11.1 kHz vs NTSC ~11.6
-                                    # kHz); 0 → MAX-BANDWIDTH hybrid (today's
-                                    # behavior). Out-of-range values are clamped
-                                    # (with a warning). Host-DMA path only.
 source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # 100 ms 200→3500 Hz linear chirp to the
                                     # pre-encoded REU audio so Cam Link
@@ -293,12 +256,9 @@ source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # listening. Only honored on the REU pump
                                     # path; host-DMA scenes are unmarked.
 
-# --- host-DMA servo pitch compensation (static; legacy) ---
-# NOTE: these apply ONLY when nmi_rate_adaptive = false. The default adaptive
-# loop above supersedes them (it tracks the content-dependent loss a fixed
-# constant can't); keep them for the adaptive-off path and PAL/TR+ hand-tuning.
+# --- host-DMA servo pitch compensation (static) ---
 # The host_dma_servo (above) kills the echo but locks playback to the C64 NMI
-# consumer rate R, which runs slightly below the nominal 8000 Hz because the
+# consumer rate R, which runs slightly below the nominal sample rate because the
 # display steals NMI ticks (VIC badlines + host-DMA video writes + the REU
 # bank-swap raster IRQ on staged bitmap modes) — so playback comes out a touch
 # slow (pitch + speed together). Each multiplier below is a per-display-mode
