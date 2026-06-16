@@ -190,27 +190,27 @@
         },
         "pitch_mult_petscii": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for PETSCII mode (light char-mode load; 1.0 = none. U64-II NTSC: good at 1.0).",
+          "description": "Host-side resample playback-rate multiplier for PETSCII mode (light char-mode load; 1.0 = none/passthrough. U64-II NTSC: 1.0).",
           "default": 1.0
         },
         "pitch_mult_hires": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges modes (REU-staged bitmap; bank-swap IRQ residual). U64-II NTSC ears-tuned to 1.02; override for TR+ or PAL.",
+          "description": "Host-side resample playback-rate multiplier for Hires / Hires-edges modes (REU-staged bitmap; bank-swap IRQ residual). U64-II NTSC starting point 1.02; tune by ear, override for TR+ / PAL.",
           "default": 1.02
         },
         "pitch_mult_mhires": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for MultiHires mode (REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC ears-tuned to 1.015; override for TR+ or PAL.",
-          "default": 1.015
+          "description": "Host-side resample playback-rate multiplier for MultiHires mode (REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC starting point 1.02; tune by ear, override for TR+ / PAL.",
+          "default": 1.02
         },
         "pitch_mult_mcm": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for MCM mode (char-based, light load; U64-II NTSC: good at 1.0).",
+          "description": "Host-side resample playback-rate multiplier for MCM mode (char-based, light load; U64-II NTSC: 1.0/passthrough).",
           "default": 1.0
         },
         "pitch_mult_blank": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for Blank mode (no video input; 1.0 = none).",
+          "description": "Host-side resample playback-rate multiplier for Blank mode (no video input; 1.0 = none/passthrough).",
           "default": 1.0
         }
       }

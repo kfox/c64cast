@@ -344,51 +344,54 @@ class AudioCfg:
     # REU-staged bitmap modes, the per-frame bank-swap raster IRQ), so playback
     # comes out a touch slow (pitch + speed down together). Each multiplier below
     # is a **playback-rate multiplier** for one display mode: >1.0 speeds playback
-    # up to cancel the slowdown, 1.0 = no change. The AudioStreamer converts it to
-    # a shorter CIA #2 Timer A period (faster NMI → faster R; rate and latch are
-    # inversely related). `hires_edges` scenes use pitch_mult_hires (same VIC
-    # fetch). Defaults were tuned BY EAR on a real U64-II (NTSC, 60fps, the
-    # default use_reu_staged="auto" — bitmap video over the bus-clean REU
-    # bank-swap, so the residual loss is small: ~2% bitmap, ~0% char). An earlier
-    # 13.6%/1.1575 estimate for mhires was measured with video on the *host-DMA*
-    # path and is wrong for the auto-staged default. Values are backend- and
+    # up to cancel the slowdown, 1.0 = no change. The AudioStreamer applies it by
+    # decimating the source by a fixed ratio = 1/multiplier (host-side resampling
+    # before the 4-bit encode) — NOT by speeding the NMI up. A fixed ratio set per
+    # scene avoids both the firmware DMA/badline wedge risk of a faster NMI and the
+    # over-correction of chasing the read-pointer R (which reads biased-low under
+    # bus load — an R-driven resampler played ~10% fast, capture-verified). It is a
+    # best-fit dial: it can't track content-dependent DMA load, so heavy-motion
+    # bitmap may still drift; tune by ear per system. `hires_edges` scenes use
+    # pitch_mult_hires (same VIC fetch). Defaults are U64-II NTSC starting points
+    # (default use_reu_staged="auto" — bitmap video over the bus-clean REU
+    # bank-swap, so the residual loss is small). Values are backend- and
     # standard-coupled: PAL (50fps → fewer halts/sec) and the lower-latency TR+
     # backend want their own ears-on values; override per system.
     pitch_mult_petscii: float = field(
         default=1.00,
         metadata={
-            "help": "Host-DMA servo playback-rate multiplier for PETSCII mode "
-            "(light char-mode load; 1.0 = none. U64-II NTSC: good at 1.0)."
+            "help": "Host-side resample playback-rate multiplier for PETSCII mode "
+            "(light char-mode load; 1.0 = none/passthrough. U64-II NTSC: 1.0)."
         },
     )
     pitch_mult_hires: float = field(
         default=1.02,
         metadata={
-            "help": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges "
-            "modes (REU-staged bitmap; bank-swap IRQ residual). U64-II NTSC "
-            "ears-tuned to 1.02; override for TR+ or PAL."
+            "help": "Host-side resample playback-rate multiplier for Hires / "
+            "Hires-edges modes (REU-staged bitmap; bank-swap IRQ residual). "
+            "U64-II NTSC starting point 1.02; tune by ear, override for TR+ / PAL."
         },
     )
     pitch_mult_mhires: float = field(
-        default=1.015,
+        default=1.02,
         metadata={
-            "help": "Host-DMA servo playback-rate multiplier for MultiHires mode "
-            "(REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC "
-            "ears-tuned to 1.015; override for TR+ or PAL."
+            "help": "Host-side resample playback-rate multiplier for MultiHires "
+            "mode (REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC "
+            "starting point 1.02; tune by ear, override for TR+ / PAL."
         },
     )
     pitch_mult_mcm: float = field(
         default=1.00,
         metadata={
-            "help": "Host-DMA servo playback-rate multiplier for MCM mode "
-            "(char-based, light load; U64-II NTSC: good at 1.0)."
+            "help": "Host-side resample playback-rate multiplier for MCM mode "
+            "(char-based, light load; U64-II NTSC: 1.0/passthrough)."
         },
     )
     pitch_mult_blank: float = field(
         default=1.00,
         metadata={
-            "help": "Host-DMA servo playback-rate multiplier for Blank mode "
-            "(no video input; 1.0 = none)."
+            "help": "Host-side resample playback-rate multiplier for Blank mode "
+            "(no video input; 1.0 = none/passthrough)."
         },
     )
 

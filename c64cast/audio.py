@@ -218,6 +218,22 @@ PREBUFFER_CHUNKS = 6  # chunks to buffer before starting NMI
 QUEUE_PUT_TIMEOUT_S = 0.2
 BACKPRESSURE_SPIN_S = 0.005  # sleep between full-queue retries
 
+# Fixed-ratio resampler (host-DMA path) — the pitch-compensation mechanism.
+# The host-DMA servo locks playback to the bus-halt-throttled NMI consumer, so a
+# heavy display mode plays a touch slow (the residual the per-mode pitch_mult was
+# meant to cancel). Instead of speeding the NMI up (a faster CIA #2 latch — extra
+# C64 stress, and it chases a read-pointer rate that is biased low under bus load),
+# we decimate the source float stream by a FIXED per-mode ratio = 1 / pitch_mult
+# before the 4-bit encode: dropping that fraction of samples makes the same NMI
+# consumption rate cover more source seconds, i.e. plays `pitch_mult`× faster.
+# The ratio is a fixed scalar set once per scene (NOT measured from R), so it can't
+# over-correct the way the R-driven loop did (capture-verified +10.8% fast). numpy
+# linear interpolation — at 4-bit output (~24 dB) linear's alias/droop floor sits
+# far below the quantization floor and the ratios are mild, so a polyphase kernel
+# buys nothing audible.
+RESAMPLE_RATIO_MIN = 0.85  # never decimate harder than ~15% (sanity floor)
+RESAMPLE_DEADBAND = 0.002  # within 0.2% of 1.0 → bit-exact passthrough
+
 # Pre-quantization sample tap. Holds the most recent SAMPLE_TAP_SIZE float
 # samples in [-1, 1] for FFT-based overlays (spectrum analyzers). Sized to
 # cover ~256 ms at 8 kHz, giving a usable FFT down to ~30 Hz.
@@ -1095,14 +1111,18 @@ class AudioStreamer:
         # by _start_nmi_timer); the pump's nominal CIA #1 latch derives from it
         # so the producer/consumer period ratio stays exact.
         self._nmi_latch = 0
-        # Host-DMA-servo pitch compensation: a sticky per-display-mode playback-
-        # rate multiplier (>1.0 = faster). set_nmi_latch_for_mode updates it, and
-        # _start_nmi_timer applies it when the timer first arms — so a multiplier
-        # set at scene setup (before the worker prebuffers and starts the timer)
-        # survives the timer start instead of being clobbered back to nominal.
-        # _nmi_timer_started gates whether a mid-stream update writes immediately.
-        self._pitch_multiplier = 1.0
-        self._nmi_timer_started = False
+        # Host-DMA-servo pitch compensation, fixed-ratio resampler edition.
+        # _resample_ratio is the decimation ratio in (0, 1]: 1.0 = passthrough,
+        # <1.0 drops that fraction of source samples so playback runs 1/ratio×
+        # faster (cancels the bus-halt slowdown). set_pitch_compensation_for_mode
+        # sets it from the per-mode pitch_mult (ratio = 1 / mult) at scene setup;
+        # it is a plain float read by the producer thread (atomic under the GIL).
+        # _resample_phase + _resample_prev_tail are the producer-owned seam state
+        # for the cross-chunk linear interpolation (reset at session start +
+        # stop()); never touched by the worker, so there is no cross-thread race.
+        self._resample_ratio = 1.0
+        self._resample_phase = 0.0
+        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
         self._reu_cia1_latch_nominal = REU_PUMP_CIA1_LATCH
         # REU mic mode: tracks the host's REU write position (wraps at
         # REU_MIC_SIZE). 0 until _start_mic_for_reu_pump() seeds it with
@@ -1122,14 +1142,16 @@ class AudioStreamer:
         # producer-side decode is the bottleneck (not DMA pacing).
         self._full_underruns = 0
         self._partial_underruns = 0
-        # Bytes-per-item queue: each item is a pre-encoded bytes blob of
-        # 4-bit volume codes (one byte per sample). This collapses the old
-        # per-sample put/get (which hit ~88K lock acquisitions/sec on a
-        # 44.1 kHz PyAV demux) to one lock per audio chunk. Backpressure is
-        # tracked separately in self._queued_samples since q.qsize() now
-        # counts blobs, not samples; q.full() is unused because the cap
-        # below is in bytes, not items.
-        self.q: queue.Queue[bytes] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
+        # Per-item queue: each item is a (payload, src_weight) tuple — a
+        # pre-encoded bytes blob of 4-bit volume codes plus the number of SOURCE
+        # samples it represents. src_weight == len(payload) when the resampler is
+        # a no-op; under decimation the payload is shorter than src_weight. The
+        # worker credits _queued_samples (a SOURCE-sample tally for
+        # position_seconds + backpressure) by src_weight, not bytes, so the A/V
+        # master clock stays on the source timeline regardless of decimation.
+        # This collapses the old per-sample put/get (which hit ~88K lock
+        # acquisitions/sec on a 44.1 kHz PyAV demux) to one lock per audio chunk.
+        self.q: queue.Queue[tuple[bytes, int]] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
         self._queued_samples = 0
         # Cap the buffered audio at ~2 s @ 8 kHz so a stalled consumer
         # doesn't accumulate a wall of stale audio.
@@ -1210,51 +1232,43 @@ class AudioStreamer:
         clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
         return max(1, round(clock / self.sample_rate) - 1)
 
-    def _compensated_latch(self) -> int:
-        """The CIA #2 Timer A latch for the current pitch multiplier.
-
-        Rate and latch are inverse — NMI period = (latch+1) cycles — so a >1.0
-        (faster) multiplier shortens the nominal period: period =
-        round((nominal+1) / mult), latch = period − 1. Multiplier 1.0 → nominal.
-        """
-        nominal_latch = self._nmi_latch_value()
-        adjusted_period = max(2, round((nominal_latch + 1) / self._pitch_multiplier))
-        return max(1, adjusted_period - 1)
-
     def _start_nmi_timer(self) -> None:
-        # Apply any pitch multiplier already chosen for this scene — the timer
-        # arms from the worker after prebuffer, i.e. AFTER set_nmi_latch_for_mode
-        # ran at scene setup, so honoring it here is what makes the compensation
-        # stick (otherwise this would reset the latch to nominal).
-        latch = self._compensated_latch()
+        # The NMI always runs at the nominal sample-rate latch. Pitch
+        # compensation is done host-side by the resampler (see
+        # set_pitch_compensation_for_mode), not by speeding the NMI up — so the
+        # consumer rate stays clear of the firmware DMA/badline wedge regime and
+        # the REU pump's CIA #1 derivation (off _nmi_latch_value) stays exact.
+        latch = self._nmi_latch_value()
         self._nmi_latch = latch
-        self._nmi_timer_started = True
         self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
         # Arm + start timer A, set NMI source.
         self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
 
-    def set_nmi_latch_for_mode(
+    def set_pitch_compensation_for_mode(
         self, display_mode: str, calibration: dict[str, float] | None = None
     ) -> None:
-        """Retune the NMI consumer rate for a display mode to restore pitch.
+        """Set the host-side resample ratio for a display mode to restore pitch.
 
         The host-DMA servo locks audio playback speed to the NMI consumer R,
         which loses ~1-14% of its ticks to video DMA bus-halts (heavier video =
-        more halts = slower R), so playback comes out slow. ``calibration`` maps
-        a display-mode name to a **playback-rate multiplier** (from
-        ``[audio] pitch_mult_*``): >1.0 means "play this much faster to cancel
-        the slowdown." Call at scene setup when the display mode changes; the
-        servo then tracks the new R automatically (it controls on the measured
-        ring gap, with no nominal-rate feed-forward to keep in sync).
+        more halts = slower R), so playback comes out a touch slow. ``calibration``
+        maps a display-mode name to a **playback-rate multiplier** (from
+        ``[audio] pitch_mult_*``): >1.0 means "play this much faster to cancel the
+        slowdown." We convert it to a fixed decimation ratio = 1 / multiplier and
+        hand it to the resampler (``_resample_residual``): dropping that fraction
+        of source samples makes the fixed NMI consumption cover more source
+        seconds, i.e. plays the mode `multiplier`× faster. Call at scene setup
+        when the display mode changes.
 
-        Rate and CIA #2 Timer A latch are *inversely* related — the NMI period is
-        (latch+1) cycles, so a faster rate needs a *smaller* latch. We divide the
-        nominal period by the multiplier:
-
-            period = (nominal_latch + 1) / multiplier;  latch = period − 1
+        This is a *fixed* per-mode dial set once per scene — it does NOT chase the
+        measured read-pointer R (which reads biased-low under bus load and made the
+        old R-driven resampler over-correct ~10% fast). It is ears-tunable per mode
+        via the pitch_mult_* config; it cannot track content-dependent DMA load, so
+        it is a best-fit compromise the user dials, not a closed loop.
 
         Only applies under the host-DMA servo with a running worker; the REU pump
-        has its own C64-side rate governor and open-loop needs no adjustment.
+        pre-encodes the whole track offline (its own governor handles drift) and
+        open-loop needs no adjustment.
         """
         if not self.host_dma_servo or not self._worker_thread:
             # REU pump has its own governor; open-loop doesn't need adjustment.
@@ -1263,27 +1277,18 @@ class AudioStreamer:
         # `hires_edges` scenes report display_mode.name == "hires" (same VIC
         # fetch), so they already resolve to the `hires` multiplier here.
         multiplier = 1.0 if calibration is None else calibration.get(display_mode.lower(), 1.0)
-        # Remember it so _start_nmi_timer applies it when the timer first arms.
-        # At scene setup the worker is usually still prebuffering (timer not
-        # started yet), so we just stash the value and let the timer pick it up.
-        self._pitch_multiplier = multiplier
-        if not self._nmi_timer_started:
+        # ratio = 1/mult, clamped to (RESAMPLE_RATIO_MIN, 1.0]. mult < 1.0 (an
+        # unusual "play slower" request) would upsample; we don't slow playback
+        # down, so it clamps to 1.0 (passthrough). _resample_ratio is a plain
+        # float, atomic to assign under the GIL — the producer reads it per chunk.
+        ratio = max(RESAMPLE_RATIO_MIN, min(1.0, 1.0 / multiplier)) if multiplier > 0 else 1.0
+        if ratio == self._resample_ratio:
             return
-
-        adjusted_latch = self._compensated_latch()
-        # Only write if it changed (avoid spurious bus traffic).
-        if adjusted_latch == self._nmi_latch:
-            return
-
         log.debug(
-            f"[audio] retune NMI for {display_mode}: latch "
-            f"{self._nmi_latch} → {adjusted_latch} "
-            f"(rate ×{multiplier:.4f})"
+            f"[audio] pitch comp for {display_mode}: resample ratio "
+            f"{self._resample_ratio:.4f} → {ratio:.4f} (rate ×{multiplier:.4f})"
         )
-        self._nmi_latch = adjusted_latch
-        self.api.write_regs(
-            f"{CIA2.TIMER_A_LO:04X}", adjusted_latch & 0xFF, (adjusted_latch >> 8) & 0xFF
-        )
+        self._resample_ratio = ratio
 
     # ---- worker --------------------------------------------------------------
     def _worker(self) -> None:
@@ -1326,7 +1331,12 @@ class AudioStreamer:
             prebuffered = False
             bytes_prebuffered = 0
             chunk_buf = bytearray(self.chunk_size)
-            leftover = b""
+            # A partially-consumed queue blob carried to the next chunk, as
+            # (remaining_bytes, src_weight). The weight is credited to
+            # _queued_samples (a SOURCE-sample tally) only when the blob's last
+            # byte is consumed, so the resampler's byte≠source-sample ratio can't
+            # drift the position clock. None = nothing carried.
+            leftover: tuple[bytes, int] | None = None
             chunk_period = self.chunk_size / self.sample_rate
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
             # Pace + collect deadlines. Zero until NMI starts.
@@ -1341,31 +1351,38 @@ class AudioStreamer:
                     collect_deadline = time.monotonic() + chunk_period
 
                 n = 0
-                from_queue = 0
+                src_from_queue = 0  # source samples whose blobs fully drained
 
-                if leftover:
-                    take = min(len(leftover), self.chunk_size)
-                    chunk_buf[:take] = leftover[:take]
+                if leftover is not None:
+                    lbytes, lweight = leftover
+                    take = min(len(lbytes), self.chunk_size)
+                    chunk_buf[:take] = lbytes[:take]
                     n = take
-                    from_queue = take
-                    leftover = leftover[take:]
+                    if take < len(lbytes):
+                        leftover = (lbytes[take:], lweight)  # still partial; defer
+                    else:
+                        src_from_queue += lweight  # fully drained → credit weight
+                        leftover = None
 
                 # Block with deadline. Returns early once chunk_buf is
                 # full or once the producer is silent past the deadline.
-                while n < self.chunk_size and not leftover and self.running:
+                while n < self.chunk_size and leftover is None and self.running:
                     remaining = collect_deadline - time.monotonic()
                     if remaining <= 0:
                         break
                     try:
-                        piece = self.q.get(timeout=remaining)
+                        payload, weight = self.q.get(timeout=remaining)
                     except queue.Empty:
                         break
-                    take = min(len(piece), self.chunk_size - n)
-                    chunk_buf[n : n + take] = piece[:take]
+                    take = min(len(payload), self.chunk_size - n)
+                    chunk_buf[n : n + take] = payload[:take]
                     n += take
-                    from_queue += take
-                    if take < len(piece):
-                        leftover = piece[take:]
+                    if take < len(payload):
+                        leftover = (payload[take:], weight)  # partial; defer weight
+                    else:
+                        # Fully consumed (also covers a 0-byte decimator-stash
+                        # blob, which credits its source weight immediately).
+                        src_from_queue += weight
 
                 if not self.running:
                     break
@@ -1379,8 +1396,8 @@ class AudioStreamer:
                     n = self.chunk_size
                     self._full_underruns += 1
                 elif n < self.chunk_size and prebuffered:
-                    # Partial chunk: pad to keep pace math simple. Pad
-                    # bytes are NOT counted in from_queue.
+                    # Partial chunk: pad to keep pace math simple. Pad bytes
+                    # carry no source weight (not from the queue).
                     pad = self.chunk_size - n
                     chunk_buf[n : n + pad] = bytes([NEUTRAL_SAMPLE]) * pad
                     n = self.chunk_size
@@ -1392,8 +1409,8 @@ class AudioStreamer:
                         time.sleep(sleep_s)
 
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
-                if from_queue:
-                    self._queued_samples = max(0, self._queued_samples - from_queue)
+                if src_from_queue:
+                    self._queued_samples = max(0, self._queued_samples - src_from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1530,10 +1547,71 @@ class AudioStreamer:
         dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
         return dsp.process(floats) if dsp.active else floats
 
+    # ---- fixed-ratio resampler -----------------------------------------------
+    def _resample_residual(self, floats: np.ndarray) -> np.ndarray:
+        """Decimate float samples by the fixed per-mode ``_resample_ratio`` so a
+        bus-halt-slowed display mode plays back at correct tempo/pitch. A ratio
+        < 1.0 drops that fraction of samples (playback runs 1/ratio× faster);
+        ratio within RESAMPLE_DEADBAND of 1.0 (the default for light modes) is a
+        bit-exact passthrough.
+
+        Linear interpolation with a fractional phase accumulator carried across
+        chunks (``_resample_phase``) plus the previous chunk's last sample
+        (``_resample_prev_tail``) so the decimation is seam-free — concatenating
+        the per-chunk outputs equals a one-shot resample of the concatenated
+        input. The seam state is owned by this (single producer) thread; the ratio
+        is a fixed scalar set at scene setup, NOT chased from the read pointer R.
+        numpy-only (no scipy runtime dep)."""
+        ratio = self._resample_ratio
+        if floats.size == 0 or ratio >= 1.0 - RESAMPLE_DEADBAND:
+            # Passthrough. Drop any stale seam so a later decimating session
+            # (different scene) starts its phase clean instead of from a tail.
+            self._resample_phase = 0.0
+            if self._resample_prev_tail.size:
+                self._resample_prev_tail = np.zeros(0, dtype=np.float32)
+            return floats
+        ratio = max(RESAMPLE_RATIO_MIN, ratio)  # sanity floor on the decimation
+        floats = floats.astype(np.float32, copy=False)
+        x = (
+            np.concatenate((self._resample_prev_tail, floats))
+            if self._resample_prev_tail.size
+            else floats
+        )
+        if x.size < 2:
+            # Can't interpolate across <2 samples; stash and emit nothing. Phase
+            # stays valid (x[0] is unchanged as the next chunk's index 0).
+            self._resample_prev_tail = x
+            return np.zeros(0, dtype=np.float32)
+        inv = 1.0 / ratio  # source samples advanced per output sample (> 1.0)
+        p0 = self._resample_phase
+        last = x.size - 1
+        # Count outputs whose source position pos = p0 + inv*k stays <= the last
+        # interpolable index. The next chunk's index 0 is x[-1], so carry the
+        # phase relative to that sample.
+        m = int(np.floor((last - p0) / inv)) + 1
+        if m <= 0:
+            self._resample_phase = p0 - last
+            self._resample_prev_tail = x[-1:]
+            return np.zeros(0, dtype=np.float32)
+        pos = p0 + inv * np.arange(m, dtype=np.float64)
+        idx = np.minimum(np.floor(pos).astype(np.int64), last - 1)
+        frac = (pos - idx).astype(np.float32)
+        out: np.ndarray = x[idx] * (1.0 - frac) + x[idx + 1] * frac
+        self._resample_phase = (p0 + inv * m) - last
+        self._resample_prev_tail = x[-1:]
+        return out.astype(np.float32, copy=False)
+
+    def _reset_resample_state(self) -> None:
+        """Clear the producer-owned resampler seam. Called at session start +
+        stop() (the producer thread is not running then), so the cross-chunk
+        phase/prev-tail never carry over from a prior scene's stream."""
+        self._resample_phase = 0.0
+        self._resample_prev_tail = np.zeros(0, dtype=np.float32)
+
     # ---- shared encode + enqueue ---------------------------------------------
     def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
-        DAC queue as 4-bit values. Returns the number of samples enqueued.
+        DAC queue as 4-bit values. Returns the number of SOURCE samples enqueued.
 
         Encodes the whole input array to one bytes blob and enqueues it in
         a single put. The previous per-sample loop hit ~88K lock
@@ -1544,35 +1622,45 @@ class AudioStreamer:
         by the PyAV push path so the demuxer naturally throttles). If
         False, drop the whole blob when full (mic path, where the
         sounddevice callback is real-time and can't block). Backpressure
-        is counted in samples (not blobs) against self._max_queued_samples."""
+        is counted in samples (not blobs) against self._max_queued_samples.
+
+        Counter-split for the fixed-ratio resampler: _pushed_count / _queued_samples
+        and the queue blob's weight are all in SOURCE samples (n_src), so
+        position_seconds (the A/V master clock) + the demuxer backpressure stay on
+        the source timeline regardless of decimation; only the encoded PAYLOAD
+        shrinks. The two are 1:1 with bytes when the resampler is a no-op."""
         if floats.size == 0:
             return 0
         floats = self._apply_dsp(floats)
+        # Source-sample count drives all accounting (the A/V master clock); the
+        # tap shows source-rate audio (spectrally ~identical to the decimated
+        # output). Resample to the compensated rate AFTER both.
+        n_src = int(floats.size)
         self._push_to_tap(floats.astype(np.float32, copy=False))
-        vol = encode_floats_to_dac(floats, dither=self.dither_enabled)
-        n = int(vol.size)
+        resampled = self._resample_residual(floats)
+        vol = encode_floats_to_dac(resampled, dither=self.dither_enabled)
         payload = vol.tobytes()
-        # Sample-count backpressure. Reading _queued_samples without the GIL
-        # is racy with the worker decrement, but the worst case is putting
-        # one blob over the cap — harmless given the cap is a soft ceiling.
-        if self._queued_samples + n > self._max_queued_samples:
+        # Sample-count backpressure (in SOURCE samples). Reading _queued_samples
+        # without the GIL is racy with the worker decrement, but the worst case
+        # is putting one blob over the cap — harmless given the soft ceiling.
+        if self._queued_samples + n_src > self._max_queued_samples:
             if not block_on_full:
                 return 0
             deadline = time.time() + QUEUE_PUT_TIMEOUT_S
-            while self._queued_samples + n > self._max_queued_samples and self.running:
+            while self._queued_samples + n_src > self._max_queued_samples and self.running:
                 if time.time() >= deadline:
                     return 0
                 time.sleep(BACKPRESSURE_SPIN_S)
         try:
             if block_on_full:
-                self.q.put(payload, timeout=QUEUE_PUT_TIMEOUT_S)
+                self.q.put((payload, n_src), timeout=QUEUE_PUT_TIMEOUT_S)
             else:
-                self.q.put_nowait(payload)
+                self.q.put_nowait((payload, n_src))
         except queue.Full:
             return 0
-        self._queued_samples += n
-        self._pushed_count += n
-        return n
+        self._queued_samples += n_src
+        self._pushed_count += n_src
+        return n_src
 
     # ---- input sources -------------------------------------------------------
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
@@ -1662,6 +1750,7 @@ class AudioStreamer:
             return
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
+        self._reset_resample_state()
         self.running = True
         self._worker_thread = threading.Thread(
             target=self._worker, daemon=True, name="audio-worker"
@@ -1918,6 +2007,7 @@ class AudioStreamer:
         via push_samples()."""
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
+        self._reset_resample_state()
         self.running = True
         self._worker_thread = threading.Thread(
             target=self._worker, daemon=True, name="audio-worker"
@@ -2278,11 +2368,11 @@ class AudioStreamer:
                 break
         self._pushed_count = 0
         self._queued_samples = 0
-        # Clear pitch-comp state so the next scene's bring-up re-arms from
-        # nominal (a scene with no display_mode never calls set_nmi_latch_for_
-        # mode, so a stale multiplier must not leak across scenes).
-        self._nmi_timer_started = False
-        self._pitch_multiplier = 1.0
+        # Clear pitch-comp state so the next scene's bring-up starts from a no-op
+        # (a scene with no display_mode never calls set_pitch_compensation_for_
+        # mode, so a stale ratio must not leak across scenes).
+        self._resample_ratio = 1.0
+        self._reset_resample_state()
         # Report underrun telemetry. Each full underrun is an audible
         # click; partials are less audible but still indicate producer
         # stalls. Deterministic, source-correlated counts (same numbers

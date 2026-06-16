@@ -256,25 +256,29 @@ source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # listening. Only honored on the REU pump
                                     # path; host-DMA scenes are unmarked.
 
-# --- host-DMA servo pitch compensation (static) ---
+# --- host-DMA servo pitch compensation (fixed-ratio resample) ---
 # The host_dma_servo (above) kills the echo but locks playback to the C64 NMI
 # consumer rate R, which runs slightly below the nominal sample rate because the
 # display steals NMI ticks (VIC badlines + host-DMA video writes + the REU
 # bank-swap raster IRQ on staged bitmap modes) — so playback comes out a touch
 # slow (pitch + speed together). Each multiplier below is a per-display-mode
 # *playback-rate multiplier*: >1.0 speeds playback up to cancel that slowdown,
-# 1.0 = no change. c64cast converts it to a shorter CIA #2 Timer A period
-# (faster NMI → faster R; rate and latch are inversely related), applied once per
-# scene change. hires_edges scenes use pitch_mult_hires (same VIC fetch).
-# Defaults were tuned BY EAR on a real U64-II (NTSC, 60fps, default
-# use_reu_staged="auto" so bitmap video rides the bus-clean REU bank-swap →
-# residual loss is small). They're standard/backend coupled: PAL (50fps) and the
-# lower-latency TR+ backend want their own ears-on values. Only active when
-# host_dma_servo = true; ignored on the REU pump path.
-pitch_mult_petscii = 1.0     # PETSCII (char mode) — good at 1.0 on U64-II NTSC.
+# 1.0 = no change. c64cast applies it by decimating the source by a fixed ratio
+# = 1/multiplier (host-side resampling before the 4-bit encode), set once per
+# scene change — NOT by speeding the NMI up. The fixed ratio avoids the firmware
+# DMA/badline wedge risk of a faster NMI and the over-correction of chasing R
+# (which reads biased-low under bus load — an R-driven resampler played ~10%
+# fast). It's a best-fit dial that can't track content-dependent DMA load, so
+# heavy-motion bitmap may still drift; tune by ear. hires_edges scenes use
+# pitch_mult_hires (same VIC fetch). Defaults are U64-II NTSC starting points
+# (default use_reu_staged="auto" so bitmap video rides the bus-clean REU
+# bank-swap). Standard/backend coupled: PAL (50fps) and the lower-latency TR+
+# backend want their own ears-on values. Only active when host_dma_servo = true;
+# ignored on the REU pump path.
+pitch_mult_petscii = 1.0     # PETSCII (char mode) — passthrough at 1.0 on U64-II NTSC.
 pitch_mult_hires = 1.02      # Hires / Hires-edges (REU-staged bitmap).
-pitch_mult_mhires = 1.015    # MultiHires (REU-staged bitmap + $D800 color RAM).
-pitch_mult_mcm = 1.0         # MCM (char mode) — good at 1.0 on U64-II NTSC.
+pitch_mult_mhires = 1.02     # MultiHires (REU-staged bitmap + $D800 color RAM).
+pitch_mult_mcm = 1.0         # MCM (char mode) — passthrough at 1.0 on U64-II NTSC.
 pitch_mult_blank = 1.0       # Blank (no video input).
 
 [vision]

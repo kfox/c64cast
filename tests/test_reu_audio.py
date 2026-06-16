@@ -78,8 +78,9 @@ def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
     s._reu_pump_total_samples = 0
     s._mic_reu_write_pos = 0
     s._nmi_latch = 0
-    s._pitch_multiplier = 1.0
-    s._nmi_timer_started = False
+    s._resample_ratio = 1.0
+    s._resample_phase = 0.0
+    s._resample_prev_tail = np.zeros(0, dtype=np.float32)
     s._reu_cia1_latch_nominal = REU_PUMP_CIA1_LATCH
     s._full_underruns = 0
     s._partial_underruns = 0

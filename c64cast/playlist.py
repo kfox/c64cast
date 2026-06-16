@@ -384,10 +384,10 @@ class Playlist:
     def _safe_setup(self, scene: Scene) -> None:
         self._maybe_install_conductor(scene)
         scene.setup()
-        # Adjust NMI latch for the new display mode (if audio is active and has
-        # a calibration table). This restores pitch under the host-DMA servo by
-        # boosting the NMI consumer rate back toward 8000 Hz after being throttled
-        # by video DMA bus-halts.
+        # Set pitch compensation for the new display mode (if audio is active and
+        # has a calibration table). This restores pitch under the host-DMA servo:
+        # the fixed-ratio resampler decimates the source by 1/pitch_mult so a mode
+        # slowed by video DMA bus-halts plays back at correct tempo.
         if (
             self.audio is not None
             and self.audio_calibration is not None
@@ -396,7 +396,7 @@ class Playlist:
         ):
             mode_name = getattr(scene.display_mode, "name", None)
             if mode_name:
-                self.audio.set_nmi_latch_for_mode(mode_name, self.audio_calibration)
+                self.audio.set_pitch_compensation_for_mode(mode_name, self.audio_calibration)
         for ov in getattr(scene, "overlays", ()):
             try:
                 ov.setup(self.api, scene)

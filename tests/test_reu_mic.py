@@ -72,8 +72,9 @@ def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
     s._servo_gap_max = -1
     s._servo_gap_last = -1
     s._nmi_latch = 0
-    s._pitch_multiplier = 1.0
-    s._nmi_timer_started = False
+    s._resample_ratio = 1.0
+    s._resample_phase = 0.0
+    s._resample_prev_tail = np.zeros(0, dtype=np.float32)
     return s
 
 

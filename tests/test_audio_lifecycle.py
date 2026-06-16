@@ -25,6 +25,7 @@ from c64cast.api import Ultimate64API
 from c64cast.audio import (
     NEUTRAL_SAMPLE,
     PREBUFFER_CHUNKS,
+    RESAMPLE_RATIO_MIN,
     SAMPLE_TAP_SIZE,
     AudioStreamer,
     encode_floats_to_dac,
@@ -105,7 +106,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # underruns.
         s = _make_worker_streamer(chunk_size=32)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([NEUTRAL_SAMPLE] * 32))
+            s.q.put((bytes([NEUTRAL_SAMPLE] * 32), 32))
             s._queued_samples += 32
         _run_worker(s, until=lambda: s._full_underruns >= 3)
         self.assertGreaterEqual(s._full_underruns, 1)
@@ -119,7 +120,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # window closes with a partial chunk → NEUTRAL tail pad.
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([1] * 64))
+            s.q.put((bytes([1] * 64), 64))
             s._queued_samples += 64
 
         stop = threading.Event()
@@ -129,7 +130,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             # assembles within a single collect window.
             period = s.chunk_size / s.sample_rate
             while not stop.is_set():
-                s.q.put(bytes([2] * (s.chunk_size // 2)))
+                s.q.put((bytes([2] * (s.chunk_size // 2)), s.chunk_size // 2))
                 s._queued_samples += s.chunk_size // 2
                 time.sleep(period)
 
@@ -148,7 +149,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # A single blob bigger than chunk_size must split across writes through
         # the `leftover` carry, preserving byte order.
         s = _make_worker_streamer(chunk_size=16, sample_rate=64000)
-        s.q.put(bytes(range(50)))
+        s.q.put((bytes(range(50)), 50))
         s._queued_samples += 50
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 4)
         body = b"".join(d for _, d in cast(Any, s.api).writes)
@@ -159,7 +160,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.
         s = _make_worker_streamer(chunk_size=8)
-        s.q.put(bytes([7] * 8))
+        s.q.put((bytes([7] * 8), 8))
         s._queued_samples += 8
 
         def boom(addr: str, data: bytes) -> None:
@@ -175,19 +176,16 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertTrue(any("audio worker crashed" in m for m in cm.output))
 
 
-class PitchCompensationLatchTest(unittest.TestCase):
-    """set_nmi_latch_for_mode converts a playback-rate multiplier into a CIA #2
-    Timer A latch. The relationship is *inverse* (NMI period = latch+1), so a
-    >1.0 (faster) multiplier MUST shrink the latch — these tests pin that
-    direction so the historic latch×multiplier inversion can't return."""
+class PitchCompensationResampleTest(unittest.TestCase):
+    """set_pitch_compensation_for_mode maps a per-mode playback-rate multiplier to
+    a fixed resample ratio = 1/multiplier (>1.0 faster ⇒ ratio < 1.0 ⇒ decimation).
+    These pin that mapping, the host-DMA-servo/worker guard, and that the NMI timer
+    is NOT touched (the latch stays nominal — compensation is host-side now)."""
 
     def _started(self, **kw: Any) -> AudioStreamer:
-        # host_dma_servo defaults on; fake a running worker + a started timer
-        # at the nominal latch so the guard passes and a change writes through.
+        # host_dma_servo defaults on; fake a running worker so the guard passes.
         s = _make(**kw)
         s._worker_thread = cast(Any, object())  # truthy → guard passes
-        s._nmi_timer_started = True  # timer already armed
-        s._nmi_latch = s._nmi_latch_value()  # at nominal
         return s
 
     def _latch_write(self, s: AudioStreamer) -> int | None:
@@ -199,71 +197,146 @@ class PitchCompensationLatchTest(unittest.TestCase):
         lo, hi = regs[key]
         return lo | (hi << 8)
 
-    def test_speedup_multiplier_shrinks_latch(self):
+    def test_speedup_multiplier_decimates(self):
         s = self._started()
-        nominal = s._nmi_latch_value()  # NTSC@8kHz → 127 (period 128)
-        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        # period = round(128 / 1.1575) = 111 → latch 110, strictly below nominal.
-        self.assertEqual(s._nmi_latch, 110)
-        self.assertLess(s._nmi_latch, nominal)  # faster rate ⇒ smaller latch
-        self.assertEqual(self._latch_write(s), 110)
+        s.set_pitch_compensation_for_mode("mhires", {"mhires": 1.02})
+        # ratio = 1/1.02 ≈ 0.9804 < 1.0 → decimation, and the NMI latch is left
+        # alone (compensation is host-side resampling, not a faster NMI).
+        self.assertAlmostEqual(s._resample_ratio, 1.0 / 1.02, places=4)
+        self.assertLess(s._resample_ratio, 1.0)
+        self.assertIsNone(self._latch_write(s))
 
-    def test_slowdown_multiplier_grows_latch(self):
+    def test_unity_multiplier_is_passthrough(self):
         s = self._started()
-        nominal = s._nmi_latch_value()
-        s.set_nmi_latch_for_mode("petscii", {"petscii": 0.8})
-        # period = round(128 / 0.8) = 160 → latch 159, above nominal.
-        self.assertEqual(s._nmi_latch, 159)
-        self.assertGreater(s._nmi_latch, nominal)
-
-    def test_unity_multiplier_no_write(self):
-        s = self._started()
-        s.set_nmi_latch_for_mode("blank", {"blank": 1.0})
-        self.assertEqual(s._nmi_latch, s._nmi_latch_value())
-        self.assertIsNone(self._latch_write(s))  # unchanged ⇒ no bus traffic
+        s.set_pitch_compensation_for_mode("blank", {"blank": 1.0})
+        self.assertEqual(s._resample_ratio, 1.0)
 
     def test_unknown_mode_defaults_to_unity(self):
         s = self._started()
-        s.set_nmi_latch_for_mode("hires_edges", {"hires": 1.1})  # no exact key
-        self.assertEqual(s._nmi_latch, s._nmi_latch_value())  # 1.0 fallback
-        self.assertIsNone(self._latch_write(s))
+        s.set_pitch_compensation_for_mode("hires_edges", {"hires": 1.1})  # no exact key
+        self.assertEqual(s._resample_ratio, 1.0)  # 1.0 fallback → passthrough
+
+    def test_ratio_clamped_to_floor(self):
+        # A wild multiplier can't decimate past the sanity floor.
+        s = self._started()
+        s.set_pitch_compensation_for_mode("mhires", {"mhires": 4.0})  # ratio 0.25
+        self.assertEqual(s._resample_ratio, RESAMPLE_RATIO_MIN)
+
+    def test_slowdown_multiplier_clamps_to_passthrough(self):
+        # mult < 1.0 would upsample (play slower); we never slow playback down.
+        s = self._started()
+        s.set_pitch_compensation_for_mode("petscii", {"petscii": 0.8})
+        self.assertEqual(s._resample_ratio, 1.0)
 
     def test_no_op_without_servo(self):
         s = self._started(host_dma_servo=False)
-        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        self.assertIsNone(self._latch_write(s))
+        s.set_pitch_compensation_for_mode("mhires", {"mhires": 1.02})
+        self.assertEqual(s._resample_ratio, 1.0)  # unchanged
 
     def test_no_op_without_worker(self):
         s = self._started()
         s._worker_thread = None
-        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        self.assertIsNone(self._latch_write(s))
-
-    def test_multiplier_is_sticky_until_timer_starts(self):
-        # The real ordering: set_nmi_latch_for_mode runs at scene setup BEFORE
-        # the worker prebuffers and arms the timer. It must stash the multiplier
-        # (no write yet) and _start_nmi_timer must then apply it — otherwise the
-        # timer start would clobber the compensation back to nominal.
-        s = _make()
-        s._worker_thread = cast(Any, object())
-        self.assertFalse(s._nmi_timer_started)
-        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        self.assertIsNone(self._latch_write(s))  # deferred, not written
-        self.assertAlmostEqual(s._pitch_multiplier, 1.1575)
-
-        cast(Any, s)._start_nmi_timer()  # worker arms the timer
-        self.assertTrue(s._nmi_timer_started)
-        self.assertEqual(s._nmi_latch, 110)  # compensation applied
-        self.assertEqual(self._latch_write(s), 110)
+        s.set_pitch_compensation_for_mode("mhires", {"mhires": 1.02})
+        self.assertEqual(s._resample_ratio, 1.0)  # unchanged
 
     def test_stop_clears_pitch_state(self):
         s = self._started()
-        s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
+        s.set_pitch_compensation_for_mode("mhires", {"mhires": 1.02})
+        self.assertLess(s._resample_ratio, 1.0)
         s.running = True
         s._worker_thread = None  # no real thread to join in this unit test
         s.stop()
-        self.assertFalse(s._nmi_timer_started)
-        self.assertAlmostEqual(s._pitch_multiplier, 1.0)
+        self.assertEqual(s._resample_ratio, 1.0)
+        self.assertEqual(s._resample_prev_tail.size, 0)
+
+
+class ResampleResidualTest(unittest.TestCase):
+    """The fixed-ratio resampler decimates the source by the per-mode
+    _resample_ratio so a bus-halt-slowed mode plays at correct tempo. These pin
+    the seam-free cross-chunk continuity, the passthrough guards, the sanity-floor
+    clamp, and the source-time accounting invariant (position_seconds + the queue
+    tally must NOT drift when the byte stream is decimated)."""
+
+    def test_length_and_phase_continuity(self):
+        # Two consecutive chunks must equal a one-shot resample of the whole
+        # input (proves the persistent fractional-phase accumulator is seam-free).
+        ratio = 0.9
+        full = np.linspace(-1.0, 1.0, 4000, dtype=np.float32)
+
+        one = _make()
+        one._resample_ratio = ratio
+        one_shot = one._resample_residual(full)
+
+        split = _make()
+        split._resample_ratio = ratio
+        a = split._resample_residual(full[:1500])
+        b = split._resample_residual(full[1500:])
+        two_chunk = np.concatenate([a, b])
+
+        self.assertAlmostEqual(len(one_shot) / len(full), ratio, delta=0.01)
+        self.assertEqual(len(two_chunk), len(one_shot))
+        np.testing.assert_allclose(two_chunk, one_shot, atol=1e-5)
+
+    def test_passthrough_at_unity(self):
+        # Default ratio 1.0 → bit-exact passthrough.
+        s = _make()
+        x = np.linspace(-1.0, 1.0, 256, dtype=np.float32)
+        np.testing.assert_array_equal(s._resample_residual(x), x)
+
+    def test_passthrough_within_deadband(self):
+        # ratio within RESAMPLE_DEADBAND of 1.0 → no-op (light mode).
+        s = _make()
+        s._resample_ratio = 0.999
+        x = np.linspace(-1.0, 1.0, 256, dtype=np.float32)
+        np.testing.assert_array_equal(s._resample_residual(x), x)
+
+    def test_ratio_floor_clamp(self):
+        # A wildly-low ratio must not decimate past RESAMPLE_RATIO_MIN.
+        s = _make()
+        s._resample_ratio = 0.2  # would be an 80% drop, unclamped
+        out = s._resample_residual(np.linspace(-1.0, 1.0, 1000, dtype=np.float32))
+        self.assertGreaterEqual(len(out) / 1000, RESAMPLE_RATIO_MIN - 0.02)
+
+    def test_position_stays_source_time_after_decimation(self):
+        # Push source samples with resample active, drain through the worker, and
+        # assert the position clock + queue tally stayed on the SOURCE timeline
+        # (pushed counts source samples; queued returns to 0 despite fewer bytes).
+        s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
+        s._resample_ratio = 0.9
+        total_src = 0
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            n = s._encode_and_enqueue(np.linspace(-1.0, 1.0, 200, dtype=np.float32))
+            total_src += n
+        self.assertEqual(s._pushed_count, total_src)
+        _run_worker(s, until=lambda: s.q.empty() and s._queued_samples == 0, timeout=2.0)
+        self.assertEqual(s._queued_samples, 0)
+        self.assertAlmostEqual(s.position_seconds(), total_src / s.sample_rate, places=6)
+
+    def test_encode_enqueue_resample_off_is_byte_identical(self):
+        # ratio 1.0 → the queued payload is byte-for-byte the plain encode, and
+        # the blob weight equals the source-sample count.
+        s = _make(dither=False)
+        s.running = True
+        x = np.linspace(-1.0, 1.0, 300, dtype=np.float32)
+        n = s._encode_and_enqueue(x)
+        payload, weight = s.q.get_nowait()
+        self.assertEqual(payload, encode_floats_to_dac(x, dither=False).tobytes())
+        self.assertEqual(weight, x.size)
+        self.assertEqual(n, x.size)
+
+    def test_encode_enqueue_decimates_payload_keeps_source_weight(self):
+        # ratio 0.9 → fewer payload bytes than source samples, but the blob weight
+        # (and _pushed_count) stay in source units.
+        s = _make(dither=False)
+        s._resample_ratio = 0.9
+        s.running = True
+        x = np.linspace(-1.0, 1.0, 1000, dtype=np.float32)
+        n = s._encode_and_enqueue(x)
+        payload, weight = s.q.get_nowait()
+        self.assertEqual(n, 1000)
+        self.assertEqual(weight, 1000)  # source units
+        self.assertLess(len(payload), 1000)  # decimated bytes
+        self.assertAlmostEqual(len(payload) / 1000, 0.9, delta=0.02)
 
 
 class NmiRateSafetyTest(unittest.TestCase):
@@ -398,7 +471,7 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         s.running = True
         s.q = queue.Queue(maxsize=1)
-        s.q.put(b"\x07")  # fill the single blob slot
+        s.q.put((b"\x07", 1))  # fill the single blob slot
         s._queued_samples = 0  # but keep the sample cap clear
         n = s._encode_and_enqueue(np.zeros(8, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0)
@@ -697,7 +770,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_stop_drains_leftover_queue(self):
         s = _make()
-        s.q.put(b"\x07\x07")
+        s.q.put((b"\x07\x07", 2))
         s._queued_samples = 2
         s.stop()
         self.assertTrue(s.q.empty())
