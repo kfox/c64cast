@@ -82,11 +82,30 @@ _BACKGROUND_CHOICES = (
     "random",
 )
 _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
+# Mirror generators.generator_names() / effects.effect_names() (hardcoded to
+# keep config import-light; a drift test in test_introspect pins the match).
+# Generative video sources + the per-scene pixel effects.
+_GENERATIVE_SOURCE_CHOICES = ("plasma", "tunnel")
+_EFFECT_CHOICES = ("trails",)
 
 # The scene types (mirrors validate_scene_cfg). Used by the introspection
 # layer's `applies_to` filtering; declared here so SceneCfg metadata can name
 # them symbolically.
-SCENE_TYPES = ("webcam", "blank", "video", "waveform", "midi", "slideshow", "launcher")
+SCENE_TYPES = (
+    "webcam",
+    "blank",
+    "video",
+    "waveform",
+    "midi",
+    "slideshow",
+    "launcher",
+    "generative",
+)
+
+# Scene types that render a numpy frame (and so support a per-scene `effect`).
+# Excludes blank (no frame), waveform/midi (self-rendered bitmap, bypass the
+# frame→display helper), and launcher (the program owns the VIC).
+_EFFECT_SCENE_TYPES = frozenset({"webcam", "video", "slideshow", "generative"})
 
 
 # ---------------------------------------------------------------------------
@@ -545,9 +564,10 @@ class SceneCfg:
         default="hires_edges",
         metadata={
             "help": "VIC-II display mode. waveform and midi are bitmap-only (both "
-            "ignore this); slideshow also accepts 'random'.",
+            "ignore this); slideshow also accepts 'random'. generative renders a "
+            "frame so any quantizing mode works (not 'blank'/'random').",
             "choices": _DISPLAY_CHOICES,
-            "applies_to": ("webcam", "blank", "video", "slideshow"),
+            "applies_to": ("webcam", "blank", "video", "slideshow", "generative"),
         },
     )
     name: str | None = field(
@@ -562,7 +582,15 @@ class SceneCfg:
             "help": "Seconds before auto-advance. Unset = scene-type default. "
             "Video scenes reject this (they run until the file ends). "
             "For launcher this is the idle timeout (reset by player input).",
-            "applies_to": ("webcam", "blank", "waveform", "midi", "slideshow", "launcher"),
+            "applies_to": (
+                "webcam",
+                "blank",
+                "waveform",
+                "midi",
+                "slideshow",
+                "launcher",
+                "generative",
+            ),
         },
     )
     # See resolve_file_spec for the comma-separated path/dir/glob grammar.
@@ -597,7 +625,26 @@ class SceneCfg:
         metadata={
             "help": "Per-scene audio override. Unset follows [audio].enabled; "
             "false mutes this scene only.",
-            "applies_to": ("webcam", "blank", "video"),
+            "applies_to": ("webcam", "blank", "video", "generative"),
+        },
+    )
+    # Generative scene: which procedural video source to render.
+    source: str = field(
+        default="plasma",
+        metadata={
+            "help": "Generative video source to render (generative scenes only).",
+            "choices": _GENERATIVE_SOURCE_CHOICES,
+            "applies_to": ("generative",),
+        },
+    )
+    # Per-scene pixel effect applied to the source frame before quantization.
+    effect: str | None = field(
+        default=None,
+        metadata={
+            "help": "Pixel effect applied to the frame before quantization "
+            "(unset = none). Works on any frame-bearing scene.",
+            "choices": _EFFECT_CHOICES,
+            "applies_to": ("webcam", "video", "slideshow", "generative"),
         },
     )
     # None = use global [dsp].pre_emphasis (which itself may be source-aware
@@ -609,7 +656,7 @@ class SceneCfg:
             "help": "Per-scene HF pre-emphasis (0 = off, ~0.3-0.7 typical; "
             "brightens speech). Unset = global [dsp].pre_emphasis / "
             "source-aware default. Needs [dsp].enabled + scene audio.",
-            "applies_to": ("webcam", "blank", "video"),
+            "applies_to": ("webcam", "blank", "video", "generative"),
         },
     )
     # waveform-specific kwargs — passed straight through to WaveformScene.
@@ -2048,6 +2095,26 @@ def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
     return _display_mode_for_scene(display, s, cfg)
 
 
+def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
+    if s.source not in _GENERATIVE_SOURCE_CHOICES:
+        raise ValueError(
+            f"generative scene `source` must be one of {_GENERATIVE_SOURCE_CHOICES}, "
+            f"got {s.source!r}"
+        )
+    if s.display == "blank":
+        raise ValueError(
+            "generative scene cannot use display = 'blank' (there'd be nothing "
+            "to quantize the generated frame). Pick mhires/hires/hires_edges/"
+            "mcm/petscii."
+        )
+    if s.display == "random":
+        raise ValueError(
+            "generative scene does not support display = 'random' (only slideshow "
+            "does). Pick a concrete mode."
+        )
+    return _display_mode_for_scene(s.display, s, cfg)
+
+
 def _validate_launcher(s: SceneCfg) -> None:
     """Self-contained launcher validation. The launched program owns the
     whole machine (VIC/SID/CIAs), so a launcher carries no display mode and
@@ -2120,6 +2187,17 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     self-validates (including its orchestrator) and we return immediately."""
     from .overlays import build_overlay, validate_for_scene
 
+    # Per-scene pixel effect: validated up front (before the launcher early
+    # return) so it's caught on every type. Only frame-bearing scenes support it.
+    if s.effect is not None:
+        if s.effect not in _EFFECT_CHOICES:
+            raise ValueError(f"effect must be one of {_EFFECT_CHOICES} or unset, got {s.effect!r}")
+        if s.type not in _EFFECT_SCENE_TYPES:
+            raise ValueError(
+                f"effect is not supported on {s.type!r} scenes (they don't render a "
+                f"video frame). Supported: {tuple(sorted(_EFFECT_SCENE_TYPES))}."
+            )
+
     if s.type == "webcam":
         mode = _display_mode_for_scene(s.display, s, cfg)
     elif s.type == "blank":
@@ -2132,6 +2210,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         mode = _validate_midi(s)
     elif s.type == "slideshow":
         mode = _validate_slideshow(s, cfg)
+    elif s.type == "generative":
+        mode = _validate_generative(s, cfg)
     elif s.type == "launcher":
         _validate_launcher(s)
         return
@@ -2139,8 +2219,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         raise ValueError(
             f"unknown scene type {s.type!r} "
             "(known: webcam, blank, video, waveform, midi, "
-            "slideshow, launcher). Note: scrolling_text is now an overlay — "
-            "attach it via [[scenes.overlays]]."
+            "slideshow, launcher, generative). Note: scrolling_text is now an "
+            "overlay — attach it via [[scenes.overlays]]."
         )
 
     audio_proxy = _AUDIO_SENTINEL if audio_enabled else None
@@ -2184,7 +2264,7 @@ def build_scene(
     is enabled; it resolves the [video].use_reu_staged "auto" setting (see
     resolve_use_reu_staged). Callers that build scenes without a live probe
     (validation, doctor) leave it False so auto degrades to host-DMA."""
-    from .scenes import BlankScene, VideoScene, WebcamScene
+    from .scenes import BlankScene, SourceScene, VideoScene, WebcamScene
 
     validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
 
@@ -2304,6 +2384,30 @@ def build_scene(
             audio_reu_pump_active=audio_reu_pump_active,
             color=cfg.color,
         )
+    elif s.type == "generative":
+        from .audio_source import AudioSource, MicAudioSource, NullAudioSource
+        from .generators import build_generator
+
+        mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
+        gen = build_generator(s.source)
+        name = s.name or f"Generative {s.source}"
+        # Audio is opt-in (off by default for generative art). Like webcam/
+        # blank, a live mic source is suppressed in ensemble mode.
+        scene_audio = None if s.audio is False else audio
+        if is_ensemble and scene_audio is not None:
+            if s.audio is True:
+                log.info(
+                    "[%s] generative scene: audio suppressed in ensemble mode "
+                    "(live scenes never hold the audio spotlight)",
+                    name,
+                )
+            scene_audio = None
+        audio_src: AudioSource = (
+            MicAudioSource(scene_audio, cfg.audio, display_mode=mode)
+            if scene_audio is not None
+            else NullAudioSource()
+        )
+        scene = SourceScene(api, scene_audio, mode, gen, audio_src, name)
     elif s.type == "launcher":
         from .scenes import LauncherScene
 
@@ -2353,6 +2457,12 @@ def build_scene(
         scene.duration_s = s.duration_s
     if s.target_fps is not None:
         scene.target_fps = float(s.target_fps)
+    # Per-scene pixel effect (validated frame-bearing in validate_scene_cfg).
+    # Applied to the source frame in scenes._render_with_overlays.
+    if s.effect is not None:
+        from .effects import build_effect
+
+        scene.effect = build_effect(s.effect)
     _attach_overlays(scene, s.overlays, audio)
     # Debug aid: source-bearing scenes draw the playback timecode + frame
     # number into each frame (pre-quantization). Harmless no-op on scenes

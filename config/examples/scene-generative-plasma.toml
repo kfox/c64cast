@@ -1,0 +1,28 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a procedural plasma rendered as a multicolor bitmap.
+#
+# `generative` scenes are a composable building block: a procedural *video
+# source* (here `source = "plasma"`) produces a frame every tick, and the
+# display mode quantizes it to the C64 — exactly like a webcam/video frame,
+# just synthesized instead of captured. Because the source and the display
+# are orthogonal, the SAME plasma renders as a multicolor bitmap here and as
+# PETSCII glyphs in scene-generative-petscii.toml — only `display` differs.
+#
+# Other sources: `source = "tunnel"` (see effect-trails.toml). Pure host-side
+# numpy, no audio by default (set `audio = true` to layer the live mic).
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-plasma.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Plasma (mhires)"
+source = "plasma"
+display = "mhires"
+duration_s = 30.0
