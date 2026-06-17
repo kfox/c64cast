@@ -41,7 +41,6 @@ import os
 import random
 import threading
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -49,10 +48,24 @@ import numpy as np
 from ._pollthread import PollThread
 from .audio import RING_BUFFER_ADDR, RING_BUFFER_END, AudioStreamer
 from .backend import C64Backend
-from .c64 import CIA2, CPU, ROM, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
+from .c64 import CIA2, CPU, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
 from .palette import C64_COLORS
 from .scenes import Scene
-from .sid_host_emu import SidHostEmu, ram_play_access_footprint, ram_write_footprint
+
+# SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
+# _play_bank_for_footprints moved to sid_host_emu.py (so SidFileAudioSource can
+# reuse them without importing the oscilloscope renderer). Imported here for
+# WaveformScene's own use AND re-exported for back-compat: config and tests
+# historically do `from .waveform import parse_sid_header / _play_bank_for_footprints`.
+from .sid_host_emu import (
+    SidHostEmu,
+    _overlaps,
+    _play_bank_for_footprints,
+    _sid_payload_extent,
+    parse_sid_header,
+    ram_play_access_footprint,
+    ram_write_footprint,
+)
 from .sidemu import SIDEmulator, primary_waveform
 
 # The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
@@ -122,53 +135,15 @@ _UNIFIED_LAYOUT_MAX_SONGS = 16
 
 
 # ---------------------------------------------------------------------------
-# SID file header
+# Display-bank selection
+#
+# The SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
+# _play_bank_for_footprints helpers moved to sid_host_emu.py (so the
+# composable SidFileAudioSource can reuse them without importing the
+# oscilloscope renderer); they're re-imported above for back-compat. The
+# bank-choice helpers below stay here — they're specific to WaveformScene's
+# relocatable display.
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class SidHeader:
-    magic: str
-    version: int
-    num_songs: int
-    start_song: int
-    name: str
-    author: str
-    released: str
-    # Decoded PSID v2+ flags. None on v1 headers (no flags field).
-    clock: str | None  # "PAL", "NTSC", "PAL+NTSC", "?" or None
-    sid_model: str | None  # "6581", "8580", "6581+8580", "?" or None
-
-
-# PSID v2+ flags byte 1 (low-order) layout — clock at bits 2-3, primary
-# SID model at bits 4-5. Higher-order model bits for 2nd/3rd SIDs live in
-# byte 0 of the 2-byte flags field; the waveform UI only surfaces the
-# primary chip + clock so we ignore the rest.
-_CLOCK_TABLE = {0: "?", 1: "PAL", 2: "NTSC", 3: "PAL+NTSC"}
-_MODEL_TABLE = {0: "?", 1: "6581", 2: "8580", 3: "6581+8580"}
-
-
-def _sid_payload_extent(sid_bytes: bytes) -> tuple[int, int]:
-    """Return (load_addr, end_addr_exclusive) for the SID's payload bytes
-    once loaded on the C64. Mirrors the load-address handling in
-    `api.parse_psid_for_player` without re-running its full validation —
-    used by WaveformScene to refuse tunes whose payload would clobber
-    the hires bitmap or screen RAM area when the scene sets up its
-    display. Assumes the SID header has already been validated (magic +
-    minimum length) by `parse_sid_header`."""
-    data_offset = int.from_bytes(sid_bytes[6:8], "big")
-    load_addr = int.from_bytes(sid_bytes[8:10], "big")
-    payload = sid_bytes[data_offset:]
-    if load_addr == 0 and len(payload) >= 2:
-        load_addr = payload[0] | (payload[1] << 8)
-        payload = payload[2:]
-    return load_addr, load_addr + len(payload)
-
-
-def _overlaps(lo: int, hi: int, region_lo: int, region_size: int) -> bool:
-    """True when [lo, hi) overlaps the region [region_lo, region_lo+size)."""
-    region_hi = region_lo + region_size
-    return lo < region_hi and hi > region_lo
 
 
 def _bank_payload_feasible(
@@ -247,64 +222,6 @@ def _choose_unified_display_layout(
         return _choose_display_layout(payload_lo, payload_hi, union.tobytes())
     except ValueError:
         return None
-
-
-def _play_bank_for_footprints(
-    write_fp: bytes | bytearray, access_fp: bytes | bytearray
-) -> int | None:
-    """Return the $01 CPU-port override the player should use around JSR play,
-    or None to let api.run_sid_player's address-keyed heuristic decide.
-
-    The heuristic banks on the play *address* page, but a tune can read its
-    live song data from RAM under BASIC ROM ($A000-$BFFF) while its code sits
-    below it — Galway's Times of Lore subtunes 2-11 copy per-song data to
-    $B400 at INIT and read it back every PLAY. With the default $37 (BASIC
-    mapped) PLAY reads ROM there instead of the data → silence. We return
-    $36 (BASIC out) when PLAY reads an address under BASIC ROM that the tune
-    also *wrote* — proof it's RAM data, not the ROM itself. A tune that reads
-    BASIC ROM *as data* (e.g. Galway's Comic Bakery table) writes nothing
-    there, so the intersection is empty and we keep $37."""
-    lo, hi = ROM.BASIC_LO, ROM.BASIC_HI
-    w = np.frombuffer(bytes(write_fp[lo:hi]), dtype=np.uint8)
-    a = np.frombuffer(bytes(access_fp[lo:hi]), dtype=np.uint8)
-    if bool((w & a).any()):
-        return CPU.PORT_BASIC_OUT
-    return None
-
-
-def parse_sid_header(data: bytes) -> SidHeader:
-    """Parse the PSID/RSID v1+ header. Validates magic, returns metadata.
-
-    Reads the v2+ flags field at offset 0x76 (2 bytes, big-endian) to
-    surface SID chip model + PAL/NTSC clock. v1 headers (length 118)
-    leave both as None."""
-    if len(data) < 22:
-        raise ValueError("SID file too short to contain a header")
-    magic = data[:4]
-    if magic not in (b"PSID", b"RSID"):
-        raise ValueError(f"not a SID file (expected PSID/RSID magic, got {magic!r})")
-    version = int.from_bytes(data[4:6], "big")
-    clock: str | None = None
-    sid_model: str | None = None
-    if version >= 2 and len(data) >= 0x78:
-        # flags lives at 0x76 (16 bits big-endian); clock/model bits are in
-        # the low byte (0x77).
-        flags_lo = data[0x77]
-        clock = _CLOCK_TABLE[(flags_lo >> 2) & 0x03]
-        sid_model = _MODEL_TABLE[(flags_lo >> 4) & 0x03]
-    return SidHeader(
-        magic=magic.decode("ascii"),
-        version=version,
-        num_songs=int.from_bytes(data[14:16], "big"),
-        start_song=int.from_bytes(data[16:18], "big"),
-        name=data[22:54].rstrip(b"\x00").decode("latin-1", "replace"),
-        author=data[54:86].rstrip(b"\x00").decode("latin-1", "replace"),
-        released=data[86:118].rstrip(b"\x00").decode("latin-1", "replace")
-        if len(data) >= 118
-        else "",
-        clock=clock,
-        sid_model=sid_model,
-    )
 
 
 # ---------------------------------------------------------------------------
