@@ -96,6 +96,16 @@ class ChoiceVocabSyncTest(unittest.TestCase):
 
         self.assertEqual(set(cfgmod._BACKGROUND_CHOICES) - {"random"}, set(backgrounds.REGISTRY))
 
+    def test_generative_sources(self):
+        from c64cast import generators
+
+        self.assertEqual(cfgmod._GENERATIVE_SOURCE_CHOICES, generators.generator_names())
+
+    def test_effects(self):
+        from c64cast import effects
+
+        self.assertEqual(cfgmod._EFFECT_CHOICES, effects.effect_names())
+
     def test_scene_types(self):
         self.assertEqual(set(cfgmod.SCENE_TYPES), set(introspect.scene_type_names()))
 

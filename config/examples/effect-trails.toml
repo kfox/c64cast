@@ -1,0 +1,29 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a per-scene pixel EFFECT layered on a generative source.
+#
+# `effect = "trails"` is a feedback/echo effect: each frame is blended with a
+# decayed copy of the previous one, so motion leaves a fading comet tail. The
+# effect is applied to the source frame BEFORE quantization, so it works on any
+# frame-bearing scene — generative (here), webcam, video, or slideshow — just
+# by adding the `effect` line. Here it rides a `tunnel` generator for an
+# infinite-zoom-with-trails look.
+#
+# Try it on a webcam scene too: add `effect = "trails"` to any of the
+# scene-webcam-*.toml demos.
+#
+# Run:
+#   python -m c64cast --config config/examples/effect-trails.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Tunnel + trails"
+source = "tunnel"
+display = "mhires"
+effect = "trails"
+duration_s = 30.0

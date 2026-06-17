@@ -1,0 +1,24 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: the SAME plasma source as scene-generative-plasma.toml,
+# but rendered as PETSCII glyphs instead of a multicolor bitmap.
+#
+# This is the point of the composable model: the video source (plasma) and the
+# display mode (petscii vs mhires) are independent. Swap `display` and the same
+# generator becomes a glyph-quantized plasma — and every PETSCII overlay
+# (clock, marquee, …) still composes on top.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-petscii.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Plasma (petscii)"
+source = "plasma"
+display = "petscii"
+duration_s = 30.0

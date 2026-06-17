@@ -56,7 +56,10 @@ from .video import (
 )
 
 if TYPE_CHECKING:
+    from .audio_source import AudioSource
     from .config import AudioCfg, ColorCfg
+    from .effects import FrameEffect
+    from .frame_source import FrameSource
     from .overlays import Overlay
 
 log = logging.getLogger(__name__)
@@ -160,6 +163,14 @@ class Scene:
         # global/source-aware default). Applied to the shared AudioStreamer in
         # setup() for audio-bearing scenes; ignored when the scene has no audio.
         self.pre_emphasis: float | None = None
+        # Optional per-scene pixel effect (None = no effect). Set by
+        # config.build_scene from [[scenes]].effect. Applied to the source
+        # frame in _render_with_overlays before the display mode quantizes, so
+        # it works on any frame-bearing scene (webcam/video/slideshow/
+        # generative). Self-rendered bitmap scenes (waveform/midi) bypass that
+        # helper, so the effect doesn't apply to them. Reset in setup() so a
+        # looping/re-entered scene starts with clean effect state.
+        self.effect: FrameEffect | None = None
         # Set by config.build_scene to the SceneCfg the scene was built
         # from — the playlist's orchestrator wiring reads this (and the
         # rest are populated for conductor/follower roles by the
@@ -191,6 +202,10 @@ class Scene:
     def setup(self) -> None:
         self.is_done = False
         self.prev_frame = None
+        # Clear any inter-frame effect state so a looping or re-entered scene
+        # doesn't ghost a trail from the previous iteration.
+        if self.effect is not None:
+            self.effect.reset()
         # Apply this scene's pre-emphasis to the shared streamer before the
         # subclass brings audio up (mic start / video pre-encode read the
         # updated DSP params). No-op when the scene has no audio.
@@ -339,8 +354,23 @@ def _render_with_overlays(
     `frame` may be None for BlankDisplayMode (no video input). The base
     DisplayMode.compose/render signature requires a real array, so callers
     that hit the None branch supply an empty placeholder — Blank's compose
-    ignores its arg, and bitmap modes never get a None frame in practice."""
+    ignores its arg, and bitmap modes never get a None frame in practice.
+
+    A per-scene pixel effect (scene.effect), if present, transforms the source
+    frame here — before downscale/quantization — so it applies uniformly to
+    every frame-bearing scene. Skipped when there's no frame (Blank). A failing
+    effect disables itself rather than killing the scene."""
     prof = get_profiler()
+    if frame is not None and scene.effect is not None:
+        try:
+            frame = scene.effect.apply(frame, t)
+        except Exception:
+            log.exception(
+                "effect %r failed on %r — disabling",
+                getattr(scene.effect, "name", scene.effect),
+                scene.name,
+            )
+            scene.effect = None
     frame_arg = frame if frame is not None else np.empty(0, dtype=np.uint8)
     if not display_mode.supports_compose:
         with prof.stage("render"):
@@ -365,6 +395,77 @@ def _render_with_overlays(
                 ov._disabled = True
     with prof.stage("push"):
         display_mode.push(api, buffers)
+
+
+class SourceScene(Scene):
+    """Composable scene: a FrameSource × an AudioSource × a display mode.
+
+    Generalizes the live-frame pattern (WebcamScene/SlideshowScene): read a
+    frame from the source at the scene clock, optionally run the scene's pixel
+    effect (applied inside _render_with_overlays), quantize via the display
+    mode, push — overlays compose on top. The source decides the scene's
+    lifetime: infinite sources (generative art) run until `duration_s`; a
+    finite source ends the scene when it reports `finished`.
+
+    Audio is delegated to the AudioSource building block (silence, live mic,
+    and — later — SID playback / sampled streaming), chosen independently of
+    the video source. The base `audio` reference is still passed so the shared
+    streamer's per-scene pre-emphasis hook works; the AudioSource owns
+    start/stop.
+    """
+
+    def __init__(
+        self,
+        api: C64Backend,
+        audio: AudioStreamer | None,
+        display_mode: DisplayMode,
+        source: FrameSource,
+        audio_source: AudioSource,
+        name: str,
+    ):
+        super().__init__(api, audio, display_mode, name)
+        self.source = source
+        self.audio_source = audio_source
+        self.start_time = 0.0
+        self._frame_count = 0
+
+    def competes_for_audio_lock(self) -> bool:
+        # The audio building block decides: a mic/silent source doesn't claim
+        # the ensemble SID spotlight; a future SID-playback source would.
+        return self.audio_source.wants_audio_lock
+
+    def setup(self) -> None:
+        super().setup()
+        self.start_time = time.time()
+        self.source.setup()
+        self.audio_source.setup()
+
+    def process_frame(self, current_time: float) -> bool:
+        if self.source.finished:
+            return False
+        if (current_time - self.start_time) >= self.duration_s:
+            return False
+        frame = self.source.read(current_time - self.start_time)
+        if frame is not None:
+            if self.show_frame_numbers:
+                self._frame_count += 1
+                label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
+                frame = _annotate_frame_number(frame, label)
+            assert self.display_mode is not None
+            _render_with_overlays(
+                self.display_mode, self.api, frame, self.overlays, current_time, self
+            )
+        return True
+
+    def teardown(self) -> None:
+        # Display teardown first (unhook any IRQ), then stop audio + source —
+        # mirrors WebcamScene so audio.stop() latency doesn't pile on a still-
+        # firing IRQ.
+        super().teardown()
+        try:
+            self.audio_source.teardown()
+        finally:
+            self.source.teardown()
 
 
 class BlankScene(Scene):

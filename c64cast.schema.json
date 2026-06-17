@@ -674,13 +674,14 @@
               "waveform",
               "midi",
               "slideshow",
-              "launcher"
+              "launcher",
+              "generative"
             ],
             "default": "webcam"
           },
           "display": {
             "type": "string",
-            "description": "VIC-II display mode. waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'.",
+            "description": "VIC-II display mode. waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random').",
             "enum": [
               "hires_edges",
               "hires",
@@ -719,6 +720,16 @@
               "null"
             ],
             "description": "Per-scene audio override. Unset follows [audio].enabled; false mutes this scene only."
+          },
+          "effect": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene.",
+            "enum": [
+              "trails"
+            ]
           },
           "pre_emphasis": {
             "type": [
@@ -1622,6 +1633,15 @@
             "type": "boolean",
             "description": "Ensemble: don't contend for the exclusive audio slot \u2014 the launched program drives its own SID concurrently, so several people can play (and hear) their own games at once. No effect single-system.",
             "default": false
+          },
+          "source": {
+            "type": "string",
+            "description": "Generative video source to render (generative scenes only).",
+            "enum": [
+              "plasma",
+              "tunnel"
+            ],
+            "default": "plasma"
           }
         },
         "allOf": [
@@ -1720,6 +1740,31 @@
                     "mcm",
                     "petscii",
                     "random"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "generative"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "display": {
+                  "enum": [
+                    "mhires",
+                    "hires",
+                    "hires_edges",
+                    "mcm",
+                    "petscii"
                   ]
                 }
               }

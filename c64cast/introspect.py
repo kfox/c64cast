@@ -186,6 +186,11 @@ _SCENE_TYPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "machine over; idle timeout resets on player input.",
         (),
     ),
+    (
+        "generative",
+        "Procedural video (plasma/tunnel/…) rendered to any display mode.",
+        ("mhires", "hires", "hires_edges", "mcm", "petscii"),
+    ),
 )
 
 
