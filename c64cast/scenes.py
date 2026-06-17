@@ -438,9 +438,30 @@ class SourceScene(Scene):
         super().setup()
         self.start_time = time.time()
         self.source.setup()
-        self.audio_source.setup()
+        # The audio source can fail on real content (a SID source rejects an
+        # RSID / a tune that loads too low / one whose payload clobbers the
+        # display). The playlist does NOT wrap setup() in try/except, so a
+        # raise here would crash the run loop — instead self-abort like
+        # VideoScene: log, flip is_done, and let the playlist advance.
+        try:
+            self.audio_source.setup()
+        except Exception:
+            log.exception(
+                "scene %r: audio source %s failed to start — aborting scene",
+                self.name,
+                type(self.audio_source).__name__,
+            )
+            self.is_done = True
 
     def process_frame(self, current_time: float) -> bool:
+        # setup() flips is_done when the audio source failed to start (e.g. a
+        # SID source whose tune run_sid_player refuses). The generative
+        # FrameSource's `finished` is always False, so without this guard the
+        # playlist's `is_done = not still_active` would clobber the abort and
+        # play silent video for the full duration. Honor it like a finished
+        # source so the scene tears down and the playlist advances.
+        if self.is_done:
+            return False
         if self.source.finished:
             return False
         if (current_time - self.start_time) >= self.duration_s:

@@ -106,6 +106,18 @@ class ChoiceVocabSyncTest(unittest.TestCase):
 
         self.assertEqual(cfgmod._EFFECT_CHOICES, effects.effect_names())
 
+    def test_audio_source_choices_pinned(self):
+        # No registry backs the AudioSource family (it's a fixed protocol set);
+        # pin the literal so a new value can't be added to the SceneCfg field
+        # metadata without build_scene learning to construct it.
+        self.assertEqual(cfgmod._AUDIO_SOURCE_CHOICES, ("none", "mic", "sid"))
+        # SceneCfg metadata must match the constant.
+        from dataclasses import fields
+
+        meta = {f.name: f for f in fields(cfgmod.SceneCfg)}["audio_source"].metadata
+        self.assertEqual(meta["choices"], cfgmod._AUDIO_SOURCE_CHOICES)
+        self.assertEqual(meta["applies_to"], ("generative",))
+
     def test_scene_types(self):
         self.assertEqual(set(cfgmod.SCENE_TYPES), set(introspect.scene_type_names()))
 
@@ -128,6 +140,16 @@ class AppliesToTest(unittest.TestCase):
         self.assertIn("scroll_columns", names)
         # waveform-only fields (SID file playback) stay excluded.
         self.assertNotIn("song", names)
+
+    def test_generative_includes_source_audio_and_sid_fields(self):
+        gen = next(s for s in introspect.scene_types() if s.name == "generative")
+        names = {f.name for f in gen.fields}
+        self.assertIn("source", names)
+        self.assertIn("audio_source", names)
+        self.assertIn("effect", names)
+        # file + song now surface for generative (used when audio_source = sid).
+        self.assertIn("file", names)
+        self.assertIn("song", names)
 
     def test_universal_fields_present_everywhere(self):
         for s in introspect.scene_types():

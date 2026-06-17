@@ -88,6 +88,13 @@ _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
 _GENERATIVE_SOURCE_CHOICES = ("plasma", "tunnel")
 _EFFECT_CHOICES = ("trails",)
 
+# Per-scene audio source for composable (generative) scenes — the AudioSource
+# building block in audio_source.py. "none" = silence; "mic" = live mic via the
+# shared AudioStreamer (gated by [audio].enabled); "sid" = play a .sid on the
+# real chip (needs `file`). Default "mic" reproduces the pre-field behavior
+# (mic when audio is enabled, else silence). A drift test pins this list.
+_AUDIO_SOURCE_CHOICES = ("none", "mic", "sid")
+
 # The scene types (mirrors validate_scene_cfg). Used by the introspection
 # layer's `applies_to` filtering; declared here so SceneCfg metadata can name
 # them symbolically.
@@ -599,8 +606,9 @@ class SceneCfg:
         metadata={
             "help": "Asset spec (comma-separated paths/dirs/globs). Videos for "
             "video, .sid for waveform, images for slideshow, "
-            ".prg/.crt for launcher.",
-            "applies_to": ("video", "waveform", "slideshow", "launcher"),
+            ".prg/.crt for launcher, .sid for generative when "
+            "audio_source = sid.",
+            "applies_to": ("video", "waveform", "slideshow", "launcher", "generative"),
         },
     )
     image_duration_s: float = field(
@@ -637,6 +645,19 @@ class SceneCfg:
             "applies_to": ("generative",),
         },
     )
+    # Generative scene: the audio building block paired with the video source.
+    audio_source: str = field(
+        default="mic",
+        metadata={
+            "help": "Audio for a generative scene: 'none' = silent; 'mic' = live "
+            "mic (only when [audio].enabled); 'sid' = play the `file` .sid on "
+            "the real chip. Default 'mic' matches pre-field behavior. A SID "
+            "source forces a host-DMA display and needs a char display "
+            "(petscii/mcm) for most tunes (see `file`).",
+            "choices": _AUDIO_SOURCE_CHOICES,
+            "applies_to": ("generative",),
+        },
+    )
     # Per-scene pixel effect applied to the source frame before quantization.
     effect: str | None = field(
         default=None,
@@ -662,7 +683,11 @@ class SceneCfg:
     # waveform-specific kwargs — passed straight through to WaveformScene.
     song: int = field(
         default=0,
-        metadata={"help": "SID subtune index to play (0-based).", "applies_to": ("waveform",)},
+        metadata={
+            "help": "SID subtune index to play (0 = the SID's default; 1-based "
+            "otherwise). For generative scenes, only with audio_source = sid.",
+            "applies_to": ("waveform", "generative"),
+        },
     )
     color_mode: str = field(
         default="per_voice",
@@ -1955,7 +1980,12 @@ def _resolve_file_spec_or_explain(
 
 
 def _display_mode_for_scene(
-    display: str, s: SceneCfg, cfg: Config, *, reu_available: bool = False
+    display: str,
+    s: SceneCfg,
+    cfg: Config,
+    *,
+    reu_available: bool = False,
+    force_host_dma: bool = False,
 ) -> DisplayMode:
     """Build the standard video display mode for a scene, centralizing the
     palette/border/background/style/REU/color kwarg cluster shared by the
@@ -1977,16 +2007,25 @@ def _display_mode_for_scene(
     bank-swap install picks a MERGED dispatcher whose non-raster branch JMPs
     the audio pump at $C100 so both IRQ sources (raster vblank + CIA #1
     jiffy) are serviced through one $0314 hook. MCM doesn't yet support
-    use_reu_staged (separate future-work)."""
+    use_reu_staged (separate future-work).
+
+    `force_host_dma` hard-disables REU staging regardless of
+    [video].use_reu_staged (including an explicit `= true`, which otherwise
+    bypasses the auto path). Used for SID-audio scenes: the SID player owns the
+    $0314 IRQ for PLAY, so the display must not install the bank-swap raster IRQ
+    at the same vector."""
+    use_reu_staged = (
+        False
+        if force_host_dma
+        else resolve_use_reu_staged(cfg.video.use_reu_staged, display, reu_available=reu_available)
+    )
     return _build_display_mode(
         display,
         palette_mode=s.palette_mode,
         border=s.border,
         background=s.background,
         style=s.style,
-        use_reu_staged=resolve_use_reu_staged(
-            cfg.video.use_reu_staged, display, reu_available=reu_available
-        ),
+        use_reu_staged=use_reu_staged,
         audio_reu_pump_active=cfg.audio.use_reu_pump,
         color=cfg.color,
     )
@@ -2112,7 +2151,66 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
             "generative scene does not support display = 'random' (only slideshow "
             "does). Pick a concrete mode."
         )
+    if s.audio_source not in _AUDIO_SOURCE_CHOICES:
+        raise ValueError(
+            f"generative scene `audio_source` must be one of {_AUDIO_SOURCE_CHOICES}, "
+            f"got {s.audio_source!r}"
+        )
+    if s.audio_source == "sid":
+        # A SID source drives the chip directly; the DAC-path `audio` toggle is
+        # meaningless for it (it plays regardless of [audio].enabled). Reject an
+        # explicit per-scene `audio` rather than silently ignoring it.
+        if s.audio is not None:
+            raise ValueError(
+                "generative scene with audio_source = 'sid' must not set `audio` — "
+                "the SID plays on the chip regardless of the DAC/mic path. Remove "
+                "`audio` (use audio_source = 'mic'/'none' for the live-mic path)."
+            )
+        # Resolve the .sid spec (default to the SID dir, like waveform) and
+        # validate the first candidate's payload against the FIXED bank-0
+        # display — a SID source can't relocate, so a bitmap display + a tune
+        # that loads over $2000 is a hard conflict. setup() does the
+        # authoritative per-pick check; this is the load-time fast-fail.
+        _resolve_file_spec_or_explain(
+            s, DEFAULT_WAVEFORM_DIR, SID_EXTS, label="generative sid audio", drop_hint="a .sid"
+        )
+        mode = _display_mode_for_scene(s.display, s, cfg, force_host_dma=True)
+        _check_first_sid_clears_display(s, mode)
+        return mode
+    # mic / none: standard frame-source display (REU staging allowed).
     return _display_mode_for_scene(s.display, s, cfg)
+
+
+def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode) -> None:
+    """Load-time guard: confirm the first resolvable .sid candidate's payload
+    clears the (fixed bank-0) display regions. Best-effort fast-fail — a
+    multi-entry pool may have other candidates, so this only raises when the
+    first one parses and demonstrably conflicts (setup() does the authoritative
+    per-pick check with bounded retry). Missing/unparseable files are left for
+    setup() to surface."""
+    from .sid_host_emu import parse_sid_header, payload_overlaps_bank0_display
+
+    assert s.file is not None  # set by _resolve_file_spec_or_explain above
+    candidates = resolve_file_spec(s.file, SID_EXTS, label="generative sid audio")
+    if not candidates:
+        return
+    path = candidates[0]
+    try:
+        with open(path, "rb") as f:
+            sid_bytes = f.read()
+        parse_sid_header(sid_bytes)  # magic / length
+    except (OSError, ValueError):
+        return  # let setup() report a real load error
+    conflict = payload_overlaps_bank0_display(sid_bytes, is_bitmapped=mode.is_bitmapped)
+    if conflict is not None:
+        lo, hi = conflict
+        region = "hires bitmap" if lo == 0x2000 else "screen RAM"
+        raise ValueError(
+            f"generative sid audio: {os.path.basename(path)}'s payload overlaps the "
+            f"{s.display} display's {region} (${lo:04X}-${hi:04X}); a SID source "
+            f"can't relocate the bank-0 display. Use a char display (petscii/mcm — "
+            f"they reserve only $0400) or a SID that loads above ${hi:04X}."
+        )
 
 
 def _validate_launcher(s: SceneCfg) -> None:
@@ -2385,29 +2483,56 @@ def build_scene(
             color=cfg.color,
         )
     elif s.type == "generative":
-        from .audio_source import AudioSource, MicAudioSource, NullAudioSource
+        from .audio_source import (
+            AudioSource,
+            MicAudioSource,
+            NullAudioSource,
+            SidFileAudioSource,
+        )
         from .generators import build_generator
 
-        mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
         gen = build_generator(s.source)
         name = s.name or f"Generative {s.source}"
-        # Audio is opt-in (off by default for generative art). Like webcam/
-        # blank, a live mic source is suppressed in ensemble mode.
-        scene_audio = None if s.audio is False else audio
-        if is_ensemble and scene_audio is not None:
-            if s.audio is True:
-                log.info(
-                    "[%s] generative scene: audio suppressed in ensemble mode "
-                    "(live scenes never hold the audio spotlight)",
-                    name,
-                )
-            scene_audio = None
-        audio_src: AudioSource = (
-            MicAudioSource(scene_audio, cfg.audio, display_mode=mode)
-            if scene_audio is not None
-            else NullAudioSource()
-        )
-        scene = SourceScene(api, scene_audio, mode, gen, audio_src, name)
+        audio_src: AudioSource
+        if s.audio_source == "sid":
+            # Force host-DMA: the SID player owns the $0314 IRQ for PLAY, so the
+            # display must NOT install the REU bank-swap raster IRQ (it would
+            # collide). The SID drives the chip directly — no DAC streamer, plays
+            # regardless of [audio].enabled, and is NOT subject to the ensemble
+            # live-mic suppression (it legitimately holds the audio spotlight;
+            # wants_audio_lock=True gates the slot). scene_audio stays None.
+            mode = _display_mode_for_scene(s.display, s, cfg, force_host_dma=True)
+            assert s.file is not None  # narrowed by _validate_generative
+            audio_src = SidFileAudioSource(
+                api, s.file, song=s.song, display_mode=mode, system=cfg.ultimate64.system
+            )
+            scene = SourceScene(api, None, mode, gen, audio_src, name)
+            # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at
+            # full system rate that competes with the SID player's per-frame
+            # PLAY IRQ for the bus. Default such scenes to half-rate (like
+            # WaveformScene) for safety; a char display stays full-rate, and an
+            # explicit target_fps (applied at the end of build_scene) still wins.
+            if s.target_fps is None and mode.is_bitmapped:
+                scene.target_fps = 25.0 if cfg.ultimate64.system.upper() == "PAL" else 30.0
+        else:
+            mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
+            # mic / none: the live-frame audio path. Like webcam/blank, a live
+            # mic source is suppressed in ensemble mode.
+            scene_audio = None if s.audio is False else audio
+            if is_ensemble and scene_audio is not None:
+                if s.audio is True:
+                    log.info(
+                        "[%s] generative scene: audio suppressed in ensemble mode "
+                        "(live scenes never hold the audio spotlight)",
+                        name,
+                    )
+                scene_audio = None
+            if s.audio_source == "mic" and scene_audio is not None:
+                audio_src = MicAudioSource(scene_audio, cfg.audio, display_mode=mode)
+            else:
+                # "none", or "mic" with audio disabled → silence.
+                audio_src = NullAudioSource()
+            scene = SourceScene(api, scene_audio, mode, gen, audio_src, name)
     elif s.type == "launcher":
         from .scenes import LauncherScene
 

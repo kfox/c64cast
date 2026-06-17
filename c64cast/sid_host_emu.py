@@ -26,11 +26,12 @@ identically regardless of which path reports them first.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from py65.devices.mpu6502 import MPU
 
 from .api import parse_psid_for_player
-from .c64 import CIA1, SID
+from .c64 import CIA1, CPU, ROM, SCREEN, SID, VIC_BANK_0
 from .sidemu import SID_REG_COUNT
 
 log = logging.getLogger(__name__)
@@ -85,6 +86,144 @@ _INIT_CYCLE_CAP = 2_000_000
 # footprint places the relocated C64-side player in RAM the tune never writes
 # (see [ram_write_footprint] + api._find_free_layout).
 FOOTPRINT_TICKS = 2000
+
+
+# ---------------------------------------------------------------------------
+# SID file structural helpers
+#
+# Pure (or footprint-only) helpers that parse / reason about a SID file's
+# layout, shared by WaveformScene (the oscilloscope) and SidFileAudioSource
+# (the composable audio building block). They live here — next to the
+# footprint functions and parse_psid_for_player — rather than in waveform.py
+# so that audio_source can use them without dragging in the oscilloscope
+# renderer (numpy / voice_scope). waveform.py re-exports them for back-compat.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SidHeader:
+    magic: str
+    version: int
+    num_songs: int
+    start_song: int
+    name: str
+    author: str
+    released: str
+    # Decoded PSID v2+ flags. None on v1 headers (no flags field).
+    clock: str | None  # "PAL", "NTSC", "PAL+NTSC", "?" or None
+    sid_model: str | None  # "6581", "8580", "6581+8580", "?" or None
+
+
+# PSID v2+ flags byte 1 (low-order) layout — clock at bits 2-3, primary
+# SID model at bits 4-5. Higher-order model bits for 2nd/3rd SIDs live in
+# byte 0 of the 2-byte flags field; the waveform UI only surfaces the
+# primary chip + clock so we ignore the rest.
+_CLOCK_TABLE = {0: "?", 1: "PAL", 2: "NTSC", 3: "PAL+NTSC"}
+_MODEL_TABLE = {0: "?", 1: "6581", 2: "8580", 3: "6581+8580"}
+
+
+def parse_sid_header(data: bytes) -> SidHeader:
+    """Parse the PSID/RSID v1+ header. Validates magic, returns metadata.
+
+    Reads the v2+ flags field at offset 0x76 (2 bytes, big-endian) to
+    surface SID chip model + PAL/NTSC clock. v1 headers (length 118)
+    leave both as None."""
+    if len(data) < 22:
+        raise ValueError("SID file too short to contain a header")
+    magic = data[:4]
+    if magic not in (b"PSID", b"RSID"):
+        raise ValueError(f"not a SID file (expected PSID/RSID magic, got {magic!r})")
+    version = int.from_bytes(data[4:6], "big")
+    clock: str | None = None
+    sid_model: str | None = None
+    if version >= 2 and len(data) >= 0x78:
+        # flags lives at 0x76 (16 bits big-endian); clock/model bits are in
+        # the low byte (0x77).
+        flags_lo = data[0x77]
+        clock = _CLOCK_TABLE[(flags_lo >> 2) & 0x03]
+        sid_model = _MODEL_TABLE[(flags_lo >> 4) & 0x03]
+    return SidHeader(
+        magic=magic.decode("ascii"),
+        version=version,
+        num_songs=int.from_bytes(data[14:16], "big"),
+        start_song=int.from_bytes(data[16:18], "big"),
+        name=data[22:54].rstrip(b"\x00").decode("latin-1", "replace"),
+        author=data[54:86].rstrip(b"\x00").decode("latin-1", "replace"),
+        released=data[86:118].rstrip(b"\x00").decode("latin-1", "replace")
+        if len(data) >= 118
+        else "",
+        clock=clock,
+        sid_model=sid_model,
+    )
+
+
+def _sid_payload_extent(sid_bytes: bytes) -> tuple[int, int]:
+    """Return (load_addr, end_addr_exclusive) for the SID's payload bytes
+    once loaded on the C64. Mirrors the load-address handling in
+    `api.parse_psid_for_player` without re-running its full validation —
+    used to refuse tunes whose payload would clobber a scene's display
+    regions. Assumes the SID header has already been validated (magic +
+    minimum length) by `parse_sid_header`."""
+    data_offset = int.from_bytes(sid_bytes[6:8], "big")
+    load_addr = int.from_bytes(sid_bytes[8:10], "big")
+    payload = sid_bytes[data_offset:]
+    if load_addr == 0 and len(payload) >= 2:
+        load_addr = payload[0] | (payload[1] << 8)
+        payload = payload[2:]
+    return load_addr, load_addr + len(payload)
+
+
+def _overlaps(lo: int, hi: int, region_lo: int, region_size: int) -> bool:
+    """True when [lo, hi) overlaps the region [region_lo, region_lo+size)."""
+    region_hi = region_lo + region_size
+    return lo < region_hi and hi > region_lo
+
+
+def _play_bank_for_footprints(
+    write_fp: bytes | bytearray, access_fp: bytes | bytearray
+) -> int | None:
+    """Return the $01 CPU-port override the player should use around JSR play,
+    or None to let api.run_sid_player's address-keyed heuristic decide.
+
+    The heuristic banks on the play *address* page, but a tune can read its
+    live song data from RAM under BASIC ROM ($A000-$BFFF) while its code sits
+    below it — Galway's Times of Lore subtunes 2-11 copy per-song data to
+    $B400 at INIT and read it back every PLAY. With the default $37 (BASIC
+    mapped) PLAY reads ROM there instead of the data → silence. We return
+    $36 (BASIC out) when PLAY reads an address under BASIC ROM that the tune
+    also *wrote* — proof it's RAM data, not the ROM itself. A tune that reads
+    BASIC ROM *as data* (e.g. Galway's Comic Bakery table) writes nothing
+    there, so the intersection is empty and we keep $37."""
+    # Pure-Python intersection over the BASIC-ROM window with an early exit
+    # (avoids importing numpy into this otherwise-light module — see the
+    # section header). The window is only 8 KB and a hit usually lands early.
+    for addr in range(ROM.BASIC_LO, ROM.BASIC_HI):
+        if write_fp[addr] and access_fp[addr]:
+            return CPU.PORT_BASIC_OUT
+    return None
+
+
+def payload_overlaps_bank0_display(
+    sid_bytes: bytes, *, is_bitmapped: bool
+) -> tuple[int, int] | None:
+    """Return the conflicting display region (lo, hi exclusive) when the SID
+    payload would clobber a VIC bank-0 display, else None.
+
+    A `SourceScene`'s display mode is hardwired to VIC bank 0 and — unlike
+    WaveformScene — cannot relocate. Char modes (`is_bitmapped=False`) reserve
+    only screen RAM at $0400; bitmap modes also reserve the hires bitmap at
+    $2000. Color RAM ($D800) is I/O space, never main RAM, so a payload can't
+    overlap it. The caller refuses a SID whose payload extent hits either
+    region (most HVSC tunes load at $1000 with multi-KB payloads, so bitmap
+    displays frequently conflict — char modes are the robust pairing)."""
+    payload_lo, payload_hi = _sid_payload_extent(sid_bytes)
+    regions = [(VIC_BANK_0.SCREEN, SCREEN.N_CELLS)]
+    if is_bitmapped:
+        regions.append((VIC_BANK_0.BITMAP, SCREEN.BITMAP_BYTES))
+    for region_lo, region_size in regions:
+        if _overlaps(payload_lo, payload_hi, region_lo, region_size):
+            return region_lo, region_lo + region_size
+    return None
 
 
 class TrappedRam:
@@ -396,3 +535,30 @@ def ram_play_access_footprint(
     for _ in range(ticks):
         emu.tick_play()
     return access
+
+
+# PLAY pre-flight pass count. After loading a tune we run this many PLAY
+# passes; if EVERY one bails at the host emulator's cycle cap (instead of
+# returning normally in the usual ~1-2k cycles), the tune spins on a
+# raster/IRQ this pure-Python 6502 never provides. Such a tune can't be
+# rendered faithfully AND would hang the C64-side player — its `SEI; JSR
+# init` sits with IRQs masked, so the kernal IRQ never fires, $028D stops
+# updating, and the machine goes dead/silent (the Hollywood Poker Pro
+# failure). 50 passes ≈ 1 s of PLAY @ 50 Hz — long enough to be unambiguous,
+# short enough that a healthy tune adds only ~5 ms.
+PREFLIGHT_TICKS = 50
+
+
+def sid_play_preflight(sid_bytes: bytes, song: int = 0, ticks: int = PREFLIGHT_TICKS) -> bool:
+    """Return True when a tune's PLAY completes within the host emulator's
+    cycle cap on at least one of `ticks` passes; False when EVERY pass caps
+    (a raster/IRQ-spinning tune that would dead-machine the C64-side player).
+
+    Shared safety gate for WaveformScene._load_sid_file and
+    SidFileAudioSource — see PREFLIGHT_TICKS. INIT already ran in __init__."""
+    emu = SidHostEmu(sid_bytes, song=song)
+    for _ in range(ticks):
+        emu.tick_play()
+        if not emu.last_routine_capped:
+            return True
+    return False

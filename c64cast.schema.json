@@ -1478,11 +1478,11 @@
               "string",
               "null"
             ],
-            "description": "Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher."
+            "description": "Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid."
           },
           "song": {
             "type": "integer",
-            "description": "SID subtune index to play (0-based).",
+            "description": "SID subtune index to play (0 = the SID's default; 1-based otherwise). For generative scenes, only with audio_source = sid.",
             "default": 0
           },
           "color_mode": {
@@ -1642,6 +1642,16 @@
               "tunnel"
             ],
             "default": "plasma"
+          },
+          "audio_source": {
+            "type": "string",
+            "description": "Audio for a generative scene: 'none' = silent; 'mic' = live mic (only when [audio].enabled); 'sid' = play the `file` .sid on the real chip. Default 'mic' matches pre-field behavior. A SID source forces a host-DMA display and needs a char display (petscii/mcm) for most tunes (see `file`).",
+            "enum": [
+              "none",
+              "mic",
+              "sid"
+            ],
+            "default": "mic"
           }
         },
         "allOf": [

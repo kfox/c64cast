@@ -216,6 +216,32 @@ class SourceSceneTest(unittest.TestCase):
         scene.teardown()
         self.assertTrue(src.teardown_called)
 
+    def test_audio_source_setup_failure_aborts_scene(self):
+        # A failing audio source (e.g. a SID source whose tune run_sid_player
+        # refuses) must abort the scene: setup() flips is_done, and
+        # process_frame() must honor it — the generative source's `finished`
+        # is always False, so without the is_done guard the playlist's
+        # `is_done = not still_active` would clobber the abort and play silent
+        # video for the full duration.
+        class _BoomAudio:
+            wants_audio_lock = True
+
+            def setup(self):
+                raise RuntimeError("boom")
+
+            def teardown(self):
+                pass
+
+            def position_seconds(self):
+                return None
+
+        scene, _mode, _src = self._scene(audio_source=_BoomAudio())
+        with self.assertLogs("c64cast.scenes", level="ERROR"):
+            scene.setup()
+        self.assertTrue(scene.is_done)
+        scene.start_time = 0.0
+        self.assertFalse(scene.process_frame(0.0))
+
 
 class _RecordingEffect(FrameEffect):
     name = "recording"
@@ -285,7 +311,45 @@ class ConfigGenerativeTest(unittest.TestCase):
         scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
         assert isinstance(scene, SourceScene)
         self.assertIsInstance(scene.effect, TrailsEffect)
+        # Default audio_source = "mic", but no streamer (audio disabled) → null.
         self.assertIsInstance(scene.audio_source, NullAudioSource)
+
+    def test_audio_source_none_is_null(self):
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="none")
+        # Even with a live streamer, "none" stays silent.
+        streamer = cast(AudioStreamer, _FakeStreamer())
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), streamer, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, NullAudioSource)
+
+    def test_audio_source_mic_uses_streamer_when_enabled(self):
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="mic")
+        streamer = cast(AudioStreamer, _FakeStreamer())
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), streamer, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, MicAudioSource)
+        self.assertIs(scene.audio, streamer)
+
+    def test_audio_source_mic_falls_back_to_null_without_streamer(self):
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="mic")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, NullAudioSource)
+
+    def test_ensemble_suppresses_mic_source(self):
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="mic")
+        streamer = cast(AudioStreamer, _FakeStreamer())
+        scene = build_scene(
+            s, self.cfg, cast(C64Backend, _DummyAPI()), streamer, None, is_ensemble=True
+        )
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, NullAudioSource)
+        self.assertIsNone(scene.audio)
+
+    def test_invalid_audio_source_rejected(self):
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="bogus")
+        with self.assertRaisesRegex(ValueError, "audio_source"):
+            validate_scene_cfg(s, self.cfg, audio_enabled=False)
 
     def test_generative_petscii_orthogonal(self):
         s = SceneCfg(type="generative", source="tunnel", display="petscii")

@@ -1,0 +1,38 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a generative plasma paired with SID-file playback — the
+# headline of the composable building blocks. The scene is FrameSource ×
+# AudioSource: a procedural `plasma` video source for the visuals, and
+# `audio_source = "sid"` plays a real .sid tune on the U64's hardware SID chip.
+# Pick the video source and the audio source independently.
+#
+# Display note: a SID audio source can't relocate the C64 display, so the SID
+# payload must clear the display's RAM. A CHAR display (mcm here, or petscii)
+# reserves only screen RAM at $0400, so it works with the typical HVSC tune
+# that loads at $1000. A BITMAP display (mhires/hires) also reserves $2000 —
+# most tunes overlap it and are refused with an actionable error. Use mcm/
+# petscii unless you have a SID that loads above $3F40.
+#
+# `audio_source = "sid"` ignores [audio].enabled (the chip plays on its own)
+# and forces a host-DMA display (the SID player owns the IRQ used for PLAY).
+#
+# Supply your own .sid — HVSC (https://hvsc.c64.org) is the canonical archive.
+# Drop a tune into assets/sids/ and set `file =`, or omit it to scan assets/sids/.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-sid.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Plasma + SID"
+source = "plasma"
+display = "mcm"
+audio_source = "sid"
+# file = "assets/sids/Commando.sid"   # else scans assets/sids/ for a .sid
+# song = 0                            # 0 = the SID's default subtune
+duration_s = 60.0
