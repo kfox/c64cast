@@ -25,7 +25,6 @@ recognizer + fake source, the same way `test_keyboard.py` scripts `$028D`.
 
 from __future__ import annotations
 
-import contextlib
 import enum
 import logging
 import os
@@ -37,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import cv2
 import numpy as np
 
+from ._native_io import silence_native_stderr
 from ._pollthread import PollThread
 
 if TYPE_CHECKING:
@@ -185,28 +185,6 @@ _mp: Any = None
 _MP_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
 
 
-@contextlib.contextmanager
-def _silence_native_stderr():
-    """Temporarily redirect the process stderr fd to /dev/null.
-
-    MediaPipe's native (C++/absl) logging — GL/XNNPACK init, the benign
-    'feedback manager' and 'landmark_projection NORM_RECT square ROI' warnings
-    — writes straight to fd 2 and ignores Python logging, GLOG_minloglevel,
-    and the absl Python flags (all verified ineffective). An fd-level redirect
-    is the only thing that catches it. We scope it to model construction + a
-    warm-up inference, which run on the constructing (main) thread before the
-    poll thread starts, so it never swallows real stderr from another thread."""
-    saved = os.dup(2)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, 2)
-        os.close(devnull)
-        yield
-    finally:
-        os.dup2(saved, 2)
-        os.close(saved)
-
-
 def _ensure_mediapipe() -> bool:
     """Import mediapipe on demand; cache the result. Returns availability.
 
@@ -270,7 +248,7 @@ class MediaPipeHandRecognizer:
         # inference (timestamp 0; real ticks always land at > 0) emits the
         # landmark_projection warning. Run both inside the fd silence so all of
         # mediapipe's startup chatter is swallowed here on the main thread.
-        with _silence_native_stderr():
+        with silence_native_stderr():
             self._landmarker = mp_vision.HandLandmarker.create_from_options(options)
             warm = self._mp_image(
                 image_format=self._image_format.SRGB, data=np.zeros((64, 64, 3), dtype=np.uint8)
