@@ -27,6 +27,7 @@ class GeneratorTest(unittest.TestCase):
         names = generator_names()
         self.assertIn("plasma", names)
         self.assertIn("tunnel", names)
+        self.assertIn("fire", names)
 
     def test_plasma_frame_shape_and_determinism(self):
         g = build_generator("plasma")
@@ -48,12 +49,25 @@ class GeneratorTest(unittest.TestCase):
 
     def test_unmodulated_path_identical_to_pure_time(self):
         # The determinism guard: render(t, None) and read(t) must be byte-for-byte
-        # the historical pure-time output for both generators (the offline
-        # renderer + drift tests rely on this).
-        for name in ("plasma", "tunnel"):
+        # the historical pure-time output for every generator (the offline
+        # renderer + drift tests rely on this — even fire, whose scroll is a
+        # pure function of t rather than a stateful cellular sim).
+        for name in ("plasma", "tunnel", "fire"):
             g = build_generator(name)
             np.testing.assert_array_equal(g.render(0.7), g.render(0.7, None))
             np.testing.assert_array_equal(g.read(0.7), g.render(0.7, None))
+            self.assertFalse(np.array_equal(g.render(0.0), g.render(1.0)))  # animates
+
+    def test_fire_flares_with_level_and_onset(self):
+        # Fire's headline reaction: a transient + loudness push the heat field
+        # toward the white-hot end of COLORMAP_HOT, so the reactive frame is
+        # strictly brighter than the resting fire — the flames leap on the beat.
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("fire")
+        rest = g.render(0.5)  # pure path
+        flare = MusicModulation(0.9, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(0.5, flare).sum()), int(rest.sum()))
 
     def test_modulation_changes_output(self):
         from c64cast.modulation import MusicModulation
@@ -262,6 +276,55 @@ class SourceSceneTest(unittest.TestCase):
         scene.setup()
         scene.teardown()
         self.assertTrue(src.teardown_called)
+
+    def test_resets_display_source_reasserts_display_after_audio(self):
+        # A SID audio source reverts the VIC to text mode (run_prg), so the
+        # display set up in Scene.setup (BEFORE the audio source) must be
+        # re-asserted AFTER it — else a bitmap mode renders $0400 as PETSCII.
+        class _CountingMode(_FakeMode):
+            def __init__(self):
+                super().__init__()
+                self.setups = 0
+
+            def setup(self, api):
+                self.setups += 1
+
+        class _ResetAudio(NullAudioSource):
+            resets_display = True
+
+        mode = _CountingMode()
+        api = SimpleNamespace(invalidate_cache=lambda: None)
+        scene = SourceScene(
+            cast(C64Backend, api),
+            None,
+            cast(DisplayMode, mode),
+            _CountingSource(),
+            _ResetAudio(),
+            "x",
+        )
+        scene.setup()
+        self.assertEqual(mode.setups, 2)  # Scene.setup + re-assert after the player
+
+    def test_non_resetting_source_sets_up_display_once(self):
+        class _CountingMode(_FakeMode):
+            def __init__(self):
+                super().__init__()
+                self.setups = 0
+
+            def setup(self, api):
+                self.setups += 1
+
+        mode = _CountingMode()
+        scene = SourceScene(
+            cast(C64Backend, SimpleNamespace()),
+            None,
+            cast(DisplayMode, mode),
+            _CountingSource(),
+            NullAudioSource(),  # resets_display = False
+            "x",
+        )
+        scene.setup()
+        self.assertEqual(mode.setups, 1)  # no re-assert for a non-SID source
 
     def test_modulation_threaded_from_audio_source_to_frame_source(self):
         # The audio source's features() snapshot must reach the frame source's

@@ -183,3 +183,74 @@ class TunnelSource(GenerativeSource):
         offset = t * self.speed + self._reactive_hue_offset(modulation)
         hue = self._depth * 0.05 + self._angle + offset
         return self._hsv_to_bgr(hue, val=self._reactive_value(modulation))
+
+
+def _periodic_value_noise(
+    rng: np.random.Generator, rows: int, w: int, octaves: list[tuple[int, int, float]]
+) -> np.ndarray:
+    """Value noise of shape (rows, w), tileable in BOTH axes, summed over
+    `octaves` of (vertical_cells, horizontal_cells, amplitude). Tileability
+    comes from duplicating the first row/column of each octave's random grid
+    before bilinear upsampling, so the upsampled endpoints match — a fire
+    texture can then scroll past `rows` and wrap with no visible seam. Returns
+    float32 normalised to [0, 1]."""
+    acc = np.zeros((rows, w), dtype=np.float32)
+    for cy, cx, amp in octaves:
+        g = rng.random((cy, cx), dtype=np.float32)
+        g = np.vstack([g, g[:1]])  # wrap row
+        g = np.hstack([g, g[:, :1]])  # wrap col
+        up = cv2.resize(g, (w, rows), interpolation=cv2.INTER_LINEAR)
+        acc += amp * up
+    lo, hi = float(acc.min()), float(acc.max())
+    return (acc - lo) / (hi - lo + 1e-6)
+
+
+@register("fire")
+class FireSource(GenerativeSource):
+    """Rising fire: an upward-scrolling turbulence texture masked by a
+    bottom-hot vertical gradient and colour-mapped black→red→yellow→white
+    (`cv2.COLORMAP_HOT` — a near-perfect match for the C64 palette). The
+    turbulence is precomputed and *tileable*, so the scroll is a pure function
+    of `t` (deterministic, dropped-frames-safe) rather than a stateful cellular
+    sim — `render(t, None)` reproduces exactly.
+
+    Reactive (the headline): `level` raises the flames (louder ⇒ taller/hotter),
+    `onset` flares them on each transient. Both push more of the field toward
+    the yellow/white end of COLORMAP_HOT, so the fire visibly leaps on the beat
+    — the most legible music reaction after 16-colour quantization."""
+
+    # Scroll period (texture rows). The flames rise one full period per
+    # period/scroll_speed seconds; a tall period keeps the motion organic.
+    _PERIOD = 256
+    # Reactive gains (None path uses gain=1, flare=0 — plain rising fire).
+    _LEVEL_HEIGHT = 0.85  # extra heat gain at full level (taller, hotter flames)
+    _ONSET_FLARE = 0.80  # extra heat gain on a full-strength transient
+
+    def __init__(
+        self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, scroll_speed: float = 1.1
+    ):
+        super().__init__(width=width, height=height)
+        self.scroll_speed = float(scroll_speed)
+        rng = np.random.default_rng(0xF12E)
+        self._turb = _periodic_value_noise(
+            rng,
+            self._PERIOD,
+            width,
+            octaves=[(4, 3, 1.0), (8, 6, 0.6), (16, 12, 0.35), (32, 24, 0.2)],
+        )
+        # Bottom-hot vertical gradient: 0 at the top row, 1 at the bottom.
+        # The 1.2 power pulls the flame tips down a touch so they taper.
+        grad = np.linspace(0.0, 1.0, height, dtype=np.float32) ** 1.2
+        self._grad = grad[:, None]  # (H, 1)
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        off = int(t * self.scroll_speed * self._PERIOD) % self._PERIOD
+        rows = (off + np.arange(self.height)) % self._PERIOD
+        turb = self._turb[rows]  # (H, W), scrolled (wraps seamlessly)
+        gain, flare = 1.0, 0.0
+        if modulation is not None:
+            gain = 1.0 + self._LEVEL_HEIGHT * modulation.level
+            flare = self._ONSET_FLARE * modulation.onset
+        heat = np.clip(turb * self._grad * gain * (1.0 + flare), 0.0, 1.0)
+        u8 = (heat * 255.0).astype(np.uint8)
+        return cv2.applyColorMap(u8, cv2.COLORMAP_HOT)
