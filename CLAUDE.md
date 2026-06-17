@@ -74,7 +74,17 @@ c64cast/
 │                     random_glyph, letter_rain, neon, inverse_pop, hatch,
 │                     color_only) cycled by the SHIFT key
 ├── scenes.py         Scene base + Webcam + Blank + Slideshow + Video
-│                     + Launcher (native .prg/.crt handoff)
+│                     + Launcher (native .prg/.crt handoff) + SourceScene
+│                     (composable FrameSource × AudioSource × display × effect)
+├── frame_source.py   FrameSource protocol + BaseFrameSource (read(t, mod))
+├── generators.py     GenerativeSource registry (plasma, tunnel); pure-numpy,
+│                     deterministic-in-t; reactive when fed a MusicModulation
+├── effects.py        FrameEffect registry (trails) — pre-quantization frame xform
+├── audio_source.py   AudioSource registry (Null/Mic/SidFile) for SourceScene
+├── modulation.py     MusicModulation: frozen music-feature struct (level/onset/
+│                     beat_phase/bpm/per-voice freq+gate) driving reactive visuals
+├── music_features.py SidFeatureStream: persistent host-side SidHostEmu + poll
+│                     thread → MusicModulation (no U64 traffic); the music driver
 ├── voice_scope.py    VoiceScopeRenderer mixin: the shared 3-voice hires
 │                     oscilloscope renderer (layout, VIC hires bring-up,
 │                     glyph text rows, per-voice render paths + knobs) used
@@ -204,6 +214,14 @@ Each Scene also carries an `overlays: list[Overlay]`. The Playlist runs every ov
 Each Scene also has an optional `target_fps` attribute. When set, the Playlist honors it for the duration of the scene. If unset, the Playlist uses the playlist's system default (60 NTSC / 50 PAL) for all modes. `WaveformScene` is the exception: it defaults to **half** the system rate (30 NTSC / 25 PAL) because 60 fps powers off the U64 on bank-2-relocated SIDs (~170 writes/s into `$A000-$BFFF` — a suspected firmware badline/DMA bug); an explicit `target_fps` (CLI/TOML) still wins. The host-emu poll thread stays at the full video rate regardless.
 
 `SlideshowScene` cycles through still images for the scene's `duration_s`. File spec mirrors VideoScene's grammar (comma-separated paths / dirs / globs via `resolve_file_spec`, default dir `assets/pictures/`). Per-image timer is `image_duration_s` (default 5s) — independent of `duration_s`, which controls total runtime. Picker is shuffle-and-walk: every image in the pool plays once before any repeats, and the first pick after a reshuffle is swapped with the second when the pool has >1 entry, so no image appears twice back-to-back across reshuffle boundaries. No audio, no `WANTS_AUDIO_LOCK`, no CLAHE/temporal-EMA smoothing (the webcam blend would cross-fade unrelated stills). `display = "random"` resolves to a fresh mode in `SLIDESHOW_RANDOM_DISPLAYS` at every `setup()` (so single-scene loops vary per iteration); `display = "hires_edges"` is substituted with `mhires` (the SceneCfg global default is tuned for live webcam Canny edges, not photos — use `display = "hires"` for plain bitmap). Images load via `cv2.imread` (no extra dependency).
+
+### Composable scenes — `scenes.SourceScene` + `frame_source.py` + `generators.py` + `effects.py` + `audio_source.py` + `modulation.py` + `music_features.py`
+
+A `SourceScene` (in `scenes.py`, `type = "generative"`) is the composable building-block scene: a **FrameSource** × an **AudioSource** × a display mode × an optional pixel **effect**, each chosen independently. The display mode is orthogonal to the source, so the same generator renders mhires/petscii/mcm purely by `display`.
+
+* `frame_source.py` — `FrameSource` protocol (`read(t, modulation=None)`) + `BaseFrameSource`. `generators.py` — `GenerativeSource` registry (`plasma`, `tunnel`); pure-numpy, **deterministic in `t`** on the unmodulated path (`render(t, None)` is byte-identical forever — the offline renderer + drift tests depend on it). Add one = a `@register` subclass + its name in `config._GENERATIVE_SOURCE_CHOICES` (drift-tested). `effects.py` — `FrameEffect` registry (`trails`), applied in `scenes._render_with_overlays` before quantization (every frame-bearing scene supports them).
+* `audio_source.py` — `AudioSource` protocol (`setup`/`teardown`/`position_seconds`/`features`). `NullAudioSource` (silence), `MicAudioSource` (live mic), `SidFileAudioSource` (plays a `.sid` on the real chip — the audio half of WaveformScene, factored out so it pairs with any FrameSource). A SID-audio SourceScene is forced to host-DMA (`force_host_dma`) and fixed at VIC bank 0, so the payload must clear the display ($0400 for char, +$2000 for bitmap) — **char displays (mcm/petscii) are the robust pairing**. SID-structural helpers live in `sid_host_emu.py` (re-exported by `waveform.py`).
+* **Music-reactive visuals** (`modulation.py` + `music_features.py`): when a SourceScene plays SID audio and `reactive = true` (default), `SidFileAudioSource` spins up a `music_features.SidFeatureStream` — a persistent `SidHostEmu` + `SIDEmulator` + `PollThread` that runs the same tune in parallel and distills per-voice envelope/freq/gate into a small frozen `modulation.MusicModulation` (level / onset / beat_phase / bpm / per-voice freq+gate). It's **entirely host-side** (no extra U64 traffic) and mirrors WaveformScene's poll thread (wall-clock catch-up, multispeed rate detection). `SourceScene.process_frame` reads `audio_source.features()` and threads it into `source.read(t, modulation)`; the generator scales its own params (plasma: `beat_phase` cycles the hue with the tempo, `onset` kicks the hue + flashes brightness — degrades to baseline when silent). `bpm` is an onset-rate proxy (EMA of inter-onset intervals), not a true beat tracker; `beat_phase` is its integral, so estimate jitter never causes a phase jump. The visual math stays pure (modulation injected, `None` = pure-`t`); *how* features are measured is decoupled from *what reacts*. Mic/none sources have no feature stream yet (`features()` → None). `scripts/diags/render_offline.py` takes `--onset/--beat-phase/--level` to eyeball the reactive path offline.
 
 ### `voice_scope.py` — shared 3-voice oscilloscope renderer
 

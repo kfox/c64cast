@@ -5,6 +5,12 @@
 # `audio_source = "sid"` plays a real .sid tune on the U64's hardware SID chip.
 # Pick the video source and the audio source independently.
 #
+# Music-reactive (on by default): the plasma BREATHES with the tune. A host-side
+# SID emulator runs the same .sid in parallel and exposes per-voice envelope /
+# pitch / gate features, which drive the visuals — the tempo cycles the colors
+# faster, and each note transient pulses them. This is entirely host-side, so it
+# adds no U64 traffic. Set `reactive = false` for the pure time-driven look.
+#
 # Display note: a SID audio source can't relocate the C64 display, so the SID
 # payload must clear the display's RAM. A CHAR display (mcm here, or petscii)
 # reserves only screen RAM at $0400, so it works with the typical HVSC tune
@@ -33,6 +39,7 @@ name = "Plasma + SID"
 source = "plasma"
 display = "mcm"
 audio_source = "sid"
+reactive = true                       # (default) music drives the visuals; false = pure time-driven
 # file = "assets/sids/Commando.sid"   # else scans assets/sids/ for a .sid
 # song = 0                            # 0 = the SID's default subtune
 duration_s = 60.0

@@ -1652,6 +1652,11 @@
               "sid"
             ],
             "default": "mic"
+          },
+          "reactive": {
+            "type": "boolean",
+            "description": "Generative scene: let the music drive the visuals \u2014 BPM cycles the colors, transients pulse them. Only takes effect with audio_source = 'sid' (a host-side SID emulator supplies the features, adding no U64 traffic); inert for mic/none. Set false to keep the pure time-driven look.",
+            "default": true
           }
         },
         "allOf": [

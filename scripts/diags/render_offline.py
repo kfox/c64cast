@@ -13,6 +13,11 @@ Examples:
   python -m scripts.diags.render_offline --source plasma --display petscii
   python -m scripts.diags.render_offline --source tunnel --display mhires \\
       --effect trails --frames 30 --save-frame 29 --t-step 0.1
+
+  # Music-reactive: feed a synthetic MusicModulation (a transient flash at
+  # onset=1, tempo-driven hue at beat_phase=3) to eyeball the reactive plasma.
+  python -m scripts.diags.render_offline --source plasma --display mcm \\
+      --onset 1.0 --beat-phase 3.0 --level 0.6
 """
 
 from __future__ import annotations
@@ -71,7 +76,26 @@ def main() -> None:
         "--save-frame", type=int, default=None, help="which frame index to save (default: last)"
     )
     ap.add_argument("--out", default=None, help="output PNG path")
+    # Synthetic music modulation (reactive path). If any is set, a
+    # MusicModulation is passed to the source's read() so the reactive
+    # generator path is exercised offline.
+    ap.add_argument("--onset", type=float, default=None, help="MusicModulation.onset [0,1]")
+    ap.add_argument("--beat-phase", type=float, default=None, help="MusicModulation.beat_phase")
+    ap.add_argument("--level", type=float, default=None, help="MusicModulation.level [0,1]")
     args = ap.parse_args()
+
+    modulation = None
+    if args.onset is not None or args.beat_phase is not None or args.level is not None:
+        from c64cast.modulation import MusicModulation
+
+        modulation = MusicModulation(
+            level=args.level or 0.0,
+            onset=args.onset or 0.0,
+            beat_phase=args.beat_phase or 0.0,
+            bpm=120.0,
+            voice_freqs=(0.0, 0.0, 0.0),
+            voice_gates=(False, False, False),
+        )
 
     os.makedirs(OUT_DIR, exist_ok=True)
     api = RenderBackend()
@@ -88,7 +112,7 @@ def main() -> None:
     saved_path = None
     for i in range(args.frames):
         t = i * args.t_step
-        frame = src.read(t)
+        frame = src.read(t, modulation)
         _render_with_overlays(mode, api, frame, [], t, scene)
         if i == save_at:
             img = fb.render()

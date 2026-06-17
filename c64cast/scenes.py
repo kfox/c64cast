@@ -466,7 +466,11 @@ class SourceScene(Scene):
             return False
         if (current_time - self.start_time) >= self.duration_s:
             return False
-        frame = self.source.read(current_time - self.start_time)
+        # Music-reactive scenes: the audio source exposes a live feature snapshot
+        # (None when it has no feature stream), which the source reads to
+        # modulate its frame. Non-reactive sources ignore it.
+        modulation = self.audio_source.features()
+        frame = self.source.read(current_time - self.start_time, modulation)
         if frame is not None:
             if self.show_frame_numbers:
                 self._frame_count += 1

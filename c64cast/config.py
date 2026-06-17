@@ -658,6 +658,20 @@ class SceneCfg:
             "applies_to": ("generative",),
         },
     )
+    # Generative scene: drive the visuals from the music. Only takes effect with
+    # audio_source = sid today (a host-side SID emulator supplies the features);
+    # inert for mic/none (no feature stream yet).
+    reactive: bool = field(
+        default=True,
+        metadata={
+            "help": "Generative scene: let the music drive the visuals — BPM "
+            "cycles the colors, transients pulse them. Only takes effect with "
+            "audio_source = 'sid' (a host-side SID emulator supplies the "
+            "features, adding no U64 traffic); inert for mic/none. Set false to "
+            "keep the pure time-driven look.",
+            "applies_to": ("generative",),
+        },
+    )
     # Per-scene pixel effect applied to the source frame before quantization.
     effect: str | None = field(
         default=None,
@@ -2504,7 +2518,12 @@ def build_scene(
             mode = _display_mode_for_scene(s.display, s, cfg, force_host_dma=True)
             assert s.file is not None  # narrowed by _validate_generative
             audio_src = SidFileAudioSource(
-                api, s.file, song=s.song, display_mode=mode, system=cfg.ultimate64.system
+                api,
+                s.file,
+                song=s.song,
+                display_mode=mode,
+                system=cfg.ultimate64.system,
+                reactive=s.reactive,
             )
             scene = SourceScene(api, None, mode, gen, audio_src, name)
             # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at
