@@ -14,25 +14,31 @@ typically via `BaseFrameSource`.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .modulation import MusicModulation
 
 
 @runtime_checkable
 class FrameSource(Protocol):
     """Produces BGR frames for a SourceScene.
 
-    `read(t)` returns the frame to display at scene-clock time `t` (seconds
-    since scene start), or None if no frame is ready this tick (the scene
-    skips the render and tries again next tick). `finished` lets a *finite*
-    source (a played-through video) end the scene; infinite sources
-    (generative art, a live webcam) leave it False and the scene's `duration_s`
-    governs. `setup()`/`teardown()` bracket the scene lifecycle.
+    `read(t, modulation)` returns the frame to display at scene-clock time `t`
+    (seconds since scene start), or None if no frame is ready this tick (the
+    scene skips the render and tries again next tick). `modulation` is an
+    optional music-feature snapshot (None when the scene isn't music-reactive)
+    that a reactive source reads to modulate its output; sources that don't care
+    ignore it. `finished` lets a *finite* source (a played-through video) end
+    the scene; infinite sources (generative art, a live webcam) leave it False
+    and the scene's `duration_s` governs. `setup()`/`teardown()` bracket the
+    scene lifecycle.
     """
 
     def setup(self) -> None: ...
-    def read(self, t: float) -> np.ndarray | None: ...
+    def read(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray | None: ...
     @property
     def finished(self) -> bool: ...
     def teardown(self) -> None: ...
@@ -40,13 +46,13 @@ class FrameSource(Protocol):
 
 class BaseFrameSource:
     """Convenience base for infinite sources: no-op setup/teardown, never
-    finishes. Subclasses implement `read(t)`. Finite sources (video) would
-    override `finished`."""
+    finishes. Subclasses implement `read(t, modulation)`. Finite sources (video)
+    would override `finished`."""
 
     def setup(self) -> None:
         return None
 
-    def read(self, t: float) -> np.ndarray | None:
+    def read(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray | None:
         raise NotImplementedError
 
     @property

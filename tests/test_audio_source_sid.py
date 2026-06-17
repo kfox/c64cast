@@ -106,12 +106,13 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.addCleanup(os.remove, path)
         return path
 
-    def _src(self, path, *, is_bitmapped=False, song=0):
+    def _src(self, path, *, is_bitmapped=False, song=0, reactive=True):
         return SidFileAudioSource(
             cast(C64Backend, FakeAPI()),
             path,
             song=song,
             display_mode=cast("object", _FakeMode(is_bitmapped)),  # type: ignore[arg-type]
+            reactive=reactive,
         )
 
     def test_wants_audio_lock_and_no_clock(self):
@@ -233,6 +234,42 @@ class SidFileAudioSourceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "none could be loaded"):
             self._src(path, is_bitmapped=False)
 
+    def test_features_none_before_setup(self):
+        path = self._write(_make_sid())
+        src = self._src(path)
+        self.assertIsNone(src.features())  # no feature stream until setup()
+
+    def test_reactive_setup_exposes_features_then_teardown_clears(self):
+        from c64cast.modulation import MusicModulation
+
+        path = self._write(_make_sid())
+        src = self._src(path, reactive=True)
+        src.setup()
+        self.addCleanup(src.teardown)
+        self.assertIsInstance(src.features(), MusicModulation)
+        src.teardown()
+        self.assertIsNone(src.features())  # stream stopped + cleared
+
+    def test_reactive_false_skips_feature_stream(self):
+        path = self._write(_make_sid())
+        src = self._src(path, reactive=False)
+        src.setup()
+        self.addCleanup(src.teardown)
+        self.assertIsNone(src.features())  # no stream built when reactive=False
+
+    def test_feature_stream_failure_degrades_to_non_reactive(self):
+        # A feature-stream startup failure must not crash setup — playback
+        # continues, features() just returns None.
+        from unittest.mock import patch
+
+        path = self._write(_make_sid())
+        src = self._src(path, reactive=True)
+        self.addCleanup(src.teardown)
+        with patch("c64cast.music_features.SidFeatureStream.start", side_effect=RuntimeError("x")):
+            with self.assertLogs("c64cast.audio_source", level="ERROR"):
+                src.setup()
+        self.assertIsNone(src.features())
+
 
 class ConfigSidGenerativeTest(unittest.TestCase):
     """build_scene wiring for `type = generative, audio_source = sid`."""
@@ -317,6 +354,22 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         s = SceneCfg(type="generative", audio_source="sid", file=self.sid, display="petscii")
         scene = build_scene(s, self.cfg, cast(C64Backend, FakeAPI()), None, None, is_ensemble=True)
         self.assertTrue(scene.competes_for_audio_lock())
+
+    def test_reactive_defaults_true_and_passes_through(self):
+        from c64cast.scenes import SourceScene
+
+        scene = self._build(display="petscii")  # no reactive kw → default True
+        assert isinstance(scene, SourceScene)
+        assert isinstance(scene.audio_source, SidFileAudioSource)
+        self.assertTrue(scene.audio_source._reactive)
+
+    def test_reactive_false_passes_through(self):
+        from c64cast.scenes import SourceScene
+
+        scene = self._build(display="petscii", reactive=False)
+        assert isinstance(scene, SourceScene)
+        assert isinstance(scene.audio_source, SidFileAudioSource)
+        self.assertFalse(scene.audio_source._reactive)
 
     def test_validate_load_time_rejects_bitmap_overlap(self):
         # A typical $1000-load tune with a real-sized payload overlaps $2000 —

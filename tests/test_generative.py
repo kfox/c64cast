@@ -46,6 +46,50 @@ class GeneratorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_generator("does-not-exist")
 
+    def test_unmodulated_path_identical_to_pure_time(self):
+        # The determinism guard: render(t, None) and read(t) must be byte-for-byte
+        # the historical pure-time output for both generators (the offline
+        # renderer + drift tests rely on this).
+        for name in ("plasma", "tunnel"):
+            g = build_generator(name)
+            np.testing.assert_array_equal(g.render(0.7), g.render(0.7, None))
+            np.testing.assert_array_equal(g.read(0.7), g.render(0.7, None))
+
+    def test_modulation_changes_output(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("plasma")
+        base = g.render(1.0)  # pure path
+        mod = MusicModulation(
+            level=0.5,
+            onset=1.0,
+            beat_phase=5.0,
+            bpm=140.0,
+            voice_freqs=(440.0, 0.0, 0.0),
+            voice_gates=(True, False, False),
+        )
+        self.assertFalse(np.array_equal(base, g.render(1.0, mod)))
+
+    def test_onset_flashes_brightness(self):
+        # A transient (onset=1) must brighten the frame versus the same modulation
+        # with onset=0 (the "color pulse / flash" behavior).
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("plasma")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_beat_phase_advances_hue(self):
+        # A larger accumulated beat_phase shifts the hue (tempo-driven cycling),
+        # so frames at different beat_phase differ.
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("plasma")
+        m0 = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        m1 = MusicModulation(0.3, 0.0, 2.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertFalse(np.array_equal(g.render(1.0, m0), g.render(1.0, m1)))
+
 
 class EffectTest(unittest.TestCase):
     def test_trails_first_frame_passthrough_then_blends(self):
@@ -109,6 +153,7 @@ class AudioSourceTest(unittest.TestCase):
         self.assertIsNone(n.position_seconds())
         self.assertIsNone(n.setup())
         self.assertIsNone(n.teardown())
+        self.assertIsNone(n.features())  # no feature stream
 
     def test_mic_source_starts_and_stops_with_skip_hook(self):
         streamer = _FakeStreamer()
@@ -118,6 +163,7 @@ class AudioSourceTest(unittest.TestCase):
             cast(AudioStreamer, streamer), cast(AudioCfg, cfg), display_mode=cast(DisplayMode, mode)
         )
         self.assertFalse(mic.wants_audio_lock)
+        self.assertIsNone(mic.features())  # live mic has no SID feature stream
         mic.setup()
         assert streamer.started is not None
         self.assertEqual(streamer.started["device"], -1)
@@ -157,7 +203,8 @@ class _CountingSource(BaseFrameSource):
     def finished(self):
         return self._finished
 
-    def read(self, t):
+    def read(self, t, modulation=None):
+        self.last_modulation = modulation
         return self.frame
 
     def teardown(self):
@@ -216,6 +263,23 @@ class SourceSceneTest(unittest.TestCase):
         scene.teardown()
         self.assertTrue(src.teardown_called)
 
+    def test_modulation_threaded_from_audio_source_to_frame_source(self):
+        # The audio source's features() snapshot must reach the frame source's
+        # read() — this is the music→visuals wiring.
+        from c64cast.modulation import MusicModulation
+
+        snap = MusicModulation(0.5, 1.0, 2.0, 120.0, (1.0, 0.0, 0.0), (True, False, False))
+
+        class _ReactiveAudio(NullAudioSource):
+            def features(self):
+                return snap
+
+        scene, _mode, src = self._scene(audio_source=_ReactiveAudio())
+        scene.setup()
+        scene.start_time = 0.0
+        scene.process_frame(0.0)
+        self.assertIs(src.last_modulation, snap)
+
     def test_audio_source_setup_failure_aborts_scene(self):
         # A failing audio source (e.g. a SID source whose tune run_sid_player
         # refuses) must abort the scene: setup() flips is_done, and
@@ -233,6 +297,9 @@ class SourceSceneTest(unittest.TestCase):
                 pass
 
             def position_seconds(self):
+                return None
+
+            def features(self):
                 return None
 
         scene, _mode, _src = self._scene(audio_source=_BoomAudio())

@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from .backend import C64Backend
     from .config import AudioCfg
     from .modes import DisplayMode
+    from .modulation import MusicModulation
+    from .music_features import SidFeatureStream
 
 log = logging.getLogger(__name__)
 
@@ -38,13 +40,15 @@ log = logging.getLogger(__name__)
 class AudioSource(Protocol):
     """How a SourceScene makes sound. `setup`/`teardown` bracket the scene;
     `position_seconds` exposes a master clock if the source owns one (None when
-    it doesn't, e.g. a free-running mic)."""
+    it doesn't, e.g. a free-running mic); `features` exposes a live music-feature
+    snapshot for reactive visuals (None when the source has no feature stream)."""
 
     wants_audio_lock: bool
 
     def setup(self) -> None: ...
     def teardown(self) -> None: ...
     def position_seconds(self) -> float | None: ...
+    def features(self) -> MusicModulation | None: ...
 
 
 class NullAudioSource:
@@ -59,6 +63,9 @@ class NullAudioSource:
         return None
 
     def position_seconds(self) -> float | None:
+        return None
+
+    def features(self) -> MusicModulation | None:
         return None
 
 
@@ -97,6 +104,11 @@ class MicAudioSource:
     def position_seconds(self) -> float | None:
         return None
 
+    def features(self) -> MusicModulation | None:
+        # A live mic has no SID host-emulator to read features from; a future
+        # audio-tap feature source could light this up.
+        return None
+
 
 class SidFileAudioSource:
     """Plays a .sid file on the U64's real SID chip — the audio half of
@@ -125,6 +137,14 @@ class SidFileAudioSource:
     No DAC AudioStreamer is involved — the chip plays autonomously, regardless
     of [audio].enabled (like WaveformScene/MidiScene). `wants_audio_lock=True`
     so the SourceScene contends for the ensemble audio slot.
+
+    Music-reactive visuals: when `reactive` (default True), setup() also spins up
+    a host-side `SidFeatureStream` (a persistent SidHostEmu + poll thread that
+    runs the same tune in parallel) and `features()` exposes its live
+    `MusicModulation` snapshot, so a generative source can breathe with the tune.
+    This is entirely host-side — it adds no U64 traffic. `reactive=False` (or a
+    feature-stream startup failure) leaves features() returning None, so the
+    visuals fall back to their pure time-driven behavior.
     """
 
     wants_audio_lock = True
@@ -142,11 +162,13 @@ class SidFileAudioSource:
         song: int = 0,
         display_mode: DisplayMode,
         system: str = "NTSC",
+        reactive: bool = True,
     ):
         self._api = api
         self.file_spec = file
         self._song_arg = song
         self.system = system
+        self._reactive = reactive
         # The display is fixed at VIC bank 0; only the bitmap flag matters for
         # the payload-clearance check (bitmap modes reserve $2000 as well as
         # $0400). Read once at construction — the mode never changes per scene.
@@ -156,6 +178,9 @@ class SidFileAudioSource:
         self._sid_file: str = ""
         self.sid_bytes: bytes = b""
         self.song: int = 0
+        # Host-side music-feature stream (built per setup() once the tune is
+        # picked + playing); None when not reactive or before setup.
+        self._features: SidFeatureStream | None = None
         # Validate the spec + first candidate now so a misconfigured single
         # scene raises at build time (parity with WaveformScene.__init__).
         self._pick_and_load()
@@ -284,14 +309,37 @@ class SidFileAudioSource:
         # SourceScene.setup, which aborts the scene cleanly.
         self._api.run_sid_player(self.sid_bytes, song=self.song, avoid=avoid, play_bank=play_bank)
 
+        # Spin up the host-side feature stream for reactive visuals. The tune
+        # already passed run_sid_player (and the host-emu preflight in
+        # _validate_candidate), so this shouldn't fail — but a startup failure
+        # must not take down playback, so degrade to non-reactive on error.
+        if self._reactive:
+            from .music_features import SidFeatureStream
+
+            try:
+                self._features = SidFeatureStream(
+                    self.sid_bytes, song=self.song, system=self.system
+                )
+                self._features.start()
+            except Exception:
+                log.exception(
+                    "sid audio: feature stream failed to start — visuals will not "
+                    "react to the music (playback continues)"
+                )
+                self._features = None
+
     def teardown(self) -> None:
-        """Stop SID playback. Order mirrors WaveformScene.teardown: unhook our
-        $0314 IRQ first (so the next PLAY tick can't rewrite the SID between the
-        volume-clear and the gate-clears), flush, then silence. Finally suppress
-        the cursor blink — the player MC's `JMP *` spin survives teardown, so a
-        following char scene would otherwise blink the cursor cell (HW-verified
-        in WaveformScene.teardown). No VIC-bank restore: a SID source never
-        moved the bank (the display owns bank 0 throughout)."""
+        """Stop the feature stream, then SID playback. SID order mirrors
+        WaveformScene.teardown: unhook our $0314 IRQ first (so the next PLAY tick
+        can't rewrite the SID between the volume-clear and the gate-clears),
+        flush, then silence. Finally suppress the cursor blink — the player MC's
+        `JMP *` spin survives teardown, so a following char scene would otherwise
+        blink the cursor cell (HW-verified in WaveformScene.teardown). No
+        VIC-bank restore: a SID source never moved the bank (the display owns
+        bank 0 throughout)."""
+        if self._features is not None:
+            self._features.stop()  # pure host-side; no U64 I/O
+            self._features = None
         try:
             self._api.restore_kernal_irq_vector()
             self._api.flush()
@@ -304,3 +352,6 @@ class SidFileAudioSource:
 
     def position_seconds(self) -> float | None:
         return None
+
+    def features(self) -> MusicModulation | None:
+        return self._features.features() if self._features is not None else None
