@@ -86,7 +86,7 @@ _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
 # keep config import-light; a drift test in test_introspect pins the match).
 # Generative video sources + the per-scene pixel effects.
 _GENERATIVE_SOURCE_CHOICES = ("plasma", "tunnel", "fire")
-_EFFECT_CHOICES = ("trails",)
+_EFFECT_CHOICES = ("trails", "pulse", "rgb_shift")
 
 # Per-scene audio source for composable (generative) scenes — the AudioSource
 # building block in audio_source.py. "none" = silence; "mic" = live mic via the
@@ -677,7 +677,11 @@ class SceneCfg:
         default=None,
         metadata={
             "help": "Pixel effect applied to the frame before quantization "
-            "(unset = none). Works on any frame-bearing scene.",
+            "(unset = none). Works on any frame-bearing scene. 'trails' echoes "
+            "moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews "
+            "the color channels apart on a transient. pulse/rgb_shift only "
+            "visibly react on a music-reactive scene (generative + audio_source "
+            "= 'sid'); elsewhere they're inert (no feature stream to react to).",
             "choices": _EFFECT_CHOICES,
             "applies_to": ("webcam", "video", "slideshow", "generative"),
         },

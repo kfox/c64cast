@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from .config import AudioCfg, ColorCfg
     from .effects import FrameEffect
     from .frame_source import FrameSource
+    from .modulation import MusicModulation
     from .overlays import Overlay
 
 log = logging.getLogger(__name__)
@@ -339,6 +340,7 @@ def _render_with_overlays(
     overlays: list[Overlay],
     t: float,
     scene: Scene,
+    modulation: MusicModulation | None = None,
 ) -> None:
     """Compose the frame, let buffer-painting overlays mutate it, then push.
 
@@ -358,12 +360,14 @@ def _render_with_overlays(
 
     A per-scene pixel effect (scene.effect), if present, transforms the source
     frame here — before downscale/quantization — so it applies uniformly to
-    every frame-bearing scene. Skipped when there's no frame (Blank). A failing
-    effect disables itself rather than killing the scene."""
+    every frame-bearing scene. `modulation` (a music-feature snapshot, None on
+    non-reactive scenes) is handed to the effect so reactive effects can react
+    to the beat. Skipped when there's no frame (Blank). A failing effect disables
+    itself rather than killing the scene."""
     prof = get_profiler()
     if frame is not None and scene.effect is not None:
         try:
-            frame = scene.effect.apply(frame, t)
+            frame = scene.effect.apply(frame, t, modulation)
         except Exception:
             log.exception(
                 "effect %r failed on %r — disabling",
@@ -492,7 +496,7 @@ class SourceScene(Scene):
                 frame = _annotate_frame_number(frame, label)
             assert self.display_mode is not None
             _render_with_overlays(
-                self.display_mode, self.api, frame, self.overlays, current_time, self
+                self.display_mode, self.api, frame, self.overlays, current_time, self, modulation
             )
         return True
 

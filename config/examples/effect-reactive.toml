@@ -1,0 +1,51 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a MUSIC-REACTIVE pixel effect over a generative source +
+# SID-file playback. The companion to effect-trails.toml — same per-scene
+# `effect` slot, but here the effect reacts to the tune instead of just the
+# scene clock.
+#
+# `effect = "pulse"` is a beat-punch zoom: each note transient punches the frame
+# scale up (a zoom-in toward center) and relaxes as the transient decays; the
+# overall loudness adds a gentle steady zoom. The reaction is driven by the same
+# host-side SID feature stream that drives the reactive generators — so it costs
+# no U64 traffic. Two other effects share the slot:
+#   * "rgb_shift" — slews the red + blue channels apart on a transient (an
+#     RGB-split glitch shudder on the beat).
+#   * "trails"    — the echo/comet-tail effect; its tail blooms on the beat and
+#     tightens between hits when a reactive scene feeds it.
+#
+# IMPORTANT: pulse and rgb_shift only visibly REACT when there's a music-feature
+# stream to react to — i.e. a generative scene with `audio_source = "sid"` (and
+# `reactive = true`, the default). On a webcam/video scene, or a generative
+# scene with no SID audio, there's no modulation and these two effects are inert
+# (the identity transform). trails always works, reactive or not.
+#
+# Display note (same as scene-generative-sid.toml): a SID audio source can't
+# relocate the C64 display, so a CHAR display (mcm here, or petscii) is the
+# robust pairing — it reserves only screen RAM at $0400, fitting the typical
+# $1000-load HVSC tune. A bitmap display (mhires/hires) also reserves $2000 and
+# is refused for most tunes.
+#
+# Supply your own .sid — HVSC (https://hvsc.c64.org) is the canonical archive.
+# Drop a tune into assets/sids/ and set `file =`, or omit it to scan assets/sids/.
+#
+# Run:
+#   python -m c64cast --config config/examples/effect-reactive.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Plasma + pulse + SID"
+source = "plasma"
+display = "mcm"
+audio_source = "sid"
+reactive = true                       # (default) feeds the feature stream the effect reacts to
+effect = "pulse"                      # try "rgb_shift" or "trails" too
+# file = "assets/sids/Commando.sid"   # else scans assets/sids/ for a .sid
+# song = 0                            # 0 = the SID's default subtune
+duration_s = 60.0

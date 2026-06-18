@@ -129,6 +129,133 @@ class EffectTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_effect("nope")
 
+    def test_trails_reactive_decay_lengthens_tail(self):
+        # A transient + loudness raise the effective decay, so more of a prior
+        # bright frame survives into the next — a brighter/longer tail than the
+        # unmodulated baseline. Drives "the trail blooms on the beat".
+        from c64cast.modulation import MusicModulation
+
+        bright = np.full((2, 2, 3), 200, np.uint8)
+        black = np.zeros((2, 2, 3), np.uint8)
+        hot = MusicModulation(0.8, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+
+        plain = build_effect("trails")
+        plain.apply(bright, 0.0)
+        plain_tail = plain.apply(black, 0.1)  # no modulation = baseline decay
+
+        react = build_effect("trails")
+        react.apply(bright, 0.0)
+        react_tail = react.apply(black, 0.1, hot)  # higher decay
+
+        self.assertGreater(int(react_tail.max()), int(plain_tail.max()))
+
+    def test_pulse_identity_without_modulation(self):
+        # No modulation ⇒ identity (the determinism guard for non-reactive scenes).
+        eff = build_effect("pulse")
+        f = np.random.default_rng(1).integers(0, 256, (8, 8, 3)).astype(np.uint8)
+        np.testing.assert_array_equal(eff.apply(f, 0.0), f)
+        np.testing.assert_array_equal(eff.apply(f, 0.0, None), f)
+
+    def test_pulse_zooms_on_onset(self):
+        from c64cast.modulation import MusicModulation
+
+        eff = build_effect("pulse")
+        f = np.zeros((8, 8, 3), np.uint8)
+        f[3:5, 3:5] = 255  # non-uniform so a zoom is detectable
+        hit = MusicModulation(0.0, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        out = eff.apply(f, 0.0, hit)
+        self.assertEqual(out.shape, f.shape)
+        self.assertFalse(np.array_equal(out, f))
+
+    def test_pulse_silent_modulation_is_noop(self):
+        # A modulation present but with no transient/loudness ⇒ scale 1.0 ⇒ no-op.
+        from c64cast.modulation import MusicModulation
+
+        eff = build_effect("pulse")
+        f = np.random.default_rng(4).integers(0, 256, (8, 8, 3)).astype(np.uint8)
+        silent = MusicModulation(0.0, 0.0, 0.0, 0.0, (0.0, 0.0, 0.0), (False, False, False))
+        np.testing.assert_array_equal(eff.apply(f, 0.0, silent), f)
+
+    def test_rgb_shift_identity_without_modulation(self):
+        eff = build_effect("rgb_shift")
+        f = np.random.default_rng(2).integers(0, 256, (8, 8, 3)).astype(np.uint8)
+        np.testing.assert_array_equal(eff.apply(f, 0.0), f)
+
+    def test_rgb_shift_silent_modulation_is_noop(self):
+        # Present-but-silent modulation rounds the shift to 0 ⇒ no-op.
+        from c64cast.modulation import MusicModulation
+
+        eff = build_effect("rgb_shift")
+        f = np.random.default_rng(5).integers(0, 256, (8, 8, 3)).astype(np.uint8)
+        silent = MusicModulation(0.0, 0.0, 0.0, 0.0, (0.0, 0.0, 0.0), (False, False, False))
+        np.testing.assert_array_equal(eff.apply(f, 0.0, silent), f)
+
+    def test_rgb_shift_separates_channels_on_onset(self):
+        # A transient slews blue + red apart horizontally; green stays put.
+        from c64cast.modulation import MusicModulation
+
+        eff = build_effect("rgb_shift")
+        f = np.random.default_rng(3).integers(0, 256, (8, 16, 3)).astype(np.uint8)
+        hit = MusicModulation(0.0, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        out = eff.apply(f, 0.0, hit)
+        np.testing.assert_array_equal(out[..., 1], f[..., 1])  # green untouched
+        np.testing.assert_array_equal(out[..., 0], np.roll(f[..., 0], 6, axis=1))  # blue +6
+        np.testing.assert_array_equal(out[..., 2], np.roll(f[..., 2], -6, axis=1))  # red -6
+
+    def test_render_with_overlays_threads_modulation_to_effect(self):
+        # The render path must hand the per-frame modulation snapshot to the
+        # effect (mirrors the frame-source threading) so reactive effects react.
+        from c64cast.modulation import MusicModulation
+
+        snap = MusicModulation(0.4, 0.9, 1.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        seen: dict[str, object] = {}
+
+        class _RecordingEffect(FrameEffect):
+            name = "rec"
+
+            def apply(self, frame, t, modulation=None):
+                seen["mod"] = modulation
+                seen["t"] = t
+                return frame
+
+        mode = _FakeMode()
+        scene = SimpleNamespace(name="s", effect=_RecordingEffect(), overlays=[])
+        frame = np.zeros((2, 2, 3), np.uint8)
+        _render_with_overlays(
+            cast(DisplayMode, mode),
+            cast(C64Backend, SimpleNamespace()),
+            frame,
+            [],
+            0.5,
+            cast(Scene, scene),
+            snap,
+        )
+        self.assertIs(seen["mod"], snap)
+        self.assertEqual(seen["t"], 0.5)
+
+    def test_render_with_overlays_modulation_defaults_none(self):
+        # Non-reactive callers omit modulation; the effect must see None.
+        seen: dict[str, object] = {"mod": "unset"}
+
+        class _RecordingEffect(FrameEffect):
+            name = "rec"
+
+            def apply(self, frame, t, modulation=None):
+                seen["mod"] = modulation
+                return frame
+
+        mode = _FakeMode()
+        scene = SimpleNamespace(name="s", effect=_RecordingEffect(), overlays=[])
+        _render_with_overlays(
+            cast(DisplayMode, mode),
+            cast(C64Backend, SimpleNamespace()),
+            np.zeros((2, 2, 3), np.uint8),
+            [],
+            0.0,
+            cast(Scene, scene),
+        )
+        self.assertIsNone(seen["mod"])
+
 
 class BaseFrameSourceTest(unittest.TestCase):
     def test_defaults(self):
@@ -381,7 +508,7 @@ class _RecordingEffect(FrameEffect):
         self.reset_count = 0
         self.marker = np.full((2, 2, 3), 123, np.uint8)
 
-    def apply(self, frame, t):
+    def apply(self, frame, t, modulation=None):
         self.applied += 1
         return self.marker
 
