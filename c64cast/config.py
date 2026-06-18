@@ -85,7 +85,7 @@ _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
 # Mirror generators.generator_names() / effects.effect_names() (hardcoded to
 # keep config import-light; a drift test in test_introspect pins the match).
 # Generative video sources + the per-scene pixel effects.
-_GENERATIVE_SOURCE_CHOICES = ("plasma", "tunnel")
+_GENERATIVE_SOURCE_CHOICES = ("plasma", "tunnel", "fire")
 _EFFECT_CHOICES = ("trails",)
 
 # Per-scene audio source for composable (generative) scenes — the AudioSource

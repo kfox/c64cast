@@ -41,9 +41,15 @@ class AudioSource(Protocol):
     """How a SourceScene makes sound. `setup`/`teardown` bracket the scene;
     `position_seconds` exposes a master clock if the source owns one (None when
     it doesn't, e.g. a free-running mic); `features` exposes a live music-feature
-    snapshot for reactive visuals (None when the source has no feature stream)."""
+    snapshot for reactive visuals (None when the source has no feature stream).
+
+    `resets_display` is True when `setup()` disturbs the VIC display state — a
+    SID source kicks its player via the firmware's run_prg, which re-inits the
+    machine back to text mode. SourceScene re-asserts the display mode AFTER
+    such a source starts so a bitmap display isn't left rendering text."""
 
     wants_audio_lock: bool
+    resets_display: bool
 
     def setup(self) -> None: ...
     def teardown(self) -> None: ...
@@ -55,6 +61,7 @@ class NullAudioSource:
     """Silent. The default for a scene with no audio."""
 
     wants_audio_lock = False
+    resets_display = False
 
     def setup(self) -> None:
         return None
@@ -78,6 +85,7 @@ class MicAudioSource:
     # A live mic is uncorrelated input, not the ensemble's SID spotlight —
     # it never claims the audio lock (matches WebcamScene's WANTS_AUDIO_LOCK=False).
     wants_audio_lock = False
+    resets_display = False  # the mic path doesn't touch the VIC
 
     def __init__(
         self,
@@ -148,6 +156,11 @@ class SidFileAudioSource:
     """
 
     wants_audio_lock = True
+    # run_sid_player kicks the player via the firmware's run_prg, which re-inits
+    # the machine to text mode — so SourceScene must re-assert the display mode
+    # after setup() (a bitmap display would otherwise render its $0400 colour
+    # nibbles as PETSCII; see SourceScene.setup).
+    resets_display = True
 
     # Bounded candidate attempts for a multi-entry file spec, mirroring
     # WaveformScene._pick_and_load_sid: each rejected SID (payload overlap,

@@ -1,0 +1,44 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a generative FIRE source paired with SID-file playback —
+# the most viscerally music-reactive generator. A host-side SID emulator runs
+# the same .sid in parallel and exposes per-voice envelope / pitch / gate
+# features; with `reactive = true` (the default) the flames leap on the beat —
+# loudness raises the fire, each note transient flares it white-hot. This is
+# entirely host-side, so it adds no U64 traffic.
+#
+# `fire` colour-maps black→red→yellow→white, a near-perfect fit for the C64
+# palette. It renders through ANY display mode; a CHAR display (mcm here, or
+# petscii) is the robust pairing with a SID audio source (it reserves only
+# screen RAM at $0400, so the typical $1000-load HVSC tune fits — see the
+# scene-generative-sid.toml notes on the bitmap/$2000 constraint).
+#
+# Fire looks markedly better on a BITMAP display — set `display = "mhires"` if
+# your .sid loads high enough to clear the $2000 bitmap (above ~$3F40; e.g. a
+# Rob Hubbard tune). mcm (below) works with any tune but renders the flames as
+# coarser character cells.
+#
+# `audio_source = "sid"` ignores [audio].enabled (the chip plays on its own)
+# and forces a host-DMA display (the SID player owns the IRQ used for PLAY).
+#
+# Supply your own .sid — HVSC (https://hvsc.c64.org) is the canonical archive.
+# Drop a tune into assets/sids/ and set `file =`, or omit it to scan assets/sids/.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-fire.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Fire + SID"
+source = "fire"
+display = "mcm"
+audio_source = "sid"
+reactive = true                       # (default) flames leap on the beat; false = plain rising fire
+# file = "assets/sids/Commando.sid"   # else scans assets/sids/ for a .sid
+# song = 0                            # 0 = the SID's default subtune
+duration_s = 60.0

@@ -1639,7 +1639,8 @@
             "description": "Generative video source to render (generative scenes only).",
             "enum": [
               "plasma",
-              "tunnel"
+              "tunnel",
+              "fire"
             ],
             "default": "plasma"
           },

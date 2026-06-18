@@ -452,6 +452,20 @@ class SourceScene(Scene):
                 type(self.audio_source).__name__,
             )
             self.is_done = True
+        # A SID audio source kicks its player via the firmware's run_prg, which
+        # re-inits the machine to text mode — clobbering the VIC mode the display
+        # configured in super().setup() (which runs BEFORE the audio source). A
+        # bitmap display (mhires/hires) would then render its $0400 colour-nibble
+        # bytes as PETSCII. Re-assert the display AFTER the player, the same order
+        # WaveformScene uses. invalidate_cache first so the next frame fully
+        # repaints against the player-disturbed RAM.
+        if (
+            not self.is_done
+            and self.display_mode is not None
+            and getattr(self.audio_source, "resets_display", False)
+        ):
+            self.api.invalidate_cache()
+            self.display_mode.setup(self.api)
 
     def process_frame(self, current_time: float) -> bool:
         # setup() flips is_done when the audio source failed to start (e.g. a
