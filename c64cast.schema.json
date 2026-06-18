@@ -726,9 +726,11 @@
               "string",
               "null"
             ],
-            "description": "Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene.",
+            "description": "Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to).",
             "enum": [
-              "trails"
+              "trails",
+              "pulse",
+              "rgb_shift"
             ]
           },
           "pre_emphasis": {

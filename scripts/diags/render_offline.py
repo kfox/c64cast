@@ -113,7 +113,7 @@ def main() -> None:
     for i in range(args.frames):
         t = i * args.t_step
         frame = src.read(t, modulation)
-        _render_with_overlays(mode, api, frame, [], t, scene)
+        _render_with_overlays(mode, api, frame, [], t, scene, modulation)
         if i == save_at:
             img = fb.render()
             tag = f"{args.source}_{args.display}" + (f"_{args.effect}" if args.effect else "")
