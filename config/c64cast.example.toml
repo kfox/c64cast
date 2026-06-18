@@ -453,6 +453,15 @@ enabled = false                     # requires the `control` extra
 host = "127.0.0.1"
 port = 8765
 
+[menu]
+# On-C64 menu: SPACE opens an on-screen panel of context-sensitive knobs for
+# the current scene (palette mode, PETSCII style, …) with a live preview;
+# cursor keys navigate (SHIFT+cursor reverses), RETURN saves. Needs a backend
+# that can read C64 memory (no-op on TeensyROM). Launcher scenes are excluded.
+enabled = false
+prompt_to_save = true               # offer to write changes back to this file on
+                                    # exit; false = apply to the running scene only
+
 [debug]
 verbose = 0                         # 0 info (default), 1+ debug (-v)
 heartbeat = 10.0                    # seconds between health log lines

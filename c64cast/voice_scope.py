@@ -41,12 +41,13 @@ the two text rows (host-specific content via ``_paint_text_row``) →
 from __future__ import annotations
 
 import logging
-import os
 import random
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
+from .bitmap_text import load_glyphs as _load_glyphs
 from .c64 import CIA2, SCREEN, RegionID
 from .palette import C64_COLORS
 from .sidemu import (
@@ -153,50 +154,9 @@ PERSISTENCE_NAMES = (*PERSISTENCE_ECHOES.keys(), RANDOM_PERSISTENCE)
 # preset; the visual reward of random is the echo trail itself.
 _PERSISTENCE_RANDOM_CHOICES = ("short", "medium", "long")
 
-# Standard C64 character ROM. First 2 KB = uppercase + graphics charset
-# (the one we want — screen-code 0x01 = 'A', 0x20 = ' ', etc.). The path
-# matches the existing [preview] charset_path default + big_text's loader
-# so all three consumers expect the same artifact.
-_CHARGEN_PATH = "assets/roms/characters.901225-01.bin"
-_GLYPHS_CACHE: bytes | None = None
-
-
-def _load_glyphs() -> bytes:
-    """Load the 2 KB uppercase charset. Cached process-wide.
-
-    Falls back to framebuffer._builtin_charset() (a cv2-rendered ASCII
-    font) if the ROM file is missing — keeps tests + minimal installs
-    working, at the cost of glyphs that don't quite look C64-native."""
-    global _GLYPHS_CACHE
-    if _GLYPHS_CACHE is not None:
-        return _GLYPHS_CACHE
-    if os.path.exists(_CHARGEN_PATH):
-        with open(_CHARGEN_PATH, "rb") as f:
-            data = f.read(2048)
-        if len(data) >= 2048:
-            _GLYPHS_CACHE = data
-            return _GLYPHS_CACHE
-        log.warning("voice_scope: charset %s shorter than 2KB; using builtin", _CHARGEN_PATH)
-    from .framebuffer import _builtin_charset
-
-    _GLYPHS_CACHE = _builtin_charset()
-    return _GLYPHS_CACHE
-
-
-def _ascii_to_screen_code(ch: str) -> int:
-    """Map a single ASCII character to its C64 screen code (uppercase set).
-
-    Letters A-Z → screen codes 0x01-0x1A; @ → 0x00; everything else
-    passes through as ord(ch) & 0xFF (digits + most punctuation are
-    identical between ASCII and screen codes). Chars the charset can't
-    represent fall back to space (0x20) so unknown bytes render as a
-    blank cell instead of a graphics glyph that would look like noise."""
-    c = ord(ch.upper())
-    if 0x40 <= c <= 0x5F:
-        return (c - 0x40) & 0x3F  # @, A-Z, [\]^_
-    if 0x20 <= c <= 0x3F:
-        return c  # space, digits, !"#... ?
-    return 0x20  # unknown → blank
+# Glyph loading + ASCII→screen-code mapping live in bitmap_text now (shared with
+# the on-C64 menu). Aliased to the historical private names so the rest of this
+# module — and its byte-for-byte oscilloscope output — is unchanged.
 
 
 def _layout_lr(left: str, right: str, width: int = SCREEN_W_CHARS) -> str:

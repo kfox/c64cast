@@ -45,6 +45,10 @@ class FieldDoc:
     help: str
     choices: tuple[str, ...] = ()
     applies_to: tuple[str, ...] = ()
+    # On-C64 menu hint: "live" = the running scene can apply a change in place;
+    # "rebuild" (default) = needs a scene rebuild, so the menu shows it read-only.
+    # Internal — not emitted to schema/serializer/example.toml.
+    apply: str = "rebuild"
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,7 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
         "Host-side audio DSP before the 4-bit DAC: compressor/limiter, expander (replaces the hard gate), pre-emphasis, and mic AGC.",
     ),
     ("control", cfgmod.ControlPlaneCfg, "HTTP control plane (extra)."),
+    ("menu", cfgmod.MenuCfg, "On-C64 SPACE-key menu for live scene tweaks."),
 )
 
 # Display modes. `runtime_name` is DisplayMode.name (hires_edges and hires both
@@ -214,6 +219,7 @@ def _field_docs(dc: type) -> list[FieldDoc]:
                 help=md.get("help", ""),
                 choices=tuple(md.get("choices", ())),
                 applies_to=tuple(md.get("applies_to", ())),
+                apply=md.get("apply", "rebuild"),
             )
         )
     return out

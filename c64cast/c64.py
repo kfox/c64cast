@@ -310,7 +310,8 @@ class SCREEN:
     BITMAP_H: Final = 200
 
     # Keyboard scratch bytes.
-    LAST_KEY: Final = 0x00C5
+    LAST_KEY: Final = 0x00C5  # matrix code of last key pressed (64 = none)
+    CUR_KEY: Final = 0x00CB  # matrix code of key currently down (64 = none)
     KB_BUFFER_LEN: Final = 0x00C6
     KB_BUFFER: Final = 0x0277
     MODIFIERS: Final = 0x028D  # bit 1 = COMMODORE, 0 = SHIFT, 2 = CTRL
@@ -323,6 +324,18 @@ class SCREEN:
     # for chars above 0x40; e.g. PETSCII '@' = 0x40 but screen code 0x00).
     SC_SPACE: Final = 0x20  # blank cell — invisible against bg
     SC_FULL_BLOCK: Final = 0xA0  # inverse space — fully filled in FG color
+
+
+class KEY:
+    """Keyboard matrix scan codes — the value the kernal writes to
+    $00C5/$00CB (SCREEN.LAST_KEY/CUR_KEY); 64 = no key. These are NOT
+    PETSCII or screen codes. Only the handful the on-C64 menu navigates."""
+
+    NONE: Final = 64
+    RETURN: Final = 1
+    CRSR_RIGHT: Final = 2
+    CRSR_DOWN: Final = 7
+    SPACE: Final = 60
 
 
 # ---------------------------------------------------------------------------
@@ -458,3 +471,11 @@ class RegionID:
     # rows the per-voice/title/meta paints don't cover, so a relocated
     # (VIC bank 2) display doesn't show uninitialized-RAM garbage there.
     WAVE_SCREEN_CLEAR: Final = 4034
+
+    # On-C64 menu overlay (overlays/menu.py). Per-panel-row IDs (+row offset,
+    # panel is at most 25 rows) so the delta cache absorbs unchanged rows
+    # between repaints. Bitmap displays use ROW_BITMAP + ROW_SCREEN (color in
+    # the screen nibble); char displays use ROW_SCREEN + ROW_COLOR.
+    MENU_ROW_BITMAP: Final = 5000  # +row 0..24
+    MENU_ROW_SCREEN: Final = 5100  # +row 0..24
+    MENU_ROW_COLOR: Final = 5200  # +row 0..24

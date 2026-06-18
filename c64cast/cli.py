@@ -507,6 +507,7 @@ def build_stack(
     stop_event: threading.Event,
     profiler: FrameProfiler | NullProfiler,
     is_ensemble: bool = False,
+    config_path: str | None = None,
 ) -> SystemStack:
     """Construct one system's full runtime stack (api + audio + source +
     playlist + preview/recording). Raises StackBuildError on any failure
@@ -705,6 +706,9 @@ def build_stack(
             if cfg.audio.enabled
             else None
         ),
+        menu_cfg=cfg.menu,
+        config=cfg,
+        config_path=config_path,
     )
 
     return SystemStack(
@@ -929,7 +933,7 @@ def main(argv=None) -> int:
 
     stacks: list[SystemStack] = []
     try:
-        for cfg, name in zip(cfgs, loaded.names, strict=True):
+        for cfg, name, sub_path in zip(cfgs, loaded.names, loaded.paths, strict=True):
             stacks.append(
                 build_stack(
                     cfg,
@@ -938,6 +942,7 @@ def main(argv=None) -> int:
                     stop_event=stop_event,
                     profiler=profiler,
                     is_ensemble=loaded.is_ensemble,
+                    config_path=sub_path,
                 )
             )
     except StackBuildError as e:

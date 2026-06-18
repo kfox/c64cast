@@ -82,6 +82,12 @@ def main() -> None:
     ap.add_argument("--onset", type=float, default=None, help="MusicModulation.onset [0,1]")
     ap.add_argument("--beat-phase", type=float, default=None, help="MusicModulation.beat_phase")
     ap.add_argument("--level", type=float, default=None, help="MusicModulation.level [0,1]")
+    # On-C64 menu overlay: paint the panel on top to eyeball its legibility on
+    # this display mode. --menu-sel highlights an item; --menu-confirm shows the
+    # save-confirmation screen.
+    ap.add_argument("--menu", action="store_true", help="overlay the on-C64 menu panel")
+    ap.add_argument("--menu-sel", type=int, default=0, help="selected menu item index")
+    ap.add_argument("--menu-confirm", action="store_true", help="show the save-confirm screen")
     args = ap.parse_args()
 
     modulation = None
@@ -108,15 +114,37 @@ def main() -> None:
     effect = build_effect(args.effect) if args.effect else None
     scene = SimpleNamespace(name=f"{args.source}/{args.display}", effect=effect, overlays=[])
 
+    menu = None
+    if args.menu:
+        from c64cast.config import SceneCfg
+        from c64cast.overlays.menu import MenuOverlay
+
+        # Give the scene the attributes the menu option-model reads.
+        scene._cfg = SceneCfg(type="generative", display=args.display, source=args.source)
+        scene.display_mode = mode
+        scene.duration_s = 120.0
+        scene.target_fps = None
+        menu = MenuOverlay(scene, api, can_save=False, prompt_to_save=False, save_fn=lambda: True)
+        menu.sel = max(0, min(args.menu_sel, len(menu.items) - 1)) if menu.items else 0
+        if args.menu_confirm:
+            menu.dirty = True
+            menu.state = "confirm"
+
     save_at = args.save_frame if args.save_frame is not None else args.frames - 1
     saved_path = None
     for i in range(args.frames):
         t = i * args.t_step
         frame = src.read(t, modulation)
         _render_with_overlays(mode, api, frame, [], t, scene, modulation)
+        if menu is not None:
+            menu.process_frame(api, scene, t)
         if i == save_at:
             img = fb.render()
-            tag = f"{args.source}_{args.display}" + (f"_{args.effect}" if args.effect else "")
+            tag = (
+                f"{args.source}_{args.display}"
+                + (f"_{args.effect}" if args.effect else "")
+                + ("_menu" if args.menu else "")
+            )
             saved_path = args.out or os.path.join(OUT_DIR, f"render_{tag}_f{i}.png")
             cv2.imwrite(saved_path, img)
 

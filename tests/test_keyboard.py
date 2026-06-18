@@ -5,10 +5,13 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from collections import deque
 from typing import cast
 
 from c64cast.api import Ultimate64API
+from c64cast.c64 import KEY
 from c64cast.keyboard import (
+    ADDR_CUR_KEY,
     ADDR_MODIFIERS,
     CommodoreKeyPoller,
 )
@@ -265,6 +268,139 @@ class ShiftCycleTest(unittest.TestCase):
         self.assertTrue(pause.wait(timeout=0.3), "C= in the chord should still trigger pause")
         self.assertFalse(cycle.is_set(), "SHIFT must NOT cycle when chorded with C=")
         poller.stop()
+
+
+class MenuKeyApi:
+    """Serves both $028D (modifiers) and $00CB (current key) from scripted
+    sequences. Each list's last byte loops forever. Used for the menu input
+    tests, where the poller reads both addresses per tick."""
+
+    def __init__(self, mod_seq=None, key_seq=None):
+        self._lock = threading.Lock()
+        self.mod_seq = list(mod_seq) if mod_seq else [b"\x00"]
+        self.key_seq = list(key_seq) if key_seq else [bytes([KEY.NONE])]
+        self._mod_idx = 0
+        self._key_idx = 0
+
+    def read_memory(self, address, length, timeout=1.0):
+        assert length == 1
+        with self._lock:
+            if address == ADDR_MODIFIERS:
+                b = self.mod_seq[min(self._mod_idx, len(self.mod_seq) - 1)]
+                self._mod_idx += 1
+                return b
+            if address == ADDR_CUR_KEY:
+                b = self.key_seq[min(self._key_idx, len(self.key_seq) - 1)]
+                self._key_idx += 1
+                return b
+            raise AssertionError(f"unexpected read address {address:#06x}")
+
+    @property
+    def stats(self):
+        return {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
+
+
+def _menu_poller(api):
+    return CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
+
+
+class MenuInputTest(unittest.TestCase):
+    def test_space_press_opens_menu(self):
+        # No key, then SPACE held — an edge → menu_event.
+        api = MenuKeyApi(key_seq=[bytes([KEY.NONE]), bytes([KEY.SPACE]), bytes([KEY.SPACE])])
+        poller = _menu_poller(api)
+        pause, resume = threading.Event(), threading.Event()
+        menu_event, menu_active = threading.Event(), threading.Event()
+        poller.start(pause, resume, menu_event=menu_event, menu_active=menu_active)
+        self.assertTrue(menu_event.wait(timeout=0.5), "SPACE edge should set menu_event")
+        self.assertFalse(pause.is_set())
+        poller.stop()
+
+    def test_no_cur_key_read_when_menu_not_wired(self):
+        # When menu_event is None the poller must never touch $00CB (keeps
+        # read load to $028D-only). A key-read here would raise.
+        class ModOnlyApi(MenuKeyApi):
+            def read_memory(self, address, length, timeout=1.0):
+                assert address == ADDR_MODIFIERS, "must not read $00CB when menu unwired"
+                return super().read_memory(address, length, timeout)
+
+        api = ModOnlyApi()
+        poller = _menu_poller(api)
+        pause, resume = threading.Event(), threading.Event()
+        poller.start(pause, resume)  # no menu params
+        time.sleep(0.08)
+        poller.stop()  # no assertion error ⇒ pass
+
+    def test_menu_active_suspends_pause_skip_cycle(self):
+        # With menu_active set, C=/CTRL/SHIFT must NOT fire pause/skip/cycle.
+        api = MenuKeyApi(mod_seq=[b"\x07"])  # SHIFT|CBM|CTRL all held
+        poller = _menu_poller(api)
+        pause, resume, skip, cycle = (threading.Event() for _ in range(4))
+        menu_event, menu_active = threading.Event(), threading.Event()
+        menu_active.set()
+        poller.start(
+            pause,
+            resume,
+            skip_event=skip,
+            cycle_event=cycle,
+            menu_event=menu_event,
+            menu_active=menu_active,
+        )
+        time.sleep(0.1)
+        self.assertFalse(pause.is_set(), "menu open: C= must not pause")
+        self.assertFalse(skip.is_set(), "menu open: CTRL must not skip")
+        self.assertFalse(cycle.is_set(), "menu open: SHIFT must not cycle")
+        poller.stop()
+
+    def test_space_while_active_toggles_menu_closed(self):
+        api = MenuKeyApi(key_seq=[bytes([KEY.NONE]), bytes([KEY.SPACE]), bytes([KEY.SPACE])])
+        poller = _menu_poller(api)
+        pause, resume = threading.Event(), threading.Event()
+        menu_event, menu_active = threading.Event(), threading.Event()
+        menu_active.set()  # menu already open
+        poller.start(pause, resume, menu_event=menu_event, menu_active=menu_active)
+        self.assertTrue(menu_event.wait(timeout=0.5), "SPACE while open should toggle (close)")
+        poller.stop()
+
+    def test_nav_keys_enqueued_with_shift(self):
+        # Menu open: CRSR-down (no shift) then later read shows the queued
+        # nav events with their shift state.
+        nav: deque[tuple[int, bool]] = deque(maxlen=8)
+        api = MenuKeyApi(
+            mod_seq=[b"\x00", b"\x00", b"\x01"],  # last tick: SHIFT held
+            key_seq=[
+                bytes([KEY.NONE]),
+                bytes([KEY.CRSR_DOWN]),  # edge, no shift
+                bytes([KEY.NONE]),
+                bytes([KEY.CRSR_RIGHT]),  # edge, with shift (mod=0x01)
+            ],
+        )
+        poller = _menu_poller(api)
+        pause, resume = threading.Event(), threading.Event()
+        menu_event, menu_active = threading.Event(), threading.Event()
+        menu_active.set()
+        poller.start(pause, resume, menu_event=menu_event, menu_active=menu_active, nav_queue=nav)
+        # Wait for both edges to land.
+        deadline = time.time() + 0.6
+        while time.time() < deadline and len(nav) < 2:
+            time.sleep(0.01)
+        poller.stop()
+        self.assertGreaterEqual(len(nav), 2)
+        codes = list(nav)
+        self.assertEqual(codes[0], (KEY.CRSR_DOWN, False))
+        self.assertEqual(codes[1], (KEY.CRSR_RIGHT, True))
+
+    def test_space_excluded_from_nav_queue(self):
+        nav: deque[tuple[int, bool]] = deque(maxlen=8)
+        api = MenuKeyApi(key_seq=[bytes([KEY.NONE]), bytes([KEY.SPACE]), bytes([KEY.SPACE])])
+        poller = _menu_poller(api)
+        pause, resume = threading.Event(), threading.Event()
+        menu_event, menu_active = threading.Event(), threading.Event()
+        menu_active.set()
+        poller.start(pause, resume, menu_event=menu_event, menu_active=menu_active, nav_queue=nav)
+        time.sleep(0.1)
+        poller.stop()
+        self.assertEqual(len(nav), 0, "SPACE drives menu_event, never the nav queue")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,44 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo of the on-C64 menu. With [menu].enabled, press SPACE on the
+# C64 keyboard to open an on-screen panel of this scene's live-editable knobs
+# over the running scene; each change previews immediately.
+#
+#   SPACE            open / close the menu
+#   CRSR up / down   move the selection (SHIFT+CRSR-down = up)
+#   CRSR right/left  change the selected value (SHIFT+CRSR-right = previous)
+#   on close         if you changed anything, RETURN saves back to THIS file
+#                    (keeping a .bak), SPACE discards. Set prompt_to_save = false
+#                    to apply changes to the running scene only (never persist).
+#
+# This uses a generative `plasma` source on an mhires bitmap display, so the
+# menu exposes PALETTE (percell/cheap/vivid/grayscale) with a live preview, plus
+# DURATION and FPS. `use_reu_staged = false` keeps the bitmap single-buffered so
+# the menu panel can paint over it (the panel is skipped on REU-staged scenes
+# this cut — live preview still applies).
+#
+# The menu needs a backend that can read C64 memory (the $00CB key scan); it is
+# a no-op on read-free backends like TeensyROM. Launcher scenes are excluded.
+#
+# Run:
+#   python -m c64cast --config config/examples/menu.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[video]
+use_reu_staged = false                # single-buffer so the menu panel can paint
+
+[menu]
+enabled = true
+prompt_to_save = true                 # offer to save on exit; false = running-scene only
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Menu demo"
+source = "plasma"
+display = "mhires"
+audio_source = "none"
+duration_s = 120.0

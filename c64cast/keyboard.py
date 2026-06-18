@@ -21,6 +21,13 @@ events the Playlist's run loop watches:
 Chord rule: SHIFT is dropped on any tick where C= or CTRL is also held,
 so a user reaching for pause/skip with a thumb on shift doesn't get a
 phantom cycle. C= + CTRL still prefers pause over skip.
+
+When the on-C64 menu is wired (`menu_event`/`menu_active`/`nav_queue` passed
+to `start`), we additionally read the current-key matrix code at $00CB:
+  * SPACE pressed              → menu_event (toggle the menu open/closed)
+  * while `menu_active` is set  → the entire pause/skip/cycle branch is
+    suspended (so SHIFT becomes a navigation modifier, not a cycle trigger);
+    every non-SPACE key edge is pushed onto `nav_queue` as `(code, shift)`.
 """
 
 from __future__ import annotations
@@ -28,12 +35,14 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 
 from ._pollthread import PollThread
 from .backend import C64Backend
-from .c64 import SCREEN
+from .c64 import KEY, SCREEN
 
 ADDR_MODIFIERS = SCREEN.MODIFIERS
+ADDR_CUR_KEY = SCREEN.CUR_KEY
 BIT_SHIFT = 0x01
 BIT_COMMODORE = 0x02
 BIT_CONTROL = 0x04
@@ -61,6 +70,9 @@ class CommodoreKeyPoller:
         self._resume_event: threading.Event | None = None
         self._skip_event: threading.Event | None = None
         self._cycle_event: threading.Event | None = None
+        self._menu_event: threading.Event | None = None
+        self._menu_active: threading.Event | None = None
+        self._nav_queue: deque[tuple[int, bool]] | None = None
 
     def start(
         self,
@@ -68,6 +80,9 @@ class CommodoreKeyPoller:
         resume_event: threading.Event,
         skip_event: threading.Event | None = None,
         cycle_event: threading.Event | None = None,
+        menu_event: threading.Event | None = None,
+        menu_active: threading.Event | None = None,
+        nav_queue: deque[tuple[int, bool]] | None = None,
     ):
         """Begin polling.
 
@@ -80,11 +95,23 @@ class CommodoreKeyPoller:
                       play, signaling the playlist to cycle the current
                       scene's display style. Ignored while paused, and
                       ignored on any tick where C= or CTRL is also held.
-                      If None, SHIFT is silently dropped."""
+                      If None, SHIFT is silently dropped.
+        menu_event    (optional) toggled when SPACE is pressed — opens the
+                      on-C64 menu when running, closes it when open. If None,
+                      $00CB is never read and SPACE/nav are ignored entirely
+                      (keeps the read load to $028D-only).
+        menu_active   (optional) set by the Playlist while the menu overlay is
+                      open. While set, the whole pause/skip/cycle branch is
+                      suspended and non-SPACE key edges are enqueued for nav.
+        nav_queue     (optional) bounded deque the poller appends `(matrix
+                      code, shift_held)` tuples to while `menu_active`."""
         self._pause_event = pause_event
         self._resume_event = resume_event
         self._skip_event = skip_event
         self._cycle_event = cycle_event
+        self._menu_event = menu_event
+        self._menu_active = menu_active
+        self._nav_queue = nav_queue
         self._poll.start()
 
     def stop(self):
@@ -101,6 +128,14 @@ class CommodoreKeyPoller:
             return None
         return data[0]
 
+    def _read_key(self) -> int | None:
+        """Read $00CB (matrix code of the key currently down, 64 = none).
+        None on read failure, distinguished from KEY.NONE."""
+        data = self.api.read_memory(ADDR_CUR_KEY, 1)
+        if data is None or len(data) < 1:
+            return None
+        return data[0]
+
     def _loop(self, stop: threading.Event):
         assert self._pause_event is not None
         assert self._resume_event is not None
@@ -108,6 +143,7 @@ class CommodoreKeyPoller:
         last_cbm_seen = False  # edge detect for pause trigger
         last_ctrl_seen = False  # edge detect for skip trigger
         last_shift_seen = False  # edge detect for cycle trigger
+        last_key = KEY.NONE  # edge detect for SPACE/nav (only when menu wired)
 
         while not stop.wait(self.poll_interval_s):
             mod = self._read_modifiers()
@@ -117,6 +153,45 @@ class CommodoreKeyPoller:
             cbm = bool(mod & BIT_COMMODORE)
             ctrl = bool(mod & BIT_CONTROL)
             shift = bool(mod & BIT_SHIFT)
+
+            # Current-key edge detection — only when the menu is wired, so the
+            # read load stays $028D-only for non-menu runs (and the existing
+            # FakeApi in tests, which only serves $028D, keeps working).
+            key_edge: int | None = None
+            if self._menu_event is not None:
+                key = self._read_key()
+                if key is not None:
+                    if key != KEY.NONE and key != last_key:
+                        key_edge = key
+                    last_key = key
+
+            if self._menu_active is not None and self._menu_active.is_set():
+                # MENU OPEN: suspend pause/skip/cycle entirely. SPACE toggles
+                # the menu closed; every other key edge is a nav event carrying
+                # the live SHIFT state (SHIFT = "reverse" modifier).
+                if key_edge == KEY.SPACE and self._menu_event is not None:
+                    self._menu_event.set()
+                elif key_edge is not None and self._nav_queue is not None:
+                    self._nav_queue.append((key_edge, shift))
+                # Keep the modifier edge baselines current so a SHIFT/C=/CTRL
+                # held across the menu session can't fire a phantom event the
+                # tick the menu closes.
+                last_cbm_seen = cbm
+                last_ctrl_seen = ctrl
+                last_shift_seen = shift
+                held_since = None
+                continue
+
+            if (
+                key_edge == KEY.SPACE
+                and self._menu_event is not None
+                and not self._pause_event.is_set()
+            ):
+                # SPACE while running opens the menu. (While paused the scene is
+                # torn down to the BASIC screen, so a menu would be meaningless;
+                # the run loop is blocked in _handle_pause and wouldn't see it.)
+                self.log.info("SPACE press detected — opening menu")
+                self._menu_event.set()
 
             if self._pause_event.is_set():
                 # PAUSED: only the C= hold-to-resume gesture matters.
