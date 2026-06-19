@@ -310,9 +310,9 @@ class SCREEN:
     BITMAP_H: Final = 200
 
     # Keyboard scratch bytes.
-    LAST_KEY: Final = 0x00C5
-    KB_BUFFER_LEN: Final = 0x00C6
-    KB_BUFFER: Final = 0x0277
+    LAST_KEY: Final = 0x00C5  # matrix code of last key pressed (64 = none)
+    KB_BUFFER_LEN: Final = 0x00C6  # NDX — count of keys in the buffer below
+    KB_BUFFER: Final = 0x0277  # KEYD — decoded PETSCII keystroke FIFO (10 bytes)
     MODIFIERS: Final = 0x028D  # bit 1 = COMMODORE, 0 = SHIFT, 2 = CTRL
     CASE_SWITCH: Final = 0x0291  # bit 7 = 1 disables the C= + SHIFT charset toggle
 
@@ -323,6 +323,24 @@ class SCREEN:
     # for chars above 0x40; e.g. PETSCII '@' = 0x40 but screen code 0x00).
     SC_SPACE: Final = 0x20  # blank cell — invisible against bg
     SC_FULL_BLOCK: Final = 0xA0  # inverse space — fully filled in FG color
+
+
+class KEYBUF:
+    """Decoded PETSCII codes as they land in the kernal keyboard buffer
+    (KEYD, SCREEN.KB_BUFFER / $0277), counted by NDX (SCREEN.KB_BUFFER_LEN /
+    $00C6). This is exactly what the U64's CMD_KEYB opcode injects and what
+    the on-C64 menu poller drains — distinct from the raw matrix scan codes
+    at $00CB. The kernal folds SHIFT into the cursor codes for us
+    (SHIFT+CRSR-down decodes to CRSR-up = $91, SHIFT+CRSR-right to CRSR-left
+    = $9D), so the menu reads direction straight off the code with no
+    separate modifier read. Only the handful the on-C64 menu navigates."""
+
+    SPACE: Final = 0x20
+    RETURN: Final = 0x0D
+    CRSR_DOWN: Final = 0x11
+    CRSR_UP: Final = 0x91
+    CRSR_RIGHT: Final = 0x1D
+    CRSR_LEFT: Final = 0x9D
 
 
 # ---------------------------------------------------------------------------
@@ -458,3 +476,11 @@ class RegionID:
     # rows the per-voice/title/meta paints don't cover, so a relocated
     # (VIC bank 2) display doesn't show uninitialized-RAM garbage there.
     WAVE_SCREEN_CLEAR: Final = 4034
+
+    # On-C64 menu overlay (overlays/menu.py). Per-panel-row IDs (+row offset,
+    # panel is at most 25 rows) so the delta cache absorbs unchanged rows
+    # between repaints. Bitmap displays use ROW_BITMAP + ROW_SCREEN (color in
+    # the screen nibble); char displays use ROW_SCREEN + ROW_COLOR.
+    MENU_ROW_BITMAP: Final = 5000  # +row 0..24
+    MENU_ROW_SCREEN: Final = 5100  # +row 0..24
+    MENU_ROW_COLOR: Final = 5200  # +row 0..24

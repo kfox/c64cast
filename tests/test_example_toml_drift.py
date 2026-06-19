@@ -45,6 +45,7 @@ _SECTION_DC = {
     "color": cfgmod.ColorCfg,
     "dsp": cfgmod.DSPCfg,
     "control": cfgmod.ControlPlaneCfg,
+    "menu": cfgmod.MenuCfg,
 }
 
 # Section fields intentionally NOT shown as live keys in the reference TOML:

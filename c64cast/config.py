@@ -69,6 +69,12 @@ _STYLE_CHOICES = (
 _TIME_BASE_CHOICES = ("wallclock", "auto")
 _PERSISTENCE_CHOICES = ("off", "short", "medium", "long", "random")
 _COLOR_MODE_CHOICES = ("per_voice", "per_waveform")
+# Field-metadata "apply" hint for the on-C64 menu: "live" = the running scene
+# can apply a change in place (zero-flash, via a display-mode/scene setter);
+# "rebuild" (the default for unmarked fields) = changing it needs a scene
+# rebuild, so the menu shows it read-only this cut. Internal-only — not
+# surfaced in the schema, serializer, or example.toml.
+_APPLY_CHOICES = ("live", "rebuild")
 _MIDI_WAVEFORM_CHOICES = ("triangle", "sawtooth", "pulse", "noise")
 _MIDI_FILTER_MODE_CHOICES = ("lowpass", "bandpass", "highpass")
 _BACKGROUND_CHOICES = (
@@ -598,6 +604,7 @@ class SceneCfg:
                 "launcher",
                 "generative",
             ),
+            "apply": "live",
         },
     )
     # See resolve_file_spec for the comma-separated path/dir/glob grammar.
@@ -623,7 +630,8 @@ class SceneCfg:
         metadata={
             "help": "Per-scene frame-rate cap; unset = playlist default (60/50), "
             "except waveform scenes which default to half rate (30/25) to "
-            "stay under the DMA ceiling."
+            "stay under the DMA ceiling.",
+            "apply": "live",
         },
     )
     # None = follow global [audio].enabled; False forces off; True is a no-op
@@ -832,7 +840,8 @@ class SceneCfg:
             "Color shaping (channel boost + hue corrections, e.g. the purple "
             "rescue) is the global [color] section, applied to every mode.",
             "choices": _PALETTE_MODE_CHOICES,
-            "applies_to": ("webcam", "video", "slideshow"),
+            "applies_to": ("webcam", "video", "slideshow", "generative"),
+            "apply": "live",
         },
     )
     style: str = field(
@@ -841,7 +850,8 @@ class SceneCfg:
             "help": "PETSCII glyph/color style (only when display = 'petscii'); "
             "'random' picks one at setup.",
             "choices": _STYLE_CHOICES,
-            "applies_to": ("webcam", "video", "slideshow"),
+            "applies_to": ("webcam", "video", "slideshow", "generative"),
+            "apply": "live",
         },
     )
     border: int = field(
@@ -1258,6 +1268,28 @@ class ControlPlaneCfg:
 
 
 @dataclass
+class MenuCfg:
+    """On-C64 menu. When enabled, SPACE on the C64 keyboard opens an on-screen
+    panel of context-sensitive knobs for the current scene (palette mode, style,
+    forced palette, etc.) with a live preview; cursor keys navigate, RETURN
+    saves. Needs a backend that can read C64 memory (the $00CB key scan); a no-op
+    on read-free backends like TeensyROM."""
+
+    enabled: bool = field(
+        default=False,
+        metadata={"help": "Enable the on-C64 SPACE-key menu for live scene tweaks."},
+    )
+    prompt_to_save: bool = field(
+        default=True,
+        metadata={
+            "help": "On menu exit with unsaved changes, offer to write them back to "
+            "the source config file. False = apply to the running scene only, never "
+            "persist (handy for conventions/demos)."
+        },
+    )
+
+
+@dataclass
 class SystemEntryCfg:
     """One system in an ensemble — name plus the path to its per-system
     standalone TOML. The path is resolved relative to the master TOML's
@@ -1297,6 +1329,7 @@ class Config:
     color: ColorCfg = field(default_factory=ColorCfg)
     dsp: DSPCfg = field(default_factory=DSPCfg)
     control: ControlPlaneCfg = field(default_factory=ControlPlaneCfg)
+    menu: MenuCfg = field(default_factory=MenuCfg)
     # Set only on the master Config produced by load_master(). Per-system
     # Configs in the returned list always have ensemble = None.
     ensemble: EnsembleCfg | None = None
@@ -1444,6 +1477,7 @@ def load(path: str | None) -> Config:
         ("recording", cfg.recording),
         ("dsp", cfg.dsp),
         ("control", cfg.control),
+        ("menu", cfg.menu),
     ):
         if section in data:
             _apply_section(dc, data[section], section)
@@ -1557,6 +1591,7 @@ _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("preview", frozenset()),
     ("recording", frozenset()),
     ("color", frozenset()),
+    ("menu", frozenset()),
 )
 
 
@@ -1679,6 +1714,7 @@ def load_master(path: str | None) -> LoadResult:
         ("preview", defaults.preview),
         ("recording", defaults.recording),
         ("control", defaults.control),
+        ("menu", defaults.menu),
     ):
         if section in raw:
             _apply_section(dc, raw[section], section)

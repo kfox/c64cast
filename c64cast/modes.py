@@ -1434,14 +1434,21 @@ class PETSCIIDisplayMode(CharDisplayMode):
         # frame. Bordr + bg are contiguous at $D020-$D021.
         api.write_regs("d020", self._style.border, self._style.background)
 
+    def set_style(self, api, name: str) -> str:
+        """Switch to PETSCII style `name` in place. Shared by the SHIFT cycle
+        and the on-C64 menu: repaints border/bg and invalidates the delta cache
+        so the next frame fully redraws with the new style. `name` must be a
+        concrete STYLE_NAMES entry (not the 'random' sentinel)."""
+        self._style_name = name
+        self._style = make_style(name)
+        api.write_regs("d020", self._style.border, self._style.background)
+        api.invalidate_cache()
+        return f"style={name}"
+
     def cycle_style(self, api):
         idx = STYLE_NAMES.index(self._style_name)
         new_name = STYLE_NAMES[(idx + 1) % len(STYLE_NAMES)]
-        self._style_name = new_name
-        self._style = make_style(new_name)
-        api.write_regs("d020", self._style.border, self._style.background)
-        api.invalidate_cache()
-        return f"style={new_name}"
+        return self.set_style(api, new_name)
 
     @property
     def style(self) -> str:
@@ -1567,15 +1574,19 @@ class MCMDisplayMode(CharDisplayMode):
         # EMA-smoothed counts for cheap/vivid picks; see PALETTE_PICK_EMA_ALPHA.
         self._smoothed_counts: np.ndarray | None = None
 
-    def cycle_style(self, api):
-        new_mode, new_force, label = _advance_palette_cycle(
-            self.palette_mode, self._force_palette, self._color_map is not None
-        )
-        self.palette_mode = new_mode
-        self._force_palette = new_force
-        self._sat_factor, self._gray_penalty = _palette_mode_settings(new_mode)
+    def set_palette_mode(self, api, palette_mode: str, *, force_palette: bool | None = None) -> str:
+        """Apply `palette_mode` (and optionally the forced-palette flag) to the
+        running instance — shared by the SHIFT cycle and the on-C64 menu. Resets
+        the EMA + last-bg state and invalidates the delta cache so the next frame
+        re-picks slots and fully repaints. Returns the same label the SHIFT
+        cycle logs."""
+        _validate_palette_mode(palette_mode)
+        self.palette_mode = palette_mode
+        if force_palette is not None:
+            self._force_palette = force_palette
+        self._sat_factor, self._gray_penalty = _palette_mode_settings(palette_mode)
         self._fixed_bg = (
-            np.array(GRAYSCALE_MCM_BGS, dtype=np.int64) if new_mode == "grayscale" else None
+            np.array(GRAYSCALE_MCM_BGS, dtype=np.int64) if palette_mode == "grayscale" else None
         )
         # Reset EMA + last-bg so the new mode's slot picks don't blend with
         # the previous mode's accumulated counts and so border/bg get
@@ -1583,7 +1594,13 @@ class MCMDisplayMode(CharDisplayMode):
         self._smoothed_counts = None
         self._last_bg = None
         api.invalidate_cache()
-        return label
+        return f"palette_mode={palette_mode}" + ("+forced" if self._force_palette else "")
+
+    def cycle_style(self, api):
+        new_mode, new_force, _label = _advance_palette_cycle(
+            self.palette_mode, self._force_palette, self._color_map is not None
+        )
+        return self.set_palette_mode(api, new_mode, force_palette=new_force)
 
     def setup(self, api):
         super().setup(api)
@@ -1969,13 +1986,16 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._fixed_slots = None
             self._fixed_lut = None
 
-    def cycle_style(self, api):
-        new_mode, new_force, label = _advance_palette_cycle(
-            self.palette_mode, self._force_palette, self._color_map is not None
-        )
-        self.palette_mode = new_mode
-        self._force_palette = new_force
-        self._sat_factor, self._gray_penalty = _palette_mode_settings(new_mode)
+    def set_palette_mode(self, api, palette_mode: str, *, force_palette: bool | None = None) -> str:
+        """Apply `palette_mode` (and optionally the forced-palette flag) to the
+        running instance — shared by the SHIFT cycle and the on-C64 menu. Resets
+        all per-frame EMA/hysteresis state and invalidates the delta cache so the
+        next frame re-picks slots and fully repaints. Returns the SHIFT label."""
+        _validate_palette_mode(palette_mode)
+        self.palette_mode = palette_mode
+        if force_palette is not None:
+            self._force_palette = force_palette
+        self._sat_factor, self._gray_penalty = _palette_mode_settings(palette_mode)
         self._apply_grayscale_fixed_slots()
         self._smoothed_counts = None
         self._smoothed_cell_counts = None
@@ -1984,7 +2004,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_quantized = None
         self._last_bg = None
         api.invalidate_cache()
-        return label
+        return f"palette_mode={palette_mode}" + ("+forced" if self._force_palette else "")
+
+    def cycle_style(self, api):
+        new_mode, new_force, _label = _advance_palette_cycle(
+            self.palette_mode, self._force_palette, self._color_map is not None
+        )
+        return self.set_palette_mode(api, new_mode, force_palette=new_force)
 
     def setup(self, api):
         super().setup(api)

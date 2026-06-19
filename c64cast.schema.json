@@ -657,6 +657,23 @@
         }
       }
     },
+    "menu": {
+      "type": "object",
+      "description": "On-C64 SPACE-key menu for live scene tweaks.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the on-C64 SPACE-key menu for live scene tweaks.",
+          "default": false
+        },
+        "prompt_to_save": {
+          "type": "boolean",
+          "description": "On menu exit with unsaved changes, offer to write them back to the source config file. False = apply to the running scene only, never persist (handy for conventions/demos).",
+          "default": true
+        }
+      }
+    },
     "scenes": {
       "type": "array",
       "description": "Playlist scenes ([[scenes]] blocks).",
