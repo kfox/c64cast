@@ -729,7 +729,7 @@
               "number",
               "null"
             ],
-            "description": "Per-scene frame-rate cap; unset = playlist default (60/50), except waveform scenes which default to half rate (30/25) to stay under the DMA ceiling."
+            "description": "Per-scene frame-rate cap; unset = playlist default (60/50). Bitmap (hires/mhires) video/webcam/generative scenes default lower to stay under the DMA bus-halt ceiling: 20 fps while streaming digitized audio, else half rate (30/25). Waveform/midi default to half rate too."
           },
           "audio": {
             "type": [

@@ -628,9 +628,11 @@ class SceneCfg:
     target_fps: float | None = field(
         default=None,
         metadata={
-            "help": "Per-scene frame-rate cap; unset = playlist default (60/50), "
-            "except waveform scenes which default to half rate (30/25) to "
-            "stay under the DMA ceiling.",
+            "help": "Per-scene frame-rate cap; unset = playlist default (60/50). "
+            "Bitmap (hires/mhires) video/webcam/generative scenes default "
+            "lower to stay under the DMA bus-halt ceiling: 20 fps while "
+            "streaming digitized audio, else half rate (30/25). "
+            "Waveform/midi default to half rate too.",
             "apply": "live",
         },
     )
@@ -2426,6 +2428,31 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         resolve_orchestrator(s)
 
 
+def _frame_push_default_fps(
+    mode: DisplayMode, has_digitized_audio: bool, system: str
+) -> float | None:
+    """Default ``target_fps`` for a frame-pushing scene that can stream the
+    4-bit ``$D418`` digitized-audio DAC (video / live webcam / generative-mic).
+
+    Bitmap modes (hires/mhires) push a full ~9-10 KB frame every frame; each
+    DMA write halts the C64 bus, and when the digitized-audio DAC is *also*
+    streaming, the combined halt load tears the picture at the system rate.
+    So a bitmap scene streaming digitized audio caps at **20 fps** (both NTSC
+    and PAL), and a bitmap scene without it at **half** the system rate
+    (30 NTSC / 25 PAL). Char modes (petscii/blank) are cheap — a 1 KB
+    delta-cached screen — so they keep the playlist system default; this
+    returns ``None`` for them and the caller leaves ``target_fps`` unset.
+
+    Worth revisiting these caps once the firmware no longer halts the CPU on
+    DMA writes (see ``u64ii_firmware_build`` / ``u64_zero_halt_dma_path``).
+    """
+    if not mode.is_bitmapped:
+        return None
+    if has_digitized_audio:
+        return 20.0
+    return 25.0 if system.upper() == "PAL" else 30.0
+
+
 def build_scene(
     s: SceneCfg,
     cfg: Config,
@@ -2485,6 +2512,10 @@ def build_scene(
                 )
             scene_audio = None
         scene = WebcamScene(api, scene_audio, mode, source, cfg.audio, name)
+        if s.target_fps is None:
+            fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
+            if fps is not None:
+                scene.target_fps = fps
     elif s.type == "blank":
         mode = _build_display_mode(
             "blank",
@@ -2520,6 +2551,10 @@ def build_scene(
             prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
             color=cfg.color,
         )
+        if s.target_fps is None:
+            fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
+            if fps is not None:
+                scene.target_fps = fps
     elif s.type == "waveform":
         from .waveform import WaveformScene
 
@@ -2633,6 +2668,14 @@ def build_scene(
                 # "none", or "mic" with audio disabled → silence.
                 audio_src = NullAudioSource()
             scene = SourceScene(api, scene_audio, mode, gen, audio_src, name)
+            # A mic-source generative scene is digitized-audio-capable like
+            # webcam/video, so it gets the same bitmap frame-push caps (20 fps
+            # while the DAC streams, half rate otherwise). The "none" source
+            # never drives the DAC, so it keeps the playlist default.
+            if s.target_fps is None and s.audio_source == "mic":
+                fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
+                if fps is not None:
+                    scene.target_fps = fps
     elif s.type == "launcher":
         from .scenes import LauncherScene
 
@@ -2795,17 +2838,23 @@ def scenes_from_config(
     for built in base:
         interleaved.append(built)
         if not isinstance(built, VideoScene):
-            interleaved.append(
-                VideoScene(
-                    api,
-                    audio,
-                    HiresDisplayMode(style="edges"),
-                    video_files[video_idx],
-                    prepend_alignment_marker=(
-                        cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump
-                    ),
-                )
+            vid_mode = HiresDisplayMode(style="edges")
+            vid_scene = VideoScene(
+                api,
+                audio,
+                vid_mode,
+                video_files[video_idx],
+                prepend_alignment_marker=(
+                    cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump
+                ),
             )
+            # These are built directly (not via build_scene), so apply the
+            # same bitmap frame-push cap: 20 fps with audio (this hires_edges
+            # video streams the digitized DAC), half rate when muted.
+            fps = _frame_push_default_fps(vid_mode, audio is not None, cfg.ultimate64.system)
+            if fps is not None:
+                vid_scene.target_fps = fps
+            interleaved.append(vid_scene)
             video_idx = (video_idx + 1) % len(video_files)
     return interleaved
 
