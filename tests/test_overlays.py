@@ -33,13 +33,16 @@ def _fake_api() -> C64Backend:
 
 
 def _make_buffers():
-    """Fresh buffers dict matching what CharDisplayMode.compose() returns."""
+    """Fresh buffers dict matching what CharDisplayMode.compose() returns —
+    including the CharTextSurface text overlays now paint through (its writes
+    pass through to the same screen/color arrays, so the assertions below
+    still inspect buffers["screen"]/["color"] directly)."""
     from c64cast.overlays import SC_SPACE
+    from c64cast.text_surface import CharTextSurface
 
-    return {
-        "screen": np.full(40 * 25, SC_SPACE, dtype=np.uint8),
-        "color": np.zeros(40 * 25, dtype=np.uint8),
-    }
+    screen = np.full(40 * 25, SC_SPACE, dtype=np.uint8)
+    color = np.zeros(40 * 25, dtype=np.uint8)
+    return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 
 
 class FakeAudio:

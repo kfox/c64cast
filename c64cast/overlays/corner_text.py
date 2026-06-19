@@ -17,6 +17,8 @@ import numpy as np
 
 from ..c64 import SCREEN
 from ..palette import C64_COLORS
+from ..text_surface import TextSurface
+from ..text_surface import corner_origin as _surface_corner_origin
 from . import Overlay, ascii_to_screen
 
 log = logging.getLogger(__name__)
@@ -28,7 +30,9 @@ VALID_CORNERS = ("top-left", "top-right", "bottom-left", "bottom-right")
 
 
 def corner_origin(corner: str, width: int, height: int = 1) -> tuple[int, int]:
-    """Top-left (col, row) of a `width`×`height` cell block in the given corner."""
+    """Top-left (col, row) of a `width`×`height` cell block in a 40×25 char
+    grid (used by the char-only `logo` overlay). Mode-aware corner placement
+    for the text overlays goes through text_surface.corner_origin."""
     if corner not in VALID_CORNERS:
         raise ValueError(f"corner must be one of {VALID_CORNERS}, got {corner!r}")
     row = 0 if "top" in corner else SCREEN_H - height
@@ -37,36 +41,30 @@ def corner_origin(corner: str, width: int, height: int = 1) -> tuple[int, int]:
 
 
 def paint_corner_string(
-    buffers: dict, corner: str, lines: list[str], fg_color: str, bg_color: str
+    surface: TextSurface, corner: str, lines: list[str], fg_color: str, bg_color: str
 ) -> None:
-    """Paint multi-line text into the scene's screen/color buffers at a corner.
+    """Paint multi-line text into a TextSurface at a corner.
 
-    bg_color == "none" only writes the color cells under the text (leaves
-    the scene's underlying chars visible). Any other color also stamps a
-    space-filled char block so the text reads cleanly.
+    Works on any display mode: the surface translates the cell-grid run into
+    char screen codes or folded bitmap glyphs, and reports its own cols/rows
+    (40×25 char/hires, 20×25 mhires) so corner placement adapts.
 
-    Mutates buffers["screen"] and buffers["color"] in place."""
+    bg_color == "none" leaves the underlying glyph (char modes recolor only;
+    bitmap modes have no underlying glyph so they draw opaque on black). Any
+    other color stamps an opaque text box."""
     if not lines:
         return
     width = max(len(s) for s in lines)
     height = len(lines)
-    col, row = corner_origin(corner, width, height)
+    col, row = _surface_corner_origin(corner, width, height, surface.cols, surface.rows)
 
     fg = C64_COLORS.get(fg_color, C64_COLORS["white"])
-    paint_chars = bg_color != "none"
-
-    screen = buffers["screen"]
-    color = buffers["color"]
+    draw_chars = bg_color != "none"
+    bg = C64_COLORS.get(bg_color, 0)  # 0 (black) when "none"
 
     for i, text in enumerate(lines):
         encoded = np.frombuffer(ascii_to_screen(text.ljust(width)), dtype=np.uint8)
-        y = row + i
-        if y < 0 or y >= SCREEN_H:
-            continue
-        base = y * SCREEN_W + col
-        if paint_chars:
-            screen[base : base + width] = encoded
-        color[base : base + width] = fg
+        surface.paint_run(row + i, col, encoded, fg, bg, draw_chars=draw_chars)
 
 
 class CornerTextOverlay(Overlay):
@@ -118,4 +116,6 @@ class CornerTextOverlay(Overlay):
             self._last_compute_t = t
         if not self._last_strings:
             return
-        paint_corner_string(buffers, self.corner, self._last_strings, self.fg_color, self.bg_color)
+        paint_corner_string(
+            buffers["text"], self.corner, self._last_strings, self.fg_color, self.bg_color
+        )

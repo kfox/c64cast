@@ -88,6 +88,11 @@ def main() -> None:
     ap.add_argument("--menu", action="store_true", help="overlay the on-C64 menu panel")
     ap.add_argument("--menu-sel", type=int, default=0, help="selected menu item index")
     ap.add_argument("--menu-confirm", action="store_true", help="show the save-confirm screen")
+    # Text overlay: attach a registered PETSCII text overlay (clock / callsign /
+    # marquee / scrolling_text / …) to eyeball its legibility on a bitmap mode.
+    ap.add_argument("--overlay", default=None, help="text overlay type (e.g. clock, callsign)")
+    ap.add_argument("--overlay-text", default="C64CAST", help="text for callsign/marquee overlays")
+    ap.add_argument("--overlay-corner", default="top-right", help="corner for corner-text overlays")
     args = ap.parse_args()
 
     modulation = None
@@ -112,7 +117,24 @@ def main() -> None:
     mode.setup(api)
     src = build_generator(args.source)
     effect = build_effect(args.effect) if args.effect else None
-    scene = SimpleNamespace(name=f"{args.source}/{args.display}", effect=effect, overlays=[])
+
+    overlays = []
+    if args.overlay:
+        from c64cast.overlays import build_overlay
+
+        cfg = {"type": args.overlay}
+        if args.overlay in ("callsign", "marquee", "scrolling_text"):
+            if args.overlay == "scrolling_text":
+                cfg["messages"] = [{"text": args.overlay_text}]
+            else:
+                cfg["text"] = args.overlay_text
+        if args.overlay in ("clock", "callsign", "weather", "countdown", "network"):
+            cfg["corner"] = args.overlay_corner
+        ov = build_overlay(cfg, audio=None)
+        ov.setup(api, SimpleNamespace())  # type: ignore[arg-type]
+        overlays.append(ov)
+
+    scene = SimpleNamespace(name=f"{args.source}/{args.display}", effect=effect, overlays=overlays)
 
     menu = None
     if args.menu:
@@ -135,7 +157,7 @@ def main() -> None:
     for i in range(args.frames):
         t = i * args.t_step
         frame = src.read(t, modulation)
-        _render_with_overlays(mode, api, frame, [], t, scene, modulation)
+        _render_with_overlays(mode, api, frame, overlays, t, scene, modulation)
         if menu is not None:
             menu.process_frame(api, scene, t)
         if i == save_at:
@@ -143,6 +165,7 @@ def main() -> None:
             tag = (
                 f"{args.source}_{args.display}"
                 + (f"_{args.effect}" if args.effect else "")
+                + (f"_{args.overlay}" if args.overlay else "")
                 + ("_menu" if args.menu else "")
             )
             saved_path = args.out or os.path.join(OUT_DIR, f"render_{tag}_f{i}.png")

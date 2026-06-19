@@ -123,10 +123,10 @@ class ScrollingTextOverlay(Overlay):
             acc += d
         return self.messages[-1], len(self.messages) - 1, 0.0
 
-    def _row_for(self, msg: ScrollMessage, idx: int, local_t: float) -> np.ndarray:
-        """Return a 40-byte screen-code array for the message at local_t."""
+    def _row_for(self, msg: ScrollMessage, idx: int, local_t: float, width: int) -> np.ndarray:
+        """Return a `width`-byte screen-code array for the message at local_t."""
         encoded, _ = self._encoded[idx]
-        row = np.full(SCREEN_W, SC_SPACE, dtype=np.uint8)
+        row = np.full(width, SC_SPACE, dtype=np.uint8)
         if local_t < msg.pre_delay_s:
             return row
         t = local_t - msg.pre_delay_s
@@ -134,35 +134,35 @@ class ScrollingTextOverlay(Overlay):
         text_len = len(encoded)
         text = np.frombuffer(encoded, dtype=np.uint8)
         if msg.style == "static":
-            x0 = (SCREEN_W - text_len) // 2
-            self._paste(row, text, x0)
+            x0 = (width - text_len) // 2
+            self._paste(row, text, x0, width)
             return row
 
         # default: scroll right → left
-        x = SCREEN_W - int(t * self.speed)
-        self._paste(row, text, x)
+        x = width - int(t * self.speed)
+        self._paste(row, text, x, width)
         return row
 
     @staticmethod
-    def _paste(row: np.ndarray, text: np.ndarray, x: int):
+    def _paste(row: np.ndarray, text: np.ndarray, x: int, width: int):
         """Write `text` into `row` starting at x, clipping to row bounds."""
         n = len(text)
-        if x >= SCREEN_W or x + n <= 0:
+        if x >= width or x + n <= 0:
             return
         src_start = max(0, -x)
         dst_start = max(0, x)
-        copy_n = min(n - src_start, SCREEN_W - dst_start)
+        copy_n = min(n - src_start, width - dst_start)
         if copy_n > 0:
             row[dst_start : dst_start + copy_n] = text[src_start : src_start + copy_n]
 
     def compose(self, buffers: dict, scene, t: float) -> None:
+        surface = buffers["text"]
+        width = surface.cols  # 40 char/hires, 20 mhires (double-wide)
         elapsed = t - self.start_time
         msg, idx, local_t = self._active_message(elapsed)
-        row = self._row_for(msg, idx, local_t)
+        row = self._row_for(msg, idx, local_t, width)
         _, color_idx = self._encoded[idx]
         # Color row: every non-space cell gets msg color, spaces get bg_color
         # so the row reads as a band of bg cells where the text isn't.
-        colors = np.where(row != SC_SPACE, color_idx, self.bg_color).astype(np.uint8)
-        base = self.row * SCREEN_W
-        buffers["screen"][base : base + SCREEN_W] = row
-        buffers["color"][base : base + SCREEN_W] = colors
+        colors = np.where(row != SC_SPACE, color_idx, self.bg_color).astype(np.int64)
+        surface.paint_run(self.row, 0, row, colors, self.bg_color)
