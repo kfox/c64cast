@@ -40,6 +40,7 @@ class FakeAPI:
         # the right things to use for last-write-wins lookups.
         self.ops: list[tuple] = []
         self.cache_invalidations = 0
+        self.region_invalidations: list[int] = []
         self.sid_played: tuple[bytes, int] | None = None
         # Tracks each cue_song_reinit(song) call in order. Tests inspect
         # this to verify the SHIFT cycle path uses the fast in-place
@@ -76,6 +77,9 @@ class FakeAPI:
 
     def invalidate_cache(self):
         self.cache_invalidations += 1
+
+    def invalidate_region(self, region_id):
+        self.region_invalidations.append(region_id)
 
     def read_memory(self, address, length, timeout=1.0):
         if address == 0xD400 and length == 25:

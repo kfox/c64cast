@@ -311,9 +311,8 @@ class SCREEN:
 
     # Keyboard scratch bytes.
     LAST_KEY: Final = 0x00C5  # matrix code of last key pressed (64 = none)
-    CUR_KEY: Final = 0x00CB  # matrix code of key currently down (64 = none)
-    KB_BUFFER_LEN: Final = 0x00C6
-    KB_BUFFER: Final = 0x0277
+    KB_BUFFER_LEN: Final = 0x00C6  # NDX — count of keys in the buffer below
+    KB_BUFFER: Final = 0x0277  # KEYD — decoded PETSCII keystroke FIFO (10 bytes)
     MODIFIERS: Final = 0x028D  # bit 1 = COMMODORE, 0 = SHIFT, 2 = CTRL
     CASE_SWITCH: Final = 0x0291  # bit 7 = 1 disables the C= + SHIFT charset toggle
 
@@ -326,16 +325,22 @@ class SCREEN:
     SC_FULL_BLOCK: Final = 0xA0  # inverse space — fully filled in FG color
 
 
-class KEY:
-    """Keyboard matrix scan codes — the value the kernal writes to
-    $00C5/$00CB (SCREEN.LAST_KEY/CUR_KEY); 64 = no key. These are NOT
-    PETSCII or screen codes. Only the handful the on-C64 menu navigates."""
+class KEYBUF:
+    """Decoded PETSCII codes as they land in the kernal keyboard buffer
+    (KEYD, SCREEN.KB_BUFFER / $0277), counted by NDX (SCREEN.KB_BUFFER_LEN /
+    $00C6). This is exactly what the U64's CMD_KEYB opcode injects and what
+    the on-C64 menu poller drains — distinct from the raw matrix scan codes
+    at $00CB. The kernal folds SHIFT into the cursor codes for us
+    (SHIFT+CRSR-down decodes to CRSR-up = $91, SHIFT+CRSR-right to CRSR-left
+    = $9D), so the menu reads direction straight off the code with no
+    separate modifier read. Only the handful the on-C64 menu navigates."""
 
-    NONE: Final = 64
-    RETURN: Final = 1
-    CRSR_RIGHT: Final = 2
-    CRSR_DOWN: Final = 7
-    SPACE: Final = 60
+    SPACE: Final = 0x20
+    RETURN: Final = 0x0D
+    CRSR_DOWN: Final = 0x11
+    CRSR_UP: Final = 0x91
+    CRSR_RIGHT: Final = 0x1D
+    CRSR_LEFT: Final = 0x9D
 
 
 # ---------------------------------------------------------------------------

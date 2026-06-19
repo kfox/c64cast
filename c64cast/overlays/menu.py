@@ -19,8 +19,10 @@ REU-staged bitmap scenes are skipped for the panel glyphs (the live preview
 still applies through the staged path); see `_render`.
 
 Navigation is driven by the keyboard poller's nav queue (forwarded by the
-Playlist as `on_key`); SPACE arrives via `on_toggle`. CRSR-down/up moves the
-selection, CRSR-right/left changes the selected value (SHIFT reverses), SPACE
+Playlist as `on_key`); SPACE arrives via `on_toggle`. The poller drains the
+kernal keyboard buffer, so it receives decoded PETSCII codes: CRSR-down/up
+moves the selection, CRSR-right/left changes the selected value (the kernal
+folds SHIFT into the up/left codes, so reverse needs no separate flag), SPACE
 exits (offering a save confirmation when there are unsaved changes).
 """
 
@@ -32,7 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .. import bitmap_text, introspect
-from ..c64 import KEY, SCREEN, RegionID
+from ..c64 import KEYBUF, SCREEN, RegionID
 from . import Overlay, ascii_to_screen
 
 if TYPE_CHECKING:
@@ -233,10 +235,14 @@ class MenuOverlay(Overlay):
 
     # --- input -------------------------------------------------------------
 
-    def on_key(self, code: int, shift: bool) -> None:
-        """Handle one nav key (forwarded from the poller's nav queue)."""
+    def on_key(self, code: int) -> None:
+        """Handle one decoded PETSCII nav key (forwarded from the poller's nav
+        queue). Direction is encoded in the code itself — the kernal already
+        folded SHIFT into CRSR-up/left ($91/$9D), so there is no separate
+        "reverse" flag: CRSR-down/up move the selection, CRSR-right/left
+        change the selected value."""
         if self.state == "confirm":
-            if code == KEY.RETURN:
+            if code == KEYBUF.RETURN:
                 ok = self.save_fn()
                 self.log.info("menu: config saved" if ok else "menu: save failed")
             else:
@@ -245,11 +251,16 @@ class MenuOverlay(Overlay):
             return
         if not self.items:
             return
-        delta = -1 if shift else 1
-        if code == KEY.CRSR_DOWN:
-            self.sel = (self.sel + delta) % len(self.items)
-        elif code == KEY.CRSR_RIGHT:
-            self.items[self.sel].change(delta)
+        n = len(self.items)
+        if code == KEYBUF.CRSR_DOWN:
+            self.sel = (self.sel + 1) % n
+        elif code == KEYBUF.CRSR_UP:
+            self.sel = (self.sel - 1) % n
+        elif code == KEYBUF.CRSR_RIGHT:
+            self.items[self.sel].change(1)
+            self.dirty = True
+        elif code == KEYBUF.CRSR_LEFT:
+            self.items[self.sel].change(-1)
             self.dirty = True
 
     def on_toggle(self) -> bool:
@@ -323,6 +334,12 @@ class MenuOverlay(Overlay):
         screen = bytes(ascii_to_screen(text))
         color = bytes([fg & 0x0F] * len(text))
         base = cell_row * SCREEN.W_CHARS + _PANEL_COL
+        # Force-repaint: the scene re-renders these same cells every frame, so
+        # the panel's own per-region cache must be dropped or write_region
+        # would treat the (static) panel as unchanged and skip it — leaving the
+        # scene's content showing through. See backend.invalidate_region.
+        api.invalidate_region(RegionID.MENU_ROW_SCREEN + idx)
+        api.invalidate_region(RegionID.MENU_ROW_COLOR + idx)
         api.write_region(SCREEN.RAM + base, screen, region_id=RegionID.MENU_ROW_SCREEN + idx)
         api.write_region(SCREEN.COLOR_RAM + base, color, region_id=RegionID.MENU_ROW_COLOR + idx)
 
@@ -330,6 +347,10 @@ class MenuOverlay(Overlay):
         self, api: C64Backend, cell_row: int, idx: int, text: str, fg: int
     ) -> None:
         assert self._glyphs is not None
+        # Force-repaint over the scene's per-frame bitmap redraw (see
+        # _paint_char_row).
+        api.invalidate_region(RegionID.MENU_ROW_BITMAP + idx)
+        api.invalidate_region(RegionID.MENU_ROW_SCREEN + idx)
         bitmap_text.paint_text_row(
             api,
             self._glyphs,

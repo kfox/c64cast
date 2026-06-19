@@ -22,12 +22,26 @@ Chord rule: SHIFT is dropped on any tick where C= or CTRL is also held,
 so a user reaching for pause/skip with a thumb on shift doesn't get a
 phantom cycle. C= + CTRL still prefers pause over skip.
 
-When the on-C64 menu is wired (`menu_event`/`menu_active`/`nav_queue` passed
-to `start`), we additionally read the current-key matrix code at $00CB:
-  * SPACE pressed              → menu_event (toggle the menu open/closed)
+When the on-C64 menu is wired (`menu_event`/`menu_active`/`menu_eligible`/
+`nav_queue` passed to `start`), we additionally drain the kernal keyboard
+buffer — NDX ($00C6) + KEYD ($0277), the same buffer the U64's CMD_KEYB
+opcode injects into — so SPACE/cursor/RETURN keys can drive the menu:
+  * SPACE pressed              → menu_event (toggle the menu open/closed),
+    debounced by `_SPACE_COOLDOWN_S` so a held/repeating SPACE is one toggle.
   * while `menu_active` is set  → the entire pause/skip/cycle branch is
-    suspended (so SHIFT becomes a navigation modifier, not a cycle trigger);
-    every non-SPACE key edge is pushed onto `nav_queue` as `(code, shift)`.
+    suspended; cursor + RETURN codes are pushed onto `nav_queue`. The kernal
+    has already folded SHIFT into the cursor codes (CRSR-up/left = $91/$9D),
+    so direction rides on the code itself — no modifier read for "reverse".
+  * `menu_eligible` gates buffer access: draining writes $00C6=0 to consume
+    keystrokes, which must NOT happen on a scene that watches $00C6 itself
+    (a kernal-input launcher) or can't host the panel. The poller only
+    touches the buffer when the menu is open or the current scene is eligible.
+
+Reading keystrokes from the buffer (rather than the matrix byte $00CB) is
+what makes the menu drivable over the bus-clean DMA socket: CMD_KEYB writes
+KEYD/NDX directly, the value persists until we consume it (no 60 Hz kernal
+scan overwriting it), so an automated test can inject keys over DMA with zero
+REST traffic. See docs + the menu_hw_key_injection note.
 """
 
 from __future__ import annotations
@@ -39,13 +53,25 @@ from collections import deque
 
 from ._pollthread import PollThread
 from .backend import C64Backend
-from .c64 import KEY, SCREEN
+from .c64 import KEYBUF, SCREEN
 
 ADDR_MODIFIERS = SCREEN.MODIFIERS
-ADDR_CUR_KEY = SCREEN.CUR_KEY
+ADDR_KB_BUFFER_LEN = SCREEN.KB_BUFFER_LEN
+ADDR_KB_BUFFER = SCREEN.KB_BUFFER
+_KB_BUFFER_LEN_HEX = f"{SCREEN.KB_BUFFER_LEN:04X}"
+_KB_BUFFER_MAX = 10  # KEYD is 10 bytes; clamp a bogus NDX read
 BIT_SHIFT = 0x01
 BIT_COMMODORE = 0x02
 BIT_CONTROL = 0x04
+
+# Decoded cursor + RETURN codes that drive menu navigation (SPACE is handled
+# separately as the open/close toggle, never enqueued).
+_NAV_CODES = frozenset(
+    {KEYBUF.CRSR_DOWN, KEYBUF.CRSR_UP, KEYBUF.CRSR_RIGHT, KEYBUF.CRSR_LEFT, KEYBUF.RETURN}
+)
+# Debounce window for SPACE→toggle, so a held SPACE (the kernal repeats it)
+# doesn't flutter the menu open/closed. A deliberate tap is well clear of this.
+_SPACE_COOLDOWN_S = 0.4
 
 
 class CommodoreKeyPoller:
@@ -72,7 +98,8 @@ class CommodoreKeyPoller:
         self._cycle_event: threading.Event | None = None
         self._menu_event: threading.Event | None = None
         self._menu_active: threading.Event | None = None
-        self._nav_queue: deque[tuple[int, bool]] | None = None
+        self._menu_eligible: threading.Event | None = None
+        self._nav_queue: deque[int] | None = None
 
     def start(
         self,
@@ -82,7 +109,8 @@ class CommodoreKeyPoller:
         cycle_event: threading.Event | None = None,
         menu_event: threading.Event | None = None,
         menu_active: threading.Event | None = None,
-        nav_queue: deque[tuple[int, bool]] | None = None,
+        menu_eligible: threading.Event | None = None,
+        nav_queue: deque[int] | None = None,
     ):
         """Begin polling.
 
@@ -98,19 +126,25 @@ class CommodoreKeyPoller:
                       If None, SHIFT is silently dropped.
         menu_event    (optional) toggled when SPACE is pressed — opens the
                       on-C64 menu when running, closes it when open. If None,
-                      $00CB is never read and SPACE/nav are ignored entirely
-                      (keeps the read load to $028D-only).
+                      the keyboard buffer is never read and SPACE/nav are
+                      ignored entirely (keeps the read load to $028D-only).
         menu_active   (optional) set by the Playlist while the menu overlay is
                       open. While set, the whole pause/skip/cycle branch is
-                      suspended and non-SPACE key edges are enqueued for nav.
-        nav_queue     (optional) bounded deque the poller appends `(matrix
-                      code, shift_held)` tuples to while `menu_active`."""
+                      suspended and cursor/RETURN codes are enqueued for nav.
+        menu_eligible (optional) set by the Playlist when the current scene can
+                      host the menu. Gates buffer access: the poller only
+                      drains/clears NDX ($00C6) when the menu is open or this
+                      is set, so a kernal-input launcher's own $00C6 watch is
+                      never disturbed.
+        nav_queue     (optional) bounded deque the poller appends decoded
+                      PETSCII cursor/RETURN codes to while `menu_active`."""
         self._pause_event = pause_event
         self._resume_event = resume_event
         self._skip_event = skip_event
         self._cycle_event = cycle_event
         self._menu_event = menu_event
         self._menu_active = menu_active
+        self._menu_eligible = menu_eligible
         self._nav_queue = nav_queue
         self._poll.start()
 
@@ -128,13 +162,28 @@ class CommodoreKeyPoller:
             return None
         return data[0]
 
-    def _read_key(self) -> int | None:
-        """Read $00CB (matrix code of the key currently down, 64 = none).
-        None on read failure, distinguished from KEY.NONE."""
-        data = self.api.read_memory(ADDR_CUR_KEY, 1)
-        if data is None or len(data) < 1:
-            return None
-        return data[0]
+    def _drain_kbbuf(self) -> list[int]:
+        """Read and consume the kernal keyboard buffer.
+
+        Reads NDX ($00C6); if non-zero, reads that many decoded PETSCII codes
+        from KEYD ($0277…) and zeroes NDX to consume them — the BASIC clear
+        loop never GETINs them itself, so without the clear we'd re-process
+        the same codes every tick. Returns the codes in arrival order; an
+        empty list on no keys OR any read failure (the None-on-failure guard
+        means a dropped read never fabricates input). On a buffer read failure
+        NDX is left intact so the keystrokes survive to the next tick."""
+        ndx = self.api.read_memory(ADDR_KB_BUFFER_LEN, 1)
+        if ndx is None or len(ndx) < 1:
+            return []
+        count = ndx[0]
+        if count == 0:
+            return []
+        count = min(count, _KB_BUFFER_MAX)
+        data = self.api.read_memory(ADDR_KB_BUFFER, count)
+        if data is None or len(data) < count:
+            return []
+        self.api.write_memory(_KB_BUFFER_LEN_HEX, "00")
+        return list(data[:count])
 
     def _loop(self, stop: threading.Event):
         assert self._pause_event is not None
@@ -143,7 +192,7 @@ class CommodoreKeyPoller:
         last_cbm_seen = False  # edge detect for pause trigger
         last_ctrl_seen = False  # edge detect for skip trigger
         last_shift_seen = False  # edge detect for cycle trigger
-        last_key = KEY.NONE  # edge detect for SPACE/nav (only when menu wired)
+        last_space_toggle = 0.0  # monotonic time of the last SPACE menu toggle
 
         while not stop.wait(self.poll_interval_s):
             mod = self._read_modifiers()
@@ -154,25 +203,29 @@ class CommodoreKeyPoller:
             ctrl = bool(mod & BIT_CONTROL)
             shift = bool(mod & BIT_SHIFT)
 
-            # Current-key edge detection — only when the menu is wired, so the
-            # read load stays $028D-only for non-menu runs (and the existing
-            # FakeApi in tests, which only serves $028D, keeps working).
-            key_edge: int | None = None
-            if self._menu_event is not None:
-                key = self._read_key()
-                if key is not None:
-                    if key != KEY.NONE and key != last_key:
-                        key_edge = key
-                    last_key = key
+            # Drain decoded keystrokes from the kernal buffer — only when the
+            # menu is wired AND it's open or the current scene is eligible, so
+            # the read stays $028D-only for non-menu runs and the buffer's
+            # $00C6 is never zeroed under a kernal-input launcher scene.
+            menu_open = self._menu_active is not None and self._menu_active.is_set()
+            eligible = self._menu_eligible is not None and self._menu_eligible.is_set()
+            keys: list[int] = []
+            if self._menu_event is not None and (menu_open or eligible):
+                keys = self._drain_kbbuf()
 
-            if self._menu_active is not None and self._menu_active.is_set():
+            if menu_open:
                 # MENU OPEN: suspend pause/skip/cycle entirely. SPACE toggles
-                # the menu closed; every other key edge is a nav event carrying
-                # the live SHIFT state (SHIFT = "reverse" modifier).
-                if key_edge == KEY.SPACE and self._menu_event is not None:
-                    self._menu_event.set()
-                elif key_edge is not None and self._nav_queue is not None:
-                    self._nav_queue.append((key_edge, shift))
+                # the menu closed (debounced); cursor/RETURN codes are nav
+                # events. The kernal already folded SHIFT into the cursor codes
+                # (CRSR-up/left = $91/$9D), so direction rides on the code.
+                now = time.monotonic()
+                for code in keys:
+                    if code == KEYBUF.SPACE and self._menu_event is not None:
+                        if now - last_space_toggle >= _SPACE_COOLDOWN_S:
+                            self._menu_event.set()
+                            last_space_toggle = now
+                    elif code in _NAV_CODES and self._nav_queue is not None:
+                        self._nav_queue.append(code)
                 # Keep the modifier edge baselines current so a SHIFT/C=/CTRL
                 # held across the menu session can't fire a phantom event the
                 # tick the menu closes.
@@ -183,15 +236,19 @@ class CommodoreKeyPoller:
                 continue
 
             if (
-                key_edge == KEY.SPACE
+                keys
+                and KEYBUF.SPACE in keys
                 and self._menu_event is not None
                 and not self._pause_event.is_set()
             ):
                 # SPACE while running opens the menu. (While paused the scene is
                 # torn down to the BASIC screen, so a menu would be meaningless;
                 # the run loop is blocked in _handle_pause and wouldn't see it.)
-                self.log.info("SPACE press detected — opening menu")
-                self._menu_event.set()
+                now = time.monotonic()
+                if now - last_space_toggle >= _SPACE_COOLDOWN_S:
+                    self.log.info("SPACE press detected — opening menu")
+                    self._menu_event.set()
+                    last_space_toggle = now
 
             if self._pause_event.is_set():
                 # PAUSED: only the C= hold-to-resume gesture matters.

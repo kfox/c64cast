@@ -9,7 +9,7 @@ from typing import cast
 from _fakes import FakeAPI
 
 from c64cast.backend import C64Backend
-from c64cast.c64 import KEY, SCREEN
+from c64cast.c64 import KEYBUF, SCREEN
 from c64cast.config import SceneCfg
 from c64cast.overlays.menu import MenuItem, MenuOverlay, build_menu_items, can_show_menu
 from c64cast.scenes import Scene
@@ -169,15 +169,17 @@ class NavTest(unittest.TestCase):
         cfg = SceneCfg(type="generative", display="mhires", source="plasma")
         return FakeScene(cfg, BitmapMode())
 
-    def test_crsr_down_moves_selection_with_shift_reverse(self):
+    def test_crsr_down_up_moves_selection(self):
+        # Direction rides on the decoded code: CRSR-down = next, CRSR-up
+        # (kernal's SHIFT+CRSR-down decode) = previous, both wrap.
         ov = _overlay(self._scene())
         n = len(ov.items)
         self.assertGreater(n, 1)
-        ov.on_key(KEY.CRSR_DOWN, False)
+        ov.on_key(KEYBUF.CRSR_DOWN)
         self.assertEqual(ov.sel, 1)
-        ov.on_key(KEY.CRSR_DOWN, True)  # reverse
+        ov.on_key(KEYBUF.CRSR_UP)  # reverse
         self.assertEqual(ov.sel, 0)
-        ov.on_key(KEY.CRSR_DOWN, True)  # wrap to last
+        ov.on_key(KEYBUF.CRSR_UP)  # wrap to last
         self.assertEqual(ov.sel, n - 1)
 
     def test_crsr_right_changes_value_and_marks_dirty(self):
@@ -185,9 +187,21 @@ class NavTest(unittest.TestCase):
         ov = _overlay(scene)
         ov.sel = next(i for i, it in enumerate(ov.items) if it.label == "PALETTE")
         self.assertFalse(ov.dirty)
-        ov.on_key(KEY.CRSR_RIGHT, False)
+        ov.on_key(KEYBUF.CRSR_RIGHT)
         self.assertTrue(ov.dirty)
         self.assertNotEqual(scene.display_mode.palette_mode, "percell")
+
+    def test_crsr_left_reverses_value_change(self):
+        # CRSR-left (kernal's SHIFT+CRSR-right decode) steps the value the
+        # opposite way from CRSR-right.
+        scene = self._scene()
+        ov = _overlay(scene)
+        ov.sel = next(i for i, it in enumerate(ov.items) if it.label == "PALETTE")
+        ov.on_key(KEYBUF.CRSR_RIGHT)
+        forward = scene.display_mode.palette_mode
+        ov.on_key(KEYBUF.CRSR_LEFT)
+        self.assertEqual(scene.display_mode.palette_mode, "percell")
+        self.assertNotEqual(forward, "percell")
 
 
 class CloseAndSaveTest(unittest.TestCase):
@@ -210,7 +224,7 @@ class CloseAndSaveTest(unittest.TestCase):
         self.assertFalse(closed)
         self.assertEqual(ov.state, "confirm")
         self.assertFalse(ov.closed)
-        ov.on_key(KEY.RETURN, False)  # YES
+        ov.on_key(KEYBUF.RETURN)  # YES
         self.assertEqual(calls, [1])
         self.assertTrue(ov.closed)
 
@@ -220,7 +234,7 @@ class CloseAndSaveTest(unittest.TestCase):
         ov.dirty = True
         ov.on_toggle()
         self.assertEqual(ov.state, "confirm")
-        ov.on_key(KEY.CRSR_DOWN, False)  # anything but RETURN = discard
+        ov.on_key(KEYBUF.CRSR_DOWN)  # anything but RETURN = discard
         self.assertEqual(calls, [])
         self.assertTrue(ov.closed)
 
@@ -289,6 +303,53 @@ class RenderTest(unittest.TestCase):
         )
         ov.process_frame(cast(C64Backend, api), cast(Scene, scene), 0.0)
         self.assertEqual(api.regions, {}, "staged bitmap scene draws no panel (preview only)")
+
+    def test_panel_repaints_every_frame_over_dynamic_scene(self):
+        # Regression: a scene that re-renders the panel's addresses every frame
+        # (e.g. generative plasma) would clobber the panel, and the panel's own
+        # per-region cache would then treat its unchanged content as a no-op
+        # and skip the repaint — leaving the menu invisible after frame 1. The
+        # overlay must invalidate its regions so write_region re-pushes each
+        # frame. This fake models BufferedWriteBackend's per-region skip.
+        class SkipCacheAPI(FakeAPI):
+            def __init__(self):
+                super().__init__()
+                self._region_cache: dict[int, bytes] = {}
+                self.region_pushes: dict[int, int] = {}
+
+            def write_region(self, addr, data, region_id=None, full_threshold=0.6):
+                key = region_id if region_id is not None else addr
+                b = bytes(data)
+                if self._region_cache.get(key) == b:
+                    return 0  # unchanged → skip, like the real cache
+                self._region_cache[key] = b
+                self.region_pushes[key] = self.region_pushes.get(key, 0) + 1
+                return len(b)
+
+            def invalidate_region(self, region_id):
+                super().invalidate_region(region_id)
+                self._region_cache.pop(region_id, None)
+
+        api = SkipCacheAPI()
+        scene = FakeScene(
+            SceneCfg(type="generative", display="mhires", source="plasma"), BitmapMode()
+        )
+        ov = MenuOverlay(
+            cast(Scene, scene),
+            cast(C64Backend, api),
+            can_save=False,
+            prompt_to_save=False,
+            save_fn=lambda: True,
+        )
+        ov.process_frame(cast(C64Backend, api), cast(Scene, scene), 0.0)
+        self.assertTrue(api.region_pushes, "panel pushed something on frame 1")
+        regions_frame1 = set(api.region_pushes)
+        # Frame 2 with identical panel content: every region must push AGAIN.
+        ov.process_frame(cast(C64Backend, api), cast(Scene, scene), 0.1)
+        for region in regions_frame1:
+            self.assertGreaterEqual(
+                api.region_pushes[region], 2, f"region {region} not repainted on frame 2"
+            )
 
 
 if __name__ == "__main__":

@@ -108,11 +108,21 @@ class Playlist:
         # menu is gated on [menu].enabled + a read-capable backend in cli.py.
         self.menu_event = threading.Event()
         self.menu_active = threading.Event()
-        self.nav_queue: deque[tuple[int, bool]] = deque(maxlen=8)
+        # Set while the current scene can host the menu; gates the poller's
+        # access to the kernal keyboard buffer (it writes $00C6=0 to consume
+        # keys, which must not disturb a kernal-input launcher's own watch).
+        self.menu_eligible = threading.Event()
+        self.nav_queue: deque[int] = deque(maxlen=8)
         self.menu_cfg = menu_cfg
         self.config = config
         self.config_path = config_path
         self._menu_overlay: Any = None
+        # While the menu is open the background is frozen (not re-rendered every
+        # frame) so the post-render panel can't flicker against a per-frame
+        # scene redraw. This flag requests a one-shot re-render on open / nav /
+        # value-change so the live preview still updates. See _service_menu +
+        # the freeze gate in run().
+        self._menu_repaint = False
 
         self.index = 0
         self.current: Scene | None = None
@@ -489,6 +499,19 @@ class Playlist:
         self._last_stats = s
         self._last_heartbeat = now
 
+    def _idle_pace(self, scene: Scene, next_deadline: float) -> float:
+        """Pace one frame WITHOUT rendering — holds the current (frozen) frame
+        while the menu is open and idle. Single-buffer VIC RAM retains the last
+        scene+panel, so skipping the re-render keeps the panel rock-steady;
+        events (nav keys, close, pause/skip) are still serviced each loop. The
+        deadline advances by one frame_time so cadence resumes cleanly when the
+        menu closes or an interaction forces a re-render."""
+        frame_time = self._frame_time_for(scene)
+        now = time.time()
+        if now < next_deadline:
+            self.stop_event.wait(timeout=next_deadline - now)
+        return max(next_deadline + frame_time, time.time())
+
     def _run_one_frame(self, scene: Scene, next_deadline: float) -> float:
         """Render one frame of `scene`. Returns the new next_deadline.
 
@@ -692,9 +715,10 @@ class Playlist:
                     self.resume_event,
                     skip_event=self.skip_event,
                     cycle_event=self.cycle_event,
-                    # Only wire the menu (and the extra $00CB read) when enabled.
+                    # Only wire the menu (and the extra buffer read) when enabled.
                     menu_event=self.menu_event if menu_enabled else None,
                     menu_active=self.menu_active if menu_enabled else None,
+                    menu_eligible=self.menu_eligible if menu_enabled else None,
                     nav_queue=self.nav_queue if menu_enabled else None,
                 )
         # Deadline-based pacing: after each frame we advance the deadline by
@@ -730,6 +754,15 @@ class Playlist:
                     break
 
                 self._service_menu()
+                # Freeze the background while the menu is open and idle: holding
+                # the last frame stops the post-render panel from flickering
+                # against a scene that redraws the whole frame every tick. A
+                # menu interaction (open / nav / value change) sets
+                # _menu_repaint, so the live preview still re-renders on demand.
+                if self.menu_active.is_set() and not self._menu_repaint:
+                    next_deadline = self._idle_pace(self.current, next_deadline)
+                    continue
+                self._menu_repaint = False
                 next_deadline = self._run_one_frame(self.current, next_deadline)
         except KeyboardInterrupt:
             self.log.info("interrupted")
@@ -746,7 +779,19 @@ class Playlist:
         renders, so a value change previews on the same frame."""
         scene = self.current
         if scene is None:
+            self.menu_eligible.clear()
             return
+        if self.menu_cfg is None or not getattr(self.menu_cfg, "enabled", False):
+            return
+        from .overlays.menu import can_show_menu
+
+        # Publish eligibility to the poller every frame: only an eligible scene
+        # lets it drain/clear the keyboard buffer (so SPACE-to-open is inert,
+        # and $00C6 untouched, on launcher/waveform/midi scenes).
+        if can_show_menu(scene):
+            self.menu_eligible.set()
+        else:
+            self.menu_eligible.clear()
         # Defensive: if the scene changed out from under an open menu (reload,
         # broadcast), drop the menu state cleanly.
         if self._menu_overlay is not None and self._menu_overlay not in getattr(
@@ -760,15 +805,18 @@ class Playlist:
                 self._open_menu()
             elif self._menu_overlay.on_toggle():
                 self._close_menu()
+            self._menu_repaint = True  # open / close / confirm changed the view
         if self._menu_overlay is not None:
             while self.nav_queue:
                 try:
-                    code, shift = self.nav_queue.popleft()
+                    code = self.nav_queue.popleft()
                 except IndexError:
                     break
-                self._menu_overlay.on_key(code, shift)
+                self._menu_overlay.on_key(code)
+                self._menu_repaint = True  # nav / value change → preview update
             if self._menu_overlay.closed:
                 self._close_menu()
+                self._menu_repaint = True
 
     def _menu_can_save(self) -> bool:
         """Save-back is available only when we know the source TOML path and

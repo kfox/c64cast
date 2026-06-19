@@ -222,6 +222,9 @@ class C64Backend(ABC):
     def invalidate_cache(self) -> None: ...
 
     @abstractmethod
+    def invalidate_region(self, region_id: int) -> None: ...
+
+    @abstractmethod
     def add_write_listener(self, callback: WriteListener) -> None: ...
 
     @abstractmethod
@@ -506,6 +509,15 @@ class BufferedWriteBackend(C64Backend):
         """Drop the dirty-region cache. Call after anything that changes VIC
         memory layout (mode switches, bank changes, machine reset)."""
         self._cache.clear()
+
+    def invalidate_region(self, region_id: int) -> None:
+        """Drop one region's cache entry so its next `write_region` re-pushes
+        in full. A post-render overlay (e.g. the on-C64 menu) that paints over
+        a scene which rewrites the same addresses every frame needs this: the
+        scene clobbers the overlay's cells, but the overlay's own per-region
+        cache would otherwise see its content unchanged and skip the repaint —
+        leaving the panel painted once and then overwritten."""
+        self._cache.pop(region_id, None)
 
     @property
     def stats(self) -> dict[str, int]:
