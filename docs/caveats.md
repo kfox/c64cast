@@ -303,6 +303,32 @@ at the full video rate so the scope still tracks every PLAY tick. An
 explicit `target_fps` in the CLI/TOML still overrides the default — but
 raising a bank-2 tune back toward 60 fps risks the power-off above.
 
+## Bitmap video/webcam scenes default lower when digitized audio streams
+
+The same DMA-ceiling reasoning applies to the frame-pushing scenes that can
+drive the 4-bit `$D418` digitized-audio DAC — `video`, live `webcam`, and a
+`generative` scene with `audio_source = "mic"`. A bitmap display (hires /
+hires_edges / mhires) re-uploads a full ~9-10 KB frame every frame, and each
+DMA write halts the C64 bus for the duration of the transfer. When the
+digitized-audio DAC is *also* streaming (the audio worker writing the ring +
+the NMI consuming it), the two write streams compete for the bus and the
+picture tears at the full system rate.
+
+Defaults (all overridable with an explicit `target_fps`):
+
+* **Bitmap + digitized audio → 20 fps** (both NTSC and PAL). The aggressive
+  cap that keeps the combined DMA load under the bus-halt ceiling.
+* **Bitmap, no digitized audio → half rate (30 NTSC / 25 PAL).** A muted
+  bitmap video / no-mic bitmap webcam still pushes full frames, so it gets the
+  same half-rate treatment as `WaveformScene`.
+* **Char modes (petscii / blank) → unchanged.** A 1 KB screen that the
+  per-region delta cache mostly skips is cheap, so these keep the playlist
+  system default (60 NTSC / 50 PAL).
+
+These caps (`config._frame_push_default_fps`) are worth revisiting once the
+firmware no longer halts the CPU on DMA writes — see the U64 zero-halt DMA
+path notes.
+
 ## `LauncherScene` runs a real program and only watches for input
 
 The `launcher` scene resets the U64, uploads a `.prg` (firmware

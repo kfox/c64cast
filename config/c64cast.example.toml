@@ -485,9 +485,11 @@ profile_interval = 10.0             # seconds between profiler summary lines
 #                 scenes (they run until the video file ends).
 #   name        — display name (used by the interstitial). Optional.
 #   target_fps  — per-scene FPS cap. Default: system rate
-#                 (60 NTSC / 50 PAL) for all scenes, except waveform
-#                 which defaults to half rate (30 NTSC / 25 PAL) to stay
-#                 under the DMA ceiling (see docs/caveats.md).
+#                 (60 NTSC / 50 PAL). Bitmap (hires/mhires) video, webcam,
+#                 and generative scenes default lower to stay under the DMA
+#                 bus-halt ceiling: 20 fps while streaming digitized audio,
+#                 else half rate (30 NTSC / 25 PAL). Waveform/midi also
+#                 default to half rate (see docs/caveats.md).
 #   audio       — opt out of audio for this scene. Default: when
 #                 [audio].enabled is on (or -A is passed), every webcam,
 #                 blank, and video scene plays its audio. Set
