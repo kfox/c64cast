@@ -52,6 +52,12 @@ from .petscii_styles import (
     pick_random_style_name,
     validate_style,
 )
+from .text_surface import (
+    CharTextSurface,
+    HiresTextSurface,
+    MHiresTextSurface,
+    TextSurface,
+)
 
 
 class ComposeBuffers(TypedDict):
@@ -59,10 +65,16 @@ class ComposeBuffers(TypedDict):
     produces and ``push()`` (plus overlay ``compose()``) consume. Each is a
     length-1000 uint8 numpy array, one byte per 40×25 cell. Named so the
     'screen'/'color' string keys stop being repeated as bare literals across
-    the display modes and every PAINTS_INTO_BUFFERS overlay."""
+    the display modes and every PAINTS_INTO_BUFFERS overlay.
+
+    ``text`` is the backend-neutral surface buffer-painting overlays write text
+    into (see text_surface.TextSurface). Char modes wrap their screen/color
+    arrays in a CharTextSurface; bitmap modes provide a glyph-folding surface.
+    Every mode that hosts text overlays populates it."""
 
     screen: np.ndarray
     color: np.ndarray
+    text: TextSurface
 
 
 class MCMComposeBuffers(ComposeBuffers):
@@ -74,6 +86,28 @@ class MCMComposeBuffers(ComposeBuffers):
     screen+color."""
 
     bg: np.ndarray
+
+
+class BitmapComposeBuffers(TypedDict):
+    """The buffers a bitmap display's ``compose()`` produces and ``push()``
+    consumes. ``bitmap`` is the 8000-byte VIC bitmap, ``screen`` the 1000-byte
+    screen matrix (per-cell color nibbles), ``bg`` the global bg0/border
+    palette index, ``text`` the glyph-folding surface overlays paint into.
+    Overlay text is folded into ``bitmap``/``screen`` before push (so it rides
+    the same host-DMA or REU bank-swap path as the frame)."""
+
+    bitmap: np.ndarray
+    screen: np.ndarray
+    bg: int
+    text: TextSurface
+
+
+class MHiresComposeBuffers(BitmapComposeBuffers):
+    """MultiHires adds ``color``: the 1000-byte color RAM (per-cell c3). The
+    text surface reserves c1/c2 (screen nibbles) for an opaque text box, so it
+    leaves color RAM to the frame."""
+
+    color: np.ndarray
 
 
 # grayscale palette_mode uses fixed slot assignments (no per-frame picking)
@@ -1245,6 +1279,11 @@ class DisplayMode:
     # instead of matching `name == "petscii"`, so multiple compatible modes
     # (petscii, blank) can host the same overlays.
     is_petscii_compatible = False
+    # True for bitmap modes (hires, mhires) that can render the PETSCII text
+    # overlays (clock/marquee/…) by folding glyphs into the bitmap. Overlays
+    # that paint text accept either is_petscii_compatible (char) OR this
+    # (bitmap) — see overlays.validate_for_scene + text_surface.py.
+    is_bitmap_text_compatible = False
     # Frame-rate ceiling the Playlist falls back to when the scene itself
     # doesn't override target_fps. None = "use the playlist default (60
     # NTSC / 50 PAL)". Bitmap modes can't sustain that over HTTP so they
@@ -1366,9 +1405,20 @@ class BitmapDisplayMode(DisplayMode):
     Inherits default_target_fps = None so bitmap scenes follow the playlist's
     system rate (60 fps NTSC / 50 fps PAL). The old cap of 30 fps was
     conservative sizing for the HTTP transport; socket DMA handles full-frame
-    bitmap uploads at 60 fps comfortably within the ~200 writes/sec ceiling."""
+    bitmap uploads at 60 fps comfortably within the ~200 writes/sec ceiling.
+
+    Bitmap modes implement compose()/push() (supports_compose = True) so text
+    overlays can fold glyphs into the bitmap before push — including down the
+    REU bank-swap path, which a post-hoc direct writer can't reach. compose()
+    returns BitmapComposeBuffers ({bitmap, screen, bg, text}); MultiHires adds
+    color. The text surface (text_surface.py) folds glyphs into the in-memory
+    bitmap/screen(/color) arrays, so push() uploads one combined frame."""
 
     is_bitmapped = True
+    supports_compose = True
+    # Bitmap modes can host the text overlays (clock/marquee/…) that paint
+    # PETSCII screen codes — see text_surface.HiresTextSurface / MHiresTextSurface.
+    is_bitmap_text_compatible = True
 
     @staticmethod
     def _blank_bitmap(api: C64Backend) -> None:
@@ -1460,7 +1510,7 @@ class PETSCIIDisplayMode(CharDisplayMode):
         if self._color_fit is not None:
             img = apply_color_fit(img, self._color_fit)
         screen, color = self._style.compose(img, self._channel_boost, self._hue_corrections)
-        return {"screen": screen, "color": color}
+        return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 
     def push(self, api: C64Backend, buffers: ComposeBuffers) -> None:
         screen_bytes = buffers["screen"].tobytes()
@@ -1508,7 +1558,7 @@ class BlankDisplayMode(CharDisplayMode):
         # Color RAM is the FG color of every cell. Default to background
         # so SC_SPACE renders invisibly until an overlay paints over it.
         color = np.full(1000, self.background, dtype=np.uint8)
-        return {"screen": screen, "color": color}
+        return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 
     def push(self, api: C64Backend, buffers: ComposeBuffers) -> None:
         screen_bytes = buffers["screen"].tobytes()
@@ -1683,7 +1733,9 @@ class MCMDisplayMode(CharDisplayMode):
         screen = ((fa[:, 0] << 6) | (fa[:, 1] << 4) | (fa[:, 2] << 2) | fa[:, 3]).astype(np.uint8)
         color = (best_fg + 8).astype(np.uint8)  # high bit = multicolor
 
-        return {"screen": screen, "color": color, "bg": bg}
+        # text surface present for the buffers contract; MCM rejects PETSCII
+        # text overlays (color-RAM bit 3 = multicolor), so nothing paints it.
+        return {"screen": screen, "color": color, "bg": bg, "text": CharTextSurface(screen, color)}
 
     def push(self, api: C64Backend, buffers: MCMComposeBuffers) -> None:
         bg = buffers["bg"]
@@ -1808,7 +1860,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         api.invalidate_cache()
         return f"style={new_style}"
 
-    def render(self, api, frame):
+    def compose(self, frame) -> BitmapComposeBuffers:
         img = cv2.resize(frame, (320, 200), interpolation=cv2.INTER_AREA)
 
         if self.style == "normal":
@@ -1831,10 +1883,6 @@ class HiresDisplayMode(BitmapDisplayMode):
             else:
                 bg, fg_const = 0, 1
 
-        if bg != self._last_bg:
-            api.write_regs("d020", bg, bg)
-            self._last_bg = bg
-
         # Bit-pack into VIC bitmap layout: 25 rows × 40 cells × 8 bytes.
         packed = np.packbits(is_fg.astype(np.uint8), axis=1)  # (200, 40)
         bitmap_ram = packed.reshape(25, 8, 40).transpose(0, 2, 1).reshape(-1)
@@ -1846,15 +1894,31 @@ class HiresDisplayMode(BitmapDisplayMode):
             sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
             screen_ram = ((sample_fg << 4) | bg).astype(np.uint8).ravel()
 
+        return {
+            "bitmap": bitmap_ram,
+            "screen": screen_ram,
+            "bg": bg,
+            "text": HiresTextSurface(bitmap_ram, screen_ram),
+        }
+
+    def push(self, api: C64Backend, buffers: BitmapComposeBuffers) -> None:
+        bg = buffers["bg"]
+        # $D020 (border) is a single global register — write it from the host
+        # on both paths (the REU bank-swap IRQ only manages the banked bitmap +
+        # screen, not the border).
+        if bg != self._last_bg:
+            api.write_regs("d020", bg, bg)
+            self._last_bg = bg
+        bitmap_bytes = buffers["bitmap"].tobytes()
+        screen_bytes = buffers["screen"].tobytes()
         if self.use_reu_staged:
-            # Render into the off-screen bank, then cue a vblank swap.
+            # Drop into the off-screen bank, then cue a vblank swap.
             target_bank = 1 - self._displayed_bank
-            _push_bitmap_via_reu(api, bitmap_ram.tobytes(), screen_ram.tobytes(), target_bank)
+            _push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, target_bank)
             self._displayed_bank = target_bank
             return
-
-        api.write_region(0x2000, bitmap_ram.tobytes(), region_id=RegionID.BITMAP)
-        api.write_region(0x0400, screen_ram.tobytes(), region_id=RegionID.SCREEN)
+        api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)
+        api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
 
 
 class MultiHiresDisplayMode(BitmapDisplayMode):
@@ -1925,8 +1989,14 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         hue_corrections_replace: bool = False,
         channel_boost: list[float] | None = None,
         force_palette: bool = False,
+        text_double_height: bool = False,
     ):
         _validate_palette_mode(palette_mode)
+        # Text overlays render double-wide ("chunky") by default — an 8×8 glyph
+        # spans 2 of the mode's 4px cells (20-col text grid). text_double_height
+        # also stretches it to 16 px tall (12-row grid) for across-the-room
+        # legibility. See text_surface.MHiresTextSurface.
+        self.text_double_height = bool(text_double_height)
         # Forced-palette preset pairs with percell (see cycle_style); when config
         # opts in, start there regardless of the configured palette_mode.
         self._force_palette = bool(force_palette)
@@ -2071,7 +2141,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             _uninstall_bank_swap_irq(api)
             api.invalidate_cache()
 
-    def render(self, api, frame):
+    def compose(self, frame) -> MHiresComposeBuffers:
         img = cv2.resize(frame, (160, 200), interpolation=cv2.INTER_AREA)
         if self._force_palette and self._color_map is not None:
             # Forced-palette remap: emit exact C64 colors and skip the faithful
@@ -2090,13 +2160,40 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             d += self._gray_penalty
 
         if self.palette_mode == "percell":
-            self._render_percell(api, d)
+            bitmap_ram, screen_ram, color_ram, bg0 = self._compose_percell(d)
         else:
-            self._render_global(api, d)
+            bitmap_ram, screen_ram, color_ram, bg0 = self._compose_global(d)
+        return {
+            "bitmap": bitmap_ram,
+            "screen": screen_ram,
+            "color": color_ram,
+            "bg": bg0,
+            "text": MHiresTextSurface(
+                bitmap_ram, screen_ram, color_ram, double_height=self.text_double_height
+            ),
+        }
 
-    def _render_global(self, api, d: np.ndarray) -> None:
+    def push(self, api: C64Backend, buffers: MHiresComposeBuffers) -> None:
+        bg0 = buffers["bg"]
+        bitmap_bytes = buffers["bitmap"].tobytes()
+        screen_bytes = buffers["screen"].tobytes()
+        color_bytes = buffers["color"].tobytes()
+        if self.use_reu_staged:
+            target_bank = 1 - self._displayed_bank
+            _push_mhires_via_reu(api, bitmap_bytes, screen_bytes, color_bytes, bg0, target_bank)
+            self._displayed_bank = target_bank
+            return
+        if bg0 != self._last_bg:
+            api.write_regs("d021", bg0)
+            self._last_bg = bg0
+        api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
+        api.write_region(0xD800, color_bytes, region_id=RegionID.COLOR)
+        api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)
+
+    def _compose_global(self, d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         """Legacy path: pick 4 global palette slots for the whole frame.
-        Used by cheap/vivid/grayscale modes."""
+        Used by cheap/vivid/grayscale modes. Returns
+        (bitmap_ram, screen_ram, color_ram, bg0)."""
         quantized = np.argmin(d, axis=1)
         if self._fixed_slots is not None:
             bg0, c1, c2, c3 = self._fixed_slots
@@ -2133,29 +2230,16 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         ).astype(np.uint8)
         bitmap_ram = packed.reshape(25, 8, 40).transpose(0, 2, 1).ravel()
 
-        screen_val = (c1 << 4) | c2
-        screen_bytes = bytes([screen_val] * 1000)
-        color_bytes = bytes([c3] * 1000)
-        bitmap_bytes = bitmap_ram.tobytes()
+        screen_ram = np.full(1000, (c1 << 4) | c2, dtype=np.uint8)
+        color_ram = np.full(1000, c3, dtype=np.uint8)
+        return bitmap_ram, screen_ram, color_ram, bg0
 
-        if self.use_reu_staged:
-            target_bank = 1 - self._displayed_bank
-            _push_mhires_via_reu(api, bitmap_bytes, screen_bytes, color_bytes, bg0, target_bank)
-            self._displayed_bank = target_bank
-            return
-
-        if bg0 != self._last_bg:
-            api.write_regs("d021", bg0)
-            self._last_bg = bg0
-        api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
-        api.write_region(0xD800, color_bytes, region_id=RegionID.COLOR)
-        api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)
-
-    def _render_percell(self, api, d: np.ndarray) -> None:
+    def _compose_percell(self, d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         """Per-cell path: pick bg0 globally, then for each 4×8 cell pick
         its own top-3 non-bg0 colors by population. Each pixel resolves
         against its cell's local {bg0, c1, c2, c3} set, so screen RAM and
         color RAM both carry per-cell content instead of one repeated byte.
+        Returns (bitmap_ram, screen_ram, color_ram, bg0).
 
         Both the global bg0 pick and the per-cell top-3 picks go through
         EMA-smoothed counts (PALETTE_PICK_EMA_ALPHA for bg0,
@@ -2261,20 +2345,4 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # Screen RAM nibbles = (c1, c2) per cell; color RAM = c3 per cell.
         screen_ram = ((top3[:, 0] << 4) | top3[:, 1]).astype(np.uint8)
         color_ram = top3[:, 2].astype(np.uint8)
-
-        screen_bytes = screen_ram.tobytes()
-        color_bytes = color_ram.tobytes()
-        bitmap_bytes = bitmap_ram.tobytes()
-
-        if self.use_reu_staged:
-            target_bank = 1 - self._displayed_bank
-            _push_mhires_via_reu(api, bitmap_bytes, screen_bytes, color_bytes, bg0, target_bank)
-            self._displayed_bank = target_bank
-            return
-
-        if bg0 != self._last_bg:
-            api.write_regs("d021", bg0)
-            self._last_bg = bg0
-        api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
-        api.write_region(0xD800, color_bytes, region_id=RegionID.COLOR)
-        api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)
+        return bitmap_ram, screen_ram, color_ram, bg0
