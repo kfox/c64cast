@@ -421,6 +421,43 @@ port = 8765
 HTTP endpoints: `POST /pause`, `POST /resume`, `POST /skip`,
 `POST /reload`. Same surface as the keyboard poller (C= and CTRL keys).
 
+### `[menu]`
+
+```toml
+[menu]
+enabled = false                     # SPACE on the C64 keyboard opens the menu
+prompt_to_save = true               # offer to write changes back to the config
+```
+
+The on-C64 menu: press **SPACE** on the real keyboard to open an on-screen
+panel of context-sensitive knobs for the running scene (display mode,
+palette mode, style, scope settings, …). Cursor keys navigate and RETURN
+selects; SPACE closes it. While the menu is open the C= / CTRL / SHIFT
+controls are suspended. Needs a read-capable backend (the U64 keyboard
+buffer is polled, like the modifier keys). On exit with unsaved changes,
+`prompt_to_save = true` offers to persist them back to the source config
+file; `false` applies to the running scene only (handy for demos). Text
+parameters are shown read-only — text entry is a deferred follow-up.
+
+### `[vision]`
+
+```toml
+[vision]
+enabled = false                     # webcam hand-gesture control (needs `vision` extra)
+model_path = "assets/models/hand_landmarker.task"
+```
+
+A second control surface alongside the keyboard: a webcam + MediaPipe
+HandLandmarker maps hand gestures to the same pause/resume/skip/cycle
+events. **Running:** pinch = pause, fast horizontal swipe = skip, open
+hand = cycle. **Paused:** hold a pinch for `hold_threshold_s` to resume.
+Because it watches the camera (not C64 memory) it works on any backend.
+Needs the `vision` extra (`mediapipe`) plus a downloaded HandLandmarker
+`.task` model (see `assets/models/README.md`); a missing dep/model logs
+"vision control disabled" and the stream runs without it. Sensitivity
+knobs (`pinch_threshold`, `swipe_velocity`, `gesture_dwell_s`,
+`gesture_cooldown_s`, …) are in `--describe section:vision`.
+
 ### `[debug]`
 
 ```toml
@@ -473,15 +510,22 @@ Each `[[scenes]]` block is a scene; they run in declaration order and
 each plays for `duration_s` seconds, then advances. Common fields:
 
 * `type` — `"webcam"`, `"video"`, `"slideshow"`, `"waveform"`,
-  `"midi"`, `"blank"`, or `"launcher"`
+  `"midi"`, `"blank"`, `"launcher"`, or `"generative"`
 * `duration_s` — seconds before advancing. Rejected on `video`
   scenes — they run until the video file ends.
 * `name` — display name (shown in the interstitial). Optional.
 * `target_fps` — per-scene FPS cap. Default: system rate (60 NTSC /
-  50 PAL) for all scenes, **except `waveform`**, which defaults to half
-  the system rate (30 NTSC / 25 PAL) to keep its per-frame bitmap-strip
-  DMA under the ceiling (see "WaveformScene defaults to half the video
-  rate" in [caveats.md](caveats.md)).
+  50 PAL), with two groups defaulting lower to stay under the DMA
+  bus-halt ceiling (an explicit `target_fps` always wins):
+  * **Bitmap (hires/mhires) frame-pushing scenes** — `video`, live
+    `webcam`, and `generative` with `audio_source = "mic"` — cap at
+    **20 fps** while streaming digitized audio and at half rate
+    (30 NTSC / 25 PAL) when muted. Char modes (petscii/blank) stay at
+    the system rate. See "Bitmap video/webcam scenes default lower when
+    digitized audio streams" in [caveats.md](caveats.md).
+  * **`waveform` and `midi`** default to half rate (30 NTSC / 25 PAL) —
+    see "WaveformScene defaults to half the video rate" in
+    [caveats.md](caveats.md).
 
 If a scene's `duration_s` expires while an overlay reports itself busy
 (e.g. a `big_text` message still mid-scroll), the Playlist defers the
@@ -840,6 +884,46 @@ pause/skip/cycle modifier keys at `$028D` are deliberately excluded):
 globs, default dir `assets/programs/`, extensions `.prg .crt`). In
 ensemble mode `bypass_audio_lock = true` lets several launcher systems
 run interactive programs at once, each player hearing their own SID.
+
+### `type = "generative"`
+
+```toml
+[[scenes]]
+type = "generative"
+display = "mhires"                  # any quantizing mode (not blank/random)
+duration_s = 60.0
+source = "plasma"                   # plasma | tunnel | fire
+audio_source = "mic"               # none | mic | sid
+reactive = true                     # music drives the visuals (sid only)
+effect = "trails"                  # optional: trails | pulse | rgb_shift
+# file = "assets/sids/Tune.sid"     # required when audio_source = "sid"
+```
+
+A procedural scene composed from three orthogonal choices — a **frame
+source**, an **audio source**, and an optional pixel **effect** —
+rendered through any quantizing display mode. The generators are pure
+numpy and deterministic in time:
+
+* `source` — `plasma`, `tunnel`, or `fire`.
+* `audio_source` — `none` (silent), `mic` (live mic through the SID DAC;
+  needs `[audio] enabled = true` + the `mic` extra), or `sid` (play the
+  `file` `.sid` on the real chip). A `sid` source forces a host-DMA
+  display and pairs most robustly with a **char** display (`mcm` /
+  `petscii`); a bitmap display works only with a tune that loads high
+  enough to clear `$2000`.
+* `reactive` (default `true`) — when `audio_source = "sid"`, a host-side
+  SID emulator extracts BPM / onsets / per-voice features (no extra U64
+  traffic) and the generator reacts: BPM cycles the colors, transients
+  pulse them. Inert for `mic`/`none`. Set `false` for the pure
+  time-driven look.
+* `effect` — a pre-quantization pixel transform applied to any
+  frame-bearing scene: `trails` (motion echo), `pulse` (beat-punch
+  zoom), `rgb_shift` (channel separation on a transient). `pulse` and
+  `rgb_shift` only visibly react on a music-reactive (`sid` + reactive)
+  scene; elsewhere they're inert.
+
+`song`, `palette_mode`, `style` (petscii), and the `target_fps` bitmap
+caps above all apply.
 
 ## Overlays
 

@@ -65,8 +65,31 @@ Exit with `Ctrl+C`.
 | `scene-waveform.toml`             | SID jukebox + oscilloscope. Requires a `.sid` file.        |
 | `scene-midi.toml`                 | MIDI → SID synth. Requires `midi` extra + MIDI source.     |
 | `scene-launcher.toml`             | Launch a native `.prg`/`.crt` and hand over the machine.   |
+| `scene-generative-plasma.toml`    | Procedural plasma rendered as a multicolor bitmap.         |
+| `scene-generative-petscii.toml`   | The same plasma source rendered as PETSCII glyphs.         |
+| `scene-generative-sid.toml`       | Plasma × SID playback — music-reactive composable scene.   |
+| `scene-generative-fire.toml`      | Fire generator × SID playback (the loudest reactive look). |
 | `color-force-palette.toml`        | EXTREME `[color].force_palette` remap. Needs PyAV.         |
 | `teensyrom-blank.toml`            | TeensyROM+ backend → blank canvas + scrolling text.        |
+
+### Effect demos
+
+Per-scene pixel effects layered on a generative source.
+
+| File                              | What it demonstrates                                       |
+|-----------------------------------|------------------------------------------------------------|
+| `effect-trails.toml`              | A `trails` motion-echo effect over a generative scene.     |
+| `effect-reactive.toml`            | A music-reactive effect over generative + SID playback.    |
+
+### Control-surface demos
+
+Alternate ways to drive the playlist beyond the C= / CTRL / SHIFT keys.
+
+| File                              | What it demonstrates                                       |
+|-----------------------------------|------------------------------------------------------------|
+| `menu.toml`                       | On-C64 SPACE menu — live-edit a scene's knobs (`[menu]`).  |
+| `vision-gesture.toml`             | Webcam hand gestures → pause/skip/cycle (`[vision]`).      |
+| `vision-modes.toml`               | Swipe cycles the video mode; hold-open cycles the style.   |
 
 ### Ensemble demo
 
