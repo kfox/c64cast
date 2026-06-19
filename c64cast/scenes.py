@@ -672,7 +672,15 @@ class SlideshowScene(Scene):
             background=self._background,
             style=self._style,
             use_reu_staged=resolve_use_reu_staged(
-                self._reu_staged_setting, new_name, reu_available=self._reu_available
+                self._reu_staged_setting,
+                new_name,
+                reu_available=self._reu_available,
+                # Text overlays fold into the bitmap; under auto they prefer the
+                # crisp host-DMA path over the REU bank-swap (which shimmers fine
+                # glyphs). See config.resolve_use_reu_staged.
+                has_buffer_overlays=any(
+                    getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
+                ),
             ),
             audio_reu_pump_active=self._audio_reu_pump_active,
             color=self._color,

@@ -1876,16 +1876,32 @@ def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
 _REU_BITMAP_MODES = frozenset({"hires", "hires_edges", "mhires"})
 
 
-def resolve_use_reu_staged(setting: bool | str, display: str, *, reu_available: bool) -> bool:
+def resolve_use_reu_staged(
+    setting: bool | str,
+    display: str,
+    *,
+    reu_available: bool,
+    has_buffer_overlays: bool = False,
+) -> bool:
     """Resolve the [video].use_reu_staged tri-state to a concrete bool for one
     scene's display mode.
 
     "auto" → True only for a bitmap display mode (see _REU_BITMAP_MODES) AND
-    only when the hardware probe confirmed the REU is usable (reu_available).
-    Explicit true/false pass straight through. The loader guarantees the only
-    legal string is "auto"; any other string is treated as auto (False here)
-    rather than silently truthy-True."""
+    only when the hardware probe confirmed the REU is usable (reu_available) AND
+    the scene has no buffer-painting (text) overlay. Such overlays fold fine
+    high-contrast glyphs into the bitmap, and the REU bank-swap's mid-frame
+    $DD00 swap (the ~9000-cycle REU→bank DMA runs the swap past vblank into the
+    visible rows) makes bottom-row text shimmer; the host-DMA delta path renders
+    it crisply. So a bitmap scene WITH text overlays resolves to host-DMA under
+    auto — overlay-free bitmap video still gets the tear-free REU pipeline.
+
+    Explicit true/false pass straight through (true forces REU even with text
+    overlays — the caller has opted into the shimmer for tear-free cuts). The
+    loader guarantees the only legal string is "auto"; any other string is
+    treated as auto (False here) rather than silently truthy-True."""
     if isinstance(setting, str):
+        if has_buffer_overlays:
+            return False
         return reu_available and display in _REU_BITMAP_MODES
     return bool(setting)
 
@@ -2081,10 +2097,20 @@ def _display_mode_for_scene(
     bypasses the auto path). Used for SID-audio scenes: the SID player owns the
     $0314 IRQ for PLAY, so the display must not install the bank-swap raster IRQ
     at the same vector."""
+    from .overlays import paints_into_buffers
+
+    has_buffer_overlays = any(
+        paints_into_buffers(ov.get("type", "")) for ov in s.overlays if isinstance(ov, dict)
+    )
     use_reu_staged = (
         False
         if force_host_dma
-        else resolve_use_reu_staged(cfg.video.use_reu_staged, display, reu_available=reu_available)
+        else resolve_use_reu_staged(
+            cfg.video.use_reu_staged,
+            display,
+            reu_available=reu_available,
+            has_buffer_overlays=has_buffer_overlays,
+        )
     )
     return _build_display_mode(
         display,

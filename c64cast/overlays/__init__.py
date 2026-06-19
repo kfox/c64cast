@@ -165,6 +165,18 @@ def known_overlays() -> list[str]:
     return sorted(_REGISTRY)
 
 
+def paints_into_buffers(type_name: str) -> bool:
+    """Whether the registered overlay folds into the scene's compose buffers
+    (the text overlays: clock/marquee/logo/…). Used by config to steer the
+    use_reu_staged "auto" default away from the REU bank-swap on bitmap scenes
+    that carry such overlays — the bank-swap's mid-frame $DD00 swap shimmers
+    fine high-contrast glyphs, and the host-DMA delta path renders them crisply.
+    Unknown types → False."""
+    _load_all()
+    cls = _REGISTRY.get(type_name)
+    return bool(cls and cls.PAINTS_INTO_BUFFERS)
+
+
 def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
     """Construct an Overlay from a config dict.
 
