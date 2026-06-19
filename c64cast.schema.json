@@ -1571,7 +1571,7 @@
           },
           "midi_waveform": {
             "type": "string",
-            "description": "SID waveform for MIDI notes.",
+            "description": "Default SID waveform for MIDI notes (the starting waveform for every voice; SHIFT cycles it, incl. into combined waveforms).",
             "enum": [
               "triangle",
               "sawtooth",
@@ -1579,6 +1579,34 @@
               "noise"
             ],
             "default": "pulse"
+          },
+          "midi_voice_waveforms": {
+            "type": "array",
+            "description": "Per-voice starting waveforms (up to 3, e.g. ['pulse', 'sawtooth', 'triangle']). Each entry is one waveform or a '+'-combo. 'pulse+triangle' is the combined wave that reliably sounds on a 6581; sawtooth combos AND down to near-silence there (audible may differ on 8580). Empty = every voice uses midi_waveform; fewer than 3 repeats the last.",
+            "default": []
+          },
+          "midi_voice_mode": {
+            "type": "string",
+            "description": "Voice allocation: 'shared' = one MIDI channel spread across the 3 voices (mono melody over a sustain pad); 'multitimbral' = MIDI channels route to fixed voices (see midi_voice_channels).",
+            "enum": [
+              "shared",
+              "multitimbral"
+            ],
+            "default": "shared"
+          },
+          "midi_voice_channels": {
+            "type": "array",
+            "description": "Multitimbral channel\u2192voice map: MIDI channels (1..16) for voices 1/2/3, in order. Only used when midi_voice_mode = 'multitimbral'; notes on other channels are ignored.",
+            "default": [
+              1,
+              2,
+              3
+            ]
+          },
+          "midi_program_change": {
+            "type": "boolean",
+            "description": "Honor MIDI Program Change to select a voice's waveform (shared mode = all voices; multitimbral = the message's channel).",
+            "default": true
           },
           "midi_adsr": {
             "type": "array",

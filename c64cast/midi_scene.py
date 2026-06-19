@@ -16,9 +16,12 @@ last writer wins.)
 
 Visualization is the shared :class:`~c64cast.voice_scope.VoiceScopeRenderer`
 oscilloscope (the same one WaveformScene uses): three stacked voice strips
-in a 320×200 hires bitmap, with the per-voice readout (note / velocity /
-waveform) and the global state (port waveform / master volume) on the two
-bottom text rows. Unlike WaveformScene — which mirrors a write-only SID via a
+in a 320×200 hires bitmap, with the per-voice waveforms + master volume on
+one bottom text row and the live controller state (pulse width / filter /
+ADSR) on the other. Each voice can run its own (optionally combined)
+waveform — set per voice in config, cycled by SHIFT, or selected live by
+MIDI Program Change; MIDI channels can also be routed to fixed voices
+(multitimbral mode). See the c64cast README's MidiScene section. Unlike WaveformScene — which mirrors a write-only SID via a
 parallel py65 6502 — MidiScene *is* the writer: it keeps a 25-byte $D400-$D418
 register shadow updated alongside every SID write and feeds the host-side
 :class:`~c64cast.sidemu.SIDEmulator` directly. A light background poll thread
@@ -76,6 +79,49 @@ _WAVEFORM_BITS = {
     "noise": SID.WAVE_NOISE,
 }
 
+# Canonical token order for (combined) waveform names, so a parsed spec always
+# round-trips to one string regardless of input order ("triangle+pulse" →
+# "pulse+triangle") and matches _WAVEFORM_CYCLE entries.
+_WAVEFORM_CANONICAL_ORDER = ("pulse", "sawtooth", "triangle", "noise")
+_WAVEFORM_ABBREV = {"triangle": "TRI", "sawtooth": "SAW", "pulse": "PUL", "noise": "NOI"}
+# Single waveform-select bit → name (inverse of _WAVEFORM_BITS), used to find a
+# combined voice's dominant single waveform for the SHIFT cycle.
+_BIT_TO_NAME = {v: k for k, v in _WAVEFORM_BITS.items()}
+
+
+def parse_waveform_spec(spec: str) -> tuple[int, str]:
+    """Parse a waveform spec into ``(control-byte waveform bits, canonical name)``.
+
+    Accepts a single waveform (``"pulse"``) or a ``+``-joined combination
+    (``"pulse+triangle"``) of triangle/sawtooth/pulse/noise. A combination ORs
+    the selected waveform-select bits — the real SID then ANDs those waveforms
+    together (the oscilloscope draws the dominant one via ``primary_waveform``).
+    The returned name is normalised to :data:`_WAVEFORM_CANONICAL_ORDER`.
+    """
+    tokens = [t.strip().lower() for t in str(spec).split("+") if t.strip()]
+    if not tokens:
+        raise ValueError(f"empty waveform spec: {spec!r}")
+    bits = 0
+    seen: set[str] = set()
+    for t in tokens:
+        if t not in _WAVEFORM_BITS:
+            raise ValueError(f"unknown waveform {t!r} in {spec!r}; valid: {sorted(_WAVEFORM_BITS)}")
+        bits |= _WAVEFORM_BITS[t]
+        seen.add(t)
+    name = "+".join(w for w in _WAVEFORM_CANONICAL_ORDER if w in seen)
+    return bits, name
+
+
+def _abbrev_waveform(name: str) -> str:
+    """Short label for a (possibly combined) waveform name for the title row:
+    single → TRI/SAW/PUL/NOI; combo → joined first letters ('pulse+triangle' →
+    'P+T')."""
+    tokens = [t for t in name.split("+") if t]
+    if len(tokens) == 1:
+        return _WAVEFORM_ABBREV.get(tokens[0], tokens[0][:3].upper())
+    return "+".join(t[0].upper() for t in tokens)
+
+
 # Standard MIDI note names. Aligned so note 60 = C-4.
 _NOTE_NAMES = ("C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-")
 
@@ -91,8 +137,40 @@ _PW_MAX_AUDIBLE = 3968  # ~97% duty
 # and keeps wheel sweeps from bursting the DMA socket. See _reader().
 _CONTROL_FLUSH_INTERVAL_S = 1.0 / 60.0
 
-# SHIFT cycles the global waveform through these, in order.
-_WAVEFORM_CYCLE = ("pulse", "sawtooth", "triangle", "noise")
+# SHIFT advances each voice one step through these, in order. The four single
+# waveforms come first (so a uniform default cycles exactly as it always has),
+# then the combined waveforms that actually SOUND on a real SID. Only
+# pulse+triangle qualifies: on a 6581 the waveform-select outputs share a bus
+# and AND together, and any combination containing sawtooth ANDs down to
+# near-silence (the scope trace would move but the chip is effectively mute) —
+# so saw/noise combos are deliberately kept out of the interactive rotation.
+# Other combos remain reachable via explicit midi_voice_waveforms. Entries must
+# be canonical (parse_waveform_spec).
+_WAVEFORM_CYCLE = (
+    "pulse",
+    "sawtooth",
+    "triangle",
+    "noise",
+    "pulse+triangle",
+)
+
+# Voice-allocation modes. "shared" = one pool of 3 voices fed by all channels
+# (the historical mono-melody-over-pad allocator). "multitimbral" = MIDI
+# channels route to fixed voices (see _note_on_mt). config._MIDI_VOICE_MODE_CHOICES
+# mirrors this (asserted by tests/test_introspect.py ChoiceVocabSyncTest).
+VOICE_MODES = ("shared", "multitimbral")
+
+# MIDI Program Change number → waveform spec (indexed modulo the table length).
+# Covers the four singles then pulse+triangle — the only combined waveform that
+# reliably sounds on a real SID (see _WAVEFORM_CYCLE for why saw combos aren't
+# here).
+_PC_WAVEFORMS = (
+    "triangle",
+    "sawtooth",
+    "pulse",
+    "noise",
+    "pulse+triangle",
+)
 
 # Control-change (CC) numbers → SID parameters. General-MIDI-ish where it maps
 # cleanly (CC73/72/75 = attack/release/decay sound controllers; CC71 = harmonic
@@ -161,6 +239,10 @@ class MidiScene(VoiceScopeRenderer, Scene):
         audio,
         port: str | None = None,
         waveform: str = "pulse",
+        voice_waveforms: list[str] | None = None,
+        voice_mode: str = "shared",
+        voice_channels: list[int] | None = None,
+        program_change: bool = True,
         adsr: tuple[int, int, int, int] = (0, 8, 12, 8),
         pulse_width: int = 2048,
         filter_cutoff: int = 2047,
@@ -187,6 +269,10 @@ class MidiScene(VoiceScopeRenderer, Scene):
             raise ValueError(
                 f"MidiScene: waveform must be one of {sorted(_WAVEFORM_BITS)}, got {waveform!r}"
             )
+        if voice_mode not in VOICE_MODES:
+            raise ValueError(
+                f"MidiScene: voice_mode must be one of {VOICE_MODES}, got {voice_mode!r}"
+            )
         if len(adsr) != 4 or not all(0 <= v <= 15 for v in adsr):
             raise ValueError(f"MidiScene: adsr must be 4 ints in 0..15, got {adsr!r}")
         if not 0 <= pulse_width <= 4095:
@@ -199,8 +285,31 @@ class MidiScene(VoiceScopeRenderer, Scene):
             raise ValueError("MidiScene: master_volume must be 0..15")
 
         self.port_name = port
+        # Global "shared default" waveform — the starting point for new/idle
+        # voices in shared mode, and what the title label/back-compat track.
         self.waveform = waveform
         self.waveform_bits = _WAVEFORM_BITS[waveform]
+        # Per-voice waveforms (authoritative for what each voice plays). Empty
+        # config → every voice uses the global default (legacy uniform). A
+        # provided list is parsed (combos allowed) and padded to 3 voices by
+        # repeating the last entry.
+        if voice_waveforms:
+            parsed = [parse_waveform_spec(w) for w in voice_waveforms]
+            parsed = (parsed + [parsed[-1]] * SID.N_VOICES)[: SID.N_VOICES]
+        else:
+            parsed = [(self.waveform_bits, self.waveform)] * SID.N_VOICES
+        self.voice_wave_bits: list[int] = [b for b, _ in parsed]
+        self.voice_wave_names: list[str] = [n for _, n in parsed]
+
+        self.voice_mode = voice_mode
+        self.program_change_enabled = bool(program_change)
+        # Multitimbral channel→voice map: config channels are 1-based (1..16),
+        # mido message channels are 0-based, so store 0-based keys. Default maps
+        # channels 1/2/3 → voices 0/1/2. Only consulted in multitimbral mode.
+        chans = list(voice_channels) if voice_channels else [1, 2, 3]
+        self._chan_to_voice: dict[int, int] = {
+            (ch - 1): vi for vi, ch in enumerate(chans[: SID.N_VOICES])
+        }
         # Mutable so the ADSR CCs (CC73/72/75) can update attack/decay/release
         # live. Sustain (index 2) is the base/fallback; per-note velocity
         # overrides it in _program_voice (velocity → loudness).
@@ -271,10 +380,15 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._last_voice_wave: list[int] = [-1, -1, -1]
 
         self.voices: list[_VoiceState] = [_VoiceState() for _ in range(SID.N_VOICES)]
-        # Stack of all currently-held MIDI notes (most-recent last) + their
-        # press velocities; the top SID.N_VOICES sound. See _reconcile_voices.
+        # Shared mode: stack of all currently-held MIDI notes (most-recent last)
+        # + their press velocities; the top SID.N_VOICES sound.
         self._held: list[int] = []
         self._held_vel: dict[int, int] = {}
+        # Multitimbral mode: a per-voice held-note stack (note → velocity), so
+        # each routed channel is monophonic with last-note priority + LIFO
+        # resurrection scoped to its own voice. Unused in shared mode.
+        self._mt_held: list[list[int]] = [[] for _ in range(SID.N_VOICES)]
+        self._mt_held_vel: list[dict[int, int]] = [{} for _ in range(SID.N_VOICES)]
         self._allocation_lock = threading.Lock()
         self._midi_port = None
         self._reader_thread: threading.Thread | None = None
@@ -344,12 +458,23 @@ class MidiScene(VoiceScopeRenderer, Scene):
             log.exception("MidiScene reader crashed")
 
     def _handle_msg(self, msg) -> None:
+        channel = getattr(msg, "channel", 0)
+        multitimbral = self.voice_mode == "multitimbral"
         if msg.type == "note_on" and msg.velocity > 0:
-            self._note_on(msg.note, msg.velocity)
+            if multitimbral:
+                self._note_on_mt(channel, msg.note, msg.velocity)
+            else:
+                self._note_on(msg.note, msg.velocity)
         elif msg.type in ("note_off",) or (msg.type == "note_on" and msg.velocity == 0):
-            self._note_off(msg.note)
+            if multitimbral:
+                self._note_off_mt(channel, msg.note)
+            else:
+                self._note_off(msg.note)
         elif msg.type == "control_change":
             self._control_change(msg.control, msg.value)
+        elif msg.type == "program_change":
+            if self.program_change_enabled:
+                self._program_change(msg.program, channel)
         elif msg.type == "pitchwheel":
             self._pitchwheel(msg.pitch)
 
@@ -415,6 +540,47 @@ class MidiScene(VoiceScopeRenderer, Scene):
         v.t_changed = time.time()
         v.velocity = velocity
         self._program_voice(idx, note, gate=True, velocity=velocity)
+
+    # ---- multitimbral allocation: MIDI channel → fixed voice -----------------
+    # Each mapped channel drives one voice monophonically with last-note
+    # priority + LIFO resurrection scoped to that voice (its own held stack).
+    # Notes on unmapped channels are ignored. Per-voice ADSR / pulse width /
+    # filter are not yet split out — those stay global (deferred follow-up).
+    def _note_on_mt(self, channel: int, midi_note: int, velocity: int) -> None:
+        idx = self._chan_to_voice.get(channel)
+        if idx is None:
+            return
+        with self._allocation_lock:
+            held = self._mt_held[idx]
+            if midi_note in held:
+                held.remove(midi_note)
+            held.append(midi_note)
+            self._mt_held_vel[idx][midi_note] = velocity
+            self._assign_voice(idx, midi_note, velocity)
+        self._dirty = True
+
+    def _note_off_mt(self, channel: int, midi_note: int) -> None:
+        idx = self._chan_to_voice.get(channel)
+        if idx is None:
+            return
+        with self._allocation_lock:
+            held = self._mt_held[idx]
+            if midi_note not in held:
+                return
+            held.remove(midi_note)
+            self._mt_held_vel[idx].pop(midi_note, None)
+            v = self.voices[idx]
+            # Only react if the released note is the one currently sounding;
+            # releasing a non-top held note just leaves the stack.
+            if not (v.on and v.note == midi_note):
+                self._dirty = True
+                return
+            v.on = False
+            self._program_voice(idx, midi_note, gate=False)
+            if held:  # resurrect this voice's most-recent still-held note
+                resurrect = held[-1]
+                self._assign_voice(idx, resurrect, self._mt_held_vel[idx].get(resurrect, 100))
+            self._dirty = True
 
     def _control_change(self, cc: int, value: int) -> None:
         """Map a MIDI continuous controller to a SID parameter. `value` is
@@ -545,7 +711,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
         freq = _note_to_sid_freq(midi_note, self.system)
         # Coalesce freq + pulse-width + control + ADSR (7 contiguous bytes)
         # into a single PUT — minimises socket overhead per note event.
-        ctrl = self.waveform_bits | (SID.GATE if gate else 0)
+        wave_bits = self.voice_wave_bits[voice_idx]
+        ctrl = wave_bits | (SID.GATE if gate else 0)
         a, d, _, r = self.adsr
         # Velocity → sustain (loudness) on a gated note; configured sustain
         # otherwise (note_off keeps the last SR; the gate clear is what matters).
@@ -570,7 +737,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         hard_restart = gate and bool(prev_ctrl & SID.GATE)
         if hard_restart:
             self.api.write_memory(
-                f"{base + SID.OFF_CONTROL:04X}", f"{self.waveform_bits & 0xFF:02X}"
+                f"{base + SID.OFF_CONTROL:04X}", f"{wave_bits & 0xFF:02X}"
             )  # gate off
         self.api.write_regs(f"{base:04X}", *regs)
 
@@ -599,26 +766,32 @@ class MidiScene(VoiceScopeRenderer, Scene):
         a, d, s, r = self.adsr
         for vidx in range(SID.N_VOICES):
             base = SID.voice_base(vidx)
+            wave_bits = self.voice_wave_bits[vidx]
             self.api.write_regs(
                 f"{base + SID.OFF_PW_LO:04X}",
                 self.pulse_width & 0xFF,
                 (self.pulse_width >> 8) & 0x0F,
-                self.waveform_bits,  # gate off
+                wave_bits,  # gate off
                 ((a & 0xF) << 4) | (d & 0xF),
                 ((s & 0xF) << 4) | (r & 0xF),
             )
             off = vidx * SID.BYTES_PER_VOICE
             self._poke_shadow(base + SID.OFF_PW_LO, self.pulse_width & 0xFF)
             self._poke_shadow(base + SID.OFF_PW_HI, (self.pulse_width >> 8) & 0x0F)
-            self._sid_shadow[off + SID.OFF_CONTROL] = self.waveform_bits
+            self._sid_shadow[off + SID.OFF_CONTROL] = wave_bits
             self._sid_shadow[off + SID.OFF_AD] = ((a & 0xF) << 4) | (d & 0xF)
             self._sid_shadow[off + SID.OFF_SR] = ((s & 0xF) << 4) | (r & 0xF)
         self._feed_emulator()
 
     # ---- info text rows ------------------------------------------------------
     def _build_title_line(self) -> str:
-        """Global state: MIDI + current waveform (left), master volume (right)."""
-        return _layout_lr(f"MIDI {self.waveform.upper()}", f"VOL {self.master_volume:2d}")
+        """Per-voice waveforms (left), master volume (right). Each voice shows a
+        short waveform tag (TRI/SAW/PUL/NOI; a combo joins first letters, e.g.
+        'P+T') so all three timbres are visible at a glance."""
+        waves = " ".join(
+            f"{i + 1}:{_abbrev_waveform(n)}" for i, n in enumerate(self.voice_wave_names)
+        )
+        return _layout_lr(waves, f"VOL {self.master_volume:2d}")
 
     def _build_controller_line(self) -> str:
         """Live controller state on the second row: pulse width %, filter
@@ -649,29 +822,75 @@ class MidiScene(VoiceScopeRenderer, Scene):
             RegionID.WAVE_META_SCREEN,
         )
 
-    # ---- SHIFT: cycle the global waveform ------------------------------------
-    def cycle_style(self, api) -> str:
-        """SHIFT handler: advance the global waveform pulse→saw→tri→noise and
-        re-emit it on every voice (held notes keep their gate + velocity
-        sustain; idle voices get the new waveform for their next note)."""
-        i = _WAVEFORM_CYCLE.index(self.waveform) if self.waveform in _WAVEFORM_CYCLE else -1
-        self.waveform = _WAVEFORM_CYCLE[(i + 1) % len(_WAVEFORM_CYCLE)]
-        self.waveform_bits = _WAVEFORM_BITS[self.waveform]
+    # ---- per-voice waveform changes (SHIFT + Program Change) -----------------
+    def _set_voice_waveform(self, idx: int, bits: int, name: str) -> None:
+        """Set voice `idx`'s waveform and re-emit it: a sounding voice is
+        re-programmed (hard restart keeps the gate + velocity sustain), an idle
+        voice just gets its control byte updated so its next note uses the new
+        waveform. Caller holds `_allocation_lock`."""
+        self.voice_wave_bits[idx] = bits
+        self.voice_wave_names[idx] = name
+        v = self.voices[idx]
+        if v.on and v.note is not None:
+            self._program_voice(idx, v.note, gate=True, velocity=v.velocity)
+        else:
+            base = SID.voice_base(idx)
+            self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{bits & 0xFF:02X}")
+            self._sid_shadow[idx * SID.BYTES_PER_VOICE + SID.OFF_CONTROL] = bits & 0xFF
+            self._feed_emulator()
+
+    def _waveform_label(self) -> str:
+        names = self.voice_wave_names
+        if all(n == names[0] for n in names):
+            return f"waveform={names[0]}"
+        return "waveforms=" + "/".join(_abbrev_waveform(n) for n in names)
+
+    def _program_change(self, program: int, channel: int) -> None:
+        """MIDI Program Change → waveform. Shared mode sets the waveform on all
+        three voices (a global patch change); multitimbral sets only the voice
+        mapped to the message's channel."""
+        bits, name = parse_waveform_spec(_PC_WAVEFORMS[program % len(_PC_WAVEFORMS)])
         with self._allocation_lock:
-            for idx, v in enumerate(self.voices):
-                if v.on and v.note is not None:
-                    self._program_voice(idx, v.note, gate=True, velocity=v.velocity)
-                else:
-                    base = SID.voice_base(idx)
-                    self.api.write_memory(
-                        f"{base + SID.OFF_CONTROL:04X}", f"{self.waveform_bits:02X}"
-                    )
-                    self._sid_shadow[idx * SID.BYTES_PER_VOICE + SID.OFF_CONTROL] = (
-                        self.waveform_bits
-                    )
-        self._feed_emulator()
+            if self.voice_mode == "multitimbral":
+                idx = self._chan_to_voice.get(channel)
+                if idx is None:
+                    return
+                targets = [idx]
+            else:
+                targets = list(range(SID.N_VOICES))
+                self.waveform = name
+                self.waveform_bits = bits
+            for idx in targets:
+                self._set_voice_waveform(idx, bits, name)
         self._dirty = True
-        return f"waveform={self.waveform}"
+
+    # ---- SHIFT: advance every voice through the waveform cycle ---------------
+    def cycle_style(self, api) -> str:
+        """SHIFT handler: advance every voice one step through `_WAVEFORM_CYCLE`
+        (the four single waveforms, then combined waveforms), keeping per-voice
+        offsets. A uniform set cycles in lockstep (the historical behavior);
+        differing per-voice waveforms each walk from their own position so the
+        voices stay distinct and each tours the combos. Held voices keep their
+        gate + velocity sustain; idle voices get the new waveform for their
+        next note."""
+        with self._allocation_lock:
+            for idx, name in enumerate(self.voice_wave_names):
+                if name in _WAVEFORM_CYCLE:
+                    i = _WAVEFORM_CYCLE.index(name)
+                else:
+                    # An off-cycle combo (a noise combo, a 3-way, …): advance
+                    # from its dominant single waveform's slot rather than
+                    # resetting every such voice to index 0, which would
+                    # collapse distinct voices onto the same waveform.
+                    dom = _BIT_TO_NAME[primary_waveform(self.voice_wave_bits[idx])]
+                    i = _WAVEFORM_CYCLE.index(dom)
+                bits, cname = parse_waveform_spec(_WAVEFORM_CYCLE[(i + 1) % len(_WAVEFORM_CYCLE)])
+                self._set_voice_waveform(idx, bits, cname)
+            # Voice 0 tracks the shared default / single-waveform label.
+            self.waveform = self.voice_wave_names[0]
+            self.waveform_bits = self.voice_wave_bits[0]
+        self._dirty = True
+        return self._waveform_label()
 
     # ---- Scene lifecycle -----------------------------------------------------
     def setup(self) -> None:

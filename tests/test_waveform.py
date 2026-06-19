@@ -445,11 +445,44 @@ class SidEmulatorTest(unittest.TestCase):
         self.assertGreater(rising, 50, "sawtooth at very low freq should be mostly rising")
 
     def test_priority_noise_over_pulse(self):
-        # 0xC0 = noise + pulse. Visualization picks noise.
+        # 0xC0 = noise + pulse. primary_waveform (used for coloring + the
+        # silent check) picks noise.
         self.assertEqual(primary_waveform(0xC0), WAVE_NOISE)
         self.assertEqual(primary_waveform(0x30), WAVE_SAWTOOTH)
         self.assertEqual(primary_waveform(0x10), WAVE_TRIANGLE)
         self.assertEqual(primary_waveform(0x00), 0)
+
+    def test_combined_waveform_ands_oscillator_outputs(self):
+        # pulse+triangle (0x60) wires two oscillator outputs onto the shared
+        # bus → bitwise-AND. The trace is distinct from pure pulse, stays in
+        # [-1, 1], and skews low (the sparse "metallic" combined-wave shape).
+        def trace(control):
+            emu = SIDEmulator()
+            emu.update_registers(
+                self._voice_regs(0, freq=0x0400, pw=0x0800, control=control, ad=0x00, sr=0xF0)
+            )
+            emu.advance_envelopes(0.01)
+            return emu.voice_samples(0, 256)
+
+        combined = trace(0x61)  # pulse + triangle + gate
+        pulse = trace(0x41)  # pulse + gate
+        self.assertGreaterEqual(combined.min(), -1.0001)
+        self.assertLessEqual(combined.max(), 1.0001)
+        self.assertFalse(np.array_equal(combined, pulse))
+        # 50%-duty pulse averages ~0; the AND skews the combination toward the
+        # low rail.
+        self.assertLess(combined.mean(), pulse.mean())
+
+    def test_single_waveform_uses_clean_bipolar_path(self):
+        # A single-bit control keeps the clean bipolar shape (not the AND-skewed
+        # combined path): a triangle over several cycles spans nearly the full
+        # [-1, 1] range.
+        emu = SIDEmulator()
+        emu.update_registers(self._voice_regs(0, freq=0x1C32, control=0x11, ad=0x00, sr=0xF0))
+        emu.advance_envelopes(0.01)
+        s = emu.voice_samples(0, 320)
+        self.assertGreater(s.max(), 0.9)
+        self.assertLess(s.min(), -0.9)
 
 
 # ---------------------------------------------------------------------------

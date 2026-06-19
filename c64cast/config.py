@@ -77,6 +77,8 @@ _COLOR_MODE_CHOICES = ("per_voice", "per_waveform")
 _APPLY_CHOICES = ("live", "rebuild")
 _MIDI_WAVEFORM_CHOICES = ("triangle", "sawtooth", "pulse", "noise")
 _MIDI_FILTER_MODE_CHOICES = ("lowpass", "bandpass", "highpass")
+# Mirrors midi_scene.VOICE_MODES (asserted by tests/test_introspect.py).
+_MIDI_VOICE_MODE_CHOICES = ("shared", "multitimbral")
 _BACKGROUND_CHOICES = (
     "starfield",
     "petscii_bars",
@@ -783,8 +785,48 @@ class SceneCfg:
     midi_waveform: str = field(
         default="pulse",
         metadata={
-            "help": "SID waveform for MIDI notes.",
+            "help": "Default SID waveform for MIDI notes (the starting waveform "
+            "for every voice; SHIFT cycles it, incl. into combined waveforms).",
             "choices": _MIDI_WAVEFORM_CHOICES,
+            "applies_to": ("midi",),
+        },
+    )
+    midi_voice_waveforms: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "Per-voice starting waveforms (up to 3, e.g. "
+            "['pulse', 'sawtooth', 'triangle']). Each entry is one waveform or a "
+            "'+'-combo. 'pulse+triangle' is the combined wave that reliably sounds "
+            "on a 6581; sawtooth combos AND down to near-silence there (audible "
+            "may differ on 8580). Empty = every voice uses midi_waveform; fewer "
+            "than 3 repeats the last.",
+            "applies_to": ("midi",),
+        },
+    )
+    midi_voice_mode: str = field(
+        default="shared",
+        metadata={
+            "help": "Voice allocation: 'shared' = one MIDI channel spread across "
+            "the 3 voices (mono melody over a sustain pad); 'multitimbral' = MIDI "
+            "channels route to fixed voices (see midi_voice_channels).",
+            "choices": _MIDI_VOICE_MODE_CHOICES,
+            "applies_to": ("midi",),
+        },
+    )
+    midi_voice_channels: list[int] = field(
+        default_factory=lambda: [1, 2, 3],
+        metadata={
+            "help": "Multitimbral channel→voice map: MIDI channels (1..16) for "
+            "voices 1/2/3, in order. Only used when midi_voice_mode = "
+            "'multitimbral'; notes on other channels are ignored.",
+            "applies_to": ("midi",),
+        },
+    )
+    midi_program_change: bool = field(
+        default=True,
+        metadata={
+            "help": "Honor MIDI Program Change to select a voice's waveform "
+            "(shared mode = all voices; multitimbral = the message's channel).",
             "applies_to": ("midi",),
         },
     )
@@ -2203,6 +2245,34 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
 def _validate_midi(s: SceneCfg) -> DisplayMode:
     if len(s.midi_adsr) != 4:
         raise ValueError(f"midi scene midi_adsr must have 4 entries, got {s.midi_adsr!r}")
+    if s.midi_voice_mode not in _MIDI_VOICE_MODE_CHOICES:
+        raise ValueError(
+            f"midi scene midi_voice_mode must be one of {_MIDI_VOICE_MODE_CHOICES}, "
+            f"got {s.midi_voice_mode!r}"
+        )
+    if len(s.midi_voice_waveforms) > 3:
+        raise ValueError(
+            f"midi scene midi_voice_waveforms takes at most 3 entries (one per voice), "
+            f"got {len(s.midi_voice_waveforms)}"
+        )
+    for spec in s.midi_voice_waveforms:
+        tokens = [t.strip().lower() for t in str(spec).split("+") if t.strip()]
+        if not tokens or any(t not in _MIDI_WAVEFORM_CHOICES for t in tokens):
+            raise ValueError(
+                f"midi scene midi_voice_waveforms entry {spec!r} must be one or a "
+                f"'+'-combo of {_MIDI_WAVEFORM_CHOICES}"
+            )
+    if s.midi_voice_mode == "multitimbral":
+        chans = s.midi_voice_channels[:3]
+        if any(not 1 <= c <= 16 for c in chans):
+            raise ValueError(
+                f"midi scene midi_voice_channels must be MIDI channels 1..16, "
+                f"got {s.midi_voice_channels!r}"
+            )
+        if len(set(chans)) != len(chans):
+            raise ValueError(
+                f"midi scene midi_voice_channels must be unique, got {s.midi_voice_channels!r}"
+            )
     _validate_scope_knobs(s, "midi")
     # MidiScene is bitmap-only (hires oscilloscope) — the SceneCfg `display`
     # field is ignored. Synthesise a hires display_mode so overlay
@@ -2701,6 +2771,10 @@ def build_scene(
             audio,
             port=s.midi_port,
             waveform=s.midi_waveform,
+            voice_waveforms=s.midi_voice_waveforms or None,
+            voice_mode=s.midi_voice_mode,
+            voice_channels=s.midi_voice_channels or None,
+            program_change=s.midi_program_change,
             adsr=(a, d, sus, r),
             pulse_width=s.midi_pulse_width,
             filter_cutoff=s.midi_filter_cutoff,
