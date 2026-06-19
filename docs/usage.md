@@ -473,15 +473,22 @@ Each `[[scenes]]` block is a scene; they run in declaration order and
 each plays for `duration_s` seconds, then advances. Common fields:
 
 * `type` — `"webcam"`, `"video"`, `"slideshow"`, `"waveform"`,
-  `"midi"`, `"blank"`, or `"launcher"`
+  `"midi"`, `"blank"`, `"launcher"`, or `"generative"`
 * `duration_s` — seconds before advancing. Rejected on `video`
   scenes — they run until the video file ends.
 * `name` — display name (shown in the interstitial). Optional.
 * `target_fps` — per-scene FPS cap. Default: system rate (60 NTSC /
-  50 PAL) for all scenes, **except `waveform`**, which defaults to half
-  the system rate (30 NTSC / 25 PAL) to keep its per-frame bitmap-strip
-  DMA under the ceiling (see "WaveformScene defaults to half the video
-  rate" in [caveats.md](caveats.md)).
+  50 PAL), with two groups defaulting lower to stay under the DMA
+  bus-halt ceiling (an explicit `target_fps` always wins):
+  * **Bitmap (hires/mhires) frame-pushing scenes** — `video`, live
+    `webcam`, and `generative` with `audio_source = "mic"` — cap at
+    **20 fps** while streaming digitized audio and at half rate
+    (30 NTSC / 25 PAL) when muted. Char modes (petscii/blank) stay at
+    the system rate. See "Bitmap video/webcam scenes default lower when
+    digitized audio streams" in [caveats.md](caveats.md).
+  * **`waveform` and `midi`** default to half rate (30 NTSC / 25 PAL) —
+    see "WaveformScene defaults to half the video rate" in
+    [caveats.md](caveats.md).
 
 If a scene's `duration_s` expires while an overlay reports itself busy
 (e.g. a `big_text` message still mid-scroll), the Playlist defers the
