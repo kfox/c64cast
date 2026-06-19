@@ -844,6 +844,17 @@ class SceneCfg:
             "apply": "live",
         },
     )
+    text_double_height: bool = field(
+        default=False,
+        metadata={
+            "help": "On mhires, render text overlays (clock/marquee/…) at double "
+            "height — 16px / 2 cell rows — for across-the-room legibility. "
+            "Text is always double-WIDE on mhires (8x8 glyph spans 2 of the "
+            "4px cells); this toggle adds the vertical stretch. Ignored on "
+            "other display modes.",
+            "applies_to": ("webcam", "video", "slideshow", "generative"),
+        },
+    )
     style: str = field(
         default="default",
         metadata={
@@ -1865,16 +1876,32 @@ def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
 _REU_BITMAP_MODES = frozenset({"hires", "hires_edges", "mhires"})
 
 
-def resolve_use_reu_staged(setting: bool | str, display: str, *, reu_available: bool) -> bool:
+def resolve_use_reu_staged(
+    setting: bool | str,
+    display: str,
+    *,
+    reu_available: bool,
+    has_buffer_overlays: bool = False,
+) -> bool:
     """Resolve the [video].use_reu_staged tri-state to a concrete bool for one
     scene's display mode.
 
     "auto" → True only for a bitmap display mode (see _REU_BITMAP_MODES) AND
-    only when the hardware probe confirmed the REU is usable (reu_available).
-    Explicit true/false pass straight through. The loader guarantees the only
-    legal string is "auto"; any other string is treated as auto (False here)
-    rather than silently truthy-True."""
+    only when the hardware probe confirmed the REU is usable (reu_available) AND
+    the scene has no buffer-painting (text) overlay. Such overlays fold fine
+    high-contrast glyphs into the bitmap, and the REU bank-swap's mid-frame
+    $DD00 swap (the ~9000-cycle REU→bank DMA runs the swap past vblank into the
+    visible rows) makes bottom-row text shimmer; the host-DMA delta path renders
+    it crisply. So a bitmap scene WITH text overlays resolves to host-DMA under
+    auto — overlay-free bitmap video still gets the tear-free REU pipeline.
+
+    Explicit true/false pass straight through (true forces REU even with text
+    overlays — the caller has opted into the shimmer for tear-free cuts). The
+    loader guarantees the only legal string is "auto"; any other string is
+    treated as auto (False here) rather than silently truthy-True."""
     if isinstance(setting, str):
+        if has_buffer_overlays:
+            return False
         return reu_available and display in _REU_BITMAP_MODES
     return bool(setting)
 
@@ -1888,6 +1915,7 @@ def _build_display_mode(
     use_reu_staged: bool = False,
     audio_reu_pump_active: bool = False,
     color: ColorCfg | None = None,
+    text_double_height: bool = False,
 ) -> DisplayMode:
     # Imported inside the function to keep config.py importable in test
     # contexts that stub out the heavy modules.
@@ -1944,6 +1972,7 @@ def _build_display_mode(
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
+            text_double_height=text_double_height,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
@@ -2068,10 +2097,20 @@ def _display_mode_for_scene(
     bypasses the auto path). Used for SID-audio scenes: the SID player owns the
     $0314 IRQ for PLAY, so the display must not install the bank-swap raster IRQ
     at the same vector."""
+    from .overlays import paints_into_buffers
+
+    has_buffer_overlays = any(
+        paints_into_buffers(ov.get("type", "")) for ov in s.overlays if isinstance(ov, dict)
+    )
     use_reu_staged = (
         False
         if force_host_dma
-        else resolve_use_reu_staged(cfg.video.use_reu_staged, display, reu_available=reu_available)
+        else resolve_use_reu_staged(
+            cfg.video.use_reu_staged,
+            display,
+            reu_available=reu_available,
+            has_buffer_overlays=has_buffer_overlays,
+        )
     )
     return _build_display_mode(
         display,
@@ -2082,6 +2121,7 @@ def _display_mode_for_scene(
         use_reu_staged=use_reu_staged,
         audio_reu_pump_active=cfg.audio.use_reu_pump,
         color=cfg.color,
+        text_double_height=s.text_double_height,
     )
 
 
@@ -2535,6 +2575,7 @@ def build_scene(
             reu_available=reu_available,
             audio_reu_pump_active=audio_reu_pump_active,
             color=cfg.color,
+            text_double_height=s.text_double_height,
         )
     elif s.type == "generative":
         from .audio_source import (

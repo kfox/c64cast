@@ -19,6 +19,7 @@ import numpy as np
 
 from ..c64 import SCREEN
 from ..palette import C64_COLORS
+from ..text_surface import corner_origin as _surface_corner_origin
 from . import Overlay, ascii_to_screen, register
 from .corner_text import VALID_CORNERS, corner_origin
 
@@ -69,6 +70,11 @@ def _load_art(path: str) -> list[str]:
 @register("logo")
 class LogoOverlay(Overlay):
     REQUIRES_PETSCII = True
+    # Art is just screen codes + a color, which the TextSurface folds into a
+    # bitmap as readily as char RAM. On hires the 40-col layout maps 1:1; on
+    # mhires the grid is 20 double-wide cols, so wide art clips — size the file
+    # for the target mode (or use hires for full-width art).
+    SUPPORTS_BITMAP_TEXT = True
     REQUIRES_AUDIO = False
     PAINTS_INTO_BUFFERS = True
     HELP = "Multi-line PETSCII art block loaded from a .txt file."
@@ -135,11 +141,16 @@ class LogoOverlay(Overlay):
         self._encoded = [ascii_to_screen(ln) for ln in self.lines]
 
     def compose(self, buffers: dict, scene, t: float) -> None:
-        screen = buffers["screen"]
-        color = buffers["color"]
+        surface = buffers["text"]
+        # Recompute the corner anchor against the surface's actual grid (40-col
+        # char/hires, 20-col mhires) so the block lands in the right corner on
+        # every mode. Explicit row/col is used verbatim (clipped if off-grid).
+        if self.corner is not None:
+            col, row = _surface_corner_origin(
+                self.corner, self._w, self._h, surface.cols, surface.rows
+            )
+        else:
+            col, row = self._col, self._row
         for i, encoded in enumerate(self._encoded):
-            y = self._row + i
-            base = y * SCREEN_W + self._col
             row_chars = np.frombuffer(encoded, dtype=np.uint8)
-            screen[base : base + self._w] = row_chars
-            color[base : base + self._w] = self.fg
+            surface.paint_run(row + i, col, row_chars, self.fg, self.bg, draw_chars=True)

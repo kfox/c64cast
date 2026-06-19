@@ -593,6 +593,7 @@ class SlideshowScene(Scene):
         reu_available: bool = False,
         audio_reu_pump_active: bool = False,
         color: ColorCfg | None = None,
+        text_double_height: bool = False,
     ):
         from .config import PICTURE_EXTS, ColorCfg, resolve_file_spec
 
@@ -616,6 +617,7 @@ class SlideshowScene(Scene):
         self._border = border
         self._background = background
         self._style = style
+        self._text_double_height = text_double_height
         # Stored as the raw tri-state setting + the probe verdict (not a
         # resolved bool) so a `display = "random"` rebuild can re-decide REU
         # staging per concrete mode each setup() — auto stages bitmap picks
@@ -670,10 +672,19 @@ class SlideshowScene(Scene):
             background=self._background,
             style=self._style,
             use_reu_staged=resolve_use_reu_staged(
-                self._reu_staged_setting, new_name, reu_available=self._reu_available
+                self._reu_staged_setting,
+                new_name,
+                reu_available=self._reu_available,
+                # Text overlays fold into the bitmap; under auto they prefer the
+                # crisp host-DMA path over the REU bank-swap (which shimmers fine
+                # glyphs). See config.resolve_use_reu_staged.
+                has_buffer_overlays=any(
+                    getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
+                ),
             ),
             audio_reu_pump_active=self._audio_reu_pump_active,
             color=self._color,
+            text_double_height=self._text_double_height,
         )
         log.info("slideshow: display = random → %s", new_name)
 

@@ -87,10 +87,12 @@ class ValidateScenesTest(unittest.TestCase):
         self.assertEqual(subjects["system/good"], "ok")
 
     def test_overlay_incompatibility_surfaces_at_scene_level(self):
+        # mcm is neither PETSCII- nor bitmap-text-compatible, so a text overlay
+        # is rejected there (on hires/mhires it would now fold into the bitmap).
         loaded = _load("""
             [[scenes]]
             type = "webcam"
-            display = "mhires"
+            display = "mcm"
             name = "clockless"
             [[scenes.overlays]]
             type = "clock"
@@ -98,7 +100,7 @@ class ValidateScenesTest(unittest.TestCase):
         diags = doctor.validate_load_result(loaded, probe_u64=False)
         scene_diags = [d for d in diags if d.category == "scene"]
         self.assertEqual(scene_diags[0].level, "error")
-        self.assertIn("PETSCII", scene_diags[0].message)
+        self.assertIn("petscii", scene_diags[0].message)
 
 
 class CrossSystemOrchestrationTest(unittest.TestCase):

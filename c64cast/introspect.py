@@ -75,6 +75,7 @@ class OverlayDoc:
     requires_petscii: bool
     requires_audio: bool
     compatible_modes: tuple[str, ...]
+    supports_bitmap_text: bool
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class ModeDoc:
     is_bitmapped: bool
     is_petscii_compatible: bool
     help: str
+    is_bitmap_text_compatible: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,14 +145,23 @@ _MODES: tuple[ModeDoc, ...] = (
         True,
         False,
         "320×200 bitmap, Canny edges (white on black). Default for live webcam.",
+        is_bitmap_text_compatible=True,
     ),
-    ModeDoc("hires", "hires", True, False, "320×200 monochrome bitmap (luma-quantized per cell)."),
+    ModeDoc(
+        "hires",
+        "hires",
+        True,
+        False,
+        "320×200 monochrome bitmap (luma-quantized per cell).",
+        is_bitmap_text_compatible=True,
+    ),
     ModeDoc(
         "mhires",
         "mhires",
         True,
         False,
         "160×200 4-color MCBM bitmap; per-cell palette (best for photos/video).",
+        is_bitmap_text_compatible=True,
     ),
     ModeDoc("mcm", "mcm", False, False, "80×50 multicolor character mode (uploaded 2×2 charset)."),
     ModeDoc("petscii", "petscii", False, True, "40×25 PETSCII char mode (luma→glyph, hue→color)."),
@@ -314,6 +325,7 @@ def overlay_docs() -> list[OverlayDoc]:
                 requires_petscii=bool(getattr(cls, "REQUIRES_PETSCII", False)),
                 requires_audio=bool(getattr(cls, "REQUIRES_AUDIO", False)),
                 compatible_modes=tuple(getattr(cls, "COMPATIBLE_MODES", ())),
+                supports_bitmap_text=bool(getattr(cls, "SUPPORTS_BITMAP_TEXT", False)),
             )
         )
     return out
@@ -332,8 +344,13 @@ def overlay_names() -> list[str]:
 def overlay_mode_ok(ov: OverlayDoc, mode: ModeDoc) -> tuple[bool, str]:
     """Mirror overlays.validate_for_scene against a ModeDoc. Returns
     (ok, reason-when-not-ok)."""
-    if ov.requires_petscii and not mode.is_petscii_compatible:
-        return False, "needs PETSCII-compatible mode (petscii/blank)"
+    if ov.requires_petscii:
+        petscii_ok = mode.is_petscii_compatible
+        bitmap_ok = ov.supports_bitmap_text and mode.is_bitmap_text_compatible
+        if not (petscii_ok or bitmap_ok):
+            if ov.supports_bitmap_text:
+                return False, "needs a text-capable mode (petscii/blank/hires/mhires)"
+            return False, "needs PETSCII-compatible mode (petscii/blank)"
     if ov.compatible_modes and mode.runtime_name not in ov.compatible_modes:
         allowed = "/".join(ov.compatible_modes)
         return False, f"only on {allowed}"
@@ -375,7 +392,7 @@ def render_list_overlays() -> str:
     for od in overlay_docs():
         flags = []
         if od.requires_petscii:
-            flags.append("petscii")
+            flags.append("text+bitmap" if od.supports_bitmap_text else "petscii")
         if od.requires_audio:
             flags.append("audio")
         if od.compatible_modes:
@@ -435,7 +452,10 @@ def _render_overlay(od: OverlayDoc) -> str:
     lines = [f"overlay {od.name!r} — {od.help}", ""]
     restr = []
     if od.requires_petscii:
-        restr.append("requires a PETSCII-compatible scene (petscii/blank)")
+        if od.supports_bitmap_text:
+            restr.append("text overlay: renders on petscii/blank and bitmap (hires/mhires)")
+        else:
+            restr.append("requires a PETSCII-compatible scene (petscii/blank)")
     if od.requires_audio:
         restr.append("requires [audio].enabled")
     if od.compatible_modes:
@@ -463,6 +483,7 @@ def _render_mode(m: ModeDoc) -> str:
         "",
         f"  kind: {kind}",
         f"  PETSCII overlays: {'yes' if m.is_petscii_compatible else 'no'}",
+        f"  bitmap text overlays: {'yes' if m.is_bitmap_text_compatible else 'no'}",
     ]
     return "\n".join(lines)
 

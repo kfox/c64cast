@@ -69,6 +69,13 @@ class Overlay:
     # don't expose the character matrix at all. So we restrict to display
     # mode "petscii" rather than just "any char mode".
     REQUIRES_PETSCII = False
+    # When True (alongside REQUIRES_PETSCII), this text overlay can ALSO render
+    # on a bitmap mode (hires/mhires) by folding its glyphs into the bitmap via
+    # the TextSurface — not just on char modes. Set on the shared text bases
+    # (corner_text, marquee, scrolling_text). Overlays whose paint doesn't map
+    # onto a simple text-row rasterizer (logo art, spectrum bars) leave it
+    # False, staying petscii/blank-only. See modes.is_bitmap_text_compatible.
+    SUPPORTS_BITMAP_TEXT = False
     REQUIRES_AUDIO = False
     # Optional whitelist of display-mode names this overlay supports. Empty
     # tuple = no restriction (works on any display mode that accepts it via
@@ -158,6 +165,18 @@ def known_overlays() -> list[str]:
     return sorted(_REGISTRY)
 
 
+def paints_into_buffers(type_name: str) -> bool:
+    """Whether the registered overlay folds into the scene's compose buffers
+    (the text overlays: clock/marquee/logo/…). Used by config to steer the
+    use_reu_staged "auto" default away from the REU bank-swap on bitmap scenes
+    that carry such overlays — the bank-swap's mid-frame $DD00 swap shimmers
+    fine high-contrast glyphs, and the host-DMA delta path renders them crisply.
+    Unknown types → False."""
+    _load_all()
+    cls = _REGISTRY.get(type_name)
+    return bool(cls and cls.PAINTS_INTO_BUFFERS)
+
+
 def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
     """Construct an Overlay from a config dict.
 
@@ -215,13 +234,24 @@ def _kwarg_suggestion(cls: type[Overlay], err_msg: str) -> str:
 def validate_for_scene(overlay: Overlay, display_mode) -> None:
     """Raise ValueError if `overlay` can't run on a scene with `display_mode`."""
     mode_name = getattr(display_mode, "name", "?")
-    if overlay.REQUIRES_PETSCII and not getattr(display_mode, "is_petscii_compatible", False):
-        raise ValueError(
-            f"overlay {overlay.name!r} paints PETSCII screen codes and only "
-            f"renders correctly with display = 'petscii' or 'blank', but "
-            f"this scene's display mode is {mode_name!r}. Change the scene "
-            "to a compatible display mode or remove this overlay."
+    if overlay.REQUIRES_PETSCII:
+        # Text overlays render on char modes (petscii/blank) and — when the
+        # overlay folds glyphs via the TextSurface — on bitmap modes too.
+        petscii_ok = getattr(display_mode, "is_petscii_compatible", False)
+        bitmap_ok = getattr(overlay, "SUPPORTS_BITMAP_TEXT", False) and getattr(
+            display_mode, "is_bitmap_text_compatible", False
         )
+        if not (petscii_ok or bitmap_ok):
+            where = (
+                "display = 'petscii'/'blank' or a bitmap mode (hires/mhires)"
+                if getattr(overlay, "SUPPORTS_BITMAP_TEXT", False)
+                else "display = 'petscii' or 'blank'"
+            )
+            raise ValueError(
+                f"overlay {overlay.name!r} paints text and only renders with "
+                f"{where}, but this scene's display mode is {mode_name!r}. Change "
+                "the scene to a compatible display mode or remove this overlay."
+            )
     if overlay.COMPATIBLE_MODES and mode_name not in overlay.COMPATIBLE_MODES:
         modes = ", ".join(repr(m) for m in overlay.COMPATIBLE_MODES)
         raise ValueError(

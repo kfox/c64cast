@@ -17,6 +17,7 @@ from _fakes import FakeAPI
 
 from c64cast.backend import C64Backend
 from c64cast.overlays import (
+    Overlay,
     ascii_to_screen,
     build_overlay,
     known_overlays,
@@ -33,13 +34,16 @@ def _fake_api() -> C64Backend:
 
 
 def _make_buffers():
-    """Fresh buffers dict matching what CharDisplayMode.compose() returns."""
+    """Fresh buffers dict matching what CharDisplayMode.compose() returns —
+    including the CharTextSurface text overlays now paint through (its writes
+    pass through to the same screen/color arrays, so the assertions below
+    still inspect buffers["screen"]/["color"] directly)."""
     from c64cast.overlays import SC_SPACE
+    from c64cast.text_surface import CharTextSurface
 
-    return {
-        "screen": np.full(40 * 25, SC_SPACE, dtype=np.uint8),
-        "color": np.zeros(40 * 25, dtype=np.uint8),
-    }
+    screen = np.full(40 * 25, SC_SPACE, dtype=np.uint8)
+    color = np.zeros(40 * 25, dtype=np.uint8)
+    return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 
 
 class FakeAudio:
@@ -73,8 +77,12 @@ class FakeMcmMode:
 
 
 class FakeBitmapMode:
+    """A real bitmap mode (hires/mhires): not PETSCII-compatible, but text
+    overlays fold their glyphs into the bitmap, so is_bitmap_text_compatible."""
+
     is_bitmapped = True
     is_petscii_compatible = False
+    is_bitmap_text_compatible = True
     name = "fake_bitmap"
 
 
@@ -103,14 +111,27 @@ class RegistryTest(unittest.TestCase):
             build_overlay({"type": "spectrum_petscii"}, audio=None)
         self.assertIn("audio", str(cm.exception).lower())
 
-    def test_validate_for_scene_rejects_bitmap(self):
+    def test_validate_for_scene_accepts_bitmap_text_overlay(self):
+        # Text overlays (clock/marquee/…) now fold glyphs into the bitmap, so
+        # they attach to a bitmap-text-compatible mode (hires/mhires).
         ov = build_overlay({"type": "clock"}, audio=None)
+        validate_for_scene(ov, FakeBitmapMode())  # no raise
+
+    def test_validate_for_scene_rejects_bitmap_for_non_text_overlay(self):
+        # A REQUIRES_PETSCII overlay that does NOT fold glyphs (e.g. the
+        # spectrum bar renderer) stays petscii/blank-only.
+        class _ArtOverlay(Overlay):
+            name = "art"
+            REQUIRES_PETSCII = True
+            SUPPORTS_BITMAP_TEXT = False
+
         with self.assertRaises(ValueError):
-            validate_for_scene(ov, FakeBitmapMode())
+            validate_for_scene(_ArtOverlay(), FakeBitmapMode())
 
     def test_validate_for_scene_rejects_mcm_for_petscii_overlay(self):
-        # PETSCII glyphs render wrong in MCM (color-RAM bit 3 toggles
-        # multicolor mode and pixel pairs render at 4x8 resolution).
+        # MCM is neither PETSCII- nor bitmap-text-compatible (color-RAM bit 3
+        # toggles multicolor + pixel pairs render at 4x8), so even a folding
+        # text overlay can't render there.
         ov = build_overlay({"type": "clock"}, audio=None)
         with self.assertRaises(ValueError) as cm:
             validate_for_scene(ov, FakeMcmMode())

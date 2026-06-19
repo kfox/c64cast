@@ -768,6 +768,11 @@
             ],
             "default": "percell"
           },
+          "text_double_height": {
+            "type": "boolean",
+            "description": "On mhires, render text overlays (clock/marquee/\u2026) at double height \u2014 16px / 2 cell rows \u2014 for across-the-room legibility. Text is always double-WIDE on mhires (8x8 glyph spans 2 of the 4px cells); this toggle adds the vertical stretch. Ignored on other display modes.",
+            "default": false
+          },
           "style": {
             "type": "string",
             "description": "PETSCII glyph/color style (only when display = 'petscii'); 'random' picks one at setup.",

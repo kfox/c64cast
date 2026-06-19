@@ -26,6 +26,7 @@ class MarqueeBase(Overlay):
     """Shared logic for marquee + rss. Subclass overrides _current_text()."""
 
     REQUIRES_PETSCII = True
+    SUPPORTS_BITMAP_TEXT = True  # ticker folds into hires/mhires too
     REQUIRES_AUDIO = False
     PAINTS_INTO_BUFFERS = True
     SEPARATOR = "   *   "
@@ -60,6 +61,8 @@ class MarqueeBase(Overlay):
         self.start_time = time.time()
 
     def compose(self, buffers: dict, scene, t: float) -> None:
+        surface = buffers["text"]
+        width = surface.cols  # 40 char/hires, 20 mhires (double-wide)
         text = self._current_text() or " "
         # Loop the text seamlessly: repeat with a separator so there's never
         # a long blank gap.
@@ -71,19 +74,18 @@ class MarqueeBase(Overlay):
         elapsed = t - self.start_time
         # Pixel-stable integer offset: each cell takes 1/speed seconds.
         offset = int(elapsed * self.speed) % n
-        if offset + SCREEN_W <= n:
-            row = encoded[offset : offset + SCREEN_W]
+        if offset + width <= n:
+            row = encoded[offset : offset + width]
         else:
             tail = n - offset
-            row = np.concatenate([encoded[offset:], encoded[: SCREEN_W - tail]])
-        if row.size < SCREEN_W:
-            pad = np.full(SCREEN_W - row.size, SC_SPACE, dtype=np.uint8)
+            row = np.concatenate([encoded[offset:], encoded[: width - tail]])
+        if row.size < width:
+            pad = np.full(width - row.size, SC_SPACE, dtype=np.uint8)
             row = np.concatenate([row, pad])
-        colors = np.where(row != SC_SPACE, self.fg, self.bg).astype(np.uint8)
-
-        base = self.row * SCREEN_W
-        buffers["screen"][base : base + SCREEN_W] = row
-        buffers["color"][base : base + SCREEN_W] = colors
+        # Per-cell FG = text color on glyphs, bg color on the gaps (so the
+        # ticker reads as a band). bg also fills the "off" pixels on bitmap.
+        colors = np.where(row != SC_SPACE, self.fg, self.bg).astype(np.int64)
+        surface.paint_run(self.row, 0, row, colors, self.bg)
 
 
 @register("marquee")
