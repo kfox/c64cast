@@ -53,7 +53,7 @@ TOML file (`--config PATH` wins; else `./c64cast.toml` if present; else built-in
 
 The config defines the **playlist** (which scenes run, in what order, for how long) plus all CLI-overridable options. Every CLI flag has `default=None`; `config.merge_cli()` only overwrites a config field when the CLI value is non-None.
 
-**Config metadata is the single source of truth.** Every dataclass field in [config.py](c64cast/config.py) carries `field(metadata={"help", "choices", "applies_to"})`, and every overlay class carries `HELP` + `PARAM_HELP` (plus the existing `REQUIRES_PETSCII`/`REQUIRES_AUDIO`/`COMPATIBLE_MODES` restriction attrs). [introspect.py](c64cast/introspect.py) reads all of that into one model and renders the discovery commands; [schema.py](c64cast/schema.py) renders the same model into a JSON Schema; [config_serialize.py](c64cast/config_serialize.py) renders a `Config` back to annotated TOML (inverse of `load`; `load(dumps(cfg)) == cfg`); [wizard.py](c64cast/wizard.py) drives `--init`'s interactive prompts from the same model (choices/defaults from metadata, overlays filtered via `--compat`, asset-aware file pickers). So `--describe`, `--list-*`, `--compat`, `c64cast.schema.json`, `--init`, and serialized configs can't drift from the code. Discovery commands (config-free, no hardware): `--list-scenes` / `--list-overlays` / `--list-modes`, `--describe NAME` (optionally prefixed `scene:`/`overlay:`/`section:`/`mode:`), `--compat` (overlay × display-mode matrix — also the worklist for widening overlay parity into bitmap modes), and `--print-schema`. The committed `c64cast.schema.json` (regenerate with `make schema`; CI fails on drift) plus a `#:schema` directive on the first line of a config gives Taplo/"Even Better TOML" editors live autocomplete. `c64cast --init [PATH]` (needs the `wizard` extra) builds either a single-scene config or a multi-scene playlist (add/remove/reorder scenes, then `[playlist]` loop + video interleaving + `[interstitial]` style) interactively and writes it via the serializer, then offers to launch it. The flow is a thin questionary shell over pure helpers (`make_scene`/`build_config`/`build_multi_config`/`validate_all`); multi-scene needed no serializer/schema/loader change because the round-trip already covered N `[[scenes]]`. `--doctor --skip-probe` is the offline, collect-all config check. Unknown keys get `difflib` "did you mean" suggestions (in `_apply_section` and `build_overlay`). When adding a config field or overlay, fill in its `help`/`PARAM_HELP`, run `make schema`, and the drift tests in [tests/test_example_toml_drift.py](tests/test_example_toml_drift.py) + [tests/test_introspect.py](tests/test_introspect.py) keep everything honest.
+**Config metadata is the single source of truth.** Every dataclass field in [config.py](c64cast/config.py) carries `field(metadata={"help", "choices", "applies_to"})`, and every overlay class carries `HELP` + `PARAM_HELP` (plus the existing `REQUIRES_PETSCII`/`REQUIRES_AUDIO`/`COMPATIBLE_MODES` restriction attrs). [introspect.py](c64cast/introspect.py) reads all of that into one model and renders the discovery commands; [schema.py](c64cast/schema.py) renders the same model into a JSON Schema; [config_serialize.py](c64cast/config_serialize.py) renders a `Config` back to annotated TOML (inverse of `load`; `load(dumps(cfg)) == cfg`); [wizard.py](c64cast/wizard.py) drives `--init`'s interactive prompts from the same model (choices/defaults from metadata, overlays filtered via `--compat`, asset-aware file pickers). So `--describe`, `--list-*`, `--compat`, `c64cast.schema.json`, `--init`, and serialized configs can't drift from the code. Discovery commands (config-free, no hardware): `--list-scenes` / `--list-overlays` / `--list-modes`, `--describe NAME` (optionally prefixed `scene:`/`overlay:`/`section:`/`mode:`), `--compat` (overlay × display-mode matrix — text overlays now ✓ on bitmap modes via the TextSurface fold; the remaining bitmap gaps are `spectrum_petscii` and `big_text`), and `--print-schema`. The committed `c64cast.schema.json` (regenerate with `make schema`; CI fails on drift) plus a `#:schema` directive on the first line of a config gives Taplo/"Even Better TOML" editors live autocomplete. `c64cast --init [PATH]` (needs the `wizard` extra) builds either a single-scene config or a multi-scene playlist (add/remove/reorder scenes, then `[playlist]` loop + video interleaving + `[interstitial]` style) interactively and writes it via the serializer, then offers to launch it. The flow is a thin questionary shell over pure helpers (`make_scene`/`build_config`/`build_multi_config`/`validate_all`); multi-scene needed no serializer/schema/loader change because the round-trip already covered N `[[scenes]]`. `--doctor --skip-probe` is the offline, collect-all config check. Unknown keys get `difflib` "did you mean" suggestions (in `_apply_section` and `build_overlay`). When adding a config field or overlay, fill in its `help`/`PARAM_HELP`, run `make schema`, and the drift tests in [tests/test_example_toml_drift.py](tests/test_example_toml_drift.py) + [tests/test_introspect.py](tests/test_introspect.py) keep everything honest.
 
 ## Architecture
 
@@ -70,6 +70,13 @@ c64cast/
 ├── vision.py         VisionController: webcam hand-gestures → pause/skip/cycle
 │                     (MediaPipe HandLandmarker; sibling to keyboard.py)
 ├── modes.py          VIC-II renderers: PETSCII, MCM, Hires, MultiHires
+│                     (char + bitmap modes share a compose()/push() split so
+│                     overlays fold into the frame before upload)
+├── bitmap_text.py    Shared hires glyph rasterizer (load_glyphs / cell blit);
+│                     used by voice_scope + the on-C64 menu
+├── text_surface.py   Backend-neutral text grid overlays paint into
+│                     (Char/Hires/MHires impls); folds glyphs into char screen
+│                     codes or bitmap so text overlays render on any mode
 ├── petscii_styles.py PETSCII glyph + color style packs (default, halftone,
 │                     random_glyph, letter_rain, neon, inverse_pop, hatch,
 │                     color_only) cycled by the SHIFT key
@@ -274,28 +281,33 @@ Display is fixed bank-0 hires (no relocation — MidiScene uploads no SID payloa
 
 ### `overlays/`
 
-Stackable scene decorations. Each overlay subclasses `Overlay` and registers via `@register("name")`. `config.scenes_from_config` builds them from `[[scenes.overlays]]` TOML blocks and `validate_for_scene` rejects incompatible combinations (e.g. `clock` overlay on a `hires` scene — the clock writes PETSCII screen codes that only render in standard char mode; or on an `mcm` scene — color RAM bit 3 reinterprets the cell as multicolor).
+Stackable scene decorations. Each overlay subclasses `Overlay` and registers via `@register("name")`. `config.scenes_from_config` builds them from `[[scenes.overlays]]` TOML blocks and `validate_for_scene` rejects incompatible combinations (e.g. a text overlay on an `mcm` scene — color RAM bit 3 reinterprets the cell as multicolor + halves horizontal resolution, so neither char glyphs nor folded bitmap glyphs render right there).
+
+**Text overlays render on bitmap modes too.** A text overlay paints through `buffers["text"]` — a `text_surface.TextSurface` the scene's `compose()` stashes — instead of poking screen/color RAM directly. The surface reports its own `cols`/`rows` and folds each run into either char screen codes (`CharTextSurface`) or bitmap glyphs (`HiresTextSurface`: 40×25, glyph + FG/BG nibble per cell; `MHiresTextSurface`: 20 double-wide cols, c1=bg / c2=fg opaque box per cell, optional `text_double_height` 16px/12-row grid). Because the glyphs fold into the in-memory buffers *before* `push()`, the text rides the same host-DMA or REU bank-swap path as the frame — unlike the `menu` overlay's post-render direct writes, which skip REU-staged bitmap scenes. The shared glyph rasterizer is `bitmap_text.py`.
 
 Restrictions:
 
-* `REQUIRES_PETSCII = True` — writes PETSCII screen codes to $0400/$D800; accepted on any display mode with `is_petscii_compatible = True` (currently `PETSCIIDisplayMode` and `BlankDisplayMode`). Rejects `mcm` (color RAM bit 3 reinterprets the cell as multicolor + halved horizontal pixel resolution) and all bitmap modes (no character matrix at all).
+* `REQUIRES_PETSCII = True` — the overlay paints text (screen codes + color). Accepted on any `is_petscii_compatible = True` char mode (`PETSCIIDisplayMode`, `BlankDisplayMode`). Rejects `mcm` (color RAM bit 3 reinterprets the cell as multicolor + halved horizontal resolution).
+* `SUPPORTS_BITMAP_TEXT = True` (alongside `REQUIRES_PETSCII`) — the overlay folds its glyphs via the TextSurface, so it ALSO renders on bitmap modes (`is_bitmap_text_compatible = True`: `HiresDisplayMode`, `MultiHiresDisplayMode`). Set on the shared text bases (`corner_text`, `marquee`, `scrolling_text`) + `logo`, so every text overlay works on petscii/blank/hires/mhires. Overlays whose paint isn't a simple text run (the `spectrum_petscii` bar renderer) leave it `False` and stay char-only.
 * `COMPATIBLE_MODES = ("a", "b", ...)` — whitelist of display-mode names this overlay supports. Empty tuple (default) = no restriction. Used for overlays that don't map onto the binary "PETSCII vs bitmap" split — e.g. `big_text` paints into blank or MCM buffers but not into a PETSCII webcam scene (where it would stomp the live-frame PETSCII glyphs).
 * `REQUIRES_AUDIO = True` — needs `[audio]` enabled. `build_overlay` raises with a clear message otherwise.
 
 The built-in overlays:
 
+("text modes" below = petscii / blank / hires / mhires — folded into the bitmap on the latter two.)
+
 | Overlay            | Restriction               | What it writes                                                                 |
 |--------------------|---------------------------|--------------------------------------------------------------------------------|
-| `scrolling_text`   | petscii / blank           | One row of screen + color RAM, configurable row/speed/messages.                |
-| `marquee`          | petscii / blank           | One row, single text string, ticker-style continuous loop with separator.      |
-| `rss`              | petscii / blank           | Marquee fed by a background RSS/Atom fetch (stdlib `ElementTree`).             |
+| `scrolling_text`   | text modes                | One row of screen + color RAM, configurable row/speed/messages.                |
+| `marquee`          | text modes                | One row, single text string, ticker-style continuous loop with separator.      |
+| `rss`              | text modes                | Marquee fed by a background RSS/Atom fetch (stdlib `ElementTree`).             |
 | `spectrum_petscii` | petscii / blank, audio    | A strip of cells (bottom / center / split mode), 8 bands × 5 cols.             |
-| `clock`            | petscii / blank           | Time/date in a corner; only updates when the formatted string changes.         |
-| `weather`          | petscii / blank           | Temp + conditions in a corner; background thread polls every N minutes.        |
-| `callsign`         | petscii / blank           | Static text in a corner. Single paint, then change-detect zero traffic.        |
-| `countdown`        | petscii / blank           | Time-until-target in a corner; auto-format or `{d}{h}{m}{s}` template.         |
-| `network`          | petscii / blank           | IP / hostname / U64 ping latency in a corner; background socket poll.          |
-| `logo`             | petscii / blank           | Multi-line PETSCII art from a `.txt` file at `corner` or explicit `row`+`col`. |
+| `clock`            | text modes                | Time/date in a corner; only updates when the formatted string changes.         |
+| `weather`          | text modes                | Temp + conditions in a corner; background thread polls every N minutes.        |
+| `callsign`         | text modes                | Static text in a corner. Single paint, then change-detect zero traffic.        |
+| `countdown`        | text modes                | Time-until-target in a corner; auto-format or `{d}{h}{m}{s}` template.         |
+| `network`          | text modes                | IP / hostname / U64 ping latency in a corner; background socket poll.          |
+| `logo`             | text modes                | Multi-line PETSCII art from a `.txt` file at `corner` or explicit `row`+`col` (wide art clips on mhires). |
 | `big_text`         | blank / mcm only          | Demo-scene 8×-scaled scrolling text (each source PETSCII char → 8×8 cells).    |
 
 Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `network`) share `overlays/corner_text.py` — subclass `CornerTextOverlay` and just implement `compute_strings(t) → Optional[list[str]]`. The base handles change-detection, blanking-on-shrink, and teardown cleanup.

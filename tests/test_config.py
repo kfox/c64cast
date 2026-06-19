@@ -433,10 +433,16 @@ class ValidateSceneCfgTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown display mode"):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
-    def test_overlay_requires_petscii_rejected_on_mhires(self):
-        # `clock` overlay has REQUIRES_PETSCII; mhires is bitmap.
+    def test_text_overlay_accepted_on_mhires(self):
+        # `clock` is a text overlay (REQUIRES_PETSCII + SUPPORTS_BITMAP_TEXT):
+        # it folds its glyphs into the bitmap, so mhires is valid now.
         s = cfgmod.SceneCfg(type="webcam", display="mhires", overlays=[{"type": "clock"}])
-        with self.assertRaisesRegex(ValueError, "PETSCII"):
+        cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)  # no raise
+
+    def test_text_overlay_rejected_on_mcm(self):
+        # mcm is neither PETSCII- nor bitmap-text-compatible (color-RAM bit 3).
+        s = cfgmod.SceneCfg(type="webcam", display="mcm", overlays=[{"type": "clock"}])
+        with self.assertRaisesRegex(ValueError, "petscii"):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_overlay_requires_audio_with_audio_enabled_passes(self):

@@ -593,6 +593,7 @@ class SlideshowScene(Scene):
         reu_available: bool = False,
         audio_reu_pump_active: bool = False,
         color: ColorCfg | None = None,
+        text_double_height: bool = False,
     ):
         from .config import PICTURE_EXTS, ColorCfg, resolve_file_spec
 
@@ -616,6 +617,7 @@ class SlideshowScene(Scene):
         self._border = border
         self._background = background
         self._style = style
+        self._text_double_height = text_double_height
         # Stored as the raw tri-state setting + the probe verdict (not a
         # resolved bool) so a `display = "random"` rebuild can re-decide REU
         # staging per concrete mode each setup() — auto stages bitmap picks
@@ -674,6 +676,7 @@ class SlideshowScene(Scene):
             ),
             audio_reu_pump_active=self._audio_reu_pump_active,
             color=self._color,
+            text_double_height=self._text_double_height,
         )
         log.info("slideshow: display = random → %s", new_name)
 

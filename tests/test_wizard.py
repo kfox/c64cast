@@ -32,11 +32,20 @@ class FieldKindTest(unittest.TestCase):
 
 
 class CompatibleOverlaysTest(unittest.TestCase):
-    def test_petscii_allows_clock_bitmap_does_not(self):
+    def test_text_overlay_offered_on_petscii_and_bitmap(self):
+        # `clock` is a text overlay: it folds into the bitmap, so it's offered
+        # on both petscii and hires now.
         petscii = {o.name for o in wizard.compatible_overlays("petscii", audio_enabled=False)}
         hires = {o.name for o in wizard.compatible_overlays("hires", audio_enabled=False)}
         self.assertIn("clock", petscii)
-        self.assertNotIn("clock", hires)
+        self.assertIn("clock", hires)
+
+    def test_non_text_overlay_stays_petscii_only(self):
+        # spectrum_petscii draws bars, not a text run — petscii/blank only.
+        petscii = {o.name for o in wizard.compatible_overlays("petscii", audio_enabled=True)}
+        hires = {o.name for o in wizard.compatible_overlays("hires", audio_enabled=True)}
+        self.assertIn("spectrum_petscii", petscii)
+        self.assertNotIn("spectrum_petscii", hires)
 
     def test_hires_edges_maps_to_hires_runtime(self):
         # hires_edges and hires share runtime name 'hires' — same overlay set.
@@ -205,10 +214,9 @@ class ValidateAllTest(unittest.TestCase):
         cfg = wizard.build_multi_config(
             scenes=[
                 wizard.make_scene("blank", {"display": "blank"}, []),  # ok
-                # clock overlay on a bitmap scene -> rejected.
-                wizard.make_scene(
-                    "webcam", {"display": "hires", "name": "Bad"}, [{"type": "clock"}]
-                ),
+                # clock overlay on an mcm scene -> rejected (mcm isn't
+                # PETSCII- or bitmap-text-compatible; hires would now fold it).
+                wizard.make_scene("webcam", {"display": "mcm", "name": "Bad"}, [{"type": "clock"}]),
             ]
         )
         errs = wizard.validate_all(cfg)

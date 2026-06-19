@@ -26,6 +26,7 @@ class MarqueeBase(Overlay):
     """Shared logic for marquee + rss. Subclass overrides _current_text()."""
 
     REQUIRES_PETSCII = True
+    SUPPORTS_BITMAP_TEXT = True  # ticker folds into hires/mhires too
     REQUIRES_AUDIO = False
     PAINTS_INTO_BUFFERS = True
     SEPARATOR = "   *   "

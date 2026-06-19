@@ -64,6 +64,64 @@ class ModeTableSyncTest(unittest.TestCase):
             self.assertEqual(built.name, m.runtime_name, m.name)
             self.assertEqual(bool(built.is_bitmapped), m.is_bitmapped, m.name)
             self.assertEqual(bool(built.is_petscii_compatible), m.is_petscii_compatible, m.name)
+            self.assertEqual(
+                bool(getattr(built, "is_bitmap_text_compatible", False)),
+                m.is_bitmap_text_compatible,
+                m.name,
+            )
+
+
+class CompatMatrixTest(unittest.TestCase):
+    """The --compat matrix (overlay_mode_ok) must mirror the real
+    overlays.validate_for_scene gate, including bitmap text support."""
+
+    def _doc(self, name):
+        return next(o for o in introspect.overlay_docs() if o.name == name)
+
+    def _mode(self, name):
+        return next(m for m in introspect.display_modes() if m.name == name)
+
+    def test_text_overlays_attach_on_bitmap(self):
+        for ov_name in (
+            "clock",
+            "marquee",
+            "scrolling_text",
+            "callsign",
+            "countdown",
+            "network",
+            "weather",
+            "rss",
+            "logo",
+        ):
+            od = self._doc(ov_name)
+            self.assertTrue(od.supports_bitmap_text, ov_name)
+            for mode_name in ("hires", "hires_edges", "mhires", "petscii", "blank"):
+                ok, _ = introspect.overlay_mode_ok(od, self._mode(mode_name))
+                self.assertTrue(ok, f"{ov_name} should attach on {mode_name}")
+            ok, _ = introspect.overlay_mode_ok(od, self._mode("mcm"))
+            self.assertFalse(ok, f"{ov_name} must not attach on mcm")
+
+    def test_non_text_petscii_overlay_stays_char_only(self):
+        # spectrum_petscii writes screen RAM but doesn't fold glyphs.
+        od = self._doc("spectrum_petscii")
+        self.assertFalse(od.supports_bitmap_text)
+        ok, _ = introspect.overlay_mode_ok(od, self._mode("hires"))
+        self.assertFalse(ok)
+
+    def test_matrix_mirrors_validate_for_scene(self):
+        from c64cast.overlays import build_overlay, validate_for_scene
+
+        ov = build_overlay({"type": "clock"}, audio=None)
+        od = self._doc("clock")
+        for m in introspect.display_modes():
+            built_mode = cfgmod._build_display_mode(m.name)
+            try:
+                validate_for_scene(ov, built_mode)
+                raised = False
+            except ValueError:
+                raised = True
+            ok, _ = introspect.overlay_mode_ok(od, m)
+            self.assertEqual(ok, not raised, m.name)
 
 
 class ChoiceVocabSyncTest(unittest.TestCase):

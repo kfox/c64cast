@@ -75,6 +75,7 @@ class CornerTextOverlay(Overlay):
     """
 
     REQUIRES_PETSCII = True
+    SUPPORTS_BITMAP_TEXT = True  # corner text folds into hires/mhires too
     REQUIRES_AUDIO = False
     PAINTS_INTO_BUFFERS = True
     # Shared by clock/weather/callsign/countdown/network — the introspection

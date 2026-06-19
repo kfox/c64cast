@@ -25,6 +25,7 @@ from _fakes import FakeAPI  # noqa: E402
 from c64cast import text_surface  # noqa: E402
 from c64cast.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
 from c64cast.overlays.callsign import CallsignOverlay  # noqa: E402
+from c64cast.overlays.logo import LogoOverlay  # noqa: E402
 from c64cast.overlays.marquee import MarqueeOverlay  # noqa: E402
 from c64cast.overlays.scrolling_text import ScrollingTextOverlay  # noqa: E402
 from c64cast.text_surface import HiresTextSurface, MHiresTextSurface  # noqa: E402
@@ -114,6 +115,30 @@ class MhiresOverlayTest(unittest.TestCase):
         mode.push(api, buffers)
         self.assertIn(0x2000, api.regions)
 
+    def test_logo_art_folds_into_bitmap(self):
+        import os
+        import tempfile
+
+        glyphs = _synthetic_glyphs()
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("AB\nCD\n")
+            path = f.name
+        try:
+            with patch.object(text_surface, "_glyph_table", lambda: glyphs):
+                mode = MultiHiresDisplayMode("percell")
+                api = FakeAPI()
+                mode.setup(api)
+                buffers = mode.compose(_frame())
+                ov = LogoOverlay(file=path, corner="top-left", fg_color="white", bg_color="black")
+                ov.setup(api, MagicMock())
+                ov.compose(buffers, MagicMock(), 0.0)
+        finally:
+            os.unlink(path)
+        # "AB" row 0: text cell 0 ('A'=code 1) -> hw cells 0,1 double-wide.
+        # screen nibble = (bg<<4)|fg = (0<<4)|white(1) = 0x01.
+        self.assertEqual(buffers["screen"][0], 0x01)
+        self.assertEqual(buffers["screen"][1], 0x01)
+
     def test_double_height_grid(self):
         mode = MultiHiresDisplayMode("percell", text_double_height=True)
         api = FakeAPI()
@@ -121,6 +146,17 @@ class MhiresOverlayTest(unittest.TestCase):
         buffers = mode.compose(_frame())
         surf = buffers["text"]
         self.assertEqual((surf.cols, surf.rows), (20, 12))
+
+    def test_config_threads_text_double_height(self):
+        # The SceneCfg field reaches MultiHiresDisplayMode via _build_display_mode.
+        from typing import cast
+
+        from c64cast.config import _build_display_mode
+
+        mode = cast(MultiHiresDisplayMode, _build_display_mode("mhires", text_double_height=True))
+        self.assertTrue(mode.text_double_height)
+        mode_default = cast(MultiHiresDisplayMode, _build_display_mode("mhires"))
+        self.assertFalse(mode_default.text_double_height)
 
     def test_scrolling_text_static_centered(self):
         glyphs = _synthetic_glyphs()

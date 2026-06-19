@@ -844,6 +844,17 @@ class SceneCfg:
             "apply": "live",
         },
     )
+    text_double_height: bool = field(
+        default=False,
+        metadata={
+            "help": "On mhires, render text overlays (clock/marquee/…) at double "
+            "height — 16px / 2 cell rows — for across-the-room legibility. "
+            "Text is always double-WIDE on mhires (8x8 glyph spans 2 of the "
+            "4px cells); this toggle adds the vertical stretch. Ignored on "
+            "other display modes.",
+            "applies_to": ("webcam", "video", "slideshow", "generative"),
+        },
+    )
     style: str = field(
         default="default",
         metadata={
@@ -1888,6 +1899,7 @@ def _build_display_mode(
     use_reu_staged: bool = False,
     audio_reu_pump_active: bool = False,
     color: ColorCfg | None = None,
+    text_double_height: bool = False,
 ) -> DisplayMode:
     # Imported inside the function to keep config.py importable in test
     # contexts that stub out the heavy modules.
@@ -1944,6 +1956,7 @@ def _build_display_mode(
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
+            text_double_height=text_double_height,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
@@ -2082,6 +2095,7 @@ def _display_mode_for_scene(
         use_reu_staged=use_reu_staged,
         audio_reu_pump_active=cfg.audio.use_reu_pump,
         color=cfg.color,
+        text_double_height=s.text_double_height,
     )
 
 
@@ -2535,6 +2549,7 @@ def build_scene(
             reu_available=reu_available,
             audio_reu_pump_active=audio_reu_pump_active,
             color=cfg.color,
+            text_double_height=s.text_double_height,
         )
     elif s.type == "generative":
         from .audio_source import (

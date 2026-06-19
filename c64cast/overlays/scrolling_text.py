@@ -57,6 +57,7 @@ class ScrollMessage:
 @register("scrolling_text")
 class ScrollingTextOverlay(Overlay):
     REQUIRES_PETSCII = True
+    SUPPORTS_BITMAP_TEXT = True  # scroller folds into hires/mhires too
     REQUIRES_AUDIO = False
     PAINTS_INTO_BUFFERS = True
     HELP = "One scrolling row of messages (per-row scroller)."
