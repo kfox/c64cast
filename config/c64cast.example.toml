@@ -869,14 +869,23 @@ palette_mode = "grayscale"
 #
 # Visualization is a full-screen hires oscilloscope of the three SID voices
 # (the same renderer as the waveform scene). Voices draw in color while
-# sounding and fade to gray when idle; the bottom rows show the global waveform
-# + master volume and a live controller readout (PW / cutoff / resonance /
-# ADSR). Bitmap-only, so the `display` field is ignored and PETSCII overlays
-# (clock/callsign/marquee/…) are NOT compatible — same as a waveform scene.
+# sounding and fade to gray when idle; the bottom rows show the per-voice
+# waveforms + master volume and a live controller readout (PW / cutoff /
+# resonance / ADSR). Bitmap-only, so the `display` field is ignored and PETSCII
+# overlays (clock/callsign/marquee/…) are NOT compatible — like a waveform scene.
+#
+# Each voice can run its own (optionally combined) waveform. Set them per voice
+# (midi_voice_waveforms), cycle them with SHIFT (which now also walks combined
+# waveforms), or select live with MIDI Program Change. By default one MIDI
+# channel is spread across the 3 voices; set midi_voice_mode = "multitimbral"
+# to route MIDI channels to fixed voices instead.
 #
 # Live control:
-#   SHIFT       cycle the global waveform (pulse → saw → triangle → noise)
-#   velocity    → per-note loudness (drives each voice's sustain level)
+#   SHIFT          advance every voice one step through the waveform cycle
+#                  (pulse → saw → triangle → noise → pulse+triangle)
+#   ProgramChange  select a waveform (shared = all voices; multitimbral = the
+#                  message's channel)
+#   velocity       → per-note loudness (drives each voice's sustain level)
 #   CC1  modwheel → pulse width      CC7  → master volume
 #   CC74 → filter cutoff   CC71 → resonance
 #   CC73 / CC75 / CC72 → attack / decay / release
@@ -886,7 +895,14 @@ palette_mode = "grayscale"
 # name = "MIDI → SID"
 # duration_s = 60.0
 # midi_port = ""                        # "" or omit → first available port
-# midi_waveform = "pulse"               # pulse | sawtooth | triangle | noise (SHIFT cycles)
+# midi_waveform = "pulse"               # default waveform: pulse | sawtooth | triangle | noise
+# # Per-voice starting waveforms (≤3; '+' combines, e.g. 'pulse+triangle' for
+# # the SID's combined wave). On a 6581 only pulse+triangle reliably sounds —
+# # sawtooth combos AND to near-silence. Empty = every voice uses midi_waveform.
+# midi_voice_waveforms = ["pulse", "sawtooth", "triangle"]
+# midi_voice_mode = "shared"            # shared | multitimbral
+# midi_voice_channels = [1, 2, 3]       # multitimbral: MIDI channels for voices 1/2/3
+# midi_program_change = true            # honor Program Change → waveform
 # midi_adsr = [0, 8, 12, 8]             # attack, decay, sustain, release (0-15); velocity overrides sustain
 # midi_pulse_width = 2048               # 0-4095 (pulse waveform only); CC1
 # midi_filter_cutoff = 2047             # 0-2047, default open (neutral lowpass); CC74

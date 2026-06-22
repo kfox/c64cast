@@ -149,6 +149,11 @@ class ChoiceVocabSyncTest(unittest.TestCase):
 
         self.assertEqual(set(cfgmod._MIDI_WAVEFORM_CHOICES), set(midi_scene._WAVEFORM_BITS))
 
+    def test_midi_voice_modes(self):
+        from c64cast import midi_scene
+
+        self.assertEqual(cfgmod._MIDI_VOICE_MODE_CHOICES, midi_scene.VOICE_MODES)
+
     def test_backgrounds(self):
         from c64cast import backgrounds
 
