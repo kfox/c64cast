@@ -2,8 +2,9 @@
 
 No hardware: a `LoopbackTransport` captures the exact bytes the client puts
 on the wire and replies with queued tokens, so the framing (big-endian
-tokens + fields), the ack handshake, and the PostFile/LaunchFile/reset
-workflows are pinned against the firmware protocol.
+tokens + fields), the ack handshake, the ReadC64Mem round-trip + read-
+capability probe, and the PostFile/LaunchFile/reset workflows are pinned
+against the firmware protocol.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from c64cast.teensyrom_dma import (
     TOK_ACK,
     TOK_FAIL,
     TOK_FW_FULL,
+    TOK_READ_C64_MEM,
     TRClient,
     TRError,
     TRTransport,
@@ -108,6 +110,29 @@ class FramingTest(unittest.TestCase):
         with self.assertRaises(TRError):
             self.client.write_segment(0xD020, b"\x02")
 
+    def test_read_segment_is_big_endian_with_ack_then_data(self):
+        # ReadC64Mem: token 0x64FD + addr(BE) + len(BE), then the ack, then
+        # `len` data bytes. $FFFC reads back the KERNAL reset vector (E2 FC).
+        self.t.queue_token(TOK_ACK)
+        self.t.queue_raw(b"\xe2\xfc")
+        out = self.client.read_segment(0xFFFC, 2)
+        self.assertEqual(self.t.sent, bytes([0x64, 0xFD, 0xFF, 0xFC, 0x00, 0x02]))
+        self.assertEqual(out, b"\xe2\xfc")
+        # Sanity: the token constant matches the wire bytes.
+        self.assertEqual(TOK_READ_C64_MEM, 0x64FD)
+
+    def test_read_segment_nak_raises(self):
+        self.t.queue_token(TOK_FAIL)
+        with self.assertRaises(TRError):
+            self.client.read_segment(0x028D, 1)
+
+    def test_read_segment_ack_parsed_little_endian(self):
+        # Ack 0x64CC arrives LSB-first (CC 64); a big-endian parse would make
+        # a valid read look like an error before the data is even read.
+        self.t.queue_raw(b"\xcc\x64")
+        self.t.queue_raw(b"\x05")
+        self.assertEqual(self.client.read_segment(0x028D, 1), b"\x05")
+
     def test_fw_check_on_connect(self):
         self.t.queue_token(TOK_FW_FULL)
         self.client.connect()
@@ -153,9 +178,17 @@ class FramingTest(unittest.TestCase):
 
 
 class BackendTest(unittest.TestCase):
-    def _backend(self):
+    def _backend(self, read: bool = True):
         t = LoopbackTransport()
         t.queue_token(TOK_FW_FULL)  # consumed by connect()'s fw_check
+        # __init__ probes ReadC64Mem (a 2-byte $FFFC read). Feed a successful
+        # round-trip (read=True) so supports_read stays set, or a NAK
+        # (read=False) so it downgrades to the old read-free behaviour.
+        if read:
+            t.queue_token(TOK_ACK)  # probe ack
+            t.queue_raw(b"\xe2\xfc")  # 2 ROM bytes ($FFFC)
+        else:
+            t.queue_token(TOK_FAIL)  # probe NAK -> supports_read False
         b = TeensyROMBackend(t, profile=replace(TEENSYROM_PROFILE), storage="sd")
         return b, t
 
@@ -178,23 +211,72 @@ class BackendTest(unittest.TestCase):
         b.write_memory("d020", "0e")
         self.assertEqual(b.stats["errors"], 1)
 
-    def test_read_memory_is_unsupported(self):
-        b, _ = self._backend()
+    def test_read_probe_sets_supports_read(self):
+        # A firmware that answers the ReadC64Mem probe keeps supports_read True
+        # (so cli.py builds the keyboard poller).
+        b, _ = self._backend(read=True)
+        self.assertTrue(b.profile.supports_read)
+
+    def test_read_probe_downgrades_on_old_firmware(self):
+        # A firmware that NAKs the probe is honestly reported as read-free,
+        # so callers fall back to the control plane instead of polling forever.
+        b, _ = self._backend(read=False)
         self.assertFalse(b.profile.supports_read)
-        with self.assertRaises(BackendCapabilityError):
-            b.read_memory(0x028D, 1)
+
+    def test_read_memory_round_trip(self):
+        b, t = self._backend()
+        t.queue_token(TOK_ACK)
+        t.queue_raw(b"\x42")  # the byte living at $028D
+        out = b.read_memory(0x028D, 1)
+        self.assertEqual(out, b"\x42")
+        # The ReadC64Mem command (token + addr BE + len BE) is the tail of the
+        # wire output, after the connect + probe prefix.
+        self.assertTrue(bytes(t.sent).endswith(b"\x64\xfd\x02\x8d\x00\x01"))
+
+    def test_read_memory_returns_none_on_nak(self):
+        # keyboard.py + the menu poller depend on None (never a raise) meaning
+        # "couldn't tell" so a blip doesn't crash the playlist.
+        b, t = self._backend()
+        t.queue_token(TOK_FAIL)
+        self.assertIsNone(b.read_memory(0x028D, 1))
+
+    def test_read_memory_returns_none_on_timeout(self):
+        b, _ = self._backend()
+        # No reply queued -> the transport underflows; read_memory swallows it.
+        self.assertIsNone(b.read_memory(0x028D, 1))
 
     def test_sid_player_unsupported_in_phase1(self):
         b, _ = self._backend()
         with self.assertRaises(BackendCapabilityError):
             b.run_sid_player(b"PSID")
 
-    def test_bring_up_dmas_spin_stub_then_deletes_uploads_launches(self):
-        # Bring-up DMAs the spin MC to $C000 (one WriteC64Mem segment), then
-        # DeleteFile -> PostFile -> LaunchFile the SYS stub. Acks: 1 (spin) +
-        # 2 (delete) + 3 (post) + 2 (launch) = 8.
-        b, t = self._backend()
-        # 1 (spin MC) + 2 (delete) + 3 (post) + 2 (launch) + 1 (screen clear).
+    def test_bring_up_clear_loop_when_read_supported(self):
+        # Cycle-clean firmware (supports_read True) launches the IRQ-enabled
+        # BASIC clear-loop: DeleteFile -> PostFile -> LaunchFile, with NO spin
+        # MC write to $C000 and NO DMA screen-clear (CHR$(147) clears it).
+        # Acks: 2 (delete) + 3 (post) + 2 (launch) = 7.
+        b, t = self._backend(read=True)
+        for _ in range(7):
+            t.queue_token(TOK_ACK)
+        b.run_basic_clear_loop()
+        sent = bytes(t.sent)
+        # No WriteC64Mem to $C000 (spin MC) nor to $0400 (screen clear).
+        self.assertNotIn(b"\x64\xfb\xc0\x00", sent)
+        self.assertNotIn(b"\x64\xfb\x04\x00", sent)
+        # The clear-loop PRG was deleted-then-posted-then-launched.
+        i_del = sent.find(b"\x64\xcf")
+        i_post = sent.find(b"\x64\xbb")
+        i_launch = sent.find(b"\x64\x44")
+        self.assertNotEqual(i_del, -1)
+        self.assertLess(i_del, i_post)
+        self.assertLess(i_post, i_launch)
+
+    def test_bring_up_spin_stub_when_read_unsupported(self):
+        # Old firmware (supports_read False) falls back to the spin stub: DMA
+        # the spin MC to $C000, then DeleteFile -> PostFile -> LaunchFile the
+        # SYS stub, then DMA-clear the screen. Acks: 1 (spin) + 2 (delete) +
+        # 3 (post) + 2 (launch) + 1 (screen clear) = 9.
+        b, t = self._backend(read=False)
         for _ in range(9):
             t.queue_token(TOK_ACK)
         b.run_basic_clear_loop()
@@ -213,16 +295,14 @@ class BackendTest(unittest.TestCase):
 
     def test_bring_up_tolerates_missing_file_on_delete(self):
         # First-ever run: the file doesn't exist, so DeleteFile NAKs; bring-up
-        # must ignore that and still PostFile + LaunchFile.
-        b, t = self._backend()
-        t.queue_token(TOK_ACK)  # spin MC write
+        # must ignore that and still PostFile + LaunchFile. (Clear-loop path.)
+        b, t = self._backend(read=True)
         t.queue_token(TOK_ACK)  # delete open
         t.queue_token(TOK_FAIL)  # delete body -> file not found (ignored)
         for _ in range(3):
             t.queue_token(TOK_ACK)  # post open/header/data
         for _ in range(2):
             t.queue_token(TOK_ACK)  # launch open/body
-        t.queue_token(TOK_ACK)  # post-launch screen clear
         b.run_basic_clear_loop()
         self.assertIn(b"\x64\x44", bytes(t.sent))  # launch still happened
 

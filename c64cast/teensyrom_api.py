@@ -8,9 +8,15 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     into WriteC64Mem segments and waits for the per-segment ack.
   * **reset** maps to ResetC64Token; **run_prg** is synthesised from
     PostFile (upload to SD/USB) + LaunchFile; **probe** uses Ping.
-  * **read_memory / run_sid_player / cue_song_reinit / reu_write** are left
-    on the ABC's raising defaults — the protocol has no read-C64-memory token
-    (the one true gap), SID-player launch is a later phase, and there is no
+  * **read_memory** rides ReadC64Mem (`0x64FD`), added in the cycle-clean TR+
+    firmware (v0.7.2.5). The protocol-level capability is declared on the
+    profile, but `__init__` *probes* for it at connect (a tiny ROM read) and
+    downgrades `supports_read` if the connected build lacks the token — so an
+    older firmware still degrades gracefully instead of NAK/timeout-ing every
+    keyboard poll. Read support unlocks the `$028D` keyboard poller (physical
+    pause/skip/cycle/menu control), same as the Ultimate.
+  * **run_sid_player / cue_song_reinit / reu_write** are left on the ABC's
+    raising defaults — SID-player launch is a later phase and there is no
     REUWRITE opcode. Callers gate on `profile.supports_*`.
 
 The semantic helpers (`silence_sid`, `restore_kernal_irq_vector`,
@@ -20,9 +26,11 @@ The semantic helpers (`silence_sid`, `restore_kernal_irq_vector`,
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import time
+from dataclasses import replace
 
 from .backend import BufferedWriteBackend, HardwareProfile
 from .teensyrom_dma import (
@@ -39,17 +47,34 @@ log = logging.getLogger(__name__)
 # the directory; a dedicated folder keeps our files out of the user's roots.
 _UPLOAD_DIR = "c64cast"
 _SPIN_NAME = "spin.prg"
+_CLEARLOOP_NAME = "clearloop.prg"
 
-# C64-side "park the CPU" machine code, DMA'd to $C000 and entered via a
-# launched BASIC `SYS 49152` stub. The TR's WriteC64Mem DMA is NOT cycle-clean
-# — it perturbs the running 6510, so streaming over a running BASIC program
-# (the U64's clear-loop approach) corrupts it within seconds ("?UNDEF'D
-# STATEMENT", "?SYNTAX ERROR"). This stub instead parks the CPU with IRQs
-# masked, executing only a NOP sled that loops on itself: SEI, 252×NOP, then
-# JMP back to the top. A perturbed cycle just lands somewhere in the sled and
-# slides back to the JMP — there's no interpreter state to corrupt and the
-# kernal IRQ (cursor blink / keyboard scan) never runs. The VIC keeps
-# refreshing the display from screen RAM, which we update by DMA.
+# Idle bring-up has two strategies, picked by firmware (see
+# run_basic_clear_loop):
+#
+# (1) IRQ-ENABLED CLEAR-LOOP (default on cycle-clean firmware, fw >= v0.7.2.5).
+#     Launch the same `10 PRINT CHR$(147):20 GOTO 20` BASIC PRG the Ultimate
+#     runs (api.BASIC_CLEAR_LOOP_PRG): CHR$(147) clears the screen, the GOTO
+#     loop keeps the kernal IRQ scanning the keyboard (so $028D stays live for
+#     the keyboard poller) while staying out of the editor's direct-input mode
+#     (cursor blink suppressed for free). Safe now that the TR's WriteC64Mem
+#     DMA is cycle-clean — a running interpreter survives sustained hammering
+#     (HW-verified). Read support is the proxy for "new enough firmware": both
+#     ReadC64Mem and the cycle-clean DMA fix shipped together, so the idle
+#     follows `profile.supports_read`.
+#
+# (2) SPIN-STUB FALLBACK (older firmware, before the DMA was cycle-clean).
+#     C64-side "park the CPU" machine code, DMA'd to $C000 and entered via a
+#     launched BASIC `SYS 49152` stub. On pre-cycle-clean firmware the TR's
+#     WriteC64Mem DMA perturbs the running 6510, so streaming over a running
+#     BASIC program corrupts it within seconds ("?UNDEF'D STATEMENT", "?SYNTAX
+#     ERROR"). This stub instead parks the CPU with IRQs masked, executing only
+#     a NOP sled that loops on itself: SEI, 252×NOP, then JMP back to the top.
+#     A perturbed cycle just lands somewhere in the sled and slides back to the
+#     JMP — there's no interpreter state to corrupt. The trade-off is that the
+#     kernal IRQ (cursor blink / keyboard scan) never runs, so $028D is frozen
+#     and there's no physical-keyboard control on old firmware. The VIC keeps
+#     refreshing the display from screen RAM, which we update by DMA.
 #   $C000 SEI            ; 78        mask IRQs
 #   $C001 NOP × 252      ; EA…       glitch-tolerant sled
 #   $C0FD JMP $C000      ; 4C 00 C0  loop forever
@@ -84,6 +109,32 @@ class TeensyROMBackend(BufferedWriteBackend):
         # connect() raises TRError on a bad port / unreachable listener; let
         # it propagate so the CLI can render a user-actionable message.
         self.tr.connect()
+        # The profile declares read support at the protocol level (ReadC64Mem
+        # exists), but a given device may run pre-v0.7.2.5 firmware that lacks
+        # the token. Probe once and downgrade rather than NAK/timeout-ing every
+        # keyboard poll — version-robust without parsing the ping banner.
+        if self.profile.supports_read and not self._probe_read():
+            self.profile = replace(self.profile, supports_read=False)
+            log.info(
+                "TR firmware lacks ReadC64Mem — physical-keyboard control "
+                "disabled (use the control plane); upgrade to fw >= v0.7.2.5"
+            )
+
+    def _probe_read(self) -> bool:
+        """Confirm the connected firmware answers ReadC64Mem. Reads 2 bytes of
+        KERNAL ROM ($FFFC reset vector — always mapped, value-stable) and only
+        checks the round-trip succeeds; older builds NAK/timeout the unknown
+        token. Best-effort: any failure -> no read support, drained to resync."""
+        try:
+            data = self.tr.read_segment(0xFFFC, 2)
+            return len(data) == 2
+        except (OSError, TRError) as e:
+            log.debug("TR read-capability probe failed (%s); assuming no read", e)
+            # An unknown token on old firmware may leave trailing bytes; clear
+            # them so the next real command starts on a clean offset.
+            with contextlib.suppress(OSError, TRError):
+                self.tr._drain_stale(0.2)
+            return False
 
     # ---- write path -------------------------------------------------------
     _EMIT_WRITE_LABEL = "TR write"
@@ -116,6 +167,28 @@ class TeensyROMBackend(BufferedWriteBackend):
         return self.tr.format_latency()
 
     # ---- capability-gated surface (the supported subset) ------------------
+    def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
+        """Read `length` bytes from C64 `address` via ReadC64Mem, chunked at
+        MAX_SEGMENT_BYTES. Returns the bytes, or **None** on any transport /
+        protocol failure.
+
+        Returning None (never raising) is a hard contract: keyboard.py and the
+        menu poller call this every ~100 ms and rely on None meaning "couldn't
+        tell" so a transient blip doesn't crash the playlist (parallel to the
+        Ultimate's REST read). `timeout` is accepted for the C64Backend
+        signature; the transport's own io_timeout governs the actual wait."""
+        try:
+            out = bytearray()
+            off = 0
+            while off < length:
+                n = min(length - off, self.tr.MAX_SEGMENT_BYTES)
+                out += self.tr.read_segment(address + off, n)
+                off += n
+            return bytes(out)
+        except (OSError, TRError) as e:
+            log.debug("TR read_memory $%04X failed: %s", address, e)
+            return None
+
     def probe(self, timeout: float = 2.0) -> str | None:
         """Liveness probe via Ping; returns the TR's status line or None."""
         try:
@@ -137,49 +210,89 @@ class TeensyROMBackend(BufferedWriteBackend):
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Bring the C64 to a clean, streamable idle state.
 
-        Unlike the Ultimate (which RUNs a BASIC clear-loop), the TR parks the
-        6510 in a glitch-tolerant machine-code spin loop — see [_SPIN_STUB].
-        The TR's WriteC64Mem DMA perturbs a running CPU, so leaving BASIC's
-        interpreter executing corrupts it within seconds; the NOP-sled spin
-        has no interpreter state to corrupt and masks IRQs (no cursor blink).
+        Two strategies, picked by firmware (see the _SPIN_STUB strategy comment
+        above):
 
-        Sequence: DMA the spin MC to $C000, then launch a `SYS 49152` BASIC
-        stub so the 6510 jumps into it. Best-effort: failures log, don't raise.
-        Requires the TR menu active (true right after reset()).
+          * **cycle-clean firmware** (proxied by `profile.supports_read`, since
+            ReadC64Mem + the cycle-clean DMA fix shipped together) — launch the
+            same IRQ-enabled BASIC clear-loop the Ultimate runs, so the kernal
+            keyboard scan keeps `$028D` live for the keyboard poller.
+          * **older firmware** (no read support) — fall back to the IRQ-masked
+            spin stub, which survives a non-cycle-clean DMA but freezes `$028D`
+            (no physical-keyboard control).
+
+        Best-effort: failures log, don't raise. Requires the TR menu active
+        (true right after reset()).
         """
+        if self.profile.supports_read:
+            self._bring_up_irq_clear_loop()
+        else:
+            self._bring_up_spin_stub()
+
+    def _bring_up_irq_clear_loop(self) -> None:
+        """IRQ-enabled idle: PostFile + LaunchFile the BASIC clear-loop PRG
+        (`10 PRINT CHR$(147):20 GOTO 20`, shared with the Ultimate). CHR$(147)
+        clears the screen and the running GOTO loop keeps the kernal IRQ
+        (keyboard scan) alive — so `$028D` updates for the keyboard poller —
+        while staying out of the editor's direct-input mode (cursor blink
+        suppressed for free). Safe now that the TR DMA is cycle-clean."""
+        from .api import BASIC_CLEAR_LOOP_PRG
+
+        self.invalidate_cache()
+        path = f"{_UPLOAD_DIR}/{_CLEARLOOP_NAME}"
+        # CHR$(147) clears the screen, so (unlike the spin stub) there's no
+        # leftover banner to DMA-blank afterwards.
+        if self._upload_and_launch_retry(BASIC_CLEAR_LOOP_PRG, path, "clear-loop"):
+            self.invalidate_cache()
+
+    def _bring_up_spin_stub(self) -> None:
+        """Legacy IRQ-masked idle for pre-cycle-clean firmware: DMA the spin MC
+        to $C000, then launch a `SYS 49152` stub so the 6510 jumps into it.
+        LaunchFile loads the BASIC stub at $0801 and won't touch $C000, so the
+        MC is still there when SYS jumps to it."""
         from .api import _build_basic_sys_stub
 
         self.invalidate_cache()
-        # DMA the spin MC first; LaunchFile loads the BASIC stub at $0801 and
-        # won't touch $C000, so the MC is still there when SYS jumps to it.
         self.write_memory_file(f"{_SPIN_STUB_ADDR:04X}", _SPIN_STUB)
         self.flush()
         stub_prg = _build_basic_sys_stub(_SPIN_STUB_ADDR)
         path = f"{_UPLOAD_DIR}/{_SPIN_NAME}"
-        # Retry handles the brief window after reset where the menu/SD isn't
-        # ready yet; _upload drains stale chatter + deletes any prior copy
-        # (PostFile won't overwrite) so retries resync cleanly.
+        if self._upload_and_launch_retry(stub_prg, path, "spin-stub"):
+            # The CPU is now parked; clear the boot banner / "RUNNING..." the
+            # spin stub left on screen (it doesn't PRINT CHR$(147)). Settle
+            # first so the loader's print lands before we blank it.
+            time.sleep(_LAUNCH_SETTLE_S)
+            self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
+            self.invalidate_cache()
+
+    def _upload_and_launch_retry(self, prg: bytes, dest: str, label: str) -> bool:
+        """Upload `prg` to `dest` and LaunchFile it, retrying through the brief
+        post-reset window where the menu/SD isn't ready yet. `_upload` drains
+        stale chatter + deletes any prior copy (PostFile won't overwrite) so
+        retries resync cleanly. Returns True on success, False after exhausting
+        attempts (logged, not raised — bring-up is best-effort)."""
         last_err: Exception | None = None
         for attempt in range(1, _BRINGUP_ATTEMPTS + 1):
             try:
-                self._upload(stub_prg, path)
-                self.tr.launch_file(path, self._drive)
+                self._upload(prg, dest)
+                self.tr.launch_file(dest, self._drive)
                 if attempt > 1:
-                    log.info("TR spin-stub bring-up OK on attempt %d", attempt)
-                # The CPU is now parked; clear the boot banner / "RUNNING..."
-                # the spin stub left on screen (it doesn't PRINT CHR$(147)).
-                # Settle first so the loader's print lands before we blank it.
-                time.sleep(_LAUNCH_SETTLE_S)
-                self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
-                self.invalidate_cache()
-                return
+                    log.info("TR %s bring-up OK on attempt %d", label, attempt)
+                return True
             except (OSError, TRError) as e:
                 last_err = e
-                log.debug("TR bring-up attempt %d/%d failed: %s", attempt, _BRINGUP_ATTEMPTS, e)
+                log.debug(
+                    "TR %s bring-up attempt %d/%d failed: %s",
+                    label,
+                    attempt,
+                    _BRINGUP_ATTEMPTS,
+                    e,
+                )
                 time.sleep(_BRINGUP_RETRY_S)
         log.warning(
-            "TR spin-stub bring-up failed after %d attempts: %s", _BRINGUP_ATTEMPTS, last_err
+            "TR %s bring-up failed after %d attempts: %s", label, _BRINGUP_ATTEMPTS, last_err
         )
+        return False
 
     def _upload(self, data: bytes, dest: str) -> None:
         """Upload `data` to `dest`, replacing any existing file. PostFile

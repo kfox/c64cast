@@ -151,17 +151,19 @@ ULTIMATE_PROFILE = HardwareProfile(
 
 # TeensyROM+ over the token protocol (USB serial or raw TCP). Confirmed
 # capabilities from the firmware source: reset (0x64EE), run_prg-equivalent
-# (PostFile 0x64BB upload + LaunchFile 0x6444), ping/fw-check probe. The one
-# genuine gap is read-C64-memory (no such token exists), which gates the
-# keyboard poller + launcher idle-detect. No REUWRITE, so the experimental
-# REU-staged paths fall back to the standard write paths. `default_fps` is
-# overridden from the configured NTSC/PAL system by make_backend; the
-# `write_transport` is set per the chosen transport.
+# (PostFile 0x64BB upload + LaunchFile 0x6444), ping/fw-check probe, and (in
+# cycle-clean fw v0.7.2.5+) read-C64-memory (ReadC64Mem 0x64FD), which gates
+# the keyboard poller + launcher idle-detect. `supports_read` is declared True
+# at the protocol level here, but TeensyROMBackend.__init__ *probes* for the
+# token at connect and downgrades it for older firmware that lacks it. No
+# REUWRITE, so the experimental REU-staged paths fall back to the standard
+# write paths. `default_fps` is overridden from the configured NTSC/PAL system
+# by make_backend; the `write_transport` is set per the chosen transport.
 TEENSYROM_PROFILE = HardwareProfile(
     name="TeensyROM+",
     family="tr",
     supports_write=True,
-    supports_read=False,  # no read-C64-memory token in the protocol
+    supports_read=True,  # ReadC64Mem 0x64FD (fw v0.7.2.5+); probed at connect
     supports_reset=True,  # ResetC64Token 0x64EE
     supports_probe=True,  # Ping 0x6455 / FWCheck 0x64E0
     supports_run_prg=True,  # PostFile + LaunchFile
@@ -619,7 +621,8 @@ def make_backend(cfg: Config) -> C64Backend:
             if not tr.serial_port:
                 raise ValueError(
                     "[teensyrom].serial_port is required when transport = "
-                    '"serial" (e.g. /dev/tty.usbmodem* or COM3)'
+                    '"serial" (e.g. /dev/cu.usbmodem* or COM3, over a plain '
+                    "USB data cable — not an FTDI null-modem cable)"
                 )
             transport = SerialTransport(tr.serial_port, tr.baud or DEFAULT_BAUD)
             transport_kind = "tr_serial"

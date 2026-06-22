@@ -58,9 +58,16 @@ backend = "ultimate"                # which hardware abstraction layer drives
                                     # "teensyrom" = TeensyROM+ (see [teensyrom]).
 
 [teensyrom]                         # only used when [hardware].backend = "teensyrom"
-transport = "serial"                # "serial" (USB-B) | "tcp" (port 2112)
-serial_port = "/dev/tty.usbmodem1234"  # serial device (required for serial);
-                                    #   COM3 on Windows, /dev/ttyACM0 on Linux
+                                    # On cycle-clean fw (v0.7.2.5+) the TR reads
+                                    # C64 memory, so the physical keyboard (C=/
+                                    # CTRL/SHIFT/SPACE) works like the Ultimate;
+                                    # older fw falls back to the control plane.
+transport = "serial"                # "serial" (USB data cable to micro-USB-B) |
+                                    #   "tcp" (port 2112)
+serial_port = "/dev/cu.usbmodem1234"  # serial device (required for serial); a
+                                    #   plain USB DATA cable, NOT an FTDI null-
+                                    #   modem cable. COM3 on Windows,
+                                    #   /dev/ttyACM0 on Linux
 baud = 2000000                      # 2 Mbaud 8N1 (TR uses full USB bandwidth)
 host = "192.168.2.66"               # TR IP (required for tcp; via CCGMS "ATC")
 tcp_port = 2112                     # TR TCP listener port (firmware default)
@@ -457,7 +464,9 @@ port = 8765
 # On-C64 menu: SPACE opens an on-screen panel of context-sensitive knobs for
 # the current scene (palette mode, PETSCII style, …) with a live preview;
 # cursor keys navigate (SHIFT+cursor reverses), RETURN saves. Needs a backend
-# that can read C64 memory (no-op on TeensyROM). Launcher scenes are excluded.
+# that can read C64 memory (a no-op only on an older TeensyROM firmware without
+# ReadC64Mem; the Ultimate + cycle-clean TR+ both read). Launcher scenes are
+# excluded.
 enabled = false
 prompt_to_save = true               # offer to write changes back to this file on
                                     # exit; false = apply to the running scene only

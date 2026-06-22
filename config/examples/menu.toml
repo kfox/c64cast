@@ -16,8 +16,9 @@
 # the menu panel can paint over it (the panel is skipped on REU-staged scenes
 # this cut — live preview still applies).
 #
-# The menu needs a backend that can read C64 memory (the $00CB key scan); it is
-# a no-op on read-free backends like TeensyROM. Launcher scenes are excluded.
+# The menu needs a backend that can read C64 memory; it is a no-op only on an
+# older TeensyROM firmware without ReadC64Mem (the Ultimate + cycle-clean TR+
+# fw v0.7.2.5+ both read). Launcher scenes are excluded.
 #
 # Run:
 #   python -m c64cast --config config/examples/menu.toml
