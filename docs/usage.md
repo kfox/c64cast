@@ -433,8 +433,10 @@ The on-C64 menu: press **SPACE** on the real keyboard to open an on-screen
 panel of context-sensitive knobs for the running scene (display mode,
 palette mode, style, scope settings, …). Cursor keys navigate and RETURN
 selects; SPACE closes it. While the menu is open the C= / CTRL / SHIFT
-controls are suspended. Needs a read-capable backend (the U64 keyboard
-buffer is polled, like the modifier keys). On exit with unsaved changes,
+controls are suspended. Needs a read-capable backend — the Ultimate, or a
+cycle-clean TeensyROM+ (fw v0.7.2.5+, which added ReadC64Mem) — since the
+kernal keyboard buffer is polled, like the modifier keys. On exit with unsaved
+changes,
 `prompt_to_save = true` offers to persist them back to the source config
 file; `false` applies to the running scene only (handy for demos). Text
 parameters are shown read-only — text entry is a deferred follow-up.

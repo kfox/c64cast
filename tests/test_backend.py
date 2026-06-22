@@ -138,6 +138,7 @@ class AbstractContractTest(unittest.TestCase):
         for call in (
             lambda: b.read_memory(0x028D, 1),
             lambda: b.reset(),
+            lambda: b.pause_idle(),  # default delegates to reset()
             lambda: b.run_basic_clear_loop(),
             lambda: b.launch_program("x.prg"),
             lambda: b.run_sid_player(b"PSID"),

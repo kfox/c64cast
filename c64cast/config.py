@@ -166,8 +166,9 @@ class TeensyromCfg:
     serial_port: str | None = field(
         default=None,
         metadata={
-            "help": "Serial device for transport=serial "
-            "(e.g. /dev/tty.usbmodem* or COM3). Required for serial."
+            "help": "Serial device for transport=serial over a plain USB data "
+            "cable (e.g. /dev/cu.usbmodem* or COM3; NOT an FTDI null-modem "
+            "cable). Required for serial."
         },
     )
     baud: int = field(
@@ -1327,8 +1328,9 @@ class MenuCfg:
     """On-C64 menu. When enabled, SPACE on the C64 keyboard opens an on-screen
     panel of context-sensitive knobs for the current scene (palette mode, style,
     forced palette, etc.) with a live preview; cursor keys navigate, RETURN
-    saves. Needs a backend that can read C64 memory (the $00CB key scan); a no-op
-    on read-free backends like TeensyROM."""
+    saves. Needs a backend that can read C64 memory; a no-op on a read-free
+    backend (an older TeensyROM firmware without ReadC64Mem). The Ultimate and
+    cycle-clean TR+ (fw v0.7.2.5+) both read."""
 
     enabled: bool = field(
         default=False,

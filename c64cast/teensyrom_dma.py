@@ -10,6 +10,12 @@ command, and every command is acknowledged (`AckToken 0x64CC` / `FailToken
   * **WriteC64Mem `0x64FB`** — sequential DMA write into C64 address space.
     The hot path; carries all rendering + audio programming. (Present in the
     author's test build; may not be in older shipping firmware.)
+  * **ReadC64Mem `0x64FD`** — sequential DMA read back from C64 address space
+    (addr + len -> ack -> `len` data bytes). Backs `read_memory`, which gates
+    the keyboard poller + launcher idle-detect. Added in the same cycle-clean
+    firmware that made WriteC64Mem safe over a running interpreter (TR+ fw
+    v0.7.2.5); older builds NAK/timeout it, so the backend probes for it at
+    connect rather than assuming it.
   * **Reset `0x64EE`** — reset the C64 (boots to the TR menu). Responds with
     a text line, not a binary ack.
   * **PostFile `0x64BB`** — upload a file to SD/USB. Requires the TR menu to
@@ -57,6 +63,7 @@ DEFAULT_BAUD = 2_000_000  # 2 Mbaud 8N1, per the firmware author
 
 # ---- protocol tokens (Common_Defs.h) --------------------------------------
 TOK_WRITE_C64_MEM = 0x64FB
+TOK_READ_C64_MEM = 0x64FD
 TOK_RESET_C64 = 0x64EE
 TOK_LAUNCH_FILE = 0x6444
 TOK_POST_FILE = 0x64BB
@@ -380,6 +387,19 @@ class TRClient:
             self.transport.send_all(frame)
             self._expect_ack(f"WriteC64Mem ${addr:04X}")
             self._latencies.append(time.perf_counter() - t0)
+
+    def read_segment(self, addr: int, length: int) -> bytes:
+        """One ReadC64Mem command: token + addr(BE) + len(BE), verify the ack,
+        then read back exactly `length` data bytes. The mirror of write_segment
+        for the read direction. Raises TRError on NAK/timeout (callers that
+        must not crash — keyboard.py — catch it and treat it as "couldn't
+        tell"). Bound `length` to MAX_SEGMENT_BYTES; chunk larger reads above
+        this in the caller."""
+        frame = self._u16(TOK_READ_C64_MEM) + self._u16(addr & 0xFFFF) + self._u16(length)
+        with self._lock:
+            self.transport.send_all(frame)
+            self._expect_ack(f"ReadC64Mem ${addr:04X}")
+            return self.transport.recv_exact(length)
 
     def reset(self) -> None:
         """Reset the C64 (boots to the TR menu). The firmware answers with a

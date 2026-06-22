@@ -607,9 +607,10 @@ def build_stack(
     api.run_basic_clear_loop()
     api.disable_case_switch()
 
-    # The Commodore-key poller reads $028D over the wire. Backends that can't
-    # read C64 memory (e.g. TeensyROM) have no physical-keyboard control —
-    # skip the poller; the HTTP control plane is the read-free equivalent.
+    # The Commodore-key poller reads $028D over the wire. A backend that can't
+    # read C64 memory (an older TeensyROM firmware without ReadC64Mem) has no
+    # physical-keyboard control — skip the poller; the HTTP control plane is
+    # the read-free equivalent. (The Ultimate and cycle-clean TR+ both read.)
     key_poller = CommodoreKeyPoller(api, name=name) if api.profile.supports_read else None
     if key_poller is None:
         log.info(

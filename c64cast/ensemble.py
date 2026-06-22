@@ -50,8 +50,9 @@ class SystemStack:
     audio: AudioStreamer | None
     source: WebcamSource | None
     playlist: Playlist
-    # None when the backend can't read C64 memory (e.g. TeensyROM) — there's
-    # no physical-keyboard control surface; the control plane stands in.
+    # None when the backend can't read C64 memory (an older TeensyROM firmware
+    # without ReadC64Mem) — no physical-keyboard control surface; the control
+    # plane stands in. The Ultimate and cycle-clean TR+ both read.
     key_poller: CommodoreKeyPoller | None
     # None unless [vision].enabled — webcam hand-gesture control surface.
     vision_controller: VisionController | None = None

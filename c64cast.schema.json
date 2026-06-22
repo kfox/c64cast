@@ -40,7 +40,7 @@
             "string",
             "null"
           ],
-          "description": "Serial device for transport=serial (e.g. /dev/tty.usbmodem* or COM3). Required for serial."
+          "description": "Serial device for transport=serial over a plain USB data cable (e.g. /dev/cu.usbmodem* or COM3; NOT an FTDI null-modem cable). Required for serial."
         },
         "baud": {
           "type": "integer",
