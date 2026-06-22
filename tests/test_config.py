@@ -423,6 +423,29 @@ class ValidateSceneCfgTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "midi_adsr must have 4"):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
+    def test_midi_scene_rejects_bad_voice_mode(self):
+        s = cfgmod.SceneCfg(type="midi", midi_voice_mode="poly")
+        with self.assertRaisesRegex(ValueError, "midi_voice_mode"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_midi_scene_rejects_bad_voice_waveform(self):
+        s = cfgmod.SceneCfg(type="midi", midi_voice_waveforms=["pulse", "square"])
+        with self.assertRaisesRegex(ValueError, "midi_voice_waveforms"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_midi_scene_accepts_combined_voice_waveforms(self):
+        s = cfgmod.SceneCfg(
+            type="midi", midi_voice_waveforms=["pulse+triangle", "sawtooth", "noise"]
+        )
+        cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)  # no raise
+
+    def test_midi_scene_rejects_bad_voice_channels_when_multitimbral(self):
+        s = cfgmod.SceneCfg(
+            type="midi", midi_voice_mode="multitimbral", midi_voice_channels=[1, 1, 99]
+        )
+        with self.assertRaisesRegex(ValueError, "midi_voice_channels"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
     def test_unknown_scene_type_rejected(self):
         s = cfgmod.SceneCfg(type="something-bogus")
         with self.assertRaisesRegex(ValueError, "unknown scene type"):

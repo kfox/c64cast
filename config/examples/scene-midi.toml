@@ -4,12 +4,18 @@
 # Listens on a MIDI input port and synthesises notes on the U64's
 # hardware SID — turns the C64 into a 3-voice MIDI sound module — and
 # draws a full-screen hires oscilloscope of the three voices. Voices draw in
-# color while sounding and gray out when idle; the bottom rows show the global
-# waveform + volume and a live controller readout (PW/cutoff/resonance/ADSR).
-# (Bitmap-only: PETSCII overlays don't apply, like a waveform scene.)
+# color while sounding and gray out when idle; the bottom rows show the
+# per-voice waveforms + volume and a live controller readout (PW/cutoff/
+# resonance/ADSR). (Bitmap-only: PETSCII overlays don't apply, like a waveform
+# scene.)
+#
+# Each voice can run its own (optionally combined) waveform — set per voice
+# below, cycled by SHIFT, or selected live by MIDI Program Change.
 #
 # Live control:
-#   SHIFT     cycle the global waveform (pulse → saw → triangle → noise)
+#   SHIFT          advance every voice one step through the waveform cycle
+#                  (pulse → saw → triangle → noise → pulse+triangle)
+#   ProgramChange  select a waveform (shared = all voices; multitimbral = chan)
 #   velocity  → per-note loudness (each voice's sustain level)
 #   CC1 modwheel → pulse width   CC7 → volume   CC74 → cutoff
 #   CC71 → resonance             CC73/CC75/CC72 → attack/decay/release
@@ -35,7 +41,14 @@ interleave_videos = false
 type = "midi"
 name = "MIDI -> SID"
 midi_port = ""                # "" = first port; or e.g. "IAC", "MPK"
-midi_waveform = "pulse"       # pulse | sawtooth | triangle | noise (SHIFT cycles)
+midi_waveform = "pulse"       # default waveform: pulse | sawtooth | triangle | noise
+# Per-voice starting waveforms (≤3; '+' combines, e.g. "pulse+triangle" for the
+# SID's combined wave). Note: on a 6581 only pulse+triangle reliably sounds —
+# sawtooth combos AND down to near-silence. Empty = every voice uses midi_waveform.
+midi_voice_waveforms = ["pulse", "sawtooth", "triangle"]
+midi_voice_mode = "shared"    # shared (1 channel → 3 voices) | multitimbral (channel → voice)
+midi_voice_channels = [1, 2, 3]  # multitimbral only: MIDI channels for voices 1/2/3
+midi_program_change = true    # honor Program Change → waveform select
 midi_adsr = [0, 8, 12, 8]     # attack, decay, sustain, release (0..15); velocity overrides sustain
 midi_pulse_width = 2048       # 0..4095, pulse waveform only (CC1)
 midi_filter_cutoff = 2047     # 0..2047, default open / neutral lowpass (CC74)

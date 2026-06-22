@@ -774,7 +774,11 @@ explicit `duration_s` also disables skip (treated the same way).
 [[scenes]]
 type = "midi"
 midi_port = ""                      # "" = first available port; substring match also works
-midi_waveform = "pulse"             # triangle | sawtooth | pulse | noise
+midi_waveform = "pulse"             # default waveform: triangle | sawtooth | pulse | noise
+midi_voice_waveforms = ["pulse", "sawtooth", "triangle"]  # per-voice; '+' combines
+midi_voice_mode = "shared"          # shared (1 channel → 3 voices) | multitimbral
+midi_voice_channels = [1, 2, 3]     # multitimbral: MIDI channels for voices 1/2/3
+midi_program_change = true          # honor Program Change → waveform select
 midi_adsr = [0, 8, 12, 8]           # attack / decay / sustain / release, each 0..15
 midi_pulse_width = 2048             # 0..4095 (SID 12-bit PW)
 midi_filter_cutoff = 1024           # 0..2047
@@ -784,10 +788,37 @@ voice_colors = ["light green", "cyan", "yellow"]
 duration_s = 120.0
 ```
 
-Requires the `midi` extra (`pip install -e .[midi]`). Notes from the MIDI
-input get round-robin-allocated across the SID's three voices (oldest is
-stolen when all three are gated). Voices are visualized the same way the
-waveform scene does — per-voice traces colored by `voice_colors`.
+Requires the `midi` extra (`pip install -e .[midi]`). Voices are visualized the
+same way the waveform scene does — per-voice traces colored by `voice_colors`
+(or by waveform with `color_mode = "per_waveform"`).
+
+**Per-voice waveforms.** Each of the three voices can run its own waveform, and
+an entry may be a `+`-combo (e.g. `"pulse+triangle"`) for the SID's combined
+waveform — the audience hears the real chip's combined wave, and the scope draws
+a bitwise-AND approximation of its (sparse, "metallic") shape. Set the starting
+waveforms with `midi_voice_waveforms` (≤3, padded by repeating the last; empty =
+every voice uses `midi_waveform`). **SHIFT** advances every voice one step
+through the waveform cycle — the four single waveforms, then `pulse+triangle` —
+keeping per-voice offsets. **MIDI Program Change** selects a waveform live
+(disable with `midi_program_change = false`).
+
+> **Combined-waveform caveat.** On a real 6581 the waveform outputs share a bus
+> and AND together, and any combination containing **sawtooth** ANDs down to
+> near-silence (`pulse+triangle` is the one combination that reliably sounds).
+> So the interactive SHIFT/Program-Change rotation only includes `pulse+triangle`;
+> saw/noise combos are still settable via `midi_voice_waveforms` for
+> experimentation (and may behave differently on an 8580), but expect them quiet
+> on a 6581. The scope's AND trace currently *over*-shows those — a faithful
+> chip-modeled trace is a future refinement.
+
+**Voice allocation.** In the default `shared` mode one MIDI channel is spread
+across all three voices: held notes keep their voice (a polyphonic pad), and a
+new note that needs a voice when all three are gated steals the *most-recently
+-started* one (so the held pad survives and an overlapping melody cycles on the
+top voice). With `midi_voice_mode = "multitimbral"`, MIDI channels route to
+fixed voices (`midi_voice_channels`, default channels 1/2/3 → voices 1/2/3),
+each voice monophonic with last-note priority; notes on unmapped channels are
+ignored. In multitimbral mode Program Change targets only the message's channel.
 
 ### `type = "blank"`
 

@@ -391,15 +391,41 @@ class VelocityTests(_MidiTestCase):
 class WaveformCycleTests(_MidiTestCase):
     def test_shift_cycles_waveform(self):
         scene, _ = _make_scene(waveform="pulse")
+        # A uniform set cycles in lockstep (legacy single-waveform label).
         self.assertEqual(scene.cycle_style(scene.api), "waveform=sawtooth")
         self.assertEqual(scene.waveform, "sawtooth")
         self.assertEqual(scene.waveform_bits, SID.WAVE_SAWTOOTH)
-        # wraps pulse→saw→tri→noise→pulse
+        # The four singles come first, then combined waveforms (no wrap to
+        # pulse at step 4 anymore — combos are now in the rotation).
         scene.cycle_style(scene.api)  # triangle
         scene.cycle_style(scene.api)  # noise
+        label = scene.cycle_style(scene.api)  # pulse+triangle (first combo)
+        self.assertEqual(scene.waveform, "pulse+triangle")
+        self.assertEqual(scene.waveform_bits, SID.WAVE_PULSE | SID.WAVE_TRIANGLE)
+        self.assertEqual(label, "waveform=pulse+triangle")
+        self.assertEqual(scene.voice_wave_bits, [SID.WAVE_PULSE | SID.WAVE_TRIANGLE] * 3)
+
+    def test_shift_preserves_per_voice_offsets(self):
+        # Voices starting on different waveforms each advance one step and stay
+        # distinct; the label switches to the per-voice form.
+        scene, _ = _make_scene(voice_waveforms=["pulse", "sawtooth", "noise"])
         label = scene.cycle_style(scene.api)
-        self.assertEqual(scene.waveform, "pulse")
-        self.assertEqual(label, "waveform=pulse")
+        self.assertEqual(scene.voice_wave_names, ["sawtooth", "triangle", "pulse+triangle"])
+        self.assertEqual(label, "waveforms=SAW/TRI/P+T")
+
+    def test_shift_off_cycle_combos_advance_from_dominant_not_collapse(self):
+        # Combos that aren't in _WAVEFORM_CYCLE (a noise combo, a 3-way) advance
+        # from their dominant single waveform's slot instead of all resetting to
+        # 'pulse' — so two distinct off-cycle voices stay distinct.
+        scene, _ = _make_scene(
+            voice_waveforms=["sawtooth+noise", "pulse+sawtooth+triangle", "triangle"]
+        )
+        scene.cycle_style(scene.api)
+        # sawtooth+noise → dominant noise (idx 3) → next pulse+triangle;
+        # pulse+sawtooth+triangle → dominant pulse (idx 0) → next sawtooth;
+        # triangle (idx 2) → next noise.
+        self.assertEqual(scene.voice_wave_names, ["pulse+triangle", "sawtooth", "noise"])
+        self.assertEqual(len(set(scene.voice_wave_names)), 3)  # stayed distinct
 
     def test_cycle_reprograms_held_voice_with_new_waveform(self):
         scene, api = _make_scene(waveform="pulse")
@@ -447,6 +473,97 @@ class HandleMsgDispatchTests(_MidiTestCase):
         scene._handle_msg(mido.Message("control_change", control=7, value=0))
         # vol 0 + lowpass mode (1) → high nibble 1, low nibble 0.
         self.assertEqual(api.memories["D418"], f"{(0x1 << 4) | 0:02X}")
+
+
+class PerVoiceWaveformTests(_MidiTestCase):
+    def test_parse_waveform_spec_single(self):
+        bits, name = midi_scene.parse_waveform_spec("sawtooth")
+        self.assertEqual(bits, SID.WAVE_SAWTOOTH)
+        self.assertEqual(name, "sawtooth")
+
+    def test_parse_waveform_spec_combo_is_canonical(self):
+        # OR'd bits; canonical token order regardless of input order.
+        bits, name = midi_scene.parse_waveform_spec("triangle+pulse")
+        self.assertEqual(bits, SID.WAVE_PULSE | SID.WAVE_TRIANGLE)
+        self.assertEqual(name, "pulse+triangle")
+
+    def test_parse_waveform_spec_rejects_unknown(self):
+        with self.assertRaises(ValueError):
+            midi_scene.parse_waveform_spec("square")
+
+    def test_per_voice_waveforms_each_voice_gets_its_own(self):
+        scene, api = _make_scene(voice_waveforms=["pulse", "sawtooth", "triangle"])
+        scene._note_on(60, 100)  # → voice 0
+        scene._note_on(64, 100)  # → voice 1
+        scene._note_on(67, 100)  # → voice 2
+        self.assertEqual(api.regs["D400"][_CTRL_IDX], SID.WAVE_PULSE | SID.GATE)
+        self.assertEqual(api.regs["D407"][_CTRL_IDX], SID.WAVE_SAWTOOTH | SID.GATE)
+        self.assertEqual(api.regs["D40E"][_CTRL_IDX], SID.WAVE_TRIANGLE | SID.GATE)
+
+    def test_combined_waveform_ors_the_bits(self):
+        scene, api = _make_scene(voice_waveforms=["pulse+triangle", "sawtooth", "noise"])
+        scene._note_on(60, 100)
+        self.assertEqual(api.regs["D400"][_CTRL_IDX], SID.WAVE_PULSE | SID.WAVE_TRIANGLE | SID.GATE)
+
+    def test_short_list_repeats_last_entry(self):
+        scene, _ = _make_scene(voice_waveforms=["noise"])
+        self.assertEqual(scene.voice_wave_names, ["noise", "noise", "noise"])
+
+    def test_empty_list_falls_back_to_global_waveform(self):
+        scene, _ = _make_scene(waveform="triangle")
+        self.assertEqual(scene.voice_wave_names, ["triangle", "triangle", "triangle"])
+
+
+class ProgramChangeTests(_MidiTestCase):
+    # _PC_WAVEFORMS = (triangle, sawtooth, pulse, noise, pulse+triangle, ...)
+    def test_shared_mode_sets_all_voices(self):
+        scene, _ = _make_scene(waveform="pulse")
+        scene._handle_msg(mido.Message("program_change", program=1))  # sawtooth
+        self.assertEqual(scene.voice_wave_bits, [SID.WAVE_SAWTOOTH] * 3)
+        self.assertEqual(scene.waveform, "sawtooth")
+
+    def test_combo_program(self):
+        scene, _ = _make_scene()
+        scene._handle_msg(mido.Message("program_change", program=4))  # pulse+triangle
+        self.assertEqual(scene.voice_wave_bits, [SID.WAVE_PULSE | SID.WAVE_TRIANGLE] * 3)
+
+    def test_disabled_is_ignored(self):
+        scene, _ = _make_scene(waveform="pulse", program_change=False)
+        scene._handle_msg(mido.Message("program_change", program=3))  # noise
+        self.assertEqual(scene.voice_wave_names, ["pulse", "pulse", "pulse"])
+
+    def test_multitimbral_sets_only_the_channels_voice(self):
+        scene, _ = _make_scene(voice_mode="multitimbral", waveform="pulse")
+        # channel 1 (0-based) → voice 1; PC 3 = noise.
+        scene._handle_msg(mido.Message("program_change", program=3, channel=1))
+        self.assertEqual(scene.voice_wave_names, ["pulse", "noise", "pulse"])
+
+
+class MultitimbralTests(_MidiTestCase):
+    def test_channels_route_to_fixed_voices(self):
+        scene, _ = _make_scene(voice_mode="multitimbral")  # ch 1/2/3 → voice 0/1/2
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=0))
+        scene._handle_msg(mido.Message("note_on", note=64, velocity=100, channel=2))
+        self.assertEqual(scene.voices[0].note, 60)
+        self.assertTrue(scene.voices[0].on)
+        self.assertIsNone(scene.voices[1].note)
+        self.assertEqual(scene.voices[2].note, 64)
+
+    def test_unmapped_channel_is_ignored(self):
+        scene, _ = _make_scene(voice_mode="multitimbral", voice_channels=[1, 2, 3])
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=9))
+        self.assertTrue(all(not v.on for v in scene.voices))
+
+    def test_monophonic_last_note_priority_and_lifo_resurrection(self):
+        scene, _ = _make_scene(voice_mode="multitimbral")
+        scene._handle_msg(mido.Message("note_on", note=60, velocity=100, channel=0))
+        scene._handle_msg(mido.Message("note_on", note=62, velocity=100, channel=0))
+        self.assertEqual(scene.voices[0].note, 62)  # newest sounds
+        scene._handle_msg(mido.Message("note_off", note=62, velocity=0, channel=0))
+        self.assertTrue(scene.voices[0].on)  # held note resurrects
+        self.assertEqual(scene.voices[0].note, 60)
+        scene._handle_msg(mido.Message("note_off", note=60, velocity=0, channel=0))
+        self.assertFalse(scene.voices[0].on)  # nothing held → idle
 
 
 class ShadowEmulatorTests(_MidiTestCase):
@@ -512,10 +629,12 @@ class PaintTests(_MidiTestCase):
         self.assertIn(_TITLE_BITMAP, api.regions)
         self.assertIn(_TITLE_SCREEN, api.regions)
         self.assertIn(_META_BITMAP, api.regions)
-        # Title = global state; controller row = live CC values (no per-voice
-        # note text — the colored/gray strips convey activity).
+        # Title = per-voice waveform tags + master volume; controller row =
+        # live CC values (no per-voice note text — the colored/gray strips
+        # convey activity).
         title = scene._build_title_line()
-        self.assertIn("MIDI PULSE", title)
+        self.assertIn("1:PUL", title)  # all three voices default to pulse
+        self.assertIn("3:PUL", title)
         self.assertIn("VOL 15", title)
         ctl = scene._build_controller_line()
         self.assertIn("PW", ctl)
@@ -602,6 +721,14 @@ class ValidationTests(_MidiTestCase):
             _make_scene(filter_cutoff=3000)
         with self.assertRaises(ValueError):
             _make_scene(master_volume=16)
+
+    def test_bad_voice_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            _make_scene(voice_mode="bogus")
+
+    def test_bad_voice_waveform_token_rejected(self):
+        with self.assertRaises(ValueError):
+            _make_scene(voice_waveforms=["pulse+square"])
 
     def test_missing_midi_extra_raises(self):
         with mock.patch.object(midi_scene, "MIDI_AVAILABLE", False):

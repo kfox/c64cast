@@ -15,10 +15,15 @@ Per-voice we track:
   * Envelope state machine driven by the gate bit (control bit 0).
 
 For combined waveforms (multiple bits set in the upper nibble of the
-control byte) we pick by priority: noise > pulse > sawtooth > triangle.
-The real SID ANDs the bit patterns together; the result is a "metallic"
-sound without a clean visual shape. Picking by priority gives a
-recognizable trace per voice.
+control byte) the real SID wires the selected waveforms' 12-bit
+oscillator outputs onto a shared bus, effectively bitwise-ANDing them.
+``voice_samples`` approximates that: it ANDs each selected waveform's
+unsigned 12-bit form and maps the result back to [-1, 1]. That's
+faithful in character (the sparse, mostly-low "metallic" shape; noise
+combined with a tone darkens toward silence) but not chip-exact — an
+accurate model needs reSID-style per-chip sampled tables. ``primary_waveform``
+(priority noise > pulse > sawtooth > triangle) is still used to pick a
+single waveform for *coloring* (per_waveform mode) and the silent check.
 """
 
 from __future__ import annotations
@@ -37,6 +42,9 @@ WAVE_TRIANGLE = SID.WAVE_TRIANGLE
 WAVE_SAWTOOTH = SID.WAVE_SAWTOOTH
 WAVE_PULSE = SID.WAVE_PULSE
 WAVE_NOISE = SID.WAVE_NOISE
+# All four waveform-select bits (control high nibble). Exactly one set = a
+# single waveform; two or more = a combined waveform (see voice_samples).
+WAVE_MASK = WAVE_TRIANGLE | WAVE_SAWTOOTH | WAVE_PULSE | WAVE_NOISE
 GATE = SID.GATE
 
 # SID ADSR rate table (in seconds to traverse full range, indexed by the
@@ -239,16 +247,55 @@ class SIDEmulator:
 
         phases = accs / float(ACCUMULATOR_RANGE)  # in [0, 1)
 
-        if wave == WAVE_SAWTOOTH:
-            out = 2.0 * phases - 1.0
-        elif wave == WAVE_TRIANGLE:
-            # /\ shape spanning [-1, 1].
-            out = np.where(phases < 0.5, 4.0 * phases - 1.0, 3.0 - 4.0 * phases)
-        elif wave == WAVE_PULSE:
-            pw_frac = max(1, v.pulse_width) / PULSE_WIDTH_RANGE
-            out = np.where(phases < pw_frac, 1.0, -1.0)
-        else:  # WAVE_NOISE
-            rng = self._noise_rng[voice_idx]
-            out = np.array([rng.uniform(-1.0, 1.0) for _ in range(n)], dtype=np.float64)
+        # Single waveform: the clean bipolar shape (output byte-identical to the
+        # pre-combined-waveform code, so single-waveform WaveformScene/MidiScene
+        # traces don't move).
+        if (v.control & WAVE_MASK) in (
+            WAVE_TRIANGLE,
+            WAVE_SAWTOOTH,
+            WAVE_PULSE,
+            WAVE_NOISE,
+        ):
+            if wave == WAVE_SAWTOOTH:
+                out = 2.0 * phases - 1.0
+            elif wave == WAVE_TRIANGLE:
+                # /\ shape spanning [-1, 1].
+                out = np.where(phases < 0.5, 4.0 * phases - 1.0, 3.0 - 4.0 * phases)
+            elif wave == WAVE_PULSE:
+                pw_frac = max(1, v.pulse_width) / PULSE_WIDTH_RANGE
+                out = np.where(phases < pw_frac, 1.0, -1.0)
+            else:  # WAVE_NOISE
+                rng = self._noise_rng[voice_idx]
+                out = np.array([rng.uniform(-1.0, 1.0) for _ in range(n)], dtype=np.float64)
+        else:
+            # Combined waveform: the SID wires the selected waveforms' 12-bit
+            # oscillator outputs onto a shared bus, bitwise-ANDing them. We
+            # approximate that by ANDing each selected waveform's unsigned
+            # 12-bit form, then mapping back to [-1, 1]. Faithful in character
+            # (the sparse, mostly-low "metallic" shape) but not chip-exact — an
+            # accurate model needs reSID-style per-chip sampled tables. Noise
+            # combined with a tone correctly darkens toward silence.
+            combined = np.full(n, 0x0FFF, dtype=np.uint16)
+            for bit in (WAVE_TRIANGLE, WAVE_SAWTOOTH, WAVE_PULSE, WAVE_NOISE):
+                if v.control & bit:
+                    combined &= self._waveform_u12(bit, phases, v, voice_idx, n)
+            out = combined.astype(np.float64) / 2047.5 - 1.0
 
         return (out * v.envelope_level).astype(np.float32)
+
+    def _waveform_u12(
+        self, bit: int, phases: np.ndarray, v: Voice, voice_idx: int, n: int
+    ) -> np.ndarray:
+        """One selected waveform's unsigned 12-bit oscillator output (0..4095)
+        over `phases`, for the combined (bitwise-AND) path in voice_samples."""
+        if bit == WAVE_SAWTOOTH:
+            u = phases * 0x0FFF
+        elif bit == WAVE_TRIANGLE:
+            u = (1.0 - np.abs(2.0 * phases - 1.0)) * 0x0FFF
+        elif bit == WAVE_PULSE:
+            pw_frac = max(1, v.pulse_width) / PULSE_WIDTH_RANGE
+            u = np.where(phases < pw_frac, float(0x0FFF), 0.0)
+        else:  # WAVE_NOISE
+            rng = self._noise_rng[voice_idx]
+            u = np.array([rng.uniform(0.0, float(0x0FFF)) for _ in range(n)], dtype=np.float64)
+        return u.astype(np.uint16)
