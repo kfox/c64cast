@@ -262,6 +262,22 @@ class C64Backend(ABC):
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         raise BackendCapabilityError("run_prg")
 
+    def pause_idle(self) -> None:
+        """Put the machine into its *paused* idle state and return.
+
+        The Playlist calls this on a C= pause (after tearing down the scene):
+        the machine is left showing a static "paused" screen while the keyboard
+        poller waits for the resume-hold. The contract that matters is that the
+        **kernal keyboard scan stays alive** so $028D keeps updating — otherwise
+        the C=-held-to-resume gesture can never be detected and the stream is
+        stranded paused.
+
+        Default: a hard `reset()`, which on the Ultimate lands in BASIC (READY
+        banner, kernal editor IRQ scanning the keyboard — $028D live). A backend
+        whose `reset()` lands somewhere that does NOT scan the keyboard (e.g.
+        the TeensyROM menu) must override this to reach a $028D-live idle."""
+        self.reset()
+
     def launch_program(self, path: str, timeout: float = 10.0) -> None:
         raise BackendCapabilityError("run_prg/run_crt")
 

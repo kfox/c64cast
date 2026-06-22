@@ -229,20 +229,57 @@ class TeensyROMBackend(BufferedWriteBackend):
         else:
             self._bring_up_spin_stub()
 
+    def pause_idle(self) -> None:
+        """TR paused-idle state — clear the screen but keep the VIC display ON.
+
+        Two hard constraints, both HW-confirmed, shape this:
+
+        1. **Don't reset.** A TR reset() lands at the TeensyROM menu, whose own
+           input handling doesn't run the kernal keyboard scan — $028D would
+           freeze and the C=-held-to-resume gesture could never be detected.
+
+        2. **Keep DEN on (don't blank_display).** The TR's cycle-clean DMA
+           gates its /DMA assert on a safe VIC cycle (a badline). Turning the
+           display OFF (DEN=0) removes badlines, so the DMA can never assert —
+           every subsequent read (and write) hangs, which both strands resume
+           AND wedges the TR until a power-cycle.
+
+        Neither a reset nor a blank is needed: the IRQ-enabled BASIC clear-loop
+        set up at bring-up is still running underneath every scene (it's what
+        keeps $028D live so pause/skip/cycle work *during* a scene — the DMA
+        only overwrites screen/VIC RAM, never the BASIC program). So we just
+        DMA-clear screen RAM to spaces for a clean 'paused' screen, leaving DEN
+        on — badlines keep flowing and the resume-hold reads keep working. This
+        is the closest possible idle to the (working) live-scene state. We also
+        suppress the kernal editor's cursor blink (BASIC sits at READY under the
+        cleared screen) so the paused screen is a clean blank, not a lone
+        blinking cursor."""
+        self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
+        self.suppress_cursor_blink()
+
     def _bring_up_irq_clear_loop(self) -> None:
         """IRQ-enabled idle: PostFile + LaunchFile the BASIC clear-loop PRG
-        (`10 PRINT CHR$(147):20 GOTO 20`, shared with the Ultimate). CHR$(147)
-        clears the screen and the running GOTO loop keeps the kernal IRQ
-        (keyboard scan) alive — so `$028D` updates for the keyboard poller —
-        while staying out of the editor's direct-input mode (cursor blink
-        suppressed for free). Safe now that the TR DMA is cycle-clean."""
+        (`10 PRINT CHR$(147):20 GOTO 20`, shared with the Ultimate). The kernal
+        IRQ keeps the keyboard scan alive — so `$028D` updates for the keyboard
+        poller — and the DMA is cycle-clean, so this is safe over a live
+        interpreter.
+
+        HW note: TR LaunchFile prints "RUNNING..." and doesn't reliably leave
+        the tiny PRG in its `GOTO` loop, so the loader text + a BASIC READY
+        banner + a blinking cursor are left on screen (the program's CHR$(147)
+        never runs). $028D is still live (kernal editor IRQ), so keyboard
+        control works regardless — but, like the spin-stub path, we DMA-clear
+        the screen + suppress the cursor blink once the loader settles so the
+        first scene/interstitial doesn't paint over leftover text. DEN stays
+        on, so the cycle-clean DMA keeps working."""
         from .api import BASIC_CLEAR_LOOP_PRG
 
         self.invalidate_cache()
         path = f"{_UPLOAD_DIR}/{_CLEARLOOP_NAME}"
-        # CHR$(147) clears the screen, so (unlike the spin stub) there's no
-        # leftover banner to DMA-blank afterwards.
         if self._upload_and_launch_retry(BASIC_CLEAR_LOOP_PRG, path, "clear-loop"):
+            time.sleep(_LAUNCH_SETTLE_S)  # let the loader's "RUNNING..." land
+            self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
+            self.suppress_cursor_blink()
             self.invalidate_cache()
 
     def _bring_up_spin_stub(self) -> None:

@@ -939,8 +939,8 @@ class Playlist:
             self.log.debug("cycle ignored: %r has no cyclable styles", self.current.name)
 
     def _handle_pause(self) -> None:
-        """Tear down the current scene, hard-reset the U64, and wait until
-        either the resume signal fires (C= held N seconds) or stop fires.
+        """Tear down the current scene, idle the machine, and wait until either
+        the resume signal fires (C= held N seconds) or stop fires.
 
         We do NOT advance self.index — the same scene picks back up after
         the next `_advance()` call when we leave this method."""
@@ -948,20 +948,31 @@ class Playlist:
         if self.current is not None:
             self._safe_teardown(self.current)
             self.current = None
-        try:
-            self.log.info("U64: reset (pause) — leaving the BASIC READY banner up")
-            self.api.reset()
-        except Exception:
-            self.log.exception("reset during pause failed")
-
+        # Clear any stale resume signal BEFORE idling. The poller can set
+        # resume_event the moment it sees a 3 s C= hold — which, if pause_idle
+        # is slow (it brings $028D live mid-call on some backends), can land
+        # *during* pause_idle. Clearing afterwards would then wipe a legitimate
+        # resume and strand the pause; clearing first lets that detection stick.
         self.resume_event.clear()
+        try:
+            # pause_idle() leaves the machine in its paused state with the
+            # kernal keyboard scan still alive so $028D keeps updating for the
+            # resume-hold detection. Backend-specific: the Ultimate resets to
+            # the BASIC READY banner; the TeensyROM clears the screen but keeps
+            # the display ON (a bare reset lands at the TR menu, freezing $028D;
+            # blanking the display would remove the VIC badlines the TR's
+            # cycle-clean DMA needs, hanging the resume reads).
+            self.api.pause_idle()
+        except Exception:
+            self.log.exception("pause_idle failed")
+
         # Spin on stop_event.wait so SIGTERM can shortcut the pause.
         while not self.stop_event.is_set() and not self.resume_event.is_set():
             self.stop_event.wait(timeout=0.1)
         if self.stop_event.is_set():
             return
 
-        self.log.info("resuming — U64: reset + run BASIC clear loop")
+        self.log.info("resuming — reset + run clear loop")
         try:
             self.api.reset()
             time.sleep(1)

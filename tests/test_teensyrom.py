@@ -252,17 +252,21 @@ class BackendTest(unittest.TestCase):
 
     def test_bring_up_clear_loop_when_read_supported(self):
         # Cycle-clean firmware (supports_read True) launches the IRQ-enabled
-        # BASIC clear-loop: DeleteFile -> PostFile -> LaunchFile, with NO spin
-        # MC write to $C000 and NO DMA screen-clear (CHR$(147) clears it).
-        # Acks: 2 (delete) + 3 (post) + 2 (launch) = 7.
+        # BASIC clear-loop: DeleteFile -> PostFile -> LaunchFile, then (like the
+        # spin path) DMA-clears the screen + suppresses the cursor blink to wipe
+        # the loader "RUNNING.."/READY/cursor text TR LaunchFile leaves behind.
+        # NO spin MC write to $C000 and NO $D011 blanking (the display stays on
+        # — DEN-off would hang the DMA). Acks: 2 (delete) + 3 (post) +
+        # 2 (launch) + 1 (screen clear) + 1 (cursor suppress) = 9.
         b, t = self._backend(read=True)
-        for _ in range(7):
+        for _ in range(9):
             t.queue_token(TOK_ACK)
         b.run_basic_clear_loop()
         sent = bytes(t.sent)
-        # No WriteC64Mem to $C000 (spin MC) nor to $0400 (screen clear).
-        self.assertNotIn(b"\x64\xfb\xc0\x00", sent)
-        self.assertNotIn(b"\x64\xfb\x04\x00", sent)
+        self.assertNotIn(b"\x64\xfb\xc0\x00", sent)  # no spin MC ($C000)
+        self.assertNotIn(b"\x64\xfb\xd0\x11", sent)  # display never blanked ($D011)
+        self.assertIn(b"\x64\xfb\x04\x00", sent)  # screen-clear to $0400
+        self.assertIn(b"\x64\xfb\x00\xcc", sent)  # cursor-blink suppress ($00CC)
         # The clear-loop PRG was deleted-then-posted-then-launched.
         i_del = sent.find(b"\x64\xcf")
         i_post = sent.find(b"\x64\xbb")
@@ -292,6 +296,24 @@ class BackendTest(unittest.TestCase):
         self.assertLess(i_post, i_launch)
         # The spin MC is written to $C000 (BE address bytes C0 00).
         self.assertEqual(sent[i_write : i_write + 4], b"\x64\xfb\xc0\x00")
+
+    def test_pause_idle_clears_screen_keeping_display_on(self):
+        # On TR a pause must (1) NOT reset — a reset lands at the TeensyROM
+        # menu, freezing $028D and stranding the resume-hold; and (2) NOT turn
+        # the VIC display off — DEN=0 removes badlines, hanging the cycle-clean
+        # DMA so reads/writes time out (HW-confirmed, wedges the TR). So it
+        # clears screen RAM (spaces) + suppresses the cursor blink, with DEN
+        # left ON. Asserts: WriteC64Mem to $0400 (clear) + $00CC (cursor), and
+        # NO ResetC64 and NO $D011 (blank) write.
+        b, t = self._backend(read=True)
+        t.queue_token(TOK_ACK)  # screen-clear write (<4096 -> 1 seg)
+        t.queue_token(TOK_ACK)  # cursor-blink suppress write
+        b.pause_idle()
+        sent = bytes(t.sent)
+        self.assertNotIn(b"\x64\xee", sent)  # no ResetC64 anywhere
+        self.assertNotIn(b"\x64\xfb\xd0\x11", sent)  # no $D011 write (display stays on)
+        self.assertIn(b"\x64\xfb\x04\x00", sent)  # WriteC64Mem to $0400 (screen clear)
+        self.assertIn(b"\x64\xfb\x00\xcc", sent)  # cursor-blink suppress ($00CC)
 
     def test_bring_up_tolerates_missing_file_on_delete(self):
         # First-ever run: the file doesn't exist, so DeleteFile NAKs; bring-up
