@@ -333,9 +333,11 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
     """
     from .backend import make_backend
     from .socket_dma import SocketDMAError
+    from .teensyrom_dma import TRError
 
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        is_tr = cfg.hardware.backend == "teensyrom"
         url = cfg.ultimate64.url
         try:
             api = make_backend(cfg)
@@ -354,9 +356,48 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
             continue
+        except TRError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="connectivity",
+                    subject=name,
+                    message=f"TeensyROM connect failed: {e}",
+                    hint=(
+                        "Check the USB data cable to the TR's micro-USB-B port "
+                        "(transport = serial) or 'Enable TCP Listener' + the "
+                        "host IP (transport = tcp)."
+                    ),
+                )
+            )
+            continue
         try:
             status = api.probe()
-            if status is None:
+            if is_tr:
+                # The TeensyROM has no REST surface; probe() is the ping/FW line.
+                # It also has no REU, so the REST REU/SID-enable probes below
+                # don't apply — instead just flag a REU opt-in as ignored.
+                if status is None:
+                    out.append(
+                        Diagnostic(
+                            level="warn",
+                            category="connectivity",
+                            subject=name,
+                            message="TeensyROM transport reachable but ping failed",
+                            hint="Writes may still work; check the firmware version.",
+                        )
+                    )
+                else:
+                    out.append(
+                        Diagnostic(
+                            level="ok",
+                            category="connectivity",
+                            subject=name,
+                            message=f"TeensyROM reachable ({status})",
+                        )
+                    )
+                    out.extend(_probe_reu_unavailable(name, cfg, api))
+            elif status is None:
                 out.append(
                     Diagnostic(
                         level="warn",
@@ -387,6 +428,25 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
         finally:
             api.close()
     return out
+
+
+def _probe_reu_unavailable(name: str, cfg: object, api: object) -> list[Diagnostic]:
+    """On a backend with no REU (e.g. TeensyROM), report that a config's
+    REU-staged opt-in is ignored. cli.build_stack coerces these off to the
+    host-DMA paths, so this is informational, not a failure."""
+    wants, reasons = _wants_reu(cfg)
+    if not wants or getattr(api, "profile", None) is None or api.profile.supports_reu:  # type: ignore[attr-defined]
+        return []
+    return [
+        Diagnostic(
+            level="warn",
+            category="connectivity",
+            subject=f"{name} (REU)",
+            message=f"config requests REU ({', '.join(reasons)}) but this backend has no REU",
+            hint="The opt-in is ignored — the host-DMA NMI DAC / host-DMA "
+            "video paths are used instead. Remove the flag to silence this.",
+        )
+    ]
 
 
 def _wants_reu(cfg: object) -> tuple[bool, list[str]]:

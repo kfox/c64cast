@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import NamedTuple
 from urllib.parse import urlparse
@@ -797,7 +798,309 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
     )
 
 
-class Ultimate64API(BufferedWriteBackend):
+class _SidPlayerBackend(BufferedWriteBackend):
+    """SID-player orchestration shared by the Ultimate + TeensyROM backends.
+
+    The host-side work — PSID parse, player-layout choice, player MC / re-INIT
+    stub build, the CIA #1 PLAY-rate divider auto-tune, and SHIFT-driven subtune
+    re-INIT (`cue_song_reinit`) — is identical across backends: it touches only
+    the buffered write path + `read_memory` + the module-level SID helpers. The
+    backends differ in exactly one step: how the BASIC SYS stub that hands
+    control to the player MC is delivered to the C64. That step is the abstract
+    `_launch_sid_player`:
+
+      * Ultimate — POST a `10 SYS <player_base>` PRG to the REST `run_prg`
+        runner (a soft reset that preserves RAM, then RUN).
+      * TeensyROM — LaunchFile a pre-uploaded constant stub that SYSes a small
+        trampoline (PostFile is menu-gated, so it can't upload a per-tune stub
+        mid-stream; see teensyrom_api.TeensyROMBackend).
+
+    Both real backends set `profile.supports_run_prg = True`; this mixin
+    overrides the ABC's capability-gated (raising) `run_sid_player` /
+    `cue_song_reinit` with the working implementation.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Set by run_sid_player; consumed by cue_song_reinit so SHIFT-driven
+        # song cycling patches the stub at the same address the player MC
+        # was uploaded to. None until the first run_sid_player call.
+        self._sid_player_layout: _PlayerLayout | None = None
+        # The address-keyed heuristic playBank for the current tune (constant
+        # across its subtunes — play_addr doesn't change per song). cue_song_
+        # reinit restores it when a cycle target needs no override, so a prior
+        # subtune's $36 override can't leak into a $37 subtune.
+        self._sid_player_default_play_bank: int | None = None
+        # Wall-clock instant the real SID began playing (set by run_sid_player
+        # when audio starts synchronously, or by begin_sid_audio when deferred).
+        # Exposed via sid_audio_start_time() for the scope's host-emu clock.
+        self._sid_audio_start: float | None = None
+        # True between a run_sid_player(defer_audio=True) and the matching
+        # begin_sid_audio() on backends that can defer (the TeensyROM); guards
+        # begin_sid_audio against a double-start / a stray call.
+        self._sid_audio_pending = False
+
+    # ---- backend-specific kick (subclass implements) ----------------------
+    @abstractmethod
+    def _launch_sid_player(
+        self,
+        parsed: ParsedPsid,
+        layout: _PlayerLayout,
+        mc: bytes,
+        reinit: bytes,
+        timeout: float,
+        avoid: bytes | bytearray | None,
+        defer_audio: bool,
+    ) -> bool:
+        """DMA the SID payload + player MC + re-INIT stub into C64 RAM and hand
+        control to the player MC. Use `_write_sid_blobs` for the standard
+        three-blob upload. `avoid` is the caller's RAM footprint bitmap (or
+        None), forwarded for backends that need it.
+
+        Returns True to have `run_sid_player` run the standard post-start
+        finalize — record the audio-start instant + auto-tune the PLAY-rate
+        divider — used by a backend that starts audio synchronously right here
+        (the Ultimate's `run_prg`). Returns False if the backend manages that
+        itself: either the start is deferred to `begin_sid_audio()`, or the
+        backend self-finalizes after its own kick (the TeensyROM, whose `$0314`
+        vector-swap must precede the divider's CIA #1 read, so it can't let
+        `run_sid_player` finalize before the swap)."""
+        ...
+
+    def _write_sid_blobs(
+        self, parsed: ParsedPsid, layout: _PlayerLayout, mc: bytes, reinit: bytes
+    ) -> None:
+        """DMA the SID payload + patched player MC + re-INIT stub to their C64
+        addresses. Invalidates the delta cache first (the payload + player MC
+        overlap arbitrary RAM regions; a clean baseline keeps the next scene's
+        writes diffing against fresh state). Does NOT flush — the caller flushes
+        once all blobs (plus any backend-specific extras, e.g. the TR
+        trampoline) have been queued, so they all land before the BASIC SYS
+        fires."""
+        self.invalidate_cache()
+        self.write_memory_file(f"{parsed.load_addr:04X}", parsed.payload)
+        self.write_memory_file(f"{layout.player_base:04X}", mc)
+        self.write_memory_file(f"{layout.stub_base:04X}", reinit)
+
+    def run_sid_player(
+        self,
+        sid_bytes: bytes,
+        song: int = 0,
+        timeout: float = 5.0,
+        *,
+        avoid: bytes | bytearray | None = None,
+        play_bank: int | None = None,
+        defer_audio: bool = False,
+    ) -> None:
+        """Play a SID on the real 6510 without going through the firmware's
+        own SID-player UI.
+
+        `play_bank` overrides the CPU-port ($01) value used transiently around
+        the per-IRQ JSR play. Pass $36 (BASIC ROM out) for tunes whose PLAY
+        reads live data from RAM under BASIC ROM ($A000-$BFFF) even though their
+        code sits below it — the address-keyed heuristic can't see that, but the
+        caller's PLAY footprint can. None = use the heuristic ([_play_bank_for]).
+
+        Sequence:
+          1. Parse the PSID/RSID header for load/init/play addresses. Refuse
+             RSIDs, tunes loading below $0820 (would collide with the BASIC SYS
+             stub), tunes with play_addr 0, and code/data under KERNAL ROM.
+          2. Choose where to place the player MC + re-INIT stub. Default is
+             $C300/$C400; relocates per-tune when the SID payload would overlap
+             (see [_choose_player_layout]). Pass `avoid` (a 64 KB bitmap of RAM
+             the tune writes ∪ the caller's reserved regions) to relocate into
+             the largest footprint-clean hole.
+          3-5. DMA the payload + player MC + re-INIT stub, then hand control to
+             the player via the backend-specific `_launch_sid_player`. The player
+             banks $01 per-call, calls INIT once, installs a $0314 IRQ that calls
+             PLAY then chains to kernal $EA31, then spins forever in `JMP *` (so
+             the kernal IRQ keeps firing PLAY + updating $028D for the keyboard
+             poller; returning to BASIC would syntax-error on INIT-clobbered ZP).
+          6. Measure the post-INIT CIA #1 Timer A rate and patch the player MC's
+             kernal-chain divider so fast-PLAY tunes don't run SCNKEY every tick.
+
+        `song` is the 1-based subtune; pass 0 to use the SID's default.
+
+        `defer_audio=True` loads the player but leaves it silent until
+        `begin_sid_audio()` — WaveformScene uses it to bring the oscilloscope up
+        before the first note. A backend that can't defer (the Ultimate's
+        synchronous `run_prg`) starts immediately and ignores the flag.
+
+        v1 limitations: PSID only; PAL/NTSC speed flag ignored (kernal-default
+        CIA #1 rate). See [docs/caveats.md] for the full rationale.
+        """
+        parsed = parse_psid_for_player(sid_bytes, song=song)
+        layout = _choose_player_layout(parsed, avoid)
+        self._sid_player_layout = layout
+        self._sid_player_default_play_bank = _play_bank_for(parsed)
+
+        if layout is not _DEFAULT_PLAYER_LAYOUT:
+            log.info(
+                "SID player relocated to player=$%04X stub=$%04X "
+                "(default $C300/$C400 conflicts with payload "
+                "$%04X-$%04X)",
+                layout.player_base,
+                layout.stub_base,
+                parsed.load_addr,
+                parsed.load_addr + len(parsed.payload),
+            )
+
+        mc = _build_player_mc(parsed, layout, play_bank=play_bank)
+        reinit = _build_reinit_stub(parsed, layout)
+        finalize = self._launch_sid_player(parsed, layout, mc, reinit, timeout, avoid, defer_audio)
+
+        if finalize:
+            # The backend started audio synchronously here (the Ultimate's
+            # run_prg) — anchor the host-emu clock and, once INIT has reprogrammed
+            # CIA #1 Timer A, measure the PLAY rate and patch the tick divider. A
+            # backend that self-finalizes or defers (the TeensyROM) returns False
+            # and owns this itself (in begin_sid_audio / its own kick).
+            self._sid_audio_start = time.time()
+            self._tune_play_divider()
+
+    def begin_sid_audio(self) -> None:
+        """Release a SID start deferred by `run_sid_player(defer_audio=True)`.
+
+        The base implementation is a no-op: the only backend that defers is the
+        TeensyROM (which DMA-swaps `$0314` to the re-INIT stub here); the
+        Ultimate starts audio synchronously inside `_launch_sid_player` and never
+        reaches a deferred state."""
+        return
+
+    def sid_audio_start_time(self) -> float | None:
+        return self._sid_audio_start
+
+    def cue_song_reinit(self, song: int, *, play_bank: int | None = None) -> None:
+        """Cue the next kernal IRQ tick to re-INIT the SID on a new subtune,
+        without going through the BASIC-runs-SYS-stub path. Avoids the runner
+        round-trip that resets VIC mode + clears screen RAM, so SHIFT-driven
+        song cycling in WaveformScene stays flicker-free.
+
+        Requires `run_sid_player` to have been called first — it picks the
+        per-tune player layout and uploads the re-INIT stub at the layout's
+        stub_base.
+        Sequence:
+          1. DMA-patch the song operand at stub_base + _REINIT_PATCH_SONG.
+          2. When `play_bank` is given (or restore the tune default otherwise),
+             DMA-patch the player MC's playBank operand so PLAY of the new
+             subtune uses the right $01 value. The player MC isn't rebuilt on a
+             cue, so a subtune that needs a different bank than the start song
+             would otherwise keep the start song's bank and play silent.
+          3. Atomically DMA-swap $0314/$0315 to point at the stub.
+          4. The next kernal IRQ runs the stub: JSR init(new song), restore
+             $D418=$0F, restore $0314/$0315 back to the regular PLAY handler,
+             JMP $EA31. Subsequent IRQs resume PLAY on the new subtune.
+        `song` is the 1-based subtune number.
+        """
+        layout = self._sid_player_layout
+        if layout is None:
+            raise RuntimeError(
+                "cue_song_reinit called before run_sid_player — the "
+                "re-INIT stub hasn't been uploaded yet"
+            )
+        self.write_memory(
+            f"{layout.stub_base + _REINIT_PATCH_SONG:04X}", f"{(song - 1) & 0xFF:02X}"
+        )
+        # Patch the player MC's playBank BEFORE the vector swap so the first
+        # PLAY after the re-INIT stub restores the vector already uses it.
+        # When the caller passes None, restore the tune's heuristic default
+        # so a previous subtune's override (e.g. $36 for a Times-of-Lore
+        # under-ROM subtune) doesn't leak into one that wants $37.
+        bank = play_bank if play_bank is not None else self._sid_player_default_play_bank
+        if bank is not None:
+            self.write_memory(
+                f"{layout.player_base + _SID_PATCH_PLAYBANK:04X}", f"{bank & 0xFF:02X}"
+            )
+        self.write_regs(
+            f"{VECTORS.IRQ:04X}", layout.stub_base & 0xFF, (layout.stub_base >> 8) & 0xFF
+        )
+        # The new subtune's INIT may reprogram CIA #1 Timer A to a different
+        # rate — re-measure and re-patch the tick divider. Longer settle than
+        # run_sid_player's path: cue takes effect on the NEXT kernal IRQ, then
+        # the stub runs INIT, then we want to observe the post-INIT latch.
+        self._tune_play_divider(settle_s=0.08)
+
+    # CIA #1 Timer A latch sampling for [_tune_play_divider].
+    # Reads are 1 byte each, and the timer counts down from latch to 0 then
+    # reloads. Eight reads span enough time to catch a value within ~10% of the
+    # latch even at the highest PLAY rates we care about.
+    _DIVIDER_LATCH_SAMPLES = 8
+
+    # Target kernal-services rate. SCNKEY at >= 30 Hz keeps $028D updating fast
+    # enough for the 10 Hz keyboard poller.
+    _DIVIDER_TARGET_KERNAL_HZ = 30
+
+    # Cap the divider so a misread (very high estimated PLAY rate) can't starve
+    # kernal services entirely.
+    _DIVIDER_MAX = 8
+
+    # PHI2 approximation in Hz. PAL is 985248, NTSC is 1022730 — using 1e6
+    # introduces <2% error, well within the rounding tolerance.
+    _DIVIDER_PHI2_HZ = 1_000_000
+
+    def _tune_play_divider(self, settle_s: float = 0.2) -> int:
+        """Sample CIA #1 Timer A to estimate the SID's PLAY rate, then
+        live-patch the player MC's tick divider so the kernal IRQ tail (SCNKEY +
+        UDTIM + cursor blink at $EA31) only runs every Nth PLAY tick.
+
+        Returns the patched N (1 = chain every tick = legacy behavior).
+        Best-effort: a read or write failure logs and returns 1 without raising.
+
+        Works on any backend whose `read_memory` reaches CIA #1 — the Ultimate
+        (REST) and cycle-clean TeensyROM (ReadC64Mem) both do. A backend that
+        can't read returns None from read_memory and the divider stays at the
+        template default (N=1), which is correct but leaves fast-PLAY tunes
+        running the kernal tail every tick.
+        """
+        layout = self._sid_player_layout
+        if layout is None:
+            return 1
+        # Settle so INIT has had a chance to reprogram CIA #1 Timer A.
+        time.sleep(settle_s)
+        # The CIA latch is write-only at $DC04/$DC05; reading those returns the
+        # current down-count. Max over a small window catches a fresh reload.
+        max_count = 0
+        for _ in range(self._DIVIDER_LATCH_SAMPLES):
+            buf = self.read_memory(CIA1.TIMER_A_LO, 2)
+            if buf is None or len(buf) < 2:
+                log.debug(
+                    "_tune_play_divider: CIA1 read failed; leaving divider at template default"
+                )
+                return 1
+            v = buf[0] | (buf[1] << 8)
+            if v > max_count:
+                max_count = v
+        if max_count == 0:
+            log.debug(
+                "_tune_play_divider: CIA1 latch sampled as 0; leaving divider at template default"
+            )
+            return 1
+        play_rate_hz = self._DIVIDER_PHI2_HZ / max_count
+        divider = max(1, int(play_rate_hz / self._DIVIDER_TARGET_KERNAL_HZ))
+        if divider > self._DIVIDER_MAX:
+            divider = self._DIVIDER_MAX
+        try:
+            self.write_memory(f"{layout.divider_addr:04X}", f"{divider & 0xFF:02X}")
+            self.flush()
+        except Exception:
+            log.warning(
+                "_tune_play_divider: failed to patch divider byte at $%04X",
+                layout.divider_addr,
+                exc_info=True,
+            )
+            return 1
+        log.info(
+            "SID player: CIA1 latch~=$%04X (~%.0fHz PLAY) -> "
+            "kernal-chain divider=%d (~%.0fHz service rate)",
+            max_count,
+            play_rate_hz,
+            divider,
+            play_rate_hz / divider,
+        )
+        return divider
+
+
+class Ultimate64API(_SidPlayerBackend):
     def __init__(
         self,
         base_url: str,
@@ -806,7 +1109,8 @@ class Ultimate64API(BufferedWriteBackend):
         dma_password: str | None = None,
         profile: HardwareProfile | None = None,
     ):
-        # Init the shared write path (delta cache, stats, listeners).
+        # Init the shared write path (delta cache, stats, listeners) + the
+        # SID-player state fields (_sid_player_layout / _default_play_bank).
         super().__init__()
         # The Ultimate is fully capable; default to the generic Ultimate
         # profile when constructed directly (tests, doctor). make_backend()
@@ -818,16 +1122,6 @@ class Ultimate64API(BufferedWriteBackend):
         self.timeout = 0.5
 
         self.session = requests.Session()
-
-        # Set by run_sid_player; consumed by cue_song_reinit so SHIFT-driven
-        # song cycling patches the stub at the same address the player MC
-        # was uploaded to. None until the first run_sid_player call.
-        self._sid_player_layout: _PlayerLayout | None = None
-        # The address-keyed heuristic playBank for the current tune (constant
-        # across its subtunes — play_addr doesn't change per song). cue_song_
-        # reinit restores it when a cycle target needs no override, so a prior
-        # subtune's $36 override can't leak into a $37 subtune.
-        self._sid_player_default_play_bank: int | None = None
 
         # Socket DMA transport for writes. urlparse extracts the bare host
         # from the REST base URL so we don't need a second config field —
@@ -974,105 +1268,31 @@ class Ultimate64API(BufferedWriteBackend):
         except requests.RequestException as e:
             log.warning("U64 reset failed: %s", e)
 
-    def run_sid_player(
+    def _launch_sid_player(
         self,
-        sid_bytes: bytes,
-        song: int = 0,
-        timeout: float = 5.0,
-        *,
+        parsed: ParsedPsid,
+        layout: _PlayerLayout,
+        mc: bytes,
+        reinit: bytes,
+        timeout: float,
         avoid: bytes | bytearray | None = None,
-        play_bank: int | None = None,
-    ) -> None:
-        """Play a SID on the real 6510 without going through the firmware's
-        /v1/runners:sidplay UI (which takes over HDMI).
+        defer_audio: bool = False,
+    ) -> bool:
+        """Ultimate kick: DMA the SID payload + player MC + re-INIT stub, flush
+        so all three land, then POST a `10 SYS <player_base>` PRG to the REST
+        run_prg runner. run_prg soft-resets the C64 (RAM preserved — the player
+        MC at $C300 survives) and RUNs the stub; BASIC's SYS jumps to the player
+        MC, which installs the IRQ and spins forever (never re-entering BASIC).
 
-        `play_bank` overrides the CPU-port ($01) value used transiently
-        around the per-IRQ JSR play. Pass $36 (BASIC ROM out) for tunes
-        whose PLAY reads live data from RAM under BASIC ROM ($A000-$BFFF)
-        even though their code sits below it — the address-keyed heuristic
-        can't see that, but the caller's PLAY footprint can. None = use the
-        heuristic ([_play_bank_for]).
-
-        Sequence:
-          1. Parse the PSID/RSID header for load/init/play addresses.
-             Refuse RSIDs (they need a custom raster IRQ and don't
-             cooperate with kernal chaining) and any SID whose load_addr
-             would overlap the BASIC stub at $0801-$0811.
-          2. Choose where to place the player MC + re-INIT stub on the
-             C64. Default is $C300/$C400; relocates per-tune when the
-             SID payload would overlap (see [_choose_player_layout]).
-             Pass `avoid` (a 64 KB bitmap of RAM the tune writes ∪ the
-             caller's reserved regions — built from
-             [ram_write_footprint](sid_host_emu.py)) to relocate into the
-             largest footprint-clean hole; without it, the legacy
-             adjacent-to-payload heuristic is used.
-          3. DMA the SID payload to its declared load address.
-          4. DMA the patched player MC + re-INIT stub to the chosen
-             layout's addresses.
-          5. Flush — all three writes must land before the BASIC SYS executes.
-          6. POST a `10 SYS <player_base>` BASIC stub via
-             /v1/runners:run_prg. BASIC's SYS jumps to the player MC,
-             which banks $01 per-call (rest $37, transient $36 around
-             init/play for under-BASIC-ROM tunes — see [_bank_for_addr_hi]),
-             calls INIT once, installs a $0314 IRQ that calls PLAY then chains
-             to kernal $EA31, and then spins forever in a tight `JMP *`.
-             The player intentionally never returns to BASIC: INIT
-             routinely clobbers zero-page state BASIC needs, so RTS would
-             print a syntax error on the next interpreter step. The kernal
-             IRQ keeps firing (CIA #1 Timer A) so PLAY runs and `$028D`
-             keeps updating for the keyboard poller.
-
-        `song` is the 1-based subtune; pass 0 to use the SID's default.
-
-        v1 limitations:
-          * PSID only. RSIDs raise ValueError.
-          * SIDs whose load_addr is in $0801-$081F raise ValueError
-            (the BASIC stub actually ends at $0811 but the threshold is
-            held at $0820 for safety margin).
-          * SIDs with code/data under KERNAL ROM ($E000-$FFFF) raise
-            ValueError (the player keeps KERNAL mapped for its $EA31 IRQ
-            tail). Tunes under BASIC ROM ($A000-$BFFF) ARE supported —
-            the player banks BASIC out per-tune.
-          * PAL/NTSC speed flag is ignored — the kernal's default CIA #1
-            Timer A rate is used, so PAL tunes on an NTSC kernal play
-            ~20% fast (and vice versa).
-        """
-        parsed = parse_psid_for_player(sid_bytes, song=song)
-        layout = _choose_player_layout(parsed, avoid)
-        self._sid_player_layout = layout
-        self._sid_player_default_play_bank = _play_bank_for(parsed)
-
-        if layout is not _DEFAULT_PLAYER_LAYOUT:
-            log.info(
-                "SID player relocated to player=$%04X stub=$%04X "
-                "(default $C300/$C400 conflicts with payload "
-                "$%04X-$%04X)",
-                layout.player_base,
-                layout.stub_base,
-                parsed.load_addr,
-                parsed.load_addr + len(parsed.payload),
-            )
-
-        mc = _build_player_mc(parsed, layout, play_bank=play_bank)
-        reinit = _build_reinit_stub(parsed, layout)
-        basic_stub = _build_basic_sys_stub(layout.player_base)
-
-        # Dirty cache: SID payload + player MC overlap arbitrary RAM
-        # regions; force a clean baseline so the next scene's writes
-        # diff against fresh state.
-        self.invalidate_cache()
-
-        # DMA the SID payload + player MC + re-INIT stub, then flush so
-        # all three land before the BASIC SYS fires.
-        self.write_memory_file(f"{parsed.load_addr:04X}", parsed.payload)
-        self.write_memory_file(f"{layout.player_base:04X}", mc)
-        self.write_memory_file(f"{layout.stub_base:04X}", reinit)
+        `avoid` is unused here (no trampoline to place). `defer_audio` is ignored:
+        run_prg is a synchronous reset+RUN that also re-inits VIC to text mode, so
+        there's no loaded-but-silent window to hold — audio starts here. Returns
+        True so `run_sid_player` runs the standard finalize (timestamp + divider).
+        WaveformScene's `begin_sid_audio()` is then a no-op, and it (re)asserts the
+        bitmap display *after* this call as it always has."""
+        self._write_sid_blobs(parsed, layout, mc, reinit)
         self.flush()
-
-        # POST the BASIC SYS stub. BASIC's RUN parses the stub, executes
-        # SYS <player_base> → our player MC, which installs the IRQ and
-        # spins forever. BASIC never re-enters (intentional — see
-        # template comment).
+        basic_stub = _build_basic_sys_stub(layout.player_base)
         url = f"{self.base_url}{U64_API.RUN_PRG}"
         try:
             r = self.session.post(
@@ -1088,158 +1308,7 @@ class Ultimate64API(BufferedWriteBackend):
                     "required for the SID player path."
                 ) from e
             raise
-
-        # Once INIT has had a moment to reprogram CIA #1 Timer A, measure
-        # the actual PLAY rate and patch the player MC's tick divider so
-        # fast-PLAY tunes don't run SCNKEY/UDTIM/blink every tick.
-        self._tune_play_divider()
-
-    def cue_song_reinit(self, song: int, *, play_bank: int | None = None) -> None:
-        """Cue the next kernal IRQ tick to re-INIT the SID on a new
-        subtune, without going through the BASIC-runs-SYS-stub path.
-        Avoids the run_prg round-trip that resets VIC mode + clears
-        screen RAM, so SHIFT-driven song cycling in WaveformScene stays
-        flicker-free.
-
-        Requires `run_sid_player` to have been called first — it picks
-        the per-tune player layout (default or relocated) and uploads
-        the re-INIT stub at that layout's stub_base.
-        Sequence:
-          1. DMA-patch the song operand at stub_base + _REINIT_PATCH_SONG.
-          2. When `play_bank` is given, DMA-patch the player MC's playBank
-             operand (player_base + _SID_PATCH_PLAYBANK) so PLAY of the new
-             subtune uses the right $01 value. The player MC isn't re-built
-             on a cue (that's the flicker-free win), so a subtune that needs
-             a different bank than the start song — e.g. Times of Lore songs
-             2-11 read data under BASIC ROM and need $36, while song 1 uses
-             $37 — would otherwise keep the start song's bank and play silent.
-          3. Atomically DMA-swap $0314/$0315 to point at the stub
-             (write_regs packs both bytes in one DMA so a stray IRQ
-             between writes can't see a half-updated vector).
-          4. The next kernal IRQ runs the stub: JSR init(new song),
-             restore $D418=$0F, restore $0314/$0315 back to the regular
-             PLAY handler in the player MC, JMP $EA31. Subsequent IRQs
-             resume normal PLAY on the new subtune.
-        `song` is the 1-based subtune number.
-        """
-        layout = self._sid_player_layout
-        if layout is None:
-            raise RuntimeError(
-                "cue_song_reinit called before run_sid_player — the "
-                "re-INIT stub hasn't been uploaded yet"
-            )
-        self.write_memory(
-            f"{layout.stub_base + _REINIT_PATCH_SONG:04X}", f"{(song - 1) & 0xFF:02X}"
-        )
-        # Patch the player MC's playBank BEFORE the vector swap so the first
-        # PLAY after the re-INIT stub restores the vector already uses it.
-        # When the caller passes None, restore the tune's heuristic default
-        # so a previous subtune's override (e.g. $36 for a Times-of-Lore
-        # under-ROM subtune) doesn't leak into one that wants $37.
-        bank = play_bank if play_bank is not None else self._sid_player_default_play_bank
-        if bank is not None:
-            self.write_memory(
-                f"{layout.player_base + _SID_PATCH_PLAYBANK:04X}", f"{bank & 0xFF:02X}"
-            )
-        self.write_regs(
-            f"{VECTORS.IRQ:04X}", layout.stub_base & 0xFF, (layout.stub_base >> 8) & 0xFF
-        )
-        # The new subtune's INIT may reprogram CIA #1 Timer A to a
-        # different rate — re-measure and re-patch the tick divider.
-        # Longer settle than run_sid_player's path: cue takes effect on
-        # the NEXT kernal IRQ, then the stub runs INIT, then we want to
-        # observe the post-INIT latch.
-        self._tune_play_divider(settle_s=0.08)
-
-    # CIA #1 Timer A latch sampling for [_tune_play_divider].
-    # Reads are 1 byte each (~5-50ms over REST), and the timer counts
-    # down from latch to 0 then reloads. Eight reads span enough time
-    # to catch a value within ~10% of the latch even at the highest
-    # PLAY rates we care about (>500 Hz = <2 ms period would need
-    # more samples; <500 Hz is comfortable).
-    _DIVIDER_LATCH_SAMPLES = 8
-
-    # Target kernal-services rate. SCNKEY at >= 30 Hz keeps $028D
-    # updating fast enough for the 10 Hz keyboard poller; lower
-    # rates would feel sluggish for pause/skip response.
-    _DIVIDER_TARGET_KERNAL_HZ = 30
-
-    # Cap the divider so a misread (very high estimated PLAY rate)
-    # can't starve kernal services entirely. 8 = SCNKEY at ~6 Hz on
-    # a 50 Hz tune, ~19 Hz on a 150 Hz tune — still responsive.
-    _DIVIDER_MAX = 8
-
-    # PHI2 approximation in Hz. PAL is 985248, NTSC is 1022730 —
-    # using 1e6 introduces <2% error in the rate estimate, which is
-    # well within the rounding tolerance of `divider = int(rate / 30)`.
-    _DIVIDER_PHI2_HZ = 1_000_000
-
-    def _tune_play_divider(self, settle_s: float = 0.2) -> int:
-        """Sample CIA #1 Timer A to estimate the SID's PLAY rate, then
-        live-patch the player MC's tick divider so the kernal IRQ tail
-        (SCNKEY + UDTIM + cursor blink at $EA31) only runs every Nth
-        PLAY tick.
-
-        Returns the patched N (1 = chain every tick = legacy behavior).
-        Best-effort: a read or write failure logs and returns 1 without
-        raising — the player keeps running with whatever divider was
-        already in place (the template seeds 1).
-
-        Background: PSID INITs commonly reprogram CIA #1 Timer A for
-        non-default PLAY rates. Fast-PLAY tunes (e.g. Galway's Wizball
-        at ~151 Hz) running SCNKEY + UDTIM + blink every tick spend
-        20-30% of CPU on kernal overhead and audibly distort. The
-        divider doesn't change PLAY's cadence (the audience hears every
-        tick from the real SID); it only changes how often the kernal
-        tail runs.
-        """
-        layout = self._sid_player_layout
-        if layout is None:
-            return 1
-        # Settle so INIT has had a chance to reprogram CIA #1 Timer A.
-        time.sleep(settle_s)
-        # The CIA latch is write-only at $DC04/$DC05; reading those
-        # returns the current down-count. Max over a small window
-        # catches a fresh reload near the top.
-        max_count = 0
-        for _ in range(self._DIVIDER_LATCH_SAMPLES):
-            buf = self.read_memory(CIA1.TIMER_A_LO, 2)
-            if buf is None or len(buf) < 2:
-                log.debug(
-                    "_tune_play_divider: CIA1 read failed; leaving divider at template default"
-                )
-                return 1
-            v = buf[0] | (buf[1] << 8)
-            if v > max_count:
-                max_count = v
-        if max_count == 0:
-            log.debug(
-                "_tune_play_divider: CIA1 latch sampled as 0; leaving divider at template default"
-            )
-            return 1
-        play_rate_hz = self._DIVIDER_PHI2_HZ / max_count
-        divider = max(1, int(play_rate_hz / self._DIVIDER_TARGET_KERNAL_HZ))
-        if divider > self._DIVIDER_MAX:
-            divider = self._DIVIDER_MAX
-        try:
-            self.write_memory(f"{layout.divider_addr:04X}", f"{divider & 0xFF:02X}")
-            self.flush()
-        except Exception:
-            log.warning(
-                "_tune_play_divider: failed to patch divider byte at $%04X",
-                layout.divider_addr,
-                exc_info=True,
-            )
-            return 1
-        log.info(
-            "SID player: CIA1 latch~=$%04X (~%.0fHz PLAY) -> "
-            "kernal-chain divider=%d (~%.0fHz service rate)",
-            max_count,
-            play_rate_hz,
-            divider,
-            play_rate_hz / divider,
-        )
-        return divider
+        return True
 
     # ---- lifecycle / introspection ----------------------------------------
     def probe(self, timeout: float = 2.0) -> str | None:

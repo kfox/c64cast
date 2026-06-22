@@ -791,6 +791,11 @@ class WaveformSceneTest(unittest.TestCase):
             self.assertIsNotNone(api.sid_played, "run_sid_player must be called from setup()")
             assert api.sid_played is not None
             self.assertEqual(api.sid_played[1], 2, "explicit song must be forwarded")
+            # Scope-first contract: setup() defers the audio start so the scope
+            # is painted before the first note, then releases it via
+            # begin_sid_audio (the "waveforms before audio" requirement).
+            self.assertTrue(api.sid_deferred, "run_sid_player must be called with defer_audio=True")
+            self.assertTrue(api.sid_audio_began, "begin_sid_audio must be called after setup_hires")
             # Bitmap area zeroed in setup, hires VIC regs poked.
             self.assertEqual(api.memories.get("D018"), "18")
             self.assertEqual(api.memories.get("D011"), "3b")

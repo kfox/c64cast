@@ -15,9 +15,22 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     older firmware still degrades gracefully instead of NAK/timeout-ing every
     keyboard poll. Read support unlocks the `$028D` keyboard poller (physical
     pause/skip/cycle/menu control), same as the Ultimate.
-  * **run_sid_player / cue_song_reinit / reu_write** are left on the ABC's
-    raising defaults — SID-player launch is a later phase and there is no
-    REUWRITE opcode. Callers gate on `profile.supports_*`.
+  * **run_sid_player / cue_song_reinit** ride the shared `_SidPlayerBackend`
+    orchestration (parse / layout / build / divider auto-tune); only the kick
+    differs. The TR does NOT boot the player via LaunchFile — that resets the
+    C64, and its async boot/fast-LOAD raced the scope bring-up and the keyboard
+    poll. Instead the launch reuses the same pure-DMA mechanism as subtune
+    cycling: with the cycle-clean IRQ-enabled clear-loop already running (stock
+    kernal IRQ chaining through `$0314`), `_launch_sid_player` DMAs the payload +
+    player MC + re-INIT stub, then a `$0314` vector-swap points the next kernal
+    IRQ at the re-INIT stub, which runs INIT and installs the PLAY handler. No
+    reset, no boot, no fast-LOAD window to corrupt. Audio start is deferrable
+    (`defer_audio` / `begin_sid_audio`) so WaveformScene paints the scope first.
+    Requires the IRQ-enabled idle, so it's gated on `supports_read` (cycle-clean
+    fw v0.7.2.5+); older firmware raises `BackendCapabilityError`. See
+    `_launch_sid_player`.
+  * **reu_write** is left on the ABC's raising default — there is no REUWRITE
+    opcode. Callers gate on `profile.supports_reu`.
 
 The semantic helpers (`silence_sid`, `restore_kernal_irq_vector`,
 `suppress_cursor_blink`, `disable_case_switch`) are inherited from
@@ -32,7 +45,14 @@ import os
 import time
 from dataclasses import replace
 
-from .backend import BufferedWriteBackend, HardwareProfile
+from .api import (
+    ParsedPsid,
+    _build_basic_sys_stub,
+    _PlayerLayout,
+    _SidPlayerBackend,
+)
+from .backend import BackendCapabilityError, HardwareProfile
+from .c64 import VECTORS
 from .teensyrom_dma import (
     DRIVE_SD,
     DRIVE_USB,
@@ -88,6 +108,12 @@ _SPIN_STUB = bytes([0x78]) + bytes([0xEA]) * 252 + bytes([0x4C, 0x00, 0xC0])
 _BRINGUP_ATTEMPTS = 6
 _BRINGUP_RETRY_S = 1.0
 
+# After the SID player's $0314 vector-swap, give the next kernal IRQ a few ticks
+# to run the re-INIT stub (JSR init → installs the PLAY handler) before the
+# divider auto-tune samples CIA #1 and the post-swap read verifies $0314. ~5
+# ticks at 60 Hz; matches cue_song_reinit's settle.
+_SID_REINIT_SETTLE_S = 0.08
+
 # After LaunchFile the TR loader prints "RUNNING..." on the C64 screen; let it
 # land before we DMA-clear, so the clear isn't immediately overwritten.
 _LAUNCH_SETTLE_S = 0.6
@@ -100,7 +126,7 @@ _SCREEN_CELLS = 1000
 _SC_SPACE = 0x20
 
 
-class TeensyROMBackend(BufferedWriteBackend):
+class TeensyROMBackend(_SidPlayerBackend):
     def __init__(self, transport: TRTransport, *, profile: HardwareProfile, storage: str = "sd"):
         super().__init__()
         self.profile = profile
@@ -287,8 +313,6 @@ class TeensyROMBackend(BufferedWriteBackend):
         to $C000, then launch a `SYS 49152` stub so the 6510 jumps into it.
         LaunchFile loads the BASIC stub at $0801 and won't touch $C000, so the
         MC is still there when SYS jumps to it."""
-        from .api import _build_basic_sys_stub
-
         self.invalidate_cache()
         self.write_memory_file(f"{_SPIN_STUB_ADDR:04X}", _SPIN_STUB)
         self.flush()
@@ -357,3 +381,92 @@ class TeensyROMBackend(BufferedWriteBackend):
         dest = f"{_UPLOAD_DIR}/{os.path.basename(path)}"
         self._upload(data, dest)
         self.tr.launch_file(dest, self._drive)
+
+    # ---- SID player (shared orchestration via _SidPlayerBackend) ----------
+    def _launch_sid_player(
+        self,
+        parsed: ParsedPsid,
+        layout: _PlayerLayout,
+        mc: bytes,
+        reinit: bytes,
+        timeout: float,
+        avoid: bytes | bytearray | None = None,
+        defer_audio: bool = False,
+    ) -> bool:
+        """TeensyROM kick — pure DMA, no LaunchFile/reset/boot.
+
+        The cycle-clean idle leaves the C64 running the IRQ-enabled clear-loop
+        with the stock kernal IRQ chaining through `$0314`. So the player is
+        started exactly like a subtune cue (see `cue_song_reinit`): DMA the
+        payload + player MC + re-INIT stub, then atomically swap `$0314/$0315` to
+        the re-INIT stub. The next kernal IRQ runs the stub once — `JSR init`
+        (banking $01 per-call), restore `$D418`, install `$0314` → the player's
+        PLAY handler, `JMP $EA31` — and every subsequent IRQ runs PLAY. The
+        BASIC clear-loop the IRQ returns to keeps looping harmlessly underneath
+        (the player MC's own `SEI…JMP *` entry is never used on this path; only
+        its PLAY-handler tail at `irq_handler_addr` is).
+
+        No reset means no boot, no fast-LOAD window to corrupt, and the display
+        the caller set up survives — so WaveformScene's scope is on screen before
+        the first note when `defer_audio=True` holds the `$0314` swap for
+        `begin_sid_audio()`. Always returns False (the TR self-finalizes after
+        its own kick — the `$0314` swap must precede the divider's CIA read, so
+        it can't let `run_sid_player` finalize first).
+
+        Requires the IRQ-enabled idle (cycle-clean fw, proxied by
+        `supports_read`); the spin-stub idle on older firmware masks IRQs, so the
+        vector-swap would never fire — raise rather than play silently."""
+        if not self.profile.supports_read:
+            raise BackendCapabilityError(
+                "run_sid_player on TeensyROM (needs the IRQ-enabled idle from "
+                "cycle-clean firmware v0.7.2.5+)"
+            )
+        self._write_sid_blobs(parsed, layout, mc, reinit)
+        self.flush()
+        if defer_audio:
+            # Loaded but silent: the $0314 swap (which starts INIT/PLAY) waits
+            # for begin_sid_audio so the caller can paint the scope first.
+            self._sid_audio_pending = True
+        else:
+            self._start_sid_audio(layout)
+        return False
+
+    def begin_sid_audio(self) -> None:
+        """Release a deferred SID start (see `_launch_sid_player`). Swaps `$0314`
+        to the re-INIT stub so the next kernal IRQ runs INIT + installs PLAY.
+        No-op unless a `defer_audio=True` launch is actually pending."""
+        if not self._sid_audio_pending:
+            return
+        layout = self._sid_player_layout
+        if layout is not None:
+            self._start_sid_audio(layout)
+        self._sid_audio_pending = False
+
+    def _start_sid_audio(self, layout: _PlayerLayout) -> None:
+        """Swap `$0314/$0315` → the re-INIT stub (kicks INIT+PLAY on the next
+        kernal IRQ), record the audio-start instant, tune the PLAY-rate divider,
+        and verify the swap took. The re-INIT stub was built for the start song,
+        and the player MC already carries the right playBank, so no re-patch is
+        needed — just the vector swap (same primitive as `cue_song_reinit`)."""
+        self.write_regs(
+            f"{VECTORS.IRQ:04X}", layout.stub_base & 0xFF, (layout.stub_base >> 8) & 0xFF
+        )
+        self.flush()
+        self._sid_audio_start = time.time()
+        # Let the stub run + INIT reprogram CIA #1, then auto-tune the divider.
+        self._tune_play_divider(settle_s=_SID_REINIT_SETTLE_S)
+        self._verify_player_irq(layout)
+
+    def _verify_player_irq(self, layout: _PlayerLayout) -> None:
+        """Confirm the re-INIT stub ran: after it executes it restores `$0314` to
+        the player's PLAY handler, so a read of `$0314` should equal
+        `irq_handler_addr`. Best-effort (a mismatch logs, doesn't raise); the bus
+        is calm by now (no boot), so this lone read is safe."""
+        target = layout.irq_handler_addr
+        want = bytes([target & 0xFF, (target >> 8) & 0xFF])
+        if self.read_memory(VECTORS.IRQ, 2) != want:
+            log.warning(
+                "TR SID player: $0314 not at the PLAY handler $%04X after the "
+                "vector-swap — the re-INIT stub may not have run (audio may be dead)",
+                target,
+            )

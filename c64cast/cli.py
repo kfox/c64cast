@@ -499,6 +499,34 @@ def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
     return False
 
 
+def _coerce_reu_for_backend(cfg: cfgmod.Config, api: C64Backend) -> None:
+    """Disable the REU-staged audio/video opt-ins when the backend has no REU.
+
+    A backend without an REU (e.g. TeensyROM — no REUWRITE opcode) can't run
+    the REU-staged paths; `[audio].use_reu_pump` / an explicit
+    `[video].use_reu_staged = true` would otherwise reach `reu_write` and raise.
+    Coerce them off (in place — config dataclasses are mutable) so the host-DMA
+    NMI DAC / host-DMA video paths are used instead. `use_reu_staged = "auto"`
+    already self-heals via `_resolve_reu_available` (which returns False when
+    `not supports_reu`), so only the explicit opt-ins need handling here."""
+    if api.profile.supports_reu:
+        return
+    if cfg.audio.use_reu_pump:
+        log.warning(
+            "[audio].use_reu_pump needs an REU; the %s backend has none — "
+            "using the host-DMA NMI DAC path instead",
+            cfg.hardware.backend,
+        )
+        cfg.audio.use_reu_pump = False
+    if cfg.video.use_reu_staged is True:  # explicit true (auto self-heals)
+        log.warning(
+            "[video].use_reu_staged = true needs an REU; the %s backend has "
+            "none — using the host-DMA video path instead",
+            cfg.hardware.backend,
+        )
+        cfg.video.use_reu_staged = False
+
+
 def build_stack(
     cfg: cfgmod.Config,
     name: str,
@@ -569,6 +597,10 @@ def build_stack(
                 source.release()
             raise StackBuildError(2)
         log.info("%s reachable: %s", cfg.hardware.backend, status)
+
+    # Drop REU-staged opt-ins on a backend with no REU, before the AudioStreamer
+    # + scenes are built (so the host-DMA paths are used instead).
+    _coerce_reu_for_backend(cfg, api)
 
     audio = (
         AudioStreamer(
