@@ -13,6 +13,8 @@ write_memory_file call as (addr_upper, bytes). Read injection: set
 
 from __future__ import annotations
 
+import time
+
 
 class FakeSocketDMA:
     """Stand-in for the `socket_dma` attribute on Ultimate64API. Records
@@ -86,10 +88,25 @@ class FakeAPI:
             return self.canned_regs
         return None
 
-    def run_sid_player(self, sid_bytes, song=0, timeout=5.0, *, avoid=None, play_bank=None):
+    def run_sid_player(
+        self, sid_bytes, song=0, timeout=5.0, *, avoid=None, play_bank=None, defer_audio=False
+    ):
         self.sid_played = (bytes(sid_bytes), song)
         self.sid_played_avoid = avoid
         self.sid_played_play_bank = play_bank
+        self.sid_deferred = defer_audio
+        # Mirror the real backends: when not deferred, audio starts now; when
+        # deferred, the start time is recorded at begin_sid_audio().
+        if not defer_audio:
+            self._sid_audio_start = time.time()
+
+    def begin_sid_audio(self):
+        self.sid_audio_began = True
+        if getattr(self, "_sid_audio_start", None) is None:
+            self._sid_audio_start = time.time()
+
+    def sid_audio_start_time(self):
+        return getattr(self, "_sid_audio_start", None)
 
     def cue_song_reinit(self, song, *, play_bank=None):
         self.cue_song_reinits.append(song)

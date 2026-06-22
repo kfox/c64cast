@@ -289,8 +289,27 @@ class C64Backend(ABC):
         *,
         avoid: bytes | bytearray | None = None,
         play_bank: int | None = None,
+        defer_audio: bool = False,
     ) -> None:
+        """Load + start a SID tune on the real 6510. `defer_audio=True` loads the
+        player but leaves it silent until `begin_sid_audio()` — used by
+        WaveformScene so the oscilloscope is on screen before the first note (on
+        backends that can defer; others start immediately and ignore the flag)."""
         raise BackendCapabilityError("run_sid_player")
+
+    def begin_sid_audio(self) -> None:
+        """Release a SID start deferred by `run_sid_player(defer_audio=True)`.
+        No-op on backends that always start audio synchronously (the Ultimate's
+        `run_prg` resets VIC, so the scope must be re-asserted *after* the player
+        — there's no silent-and-loaded window to release)."""
+        return
+
+    def sid_audio_start_time(self) -> float | None:
+        """Wall-clock (`time.time()`) instant the real SID actually began
+        playing the current tune, or None if no SID is playing. WaveformScene
+        anchors its host-emu scope clock to this so the trace stays locked to the
+        audio across the bitmap-setup gap (which differs per backend)."""
+        return None
 
     def cue_song_reinit(self, song: int, *, play_bank: int | None = None) -> None:
         raise BackendCapabilityError("cue_song_reinit")

@@ -44,6 +44,9 @@ These are **dev tools, not part of the shipped package** — they live under
 | [`video_render_probe.py`](video_render_probe.py) | Render a video through a display mode offline (no HW); reports per-frame bg0/$D021 flips + bitmap full-upload churn for flash/flicker diagnosis. |
 | [`dsp_ab.py`](dsp_ab.py) | Offline A/B of the host audio DSP chain on the 4-bit DAC stream (no HW): legacy vs `[dsp]` encode, objective metrics (RMS/crest/codes/loud-body DR/silence%) + reconstructed wavs to `out/`. Tune DSP params before spending a hardware capture. |
 | [`dsp_noise.py`](dsp_noise.py) | Noise-stage A/B (no HW): legacy mic hard gate vs the DSP expander on the Kaggle speech-noise-dataset's matched clean↔noisy pairs. Reports gap residual, gate chatter (events/s), and speech retention; writes both reconstructed wavs to `out/`. |
+| [`tr_read_probe.py`](tr_read_probe.py) | TeensyROM+ ReadC64Mem (0x64FD) round-trip over `--tcp`/`--serial`: ROM read, RAM write/read compare, live `$028D` watch. No Cam Link needed. |
+| [`tr_dma_cycleclean.py`](tr_dma_cycleclean.py) | Confirm the TR+ WriteC64Mem DMA is cycle-clean: hammer `$4000` while a fragile IRQ-driven BASIC border-cycler runs; the border keeps sweeping (alive) iff the running program survived. |
+| [`tr_audio_sid_probe.py`](tr_audio_sid_probe.py) | Drive the TR backend's audio paths on HW + capture Cam Link audio (`volumedetect`): `--mode tone` (host-DMA NMI DAC) or `--mode sid` (run_sid_player). `--flash` adds a 1 Hz `$D020` A/V sync marker. Silences + resets on exit. |
 
 ## End-of-session rule
 

@@ -745,13 +745,27 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         play_bank = _play_bank_for_footprints(footprint, display_footprint)
         self._current_needs_basic_out = play_bank == CPU.PORT_BASIC_OUT
 
-        # Upload the SID payload + tiny player MC and kick the BASIC SYS
-        # stub. The real 6510 then drives INIT + PLAY on a CIA #1 IRQ
-        # that chains to kernal $EA31, so display + keyboard scan stay
-        # under our control. See api.run_sid_player for the layout.
+        # Upload the SID payload + tiny player MC, DEFERRING the audible start
+        # so the oscilloscope is on screen before the first note (the whole
+        # point of this scene — show the waveforms *during* playback, not just
+        # play a tune). The real 6510 then drives INIT + PLAY on a CIA #1 IRQ
+        # that chains to kernal $EA31, so display + keyboard scan stay under our
+        # control. See api.run_sid_player for the layout.
+        #
+        # Backend ordering differs and both are honored by defer_audio /
+        # begin_sid_audio: the TeensyROM loads the player silent and only starts
+        # it (a $0314 vector-swap) at begin_sid_audio, so the scope is up first;
+        # the Ultimate's run_prg is a synchronous reset that re-inits VIC to text
+        # mode, so it starts audio here and we (re)assert the bitmap right after
+        # (begin_sid_audio is a no-op there). Either way the scope is painted
+        # before — or within a frame of — the audio.
         try:
             self.api.run_sid_player(
-                self.sid_bytes, song=self.song, avoid=avoid, play_bank=play_bank
+                self.sid_bytes,
+                song=self.song,
+                avoid=avoid,
+                play_bank=play_bank,
+                defer_audio=True,
             )
         except Exception as e:
             log.error(
@@ -764,18 +778,21 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.is_done = True
             return
 
-        # Anchor the host-emu clock to when the real SID started. The poll
-        # thread (below) derives its PLAY-tick count from wall-clock elapsed
-        # since this instant — so it catches up through the _setup_hires
-        # bitmap-clear gap and stays locked to the audio, rather than
-        # starting late and drifting behind. See _poll_regs.
-        self._sid_start_time = time.time()
-        self._ticks_done = 0
-
-        # Configure VIC for hires bitmap mode. Paints over the full
-        # screen so no scene state from before matters.
+        # Configure VIC for hires bitmap mode FIRST, while the SID is still
+        # silent on a deferring backend. Paints over the full screen so no scene
+        # state from before matters.
         self.api.invalidate_cache()
         self._setup_hires()
+
+        # Now release audio (no-op if it already started synchronously). Anchor
+        # the host-emu clock to when the real SID actually started — the backend
+        # records it (TR: this instant; U64: during run_sid_player, before
+        # _setup_hires). The poll thread derives its PLAY-tick count from
+        # wall-clock elapsed since this anchor, so it stays locked to the audio
+        # rather than drifting. See _poll_regs.
+        self.api.begin_sid_audio()
+        self._sid_start_time = self.api.sid_audio_start_time() or time.time()
+        self._ticks_done = 0
 
         # Resolve the host-emu PLAY rate for this tune (vsync vs CIA
         # multispeed) and (re)build the poll thread at that period — the

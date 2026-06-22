@@ -12,8 +12,10 @@ from __future__ import annotations
 import struct
 import unittest
 from dataclasses import replace
+from unittest import mock
 
 from c64cast import config as cfgmod
+from c64cast.api import _DEFAULT_PLAYER_LAYOUT
 from c64cast.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
 from c64cast.teensyrom_api import TeensyROMBackend
 from c64cast.teensyrom_dma import (
@@ -245,10 +247,120 @@ class BackendTest(unittest.TestCase):
         # No reply queued -> the transport underflows; read_memory swallows it.
         self.assertIsNone(b.read_memory(0x028D, 1))
 
-    def test_sid_player_unsupported_in_phase1(self):
+    def test_reu_write_unsupported(self):
+        # The TR has no REUWRITE opcode (supports_reu False); reu_write stays on
+        # the ABC's raising default so the experimental REU paths gate on it.
         b, _ = self._backend()
+        self.assertFalse(b.profile.supports_reu)
         with self.assertRaises(BackendCapabilityError):
-            b.run_sid_player(b"PSID")
+            b.reu_write(0, b"\x00")
+
+    # ---- SID player -------------------------------------------------------
+    @staticmethod
+    def _make_sid(*, load=0x1000, init=0x1003, play=0x1006, num_songs=1, payload_len=64):
+        """Minimal valid PSID v2 header + payload (mirrors tests/test_api.py)."""
+        h = bytearray(124)
+        h[0:4] = b"PSID"
+        h[4:6] = (2).to_bytes(2, "big")  # version
+        h[6:8] = (124).to_bytes(2, "big")  # data offset
+        h[8:10] = load.to_bytes(2, "big")
+        h[10:12] = init.to_bytes(2, "big")
+        h[12:14] = play.to_bytes(2, "big")
+        h[14:16] = num_songs.to_bytes(2, "big")
+        h[16:18] = (1).to_bytes(2, "big")  # start song
+        return bytes(h) + bytes(payload_len)
+
+    def test_run_sid_player_loads_then_vector_swaps(self):
+        # Default (defer_audio False): DMA payload + player MC + re-INIT stub,
+        # then a pure-DMA $0314/$0315 vector-swap to the re-INIT stub (which the
+        # next kernal IRQ runs to JSR init + install the PLAY handler). NO reset,
+        # NO LaunchFile, NO PostFile mid-stream — the player is started exactly
+        # like a subtune cue, over the running IRQ-enabled clear-loop.
+        b, t = self._backend(read=True)
+        for _ in range(4):  # 3 blob writes + 1 vector-swap write
+            t.queue_token(TOK_ACK)
+        # _verify_player_irq reads $0314 once after the swap; the re-INIT stub
+        # has restored it to the player handler ($C300 + 42 = $C32A, LE wire).
+        t.queue_token(TOK_ACK)
+        t.queue_raw(b"\x2a\xc3")
+        with mock.patch.object(b, "_tune_play_divider", return_value=1):
+            b.run_sid_player(self._make_sid())
+        sent = bytes(t.sent)
+        self.assertIn(b"\x64\xfb\x10\x00", sent)  # payload DMA to $1000
+        # $0314 vector-swap to the re-INIT stub at the default $C400 (len 2,
+        # data = $C400 little-endian = 00 C4).
+        self.assertIn(b"\x64\xfb\x03\x14\x00\x02\x00\xc4", sent)
+        self.assertNotIn(b"\x64\x44", sent)  # no LaunchFile (no boot)
+        self.assertNotIn(b"\x64\xee", sent)  # no ResetC64
+        self.assertNotIn(b"\x64\xbb", sent)  # no PostFile
+
+    def test_run_sid_player_defers_audio_until_begin(self):
+        # defer_audio=True (WaveformScene): run_sid_player loads the player but
+        # leaves it SILENT — no $0314 swap, no divider tune — so the caller can
+        # paint the scope first. begin_sid_audio then does the vector-swap that
+        # actually starts INIT/PLAY. This is the "waveforms before audio" path.
+        b, t = self._backend(read=True)
+        for _ in range(3):  # 3 blob writes only
+            t.queue_token(TOK_ACK)
+        with mock.patch.object(b, "_tune_play_divider", return_value=1) as tune:
+            b.run_sid_player(self._make_sid(), defer_audio=True)
+        loaded = bytes(t.sent)
+        self.assertIn(b"\x64\xfb\x10\x00", loaded)  # payload DMA'd...
+        self.assertNotIn(b"\x64\xfb\x03\x14", loaded)  # ...but NO $0314 swap yet
+        tune.assert_not_called()  # divider not tuned until audio starts
+        self.assertIsNone(b.sid_audio_start_time())
+
+        # Now release audio: the deferred $0314 swap fires.
+        t.queue_token(TOK_ACK)  # vector-swap write
+        t.queue_token(TOK_ACK)  # _verify_player_irq read
+        t.queue_raw(b"\x2a\xc3")
+        before = bytes(t.sent)
+        with mock.patch.object(b, "_tune_play_divider", return_value=1) as tune2:
+            b.begin_sid_audio()
+        swapped = bytes(t.sent)[len(before) :]
+        self.assertIn(b"\x64\xfb\x03\x14\x00\x02\x00\xc4", swapped)  # swap to $C400
+        tune2.assert_called_once()
+        self.assertIsNotNone(b.sid_audio_start_time())
+
+    def test_run_sid_player_gated_on_read_support(self):
+        # The vector-swap launch needs the IRQ-enabled idle (cycle-clean fw,
+        # proxied by supports_read). On older firmware the spin-stub idle masks
+        # IRQs, so the swap would never fire — run_sid_player raises rather than
+        # play silently.
+        b, _ = self._backend(read=False)
+        with self.assertRaises(BackendCapabilityError):
+            b.run_sid_player(self._make_sid())
+
+    def test_tune_play_divider_reads_cia1_on_tr(self):
+        # Reads now work on TR, so the PLAY-rate divider auto-tune runs for real
+        # (it degraded to N=1 on the read-free TR). Feed a CIA #1 Timer A latch
+        # of $4000 (~61 Hz PLAY) -> divider 2, patched at the player MC.
+        b, t = self._backend(read=True)
+        b._sid_player_layout = _DEFAULT_PLAYER_LAYOUT
+        for _ in range(8):  # 8 latch samples: ack + 2 data bytes each
+            t.queue_token(TOK_ACK)
+            t.queue_raw(b"\x00\x40")  # $4000 little-endian on the wire
+        t.queue_token(TOK_ACK)  # divider write
+        with mock.patch("c64cast.api.time.sleep"):
+            n = b._tune_play_divider()
+        self.assertEqual(n, 2)
+        # Divider byte patched at player_base + DIVIDER_OFFSET ($C300+59=$C33B).
+        self.assertIn(b"\x64\xfb\xc3\x3b\x00\x01\x02", bytes(t.sent))
+
+    def test_cue_song_reinit_on_tr_is_pure_dma(self):
+        # SHIFT-driven subtune re-INIT is a pure-DMA vector swap (no reset / no
+        # PostFile): patch the stub's song byte + swap $0314/$0315 to the stub.
+        b, t = self._backend(read=True)
+        b._sid_player_layout = _DEFAULT_PLAYER_LAYOUT
+        b._sid_player_default_play_bank = None
+        for _ in range(4):
+            t.queue_token(TOK_ACK)
+        with mock.patch.object(b, "_tune_play_divider", return_value=1):
+            b.cue_song_reinit(2)
+        sent = bytes(t.sent)
+        self.assertIn(b"\x64\xfb\x03\x14", sent)  # IRQ vector swap at $0314
+        self.assertNotIn(b"\x64\xee", sent)  # no reset
+        self.assertNotIn(b"\x64\xbb", sent)  # no PostFile
 
     def test_bring_up_clear_loop_when_read_supported(self):
         # Cycle-clean firmware (supports_read True) launches the IRQ-enabled
@@ -256,8 +368,10 @@ class BackendTest(unittest.TestCase):
         # spin path) DMA-clears the screen + suppresses the cursor blink to wipe
         # the loader "RUNNING.."/READY/cursor text TR LaunchFile leaves behind.
         # NO spin MC write to $C000 and NO $D011 blanking (the display stays on
-        # — DEN-off would hang the DMA). Acks: 2 (delete) + 3 (post) +
-        # 2 (launch) + 1 (screen clear) + 1 (cursor suppress) = 9.
+        # — DEN-off would hang the DMA). The SID player needs no pre-uploaded
+        # stub anymore (it starts via a pure-DMA $0314 swap), so bring-up is just
+        # the clear-loop. Acks: 5 (delete+post clear-loop) + 2 (launch) +
+        # 1 (screen clear) + 1 (cursor suppress) = 9.
         b, t = self._backend(read=True)
         for _ in range(9):
             t.queue_token(TOK_ACK)
@@ -278,8 +392,8 @@ class BackendTest(unittest.TestCase):
     def test_bring_up_spin_stub_when_read_unsupported(self):
         # Old firmware (supports_read False) falls back to the spin stub: DMA
         # the spin MC to $C000, then DeleteFile -> PostFile -> LaunchFile the
-        # SYS stub, then DMA-clear the screen. Acks: 1 (spin) + 2 (delete) +
-        # 3 (post) + 2 (launch) + 1 (screen clear) = 9.
+        # SYS stub, then DMA-clear the screen. Acks: 1 (spin) +
+        # 5 (delete+post spin stub) + 2 (launch) + 1 (screen clear) = 9.
         b, t = self._backend(read=False)
         for _ in range(9):
             t.queue_token(TOK_ACK)
@@ -319,10 +433,12 @@ class BackendTest(unittest.TestCase):
         # First-ever run: the file doesn't exist, so DeleteFile NAKs; bring-up
         # must ignore that and still PostFile + LaunchFile. (Clear-loop path.)
         b, t = self._backend(read=True)
-        t.queue_token(TOK_ACK)  # delete open
-        t.queue_token(TOK_FAIL)  # delete body -> file not found (ignored)
+        t.queue_token(TOK_ACK)  # clear-loop delete open
+        t.queue_token(TOK_FAIL)  # clear-loop delete body -> file not found (ignored)
         for _ in range(3):
-            t.queue_token(TOK_ACK)  # post open/header/data
+            t.queue_token(TOK_ACK)  # clear-loop post open/header/data
+        for _ in range(5):
+            t.queue_token(TOK_ACK)  # SID stub delete (2) + post (3)
         for _ in range(2):
             t.queue_token(TOK_ACK)  # launch open/body
         b.run_basic_clear_loop()
@@ -337,6 +453,53 @@ class BackendTest(unittest.TestCase):
         b.disable_case_switch()  # $0291 = $80
         # last write_segment frame ends with the value byte 0x80
         self.assertEqual(b.stats["writes"], 1)
+
+
+class ReuCoercionTest(unittest.TestCase):
+    """cli._coerce_reu_for_backend drops REU-staged opt-ins on a no-REU backend
+    so they never reach reu_write (which raises on the TeensyROM)."""
+
+    @staticmethod
+    def _cfg(*, pump: bool, staged: bool | str) -> cfgmod.Config:
+        cfg = cfgmod.Config()
+        cfg.hardware.backend = "teensyrom"
+        cfg.audio.use_reu_pump = pump
+        cfg.video.use_reu_staged = staged
+        return cfg
+
+    @staticmethod
+    def _backend(*, supports_reu: bool) -> TeensyROMBackend:
+        t = LoopbackTransport()
+        t.queue_token(TOK_FW_FULL)  # connect's fw_check
+        t.queue_token(TOK_ACK)  # read-probe ack
+        t.queue_raw(b"\xe2\xfc")  # read-probe data
+        profile = replace(TEENSYROM_PROFILE, supports_reu=supports_reu)
+        return TeensyROMBackend(t, profile=profile, storage="sd")
+
+    def test_no_reu_backend_coerces_opt_ins_off(self):
+        from c64cast.cli import _coerce_reu_for_backend
+
+        cfg = self._cfg(pump=True, staged=True)
+        with self.assertLogs("c64cast", level="WARNING"):
+            _coerce_reu_for_backend(cfg, self._backend(supports_reu=False))
+        self.assertFalse(cfg.audio.use_reu_pump)
+        self.assertFalse(cfg.video.use_reu_staged)
+
+    def test_no_reu_backend_leaves_auto_staged_alone(self):
+        # "auto" self-heals elsewhere; the coercion only touches explicit true.
+        from c64cast.cli import _coerce_reu_for_backend
+
+        cfg = self._cfg(pump=False, staged="auto")
+        _coerce_reu_for_backend(cfg, self._backend(supports_reu=False))
+        self.assertEqual(cfg.video.use_reu_staged, "auto")
+
+    def test_reu_backend_unchanged(self):
+        from c64cast.cli import _coerce_reu_for_backend
+
+        cfg = self._cfg(pump=True, staged=True)
+        _coerce_reu_for_backend(cfg, self._backend(supports_reu=True))
+        self.assertTrue(cfg.audio.use_reu_pump)
+        self.assertIs(cfg.video.use_reu_staged, True)
 
 
 class MakeBackendTest(unittest.TestCase):

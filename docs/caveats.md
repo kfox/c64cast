@@ -118,6 +118,56 @@ overlap that region. `WaveformScene.setup()` calls `audio.stop()` before
 SID setup so the NMI handler is silent during playback, but the bytes
 remain installed for any later scene that re-arms audio.
 
+### TeensyROM: pure-DMA `$0314` vector-swap launch (no `run_prg`)
+
+The host-side orchestration above (parse / layout / build / divider
+auto-tune / subtune re-INIT) is backend-agnostic and shared via
+`_SidPlayerBackend` in [api.py](../c64cast/api.py); only the **kick** —
+how control reaches the player — differs per backend, behind the abstract
+`_launch_sid_player`. The Ultimate POSTs the `SYS` stub to `run_prg`
+(a synchronous soft reset that preserves RAM, then RUNs). The TeensyROM
+has no synchronous run-PRG: `LaunchFile` resets the C64 and boots
+**asynchronously**, and its timing-sensitive fast-LOAD is corrupted by the
+badline-gated DMA reads of a concurrent `$028D` keyboard poll (and the
+scope's bitmap bring-up raced the still-completing boot). Working around
+the boot meant a fixed boot settle, a bus-silent launch lock, a `$C000`
+trampoline + pre-uploaded `SYS` stub, and a verify-during-boot read — a
+pile of fragile boot-race hacks.
+
+So the TR doesn't boot at all. After cycle-clean bring-up the C64 runs the
+IRQ-enabled BASIC clear-loop with the **stock kernal IRQ chaining through
+`$0314`**, so the player is started exactly like a subtune cue
+(`cue_song_reinit`): DMA the payload + player MC + re-INIT stub, then
+atomically DMA-swap `$0314/$0315` to the re-INIT stub. The next kernal IRQ
+runs the stub once — `JSR init` (banking `$01` per-call), restore `$D418`,
+install `$0314` → the player's PLAY handler, `JMP $EA31` — and every
+subsequent IRQ runs PLAY. The clear-loop the IRQ returns to keeps looping
+harmlessly underneath; the player MC's own `SEI…JMP *` entry is never used
+on this path, only its PLAY-handler tail. **No reset, no boot, no fast-LOAD
+window to corrupt** — the whole class of boot-race workarounds is deleted,
+and the display the caller set up survives the launch.
+
+That last property is what makes the oscilloscope correct: a SID scene's
+job is to show the waveforms *during* playback, not just play a tune. So
+`run_sid_player(defer_audio=True)` loads the player **silent** (no `$0314`
+swap yet); `WaveformScene` paints the hires scope (`_setup_hires`); then
+`begin_sid_audio()` fires the `$0314` swap that actually starts INIT/PLAY —
+the scope is on screen before the first note. (On the Ultimate, `run_prg`
+re-inits VIC to text mode, so the bitmap is asserted *after* the player as
+it always was, and `begin_sid_audio()` is a no-op there — the gap is one
+frame.) The scene anchors its host-emu scope clock to `sid_audio_start_time()`,
+which each backend records at the instant audio actually started.
+
+The vector-swap launch requires the IRQ-enabled idle, so it's gated on
+`profile.supports_read` (cycle-clean fw v0.7.2.5+ — ReadC64Mem and the
+cycle-clean DMA shipped together). On older firmware the spin-stub idle
+masks IRQs, so the swap would never fire — `run_sid_player` raises
+`BackendCapabilityError` rather than play silently. (The TR also has no
+REUWRITE opcode, so [cli.py](../c64cast/cli.py) coerces any `use_reu_pump`
+/ explicit `use_reu_staged = true` opt-in off on a no-REU backend, routing
+audio through the host-DMA NMI DAC and video through host-DMA; `--doctor`
+reports the same.)
+
 ## Char ROM substitution
 
 `[preview] charset_path` points at the C64 character ROM
