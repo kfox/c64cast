@@ -378,6 +378,13 @@ def run_transport(label: str, client: TRClient, cam: CamCapture, args) -> list[d
         baseline_t0 = time.monotonic()
         time.sleep(args.baseline)  # measure the 'alive' swing before hammering
 
+        # Drain launch/console chatter before hammering. On the native-USB-serial
+        # transport the command stream is ALSO the Teensy's debug console
+        # (Serial.println), so the loader's post-launch status text interleaves
+        # with acks; the write hot path doesn't drain, so the first write would
+        # misread that text as its ack. (Harmless no-op on TCP, where console
+        # output doesn't reach the client.)
+        client._drain_stale(0.3)
         h_t0 = time.monotonic()
         stats = hammer(client, HAMMER_ADDR, size, args.seconds)
         h_t1 = time.monotonic()
