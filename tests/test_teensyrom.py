@@ -502,14 +502,125 @@ class ReuCoercionTest(unittest.TestCase):
         self.assertIs(cfg.video.use_reu_staged, True)
 
 
+class TRSerialAutodetectTest(unittest.TestCase):
+    """Pure-helper tests for macOS serial-device auto-detection (no subprocess,
+    no real /dev)."""
+
+    def test_serials_from_profiler_walks_nested_usb_tree(self):
+        from c64cast.teensyrom_dma import _teensyrom_serials_from_profiler
+
+        # system_profiler nests devices under hub `_items`; the walk recurses.
+        payload = {
+            "SPUSBHostDataType": [
+                {
+                    "_name": "USB hub",
+                    "_items": [
+                        {"_name": "TeensyROM", "USBDeviceKeySerialNumber": "19307560"},
+                        {"_name": "Some Webcam", "USBDeviceKeySerialNumber": "deadbeef"},
+                    ],
+                }
+            ]
+        }
+        self.assertEqual(_teensyrom_serials_from_profiler(payload), ["19307560"])
+
+    def test_serials_from_profiler_empty_when_no_teensyrom(self):
+        from c64cast.teensyrom_dma import _teensyrom_serials_from_profiler
+
+        self.assertEqual(_teensyrom_serials_from_profiler({"SPUSBHostDataType": []}), [])
+
+    def test_device_for_serial_prefix_matches_trailing_iface_digit(self):
+        from c64cast.teensyrom_dma import _device_for_serial
+
+        # Real case: serial 19307560 -> /dev/cu.usbmodem193075601 (the device
+        # node carries a trailing interface digit, so a literal append fails;
+        # a prefix match resolves it).
+        self.assertEqual(
+            _device_for_serial("19307560", ["/dev/cu.usbmodem193075601"]),
+            "/dev/cu.usbmodem193075601",
+        )
+
+    def test_device_for_serial_none_when_no_match(self):
+        from c64cast.teensyrom_dma import _device_for_serial
+
+        self.assertIsNone(_device_for_serial("19307560", []))
+
+    def test_device_for_serial_picks_lowest_when_multiple_ifaces(self):
+        from c64cast.teensyrom_dma import _device_for_serial
+
+        self.assertEqual(
+            _device_for_serial(
+                "19307560", ["/dev/cu.usbmodem193075603", "/dev/cu.usbmodem193075601"]
+            ),
+            "/dev/cu.usbmodem193075601",
+        )
+
+    def test_autodetect_returns_none_off_macos(self):
+        from c64cast import teensyrom_dma
+
+        with mock.patch.object(teensyrom_dma.sys, "platform", "linux"):
+            self.assertIsNone(teensyrom_dma.autodetect_serial_port())
+
+
 class MakeBackendTest(unittest.TestCase):
-    def test_serial_requires_port(self):
+    def test_serial_requires_port_when_autodetect_fails(self):
+        # With no explicit serial_port and nothing auto-detected, make_backend
+        # raises a clear error. (Patch auto-detect to None so the test is
+        # deterministic on a Mac that actually has a TR attached.)
         cfg = cfgmod.Config()
         cfg.hardware.backend = "teensyrom"
         cfg.teensyrom.transport = "serial"
         cfg.teensyrom.serial_port = None
-        with self.assertRaises(ValueError):
+        with (
+            mock.patch("c64cast.teensyrom_dma.autodetect_serial_port", return_value=None),
+            self.assertRaises(ValueError),
+        ):
             make_backend(cfg)
+
+    def test_serial_auto_detects_device_when_unset(self):
+        # serial_port unset -> make_backend resolves it via auto-detect and
+        # builds the SerialTransport against the discovered node.
+        cfg = cfgmod.Config()
+        cfg.hardware.backend = "teensyrom"
+        cfg.teensyrom.transport = "serial"
+        cfg.teensyrom.serial_port = None
+        captured: dict[str, str] = {}
+
+        def fake_backend(transport, *, profile, storage):
+            captured["port"] = transport.port
+            return object()
+
+        with (
+            mock.patch(
+                "c64cast.teensyrom_dma.autodetect_serial_port",
+                return_value="/dev/cu.usbmodemAUTO1",
+            ),
+            mock.patch("c64cast.teensyrom_api.TeensyROMBackend", side_effect=fake_backend),
+            self.assertLogs("c64cast.backend", level="INFO"),
+        ):
+            make_backend(cfg)
+        self.assertEqual(captured["port"], "/dev/cu.usbmodemAUTO1")
+
+    def test_explicit_serial_port_skips_autodetect(self):
+        # An explicit serial_port wins — auto-detect is never consulted.
+        cfg = cfgmod.Config()
+        cfg.hardware.backend = "teensyrom"
+        cfg.teensyrom.transport = "serial"
+        cfg.teensyrom.serial_port = "/dev/ttyACM0"
+        captured: dict[str, str] = {}
+
+        def fake_backend(transport, *, profile, storage):
+            captured["port"] = transport.port
+            return object()
+
+        with (
+            mock.patch(
+                "c64cast.teensyrom_dma.autodetect_serial_port",
+                side_effect=AssertionError("auto-detect must not run when serial_port is set"),
+            ),
+            mock.patch("c64cast.teensyrom_api.TeensyROMBackend", side_effect=fake_backend),
+        ):
+            make_backend(cfg)
+        self.assertEqual(captured["port"], "/dev/ttyACM0")
 
     def test_tcp_requires_host(self):
         cfg = cfgmod.Config()

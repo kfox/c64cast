@@ -13,8 +13,9 @@
 #      cable (NOT an FTDI/serial null-modem cable — that does not enumerate as
 #      the TR's CDC device). It appears as a driverless USB-CDC serial port;
 #      the baud rate is irrelevant over native USB.
-#   2. Set serial_port below to your device (macOS: ls /dev/cu.usbmodem*;
-#      Linux: /dev/ttyACM0; Windows: COM3). For Ethernet instead, set
+#   2. On macOS, leave serial_port unset — the TeensyROM is auto-detected by
+#      its USB serial number. On Linux/Windows, set it to your device
+#      (Linux: /dev/ttyACM0; Windows: COM3). For Ethernet instead, set
 #      transport = "tcp" + host = "<TR ip>" (enable the TCP listener + reboot
 #      the TR first).
 #
@@ -29,7 +30,7 @@ backend = "teensyrom"
 
 [teensyrom]
 transport = "serial"
-serial_port = "/dev/cu.usbmodem1234"    # <-- set to your device
+# serial_port = "/dev/cu.usbmodem1234"  # macOS: omit to auto-detect; else set it
 storage = "sd"
 
 [playlist]
