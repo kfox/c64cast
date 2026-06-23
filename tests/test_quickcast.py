@@ -1,10 +1,12 @@
-"""Tests for the `cast` quick-playback shortcut (c64cast.quickcast).
+"""Tests for quick playback — the positional-MEDIA path (c64cast.quickcast).
 
 Covers the pure classification layer (extension/dir/glob -> scene type), the
-in-memory Config builder (playlist semantics + per-flag overrides), and URL
-routing (direct media vs yt-dlp, with a fake yt_dlp module so no network is
-touched). The hardware run path (build_stack/_run_playlists) is intentionally
-out of scope here — it's exercised by the CLI/playlist suites.
+in-memory Config builder (playlist semantics + per-flag overrides + the
+scheme-aware connection target), URL routing (direct media vs yt-dlp, with a
+fake yt_dlp module so no network is touched), and cli._resolve_configs dispatch
+(positional args vs --config). The hardware run path (build_stack/
+_run_playlists) is intentionally out of scope here — it's exercised by the
+CLI/playlist suites.
 """
 
 from __future__ import annotations
@@ -14,13 +16,17 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 from c64cast import quickcast
+from c64cast.cli import _resolve_configs, build_parser
 from c64cast.config import resolve_file_spec
 
 
 def _parse(argv: list[str]):
-    return quickcast._build_parser().parse_args(argv)
+    """Parse argv with the unified c64cast parser (quick playback now shares
+    the one parser; positional MEDIA args trigger build_config)."""
+    return build_parser().parse_args(argv)
 
 
 class IsUrlTest(unittest.TestCase):
@@ -175,8 +181,23 @@ class BuildConfigTest(unittest.TestCase):
 
     def test_url_default_kept_when_unset(self):
         # No -u and no $C64CAST_URL -> keep the built-in Config default.
-        cfg = quickcast.build_config(_parse(["a.mp4"]))
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("C64CAST_URL", None)
+            cfg = quickcast.build_config(_parse(["a.mp4"]))
         self.assertEqual(cfg.ultimate64.url, "http://ultimate-64-ii.lan")
+
+    def test_env_url_used_when_unset(self):
+        # $C64CAST_URL is the fallback connection target when -u is absent.
+        with mock.patch.dict(os.environ, {"C64CAST_URL": "u64://10.1.1.1"}):
+            cfg = quickcast.build_config(_parse(["a.mp4"]))
+        self.assertEqual(cfg.hardware.backend, "ultimate")
+        self.assertEqual(cfg.ultimate64.url, "http://10.1.1.1")
+
+    def test_tr_target_selects_teensyrom_backend(self):
+        cfg = quickcast.build_config(_parse(["-u", "tr:///dev/cu.usbmodem9", "a.sid"]))
+        self.assertEqual(cfg.hardware.backend, "teensyrom")
+        self.assertEqual(cfg.teensyrom.transport, "serial")
+        self.assertEqual(cfg.teensyrom.serial_port, "/dev/cu.usbmodem9")
 
 
 class ResolveMediaUrlTest(unittest.TestCase):
@@ -282,6 +303,27 @@ class ResolveFileSpecUrlTest(unittest.TestCase):
             path = os.path.join(d, "clip [abc123].mp4")
             open(path, "w").close()
             self.assertEqual(resolve_file_spec(path, (".mp4",), label="video"), [path])
+
+
+class ResolveConfigsDispatchTest(unittest.TestCase):
+    """cli._resolve_configs routes positional MEDIA to the quick-playback
+    builder and rejects the inputs + --config conflict, with no disk/hardware."""
+
+    def test_positional_media_builds_single_system(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("C64CAST_URL", None)
+            loaded, cfgs = _resolve_configs(_parse(["a.mp4", "b.sid"]))
+        self.assertFalse(loaded.is_ensemble)
+        self.assertEqual(loaded.names, ["cast"])
+        self.assertEqual(loaded.paths, [None])
+        self.assertEqual(len(cfgs), 1)
+        self.assertEqual([s.type for s in cfgs[0].scenes], ["video", "waveform"])
+
+    def test_inputs_with_config_is_rejected(self):
+        from c64cast.cli import _CliUsageError
+
+        with self.assertRaises(_CliUsageError):
+            _resolve_configs(_parse(["--config", "some.toml", "a.mp4"]))
 
 
 if __name__ == "__main__":

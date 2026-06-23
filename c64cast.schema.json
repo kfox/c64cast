@@ -130,8 +130,8 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Master switch for SID audio streaming (the 4-bit $D418 DAC). Also enabled by the -A CLI flag.",
-          "default": false
+          "description": "Master switch for SID audio streaming (the 4-bit $D418 DAC). On by default; mute with the --no-audio CLI flag.",
+          "default": true
         },
         "device": {
           "type": "integer",

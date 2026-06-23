@@ -22,7 +22,7 @@ class ConfigLoaderTest(unittest.TestCase):
             finally:
                 os.chdir(cwd)
         self.assertEqual(cfg.ultimate64.url, "http://ultimate-64-ii.lan")
-        self.assertEqual(cfg.audio.enabled, False)
+        self.assertEqual(cfg.audio.enabled, True)
         self.assertEqual(cfg.scenes, [])
 
     def test_load_path_parses_sections(self):
@@ -260,16 +260,19 @@ class MergeCLITest(unittest.TestCase):
 
     def test_none_values_leave_config_untouched(self):
         cfg = cfgmod.Config()
-        cfg.ultimate64.url = "http://from-config"
+        cfg.ultimate64.system = "PAL"
         merged = cfgmod.merge_cli(cfg, self._make_args())
-        self.assertEqual(merged.ultimate64.url, "http://from-config")
+        self.assertEqual(merged.ultimate64.system, "PAL")
 
     def test_cli_value_overrides_config_value(self):
+        # Connection fields (url/backend/etc.) are NOT in CLI_TO_CFG — they come
+        # from the scheme-aware -u target (see connect.py / test_connect.py).
+        # merge_cli still overlays the remaining mapped fields like system/audio.
         cfg = cfgmod.Config()
-        cfg.ultimate64.url = "http://from-config"
+        cfg.ultimate64.system = "NTSC"
         cfg.audio.enabled = False
-        merged = cfgmod.merge_cli(cfg, self._make_args(url="http://from-cli", audio=True))
-        self.assertEqual(merged.ultimate64.url, "http://from-cli")
+        merged = cfgmod.merge_cli(cfg, self._make_args(system="PAL", audio=True))
+        self.assertEqual(merged.ultimate64.system, "PAL")
         self.assertTrue(merged.audio.enabled)
 
     def test_cli_can_override_nested_audio_fields(self):
@@ -677,9 +680,9 @@ class SceneAudioAttachmentTest(unittest.TestCase):
         self.cfg = cfgmod.Config()
 
     def test_webcam_picks_up_global_audio_by_default(self):
-        # `-A` (or [audio] enabled = true) constructs an AudioStreamer at
+        # [audio].enabled (on by default) constructs an AudioStreamer at
         # startup. A webcam scene with no per-scene override must attach
-        # it automatically — otherwise -A is silently a no-op, which is
+        # it automatically — otherwise audio is silently a no-op, which is
         # what the user reported.
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
         scene = cfgmod.build_scene(s, self.cfg, self.api, self.audio_sentinel, self.source)

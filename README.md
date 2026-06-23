@@ -72,9 +72,15 @@ uv sync --all-extras
 # top of the file to point at your U64, then run it. Ctrl-C to exit.
 python -m c64cast --config config/examples/hello.toml
 
-# Override the U64 URL without editing the file:
-python -m c64cast --config config/examples/hello.toml --url http://192.168.1.64
+# Override the connection target without editing the file:
+python -m c64cast --config config/examples/hello.toml -u u64://192.168.1.64
 ```
+
+`-u/--url` is a scheme-aware target that picks the backend + endpoint:
+`u64://HOST` or `http(s)://HOST` (Ultimate 64 / II+), `tr://` (TeensyROM+ over
+auto-detected USB serial), `tr:///dev/cu.usbmodem*` / `tr://COM3` (a specific
+serial device), or `tr://HOST` (TeensyROM+ over TCP). `$C64CAST_URL` is the env
+fallback.
 
 `hello.toml` is the gentlest starting point. From there:
 
@@ -104,8 +110,25 @@ single-scene demo. See [`config/examples/README.md`](config/examples/README.md)
 for the file index.
 
 `python -m c64cast -h` lists every CLI flag grouped by section
-(`hardware`, `ultimate 64`, `video input`, `audio`, `playlist`,
-`introspection`, `debug`).
+(`connection`, `quick playback`, `video input`, `audio`, `vision input`,
+`playlist`, `introspection`, `debug`).
+
+### Quick playback (no config file)
+
+Pass media files/directories/globs/URLs as positional arguments to play them
+once, in order, without writing a TOML (mutually exclusive with `--config`).
+Audio is on by default; `--no-audio` mutes.
+
+```bash
+# A video, a SID tune, then a folder of pictures, on an Ultimate 64:
+python -m c64cast -u u64://192.168.1.64 clip.mp4 tune.sid assets/pictures/
+
+# A clip on a TeensyROM+ over auto-detected USB serial:
+python -m c64cast -u tr:// clip.mp4
+
+# A YouTube URL (needs the 'yt' extra: uv sync --extra yt):
+python -m c64cast 'https://youtu.be/dQw4w9WgXcQ'
+```
 
 ### Launcher script
 

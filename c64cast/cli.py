@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import signal
 import subprocess
@@ -53,6 +54,11 @@ class StackBuildError(Exception):
         self.exit_code = exit_code
 
 
+class _CliUsageError(Exception):
+    """A CLI-usage mistake (conflicting flags, a bad connection target).
+    main() logs the message and returns exit code 2."""
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Pull defaults from the config dataclasses so help text stays in sync
     # with the actual fallback values. CLI options use default=None at the
@@ -76,40 +82,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", default=None, help="Path to TOML config (default: ./c64cast.toml if it exists)"
     )
 
-    tr_def = cfgmod.TeensyromCfg()
+    p.add_argument(
+        "inputs",
+        nargs="*",
+        metavar="MEDIA",
+        help="Quick-playback media: files, directories, globs, or URLs played "
+        "in order, once (no loop unless --loop). Each maps to a scene by kind: "
+        "video->video, .sid->waveform, image->slideshow, .prg/.crt->launcher, "
+        "URL->video. Omit to run from --config / ./c64cast.toml / defaults. "
+        "Mutually exclusive with --config.",
+    )
 
-    hw = p.add_argument_group("hardware")
-    hw.add_argument(
-        "--backend",
-        choices=list(cfgmod._BACKEND_CHOICES),
+    conn = p.add_argument_group("connection")
+    conn.add_argument(
+        "-u",
+        "--url",
         default=None,
-        help=f"Hardware backend driving the C64 (default: {cfgmod.HardwareCfg().backend})",
+        metavar="TARGET",
+        help="Connection target selecting the hardware backend + endpoint "
+        f"(default: $C64CAST_URL, else {u64_def.url}). Schemes: u64://HOST or "
+        "http(s)://HOST (Ultimate 64 / II+); tr:// (TeensyROM+ USB serial, "
+        "auto-detected), tr:///dev/cu.usbmodemXYZ or tr://COM3 (serial device), "
+        "tr://HOST (TeensyROM+ TCP). Rare knobs as query params, e.g. "
+        "u64://host?dma_port=64 or tr://host?tcp_port=2113.",
     )
-    hw.add_argument(
-        "--tr-transport",
-        choices=list(cfgmod._TR_TRANSPORT_CHOICES),
-        default=None,
-        help=f"TeensyROM+ control link (default: {tr_def.transport})",
-    )
-    hw.add_argument(
-        "--tr-serial-port", default=None, help="TeensyROM+ serial device (transport=serial)"
-    )
-    hw.add_argument("--tr-host", default=None, help="TeensyROM+ IP address (transport=tcp)")
-
-    u = p.add_argument_group("ultimate 64")
-    u.add_argument("-u", "--url", default=None, help=f"Base U64 REST URL (default: {u64_def.url})")
-    u.add_argument(
+    conn.add_argument(
         "-s",
         "--system",
         choices=["NTSC", "PAL"],
         default=None,
         help=f"Target system timing (default: {u64_def.system})",
     )
-    u.add_argument(
-        "--dma-port",
-        type=int,
+
+    quick = p.add_argument_group("quick playback (with MEDIA args)")
+    quick.add_argument(
+        "--display",
         default=None,
-        help=f"TCP port for the U64 Socket DMA service (default: {u64_def.dma_port})",
+        help="VIC-II display mode for quick-playback video/slideshow scenes (default: mhires).",
+    )
+    quick.add_argument(
+        "-t",
+        "--duration",
+        type=float,
+        default=None,
+        help="Seconds for quick-playback scenes that honor it (waveform/slideshow).",
     )
 
     v = p.add_argument_group("video input")
@@ -123,11 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = p.add_argument_group("audio")
     a.add_argument(
-        "-A",
         "--audio",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=None,
-        help=f"Enable audio streaming to the SID volume DAC (default: {audio_def.enabled})",
+        help="Stream audio to the 4-bit SID volume DAC; --no-audio mutes "
+        f"(default: {audio_def.enabled})",
     )
     a.add_argument(
         "-D",
@@ -860,6 +876,67 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     return None
 
 
+def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[cfgmod.Config]]:
+    """Produce the per-system configs to run, from one of two front doors:
+
+    * **Quick playback** — positional ``MEDIA`` args build an in-memory,
+      single-system config (no TOML on disk), one scene per argument.
+      Mutually exclusive with ``--config``.
+    * **Config-driven** — ``--config`` / ``./c64cast.toml`` / built-in
+      defaults, with CLI flags merged on top.
+
+    The scheme-aware ``-u/--url`` target (or ``$C64CAST_URL``) is applied to the
+    single system's connection fields in both single-system paths; in ensemble
+    mode connection comes from the per-system TOMLs (per-system identity), so a
+    CLI target there is rejected. Raises ``ConfigError`` (exit 5), or
+    ``_CliUsageError`` / ``ValueError`` / ``RuntimeError`` (exit 2)."""
+    if args.inputs:
+        if args.config:
+            raise _CliUsageError(
+                "positional MEDIA arguments and --config are mutually exclusive "
+                "— pass media for quick playback, or --config for a TOML playlist."
+            )
+        from . import quickcast
+
+        cfg = quickcast.build_config(args)
+        loaded = cfgmod.LoadResult(
+            cfgs=[cfg],
+            names=["cast"],
+            paths=[None],
+            is_ensemble=False,
+            master_control=cfg.control,
+        )
+        return loaded, [cfg]
+
+    loaded = cfgmod.load_master(args.config)
+
+    # CLI flags apply to every per-system config. In ensemble mode reject the
+    # flags that pick one system's hardware — `[ultimate64].url` (the -u target)
+    # and `[video].device` are per-system identity and must come from the TOMLs.
+    if loaded.is_ensemble:
+        offending = [
+            flag for dest, flag in _PER_SYSTEM_CLI_FLAGS if getattr(args, dest, None) is not None
+        ]
+        if offending:
+            raise cfgmod.ConfigError(
+                f"ensemble mode (`[ensemble]` in {args.config}) is incompatible "
+                f"with per-system CLI flags: {', '.join(offending)}. Move these "
+                "values into the per-system TOMLs."
+            )
+
+    cfgs = [cfgmod.merge_cli(c, args) for c in loaded.cfgs]
+    # Scheme-aware connection target overrides the single system's connection
+    # fields (env honored as a fallback). Ensemble systems keep their TOML
+    # identity — the per-system-flag guard above already rejected a CLI target.
+    if not loaded.is_ensemble:
+        target = args.url or os.environ.get("C64CAST_URL")
+        if target:
+            from .connect import apply_to_config, parse_connection_uri
+
+            apply_to_config(cfgs[0], parse_connection_uri(target))
+    return loaded, cfgs
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -875,7 +952,7 @@ def main(argv=None) -> int:
         return intro_rc
 
     try:
-        loaded = cfgmod.load_master(args.config)
+        loaded, cfgs = _resolve_configs(args)
     except cfgmod.ConfigError as e:
         # Logging may not be set up yet (verbose/log_file live in [debug]).
         # Set up a minimal default handler so the error reaches the user
@@ -883,30 +960,30 @@ def main(argv=None) -> int:
         configure_logging(args.verbose or 0, args.log_file)
         log.error("%s", e)
         return 5
-
-    # CLI flags apply to every per-system config. In ensemble mode reject
-    # the flags that pick one system's hardware — `[ultimate64].url` and
-    # `[video].device` are per-system identity and must come from the TOMLs.
-    if loaded.is_ensemble:
-        offending = [
-            flag for dest, flag in _PER_SYSTEM_CLI_FLAGS if getattr(args, dest, None) is not None
-        ]
-        if offending:
-            configure_logging(args.verbose or 0, args.log_file)
-            log.error(
-                "ensemble mode (`[ensemble]` in %s) is incompatible "
-                "with per-system CLI flags: %s. Move these values "
-                "into the per-system TOMLs.",
-                args.config,
-                ", ".join(offending),
-            )
-            return 5
-
-    cfgs = [cfgmod.merge_cli(c, args) for c in loaded.cfgs]
+    except (_CliUsageError, ValueError, RuntimeError) as e:
+        configure_logging(args.verbose or 0, args.log_file)
+        log.error("%s", e)
+        return 2
     # Logging is process-wide; use the first stack's debug settings (they
     # already share defaults via the master cascade unless explicitly
     # overridden).
     configure_logging(cfgs[0].debug.verbose, cfgs[0].debug.log_file)
+
+    # Quick-playback feedback: warn when pointing at the built-in default
+    # (no target given), and log where + which backend we resolved.
+    if args.inputs:
+        if not (args.url or os.environ.get("C64CAST_URL")):
+            log.warning(
+                "no connection target given (-u/--url or C64CAST_URL) — using "
+                "the built-in default %s. Point at your hardware with e.g. "
+                "-u u64://192.168.2.64 or -u tr://.",
+                cfgs[0].ultimate64.url,
+            )
+        log.info(
+            "cast: %d scene(s) on the %s backend",
+            len(cfgs[0].scenes),
+            cfgs[0].hardware.backend,
+        )
 
     if args.doctor:
         # Doctor uses the merged configs so CLI flags (e.g. --skip-probe) and

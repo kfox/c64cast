@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running
 
 ```bash
-python -m c64cast --url http://ultimate-64-ii.lan -A -d 0
+python -m c64cast -u u64://ultimate-64-ii.lan -d 0
 # or with a config file (overrides defaults; CLI flags still win):
 python -m c64cast --config c64cast.toml
 ```
@@ -17,15 +17,18 @@ scripts/c64cast.sh --config c64cast.toml
 scripts/c64cast.sh --doctor --skip-probe
 ```
 
-[scripts/cast.sh](scripts/cast.sh) (logic in [c64cast/quickcast.py](c64cast/quickcast.py), `python -m c64cast.quickcast`) is the **quick-playback shortcut** for testing without hand-writing a throwaway TOML: it builds an **in-memory-only** `Config` (no file on disk) with one scene per argument, in order, **no loop** (override with `--loop`). Each argument is mapped to a scene type by extension — video → `video`, `.sid` → `waveform`, image → `slideshow`, `.prg`/`.crt` → `launcher` — and a directory/glob is passed straight through as the scene's `file` spec (so the scene random-picks at setup, e.g. a dir of SIDs plays a random one). A URL becomes a `video`: direct media URLs play as-is (PyAV opens http(s)), and YouTube/other sites are resolved by yt-dlp (the optional `yt` extra) to a single progressive stream. Audio is **on by default** (`--no-audio` to mute); audio-only files (mp3/wav over a test pattern) are recognized but deferred to a follow-up. It reuses the normal run path (`build_stack` → `_run_playlists` → `teardown_stack`), so behavior matches a config-driven run.
+**Connection target (`-u/--url`).** A single scheme-aware string selects both the hardware backend and its endpoint (the granular `--backend`/`--tr-*`/`--dma-port` flags were removed in favor of this — `git log` for the rationale). The parser is [c64cast/connect.py](c64cast/connect.py) (`parse_connection_uri` → `ConnectionSpec` → `apply_to_config`); it decomposes into the existing config fields (`[hardware].backend`, `[ultimate64].url`/`dma_port`, `[teensyrom].transport`/`serial_port`/`host`/…), which stay the canonical store a TOML sets directly. `make_backend` is unchanged. Schemes: `u64://HOST` or `http(s)://HOST` (Ultimate — the only HTTP-speaking backend, so http is deterministically Ultimate); `tr://` (TeensyROM+ USB serial, device auto-detected on macOS), `tr:///dev/cu.usbmodemXYZ` or `tr://COM3` (explicit serial device), `tr://HOST[:PORT]` (TeensyROM+ TCP, default port 2112). Rare per-link knobs as `?query` params (`u64://host?dma_port=64`, `tr://host?tcp_port=2113`, `tr:///dev/…?baud=2000000`, `tr://?storage=usb`). `$C64CAST_URL` is the env fallback. On the CLI the `-u` target overrides the config's connection sections (single-system runs only — in ensemble mode connection comes from the per-system TOMLs).
+
+**Quick playback (positional `MEDIA` args).** Passing media files/dirs/globs/URLs as positional arguments (mutually exclusive with `--config`) builds an **in-memory-only** `Config` (no file on disk) with one scene per argument, in order, **no loop** (override with `--loop`). Each argument is mapped to a scene type by extension — video → `video`, `.sid` → `waveform`, image → `slideshow`, `.prg`/`.crt` → `launcher` — and a directory/glob is passed straight through as the scene's `file` spec (so the scene random-picks at setup, e.g. a dir of SIDs plays a random one). A URL becomes a `video`: direct media URLs play as-is (PyAV opens http(s)), and YouTube/other sites are resolved by yt-dlp (the optional `yt` extra) to a single progressive stream. Audio-only files (mp3/wav over a test pattern) are recognized but deferred to a follow-up. The classifier library is [c64cast/quickcast.py](c64cast/quickcast.py) (`build_config`); `cli.main` dispatches to it via `_resolve_configs` when it sees positional args, then runs the result through the normal path (`build_stack` → `_run_playlists` → `teardown_stack`), so behavior matches a config-driven run.
 
 ```bash
-scripts/cast.sh -u http://192.168.2.64 clip.mp4 tune.sid assets/pictures/
-scripts/cast.sh 'https://youtu.be/...'   # needs the `yt` extra
+scripts/c64cast.sh -u u64://192.168.2.64 clip.mp4 tune.sid assets/pictures/
+scripts/c64cast.sh -u tr:// clip.mp4 tune.sid          # TeensyROM+ over auto-detected USB serial
+scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/...'   # needs the `yt` extra
 ```
 
-Flag groups (`-h` shows them grouped): `hardware`, `ultimate 64`, `video input`, `audio`, `playlist`, `introspection`, `debug`.
-Notable additions: `--config`, `--dma-port`, `-v` / `-vv` (info / debug logging), `--log-file PATH` (mirror logs to disk for headless runs). Terminal logging uses `rich.logging.RichHandler` (colored + timestamped) when the `logging` extra is installed; falls back to plain stdlib `StreamHandler` otherwise.
+**Audio is on by default** (`AudioCfg.enabled` defaults True); `--no-audio` mutes. Flag groups (`-h` shows them grouped): `connection`, `quick playback`, `video input`, `audio`, `vision input`, `playlist`, `introspection`, `debug`.
+Notable: `--config`, `-v` / `-vv` (info / debug logging), `--log-file PATH` (mirror logs to disk for headless runs). Terminal logging uses `rich.logging.RichHandler` (colored + timestamped) when the `logging` extra is installed; falls back to plain stdlib `StreamHandler` otherwise.
 
 The DMA password (if the U64 has one set) is supplied via `C64CAST_DMA_PASSWORD` env var or `[ultimate64] dma_password` in the config — **no CLI flag**, so secrets don't leak into shell history or `ps` output. The env var takes precedence when both are set.
 
@@ -142,7 +145,16 @@ c64cast/
 │   ├── logo.py             Multi-line PETSCII art block from a file
 │   ├── big_text.py         Demo-scene 8×-scaled scrolling glyphs (blank/mcm)
 │   └── obs_status.py       OBS WebSocket scene + dropped-frame counter
-├── cli.py            argparse + main()
+├── connect.py        Scheme-aware -u/--url target parser
+│                     (parse_connection_uri → ConnectionSpec →
+│                     apply_to_config); decomposes u64://, http(s)://,
+│                     tr:// into the [hardware]/[ultimate64]/[teensyrom]
+│                     config fields make_backend reads
+├── quickcast.py      Quick-playback classifier library (positional MEDIA
+│                     args → in-memory Config); build_config, called by
+│                     cli._resolve_configs (no standalone entry point)
+├── cli.py            argparse + main(); _resolve_configs picks the
+│                     config-driven vs quick-playback front door
 └── __main__.py       `python -m c64cast` entry
 ```
 
@@ -337,7 +349,7 @@ Dataclasses for each section, `load()` parses TOML, `merge_cli()` overlays argpa
 
 ### `cli.py`
 
-Loads config (`--config` flag or `./c64cast.toml`), merges in CLI overrides, then calls `config.scenes_from_config()` to build the playlist. The Playlist gets an `interstitial_factory` built from the `[interstitial]` section and a `CommodoreKeyPoller` for pause/resume.
+`_resolve_configs(args)` picks the front door: positional `MEDIA` args route to `quickcast.build_config` (in-memory single-system Config; mutually exclusive with `--config`); otherwise `config.load_master` (+`merge_cli`) for the config-driven path. The scheme-aware `-u/--url` target (or `$C64CAST_URL`) is then applied via `connect.apply_to_config` onto the single system's connection fields — skipped in ensemble mode, where the per-system-flag guard rejects a CLI target so each system keeps its TOML identity. From there both paths share one run path: `config.scenes_from_config()` builds the playlist, and the Playlist gets an `interstitial_factory` built from the `[interstitial]` section and a `CommodoreKeyPoller` for pause/resume. `merge_cli` no longer touches the connection fields (the URI owns them), so a SIGHUP/control-plane reload re-merges scenes without disturbing the already-built backend.
 
 ### Startup: BASIC clear-and-loop program
 

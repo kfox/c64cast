@@ -195,7 +195,7 @@ def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
     if cls.REQUIRES_AUDIO and audio is None:
         raise ValueError(
             f"overlay {type_name!r} requires audio but audio is not enabled — "
-            "enable [audio] in config or pass -A on the CLI"
+            "set [audio].enabled = true in config and don't pass --no-audio"
         )
     # Filter 'type' out; pass remaining as kwargs.
     kwargs = {k: v for k, v in cfg.items() if k != "type"}

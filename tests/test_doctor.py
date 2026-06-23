@@ -484,6 +484,8 @@ class SidStatusProbeTest(unittest.TestCase):
         loaded = _load("""
             [ultimate64]
             url = "http://fake"
+            [audio]
+            enabled = false
             [[scenes]]
             type = "slideshow"
             display = "mhires"

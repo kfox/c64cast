@@ -270,10 +270,10 @@ class VideoCfg:
 @dataclass
 class AudioCfg:
     enabled: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": "Master switch for SID audio streaming (the 4-bit $D418 DAC). "
-            "Also enabled by the -A CLI flag."
+            "On by default; mute with the --no-audio CLI flag."
         },
     )
     device: int = field(
@@ -1859,15 +1859,13 @@ def _warn_audio_only_ensemble(cfgs: list[Config], names: list[str]) -> None:
 
 
 # Mapping argparse dest → (config section attr, field name). Used by
-# merge_cli to know which CLI flags map onto which config fields.
+# merge_cli to know which CLI flags map onto which config fields. The
+# connection fields ([hardware].backend, [ultimate64].url/dma_port,
+# [teensyrom].*) are deliberately absent: they come from the scheme-aware
+# -u/--url target (see connect.py), applied separately so the URI can pick the
+# backend + transport in one string instead of a fan of flags.
 CLI_TO_CFG = {
-    "backend": ("hardware", "backend"),
-    "tr_transport": ("teensyrom", "transport"),
-    "tr_serial_port": ("teensyrom", "serial_port"),
-    "tr_host": ("teensyrom", "host"),
-    "url": ("ultimate64", "url"),
     "system": ("ultimate64", "system"),
-    "dma_port": ("ultimate64", "dma_port"),
     "device": ("video", "device"),
     "audio": ("audio", "enabled"),
     "audio_device": ("audio", "device"),
