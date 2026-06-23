@@ -76,8 +76,8 @@ class ResponseShapeTest(unittest.TestCase):
         self.assertEqual(body["current_index"], 0)
         self.assertFalse(body["paused"])
         self.assertFalse(body["transitioning"])
-        self.assertEqual(body["u64_stats"], {"writes": 100})
-        self.assertEqual(body["u64_dma_latency"], "lat 5ms")
+        self.assertEqual(body["stats"], {"writes": 100})
+        self.assertEqual(body["write_latency"], "lat 5ms")
 
     def test_status_dict_reflects_pause_state(self):
         from c64cast.control_plane import _status_for

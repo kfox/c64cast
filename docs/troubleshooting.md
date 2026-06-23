@@ -12,7 +12,7 @@ system's U64 — all without starting the stream. See
 "why won't it start" questions answer themselves from the doctor report.
 
 If your problem isn't here, run with `-vv` (debug logging) and check
-the U64 stats line printed every 10 s — `errors/s > 0` usually points
+the stats line printed every 10 s — `errors/s > 0` usually points
 at the right corner of the system.
 
 ## Audio symptoms

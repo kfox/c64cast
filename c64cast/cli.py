@@ -1105,7 +1105,7 @@ def main(argv=None) -> int:
             teardown_stack(st)
 
     for st in stacks:
-        log.info("[%s] u64 stats: %s", st.name, st.api.stats)
+        log.info("[%s] %s stats: %s", st.name, st.api.profile.name, st.api.stats)
     return 0
 
 

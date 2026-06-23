@@ -77,8 +77,8 @@ def _status_for(pl: Playlist) -> dict[str, Any]:
         "n_scenes": len(pl.scenes),
         "paused": pl.pause_event.is_set(),
         "transitioning": pl.transitioning,
-        "u64_stats": pl.api.stats,
-        "u64_dma_latency": pl.api.format_write_latency(),
+        "stats": pl.api.stats,
+        "write_latency": pl.api.format_write_latency(),
     }
 
 
