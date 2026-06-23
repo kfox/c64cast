@@ -266,12 +266,67 @@ class ResolveMediaUrlTest(unittest.TestCase):
         self.assertIn("yt-dlp", str(cm.exception))
 
 
+class ParseTimestrTest(unittest.TestCase):
+    def test_bare_seconds(self):
+        self.assertEqual(quickcast._parse_timestr("90"), 90.0)
+        self.assertEqual(quickcast._parse_timestr("90.5"), 90.5)
+        self.assertEqual(quickcast._parse_timestr("0"), 0.0)
+
+    def test_hms_form(self):
+        self.assertEqual(quickcast._parse_timestr("90s"), 90.0)
+        self.assertEqual(quickcast._parse_timestr("1m30s"), 90.0)
+        self.assertEqual(quickcast._parse_timestr("1h2m3s"), 3723.0)
+        self.assertEqual(quickcast._parse_timestr("1h"), 3600.0)
+        self.assertEqual(quickcast._parse_timestr("2m"), 120.0)
+        self.assertEqual(quickcast._parse_timestr("1H30M"), 5400.0)  # case-insensitive
+
+    def test_unparseable_returns_none(self):
+        self.assertIsNone(quickcast._parse_timestr(""))
+        self.assertIsNone(quickcast._parse_timestr("abc"))
+        self.assertIsNone(quickcast._parse_timestr("1x2y"))
+
+
+class ParseStartOffsetTest(unittest.TestCase):
+    def test_t_query_param(self):
+        self.assertEqual(quickcast._parse_start_offset("https://youtu.be/x?t=90"), 90.0)
+        self.assertEqual(quickcast._parse_start_offset("https://youtu.be/x?t=1m30s"), 90.0)
+
+    def test_start_query_param(self):
+        self.assertEqual(quickcast._parse_start_offset("https://yt/watch?v=x&start=45"), 45.0)
+
+    def test_t_preferred_over_start(self):
+        self.assertEqual(quickcast._parse_start_offset("https://yt/x?t=10&start=45"), 10.0)
+
+    def test_fragment_form(self):
+        self.assertEqual(quickcast._parse_start_offset("http://host/clip.mp4#t=30"), 30.0)
+        self.assertEqual(quickcast._parse_start_offset("http://host/clip.mp4#t=1m"), 60.0)
+
+    def test_no_timestamp(self):
+        self.assertIsNone(quickcast._parse_start_offset("https://youtu.be/x"))
+        self.assertIsNone(quickcast._parse_start_offset("http://host/clip.mp4?list=foo"))
+
+    def test_garbage_timestamp_ignored(self):
+        self.assertIsNone(quickcast._parse_start_offset("https://youtu.be/x?t=soon"))
+
+
 class ClassifyUrlTest(unittest.TestCase):
     def test_video_url_becomes_video(self):
         scene = quickcast.classify_url("http://host/clip.mp4", display=None)
         self.assertEqual(scene.type, "video")
         self.assertEqual(scene.file, "http://host/clip.mp4")
         self.assertEqual(scene.display, "mhires")
+        self.assertIsNone(scene.start_s)
+
+    def test_url_timestamp_sets_start_s(self):
+        # Direct media URL passes through resolve_media_url untouched (no
+        # yt-dlp), so this exercises start_s wiring without a network/dep.
+        scene = quickcast.classify_url("http://host/clip.mp4?t=1m30s", display=None)
+        self.assertEqual(scene.type, "video")
+        self.assertEqual(scene.start_s, 90.0)
+
+    def test_url_fragment_timestamp_sets_start_s(self):
+        scene = quickcast.classify_url("http://host/clip.mp4#t=45", display=None)
+        self.assertEqual(scene.start_s, 45.0)
 
     def test_audio_url_deferred(self):
         with self.assertRaises(ValueError) as cm:

@@ -864,6 +864,11 @@ palette_mode = "grayscale"
 # #   file = "assets/videos, assets/extra/promo.mp4"
 # file = "assets/videos/your-video.mp4"
 # display = "hires_edges"
+# # start_s — seconds into the file to begin playback (video-only; omit or 0
+# # = from the start). Seeks to the keyframe at/just-before this time. Quick
+# # playback (`c64cast MEDIA…`) fills this automatically from a URL's
+# # t=/start= timestamp (e.g. https://youtu.be/<id>?t=1m30s).
+# start_s = 90.0
 #
 # Video scenes run until the video file ends — `duration_s` is
 # rejected by the config loader (the playlist advances when the source

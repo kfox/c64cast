@@ -836,6 +836,7 @@ class VideoScene(Scene):
         file: str,
         prepend_alignment_marker: bool = False,
         color: ColorCfg | None = None,
+        start_s: float = 0.0,
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
@@ -868,6 +869,10 @@ class VideoScene(Scene):
         self.filepath = candidates[0]
         self.source: AVFileSource | None = None
         self._start_time = 0.0
+        # Seconds into the file to begin playback (0 = from the start). Passed
+        # to AVFileSource at setup(), which seeks + rebases PTS. Quick playback
+        # derives this from a URL's t=/start= timestamp.
+        self.start_s = max(0.0, start_s)
         self._last_rendered_img: np.ndarray | None = None
         # Rolling-window auto_fit state (set up in setup() when [color].auto_fit
         # is on without force_palette). None = no online fit (pre-scanned or
@@ -963,7 +968,10 @@ class VideoScene(Scene):
         will_push_audio = self.audio is not None and not getattr(self.audio, "use_reu_pump", False)
         try:
             self.source = AVFileSource(
-                self.filepath, target_sample_rate=sr, scan_audio_peak=will_push_audio
+                self.filepath,
+                target_sample_rate=sr,
+                scan_audio_peak=will_push_audio,
+                start_s=self.start_s,
             )
         except PermissionError as e:
             log.error("video: permission denied opening %s (%s)", self.filepath, e)

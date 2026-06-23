@@ -60,6 +60,11 @@ _GROUP_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _GLOB_CHARS = re.compile(r"[*?\[]")
 
+# Timestamp grammar for URL start offsets: bare seconds ("90", "90.5") or the
+# YouTube [Nh][Nm][Ns] form ("90s", "1m30s", "1h2m3s", "1h"). At least one of
+# h/m/s must be present for the unit form to match.
+_TIMESTR_HMS_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", re.IGNORECASE)
+
 # Display mode for video/slideshow scenes. mhires is the richest bitmap mode
 # and suits arbitrary film/photo content; SceneCfg's default (hires_edges) is
 # tuned for live-webcam Canny edges, not playback.
@@ -74,6 +79,45 @@ _DURATION_TYPES = ("waveform", "slideshow")
 def _is_url(arg: str) -> bool:
     """True if ``arg`` is an http(s) URL."""
     return bool(_URL_RE.match(arg))
+
+
+def _parse_timestr(s: str) -> float | None:
+    """Parse a timestamp string to seconds. Accepts bare seconds ("90",
+    "90.5") and the [Nh][Nm][Ns] form ("90s", "1m30s", "1h2m3s"). Returns
+    None for anything else (so an unparseable t= is ignored, not fatal)."""
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        return float(s)  # bare seconds, e.g. "90" or "90.5"
+    except ValueError:
+        pass
+    m = _TIMESTR_HMS_RE.match(s)
+    if not m or not any(m.groups()):
+        return None
+    h, mi, sec = (int(g) if g else 0 for g in m.groups())
+    return float(h * 3600 + mi * 60 + sec)
+
+
+def _parse_start_offset(url: str) -> float | None:
+    """Start offset (seconds) from a media URL's timestamp, or None.
+
+    Honors the `t` and `start` query params (in that order) and the `#t=`
+    fragment — the forms YouTube and friends use for "start here" links. An
+    unparseable or absent timestamp yields None (playback from the start)."""
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qs(parts.query)
+    for key in ("t", "start"):
+        values = query.get(key)
+        if values:
+            offset = _parse_timestr(values[0])
+            if offset is not None:
+                return offset
+    # `#t=90` / `#t=1m30s` fragment form.
+    frag = parts.fragment
+    if frag.lower().startswith("t="):
+        return _parse_timestr(frag[2:])
+    return None
 
 
 def _type_for_ext(ext: str) -> str | None:
@@ -238,7 +282,13 @@ def classify_url(arg: str, *, display: str | None) -> SceneCfg:
             f"{arg!r} resolves to audio only, which isn't supported yet "
             "(test-pattern-over-audio is a planned follow-up)."
         )
-    return _make_scene("video", stream_url, display=display, duration_s=None, name=title)
+    scene = _make_scene("video", stream_url, display=display, duration_s=None, name=title)
+    # Honor a start timestamp on the ORIGINAL url (t=/start=/#t=); the resolved
+    # stream_url won't carry it. The scene seeks to this offset on setup.
+    start_s = _parse_start_offset(arg)
+    if start_s:
+        scene.start_s = start_s
+    return scene
 
 
 def build_config(args: argparse.Namespace) -> Config:

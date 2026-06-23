@@ -1504,6 +1504,13 @@
             ],
             "description": "Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid."
           },
+          "start_s": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Seconds into the source to begin playback (video only). Quick playback fills this from a URL's t=/start= timestamp; can also be set directly on a [[scenes]] video. Unset/0 = play from the start."
+          },
           "song": {
             "type": "integer",
             "description": "SID subtune index to play (0 = the SID's default; 1-based otherwise). For generative scenes, only with audio_source = sid.",

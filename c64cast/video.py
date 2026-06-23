@@ -273,6 +273,7 @@ class AVFileSource:
         max_video_buffer: int = 240,
         source_noise_gate_enabled: bool = False,
         scan_audio_peak: bool = True,
+        start_s: float = 0.0,
     ):
         if not _ensure_pyav():
             raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
@@ -280,6 +281,14 @@ class AVFileSource:
         self.path = path
         self.target_sr = target_sample_rate
         self.max_video_buffer = max_video_buffer
+        # Seconds into the source to begin playback (0 = from the start). When
+        # set, the container is sought to the keyframe at/just-before this time
+        # and frame PTS are rebased to ~0 (see _pts_offset + _demux_loop) so the
+        # from-0 playback clock in VideoScene still lines up.
+        self.start_s = max(0.0, start_s)
+        # Captured from the first decoded video frame so every later frame's PTS
+        # can be rebased to a ~0 origin. None until that first frame arrives.
+        self._pts_offset: float | None = None
 
         self.container = av.open(path)
         self.v_stream = self.container.streams.video[0]
@@ -287,6 +296,15 @@ class AVFileSource:
 
         self.video_fps = float(self.v_stream.average_rate) if self.v_stream.average_rate else 30.0
         self.video_time_base = float(self.v_stream.time_base or 0)
+
+        # Seek before any demux so there's no decoder state to flush. Whole-
+        # container seek in AV_TIME_BASE units (microseconds); backward=True
+        # (the default) lands on the keyframe <= target, so playback starts at
+        # most one GOP early. Audio packets are interleaved near the same byte
+        # offset, so A/V stay aligned once video PTS are rebased.
+        if self.start_s > 0:
+            self.container.seek(int(self.start_s * 1_000_000))
+            log.info("av %s: seek to start_s=%.3fs", os.path.basename(self.path), self.start_s)
 
         if self.a_stream is not None:
             self._resampler = av.AudioResampler(
@@ -353,6 +371,11 @@ class AVFileSource:
             container = av.open(self.path)
             try:
                 a_stream = container.streams.audio[0]
+                # Match the played portion: with a start_s seek, normalize over
+                # [start_s, end] only — both more correct (gain reflects what's
+                # heard) and cheaper (no decoding the skipped head on long clips).
+                if self.start_s > 0:
+                    container.seek(int(self.start_s * 1_000_000))
                 resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
                 for packet in container.demux(a_stream):
                     for frame in packet.decode():
@@ -393,6 +416,16 @@ class AVFileSource:
                             if frame.pts is not None
                             else 0.0
                         )
+                        # Rebase PTS so the first decoded frame sits at ~0. With
+                        # a start_s seek the raw PTS are ~start_s; the playback
+                        # clock (audio samples / wall-clock) starts at 0, so
+                        # without this current_frame() would find no frame <= 0
+                        # for start_s seconds. Offset is captured from the first
+                        # frame (the keyframe the seek landed on), so the no-seek
+                        # path is unchanged (offset == first PTS, ~0).
+                        if self._pts_offset is None:
+                            self._pts_offset = pts
+                        pts -= self._pts_offset
                         # Backpressure: wait if the buffer is at capacity.
                         # The old behavior (silent-drop oldest frames) was a
                         # safety net under host-DMA mode, where AudioStreamer's

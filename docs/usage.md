@@ -138,6 +138,9 @@ scripts/c64cast.sh -u tr:// clip.mp4 tune.sid
 
 # Direct play a YouTube URL (needs the `yt` extra: `uv sync --extra yt`):
 scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ'
+
+# A URL timestamp (?t= / &start= / #t=) starts playback at that offset:
+scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ?t=1m30s'
 ```
 
 Each argument is mapped to a scene type:
@@ -149,7 +152,7 @@ Each argument is mapped to a scene type:
 | image (`.jpg`, `.png` …) | `slideshow`  |
 | `.prg` / `.crt`         | `launcher`   |
 | directory or glob       | inferred from the contents (a single kind); the spec is passed through, so the scene random-picks at setup |
-| URL                     | `video` (direct media plays as-is; YouTube/others resolved by yt-dlp) |
+| URL                     | `video` (direct media plays as-is; YouTube/others resolved by yt-dlp). A `?t=`/`&start=`/`#t=` timestamp (`90`, `90s`, `1m30s`, `1h2m3s`) seeks playback to that offset |
 
 Audio is **on by default** — pass `--no-audio` to mute. Flags:
 `-u/--url`, `-s/--system`, `--display MODE` (default `mhires` for video/slideshow),
