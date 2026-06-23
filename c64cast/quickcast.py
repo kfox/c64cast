@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         teardown_stack(stack)
 
-    log.info("u64 stats: %s", stack.api.stats)
+    log.info("%s stats: %s", stack.api.profile.name, stack.api.stats)
     return 0
 
 
