@@ -143,5 +143,63 @@ class AVFileSourceEOFTest(unittest.TestCase):
         self.assertFalse(src.finished, "still frames ahead of clock → not finished")
 
 
+class _FakeFrame:
+    def __init__(self, pts: int):
+        self.pts = pts
+
+    def to_ndarray(self, format: str):  # noqa: A002 - matches PyAV's kwarg name
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+
+class _FakeStream:
+    type = "video"
+
+
+class _FakePacket:
+    def __init__(self, frames: list[_FakeFrame]):
+        self.stream = _FakeStream()
+        self._frames = frames
+
+    def decode(self):
+        return self._frames
+
+
+class _FakeContainer:
+    def __init__(self, packets: list[_FakePacket]):
+        self._packets = packets
+
+    def demux(self):
+        return iter(self._packets)
+
+
+class DemuxRebaseTest(unittest.TestCase):
+    """`_demux_loop` rebases video PTS by the first decoded frame so a seeked
+    source (frame PTS ~start_s) still starts at the from-0 playback clock.
+    Driven with a fake container — no PyAV, no real file."""
+
+    def _run_demux(self, frame_ptss: list[int]) -> list[float]:
+        src = AVFileSource.__new__(AVFileSource)
+        src._closed = False
+        src._pts_offset = None
+        src.video_time_base = 1.0  # 1 PTS tick == 1 second
+        src._video_buf = []
+        src._lock = threading.Lock()
+        src.max_video_buffer = 240
+        src._resampler = None
+        src._audio_push = None
+        src.path = "fake"
+        src.container = _FakeContainer([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
+        src._demux_loop()
+        return [pts for pts, _ in src._video_buf]
+
+    def test_seeked_source_rebases_to_zero(self):
+        # Frame PTS ~100s (post-seek) must rebase so the buffer starts at 0.
+        self.assertEqual(self._run_demux([100, 101, 102]), [0.0, 1.0, 2.0])
+
+    def test_no_seek_unchanged(self):
+        # First frame already at 0 → offset 0 → buffer unchanged.
+        self.assertEqual(self._run_demux([0, 1, 2]), [0.0, 1.0, 2.0])
+
+
 if __name__ == "__main__":
     unittest.main()

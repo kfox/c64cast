@@ -622,6 +622,20 @@ class SceneCfg:
             "applies_to": ("video", "waveform", "slideshow", "launcher", "generative"),
         },
     )
+    # Start offset for video playback. Quick playback (`c64cast MEDIA…`) fills
+    # this from a URL's t=/start= timestamp; it can also be set directly on a
+    # [[scenes]] video. Honored by VideoScene -> AVFileSource (container seek to
+    # the keyframe at/just-before this time). Video-only; rejected elsewhere.
+    start_s: float | None = field(
+        default=None,
+        metadata={
+            "help": "Seconds into the source to begin playback (video only). "
+            "Quick playback fills this from a URL's t=/start= timestamp; "
+            "can also be set directly on a [[scenes]] video. "
+            "Unset/0 = play from the start.",
+            "applies_to": ("video",),
+        },
+    )
     image_duration_s: float = field(
         default=5.0,
         metadata={
@@ -2194,6 +2208,8 @@ def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
             "config; use a [[scenes]] timeout via a different scene type "
             "if you want a hard cap."
         )
+    if s.start_s is not None and s.start_s < 0:
+        raise ValueError(f"video: start_s must be >= 0, got {s.start_s!r}")
     return _display_mode_for_scene(s.display, s, cfg)
 
 
@@ -2463,6 +2479,14 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
                 f"video frame). Supported: {tuple(sorted(_EFFECT_SCENE_TYPES))}."
             )
 
+    # start_s is a video-only start offset (the only scene whose source has a
+    # seekable timeline). Reject it elsewhere rather than silently ignoring it.
+    if s.start_s is not None and s.type != "video":
+        raise ValueError(
+            f"start_s is only supported on video scenes, not {s.type!r}. "
+            "Remove the field (it would be a silent no-op here)."
+        )
+
     if s.type == "webcam":
         mode = _display_mode_for_scene(s.display, s, cfg)
     elif s.type == "blank":
@@ -2621,6 +2645,7 @@ def build_scene(
             s.file,
             prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
             color=cfg.color,
+            start_s=s.start_s or 0.0,
         )
         if s.target_fps is None:
             fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)

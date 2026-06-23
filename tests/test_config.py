@@ -347,6 +347,22 @@ class ValidateSceneCfgTest(unittest.TestCase):
         s = cfgmod.SceneCfg(type="video", file="video.mp4")
         cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
+    def test_video_scene_accepts_start_s(self):
+        s = cfgmod.SceneCfg(type="video", file="video.mp4", start_s=90.0)
+        cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_video_scene_rejects_negative_start_s(self):
+        s = cfgmod.SceneCfg(type="video", file="video.mp4", start_s=-1.0)
+        with self.assertRaisesRegex(ValueError, "start_s must be >= 0"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_start_s_rejected_on_non_video(self):
+        # start_s is a video-only seek; setting it elsewhere is a no-op the
+        # loader rejects rather than silently ignores.
+        s = cfgmod.SceneCfg(type="slideshow", file="pic.jpg", start_s=10.0)
+        with self.assertRaisesRegex(ValueError, "start_s is only supported on video"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
     def test_waveform_scene_falls_back_to_default_dir(self):
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
