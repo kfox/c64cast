@@ -172,12 +172,12 @@ class BehaviorTest(unittest.TestCase):
 
     def test_annotate_adds_comments(self):
         cfg = cfgmod.Config()
-        cfg.audio.enabled = True
+        cfg.audio.enabled = False  # non-default (audio defaults on) so it emits
         with_comments = ser.dumps(cfg, annotate=True)
         without = ser.dumps(cfg, annotate=False)
         self.assertIn("#", with_comments)
         # The bare form still parses and only carries the directive comment.
-        self.assertIn("enabled = true", without)
+        self.assertIn("enabled = false", without)
 
     def test_type_always_emitted_even_when_default(self):
         cfg = cfgmod.Config()

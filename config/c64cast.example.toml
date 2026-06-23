@@ -56,6 +56,11 @@ backend = "ultimate"                # which hardware abstraction layer drives
                                     # the C64. "ultimate" = Ultimate 64 /
                                     # Ultimate II+ over socket DMA + REST.
                                     # "teensyrom" = TeensyROM+ (see [teensyrom]).
+                                    # On the CLI, the scheme-aware -u/--url
+                                    # target sets this + the endpoint in one
+                                    # string (u64://HOST, tr://, tr://HOST,
+                                    # tr:///dev/cu.usbmodem*), overriding these
+                                    # sections; $C64CAST_URL is the env fallback.
 
 [teensyrom]                         # only used when [hardware].backend = "teensyrom"
                                     # On cycle-clean fw (v0.7.2.5+) the TR reads
@@ -157,7 +162,7 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     #     Expansion Unit: Enabled).
 
 [audio]
-enabled = false                     # true ≡ passing -A on the CLI
+enabled = true                      # on by default; --no-audio mutes
 device = -1                         # -1 = system default input; -L lists indices
 sample_rate = 10500                 # SID DAC rate; 10500 keeps fricatives (>8000 Nyquist). NTSC≤~11025, PAL≤~10500
 mic_sensitivity = 1.5
@@ -500,8 +505,8 @@ profile_interval = 10.0             # seconds between profiler summary lines
 #                 else half rate (30 NTSC / 25 PAL). Waveform/midi also
 #                 default to half rate (see docs/caveats.md).
 #   audio       — opt out of audio for this scene. Default: when
-#                 [audio].enabled is on (or -A is passed), every webcam,
-#                 blank, and video scene plays its audio. Set
+#                 [audio].enabled is on (the default; --no-audio mutes),
+#                 every webcam, blank, and video scene plays its audio. Set
 #                 `audio = false` to silence one without disabling the
 #                 streamer globally. Waveform/MIDI scenes ignore this
 #                 (they drive the SID directly).
@@ -524,8 +529,8 @@ duration_s = 45.0
 #                                       # | hatch | color_only | random
 #                                       # SHIFT key cycles through these at
 #                                       # runtime. "random" picks at setup.
-# Mic capture follows the global [audio] enabled flag — set it (or pass -A)
-# and this scene's samples will be fed to the SID DAC. Combine with the
+# Mic capture follows the global [audio] enabled flag (on by default;
+# --no-audio mutes) — this scene's samples are fed to the SID DAC. Combine with the
 # spectrum_petscii overlay below for a live VU-meter look. To silence just
 # this scene while keeping audio on for the rest of the playlist, add
 # `audio = false`.
@@ -544,8 +549,8 @@ duration_s = 45.0
     { text = "ULTIMATE 64 TRICKS", color = "cyan" },
   ]
 
-  # spectrum_petscii needs an AudioStreamer to read from. Enable [audio]
-  # (or pass -A) before uncommenting — the scene picks up the streamer
+  # spectrum_petscii needs an AudioStreamer to read from. [audio] is on by
+  # default (--no-audio mutes) — the scene picks up the streamer
   # automatically unless overridden with `audio = false`.
   # Requires the `mic` extra: `pip install -e .[mic]`.
   # [[scenes.overlays]]

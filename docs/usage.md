@@ -87,11 +87,10 @@ overrides; everything has a sensible config-file equivalent.
 |---------------------|---------------------------------------|-------------------------------------------------------------|
 | `--config PATH`     | n/a                                   | Use a specific TOML file. Else `./c64cast.toml`, else defaults. |
 | `introspection`     | `--init [PATH]`                       | Interactively build a config (needs the `wizard` extra). Writes `./c64cast.toml` or `PATH`. See "Creating a config". |
-| `ultimate 64`       | `--url`, `--system NTSC\|PAL`,        | Sets the `[ultimate64]` section. `--dma-port` overrides the |
-|                     | `--dma-port N`                        | port the Ultimate DMA Service listens on (default 64).      |
+| `connection`        | `-u TARGET`, `--system NTSC\|PAL`     | `-u` selects the backend **and** endpoint via a scheme (see below). `$C64CAST_URL` is the env fallback. |
 | `video input`       | `-d N`                                | Webcam index.                                               |
-| `audio`             | `-A`, `-D N`, `--sample-rate`,        | `-A` is the shortcut for `[audio] enabled = true`.          |
-|                     | `--mic-sensitivity`, `--noise-gate`   |                                                             |
+| `audio`             | `--audio` / `--no-audio`, `-D N`,     | Audio is **on by default**; `--no-audio` mutes.             |
+|                     | `--sample-rate`, `--mic-sensitivity`, `--noise-gate` |                                              |
 | `playlist`          | `--videos DIR`                           | Directory of videos for auto-interleaving        |
 | `debug`             | `-v`, `-vv`, `--heartbeat S`,         | `-v` info, `-vv` debug, `--skip-probe` skips the U64 reachability check. |
 |                     | `--skip-probe`, `--list-devices`      | `--list-devices` enumerates audio + video devices and exits. |
@@ -100,19 +99,45 @@ overrides; everything has a sensible config-file equivalent.
 flags. Every overridable CLI option has `default=None` so the merge can
 tell "user passed the default" from "user didn't pass it."
 
-## Quick playback (`cast`)
+## Connecting to hardware (`-u` target)
 
-For ad-hoc testing without writing a TOML, use the `cast` shortcut
-([scripts/cast.sh](../scripts/cast.sh), or `python -m c64cast.quickcast`). It
+`-u/--url` takes a single scheme-aware **connection target** that selects both
+the hardware backend and its endpoint, replacing per-backend flags. `$C64CAST_URL`
+is the env fallback when `-u` is omitted. In a TOML config the same choices live
+in `[hardware].backend` + `[ultimate64]` / `[teensyrom]`; the `-u` target
+overrides those sections (single-system runs only — ensemble systems keep their
+per-system TOML identity).
+
+| Target                          | Backend / transport                                  |
+|---------------------------------|------------------------------------------------------|
+| `u64://HOST[:PORT]`             | Ultimate 64 / II+ over REST + socket DMA (`http://HOST`) |
+| `http://HOST` / `https://HOST`  | Same — passed to the REST client verbatim            |
+| `tr://`                         | TeensyROM+ USB serial, device **auto-detected** (macOS) |
+| `tr:///dev/cu.usbmodemXYZ`      | TeensyROM+ USB serial on that device node            |
+| `tr://COM3`                     | TeensyROM+ USB serial on a Windows COM port          |
+| `tr://HOST[:PORT]`              | TeensyROM+ over raw TCP (default port 2112)          |
+
+Rare per-link knobs ride along as `?query` params, so they need no extra flags:
+`u64://host?dma_port=64`, `tr://host?tcp_port=2113`,
+`tr:///dev/cu.usbmodem?baud=2000000`, `tr://?storage=usb`.
+
+## Quick playback (positional `MEDIA` args)
+
+For ad-hoc testing without writing a TOML, pass media files/dirs/URLs as
+positional arguments to `c64cast` (mutually exclusive with `--config`). It
 builds an **in-memory-only** config — nothing is written to disk — with one
-scene per argument, in the order given, and **plays through once** (no loop).
+scene per argument, in the order given, and **plays through once** (no loop;
+`--loop` to repeat).
 
 ```bash
 # A video, then a SID, then a slideshow of a folder of pictures:
-scripts/cast.sh -u http://192.168.2.64 clip.mp4 tune.sid assets/pictures/
+scripts/c64cast.sh -u u64://192.168.2.64 clip.mp4 tune.sid assets/pictures/
+
+# Same, but driving a TeensyROM+ over auto-detected USB serial:
+scripts/c64cast.sh -u tr:// clip.mp4 tune.sid
 
 # Direct play a YouTube URL (needs the `yt` extra: `uv sync --extra yt`):
-scripts/cast.sh -u http://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ'
+scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ'
 ```
 
 Each argument is mapped to a scene type:
@@ -348,7 +373,7 @@ device = -1                         # -1 = system default camera; `--list-device
 
 ```toml
 [audio]
-enabled = false                     # true == passing -A
+enabled = true                      # on by default; --no-audio mutes
 device = -1                         # sounddevice input index; -1 = system default
 sample_rate = 8000                  # SID DAC sample rate; don't change unless you really mean it
 mic_sensitivity = 1.5               # pre-DAC gain

@@ -1,11 +1,13 @@
-"""One-shot playback shortcut.
+"""Quick-playback config builder.
 
 Build an **in-memory-only** :class:`~c64cast.config.Config` from a list of
-file / directory / glob / URL arguments and run it — no TOML on disk. One scene
-per argument, in the order given, no video interleaving, no loop (override with
-``--loop``). This is a thin convenience layer over the normal run path
-(:func:`c64cast.cli.build_stack` → ``_run_playlists`` → ``teardown_stack``); it
-adds no new playback machinery.
+file / directory / glob / URL arguments — no TOML on disk. One scene per
+argument, in the order given, no video interleaving, no loop (override with
+``--loop``). This is the library behind ``c64cast``'s positional ``MEDIA``
+mode: when :func:`c64cast.cli.main` sees positional arguments (and no
+``--config``) it calls :func:`build_config` here, then runs the result through
+the normal path (:func:`c64cast.cli.build_stack` → ``_run_playlists`` →
+``teardown_stack``); it adds no new playback machinery.
 
 Argument → scene type mapping:
 
@@ -22,19 +24,14 @@ Argument → scene type mapping:
 Audio-only files (``.mp3`` …) are recognized but **not yet supported** (a
 test-pattern-over-audio scene is a planned follow-up); they raise a clear
 message rather than a generic "unknown file type".
-
-Invoked via ``scripts/cast.sh`` (``python -m c64cast.quickcast``).
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
-import logging
 import os
 import re
-import sys
-import threading
 import urllib.parse
 
 from .config import (
@@ -43,11 +40,8 @@ from .config import (
     SID_EXTS,
     VIDEO_EXTS,
     Config,
-    ConfigError,
     SceneCfg,
 )
-
-log = logging.getLogger(__name__)
 
 # Audio-only formats. Recognized so the user gets a clear "deferred" message
 # instead of "unknown file type" — audio-over-test-pattern is a planned
@@ -248,22 +242,33 @@ def classify_url(arg: str, *, display: str | None) -> SceneCfg:
 
 
 def build_config(args: argparse.Namespace) -> Config:
-    """Build the in-memory Config: defaults, plus one scene per input argument,
-    plus the runtime overrides from the parsed flags."""
+    """Build the in-memory Config: defaults, plus one scene per positional
+    ``MEDIA`` argument, plus the runtime overrides from the unified CLI flags.
+
+    Called by :func:`c64cast.cli._resolve_configs` when the user passes
+    positional media. ``args`` is the unified ``c64cast`` argparse namespace, so
+    the connection target (``-u/--url`` or ``$C64CAST_URL``) is applied through
+    the shared :mod:`c64cast.connect` decomposer — the same scheme-aware path
+    the config-driven CLI uses — rather than being treated as a bare URL."""
     cfg = Config()
     # Each argument plays once, in order — no videos, no loop (unless --loop).
-    cfg.playlist.loop = args.loop
+    cfg.playlist.loop = bool(args.loop)
     cfg.playlist.interleave_videos = False
 
-    if args.url:
-        cfg.ultimate64.url = args.url
+    target = args.url or os.environ.get("C64CAST_URL")
+    if target:
+        from .connect import apply_to_config, parse_connection_uri
+
+        apply_to_config(cfg, parse_connection_uri(target))
     if args.system:
         cfg.ultimate64.system = args.system
     if args.device is not None:
         cfg.video.device = args.device
-    cfg.audio.enabled = args.audio
-    cfg.debug.skip_probe = args.skip_probe
-    cfg.debug.verbose = args.verbose
+    # Audio is on by default in quick playback; --no-audio (args.audio == False)
+    # mutes. args.audio is None when neither --audio nor --no-audio was passed.
+    cfg.audio.enabled = True if args.audio is None else args.audio
+    cfg.debug.skip_probe = bool(args.skip_probe)
+    cfg.debug.verbose = args.verbose or 0
 
     scenes: list[SceneCfg] = []
     for arg in args.inputs:
@@ -273,108 +278,3 @@ def build_config(args: argparse.Namespace) -> Config:
             scenes.append(classify_local(arg, display=args.display, duration_s=args.duration))
     cfg.scenes = scenes
     return cfg
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="cast",
-        description=(
-            "Quick playback: one scene per file/URL argument, in order, no loop. "
-            "video->video, .sid->waveform, image->slideshow, .prg/.crt->launcher, "
-            "URL->video (yt-dlp resolves YouTube et al.)."
-        ),
-    )
-    p.add_argument("inputs", nargs="+", help="files, directories, globs, or URLs to play")
-    p.add_argument(
-        "-u",
-        "--url",
-        default=os.environ.get("C64CAST_URL"),
-        help="Ultimate 64 base URL (default: $C64CAST_URL, else the built-in default).",
-    )
-    p.add_argument("-s", "--system", choices=["NTSC", "PAL"], help="video system")
-    p.add_argument("-d", "--device", type=int, help="webcam device index (rarely needed)")
-    p.add_argument(
-        "--no-audio",
-        dest="audio",
-        action="store_false",
-        help="disable audio (audio is on by default).",
-    )
-    p.set_defaults(audio=True)
-    p.add_argument(
-        "--display",
-        help="VIC-II display mode for video/slideshow scenes (default: mhires).",
-    )
-    p.add_argument(
-        "-t",
-        "--duration",
-        type=float,
-        help="seconds for scenes that honor it (waveform/slideshow).",
-    )
-    p.add_argument(
-        "--loop",
-        action="store_true",
-        help="loop the playlist (default: play through once and exit).",
-    )
-    p.add_argument(
-        "--skip-probe", action="store_true", help="skip the hardware reachability probe."
-    )
-    p.add_argument("-v", "--verbose", action="count", default=0, help="-v info, -vv debug.")
-    return p
-
-
-def main(argv: list[str] | None = None) -> int:
-    # Lazy import: the run path pulls in heavy/optional deps. Keeping it out of
-    # module import means the pure classifiers stay importable (and testable)
-    # without a hardware stack.
-    from .cli import (
-        StackBuildError,
-        _run_playlists,
-        build_stack,
-        configure_logging,
-        teardown_stack,
-    )
-    from .profiler import NullProfiler, set_profiler
-
-    args = _build_parser().parse_args(argv)
-    configure_logging(args.verbose)
-
-    try:
-        cfg = build_config(args)
-    except (ValueError, ConfigError, RuntimeError) as e:
-        log.error("%s", e)
-        return 2
-
-    # Connection target comes from -u/--url, else $C64CAST_URL, else the
-    # built-in default. When neither was given, warn (but proceed) so the
-    # user knows where we're pointing and how to redirect it.
-    if not args.url:
-        log.warning(
-            "no Ultimate 64 URL given — using the built-in default %s. "
-            "Point cast at your hardware with -u/--url or the C64CAST_URL "
-            "env var (e.g. -u http://192.168.2.64).",
-            cfg.ultimate64.url,
-        )
-    log.info("cast: target %s (%s)", cfg.ultimate64.url, cfg.ultimate64.system)
-
-    profiler = NullProfiler()
-    set_profiler(profiler)
-    stop_event = threading.Event()
-
-    try:
-        stack = build_stack(cfg, "cast", args, stop_event=stop_event, profiler=profiler)
-    except StackBuildError as e:
-        return e.exit_code
-
-    try:
-        _run_playlists([stack], stop_event)
-    except KeyboardInterrupt:
-        log.info("interrupted; shutting down")
-    finally:
-        teardown_stack(stack)
-
-    log.info("%s stats: %s", stack.api.profile.name, stack.api.stats)
-    return 0
-
-
-if __name__ == "__main__":  # pragma: no cover
-    sys.exit(main())
