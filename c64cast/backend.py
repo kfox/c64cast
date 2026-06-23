@@ -648,18 +648,28 @@ def make_backend(cfg: Config) -> C64Backend:
             SerialTransport,
             TcpTransport,
             TRTransport,
+            autodetect_serial_port,
         )
 
         tr = cfg.teensyrom
         transport: TRTransport
         if tr.transport == "serial":
-            if not tr.serial_port:
+            port = tr.serial_port
+            if not port:
+                # No explicit device — try to find the TR's USB-serial node
+                # (macOS only for now; other platforms return None).
+                port = autodetect_serial_port()
+                if port:
+                    log.info("[teensyrom] auto-detected serial device %s", port)
+            if not port:
                 raise ValueError(
                     "[teensyrom].serial_port is required when transport = "
-                    '"serial" (e.g. /dev/cu.usbmodem* or COM3, over a plain '
-                    "USB data cable — not an FTDI null-modem cable)"
+                    '"serial" — auto-detection found no attached TeensyROM '
+                    "(macOS only for now). Set it explicitly (e.g. "
+                    "/dev/cu.usbmodem* or COM3) over a plain USB data cable — "
+                    "not an FTDI null-modem cable."
                 )
-            transport = SerialTransport(tr.serial_port, tr.baud or DEFAULT_BAUD)
+            transport = SerialTransport(port, tr.baud or DEFAULT_BAUD)
             transport_kind = "tr_serial"
         elif tr.transport == "tcp":
             if not tr.host:

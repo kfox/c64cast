@@ -168,7 +168,8 @@ class TeensyromCfg:
         metadata={
             "help": "Serial device for transport=serial over a plain USB data "
             "cable (e.g. /dev/cu.usbmodem* or COM3; NOT an FTDI null-modem "
-            "cable). Required for serial."
+            "cable). On macOS, leave unset to auto-detect the TeensyROM by its "
+            "USB serial number; required (no auto-detect yet) on other platforms."
         },
     )
     baud: int = field(

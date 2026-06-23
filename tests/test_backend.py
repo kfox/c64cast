@@ -385,8 +385,13 @@ class MakeBackendTeensyromValidationTest(unittest.TestCase):
         return cfg
 
     def test_serial_requires_port(self):
+        # No explicit port AND nothing auto-detected -> clear error. Patch
+        # auto-detect to None so it's deterministic on a Mac with a TR attached.
         cfg = self._cfg(transport="serial", serial_port="")
-        with self.assertRaises(ValueError) as ctx:
+        with (
+            mock.patch("c64cast.teensyrom_dma.autodetect_serial_port", return_value=None),
+            self.assertRaises(ValueError) as ctx,
+        ):
             make_backend(cfg)
         self.assertIn("serial_port", str(ctx.exception))
 
