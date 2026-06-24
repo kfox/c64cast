@@ -194,10 +194,72 @@ class DoubleBufferTest(unittest.TestCase):
 
     def test_auto_off_on_reu_backend_and_when_staged(self):
         r = cfgmod.resolve_double_buffer
-        # U64 (has REU): auto leaves it off — fast DMA doesn't visibly tear.
+        # U64 (has REU), overlay-free bitmap: auto leaves it off — the REU path
+        # is the better tear-free option there.
         self.assertFalse(r("auto", "mhires", use_reu_staged=False, backend_supports_reu=True))
         # Mutually exclusive with REU staging (both flip $DD00).
         self.assertFalse(r("auto", "mhires", use_reu_staged=True, backend_supports_reu=False))
+
+    def test_auto_enables_for_text_overlay_on_reu_backend(self):
+        r = cfgmod.resolve_double_buffer
+        # U64 (has REU) + a buffer-painting text overlay: resolve_use_reu_staged
+        # turned the REU path off (shimmer), leaving single-buffer host-DMA that
+        # tears on cuts. auto picks the host-DMA double-buffer (tear-free + crisp
+        # text) instead.
+        self.assertTrue(
+            r(
+                "auto",
+                "mhires",
+                use_reu_staged=False,
+                backend_supports_reu=True,
+                has_buffer_overlays=True,
+            )
+        )
+        self.assertTrue(
+            r(
+                "auto",
+                "hires",
+                use_reu_staged=False,
+                backend_supports_reu=True,
+                has_buffer_overlays=True,
+            )
+        )
+        # Still scoped to bitmap modes — a text overlay on a char mode is the
+        # single-buffer-cheap path, no second bank to flip.
+        self.assertFalse(
+            r(
+                "auto",
+                "petscii",
+                use_reu_staged=False,
+                backend_supports_reu=True,
+                has_buffer_overlays=True,
+            )
+        )
+
+    def test_reu_mic_pump_gates_double_buffer_off(self):
+        r = cfgmod.resolve_double_buffer
+        # The host-DMA swap and the REU mic pump both own $0314 with no merged
+        # dispatcher for the pair — gate double-buffer off so they can't collide.
+        # Applies even to the text-overlay auto case and to an explicit `true`.
+        self.assertFalse(
+            r(
+                "auto",
+                "mhires",
+                use_reu_staged=False,
+                backend_supports_reu=True,
+                has_buffer_overlays=True,
+                audio_reu_pump_active=True,
+            )
+        )
+        self.assertFalse(
+            r(
+                True,
+                "mhires",
+                use_reu_staged=False,
+                backend_supports_reu=True,
+                audio_reu_pump_active=True,
+            )
+        )
 
     def test_explicit_scoped_to_bitmap_and_loses_to_reu(self):
         r = cfgmod.resolve_double_buffer

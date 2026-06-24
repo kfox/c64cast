@@ -284,11 +284,14 @@ class VideoCfg:
     double_buffer: bool | str = field(
         default="auto",
         metadata={
-            "help": "Host-DMA double-buffer (page flip) for tear-free bitmap video on "
-            'backends without a usable REU (e.g. TeensyROM). "auto" (default) '
-            "enables it for bitmap modes (hires/mhires) when REU staging is off "
-            "and the backend has no REU; true forces it on for bitmap modes, "
-            "false off. Independent of [video].use_reu_staged (the REU path)."
+            "help": "Host-DMA double-buffer (page flip) for tear-free bitmap video where "
+            'REU staging can\'t help. "auto" (default) enables it for bitmap modes '
+            "(hires/mhires) when REU staging is off and either the backend has no "
+            "REU (e.g. TeensyROM) or the scene has a text overlay (whose presence "
+            "turns the REU path off to dodge bank-swap shimmer, otherwise leaving "
+            "single-buffer host-DMA that tears on cuts). true forces it on for "
+            "bitmap modes, false off; gated off when the REU mic pump is active "
+            "(shared $0314). Independent of [video].use_reu_staged (the REU path)."
         },
     )
 
@@ -2009,6 +2012,8 @@ def resolve_double_buffer(
     *,
     use_reu_staged: bool,
     backend_supports_reu: bool = False,
+    has_buffer_overlays: bool = False,
+    audio_reu_pump_active: bool = False,
 ) -> bool:
     """Resolve the [video].double_buffer tri-state to a concrete bool for one
     scene's display mode (the host-DMA page-flip path — see modes.py
@@ -2016,20 +2021,34 @@ def resolve_double_buffer(
 
     Only bitmap modes have the two VIC banks to flip. It's mutually exclusive
     with REU staging (both drive $DD00), so a resolved use_reu_staged always
-    wins. "auto" then enables it only on a backend with NO REU at all (the
-    TeensyROM) — that's where single-buffered host-DMA visibly tears; the U64's
-    fast socket DMA doesn't, so auto leaves it off there. Explicit true/false
-    pass through (still scoped to bitmap modes — true on a char mode is a no-op).
+    wins.
 
-    No has_buffer_overlays gate (unlike resolve_use_reu_staged): the host-DMA
-    swap IRQ does no in-IRQ DMA, so the $DD00 flip lands inside vblank with no
-    shimmer — text overlays fold into the bitmap and render crisply."""
+    "auto" enables it where REU offers no tear-free alternative for the scene:
+      * a backend with NO REU at all (the TeensyROM) — single-buffered host-DMA
+        visibly tears there; or
+      * a bitmap scene with a buffer-painting text overlay (has_buffer_overlays)
+        on a REU backend — resolve_use_reu_staged turns the REU path OFF for
+        these to dodge the bank-swap shimmer, which otherwise leaves them on
+        single-buffer host-DMA that tears on scene cuts. The host-DMA double-
+        buffer gives them tear-free frames AND crisp text (its swap IRQ does no
+        in-IRQ DMA, so the $DD00 flip lands in vblank — no shimmer).
+    Overlay-free bitmap video on a REU backend stays untouched (the REU path is
+    the better tear-free option there). Explicit true/false pass through (still
+    scoped to bitmap modes — true on a char mode is a no-op).
+
+    Gated off when the scene runs the REU mic pump (audio_reu_pump_active): the
+    host-DMA swap installs a plain $0314 raster IRQ (chains to $EA31) and the
+    pump owns $0314 too, with no merged dispatcher for this pair (unlike the REU
+    bank-swap path). Two $0314 owners would collide, so we stay single-buffer.
+    Never reached on a no-REU backend — use_reu_pump is coerced off there."""
     if display not in _REU_BITMAP_MODES:
         return False
     if use_reu_staged:
         return False
+    if audio_reu_pump_active:
+        return False
     if isinstance(setting, str):  # "auto"
-        return not backend_supports_reu
+        return (not backend_supports_reu) or has_buffer_overlays
     return bool(setting)
 
 
@@ -2255,6 +2274,8 @@ def _display_mode_for_scene(
             display,
             use_reu_staged=use_reu_staged,
             backend_supports_reu=backend_supports_reu,
+            has_buffer_overlays=has_buffer_overlays,
+            audio_reu_pump_active=cfg.audio.use_reu_pump,
         )
     )
     return _build_display_mode(

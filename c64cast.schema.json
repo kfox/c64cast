@@ -126,7 +126,7 @@
             "boolean",
             "string"
           ],
-          "description": "Host-DMA double-buffer (page flip) for tear-free bitmap video on backends without a usable REU (e.g. TeensyROM). \"auto\" (default) enables it for bitmap modes (hires/mhires) when REU staging is off and the backend has no REU; true forces it on for bitmap modes, false off. Independent of [video].use_reu_staged (the REU path).",
+          "description": "Host-DMA double-buffer (page flip) for tear-free bitmap video where REU staging can't help. \"auto\" (default) enables it for bitmap modes (hires/mhires) when REU staging is off and either the backend has no REU (e.g. TeensyROM) or the scene has a text overlay (whose presence turns the REU path off to dodge bank-swap shimmer, otherwise leaving single-buffer host-DMA that tears on cuts). true forces it on for bitmap modes, false off; gated off when the REU mic pump is active (shared $0314). Independent of [video].use_reu_staged (the REU path).",
           "default": "auto"
         }
       }

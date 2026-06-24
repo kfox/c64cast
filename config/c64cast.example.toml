@@ -176,13 +176,20 @@ double_buffer = "auto"              # Host-DMA double-buffer (page flip) for
                                     #   "auto" enables it for bitmap modes
                                     #     (hires/mhires) when use_reu_staged is
                                     #     NOT active (mutually exclusive — both
-                                    #     flip $DD00) AND the backend has no REU
-                                    #     at all (so this is its only tear-free
-                                    #     path). The U64's fast DMA doesn't
-                                    #     visibly tear single-buffered, so auto
-                                    #     leaves it on host-DMA there.
+                                    #     flip $DD00) AND either the backend has
+                                    #     no REU at all (e.g. TeensyROM — its
+                                    #     only tear-free path) OR the scene has a
+                                    #     text overlay. A text overlay turns the
+                                    #     REU path off (to dodge the bank-swap
+                                    #     shimmer), otherwise leaving single-
+                                    #     buffer host-DMA that tears on scene
+                                    #     cuts; here the flip is tear-free AND
+                                    #     keeps the text crisp. Overlay-free
+                                    #     bitmap video on a REU backend stays on
+                                    #     the REU path (the better option there).
                                     #   true forces it on for bitmap modes (any
-                                    #     backend); false off.
+                                    #     backend); false off. Gated off when the
+                                    #     REU mic pump is active (shared $0314).
                                     # Residual: mhires color RAM ($D800) is not
                                     # VIC-banked, so the c3 slot still tears
                                     # briefly before each flip; bitmap+screen go
