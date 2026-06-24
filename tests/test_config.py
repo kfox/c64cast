@@ -7,8 +7,13 @@ import argparse
 import os
 import tempfile
 import unittest
+from typing import cast
+from unittest import mock
+
+from _fakes import FakeAPI
 
 from c64cast import config as cfgmod
+from c64cast.backend import C64Backend
 
 
 class ConfigLoaderTest(unittest.TestCase):
@@ -361,6 +366,26 @@ class ValidateSceneCfgTest(unittest.TestCase):
         # loader rejects rather than silently ignores.
         s = cfgmod.SceneCfg(type="slideshow", file="pic.jpg", start_s=10.0)
         with self.assertRaisesRegex(ValueError, "start_s is only supported on video"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_video_url_needing_ytdlp_rejected_without_extra(self):
+        # Offline doctor/load check: a YouTube-style URL needs yt-dlp; without
+        # the `yt` extra, flag it up front instead of failing at playback.
+        s = cfgmod.SceneCfg(type="video", file="https://youtu.be/abc?t=90")
+        with mock.patch("c64cast.quickcast._ytdlp_available", return_value=False):
+            with self.assertRaisesRegex(ValueError, "yt-dlp"):
+                cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_video_url_needing_ytdlp_passes_with_extra(self):
+        s = cfgmod.SceneCfg(type="video", file="https://youtu.be/abc?t=90")
+        with mock.patch("c64cast.quickcast._ytdlp_available", return_value=True):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_direct_media_url_does_not_require_extra(self):
+        # A direct media URL plays via PyAV without yt-dlp — no extra needed
+        # even when it's absent.
+        s = cfgmod.SceneCfg(type="video", file="http://host/clip.mp4")
+        with mock.patch("c64cast.quickcast._ytdlp_available", return_value=False):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_waveform_scene_falls_back_to_default_dir(self):
@@ -783,6 +808,57 @@ class FollowerOnlyRotationFilterTest(unittest.TestCase):
         ]
         with self.assertRaises(ValueError):
             cfgmod.scenes_from_config(self.cfg, self.api, None, None)
+
+
+class BuildSceneVideoUrlTest(unittest.TestCase):
+    """build_scene resolves a single media URL in the config path — the same
+    yt-dlp resolution quick playback uses — so configs accept YouTube et al.
+    `_ytdlp_available` is forced True so the offline gate doesn't trip when the
+    `yt` extra is absent (e.g. in CI), and resolve_media_url is faked so no
+    network/dep is needed."""
+
+    def _build(self, file: str, **kw):
+        from c64cast.scenes import VideoScene
+
+        s = cfgmod.SceneCfg(type="video", display="mhires", file=file, **kw)
+        scene = cfgmod.build_scene(s, cfgmod.Config(), cast(C64Backend, FakeAPI()), None, None)
+        assert isinstance(scene, VideoScene)  # narrows for start_s/file_spec access
+        return scene
+
+    def test_youtube_url_resolved_with_timestamp_and_title(self):
+        with (
+            mock.patch("c64cast.quickcast._ytdlp_available", return_value=True),
+            mock.patch(
+                "c64cast.quickcast.resolve_media_url",
+                return_value=("http://stream/v.m3u8", "video", "Cool Tune"),
+            ),
+        ):
+            scene = self._build("https://youtu.be/abc?t=1m30s")
+        self.assertEqual(scene.file_spec, "http://stream/v.m3u8")
+        self.assertEqual(scene.start_s, 90.0)
+        self.assertEqual(scene.name, "Cool Tune")
+
+    def test_explicit_start_s_wins_over_url_timestamp(self):
+        with (
+            mock.patch("c64cast.quickcast._ytdlp_available", return_value=True),
+            mock.patch(
+                "c64cast.quickcast.resolve_media_url",
+                return_value=("http://stream/v.m3u8", "video", "T"),
+            ),
+        ):
+            scene = self._build("https://youtu.be/abc?t=30", start_s=99.0)
+        self.assertEqual(scene.start_s, 99.0)
+
+    def test_audio_only_url_rejected_at_build(self):
+        with (
+            mock.patch("c64cast.quickcast._ytdlp_available", return_value=True),
+            mock.patch(
+                "c64cast.quickcast.resolve_media_url",
+                return_value=("http://stream/a", "audio", None),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "audio"):
+                self._build("https://youtu.be/abc")
 
 
 if __name__ == "__main__":

@@ -311,16 +311,18 @@ class ParseStartOffsetTest(unittest.TestCase):
 
 class ClassifyUrlTest(unittest.TestCase):
     def test_video_url_becomes_video(self):
-        scene = quickcast.classify_url("http://host/clip.mp4", display=None)
+        # classify_url stores the URL verbatim — resolution is deferred to
+        # config.build_scene (the single, shared resolution path).
+        scene = quickcast.classify_url("https://youtu.be/abc", display=None)
         self.assertEqual(scene.type, "video")
-        self.assertEqual(scene.file, "http://host/clip.mp4")
+        self.assertEqual(scene.file, "https://youtu.be/abc")
         self.assertEqual(scene.display, "mhires")
         self.assertIsNone(scene.start_s)
 
     def test_url_timestamp_sets_start_s(self):
-        # Direct media URL passes through resolve_media_url untouched (no
-        # yt-dlp), so this exercises start_s wiring without a network/dep.
-        scene = quickcast.classify_url("http://host/clip.mp4?t=1m30s", display=None)
+        # The timestamp is parsed offline at classify time (no network/dep)
+        # so it rides onto the SceneCfg regardless of later resolution.
+        scene = quickcast.classify_url("https://youtu.be/abc?t=1m30s", display=None)
         self.assertEqual(scene.type, "video")
         self.assertEqual(scene.start_s, 90.0)
 
@@ -328,15 +330,68 @@ class ClassifyUrlTest(unittest.TestCase):
         scene = quickcast.classify_url("http://host/clip.mp4#t=45", display=None)
         self.assertEqual(scene.start_s, 45.0)
 
-    def test_audio_url_deferred(self):
-        with self.assertRaises(ValueError) as cm:
-            quickcast.classify_url("http://host/song.mp3", display=None)
-        self.assertIn("audio", str(cm.exception))
+    def test_audio_url_not_rejected_at_classify_time(self):
+        # Audio rejection now lives in build_scene (via resolve_video_url), so
+        # classify_url no longer raises — it just wraps the URL.
+        scene = quickcast.classify_url("http://host/song.mp3", display=None)
+        self.assertEqual(scene.type, "video")
+        self.assertEqual(scene.file, "http://host/song.mp3")
 
     def test_build_config_routes_url(self):
         cfg = quickcast.build_config(_parse(["http://host/clip.mp4"]))
         self.assertEqual(cfg.scenes[0].type, "video")
         self.assertEqual(cfg.scenes[0].file, "http://host/clip.mp4")
+
+
+class UrlNeedsYtdlpTest(unittest.TestCase):
+    def test_direct_media_url_does_not_need_ytdlp(self):
+        self.assertFalse(quickcast.url_needs_ytdlp("http://host/clip.mp4"))
+        self.assertFalse(quickcast.url_needs_ytdlp("http://host/song.mp3?x=1"))
+
+    def test_page_url_needs_ytdlp(self):
+        self.assertTrue(quickcast.url_needs_ytdlp("https://youtu.be/abc?t=90"))
+        self.assertTrue(quickcast.url_needs_ytdlp("https://example.com/watch?v=x"))
+
+
+class ResolveVideoUrlTest(unittest.TestCase):
+    """The shared resolver used by both quick playback and config.build_scene."""
+
+    def tearDown(self):
+        sys.modules.pop("yt_dlp", None)
+
+    def _install_fake_ytdlp(self, info: dict):
+        class FakeYDL:
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download):  # noqa: ARG002
+                return info
+
+        mod = types.ModuleType("yt_dlp")
+        mod.YoutubeDL = FakeYDL  # type: ignore[attr-defined]
+        sys.modules["yt_dlp"] = mod
+
+    def test_direct_video_url_passthrough_with_timestamp(self):
+        url = "http://host/clip.mp4?t=2m"
+        self.assertEqual(quickcast.resolve_video_url(url), (url, 120.0, None))
+
+    def test_ytdlp_video_returns_stream_offset_title(self):
+        self._install_fake_ytdlp({"url": "http://stream/v.m3u8", "vcodec": "h264", "title": "Cool"})
+        self.assertEqual(
+            quickcast.resolve_video_url("https://youtu.be/abc?t=30"),
+            ("http://stream/v.m3u8", 30.0, "Cool"),
+        )
+
+    def test_audio_only_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            quickcast.resolve_video_url("http://host/song.mp3")
+        self.assertIn("audio", str(cm.exception))
 
 
 class ResolveFileSpecUrlTest(unittest.TestCase):

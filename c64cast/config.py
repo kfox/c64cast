@@ -2197,10 +2197,33 @@ def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
     )
 
 
+def _is_single_url_spec(spec: str | None) -> bool:
+    """True if a `file =` spec is exactly one http(s) URL (not a comma-joined
+    multi-spec). Single URLs are the form quick playback and configs resolve
+    via yt-dlp; dir/glob/multi specs stay on the local-file path."""
+    if not spec:
+        return False
+    s = spec.strip()
+    return s.lower().startswith(("http://", "https://")) and "," not in s
+
+
 def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
         s, DEFAULT_VIDEO_DIR, VIDEO_EXTS, label="video", drop_hint="a video"
     )
+    # Offline URL sanity (runs in --doctor too): a single URL that yt-dlp must
+    # resolve (a YouTube/etc. page, not a direct media link) needs the `yt`
+    # extra. Flag it now instead of failing at playback with a cryptic ffmpeg
+    # "Invalid data found" when PyAV tries to open the page as a media file.
+    if s.file is not None and _is_single_url_spec(s.file):
+        from .quickcast import _ytdlp_available, url_needs_ytdlp
+
+        if url_needs_ytdlp(s.file.strip()) and not _ytdlp_available():
+            raise ValueError(
+                f"video: {s.file!r} is a URL that needs yt-dlp to resolve, but the "
+                "`yt` extra isn't installed. Install it (`uv sync --extra yt`, or "
+                "`pip install c64cast[yt]`), or use a direct media URL / local file."
+            )
     if s.duration_s is not None:
         raise ValueError(
             "video scene does not accept `duration_s` — the scene "
@@ -2638,15 +2661,34 @@ def build_scene(
         # The user can mute one with `audio = false`.
         scene_audio = None if s.audio is False else audio
         assert s.file is not None  # narrowed by validate_scene_cfg
+        # A single media URL (YouTube et al.) is resolved here — the ONE
+        # resolution path shared with quick playback — so config-driven videos
+        # accept URLs too. Its t=/start= timestamp folds into start_s (an
+        # explicit start_s wins), and the resolved title becomes the scene name.
+        # Local files / dir / glob / multi specs are untouched.
+        file_spec = s.file
+        start_s = s.start_s
+        video_name = s.name
+        if _is_single_url_spec(s.file):
+            from .quickcast import resolve_video_url
+
+            stream_url, url_start_s, title = resolve_video_url(s.file.strip())
+            file_spec = stream_url
+            if start_s is None:
+                start_s = url_start_s
+            if video_name is None:
+                video_name = title
         scene = VideoScene(
             api,
             scene_audio,
             mode,
-            s.file,
+            file_spec,
             prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
             color=cfg.color,
-            start_s=s.start_s or 0.0,
+            start_s=start_s or 0.0,
         )
+        if video_name:
+            scene.name = video_name
         if s.target_fps is None:
             fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
             if fps is not None:
