@@ -913,5 +913,49 @@ class PlaylistTest(unittest.TestCase):
         self.assertFalse(pl.skip_event.is_set())
 
 
+class _DisturbanceAudio:
+    """Records note_playback_disturbance() calls (the only audio method the
+    frame-drop path touches)."""
+
+    def __init__(self):
+        self.disturbances = 0
+
+    def note_playback_disturbance(self):
+        self.disturbances += 1
+
+
+class FrameDropDisturbanceTest(unittest.TestCase):
+    """A large deadline snap-forward signals the audio loop; a small one doesn't."""
+
+    def _playlist(self, audio):
+        return Playlist(
+            [FakeScene("A", frames_until_done=10_000)],
+            FakeApi(),
+            target_fps=10000.0,  # frame_time = 1e-4 s
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+            audio=audio,
+        )
+
+    def test_large_drop_signals_audio(self):
+        audio = _DisturbanceAudio()
+        pl = self._playlist(audio)
+        # Deadline ~1 s in the past → drops ≫ _AUDIO_DISTURBANCE_DROP_S of frames.
+        pl._run_one_frame(pl.scenes[0], time.time() - 1.0)
+        self.assertEqual(audio.disturbances, 1)
+
+    def test_small_drop_does_not_signal(self):
+        audio = _DisturbanceAudio()
+        pl = self._playlist(audio)
+        # ~10 ms behind: a real (>2 frame) drop, but well under the 0.5 s bar.
+        pl._run_one_frame(pl.scenes[0], time.time() - 0.01)
+        self.assertEqual(audio.disturbances, 0)
+
+    def test_no_audio_is_safe(self):
+        pl = self._playlist(None)
+        pl._run_one_frame(pl.scenes[0], time.time() - 1.0)  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

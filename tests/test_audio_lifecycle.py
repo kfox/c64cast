@@ -490,6 +490,60 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)  # ~1000 B in ~0.1 s
         self.assertGreater(s._r_rate_ema, 0.0)  # seeded to ~10 kB/s (timing-slop)
 
+    # ---- warm-up gate ----
+    def _slow_r_primed(self) -> AudioStreamer:
+        """A streamer primed so the next _update_nmi_rate_loop call WOULD step the
+        latch (slow R, past the decide cadence) absent any warm-up hold."""
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._nmi_timer_started = True
+        s._nmi_latch = s._nmi_latch_value()  # nominal
+        s._r_rate_ema = 9456.0  # ~9.9% slow → coarse step
+        s._last_r_addr = -1  # skip the EMA update this call (use the pre-seed)
+        s._nmi_loop_chunk_count = max(1, round(s.sample_rate / s.chunk_size)) - 1
+        return s
+
+    def test_warmup_holds_latch(self):
+        # Within the warm-up window the loop must NOT move the latch, even with a
+        # slow R that would otherwise step it (the start/seek transient hold).
+        s = self._slow_r_primed()
+        s._nmi_warmup_until = time.monotonic() + 5.0  # warm-up in effect
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s._nmi_latch, s._nmi_latch_value())  # unchanged
+
+    def test_warmup_still_updates_ema(self):
+        # The EMA keeps warming during warm-up so the first post-warm-up decision
+        # acts on a settled estimate rather than re-seeding off one sample.
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        s._nmi_timer_started = True
+        s._nmi_warmup_until = time.monotonic() + 5.0
+        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s._last_r_time = time.monotonic() - 0.1
+        s._r_rate_ema = -1.0
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)
+        self.assertGreater(s._r_rate_ema, 0.0)  # measured + seeded despite the hold
+
+    def test_acts_after_warmup(self):
+        # Past the warm-up deadline the same slow R steps the latch (gate released).
+        s = self._slow_r_primed()
+        s._nmi_warmup_until = time.monotonic() - 0.01  # warm-up elapsed
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s._nmi_latch, 92)  # 96 - capped coarse step 4
+
+    def test_note_playback_disturbance_rearms_warmup(self):
+        s = _make(sample_rate=10500, nmi_rate_adaptive=True)
+        before = time.monotonic()
+        s.note_playback_disturbance()
+        self.assertGreaterEqual(
+            s._nmi_warmup_until, before + audio_mod.NMI_RATE_LOOP_WARMUP_S - 0.05
+        )
+
+    def test_disturbance_then_held(self):
+        # End-to-end: a disturbance arms warm-up, which then holds a would-be step.
+        s = self._slow_r_primed()
+        s.note_playback_disturbance()
+        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s._nmi_latch, s._nmi_latch_value())  # held by the re-arm
+
 
 class DigiBoostTest(unittest.TestCase):
     def test_enable_writes_all_voices(self):

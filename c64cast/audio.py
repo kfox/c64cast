@@ -391,6 +391,18 @@ NMI_RATE_LOOP_EMA_ALPHA = 0.04  # per-chunk EMA weight for the R-rate estimate (
 # bounds each move so even fast acquisition glides rather than jumps.
 NMI_RATE_LOOP_ACQUIRE_ALPHA = 0.4  # responsive EMA during acquisition
 NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS = 2  # decide every ~2 chunks while acquiring
+# Warm-up gate: hold the latch at the (near-converged) seed and SUPPRESS decisions
+# for this long after the consumer starts or a large playback disturbance, while
+# still feeding R into the EMA. The first R samples after a start/seek are
+# unrepresentative — the video pipeline's bus load hasn't reached steady state yet
+# (post-seek decode catch-up + the playlist's frame-drop snap), so R reads high
+# until the steady-state VIC/DMA tick-loss arrives (~3 s on HW: R≈11.5k→10.1k). The
+# old loop seeded its EMA off that transient and chased the latch *away* from the
+# seed and back — an audible start-of-playback pitch glide of wasted motion, since
+# the bitmap seed (= ceiling) is already the converged latch. Holding the seed
+# through the transient, then deciding once from a warm EMA, lands on the converged
+# latch with no glide. Re-armed by note_playback_disturbance() on a big frame-drop.
+NMI_RATE_LOOP_WARMUP_S = 3.0
 # Per-mode-class seed for the loop's starting latch, so playback begins near the
 # converged rate (minimal/zero start glide) instead of ramping up from nominal.
 # Bitmap modes lose ~10% of NMI ticks to the REU bank-swap + badline DMA →
@@ -1184,6 +1196,11 @@ class AudioStreamer:
         self._last_r_time = 0.0
         self._nmi_loop_chunk_count = 0
         self._nmi_loop_acquiring = True
+        # Warm-up gate deadline (monotonic). While now < this, the loop measures R
+        # into the EMA but holds the latch (see NMI_RATE_LOOP_WARMUP_S). 0.0 = open
+        # (no warm-up pending), so direct _update_nmi_rate_loop calls act at once.
+        # Armed at consumer start and re-armed by note_playback_disturbance().
+        self._nmi_warmup_until = 0.0
         # Current display mode (set by set_nmi_latch_for_mode) + an in-session
         # cache of each mode's converged latch. The loop SEEDS the starting latch
         # from these so playback begins at ~the right rate (no start-of-playback
@@ -1414,6 +1431,9 @@ class AudioStreamer:
                     self._nmi_latch = seed
                     self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", seed & 0xFF, (seed >> 8) & 0xFF)
                 self._nmi_loop_acquiring = True
+                # A mode change shifts the bus-halt profile (hence R); hold the
+                # latch at the new seed until the new mode's load settles.
+                self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
             return
 
         # `hires_edges` scenes report display_mode.name == "hires" (same VIC
@@ -1567,6 +1587,12 @@ class AudioStreamer:
                         self._last_r_time = 0.0
                         self._nmi_loop_chunk_count = 0
                         self._nmi_loop_acquiring = True
+                        # Hold the rate loop at the seed until the start/seek
+                        # transient settles (post-seek decode catch-up + the
+                        # playlist's frame-drop snap), so it acquires from a steady
+                        # R instead of chasing the spin-up reading. See
+                        # NMI_RATE_LOOP_WARMUP_S.
+                        self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
                         # Pace the next write one chunk_period out so the
                         # PREBUFFER_CHUNKS slack stays steady instead of
                         # getting eaten up immediately.
@@ -1646,6 +1672,14 @@ class AudioStreamer:
         self._last_r_addr = r_addr
         self._last_r_time = now
 
+        # Warm-up gate: during the post-start / post-disturbance settle window the
+        # EMA keeps warming (above) but the latch is held at the seed — the seed is
+        # already near-converged, so this plays at ~the right rate instead of
+        # chasing the unrepresentative spin-up R and gliding back. The chunk counter
+        # is not advanced, so the normal decide cadence resumes cleanly on release.
+        if now < self._nmi_warmup_until:
+            return
+
         self._nmi_loop_chunk_count += 1
         decide_every = (
             NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS
@@ -1683,6 +1717,18 @@ class AudioStreamer:
         )
         self._nmi_latch = new_latch
         self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", new_latch & 0xFF, (new_latch >> 8) & 0xFF)
+
+    def note_playback_disturbance(self) -> None:
+        """Re-arm the adaptive NMI-rate loop's warm-up gate after a large playback
+        disturbance (the playlist calls this when it snaps the deadline forward and
+        drops a big batch of frames — a seek catch-up or a stream rebuffer).
+
+        Holds the latch at its current value while R rides through the disturbance
+        and re-settles, so the loop doesn't chase the abnormal bus load and glitch
+        the pitch. The EMA is left intact (not re-seeded) so it keeps tracking
+        across the gap. Cheap + thread-safe: a single monotonic write. A no-op in
+        effect when the rate loop isn't running (open-loop / REU pump / static)."""
+        self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
 
     # ---- sample tap ----------------------------------------------------------
     def _push_to_tap(self, mono_floats: np.ndarray) -> None:
