@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 InterstitialFactory = Callable[[str], Scene]
 FollowerSceneFactory = Callable[["SceneCfg"], Scene]
 
+# A deadline snap-forward dropping at least this many seconds of frames counts as
+# a "large" playback disturbance (seek catch-up, stream rebuffer) worth telling the
+# audio streamer about, so its adaptive NMI-rate loop re-arms its warm-up gate
+# instead of chasing the abnormal bus load. Routine 1-3 frame drops stay below it.
+_AUDIO_DISTURBANCE_DROP_S = 0.5
+
 
 class Playlist:
     def __init__(
@@ -618,6 +624,11 @@ class Playlist:
                     dropped,
                     (now - next_deadline + frame_time) * 1000,
                 )
+                # A large snap (seek catch-up / stream rebuffer) abnormally loads
+                # the bus; tell the audio loop to hold its NMI rate steady through
+                # it instead of chasing the transient and gliding the pitch.
+                if self.audio is not None and dropped * frame_time >= _AUDIO_DISTURBANCE_DROP_S:
+                    self.audio.note_playback_disturbance()
         return next_deadline
 
     def _handle_broadcast_interrupt(self) -> None:

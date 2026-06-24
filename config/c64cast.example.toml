@@ -268,7 +268,12 @@ nmi_rate_adaptive = true            # Adaptive NMI-rate compensation. The
                                     # handler cycle budget so it never overruns.
                                     # Supersedes pitch_mult_* below (those apply
                                     # only when this is false). Host-DMA path
-                                    # only; on by default.
+                                    # only; on by default. A brief warm-up gate
+                                    # holds the rate steady right after a start /
+                                    # seek / big frame-drop (the spin-up R reads
+                                    # are unrepresentative) so it doesn't audibly
+                                    # glide the pitch chasing them, then trims
+                                    # from a settled estimate.
 source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # 100 ms 200→3500 Hz linear chirp to the
                                     # pre-encoded REU audio so Cam Link
