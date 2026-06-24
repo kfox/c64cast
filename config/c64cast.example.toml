@@ -160,6 +160,35 @@ use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     #   * Requires REU enabled on the U64 (F2
                                     #     → C64 and Cartridge Settings → RAM
                                     #     Expansion Unit: Enabled).
+double_buffer = "auto"              # Host-DMA double-buffer (page flip) for
+                                    # tear-free bitmap video on backends WITHOUT
+                                    # a usable REU — the TeensyROM, whose slow
+                                    # cycle-clean bus DMA tears a single-buffered
+                                    # mhires frame (the per-cell "sparkle").
+                                    # The host writes each frame's bitmap+screen
+                                    # into the OFF-screen VIC bank, then a tiny
+                                    # raster IRQ flips $DD00 at vblank — so the
+                                    # visible bank is never written mid-display.
+                                    # No REU needed. Unlike use_reu_staged the
+                                    # swap IRQ does no in-IRQ DMA, so the flip is
+                                    # shimmer-free and text overlays render crisp.
+                                    # Tri-state: true | false | "auto" (default).
+                                    #   "auto" enables it for bitmap modes
+                                    #     (hires/mhires) when use_reu_staged is
+                                    #     NOT active (mutually exclusive — both
+                                    #     flip $DD00) AND the backend has no REU
+                                    #     at all (so this is its only tear-free
+                                    #     path). The U64's fast DMA doesn't
+                                    #     visibly tear single-buffered, so auto
+                                    #     leaves it on host-DMA there.
+                                    #   true forces it on for bitmap modes (any
+                                    #     backend); false off.
+                                    # Residual: mhires color RAM ($D800) is not
+                                    # VIC-banked, so the c3 slot still tears
+                                    # briefly before each flip; bitmap+screen go
+                                    # tear-free. Hires (no color RAM) and static-
+                                    # palette mhires (cheap/grayscale) are fully
+                                    # tear-free. Independent of use_reu_staged.
 
 [audio]
 enabled = true                      # on by default; --no-audio mutes

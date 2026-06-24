@@ -590,7 +590,9 @@ class SlideshowScene(Scene):
         background: int = 0,
         style: str = "default",
         use_reu_staged: bool | str = "auto",
+        double_buffer: bool | str = "auto",
         reu_available: bool = False,
+        backend_supports_reu: bool = False,
         audio_reu_pump_active: bool = False,
         color: ColorCfg | None = None,
         text_double_height: bool = False,
@@ -624,6 +626,11 @@ class SlideshowScene(Scene):
         # but leaves char-mode picks on host-DMA. See config.resolve_use_reu_staged.
         self._reu_staged_setting = use_reu_staged
         self._reu_available = reu_available
+        # Host-DMA double-buffer (no-REU backends): stored as the raw tri-state +
+        # the backend's REU capability so a `display = "random"` rebuild can
+        # re-decide it per concrete mode each setup(). See config.resolve_double_buffer.
+        self._double_buffer_setting = double_buffer
+        self._backend_supports_reu = backend_supports_reu
         self._audio_reu_pump_active = audio_reu_pump_active
         candidates = resolve_file_spec(file, PICTURE_EXTS, label="slideshow")
         if len(candidates) == 1:
@@ -655,6 +662,7 @@ class SlideshowScene(Scene):
         from .config import (
             _build_display_mode,
             _resolve_slideshow_display,
+            resolve_double_buffer,
             resolve_use_reu_staged,
         )
 
@@ -665,22 +673,29 @@ class SlideshowScene(Scene):
                 old.teardown(self.api)
             except Exception:
                 log.exception("slideshow: prior display_mode teardown failed; continuing")
+        reu_staged = resolve_use_reu_staged(
+            self._reu_staged_setting,
+            new_name,
+            reu_available=self._reu_available,
+            # Text overlays fold into the bitmap; under auto they prefer the
+            # crisp host-DMA path over the REU bank-swap (which shimmers fine
+            # glyphs). See config.resolve_use_reu_staged.
+            has_buffer_overlays=any(
+                getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
+            ),
+        )
         self.display_mode = _build_display_mode(
             new_name,
             palette_mode=self._palette_mode,
             border=self._border,
             background=self._background,
             style=self._style,
-            use_reu_staged=resolve_use_reu_staged(
-                self._reu_staged_setting,
+            use_reu_staged=reu_staged,
+            double_buffer=resolve_double_buffer(
+                self._double_buffer_setting,
                 new_name,
-                reu_available=self._reu_available,
-                # Text overlays fold into the bitmap; under auto they prefer the
-                # crisp host-DMA path over the REU bank-swap (which shimmers fine
-                # glyphs). See config.resolve_use_reu_staged.
-                has_buffer_overlays=any(
-                    getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
-                ),
+                use_reu_staged=reu_staged,
+                backend_supports_reu=self._backend_supports_reu,
             ),
             audio_reu_pump_active=self._audio_reu_pump_active,
             color=self._color,
