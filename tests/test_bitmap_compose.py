@@ -154,6 +154,57 @@ class BitmapAbsoluteCaseTest(unittest.TestCase):
         self.assertEqual(api.regs.get("D020"), (0, 0))
 
 
+class PercellFillerSafetyTest(unittest.TestCase):
+    """percell must never emit a screen/color-RAM color the cell doesn't
+    actually contain. The per-cell top-3 picker grabs the 3 highest counts;
+    when a cell has fewer than 3 distinct non-bg0 colors (the common case —
+    mostly-bg0 cells, and the norm under a small forced palette) the surplus
+    slots used to hold arbitrary ZERO-count palette indices. Those leaked an
+    out-of-palette color (e.g. green into a black/purple/blue cast) that the
+    VIC briefly rendered during the non-atomic screen/color/bitmap write tear
+    on a slow transport (TeensyROM serial). The fix pads absent slots with
+    bg0, so screen/color RAM only ever carries genuinely-present colors."""
+
+    def _compose_from_targets(self, targets: np.ndarray):
+        """Drive _compose_percell with a distance matrix whose per-pixel argmin
+        is exactly `targets` (32000,), clean-margin one-hot — no quantization
+        ambiguity, so the present set is exactly set(targets)."""
+        mode = MultiHiresDisplayMode("percell")
+        d = np.full((32000, 16), 1e6, dtype=np.float32)
+        d[np.arange(32000), targets] = 0.0
+        return mode._compose_percell(d)
+
+    def test_no_color_outside_present_set(self):
+        # Mostly black (index 0) with a few accent pixels from a 4-color cast
+        # {0,4,6,14} — every other cell is all-black, the case that produced
+        # garbage fillers. Spread the accents across distinct cells.
+        targets = np.zeros(32000, dtype=np.int64)
+        targets[10] = 4  # purple
+        targets[8000] = 6  # blue
+        targets[16000] = 14  # light blue
+        targets[24000] = 4
+        present = {0, 4, 6, 14}
+
+        _bitmap, screen, color, bg0 = self._compose_from_targets(targets)
+        self.assertEqual(bg0, 0)  # black dominates
+        seen = (
+            set(np.asarray(screen) >> 4) | set(np.asarray(screen) & 0x0F) | set(np.asarray(color))
+        )
+        self.assertTrue(
+            seen <= present,
+            f"screen/color RAM carried colors outside the present set: {sorted(seen - present)}",
+        )
+
+    def test_all_bg0_cell_is_solid(self):
+        # A wholly-black frame: every cell must collapse to solid bg0 in both
+        # screen nibbles and color RAM (this is the letterboxed-edge case that
+        # flashed as a "border"). Pre-fix the fillers were random indices.
+        _bitmap, screen, color, bg0 = self._compose_from_targets(np.zeros(32000, dtype=np.int64))
+        self.assertEqual(bg0, 0)
+        self.assertEqual(set(np.asarray(screen)), {0})
+        self.assertEqual(set(np.asarray(color)), {0})
+
+
 class BitmapREUStructureTest(unittest.TestCase):
     """REU bank-swap push stages the right REU regions + a frame tracker."""
 

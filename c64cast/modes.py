@@ -2297,10 +2297,42 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # code, so wasting one of c1/c2/c3 on it would shrink the cell's
         # palette to 3.
         cell_counts[:, bg0] = -1.0
-        # Top 3 indices per cell, sorted by palette index for delta-cache
-        # stability (otherwise argpartition's arbitrary order would flip
-        # the screen-RAM byte even when the chosen SET is identical).
-        top3 = np.sort(np.argpartition(cell_counts, -3, axis=1)[:, -3:], axis=1)
+        # Top 3 candidate indices per cell. argpartition grabs the 3 highest
+        # counts, but a cell with fewer than 3 genuinely-present non-bg0 colors
+        # — very common, since most cells are mostly bg0 with 0-2 accents, and
+        # a small forced palette ([0,4,6,14]) makes it the norm — leaves the
+        # surplus slots holding ARBITRARY zero-count palette indices. Those
+        # filler indices are poison: (a) they can be a color OUTSIDE the
+        # forced palette (e.g. green=5 leaking into a black/purple/blue cast),
+        # and (b) they shuffle frame-to-frame (argpartition tie order + EMA
+        # jitter on the near-zero counts), which flips the sorted slot position
+        # of the real colors and so rewrites screen/color RAM + bitmap codes
+        # every frame on an otherwise-static cell.
+        #
+        # In steady state the garbage is never *selected* — present pixels
+        # resolve to their own in-set color, so the filler slot stays unused
+        # and invisible. But push() ships screen ($0400) / color ($D800) /
+        # bitmap ($2000) as three NON-ATOMIC writes; on a slow transport
+        # (TeensyROM serial, ~10 KB/frame ack-gated) the VIC can read a new
+        # bitmap byte against a still-stale screen/color byte mid-frame and
+        # briefly render the garbage filler — the green-square flicker (and,
+        # on letterboxed video, the all-bg0 edge cells flashing = the
+        # "flashing border"). On the U64's fast DMA the tear window is too
+        # small to see, which is why it's TR-specific.
+        #
+        # Fix: replace any pick whose smoothed count is 0 (never present in
+        # this cell) with bg0. screen/color RAM then only ever carries colors
+        # genuinely present in the cell — so nothing outside the source's
+        # color set can leak — and the absent slots become a deterministic
+        # bg0, so present colors stop churning slots. bg0 in a filler slot is a
+        # harmless duplicate: the %00 code already reaches bg0, and the
+        # per-pixel argmin breaks ties to the real bg0 at slot 0.
+        top3 = np.argpartition(cell_counts, -3, axis=1)[:, -3:]
+        absent = np.take_along_axis(cell_counts, top3, axis=1) <= 0.0
+        top3 = np.where(absent, bg0, top3)
+        # Sort by palette index for delta-cache stability (otherwise the slot
+        # order would flip even when the chosen SET is identical).
+        top3 = np.sort(top3, axis=1)
         cand = np.column_stack([np.full(1000, bg0, dtype=np.int64), top3])  # (1000, 4)
 
         # Per-cell-pixel distance to the 4 candidates (gather, not broadcast).
