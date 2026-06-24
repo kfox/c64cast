@@ -548,28 +548,51 @@ class DisplayModePaletteTest(unittest.TestCase):
             f"hysteresis allowed too many bitmap flips: {8000 - same} bytes changed under ±1 noise",
         )
 
-    def test_mhires_percell_excludes_bg0_from_per_cell_picks(self):
-        # The %00 code already addresses bg0 for free, so the per-cell
-        # c1/c2/c3 picks must not pin bg0 (otherwise the cell's effective
-        # palette shrinks to 3 colors).
-        from _fakes import FakeAPI
-
+    def test_mhires_percell_fills_unused_slots_with_bg0_not_garbage(self):
+        # Per-cell slot rules:
+        #   * a cell with >=3 distinct non-bg0 colors fills c1/c2/c3 with REAL
+        #     colors (bg0 is free via the %00 code, so it never displaces one);
+        #   * a cell with FEWER present non-bg0 colors pads the leftover slots
+        #     with bg0 — NEVER an absent ("garbage") palette index. The old
+        #     padding grabbed arbitrary zero-count indices, which leaked an
+        #     out-of-palette color (e.g. green) that tore into view on a slow
+        #     transport. So screen/color RAM only ever carries bg0 or a color
+        #     genuinely present in that cell.
         from c64cast.modes import MultiHiresDisplayMode
 
-        api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="percell")
-        m.setup(api)
-        m.render(api, self._fake_frame())
-        bg0 = api.regs["D021"][0] & 0x0F
-        screen = api.regions[0x0400]
-        color = api.regions[0xD800]
+        # Synthetic per-cell layout (so the present set per cell is exact, no
+        # quantization ambiguity): half the cells are "rich" (bg0=0 + the three
+        # colors 4/6/14), half are "sparse" (bg0=0 + only purple=4). Build in
+        # cell-major (1000, 32) order, then invert compose's cell reshape to the
+        # flat (32000,) pixel order and feed a clean one-hot distance matrix.
+        cells = np.zeros((1000, 32), dtype=np.int64)
+        cells[:500, :16] = 0
+        cells[:500, 16:22] = 4
+        cells[:500, 22:28] = 6
+        cells[:500, 28:] = 14
+        cells[500:, :26] = 0
+        cells[500:, 26:] = 4
+        quantized = cells.reshape(25, 40, 8, 4).transpose(0, 2, 1, 3).reshape(32000)
+        d = np.full((32000, 16), 1e6, dtype=np.float32)
+        d[np.arange(32000), quantized] = 0.0
+
+        _bitmap, screen, color, bg0 = m._compose_percell(d)
+        self.assertEqual(bg0, 0)
         for i in range(1000):
-            c1 = (screen[i] >> 4) & 0x0F
-            c2 = screen[i] & 0x0F
-            c3 = color[i] & 0x0F
-            self.assertNotEqual(c1, bg0, f"cell {i} c1 collides with bg0")
-            self.assertNotEqual(c2, bg0, f"cell {i} c2 collides with bg0")
-            self.assertNotEqual(c3, bg0, f"cell {i} c3 collides with bg0")
+            slots = {(screen[i] >> 4) & 0x0F, screen[i] & 0x0F, color[i] & 0x0F}
+            present = set(cells[i].tolist())  # {0,4,6,14} or {0,4}
+            self.assertTrue(
+                slots <= present,
+                f"cell {i} slots {sorted(slots)} carry a color absent from {sorted(present)}",
+            )
+            if i < 500:
+                # All three real colors present → no slot wasted on bg0.
+                self.assertEqual(slots, {4, 6, 14}, f"rich cell {i} dropped a real color")
+            else:
+                # Only purple present → it must win a slot, rest padded bg0.
+                self.assertIn(4, slots, f"sparse cell {i} lost its only color")
+                self.assertTrue(slots <= {0, 4}, f"sparse cell {i} leaked garbage")
 
     def test_mcm_cheap_compose_produces_three_bg_colors(self):
         from c64cast.modes import MCMDisplayMode
