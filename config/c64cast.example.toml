@@ -862,12 +862,17 @@ palette_mode = "grayscale"
 # #   file = "assets/videos"  # whole directory
 # #   file = "assets/videos/*.mkv"
 # #   file = "assets/videos, assets/extra/promo.mp4"
+# # `file` may also be a single media URL: a direct link (PyAV opens http(s))
+# # or a YouTube/etc. page resolved by yt-dlp (needs the `yt` extra:
+# # `uv sync --extra yt`). It's resolved when the config loads, the same as the
+# # `c64cast MEDIA…` quick-playback shortcut.
+# #   file = "https://youtu.be/<id>?t=18m18s"
 # file = "assets/videos/your-video.mp4"
 # display = "hires_edges"
 # # start_s — seconds into the file to begin playback (video-only; omit or 0
-# # = from the start). Seeks to the keyframe at/just-before this time. Quick
-# # playback (`c64cast MEDIA…`) fills this automatically from a URL's
-# # t=/start= timestamp (e.g. https://youtu.be/<id>?t=1m30s).
+# # = from the start). Seeks to the keyframe at/just-before this time. A media
+# # URL's own t=/start=/#t= timestamp fills start_s automatically (in configs
+# # and in `c64cast MEDIA…`); an explicit start_s here wins over the URL.
 # start_s = 90.0
 #
 # Video scenes run until the video file ends — `duration_s` is

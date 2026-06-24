@@ -273,18 +273,49 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
     return stream_url, kind, info.get("title")
 
 
-def classify_url(arg: str, *, display: str | None) -> SceneCfg:
-    """Turn a URL argument into a video SceneCfg (the only supported URL
-    kind today). Audio-only URLs raise the deferred-support message."""
-    stream_url, kind, title = resolve_media_url(arg)
+def url_needs_ytdlp(url: str) -> bool:
+    """True if a URL must be resolved by yt-dlp — i.e. it is NOT already a
+    direct, playable media URL that PyAV can open. Mirrors the passthrough in
+    :func:`resolve_media_url`. Offline (no network)."""
+    path = urllib.parse.urlsplit(url).path.lower()
+    return not path.endswith(VIDEO_EXTS + AUDIO_EXTS)
+
+
+def _ytdlp_available() -> bool:
+    """True if the optional yt-dlp dependency can be imported, without
+    importing it. Used by config validation (and ``--doctor``) to flag a
+    yt-dlp-requiring URL up front when the ``yt`` extra is missing."""
+    import importlib.util  # noqa: PLC0415
+
+    return importlib.util.find_spec("yt_dlp") is not None
+
+
+def resolve_video_url(url: str) -> tuple[str, float | None, str | None]:
+    """Resolve a media URL for a **video** scene.
+
+    Returns ``(stream_url, start_offset_s, title)``: the playable stream URL,
+    the URL's ``t=``/``start=``/``#t=`` timestamp in seconds (None if absent),
+    and the resolved title (None for direct URLs). Raises ValueError if the URL
+    resolves to audio-only (deferred). Shared by quick playback and the config
+    loader (:func:`c64cast.config.build_scene`) so both interfaces resolve URLs
+    and honor timestamps identically."""
+    stream_url, kind, title = resolve_media_url(url)
     if kind != "video":
         raise ValueError(
-            f"{arg!r} resolves to audio only, which isn't supported yet "
+            f"{url!r} resolves to audio only, which isn't supported yet "
             "(test-pattern-over-audio is a planned follow-up)."
         )
-    scene = _make_scene("video", stream_url, display=display, duration_s=None, name=title)
-    # Honor a start timestamp on the ORIGINAL url (t=/start=/#t=); the resolved
-    # stream_url won't carry it. The scene seeks to this offset on setup.
+    return stream_url, _parse_start_offset(url), title
+
+
+def classify_url(arg: str, *, display: str | None) -> SceneCfg:
+    """Turn a URL argument into a video SceneCfg.
+
+    The URL is stored **verbatim**; it is resolved (yt-dlp) and audio-rejected
+    later in :func:`c64cast.config.build_scene` — the single resolution path
+    shared with config-driven runs. The ``t=``/``start=`` timestamp is parsed
+    here (offline) so it rides onto the SceneCfg's ``start_s``."""
+    scene = _make_scene("video", arg, display=display, duration_s=None)
     start_s = _parse_start_offset(arg)
     if start_s:
         scene.start_s = start_s

@@ -712,6 +712,21 @@ If `file =` is omitted entirely, the scene falls back to scanning the
 default directory `assets/videos/`. Recognised extensions:
 `.mp4 .avi .mkv .mov .webm .m4v`.
 
+**URLs** — `file =` may also be a single media URL, resolved when the config
+loads (the same path the `c64cast MEDIA…` shortcut uses): a direct link plays
+as-is (PyAV opens http(s)), and a YouTube/etc. page is resolved by yt-dlp (needs
+the `yt` extra: `uv sync --extra yt`). A `?t=`/`&start=`/`#t=` timestamp on the
+URL fills `start_s` automatically (an explicit `start_s` wins). If the `yt`
+extra is missing, `--doctor` and config load flag it up front.
+
+```toml
+file = "https://youtu.be/<id>?t=18m18s"   # starts at 18:18
+```
+
+**`start_s =`** — seconds into the source to begin playback (video-only; omit or
+`0` = from the start). Seeks to the keyframe at/just-before that time; accuracy
+is keyframe-granular.
+
 The scene's lifetime is video-driven — it runs until the file's last frame
 is decoded, then the playlist advances. `duration_s` is **rejected** by
 the config loader on video scenes: a finite value would silently
