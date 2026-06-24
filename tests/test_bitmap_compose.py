@@ -205,6 +205,48 @@ class PercellFillerSafetyTest(unittest.TestCase):
         self.assertEqual(set(np.asarray(color)), {0})
 
 
+class PercellBg0HysteresisTest(unittest.TestCase):
+    """bg0 (the %00 colour written to $D021) must not strobe when two colours
+    are near-tied for most-populated — otherwise the background + the pillarbox
+    bars flash a different colour every frame, very visible on the TR's slow,
+    non-atomic transport. bg0 stays sticky until a *sustained* dominant shift
+    clears the relative margin; see modes.BG0_HYSTERESIS_MARGIN."""
+
+    def _bg0(self, mode: MultiHiresDisplayMode, targets: np.ndarray) -> int:
+        """Run one percell frame whose per-pixel argmin is exactly `targets`
+        and return the chosen bg0. Reuses `mode` so EMA + sticky bg0 persist."""
+        d = np.full((32000, 16), 1e6, dtype=np.float32)
+        d[np.arange(32000), targets] = 0.0
+        return mode._compose_percell(d)[3]
+
+    @staticmethod
+    def _split(n_black: int, fill: int) -> np.ndarray:
+        t = np.full(32000, fill, dtype=np.int64)
+        t[:n_black] = 0
+        return t
+
+    def test_slight_majority_does_not_flip_bg0(self):
+        mode = MultiHiresDisplayMode("percell")
+        # Establish bg0 = black.
+        self.assertEqual(self._bg0(mode, np.zeros(32000, dtype=np.int64)), 0)
+        # Blue (6) now holds a slight, sustained majority (17000 vs 15000):
+        # 17000/15000 ≈ 1.13 < 1 + BG0_HYSTERESIS_MARGIN (1.25), so bg0 must
+        # stay black on every frame even after the EMA tips blue ahead, rather
+        # than strobing $D021 the instant blue edges past.
+        slight = self._split(15000, 6)
+        for _ in range(15):
+            self.assertEqual(self._bg0(mode, slight), 0)
+
+    def test_sustained_dominant_change_flips_bg0(self):
+        mode = MultiHiresDisplayMode("percell")
+        self.assertEqual(self._bg0(mode, np.zeros(32000, dtype=np.int64)), 0)
+        # An overwhelming, sustained colour change MUST still move bg0 (we damp
+        # jitter, not real cuts): a few all-blue frames clear the margin.
+        all_blue = np.full(32000, 6, dtype=np.int64)
+        seen = [self._bg0(mode, all_blue) for _ in range(6)]
+        self.assertEqual(seen[-1], 6, f"bg0 never tracked the sustained change: {seen}")
+
+
 class BitmapREUStructureTest(unittest.TestCase):
     """REU bank-swap push stages the right REU regions + a frame tracker."""
 

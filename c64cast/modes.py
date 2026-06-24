@@ -192,6 +192,23 @@ PERCELL_CODE_HYSTERESIS_BONUS = 5000.0
 # any motion lag (since real motion exceeds 5000 trivially).
 PERCELL_QUANT_HYSTERESIS_BONUS = 5000.0
 
+# bg0 stickiness for the percell path. bg0 (the global %00 colour, written to
+# $D021) is picked each frame as argmax of the EMA-smoothed palette counts. On
+# content where two colours are near-tied for most-populated — e.g. a mostly-
+# black frame with a bright moment, or letterboxed/pillarboxed video whose bars
+# quantize to black — the argmax flip-flops frame-to-frame, and since bg0 fills
+# every %00 pixel (background + the bars) the whole field strobes a different
+# colour for a frame. That's a single instant $D021 change, not a write tear, so
+# it's especially visible on a slow transport where the rest of the frame lags.
+#
+# Fix: make bg0 sticky. Keep the current bg0 unless a challenger's smoothed
+# count beats it by this relative margin — so bg0 still tracks a *sustained*
+# dominant-colour change (a real blue scene eventually turns the bars blue) but
+# stops flickering between near-equal dominants. If the old bg0 vanishes from the
+# frame its smoothed count → ~0 and any challenger trivially clears the margin,
+# so bg0 can never get stuck on an absent colour.
+BG0_HYSTERESIS_MARGIN = 0.25
+
 
 def _ema_counts(mode, per_pixel: np.ndarray) -> np.ndarray:
     """EMA-smoothed (16,) palette counts. Mode must have `_smoothed_counts`."""
@@ -2033,6 +2050,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # Per-pixel previous-frame palette index for the percell path. See
         # PERCELL_QUANT_HYSTERESIS_BONUS. Shape (32000,) int64.
         self._last_quantized: np.ndarray | None = None
+        # Sticky bg0 for the percell path (see BG0_HYSTERESIS_MARGIN). None =
+        # no prior pick, so the first frame takes the raw argmax.
+        self._bg0: int | None = None
         # Opt-in REU bank-swap pipeline. See MHIRES_BANK_SWAP_IRQ_HANDLER
         # and _push_mhires_via_reu for the per-frame mechanics. When the
         # scene also opts into [audio].use_reu_pump, setup() installs the
@@ -2072,6 +2092,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_cand = None
         self._last_codes = None
         self._last_quantized = None
+        self._bg0 = None
         self._last_bg = None
         api.invalidate_cache()
         return f"palette_mode={palette_mode}" + ("+forced" if self._force_palette else "")
@@ -2096,6 +2117,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_cand = None
         self._last_codes = None
         self._last_quantized = None
+        self._bg0 = None
         if not self.use_reu_staged:
             # bg0 = black to match the _blank_bitmap fill (all-%00 → bg0), so
             # the pre-first-frame screen is solid black. _last_bg tracks it so
@@ -2267,9 +2289,25 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
         # bg0 = most-populated palette index across the frame, EMA-smoothed
         # so a few-pixel reshuffle at a chromatic-vs-gray boundary doesn't
-        # flip bg0 (and with it, every cell's screen+color RAM byte).
+        # flip bg0 (and with it, every cell's screen+color RAM byte). On top
+        # of the EMA, apply relative hysteresis (BG0_HYSTERESIS_MARGIN): keep
+        # the current bg0 unless a challenger's smoothed count beats it by the
+        # margin, so near-tied dominants (mostly-black video + a bright moment,
+        # or pillarbox bars) stop strobing $D021 every frame while a *sustained*
+        # dominant shift still moves bg0.
         smoothed = _ema_counts(self, quantized)
-        bg0 = int(np.argmax(smoothed))
+        cand = int(np.argmax(smoothed))
+        # Short-circuit keeps the margin index safe when there's no prior bg0.
+        prev = self._bg0
+        if (
+            prev is None
+            or cand == prev
+            or smoothed[cand] > smoothed[prev] * (1.0 + BG0_HYSTERESIS_MARGIN)
+        ):
+            bg0 = cand
+        else:
+            bg0 = prev
+        self._bg0 = bg0
 
         # Per-cell histogram: group into (1000, 32) cell-major layout.
         cells = quantized.reshape(25, 8, 40, 4).transpose(0, 2, 1, 3).reshape(1000, 32)
