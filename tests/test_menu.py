@@ -301,7 +301,11 @@ class RenderTest(unittest.TestCase):
             prompt_to_save=True,
             save_fn=lambda: True,
         )
-        ov.process_frame(cast(C64Backend, api), cast(Scene, scene), 0.0)
+        # The skip path logs a one-shot warning; assert it (and keep it off the
+        # test console) rather than letting it spam every suite run.
+        with self.assertLogs("c64cast.menu", level="WARNING") as cm:
+            ov.process_frame(cast(C64Backend, api), cast(Scene, scene), 0.0)
+        self.assertTrue(any("panel not drawn on REU-staged" in m for m in cm.output))
         self.assertEqual(api.regions, {}, "staged bitmap scene draws no panel (preview only)")
 
     def test_panel_repaints_every_frame_over_dynamic_scene(self):
