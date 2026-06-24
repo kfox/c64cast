@@ -13,7 +13,7 @@ import numpy as np
 from c64cast import generators
 from c64cast.audio import AudioStreamer
 from c64cast.audio_source import MicAudioSource, NullAudioSource
-from c64cast.backend import C64Backend
+from c64cast.backend import C64Backend, HardwareProfile
 from c64cast.config import AudioCfg, Config, SceneCfg, build_scene, validate_scene_cfg
 from c64cast.effects import FrameEffect, TrailsEffect, build_effect
 from c64cast.frame_source import BaseFrameSource, FrameSource
@@ -555,6 +555,11 @@ class EffectHookTest(unittest.TestCase):
 
 
 class _DummyAPI:
+    # `profile` is a pure capability read (not device I/O), legitimately read at
+    # build time to resolve [video].double_buffer — so it's a real attribute.
+    # __getattr__ still guards against any actual device call at build time.
+    profile = HardwareProfile(name="Dummy", family="fake")
+
     def __getattr__(self, name):
         raise AssertionError(f"api.{name} should not be called at build time")
 

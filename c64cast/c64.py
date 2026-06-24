@@ -484,3 +484,10 @@ class RegionID:
     MENU_ROW_BITMAP: Final = 5000  # +row 0..24
     MENU_ROW_SCREEN: Final = 5100  # +row 0..24
     MENU_ROW_COLOR: Final = 5200  # +row 0..24
+
+    # Host-DMA double-buffer (modes.py). The off-screen VIC bank is written each
+    # frame and must diff against ITS OWN prior content, not the other bank's, so
+    # bank 2 gets its own bitmap/screen cache IDs. Bank 0 reuses BITMAP/SCREEN
+    # above. Color RAM ($D800) is shared/un-banked, so it stays on COLOR.
+    BITMAP_BANK2: Final = 6000  # $A000 (8000 bytes), VIC bank 2
+    SCREEN_BANK2: Final = 6001  # $8400 (1000 bytes), VIC bank 2

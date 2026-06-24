@@ -265,6 +265,32 @@ class VideoCfg:
             "auto silently falls back to host-DMA when REU isn't confirmed."
         },
     )
+    # Host-DMA double-buffer (page flip) for tear-free bitmap video on backends
+    # WITHOUT a usable REU — the TeensyROM, whose slow cycle-clean bus DMA tears
+    # a single-buffered mhires frame (the per-cell "sparkle"). The host writes
+    # each frame's bitmap+screen into the OFF-screen VIC bank, then a tiny raster
+    # IRQ flips $DD00 at vblank, so the visible bank is never written mid-display.
+    # Needs no REU (mhires color RAM, the un-banked $D800, still tears briefly —
+    # the c3 slot; bitmap+screen go tear-free). Unlike REU staging the IRQ does
+    # no in-IRQ DMA, so the flip is shimmer-free and text overlays render crisp.
+    #
+    # Tri-state — true | false | "auto" (default):
+    #   * "auto" enables it for bitmap modes (hires/mhires) when REU staging is
+    #     NOT active (mutually exclusive — both flip $DD00) AND the backend has
+    #     no REU at all (so this is its only tear-free path). The U64's fast DMA
+    #     doesn't visibly tear single-buffered, so auto leaves it on host-DMA.
+    #   * true forces it on for bitmap modes (on any backend); false off.
+    # Resolved per-scene at build time (config.resolve_double_buffer).
+    double_buffer: bool | str = field(
+        default="auto",
+        metadata={
+            "help": "Host-DMA double-buffer (page flip) for tear-free bitmap video on "
+            'backends without a usable REU (e.g. TeensyROM). "auto" (default) '
+            "enables it for bitmap modes (hires/mhires) when REU staging is off "
+            "and the backend has no REU; true forces it on for bitmap modes, "
+            "false off. Independent of [video].use_reu_staged (the REU path)."
+        },
+    )
 
 
 @dataclass
@@ -1487,6 +1513,16 @@ def _validate_use_reu_staged(video: VideoCfg) -> None:
         raise ValueError(f'[video].use_reu_staged must be true, false, or "auto", got {v!r}')
 
 
+def _validate_double_buffer(video: VideoCfg) -> None:
+    """The tri-state [video].double_buffer accepts only a bool or the literal
+    string "auto" — same shape as use_reu_staged. Catch a typo at load time."""
+    v = video.double_buffer
+    if isinstance(v, bool):
+        return
+    if v != "auto":
+        raise ValueError(f'[video].double_buffer must be true, false, or "auto", got {v!r}')
+
+
 def _validate_force_palette(color: ColorCfg) -> None:
     """Range-check the [color].force_palette knobs at load/doctor time so a bad
     value surfaces before the playlist runs, not mid-stream at pre-scan."""
@@ -1555,6 +1591,7 @@ def load(path: str | None) -> Config:
             _apply_section(dc, data[section], section)
 
     _validate_use_reu_staged(cfg.video)
+    _validate_double_buffer(cfg.video)
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out
@@ -1792,6 +1829,7 @@ def load_master(path: str | None) -> LoadResult:
             _apply_section(dc, raw[section], section)
 
     _validate_use_reu_staged(defaults.video)
+    _validate_double_buffer(defaults.video)
 
     # [color] master defaults — handled separately for the list-of-tables
     # field, mirroring load() above.
@@ -1965,6 +2003,36 @@ def resolve_use_reu_staged(
     return bool(setting)
 
 
+def resolve_double_buffer(
+    setting: bool | str,
+    display: str,
+    *,
+    use_reu_staged: bool,
+    backend_supports_reu: bool = False,
+) -> bool:
+    """Resolve the [video].double_buffer tri-state to a concrete bool for one
+    scene's display mode (the host-DMA page-flip path — see modes.py
+    HOSTDMA_SWAP_IRQ_HANDLER).
+
+    Only bitmap modes have the two VIC banks to flip. It's mutually exclusive
+    with REU staging (both drive $DD00), so a resolved use_reu_staged always
+    wins. "auto" then enables it only on a backend with NO REU at all (the
+    TeensyROM) — that's where single-buffered host-DMA visibly tears; the U64's
+    fast socket DMA doesn't, so auto leaves it off there. Explicit true/false
+    pass through (still scoped to bitmap modes — true on a char mode is a no-op).
+
+    No has_buffer_overlays gate (unlike resolve_use_reu_staged): the host-DMA
+    swap IRQ does no in-IRQ DMA, so the $DD00 flip lands inside vblank with no
+    shimmer — text overlays fold into the bitmap and render crisply."""
+    if display not in _REU_BITMAP_MODES:
+        return False
+    if use_reu_staged:
+        return False
+    if isinstance(setting, str):  # "auto"
+        return not backend_supports_reu
+    return bool(setting)
+
+
 def _build_display_mode(
     name: str,
     palette_mode: str = "percell",
@@ -1972,6 +2040,7 @@ def _build_display_mode(
     background: int = 0,
     style: str = "default",
     use_reu_staged: bool = False,
+    double_buffer: bool = False,
     audio_reu_pump_active: bool = False,
     color: ColorCfg | None = None,
     text_double_height: bool = False,
@@ -1998,12 +2067,14 @@ def _build_display_mode(
         return HiresDisplayMode(
             style="edges",
             use_reu_staged=use_reu_staged,
+            double_buffer=double_buffer,
             audio_reu_pump_active=audio_reu_pump_active,
         )
     if name == "hires":
         return HiresDisplayMode(
             style="normal",
             use_reu_staged=use_reu_staged,
+            double_buffer=double_buffer,
             audio_reu_pump_active=audio_reu_pump_active,
         )
     if name == "petscii":
@@ -2026,6 +2097,7 @@ def _build_display_mode(
         return MultiHiresDisplayMode(
             palette_mode=palette_mode,
             use_reu_staged=use_reu_staged,
+            double_buffer=double_buffer,
             audio_reu_pump_active=audio_reu_pump_active,
             channel_boost=channel_boost,
             hue_corrections=hue_corrections,
@@ -2127,6 +2199,7 @@ def _display_mode_for_scene(
     cfg: Config,
     *,
     reu_available: bool = False,
+    backend_supports_reu: bool = False,
     force_host_dma: bool = False,
 ) -> DisplayMode:
     """Build the standard video display mode for a scene, centralizing the
@@ -2171,6 +2244,19 @@ def _display_mode_for_scene(
             has_buffer_overlays=has_buffer_overlays,
         )
     )
+    # Host-DMA double-buffer (no-REU backends). Also disabled by force_host_dma:
+    # like the REU path it installs a $0314 raster IRQ, which would collide with
+    # the SID player's PLAY IRQ on a SID-audio scene.
+    double_buffer = (
+        False
+        if force_host_dma
+        else resolve_double_buffer(
+            cfg.video.double_buffer,
+            display,
+            use_reu_staged=use_reu_staged,
+            backend_supports_reu=backend_supports_reu,
+        )
+    )
     return _build_display_mode(
         display,
         palette_mode=s.palette_mode,
@@ -2178,6 +2264,7 @@ def _display_mode_for_scene(
         background=s.background,
         style=s.style,
         use_reu_staged=use_reu_staged,
+        double_buffer=double_buffer,
         audio_reu_pump_active=cfg.audio.use_reu_pump,
         color=cfg.color,
         text_double_height=s.text_double_height,
@@ -2606,6 +2693,10 @@ def build_scene(
     validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
 
     audio_reu_pump_active = cfg.audio.use_reu_pump
+    # Whether THIS backend has an REU at all (capability, not "REU enabled" —
+    # that's reu_available). Resolves the [video].double_buffer "auto" host-DMA
+    # page-flip path on no-REU backends (the TeensyROM). See resolve_double_buffer.
+    backend_supports_reu = api.profile.supports_reu
     scene: Scene
     if s.type == "webcam":
         if source is None:
@@ -2613,7 +2704,13 @@ def build_scene(
                 "webcam scene declared but no WebcamSource was provided — "
                 "this should have been caught at cli.py startup"
             )
-        mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
+        mode = _display_mode_for_scene(
+            s.display,
+            s,
+            cfg,
+            reu_available=reu_available,
+            backend_supports_reu=backend_supports_reu,
+        )
         name = s.name or f"Webcam {s.display}"
         # Default: follow global [audio].enabled. When `audio` is None here,
         # the streamer wasn't constructed (global is off) so the scene runs
@@ -2656,7 +2753,13 @@ def build_scene(
             scene_audio = None
         scene = BlankScene(api, scene_audio, mode, cfg.audio, name)
     elif s.type == "video":
-        mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
+        mode = _display_mode_for_scene(
+            s.display,
+            s,
+            cfg,
+            reu_available=reu_available,
+            backend_supports_reu=backend_supports_reu,
+        )
         # Default: audio ON for videos (it's part of the file).
         # The user can mute one with `audio = false`.
         scene_audio = None if s.audio is False else audio
@@ -2725,7 +2828,9 @@ def build_scene(
         from .scenes import SlideshowScene
 
         display = _resolve_slideshow_display(s.display)
-        mode = _display_mode_for_scene(display, s, cfg, reu_available=reu_available)
+        mode = _display_mode_for_scene(
+            display, s, cfg, reu_available=reu_available, backend_supports_reu=backend_supports_reu
+        )
         assert s.file is not None  # narrowed by validate_scene_cfg
         # Pass the *original* display spec (may be "random") so the scene
         # can re-resolve at each setup() for fresh variety in single-scene
@@ -2745,7 +2850,9 @@ def build_scene(
             background=s.background,
             style=s.style,
             use_reu_staged=cfg.video.use_reu_staged,
+            double_buffer=cfg.video.double_buffer,
             reu_available=reu_available,
+            backend_supports_reu=backend_supports_reu,
             audio_reu_pump_active=audio_reu_pump_active,
             color=cfg.color,
             text_double_height=s.text_double_height,
@@ -2788,7 +2895,13 @@ def build_scene(
             if s.target_fps is None and mode.is_bitmapped:
                 scene.target_fps = 25.0 if cfg.ultimate64.system.upper() == "PAL" else 30.0
         else:
-            mode = _display_mode_for_scene(s.display, s, cfg, reu_available=reu_available)
+            mode = _display_mode_for_scene(
+                s.display,
+                s,
+                cfg,
+                reu_available=reu_available,
+                backend_supports_reu=backend_supports_reu,
+            )
             # mic / none: the live-frame audio path. Like webcam/blank, a live
             # mic source is suppressed in ensemble mode.
             scene_audio = None if s.audio is False else audio

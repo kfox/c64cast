@@ -169,6 +169,49 @@ hue_hi_deg = 195
         self.assertIn("force_palette_indices", str(ctx.exception))
 
 
+class DoubleBufferTest(unittest.TestCase):
+    """[video].double_buffer — the host-DMA page-flip path for no-REU backends."""
+
+    def _load(self, toml):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(toml)
+            path = f.name
+        try:
+            return cfgmod.load(path)
+        finally:
+            os.unlink(path)
+
+    def test_default_is_auto(self):
+        self.assertEqual(cfgmod.VideoCfg().double_buffer, "auto")
+
+    def test_auto_enables_on_no_reu_bitmap_only(self):
+        r = cfgmod.resolve_double_buffer
+        # No-REU backend (TeensyROM), bitmap, REU staging off → auto enables.
+        self.assertTrue(r("auto", "mhires", use_reu_staged=False, backend_supports_reu=False))
+        self.assertTrue(r("auto", "hires", use_reu_staged=False, backend_supports_reu=False))
+        # Char modes never (no second VIC bank to flip).
+        self.assertFalse(r("auto", "petscii", use_reu_staged=False, backend_supports_reu=False))
+
+    def test_auto_off_on_reu_backend_and_when_staged(self):
+        r = cfgmod.resolve_double_buffer
+        # U64 (has REU): auto leaves it off — fast DMA doesn't visibly tear.
+        self.assertFalse(r("auto", "mhires", use_reu_staged=False, backend_supports_reu=True))
+        # Mutually exclusive with REU staging (both flip $DD00).
+        self.assertFalse(r("auto", "mhires", use_reu_staged=True, backend_supports_reu=False))
+
+    def test_explicit_scoped_to_bitmap_and_loses_to_reu(self):
+        r = cfgmod.resolve_double_buffer
+        self.assertTrue(r(True, "mhires", use_reu_staged=False, backend_supports_reu=True))
+        self.assertFalse(r(True, "petscii", use_reu_staged=False, backend_supports_reu=False))
+        self.assertFalse(r(True, "mhires", use_reu_staged=True, backend_supports_reu=False))
+        self.assertFalse(r(False, "mhires", use_reu_staged=False, backend_supports_reu=False))
+
+    def test_bad_string_rejected_at_load(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[video]\ndouble_buffer = "yes"\n')
+        self.assertIn("double_buffer", str(ctx.exception))
+
+
 class ConfigErrorTest(unittest.TestCase):
     def test_missing_file_raises_config_error(self):
         with self.assertRaises(cfgmod.ConfigError) as ctx:

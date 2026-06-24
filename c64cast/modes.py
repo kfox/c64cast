@@ -953,6 +953,82 @@ assert _PUMP_BODY_LO == (REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF)
 assert _PUMP_BODY_HI == ((REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF)
 
 
+# --- Host-DMA double-buffer swap IRQ handler (no-REU backends, e.g. TeensyROM) -
+# The minimal sibling of the REU bank-swap handlers above. On a backend whose bus
+# DMA is too slow to rewrite a full bitmap frame in the VISIBLE bank without
+# tearing (TeensyROM serial/TCP both ~106 KiB/s — the bus, not the link, is the
+# wall), the host writes each frame's bitmap+screen straight into the OFF-screen
+# VIC bank over the normal host-DMA write_region path, then arms this IRQ to flip
+# $DD00 at vblank. The visible bank is never touched mid-display, so every shown
+# frame is whole — tear-free at the same frame rate.
+#
+# Unlike the REU handlers, this does NO in-IRQ DMA — it just writes $D021 (bg0)
+# and flips $DD00 from a tiny 3-byte tracker. So the swap lands cleanly inside
+# vblank with no past-vblank overrun → no shimmer, and text overlays folded into
+# the bitmap render crisply (which the REU path can't claim). NMI audio lives on
+# the $FFFA vector, independent of this $0314 raster IRQ, so they coexist; the
+# handler chains to kernal $EA31 so SCNKEY keeps $028D live for the key pollers.
+#
+# Compact tracker at $C700 (reuses FRAME_TRACKER_ADDR — never live alongside the
+# REU tracker, since a scene has exactly one display mode):
+#   $C700 : bg0 value to write to $D021
+#   $C701 : pending bank value ($97 = bank 0, $95 = bank 2)
+#   $C702 : ready flag (1 = frame staged) — host arms, handler clears
+#
+# A/X/Y survive: kernal $FF48 saved them before vectoring through $0314, and we
+# only touch A (restored by $EA81's PLA). Offsets must be exact: both BEQs target
+# the JMP $EA31 chain at offset 32. The assert below catches length drift.
+HOSTDMA_TRACKER_OFF_BG0 = 0  # $C700
+HOSTDMA_TRACKER_OFF_BANK = 1  # $C701
+HOSTDMA_TRACKER_OFF_READY = 2  # $C702
+HOSTDMA_TRACKER_LEN = 3
+
+HOSTDMA_SWAP_IRQ_HANDLER = bytes(
+    [
+        0xAD,
+        0x19,
+        0xD0,  # 0  LDA $D019         ; VIC IRQ status
+        0x29,
+        0x01,  # 3  AND #$01          ; raster bit
+        0xF0,
+        0x19,  # 5  BEQ +25 → 32      ; not raster → chain
+        0x8D,
+        0x19,
+        0xD0,  # 7  STA $D019         ; ack raster (A = $01)
+        0xAD,
+        0x02,
+        0xC7,  # 10 LDA $C702         ; ready flag
+        0xF0,
+        0x11,  # 13 BEQ +17 → 32      ; no new frame → chain
+        0xAD,
+        0x00,
+        0xC7,  # 15 LDA $C700         ; bg0
+        0x8D,
+        0x21,
+        0xD0,  # 18 STA $D021         ; set bg0
+        0xAD,
+        0x01,
+        0xC7,  # 21 LDA $C701         ; pending bank value
+        0x8D,
+        0x00,
+        0xDD,  # 24 STA $DD00         ; swap bank (tear-free at vblank)
+        0xA9,
+        0x00,  # 27 LDA #$00
+        0x8D,
+        0x02,
+        0xC7,  # 29 STA $C702         ; clear ready flag
+        0x4C,
+        0x31,
+        0xEA,  # 32 JMP $EA31         ; chain to kernal
+    ]
+)
+assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 35, (
+    "HOSTDMA_SWAP_IRQ_HANDLER length changed — the two BEQ offsets (+25 and "
+    "+17, both targeting the JMP $EA31 chain at offset 32) must be recomputed "
+    "before changing. See the offsets in the byte-comment column."
+)
+
+
 # CIA #2 PORT_A bank-select values (also defined in c64.CIA2 but pulled
 # here so the per-frame push has them as Python ints, not strings — fewer
 # allocations on the hot path).
@@ -1436,6 +1512,10 @@ class BitmapDisplayMode(DisplayMode):
     # Bitmap modes can host the text overlays (clock/marquee/…) that paint
     # PETSCII screen codes — see text_surface.HiresTextSurface / MHiresTextSurface.
     is_bitmap_text_compatible = True
+    # Which VIC bank is currently displayed under double-buffering (REU staging
+    # or host-DMA): 0 ⇒ bank 0 on screen / paint bank 2 next, 1 ⇒ bank 2 on
+    # screen / paint bank 0 next. Subclasses reset it in __init__/setup.
+    _displayed_bank: int = 0
 
     @staticmethod
     def _blank_bitmap(api: C64Backend) -> None:
@@ -1448,6 +1528,61 @@ class BitmapDisplayMode(DisplayMode):
         pairing this with a bg0 of 0 ($D021) yields a solid black screen
         regardless of stale screen/colour RAM."""
         api.write_memory_file("2000", bytes(8000))
+
+    # --- Host-DMA double-buffer (no-REU backends, e.g. TeensyROM) -----------
+    # Shared by Hires + MultiHires. The host writes bitmap+screen into the
+    # OFF-screen VIC bank over the normal host-DMA write_region path, then arms
+    # HOSTDMA_SWAP_IRQ_HANDLER (installed in setup) to flip $DD00 at vblank — so
+    # the visible bank is never written mid-display (tear-free) without needing
+    # an REU. See the handler block near the top of this module. Subclasses own
+    # self._displayed_bank (0 ⇒ off-screen is bank 2, 1 ⇒ off-screen is bank 0).
+    def _hostdma_swap_target(self) -> tuple[int, int, int, int, int, int]:
+        """Resolve the current off-screen bank to
+        (target_bank, bitmap_addr, screen_addr, bitmap_region, screen_region,
+        dd00_value). The caller toggles self._displayed_bank after the writes."""
+        if 1 - self._displayed_bank == 0:
+            return (
+                0,
+                VIC_BANK_0.BITMAP,
+                VIC_BANK_0.SCREEN,
+                RegionID.BITMAP,
+                RegionID.SCREEN,
+                _DD00_BANK_0,
+            )
+        return (
+            1,
+            VIC_BANK_2.BITMAP,
+            VIC_BANK_2.SCREEN,
+            RegionID.BITMAP_BANK2,
+            RegionID.SCREEN_BANK2,
+            _DD00_BANK_2,
+        )
+
+    def _arm_hostdma_swap(self, api: C64Backend, bg0: int, dd00_value: int) -> None:
+        """Write the 3-byte swap tracker [bg0, bank, ready=1] as one ACK-gated
+        segment. By the time it returns the off-screen bank is fully staged, so
+        the next vblank IRQ flips $DD00 to a complete frame (and sets $D021 from
+        bg0 atomically with the swap — for hires $D021 is unused, harmless)."""
+        tracker = bytes([bg0 & 0x0F, dd00_value & 0xFF, 0x01])
+        api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+
+    def _setup_hostdma_doublebuffer(self, api: C64Backend) -> None:
+        """Zero both VIC banks' bitmap+screen, pin bank 0, and install the
+        minimal vblank swap IRQ. Mirrors the REU setup minus the REU staging —
+        the caller has already set $D011/$D018/$D016 and the initial bg0/border.
+        audio_pump_active is always False: NMI audio is on the $FFFA vector,
+        independent of this $0314 raster IRQ."""
+        zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
+        zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
+        api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)
+        api.write_memory_file(f"{VIC_BANK_0.SCREEN:04X}", zeros_screen)
+        api.write_memory_file(f"{VIC_BANK_2.BITMAP:04X}", zeros_bitmap)
+        api.write_memory_file(f"{VIC_BANK_2.SCREEN:04X}", zeros_screen)
+        api.write_memory(f"{CIA2.PORT_A:04X}", f"{_DD00_BANK_0:02X}")
+        self._displayed_bank = 0
+        _install_bank_swap_irq(
+            api, HOSTDMA_SWAP_IRQ_HANDLER, HOSTDMA_TRACKER_LEN, audio_pump_active=False
+        )
 
 
 class PETSCIIDisplayMode(CharDisplayMode):
@@ -1802,12 +1937,17 @@ class HiresDisplayMode(BitmapDisplayMode):
         style: str = "normal",
         *,
         use_reu_staged: bool = False,
+        double_buffer: bool = False,
         audio_reu_pump_active: bool = False,
     ):
         _validate_hires_style(style)
         self.style = style
         self._last_bg: int | None = None
         self.use_reu_staged = use_reu_staged
+        # Host-DMA double-buffer (no-REU backends, e.g. TeensyROM): tear-free
+        # via off-screen-bank writes + a vblank $DD00 flip, no REU. Mutually
+        # exclusive with use_reu_staged (resolve_double_buffer guarantees it).
+        self.double_buffer = double_buffer
         # When the scene also opted into REU audio (`[audio].use_reu_pump`),
         # the bank-swap dispatcher at $C500 needs to fall through to the
         # audio pump handler at $C100 on non-raster (CIA #1 jiffy) IRQs.
@@ -1823,7 +1963,7 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def setup(self, api):
         super().setup(api)
-        if not self.use_reu_staged:
+        if not self.use_reu_staged and not self.double_buffer:
             # Clean field before the bitmap-mode flip — kills the garbled
             # uninitialized-RAM screen at scene start. In hires every pixel of
             # an all-%0 bitmap reads each cell's BG nibble from $0400, which is
@@ -1833,6 +1973,16 @@ class HiresDisplayMode(BitmapDisplayMode):
         api.write_memory("d018", "18")
         api.write_memory("d016", "08")
         self._last_bg = None
+        if self.double_buffer:
+            # Host-DMA double-buffer: zero both banks + install the minimal
+            # vblank swap IRQ (no REU). See _setup_hostdma_doublebuffer.
+            self._setup_hostdma_doublebuffer(api)
+            log.info(
+                "hires: host-DMA double-buffer armed (bank 0 ↔ bank 2, "
+                "IRQ @ $%04X, tracker @ $%04X)",
+                BANK_SWAP_IRQ_HANDLER_ADDR,
+                FRAME_TRACKER_ADDR,
+            )
         if self.use_reu_staged:
             # Zero both banks' bitmap + screen so the off-screen bank
             # doesn't show garbage on the first swap. Single full-region
@@ -1865,7 +2015,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             )
 
     def teardown(self, api):
-        if self.use_reu_staged:
+        if self.use_reu_staged or self.double_buffer:
             _uninstall_bank_swap_irq(api)
             api.invalidate_cache()
 
@@ -1934,6 +2084,16 @@ class HiresDisplayMode(BitmapDisplayMode):
             _push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, target_bank)
             self._displayed_bank = target_bank
             return
+        if self.double_buffer:
+            # Host-DMA: write bitmap+screen into the off-screen bank, then arm
+            # the vblank swap. Hires has no color RAM, so the swap is fully
+            # tear-free (bg passed as the tracker's bg0 → $D021, unused in hires).
+            target, bm_addr, scr_addr, bm_id, scr_id, dd00 = self._hostdma_swap_target()
+            api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
+            api.write_region(scr_addr, screen_bytes, region_id=scr_id)
+            self._arm_hostdma_swap(api, bg, dd00)
+            self._displayed_bank = target
+            return
         api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)
         api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
 
@@ -2001,6 +2161,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         palette_mode: str = "percell",
         *,
         use_reu_staged: bool = False,
+        double_buffer: bool = False,
         audio_reu_pump_active: bool = False,
         hue_corrections: list[dict] | None = None,
         hue_corrections_replace: bool = False,
@@ -2059,6 +2220,11 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # merged dispatcher (MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER)
         # which JMPs to the audio pump at $C100 on non-raster IRQs.
         self.use_reu_staged = use_reu_staged
+        # Host-DMA double-buffer (no-REU backends, e.g. TeensyROM): tear-free
+        # bitmap+screen via off-screen-bank writes + a vblank $DD00 flip. Color
+        # RAM ($D800) is shared/un-banked so the c3 slot still tears briefly;
+        # mutually exclusive with use_reu_staged (resolve_double_buffer ensures).
+        self.double_buffer = double_buffer
         self.audio_reu_pump_active = audio_reu_pump_active
         self._displayed_bank = 0
 
@@ -2105,9 +2271,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
     def setup(self, api):
         super().setup(api)
-        if not self.use_reu_staged:
+        if not self.use_reu_staged and not self.double_buffer:
             # Clean black field before the bitmap-mode flip — kills the
             # "garbled uninitialized RAM" screen during scene-start setup.
+            # (Double-buffer zeroes both banks itself, below.)
             self._blank_bitmap(api)
         api.write_memory("d011", "3b")
         api.write_memory("d018", "18")
@@ -2119,11 +2286,24 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_quantized = None
         self._bg0 = None
         if not self.use_reu_staged:
-            # bg0 = black to match the _blank_bitmap fill (all-%00 → bg0), so
-            # the pre-first-frame screen is solid black. _last_bg tracks it so
-            # the first frame only rewrites $D021 if its bg0 differs.
+            # bg0 = black so the pre-first-frame screen is solid black (the
+            # zeroed bitmap is all-%00 → bg0). Covers both the host-DMA single-
+            # buffer and double-buffer paths; _last_bg tracks it (single-buffer
+            # only — double-buffer flips $D021 via the swap tracker instead).
             api.write_regs("d021", 0x00)
             self._last_bg = 0
+        if self.double_buffer:
+            # Host-DMA double-buffer: zero both banks + install the minimal
+            # vblank swap IRQ (no REU). Bitmap+screen go tear-free; the shared
+            # $D800 color RAM still tears briefly (the c3 slot) before each flip.
+            self._setup_hostdma_doublebuffer(api)
+            log.info(
+                "mhires: host-DMA double-buffer armed (bank 0 ↔ bank 2, "
+                "IRQ @ $%04X, tracker @ $%04X; bitmap+screen tear-free, "
+                "color RAM (c3) tears briefly)",
+                BANK_SWAP_IRQ_HANDLER_ADDR,
+                FRAME_TRACKER_ADDR,
+            )
         if self.use_reu_staged:
             self._last_bg = None
             # Zero both banks' bitmap + screen so the off-screen bank doesn't
@@ -2159,7 +2339,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             )
 
     def teardown(self, api):
-        if self.use_reu_staged:
+        if self.use_reu_staged or self.double_buffer:
             _uninstall_bank_swap_irq(api)
             api.invalidate_cache()
 
@@ -2204,6 +2384,19 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             target_bank = 1 - self._displayed_bank
             _push_mhires_via_reu(api, bitmap_bytes, screen_bytes, color_bytes, bg0, target_bank)
             self._displayed_bank = target_bank
+            return
+        if self.double_buffer:
+            # Host-DMA double-buffer: bitmap+screen into the off-screen bank
+            # (per-bank delta cache), then color RAM into the SHARED $D800 LAST
+            # — written just before arming so its brief c3 tear on the still-
+            # displayed bank is minimal — then arm the vblank swap. bg0 flips
+            # via the tracker IRQ (atomic with $DD00), so no host $D021 write.
+            target, bm_addr, scr_addr, bm_id, scr_id, dd00 = self._hostdma_swap_target()
+            api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
+            api.write_region(scr_addr, screen_bytes, region_id=scr_id)
+            api.write_region(0xD800, color_bytes, region_id=RegionID.COLOR)
+            self._arm_hostdma_swap(api, bg0, dd00)
+            self._displayed_bank = target
             return
         if bg0 != self._last_bg:
             api.write_regs("d021", bg0)

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import time
 
+from c64cast.backend import HardwareProfile
+
 
 class FakeSocketDMA:
     """Stand-in for the `socket_dma` attribute on Ultimate64API. Records
@@ -51,6 +53,12 @@ class FakeAPI:
         self.cue_song_reinit_play_banks: list[int | None] = []
         self.canned_regs: bytes = bytes(25)
         self.socket_dma = FakeSocketDMA()
+        # Hardware capability profile — mirrors the real backends' `profile`.
+        # Defaults (supports_reu=True) make build_scene resolve the no-REU
+        # double_buffer "auto" path OFF, so existing tests see no change; tests
+        # that want the TR's no-REU behavior set `api.profile = HardwareProfile(
+        # supports_reu=False)` or override the field.
+        self.profile = HardwareProfile(name="Fake", family="fake")
 
     def write_memory(self, addr, data_hex):
         self.memories[str(addr).upper()] = data_hex

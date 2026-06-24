@@ -31,9 +31,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
+from c64cast.c64 import VIC_BANK_0, VIC_BANK_2  # noqa: E402
 from c64cast.modes import (  # noqa: E402
+    BANK_SWAP_IRQ_HANDLER_ADDR,
     FRAME_TRACKER_ADDR,
     FRAME_TRACKER_LEN,
+    HOSTDMA_SWAP_IRQ_HANDLER,
+    HOSTDMA_TRACKER_LEN,
+    HOSTDMA_TRACKER_OFF_READY,
     MHIRES_FRAME_TRACKER_LEN,
     REU_VIDEO_BITMAP_BASE,
     REU_VIDEO_BITMAP_COLOR_BASE,
@@ -271,6 +276,83 @@ class BitmapREUStructureTest(unittest.TestCase):
         self.assertEqual(len(staged[REU_VIDEO_BITMAP_SCREEN_BASE]), 1000)
         self.assertEqual(len(staged[REU_VIDEO_BITMAP_COLOR_BASE]), 1000)
         self.assertEqual(len(api.mem_files[f"{FRAME_TRACKER_ADDR:04X}"]), MHIRES_FRAME_TRACKER_LEN)
+
+
+class BitmapHostDmaDoubleBufferTest(unittest.TestCase):
+    """Host-DMA double-buffer (no-REU backends, e.g. TeensyROM): setup installs
+    the minimal vblank swap IRQ + zeroes both VIC banks; push writes the
+    OFF-screen bank (per-bank delta) + arms a 3-byte ready tracker with NO REU;
+    teardown restores the kernal IRQ vector + bank 0."""
+
+    def test_setup_installs_handler_and_zeroes_both_banks(self):
+        mode = MultiHiresDisplayMode("percell", double_buffer=True)
+        api = FakeAPI()
+        mode.setup(api)
+        # Minimal handler uploaded at $C500 and $0314 hooked to it.
+        self.assertEqual(
+            api.mem_files[f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}"], HOSTDMA_SWAP_IRQ_HANDLER
+        )
+        self.assertEqual(
+            api.regs["0314"],
+            (BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, (BANK_SWAP_IRQ_HANDLER_ADDR >> 8) & 0xFF),
+        )
+        # Both banks' bitmap+screen pre-zeroed; VIC pinned to bank 0 ($DD00=$97).
+        self.assertEqual(api.mem_files[f"{VIC_BANK_0.BITMAP:04X}"], bytes(8000))
+        self.assertEqual(api.mem_files[f"{VIC_BANK_2.BITMAP:04X}"], bytes(8000))
+        self.assertEqual(api.memories["DD00"], "97")
+
+    def test_mhires_push_writes_offscreen_bank_and_arms_tracker(self):
+        mode = MultiHiresDisplayMode("percell", double_buffer=True)
+        api = FakeAPI()
+        mode.setup(api)
+        _render(mode, api)
+        # First frame stages the OFF-screen bank (bank 2), leaving the visible
+        # bank 0 untouched by the per-frame push.
+        self.assertEqual(len(api.regions[VIC_BANK_2.BITMAP]), 8000)
+        self.assertEqual(len(api.regions[VIC_BANK_2.SCREEN]), 1000)
+        self.assertEqual(len(api.regions[COLOR_ADDR]), 1000)  # shared $D800
+        self.assertNotIn(VIC_BANK_0.BITMAP, api.regions)
+        # No REU on this path.
+        self.assertEqual(dict(api.socket_dma.reuwrites), {})
+        # 3-byte tracker armed (ready = 1); displayed bank toggled to bank 2.
+        tracker = api.mem_files[f"{FRAME_TRACKER_ADDR:04X}"]
+        self.assertEqual(len(tracker), HOSTDMA_TRACKER_LEN)
+        self.assertEqual(tracker[HOSTDMA_TRACKER_OFF_READY], 1)
+        self.assertEqual(mode._displayed_bank, 1)
+
+    def test_hires_push_offscreen_bank_no_color_ram(self):
+        mode = HiresDisplayMode("normal", double_buffer=True)
+        api = FakeAPI()
+        mode.setup(api)
+        _render(mode, api)
+        self.assertEqual(len(api.regions[VIC_BANK_2.BITMAP]), 8000)
+        self.assertEqual(len(api.regions[VIC_BANK_2.SCREEN]), 1000)
+        self.assertNotIn(COLOR_ADDR, api.regions)  # hires carries color in screen nibbles
+        tracker = api.mem_files[f"{FRAME_TRACKER_ADDR:04X}"]
+        self.assertEqual(len(tracker), HOSTDMA_TRACKER_LEN)
+        self.assertEqual(tracker[HOSTDMA_TRACKER_OFF_READY], 1)
+
+    def test_second_frame_targets_other_bank(self):
+        # Alternation: frame 1 → bank 2, frame 2 → bank 0 (each bank diffs
+        # against its own prior content via its own region id).
+        mode = MultiHiresDisplayMode("percell", double_buffer=True)
+        api = FakeAPI()
+        mode.setup(api)
+        _render(mode, api)
+        self.assertEqual(mode._displayed_bank, 1)
+        _render(mode, api)
+        self.assertEqual(mode._displayed_bank, 0)
+        self.assertIn(VIC_BANK_0.BITMAP, api.regions)  # bank 0 written on frame 2
+
+    def test_teardown_restores_kernal_vector(self):
+        mode = MultiHiresDisplayMode("percell", double_buffer=True)
+        api = FakeAPI()
+        mode.setup(api)
+        _render(mode, api)
+        mode.teardown(api)
+        # $0314 → kernal $EA31 (lo=$31, hi=$EA); $DD00 → bank 0.
+        self.assertEqual(api.regs["0314"], (0x31, 0xEA))
+        self.assertEqual(api.memories["DD00"], "97")
 
 
 if __name__ == "__main__":

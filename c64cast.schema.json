@@ -120,6 +120,14 @@
           ],
           "description": "REU bank-swap double-buffer for video push. \"auto\" (default) stages bitmap modes (hires/mhires) when the startup probe finds the U64's REU enabled, leaving char modes on the cheaper host-DMA path; true forces it on for every mode, false off. auto silently falls back to host-DMA when REU isn't confirmed.",
           "default": "auto"
+        },
+        "double_buffer": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "Host-DMA double-buffer (page flip) for tear-free bitmap video on backends without a usable REU (e.g. TeensyROM). \"auto\" (default) enables it for bitmap modes (hires/mhires) when REU staging is off and the backend has no REU; true forces it on for bitmap modes, false off. Independent of [video].use_reu_staged (the REU path).",
+          "default": "auto"
         }
       }
     },
