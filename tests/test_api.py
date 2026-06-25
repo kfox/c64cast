@@ -905,5 +905,39 @@ class LaunchProgramTest(unittest.TestCase):
                 self.api.launch_program(self._write(tmp, "game.prg"))
 
 
+class PutConfigItemTest(unittest.TestCase):
+    """put_config_item() issues the REST config-write the REU auto-provisioner
+    relies on: PUT /v1/configs/<category>/<item>?value=<value>, spaces in the
+    category/item path percent-encoded, value passed as a query param."""
+
+    def setUp(self):
+        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.put = patch.object(self.api.session, "put").start()
+        self.addCleanup(patch.stopall)
+
+    def test_builds_route_and_value_param(self):
+        self.api.put_config_item("C64 and Cartridge Settings", "RAM Expansion Unit", "Enabled")
+        self.put.assert_called_once()
+        args, kwargs = self.put.call_args
+        url = args[0] if args else kwargs["url"]
+        # Spaces percent-encoded in BOTH path segments; value is a query param.
+        self.assertEqual(
+            url,
+            "http://example.invalid/v1/configs/"
+            "C64%20and%20Cartridge%20Settings/RAM%20Expansion%20Unit",
+        )
+        self.assertEqual(kwargs["params"], {"value": "Enabled"})
+
+    def test_http_error_propagates(self):
+        import requests
+
+        self.put.return_value.raise_for_status.side_effect = requests.HTTPError("400")
+        with self.assertRaises(requests.HTTPError):
+            self.api.put_config_item("C64 and Cartridge Settings", "REU Size", "16 MB")
+
+
 if __name__ == "__main__":
     unittest.main()

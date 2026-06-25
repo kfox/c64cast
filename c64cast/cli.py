@@ -618,6 +618,16 @@ def build_stack(
     # + scenes are built (so the host-DMA paths are used instead).
     _coerce_reu_for_backend(cfg, api)
 
+    # Auto-provision the U64 REU (enable + size to 16 MB, live + volatile) for
+    # runs that hard-require it, so the REU-staged audio/video paths "just work"
+    # without the manual F2 enable step. No-op unless [ultimate64].auto_reu is
+    # on, the backend has an REU, a probe is allowed, and the config hard-needs
+    # the REU (see doctor.provision_reu). Runs BEFORE _resolve_reu_available so
+    # that probe sees the now-enabled REU; restored at teardown (teardown_stack).
+    from . import doctor as _doctor
+
+    reu_restore = _doctor.provision_reu(api, cfg)
+
     audio = (
         AudioStreamer(
             api,
@@ -770,6 +780,7 @@ def build_stack(
         key_poller=key_poller,
         vision_controller=vision_controller,
         reu_available=reu_available,
+        reu_restore=reu_restore,
         framebuffer=framebuffer,
         preview_window=preview_window,
         recorder=recorder,
@@ -782,6 +793,8 @@ def teardown_stack(stack: SystemStack) -> None:
     stop audio before the final reset so the NMI timer isn't firing into
     a buffer we're about to clear; preview/recording come down first so
     they don't try to render after the API is closed."""
+    from . import doctor as _doctor
+
     for label, fn in (
         ("preview shutdown", lambda: stack.preview_window.stop() if stack.preview_window else None),
         ("recording stop", lambda: stack.recorder.stop() if stack.recorder else None),
@@ -790,6 +803,9 @@ def teardown_stack(stack: SystemStack) -> None:
             "vision controller stop",
             lambda: stack.vision_controller.stop() if stack.vision_controller else None,
         ),
+        # Restore any REU config we auto-provisioned, while the REST session is
+        # still open (no-op when nothing was changed; volatile regardless).
+        ("REU restore", lambda: _doctor.restore_reu(stack.api, stack.reu_restore)),
         ("U64 reset", stack.api.reset),
         ("API close", stack.api.close),
         ("camera release", lambda: stack.source.release() if stack.source else None),

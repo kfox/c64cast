@@ -87,6 +87,14 @@ dma_port = 64                       # TCP port for the Ultimate DMA Service
 # dma_password = ""                 # optional. Prefer the C64CAST_DMA_PASSWORD
                                     # env var — secrets in a checked-in TOML
                                     # leak. Env var overrides this field.
+auto_reu = true                     # auto-enable + size (16 MB) the U64 REU,
+                                    # live + volatile (reverts on power-cycle,
+                                    # restored at teardown), for runs that
+                                    # hard-require it ([audio].use_reu_pump or
+                                    # explicit [video].use_reu_staged = true).
+                                    # Removes the manual F2 enable step. false =
+                                    # manage the REU yourself. No effect without
+                                    # an REU (TeensyROM) or under --skip-probe.
 
 [video]
 device = -1                         # -1 = system default camera; `--list-devices` to enumerate

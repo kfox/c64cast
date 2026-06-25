@@ -62,6 +62,12 @@ class SystemStack:
     # scenes after the initial probe). False under --skip-probe or a failed
     # query, so "auto" degrades to host-DMA rather than freezing video.
     reu_available: bool = False
+    # REU config fields auto-provisioned for this run (doctor.provision_reu),
+    # mapping field name -> the original value to restore at teardown. None
+    # when nothing was changed (REU already enabled+sized, auto_reu off, a
+    # no-REU backend, or --skip-probe). The change is volatile firmware state,
+    # so a missed restore still clears on the next power-cycle.
+    reu_restore: dict[str, str] | None = None
     framebuffer: Framebuffer | None = None
     preview_window: PreviewWindow | None = None
     recorder: StreamRecorder | None = None

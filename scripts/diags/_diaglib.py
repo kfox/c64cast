@@ -208,8 +208,14 @@ def rest_set_config(
     """PUT /v1/configs/<category>/<setting>?value=<value>. The firmware verb is
     setting-in-path + a ``value`` query param (a flat ``?setting=value`` is
     rejected with "Function none requires parameter value"). Returns True when
-    the reply carries an empty ``errors`` list. Persists to flash — restore any
-    machine-wide setting (e.g. System Mode → NTSC) at end of session."""
+    the reply carries an empty ``errors`` list.
+
+    LIVE + VOLATILE: the PUT applies immediately (the handler calls
+    ConfigStore::at_close_config → effectuate) but does NOT write flash — only a
+    separate ``:save_to_flash`` command persists (verified in 1541ultimate
+    software/api/route_configs.cc + components/config.h at_close_config). So a
+    change reverts on the next power-cycle. Still restore any setting you change
+    at end of session, so the running machine returns to its prior state."""
     from urllib.parse import quote
 
     import requests
