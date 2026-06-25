@@ -94,6 +94,13 @@ class TRError(Exception):
     message (parallel to socket_dma.SocketDMAError on the Ultimate side)."""
 
 
+class TRBusyError(TRError):
+    """Raised when the TR rejects a command because it's busy — a program is
+    running, or the menu handler isn't active (the firmware replies "Busy!").
+    A distinct subclass so callers can tell "try again from the menu / stop the
+    running program" apart from a hard failure."""
+
+
 # ---------------------------------------------------------------------------
 # Transports
 # ---------------------------------------------------------------------------
@@ -451,16 +458,23 @@ class TRClient:
         tok = self._read_token()
         if tok == TOK_ACK:
             return
-        # Resync before raising: a rejected command is often followed by an
-        # error text line (e.g. "Failed to ensure directory"), and a stale
-        # read offset would otherwise make every subsequent ack misalign and
-        # cascade. Drain trailing bytes so the next command starts clean.
-        self.transport.drain_text(0.15)
+        # Resync before raising: a rejected command is followed by an error
+        # text line (e.g. "Busy!", "Not enough room", "Failed to ensure
+        # directory"), and a stale read offset would otherwise make every
+        # subsequent ack misalign and cascade. Drain the trailing bytes (both
+        # to resync AND to surface the reason) so the next command starts clean.
+        detail = self.transport.drain_text(0.15).strip()
+        suffix = f" — {detail}" if detail else ""
+        # The firmware signals "program running / menu not active" with a
+        # "Busy!" text line (often alongside a Fail/Retry token); promote it to
+        # TRBusyError so callers can distinguish it from a hard failure.
+        if "busy" in detail.lower():
+            raise TRBusyError(f"{what}: TR busy{suffix}")
         if tok == TOK_FAIL:
-            raise TRError(f"{what}: TR returned FailToken (0x9B7F)")
+            raise TRError(f"{what}: TR returned FailToken (0x9B7F){suffix}")
         if tok == TOK_RETRY:
-            raise TRError(f"{what}: TR returned RetryToken (0x9B7E)")
-        raise TRError(f"{what}: unexpected reply 0x{tok:04X} (expected ack)")
+            raise TRError(f"{what}: TR returned RetryToken (0x9B7E){suffix}")
+        raise TRError(f"{what}: unexpected reply 0x{tok:04X} (expected ack){suffix}")
 
     def _fw_check_unlocked(self) -> str:
         # Caller (connect) is single-threaded at this point.

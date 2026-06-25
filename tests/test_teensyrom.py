@@ -24,6 +24,7 @@ from c64cast.teensyrom_dma import (
     TOK_FAIL,
     TOK_FW_FULL,
     TOK_READ_C64_MEM,
+    TRBusyError,
     TRClient,
     TRError,
     TRTransport,
@@ -177,6 +178,38 @@ class FramingTest(unittest.TestCase):
         for _ in range(3):
             self.t.queue_token(TOK_ACK)
         self.client.post_file(b"AB", "x.prg", DRIVE_SD)  # must NOT raise
+
+
+class ErrorSurfacingTest(unittest.TestCase):
+    """The firmware sends a trailing text line after a rejected command
+    (e.g. "Busy!", "Not enough room"). `_expect_ack` now surfaces it in the
+    raised error instead of discarding it, and promotes "Busy!" to TRBusyError.
+    Exercised via write_segment (no pre-command drain to interfere)."""
+
+    def setUp(self):
+        self.t = LoopbackTransport()
+        self.client = TRClient(self.t)
+
+    def test_busy_text_raises_trbusyerror(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.queue_stale(b"Busy!\r\n")
+        with self.assertRaises(TRBusyError) as cm:
+            self.client.write_segment(0xD020, b"\x01")
+        self.assertIn("busy", str(cm.exception).lower())
+
+    def test_fail_text_is_surfaced_in_message(self):
+        self.t.queue_token(TOK_FAIL)
+        self.t.queue_stale(b"Not enough room\r\n")
+        with self.assertRaises(TRError) as cm:
+            self.client.write_segment(0xD020, b"\x01")
+        self.assertNotIsInstance(cm.exception, TRBusyError)
+        self.assertIn("Not enough room", str(cm.exception))
+
+    def test_fail_without_text_has_no_dangling_separator(self):
+        self.t.queue_token(TOK_FAIL)  # no trailing text queued
+        with self.assertRaises(TRError) as cm:
+            self.client.write_segment(0xD020, b"\x01")
+        self.assertNotIn("—", str(cm.exception))
 
 
 class BackendTest(unittest.TestCase):

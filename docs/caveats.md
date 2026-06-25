@@ -430,6 +430,30 @@ active). Consequences worth knowing:
   makes it neither claim nor wait on the slot, so multiple launchers run
   concurrently, each driving its own SID. No effect on a single-system run.
 
+* **TR launch/upload errors surface the firmware's reason.** When the TR NAKs a
+  command, `teensyrom_dma._expect_ack` now captures the trailing text the
+  firmware emits and puts it in the raised error — `TRBusyError` on a `"Busy!"`
+  reply (a program is running / the menu handler isn't active), and the literal
+  text (`"Not enough room"`, `"File already exists."`, …) appended otherwise —
+  instead of a bare token code. This is what makes the failure below diagnosable.
+
+  > **Known issue — intermittent TR launcher upload corruption (under
+  > investigation, pre-existing).** On the TeensyROM the keyboard poller's
+  > `ReadC64Mem $028D` (and likely the launcher's own input poll) shares one
+  > serial/TCP link with the launcher's `reset()` + PostFile. A poll read that
+  > lands in the post-reset menu chatter (or reads a running program's state)
+  > can desync the stream and leave stray bytes that make the *next* PostFile
+  > drop a byte — the uploaded `.prg` then loads one byte short (BASIC autostart
+  > stub lists garbage, `?SYNTAX ERROR`). It's a **race**: intermittent, but when
+  > it fires the symptom is consistent. The launcher works reliably
+  > single-threaded (no concurrent poll) and on the Ultimate (no shared-link
+  > poll), which is why it was never caught — the TR launcher had not been
+  > HW-exercised under the live playlist. Candidate fixes (not yet shipped):
+  > make `read_segment` fully resync on any desync so no reader can poison a
+  > later command; suspend the poller across the launcher's reset+upload; a
+  > robust pre-upload drain. Needs a soak harness (hundreds of launch cycles) to
+  > verify, since it can't be reproduced on demand.
+
 ## `backgrounds.py` constants are screen codes, not PETSCII
 
 PETSCII and the VIC screen-code encoding diverge above 0x40 — e.g. the
