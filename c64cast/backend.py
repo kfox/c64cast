@@ -317,6 +317,17 @@ class C64Backend(ABC):
     def reu_write(self, reu_offset: int, data: bytes) -> None:
         raise BackendCapabilityError("reu_write")
 
+    def put_config_item(
+        self, category: str, item: str, value: str, *, timeout: float = 3.0
+    ) -> None:
+        """Set one device config item over the firmware config API (Ultimate
+        REST: ``PUT /v1/configs/<category>/<item>?value=<value>``). Default
+        raises — only the Ultimate exposes a writable config surface. The only
+        consumer is the REU auto-provisioner, which gates on
+        ``profile.supports_reu`` (Ultimate-only) before invoking, so a backend
+        without an REU never reaches this."""
+        raise BackendCapabilityError("put_config_item")
+
     # ---- semantic write helpers ---------------------------------------
     # Pure writes presuming the standard C64 memory map + kernal IRQ chain.
     # Default impls raise here on the ABC; BufferedWriteBackend (which every

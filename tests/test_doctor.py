@@ -322,7 +322,38 @@ class ReuStatusProbeTest(unittest.TestCase):
         self.assertEqual(reu[0].level, "ok")
         self.assertIn("use_reu_staged", reu[0].message)
 
-    def test_reu_disabled_is_error_with_actionable_hint(self):
+    def test_reu_disabled_is_error_when_auto_reu_off(self):
+        """REU disabled + a hard REU opt-in is an error ONLY when the user has
+        opted out of auto-provisioning (auto_reu = false). With auto_reu on
+        (the default) the run enables it live — see the next test."""
+        loaded = _load("""
+            [ultimate64]
+            url = "http://fake"
+            auto_reu = false
+            [audio]
+            enabled = true
+            use_reu_pump = true
+            [[scenes]]
+            type = "webcam"
+            display = "petscii"
+        """)
+        diags = self._patch_connectivity_to_reu_status(loaded, "Disabled")
+        reu = [d for d in diags if d.subject.endswith("(REU)")]
+        self.assertEqual(len(reu), 1)
+        self.assertEqual(reu[0].level, "error", "REU disabled + opt-in + auto_reu off = error")
+        # Message names which config flag and what fails silently:
+        self.assertIn("Disabled", reu[0].message)
+        self.assertIn("silently", reu[0].message)
+        # Hint points the user at auto_reu AND the U64 menu path:
+        self.assertIsNotNone(reu[0].hint)
+        assert reu[0].hint is not None  # narrow for type checker
+        self.assertIn("auto_reu", reu[0].hint)
+        self.assertIn("RAM Expansion Unit", reu[0].hint)
+
+    def test_reu_disabled_with_auto_reu_is_ok(self):
+        """With auto_reu on (default), REU disabled + a hard opt-in is NOT an
+        error — the run provisions the REU live at startup, so the doctor
+        reports 'ok' and points at the auto-enable behavior."""
         loaded = _load("""
             [ultimate64]
             url = "http://fake"
@@ -336,16 +367,9 @@ class ReuStatusProbeTest(unittest.TestCase):
         diags = self._patch_connectivity_to_reu_status(loaded, "Disabled")
         reu = [d for d in diags if d.subject.endswith("(REU)")]
         self.assertEqual(len(reu), 1)
-        self.assertEqual(reu[0].level, "error", "REU disabled + REU config opt-in must be an error")
-        # Message names which config flag and what fails silently:
-        self.assertIn("Disabled", reu[0].message)
-        self.assertIn("silently", reu[0].message)
-        # Hint points the user at the U64 menu path AND offers the
-        # toml-side fallback:
-        self.assertIsNotNone(reu[0].hint)
-        assert reu[0].hint is not None  # narrow for type checker
-        self.assertIn("F2", reu[0].hint)
-        self.assertIn("RAM Expansion Unit", reu[0].hint)
+        self.assertEqual(reu[0].level, "ok", "auto_reu (default) must not error on a disabled REU")
+        self.assertIn("auto_reu", reu[0].message)
+        self.assertIn("16 MB", reu[0].message)
 
     def test_rest_failure_during_reu_probe_warns(self):
         import requests
@@ -443,6 +467,212 @@ class ReuIsEnabledHelperTest(unittest.TestCase):
     def test_unrecognized_shape_none(self):
         api = self._api(json_value=["unexpected"])
         self.assertIsNone(doctor.reu_is_enabled(api))
+
+
+class _FakeProfile:
+    def __init__(self, supports_reu: bool = True) -> None:
+        self.supports_reu = supports_reu
+
+
+class _FakeApi:
+    """Minimal stand-in for an Ultimate64API the REU provisioner needs:
+    base_url + session.get for read_reu_config, a profile, and a recording
+    put_config_item (which raises `put_error` if set, to exercise the
+    best-effort path)."""
+
+    def __init__(
+        self,
+        *,
+        reu_status: str | None = "Enabled",
+        reu_size: str | None = "16 MB",
+        supports_reu: bool = True,
+        put_error: Exception | None = None,
+    ) -> None:
+        self.base_url = "http://fake"
+        self.profile = _FakeProfile(supports_reu)
+        self.put_calls: list[tuple[str, str, str]] = []
+        self._put_error = put_error
+        self.session = mock.MagicMock()
+        settings: dict[str, str] = {}
+        if reu_status is not None:
+            settings["RAM Expansion Unit"] = reu_status
+        if reu_size is not None:
+            settings["REU Size"] = reu_size
+        resp = mock.MagicMock()
+        resp.json.return_value = {"C64 and Cartridge Settings": settings, "errors": []}
+        resp.raise_for_status = mock.MagicMock()
+        self.session.get.return_value = resp
+
+    def put_config_item(
+        self, category: str, item: str, value: str, *, timeout: float = 3.0
+    ) -> None:
+        if self._put_error is not None:
+            raise self._put_error
+        self.put_calls.append((category, item, value))
+
+
+def _cfg(toml: str) -> cfgmod.Config:
+    return _load(toml).cfgs[0]
+
+
+# A config that hard-requires the REU (use_reu_pump), with auto_reu defaulting
+# on — the common provisioning trigger.
+_PUMP_TOML = """
+    [ultimate64]
+    url = "http://fake"
+    [audio]
+    enabled = true
+    use_reu_pump = true
+    [[scenes]]
+    type = "webcam"
+    display = "petscii"
+"""
+
+
+class ProvisionReuTest(unittest.TestCase):
+    """doctor.provision_reu() — auto-enable + size the REU (live, volatile) for
+    runs that hard-require it, returning the originals for teardown restore."""
+
+    def test_enables_and_sizes_a_disabled_reu(self):
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
+        restore = doctor.provision_reu(api, _cfg(_PUMP_TOML))
+        self.assertEqual(
+            api.put_calls,
+            [
+                ("C64 and Cartridge Settings", "RAM Expansion Unit", "Enabled"),
+                ("C64 and Cartridge Settings", "REU Size", "16 MB"),
+            ],
+        )
+        # Restore must capture the ORIGINAL values, not the ones we set.
+        self.assertEqual(restore, {"RAM Expansion Unit": "Disabled", "REU Size": "2 MB"})
+
+    def test_noop_when_already_enabled_and_large(self):
+        api = _FakeApi(reu_status="Enabled", reu_size="16 MB")
+        restore = doctor.provision_reu(api, _cfg(_PUMP_TOML))
+        self.assertEqual(api.put_calls, [])
+        self.assertIsNone(restore)
+
+    def test_grows_size_only_when_enabled_but_too_small(self):
+        api = _FakeApi(reu_status="Enabled", reu_size="2 MB")
+        restore = doctor.provision_reu(api, _cfg(_PUMP_TOML))
+        self.assertEqual(api.put_calls, [("C64 and Cartridge Settings", "REU Size", "16 MB")])
+        self.assertEqual(restore, {"REU Size": "2 MB"})
+
+    def test_skipped_when_auto_reu_off(self):
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
+        cfg = _cfg("""
+            [ultimate64]
+            url = "http://fake"
+            auto_reu = false
+            [audio]
+            enabled = true
+            use_reu_pump = true
+            [[scenes]]
+            type = "webcam"
+            display = "petscii"
+        """)
+        self.assertIsNone(doctor.provision_reu(api, cfg))
+        self.assertEqual(api.put_calls, [])
+
+    def test_skipped_without_hard_opt_in(self):
+        """use_reu_staged = "auto" is NOT a hard requirement (it self-heals to
+        host-DMA double-buffer), so it must not trigger provisioning."""
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
+        cfg = _cfg("""
+            [ultimate64]
+            url = "http://fake"
+            [video]
+            use_reu_staged = "auto"
+            [[scenes]]
+            type = "video"
+            display = "mhires"
+            file = "x.mp4"
+        """)
+        self.assertIsNone(doctor.provision_reu(api, cfg))
+        self.assertEqual(api.put_calls, [])
+
+    def test_skipped_on_no_reu_backend(self):
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB", supports_reu=False)
+        self.assertIsNone(doctor.provision_reu(api, _cfg(_PUMP_TOML)))
+        self.assertEqual(api.put_calls, [])
+
+    def test_skipped_under_skip_probe(self):
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
+        cfg = _cfg("""
+            [ultimate64]
+            url = "http://fake"
+            [audio]
+            enabled = true
+            use_reu_pump = true
+            [debug]
+            skip_probe = true
+            [[scenes]]
+            type = "webcam"
+            display = "petscii"
+        """)
+        self.assertIsNone(doctor.provision_reu(api, cfg))
+        self.assertEqual(api.put_calls, [])
+
+    def test_best_effort_when_enable_put_fails(self):
+        import requests
+
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB", put_error=requests.Timeout("nope"))
+        with self.assertLogs("c64cast.doctor", level="WARNING"):
+            restore = doctor.provision_reu(api, _cfg(_PUMP_TOML))
+        # Enable PUT raised before anything stuck → nothing to restore.
+        self.assertIsNone(restore)
+
+    def test_best_effort_when_reu_state_unreadable(self):
+        import requests
+
+        api = _FakeApi()
+        api.session.get.side_effect = requests.Timeout("read timeout")
+        with self.assertLogs("c64cast.doctor", level="WARNING"):
+            restore = doctor.provision_reu(api, _cfg(_PUMP_TOML))
+        self.assertIsNone(restore)
+        self.assertEqual(api.put_calls, [])
+
+
+class RestoreReuTest(unittest.TestCase):
+    def test_restores_each_field(self):
+        api = _FakeApi()
+        doctor.restore_reu(api, {"RAM Expansion Unit": "Disabled", "REU Size": "2 MB"})
+        self.assertEqual(
+            api.put_calls,
+            [
+                ("C64 and Cartridge Settings", "RAM Expansion Unit", "Disabled"),
+                ("C64 and Cartridge Settings", "REU Size", "2 MB"),
+            ],
+        )
+
+    def test_noop_on_none(self):
+        api = _FakeApi()
+        doctor.restore_reu(api, None)
+        self.assertEqual(api.put_calls, [])
+
+    def test_best_effort_on_failure(self):
+        import requests
+
+        api = _FakeApi(put_error=requests.Timeout("nope"))
+        with self.assertLogs("c64cast.doctor", level="WARNING"):
+            doctor.restore_reu(api, {"RAM Expansion Unit": "Disabled"})
+
+
+class ReadReuConfigTest(unittest.TestCase):
+    def test_reads_enabled_and_size(self):
+        api = _FakeApi(reu_status="Enabled", reu_size="8 MB")
+        self.assertEqual(doctor.read_reu_config(api), (True, "8 MB"))
+
+    def test_disabled(self):
+        api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
+        self.assertEqual(doctor.read_reu_config(api), (False, "2 MB"))
+
+    def test_unreadable_returns_none_pair(self):
+        import requests
+
+        api = _FakeApi()
+        api.session.get.side_effect = requests.Timeout("read timeout")
+        self.assertEqual(doctor.read_reu_config(api), (None, None))
 
 
 class SidStatusProbeTest(unittest.TestCase):

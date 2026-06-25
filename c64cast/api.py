@@ -1171,6 +1171,27 @@ class Ultimate64API(_SidPlayerBackend):
             log.debug("read_memory %04X failed: %s", address, e)
             return None
 
+    def put_config_item(
+        self, category: str, item: str, value: str, *, timeout: float = 3.0
+    ) -> None:
+        """Set one Ultimate config item LIVE over the REST config API.
+
+        ``PUT /v1/configs/<category>/<item>?value=<value>``. The firmware
+        applies the change immediately through its per-item effectuate hook —
+        no reboot (verified in the 1541ultimate source: C64::effectuate_settings
+        / U64Config::setCpuSpeed) — and does NOT persist it to flash, so it
+        reverts on the next power-cycle (we never call ``:save_to_flash``).
+        Used by the REU auto-provisioner (doctor.provision_reu) to enable + size
+        the REU for a run and to restore the original at teardown. Raises
+        ``requests.RequestException`` on transport/HTTP failure; callers treat
+        provisioning as best-effort (a config we can't write just leaves the
+        existing doctor/probe degradation in place)."""
+        from urllib.parse import quote
+
+        url = f"{self.base_url}/v1/configs/{quote(category)}/{quote(item)}"
+        r = self.session.put(url, params={"value": value}, timeout=timeout)
+        r.raise_for_status()
+
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Upload and run a tiny BASIC program: `10 PRINT CHR$(147) : 20 GOTO 20`.
 

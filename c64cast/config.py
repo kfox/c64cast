@@ -223,6 +223,29 @@ class Ultimate64Cfg:
             "env var over committing it here."
         },
     )
+    # Auto-provision the U64's REU for runs that hard-require it. When a config
+    # opts into an REU-staged path as a hard requirement ([audio].use_reu_pump
+    # or an explicit [video].use_reu_staged = true — the same condition
+    # --doctor checks), c64cast PUTs "RAM Expansion Unit" = Enabled + "REU
+    # Size" = 16 MB over the REST config API at startup, LIVE and VOLATILE
+    # (never saved to flash, so it reverts on the next power-cycle), and
+    # restores the originals at teardown. This removes the manual "F2 -> C64 and
+    # Cartridge Settings -> RAM Expansion Unit -> Enabled" step those paths used
+    # to require (and that --doctor errored on). The default use_reu_staged =
+    # "auto" is left alone — it self-heals to host-DMA double-buffer (also
+    # tear-free), so no machine config is touched for it. No effect on backends
+    # without an REU (TeensyROM) or under --skip-probe (we never write config we
+    # can't first read back). Set false to manage the REU yourself.
+    auto_reu: bool = field(
+        default=True,
+        metadata={
+            "help": "Auto-enable + size the U64 REU (live, volatile, restored at "
+            "teardown) for runs that hard-require it ([audio].use_reu_pump or "
+            "explicit [video].use_reu_staged = true). Removes the manual F2 "
+            "enable step. false = manage the REU yourself. No effect on no-REU "
+            "backends or under --skip-probe."
+        },
+    )
 
 
 @dataclass

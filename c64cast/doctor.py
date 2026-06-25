@@ -13,6 +13,7 @@ The validation surface is shared with `config.build_scene` via
 from __future__ import annotations
 
 import importlib.util
+import logging
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,8 @@ from typing import IO, Literal
 from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .config import LoadResult, validate_scene_cfg
 from .orchestrator import OrchestratorError
+
+log = logging.getLogger(__name__)
 
 Level = Literal["ok", "warn", "error"]
 
@@ -475,6 +478,138 @@ _REU_CONFIG_CATEGORY = "C64 and Cartridge Settings"
 _REU_ENABLED_FIELD = "RAM Expansion Unit"
 _REU_SIZE_FIELD = "REU Size"
 
+# The firmware's "REU Size" enum labels (1541ultimate software/io/c64/c64.cc
+# reu_size[]) → capacity in bytes. Used to (a) decide whether the U64's current
+# REU is large enough for c64cast's staged offsets and (b) pick the size to
+# provision. c64cast's highest REU offset is the video staging region near
+# 14 MB (modes.REU_VIDEO_BITMAP_COLOR_BASE = $E13000); the audio mic ring sits
+# near 1 MB. 16 MB covers every offset and is FPGA-backed (free), so the
+# provisioner always sizes to the max when it enables the REU.
+_REU_SIZE_BYTES: dict[str, int] = {
+    "128 KB": 128 << 10,
+    "256 KB": 256 << 10,
+    "512 KB": 512 << 10,
+    "1 MB": 1 << 20,
+    "2 MB": 2 << 20,
+    "4 MB": 4 << 20,
+    "8 MB": 8 << 20,
+    "16 MB": 16 << 20,
+}
+_REU_PROVISION_SIZE = "16 MB"
+
+
+def read_reu_config(api: object) -> tuple[bool | None, str | None]:
+    """Read the U64's REU state over REST. Returns ``(enabled, size_label)``.
+
+    ``enabled`` is True/False, or None when the query failed or the field was
+    absent (an unrecognized firmware shape) — i.e. "can't tell". ``size_label``
+    is the raw "REU Size" string (e.g. ``"2 MB"``) or None. Reuses the shared
+    `_fetch_config_section` normalizer so it tracks firmware response-shape
+    variants identically to `reu_is_enabled`."""
+    section, _data, err = _fetch_config_section(
+        api, _REU_CONFIG_CATEGORY, field_hint=_REU_ENABLED_FIELD
+    )
+    if err is not None or not section:
+        return None, None
+    enabled_raw = section.get(_REU_ENABLED_FIELD)
+    enabled = None if enabled_raw is None else (enabled_raw == "Enabled")
+    size_raw = section.get(_REU_SIZE_FIELD)
+    size = size_raw if isinstance(size_raw, str) else None
+    return enabled, size
+
+
+def provision_reu(api: object, cfg: object) -> dict[str, str] | None:
+    """Auto-enable + size the U64 REU for a run that needs it — LIVE + VOLATILE.
+
+    Returns the original ``{field: value}`` to hand back to `restore_reu` at
+    teardown, or None when nothing was changed (so a no-op is cheap to detect).
+    Gated entirely here so `cli.build_stack` can call it unconditionally:
+
+      * ``[ultimate64].auto_reu`` must be on (default true),
+      * the backend must have an REU (``profile.supports_reu`` — Ultimate only),
+      * a probe must be allowed (not ``--skip-probe`` — we never write config we
+        can't first read back to restore),
+      * the config must HARD-require the REU (`_wants_reu`: ``use_reu_pump`` or
+        an explicit ``use_reu_staged = true`` — the same condition that makes
+        `_probe_reu_status` demand the REU). The default ``use_reu_staged =
+        "auto"`` is left alone: it self-heals to the host-DMA double-buffer
+        path (also tear-free) without mutating the user's machine config.
+
+    Enables the REU if off and grows it to 16 MB if smaller. The change is NOT
+    saved to flash, so it reverts on the next power-cycle even if teardown's
+    restore never runs. Best-effort: a REST failure logs a warning and returns
+    whatever was changed so far (so teardown still restores it)."""
+    if not getattr(getattr(cfg, "ultimate64", None), "auto_reu", False):
+        return None
+    profile = getattr(api, "profile", None)
+    if profile is None or not getattr(profile, "supports_reu", False):
+        return None
+    if getattr(getattr(cfg, "debug", None), "skip_probe", False):
+        return None
+    wants, reasons = _wants_reu(cfg)
+    if not wants:
+        return None
+
+    import requests
+
+    enabled, cur_size = read_reu_config(api)
+    if enabled is None:
+        log.warning(
+            "auto_reu: config needs the REU (%s) but the U64's REU state could "
+            "not be read — leaving it unchanged.",
+            ", ".join(reasons),
+        )
+        return None
+
+    restore: dict[str, str] = {}
+    if not enabled:
+        try:
+            api.put_config_item(_REU_CONFIG_CATEGORY, _REU_ENABLED_FIELD, "Enabled")  # type: ignore[attr-defined]
+        except requests.RequestException as e:
+            log.warning("auto_reu: could not enable the U64 REU over REST: %s", e)
+            return restore or None
+        restore[_REU_ENABLED_FIELD] = "Disabled"
+
+    cur_bytes = _REU_SIZE_BYTES.get(cur_size or "", 0)
+    if cur_bytes < _REU_SIZE_BYTES[_REU_PROVISION_SIZE]:
+        try:
+            api.put_config_item(  # type: ignore[attr-defined]
+                _REU_CONFIG_CATEGORY, _REU_SIZE_FIELD, _REU_PROVISION_SIZE
+            )
+        except requests.RequestException as e:
+            log.warning("auto_reu: could not set REU size to %s: %s", _REU_PROVISION_SIZE, e)
+        else:
+            if cur_size is not None:
+                restore[_REU_SIZE_FIELD] = cur_size
+
+    if restore:
+        log.info(
+            "auto_reu: U64 REU enabled (size %s) for this run (%s) — live, "
+            "volatile (reverts on power-cycle), restored at teardown.",
+            _REU_PROVISION_SIZE,
+            ", ".join(reasons),
+        )
+    return restore or None
+
+
+def restore_reu(api: object, restore: dict[str, str] | None) -> None:
+    """Put the REU config fields changed by `provision_reu` back to their
+    original values (called once per stack at teardown). No-op when nothing was
+    provisioned. Best-effort — a failed restore just logs (the change was
+    volatile anyway, so a power-cycle clears it)."""
+    if not restore:
+        return
+
+    import requests
+
+    for fieldname, value in restore.items():
+        try:
+            api.put_config_item(_REU_CONFIG_CATEGORY, fieldname, value)  # type: ignore[attr-defined]
+        except requests.RequestException as e:
+            log.warning("auto_reu: could not restore U64 %s = %s: %s", fieldname, value, e)
+        else:
+            log.info("auto_reu: restored U64 %s = %s", fieldname, value)
+
 
 def reu_is_enabled(api: object) -> bool | None:
     """Query the Ultimate's REU enable state over REST.
@@ -698,20 +833,45 @@ def _probe_reu_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
                 message=f"REU enabled, size {size} ({reason_str})",
             )
         ]
+    # REU is off. When [ultimate64].auto_reu is on (the default), the run
+    # provisions it live at startup (provision_reu) — so this isn't an error,
+    # just an informational "will be auto-enabled". It's a hard error only when
+    # the user has opted out of auto-provisioning. (We reach here only on a
+    # REST-reachable Ultimate, so supports_reu is implied.)
+    auto_reu = bool(getattr(getattr(cfg, "ultimate64", None), "auto_reu", False))
+    if auto_reu:
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message=(
+                    f"REU is {enabled!r}, but [ultimate64].auto_reu will enable "
+                    f"it (size {_REU_PROVISION_SIZE}) live for this run ({reason_str})."
+                ),
+                hint=(
+                    "Auto-provision is volatile (reverts on power-cycle) and "
+                    "restored at teardown. Set [ultimate64].auto_reu = false to "
+                    "manage the REU yourself in the F2 menu."
+                ),
+            )
+        ]
     return [
         Diagnostic(
             level="error",
             category="connectivity",
             subject=subject,
             message=(
-                f"REU is {enabled!r} but config requests REU ({reason_str}). "
-                "REU-staged audio/video paths fail silently when REU is off: "
-                "audio plays silence, video stays unchanged."
+                f"REU is {enabled!r} but config requests REU ({reason_str}) and "
+                "[ultimate64].auto_reu is off. REU-staged audio/video paths fail "
+                "silently when REU is off: audio plays silence, video stays "
+                "unchanged."
             ),
             hint=(
-                "On the U64: F2 Menu -> C64 and Cartridge Settings -> "
-                "RAM Expansion Unit -> Enabled (size 1 MB+ is fine). Save and "
-                "reboot. Alternatively, turn off the REU opt-in in your TOML."
+                "Set [ultimate64].auto_reu = true to enable it automatically, or "
+                "on the U64: F2 Menu -> C64 and Cartridge Settings -> "
+                "RAM Expansion Unit -> Enabled (size 16 MB). Save and reboot. "
+                "Alternatively, turn off the REU opt-in in your TOML."
             ),
         )
     ]
