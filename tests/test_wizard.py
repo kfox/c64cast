@@ -319,6 +319,7 @@ class RunInitShellTest(unittest.TestCase):
                 "Display mode": "petscii",
                 "Scene name": "My Scene",
                 "Enable SID audio": True,
+                "Video-audio backend": "auto",  # audio on → backend prompt fires
                 "advanced": False,
                 "Add overlays": True,
                 "Select overlays": lambda choices: [c for c in choices if c.startswith("clock")],
@@ -347,6 +348,7 @@ class RunInitShellTest(unittest.TestCase):
             self.assertEqual(cfg.scenes[0].display, "petscii")
             self.assertEqual(cfg.scenes[0].name, "My Scene")
             self.assertTrue(cfg.audio.enabled)
+            self.assertEqual(cfg.audio.backend, "auto")
             self.assertEqual(cfg.ultimate64.system, "PAL")
             self.assertEqual(cfg.scenes[0].overlays[0]["type"], "clock")
             self.assertIsNone(wizard.validate(cfg))

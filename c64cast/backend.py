@@ -108,6 +108,7 @@ class HardwareProfile:
     supports_run_prg: bool = True  # launch a PRG (clear-loop, SID player)
     supports_run_crt: bool = True  # launch a CRT (cartridge)
     supports_reu: bool = True  # REU writes (use_reu_pump / use_reu_staged)
+    supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
@@ -140,6 +141,7 @@ ULTIMATE_PROFILE = HardwareProfile(
     supports_run_prg=True,
     supports_run_crt=True,
     supports_reu=True,
+    supports_sampler=True,  # "Ultimate Audio" FPGA PCM sampler (gated by probe)
     reu_bus_clean=True,  # U64 REUWRITE is an ARM-side memcpy; no bus halt
     writes_are_acked=False,  # socket DMAWRITE is fire-and-forget
     kernal_irq_intact=True,
@@ -169,6 +171,7 @@ TEENSYROM_PROFILE = HardwareProfile(
     supports_run_prg=True,  # PostFile + LaunchFile
     supports_run_crt=True,  # RemoteLaunch handles CRT launch
     supports_reu=False,  # no REUWRITE opcode
+    supports_sampler=False,  # no FPGA PCM sampler (Ultimate-only feature)
     reu_bus_clean=False,
     writes_are_acked=True,  # every write returns Ack/Fail -> flush ~free
     kernal_irq_intact=True,

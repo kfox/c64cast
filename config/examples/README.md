@@ -62,6 +62,7 @@ Exit with `Ctrl+C`.
 | `scene-blank.toml`                | Blank PETSCII canvas + a `big_text` overlay.               |
 | `scene-slideshow.toml`            | Cycle through still images from a directory/glob.          |
 | `scene-video.toml`           | Video + soundtrack playback. Requires `video` extra. |
+| `scene-video-sampler.toml`        | Video + hi-fi audio via the U64 Ultimate Audio FPGA sampler. |
 | `scene-waveform.toml`             | SID jukebox + oscilloscope. Requires a `.sid` file.        |
 | `scene-midi.toml`                 | MIDI → SID synth. Requires `midi` extra + MIDI source.     |
 | `scene-launcher.toml`             | Launch a native `.prg`/`.crt` and hand over the machine.   |
@@ -130,6 +131,7 @@ Five files exercise the audio path; the first three require `[audio] enabled = t
 | `scene-webcam-audio.toml`         | Mic capture → SID DAC (needs `mic` extra)        |
 | `overlay-spectrum_petscii.toml`   | Mic capture + visual 8-band FFT (needs `mic`)    |
 | `scene-video.toml`           | Video-file soundtrack (needs `video`)      |
+| `scene-video-sampler.toml`        | Video soundtrack via Ultimate Audio FPGA sampler |
 | `scene-waveform.toml`             | Native SID playback of a `.sid` file             |
 | `scene-midi.toml`                 | MIDI input → in-process SID synth (needs `midi`) |
 

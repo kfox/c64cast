@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from .audio import AudioStreamer
     from .backend import C64Backend
     from .modes import DisplayMode
+    from .sampler import UltimateAudioSampler
     from .scenes import Scene
     from .songlengths import LengthsDB
     from .video import WebcamSource
@@ -102,6 +103,13 @@ _EFFECT_CHOICES = ("trails", "pulse", "rgb_shift")
 # real chip (needs `file`). Default "mic" reproduces the pre-field behavior
 # (mic when audio is enabled, else silence). A drift test pins this list.
 _AUDIO_SOURCE_CHOICES = ("none", "mic", "sid")
+
+# Video-audio backend selector ([audio].backend). "dac" = the 4-bit $D418 NMI
+# DAC (every backend; lo-fi, bus-coupled). "sampler" = the U64 "Ultimate Audio"
+# FPGA PCM sampler (high fidelity, off the C64 bus; U64 only — see sampler.py).
+# "auto" = sampler on a sampler-capable U64 with the feature available, else
+# dac. A drift test pins this list.
+_AUDIO_BACKEND_CHOICES = ("auto", "dac", "sampler")
 
 # The scene types (mirrors validate_scene_cfg). Used by the introspection
 # layer's `applies_to` filtering; declared here so SceneCfg metadata can name
@@ -338,7 +346,41 @@ class AudioCfg:
             "the Nyquist to ~5.25 kHz so fricatives/sibilants survive (8000 lost "
             "them); HW-verified safe on NTSC + PAL with no NMI handler overrun. NTSC "
             "can go to ~11025; keep PAL <= ~10500. Rates that overrun the handler are "
-            "rejected at load (see c64.nmi_rate_safety)."
+            "rejected at load (see c64.nmi_rate_safety). Sampler-backend playback uses "
+            "[audio].sampler_sample_rate instead."
+        },
+    )
+    # Video-audio backend. The sampler (U64 "Ultimate Audio" FPGA PCM, see
+    # sampler.py) plays straight from REU with zero SID/$D418/NMI/CPU, so it is
+    # vastly higher fidelity than the 4-bit DAC and immune to the bus-halt
+    # problems the DAC fights. "auto" picks it on a sampler-capable U64 when the
+    # feature is available (else falls back to the DAC); "dac" forces the lo-fi
+    # 4-bit DAC (the only path on TeensyROM); "sampler" forces the sampler and
+    # warns+falls-back to the DAC if it isn't available. Resolved per video scene
+    # in build_scene via resolve_audio_backend; mic/webcam audio stays on the DAC.
+    backend: str = field(
+        default="auto",
+        metadata={
+            "help": "Video-audio backend: 'auto' (sampler on a capable U64, else "
+            "DAC), 'dac' (4-bit $D418 NMI DAC, all backends, lo-fi), or 'sampler' "
+            "(U64 'Ultimate Audio' FPGA PCM, high fidelity, off the C64 bus).",
+            "choices": _AUDIO_BACKEND_CHOICES,
+        },
+    )
+    sampler_sample_rate: int = field(
+        default=44100,
+        metadata={
+            "help": "Sample rate (Hz) for the Ultimate Audio sampler backend. "
+            "1000..48000; default 44100 (CD quality). The FPGA plays at the nearest "
+            "divider of its 6.25 MHz reference (a <0.5% constant pitch offset, "
+            "drift-free)."
+        },
+    )
+    sampler_bits: int = field(
+        default=16,
+        metadata={
+            "help": "PCM bit depth for the Ultimate Audio sampler backend: 8 (signed) "
+            "or 16 (signed little-endian). Default 16."
         },
     )
     mic_sensitivity: float = field(
@@ -2075,6 +2117,40 @@ def resolve_double_buffer(
     return bool(setting)
 
 
+def resolve_audio_backend(
+    setting: str,
+    *,
+    supports_sampler: bool,
+    sampler_available: bool,
+) -> str:
+    """Resolve the [audio].backend selector to a concrete ``"sampler"`` or
+    ``"dac"`` for video-scene audio (mirrors resolve_use_reu_staged's pattern).
+
+    The sampler is the U64 "Ultimate Audio" FPGA PCM path (sampler.py) — high
+    fidelity, entirely off the C64 bus. ``supports_sampler`` is the backend
+    capability (True on the Ultimate, False on TeensyROM); ``sampler_available``
+    is the startup probe's verdict that the firmware exposes + routes it.
+
+      * ``"auto"`` → ``"sampler"`` iff both are true, else ``"dac"``.
+      * ``"sampler"`` → ``"sampler"`` iff both are true; otherwise logs a
+        warning and degrades to ``"dac"`` (never silently silent).
+      * ``"dac"`` → always ``"dac"`` (the lo-fi 4-bit $D418 path)."""
+    if setting == "dac":
+        return "dac"
+    if supports_sampler and sampler_available:
+        return "sampler"
+    if setting == "sampler":
+        log.warning(
+            "[audio].backend = 'sampler' but the Ultimate Audio sampler is "
+            "unavailable on this system (%s) — falling back to the 4-bit DAC. "
+            "Enable 'Map Ultimate Audio $DF20-DFFF' (F2 -> C64 and Cartridge "
+            "Settings) and set Vol Sampler L/R audible (F2 -> Audio Mixer), or "
+            "set [audio].backend = 'dac' to silence this warning.",
+            "no sampler support" if not supports_sampler else "feature not enabled",
+        )
+    return "dac"
+
+
 def _build_display_mode(
     name: str,
     palette_mode: str = "percell",
@@ -2602,6 +2678,24 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
         log.warning("[audio].sample_rate: %s", message)
 
 
+def validate_sampler_cfg(cfg: Config) -> None:
+    """Guard the Ultimate Audio sampler settings ([audio].sampler_bits /
+    sampler_sample_rate). Raises ConfigError on an unusable value. No-op when
+    audio is disabled; the rate is only *used* when [audio].backend resolves to
+    the sampler, but validating unconditionally keeps a typo from lurking until
+    the backend is selected. The ring is length-independent (streaming), so
+    there is no per-clip overflow check — see sampler.py."""
+    if not cfg.audio.enabled:
+        return
+    if cfg.audio.sampler_bits not in (8, 16):
+        raise ConfigError(f"[audio].sampler_bits must be 8 or 16, got {cfg.audio.sampler_bits}")
+    if not 1000 <= cfg.audio.sampler_sample_rate <= 48000:
+        raise ConfigError(
+            "[audio].sampler_sample_rate must be 1000..48000 Hz, got "
+            f"{cfg.audio.sampler_sample_rate}"
+        )
+
+
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:
     """Pre-construction validation for a SceneCfg.
 
@@ -2711,6 +2805,7 @@ def build_scene(
     *,
     is_ensemble: bool = False,
     reu_available: bool = False,
+    sampler_available: bool = False,
 ) -> Scene:
     """Build a single Scene from a SceneCfg.
 
@@ -2731,7 +2826,11 @@ def build_scene(
     `reu_available` is the startup probe's verdict on whether the U64's REU
     is enabled; it resolves the [video].use_reu_staged "auto" setting (see
     resolve_use_reu_staged). Callers that build scenes without a live probe
-    (validation, doctor) leave it False so auto degrades to host-DMA."""
+    (validation, doctor) leave it False so auto degrades to host-DMA.
+
+    `sampler_available` is the probe's verdict on whether the U64's Ultimate
+    Audio sampler is exposed + routed; it resolves [audio].backend for video
+    scenes (see resolve_audio_backend). False without a probe → DAC."""
     from .scenes import BlankScene, SourceScene, VideoScene, WebcamScene
 
     validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
@@ -2805,8 +2904,33 @@ def build_scene(
             backend_supports_reu=backend_supports_reu,
         )
         # Default: audio ON for videos (it's part of the file).
-        # The user can mute one with `audio = false`.
-        scene_audio = None if s.audio is False else audio
+        # The user can mute one with `audio = false`. Distinct name from the
+        # other branches' `scene_audio` because this one may hold the sampler.
+        video_audio: AudioStreamer | UltimateAudioSampler | None = (
+            None if s.audio is False else audio
+        )
+        # Resolve the video-audio backend. On a sampler-capable U64 with the
+        # Ultimate Audio sampler available, swap the shared 4-bit DAC streamer
+        # for a per-scene UltimateAudioSampler (high fidelity, off the C64 bus —
+        # see sampler.py). It satisfies the same scene-facing audio contract
+        # (sample_rate / position_seconds / push_samples / stop), so VideoScene
+        # drives it polymorphically; mic/webcam scenes keep the shared DAC.
+        using_sampler = False
+        if video_audio is not None:
+            backend = resolve_audio_backend(
+                cfg.audio.backend,
+                supports_sampler=api.profile.supports_sampler,
+                sampler_available=sampler_available,
+            )
+            if backend == "sampler":
+                from .sampler import UltimateAudioSampler
+
+                video_audio = UltimateAudioSampler(
+                    api,
+                    sample_rate=cfg.audio.sampler_sample_rate,
+                    bits=cfg.audio.sampler_bits,
+                )
+                using_sampler = True
         assert s.file is not None  # narrowed by validate_scene_cfg
         # A single media URL (YouTube et al.) is resolved here — the ONE
         # resolution path shared with quick playback — so config-driven videos
@@ -2827,7 +2951,7 @@ def build_scene(
                 video_name = title
         scene = VideoScene(
             api,
-            scene_audio,
+            video_audio,
             mode,
             file_spec,
             prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
@@ -2837,7 +2961,14 @@ def build_scene(
         if video_name:
             scene.name = video_name
         if s.target_fps is None:
-            fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
+            # The sampler plays entirely off the C64 bus, so it does NOT impose
+            # the 4-bit DAC's bitmap fps cap (which exists only because the DAC's
+            # NMI + ring DMAWRITEs compete with frame uploads for the bus). Treat
+            # sampler audio as non-digitized so bitmap video gets the muted
+            # half-rate default (30/25) instead of 20 fps. (An HW fps A/B may
+            # raise this further — see reference_ultimate_audio_sampler.)
+            has_digitized_audio = video_audio is not None and not using_sampler
+            fps = _frame_push_default_fps(mode, has_digitized_audio, cfg.ultimate64.system)
             if fps is not None:
                 scene.target_fps = fps
     elif s.type == "waveform":
@@ -3055,6 +3186,7 @@ def scenes_from_config(
     *,
     is_ensemble: bool = False,
     reu_available: bool = False,
+    sampler_available: bool = False,
 ) -> list[Scene]:
     """Build the playlist scene list from cfg.scenes.
 
@@ -3071,7 +3203,10 @@ def scenes_from_config(
     `build_scene` for the rationale.
 
     `reu_available` propagates to `build_scene` to resolve the
-    [video].use_reu_staged "auto" setting (see resolve_use_reu_staged)."""
+    [video].use_reu_staged "auto" setting (see resolve_use_reu_staged).
+
+    `sampler_available` propagates to `build_scene` to resolve the
+    [audio].backend selector for video scenes (see resolve_audio_backend)."""
     from .scenes import VideoScene, WebcamScene
     from .video import _ensure_pyav
 
@@ -3085,7 +3220,14 @@ def scenes_from_config(
 
     base: list[Scene] = [
         build_scene(
-            s, cfg, api, audio, source, is_ensemble=is_ensemble, reu_available=reu_available
+            s,
+            cfg,
+            api,
+            audio,
+            source,
+            is_ensemble=is_ensemble,
+            reu_available=reu_available,
+            sampler_available=sampler_available,
         )
         for s in cfg.scenes
         if not s.follower_only

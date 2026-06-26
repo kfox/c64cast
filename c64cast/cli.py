@@ -515,6 +515,54 @@ def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
     return False
 
 
+def _resolve_sampler_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
+    """Decide whether the U64 "Ultimate Audio" FPGA PCM sampler should back
+    video-scene audio for this system, by asking the U64 whether it's exposed +
+    routed (mirrors `_resolve_reu_available`).
+
+    Returns False (→ the 4-bit DAC) unless [audio].backend is auto/sampler AND
+    the backend has the sampler (supports_sampler) AND a probe is allowed AND
+    the firmware reports it available. `provision_sampler` runs BEFORE this in
+    build_stack, so a box this run just enabled reads available. Any uncertainty
+    (forced dac, --skip-probe, no-sampler backend, failed query, mapped-off)
+    degrades to the DAC so audio is never silently silent."""
+    if cfg.audio.backend == "dac":
+        return False  # forced DAC ignores the probe entirely
+    if not api.profile.supports_sampler:
+        return False  # backend (e.g. TeensyROM) has no FPGA sampler
+    if cfg.debug.skip_probe:
+        log.info(
+            "[audio].backend = %s, but --skip-probe is set — using the 4-bit "
+            "DAC for video audio (sampler undetected).",
+            cfg.audio.backend,
+        )
+        return False
+    from . import doctor
+
+    avail = doctor.sampler_is_available(api)
+    if avail:
+        log.info(
+            "[audio].backend = %s: Ultimate Audio sampler available — "
+            "high-fidelity video audio (FPGA PCM, off the C64 bus).",
+            cfg.audio.backend,
+        )
+        return True
+    if avail is None:
+        log.warning(
+            "[audio].backend = %s: could not read the Ultimate Audio sampler "
+            "state — using the 4-bit DAC for video audio.",
+            cfg.audio.backend,
+        )
+    else:
+        log.info(
+            "[audio].backend = %s: Ultimate Audio sampler not available "
+            "(map disabled / mixer muted / firmware lacks it) — using the "
+            "4-bit DAC for video audio.",
+            cfg.audio.backend,
+        )
+    return False
+
+
 def _coerce_reu_for_backend(cfg: cfgmod.Config, api: C64Backend) -> None:
     """Disable the REU-staged audio/video opt-ins when the backend has no REU.
 
@@ -627,6 +675,10 @@ def build_stack(
     from . import doctor as _doctor
 
     reu_restore = _doctor.provision_reu(api, cfg)
+    # Auto-enable the Ultimate Audio sampler (map $DF20 + unmute Sampler mixer,
+    # live + volatile) when a video scene will use it. Runs BEFORE
+    # _resolve_sampler_available so the probe sees it on; restored at teardown.
+    sampler_restore = _doctor.provision_sampler(api, cfg)
 
     audio = (
         AudioStreamer(
@@ -647,8 +699,15 @@ def build_stack(
     )
 
     reu_available = _resolve_reu_available(cfg, api)
+    sampler_available = _resolve_sampler_available(cfg, api)
     playlist_scenes = cfgmod.scenes_from_config(
-        cfg, api, audio, source, is_ensemble=is_ensemble, reu_available=reu_available
+        cfg,
+        api,
+        audio,
+        source,
+        is_ensemble=is_ensemble,
+        reu_available=reu_available,
+        sampler_available=sampler_available,
     )
 
     # The system video rate (60 NTSC / 50 PAL) is resolved into the
@@ -781,6 +840,8 @@ def build_stack(
         vision_controller=vision_controller,
         reu_available=reu_available,
         reu_restore=reu_restore,
+        sampler_available=sampler_available,
+        sampler_restore=sampler_restore,
         framebuffer=framebuffer,
         preview_window=preview_window,
         recorder=recorder,
@@ -806,6 +867,8 @@ def teardown_stack(stack: SystemStack) -> None:
         # Restore any REU config we auto-provisioned, while the REST session is
         # still open (no-op when nothing was changed; volatile regardless).
         ("REU restore", lambda: _doctor.restore_reu(stack.api, stack.reu_restore)),
+        # Same for the Ultimate Audio sampler map/mixer auto-provisioning.
+        ("sampler restore", lambda: _doctor.restore_sampler(stack.api, stack.sampler_restore)),
         ("U64 reset", stack.api.reset),
         ("API close", stack.api.close),
         ("camera release", lambda: stack.source.release() if stack.source else None),
@@ -1030,6 +1093,7 @@ def main(argv=None) -> int:
         # target system (broken/pitch-dropped audio) before the playlist runs.
         try:
             cfgmod.validate_nmi_sample_rate(cfg)
+            cfgmod.validate_sampler_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5
@@ -1099,6 +1163,7 @@ def main(argv=None) -> int:
                     _st.source,
                     is_ensemble=True,
                     reu_available=_st.reu_available,
+                    sampler_available=_st.sampler_available,
                 )
             )
 
@@ -1132,6 +1197,7 @@ def main(argv=None) -> int:
                     st.source,
                     is_ensemble=loaded.is_ensemble,
                     reu_available=st.reu_available,
+                    sampler_available=st.sampler_available,
                 )
                 new_factory = interstitial_factory(st.api, new_cfg.interstitial)
                 st.playlist.request_reload(new_scenes, new_factory)
@@ -1165,6 +1231,7 @@ def main(argv=None) -> int:
                             st.source,
                             is_ensemble=loaded.is_ensemble,
                             reu_available=st.reu_available,
+                            sampler_available=st.sampler_available,
                         )
                     )
                     for st, p in zip(stacks, loaded.paths, strict=True)

@@ -155,9 +155,12 @@ def _apply_globals(
     system: str | None = None,
     audio_enabled: bool | None = None,
     vision_enabled: bool | None = None,
+    audio_overrides: dict[str, object] | None = None,
 ) -> None:
     """Overlay the essential global settings onto a Config (in place). Each is
-    skipped when None so callers can leave any at its dataclass default."""
+    skipped when None so callers can leave any at its dataclass default.
+    `audio_overrides` is a `{field: value}` map setattr'd onto cfg.audio (e.g.
+    backend / sampler_sample_rate / sampler_bits)."""
     if url:
         cfg.ultimate64.url = url
     if system:
@@ -166,6 +169,8 @@ def _apply_globals(
         cfg.audio.enabled = audio_enabled
     if vision_enabled is not None:
         cfg.vision.enabled = vision_enabled
+    for key, value in (audio_overrides or {}).items():
+        setattr(cfg.audio, key, value)
 
 
 def build_config(
@@ -177,12 +182,18 @@ def build_config(
     system: str | None = None,
     audio_enabled: bool | None = None,
     vision_enabled: bool | None = None,
+    audio_overrides: dict[str, object] | None = None,
 ) -> cfgmod.Config:
     """Assemble a single-scene Config from collected answers. Pure — no I/O —
     so the wizard's terminal shell stays a thin layer over this."""
     cfg = cfgmod.Config()
     _apply_globals(
-        cfg, url=url, system=system, audio_enabled=audio_enabled, vision_enabled=vision_enabled
+        cfg,
+        url=url,
+        system=system,
+        audio_enabled=audio_enabled,
+        vision_enabled=vision_enabled,
+        audio_overrides=audio_overrides,
     )
     cfg.scenes = [make_scene(scene_type, scene_fields, overlays)]
     return cfg
@@ -195,6 +206,7 @@ def build_multi_config(
     system: str | None = None,
     audio_enabled: bool | None = None,
     vision_enabled: bool | None = None,
+    audio_overrides: dict[str, object] | None = None,
     playlist: dict[str, object] | None = None,
     interstitial: dict[str, object] | None = None,
 ) -> cfgmod.Config:
@@ -203,7 +215,12 @@ def build_multi_config(
     setattr onto the matching section. Pure — no I/O."""
     cfg = cfgmod.Config()
     _apply_globals(
-        cfg, url=url, system=system, audio_enabled=audio_enabled, vision_enabled=vision_enabled
+        cfg,
+        url=url,
+        system=system,
+        audio_enabled=audio_enabled,
+        vision_enabled=vision_enabled,
+        audio_overrides=audio_overrides,
     )
     cfg.scenes = list(scenes)
     for key, value in (playlist or {}).items():
@@ -527,6 +544,36 @@ def _prompt_one_scene(
     }
 
 
+def _prompt_audio_backend(q, audio_enabled: bool) -> dict[str, object] | None:  # type: ignore[no-untyped-def]
+    """Ask the video-audio backend when audio is on (the wizard targets the
+    Ultimate, which has the FPGA sampler). Returns an `audio_overrides` dict for
+    `_apply_globals` ({} when audio is off / left at default), or None on cancel."""
+    if not audio_enabled:
+        return {}
+    backend = q.select(
+        "Video-audio backend (sampler = U64 Ultimate Audio FPGA PCM, hi-fi; "
+        "dac = lo-fi 4-bit $D418)",
+        choices=list(cfgmod._AUDIO_BACKEND_CHOICES),
+        default="auto",
+    ).ask()
+    if backend is None:
+        return None
+    overrides: dict[str, object] = {"backend": backend}
+    if backend == "sampler":
+        bits = q.select("Sampler PCM bit depth", choices=["16", "8"], default="16").ask()
+        if bits is None:
+            return None
+        rate = q.text("Sampler sample rate (Hz, 1000..48000)", default="44100").ask()
+        if rate is None:
+            return None
+        try:
+            overrides["sampler_sample_rate"] = int(rate)
+        except ValueError:
+            overrides["sampler_sample_rate"] = 44100
+        overrides["sampler_bits"] = int(bits)
+    return overrides
+
+
 def _prompt_globals(q) -> tuple[str, str] | None:  # type: ignore[no-untyped-def]
     """Ask the U64 URL + video system. Returns (url, system) or None."""
     url = q.text("Ultimate 64 URL", default=cfgmod.Ultimate64Cfg().url).ask()
@@ -694,6 +741,9 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
     scene = _prompt_one_scene(q, audio_enabled=None, ask_audio=True)
     if scene is None:
         return None
+    audio_overrides = _prompt_audio_backend(q, bool(scene["audio_enabled"]))
+    if audio_overrides is None:
+        return None
     globals_ = _prompt_globals(q)
     if globals_ is None:
         return None
@@ -706,6 +756,7 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
         url=url,
         system=system,
         audio_enabled=scene["audio_enabled"],  # type: ignore[arg-type]
+        audio_overrides=audio_overrides,
     )
 
     err = validate(cfg)
@@ -723,6 +774,10 @@ def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ign
 
     scenes = _manage_playlist(q, audio_enabled=audio_enabled)
     if scenes is None:
+        return None
+
+    audio_overrides = _prompt_audio_backend(q, bool(audio_enabled))
+    if audio_overrides is None:
         return None
 
     opts = _prompt_playlist_opts(q, scenes)
@@ -747,6 +802,7 @@ def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ign
         url=url,
         system=system,
         audio_enabled=audio_enabled,
+        audio_overrides=audio_overrides,
         playlist=playlist_overrides,
         interstitial=interstitial_overrides,
     )

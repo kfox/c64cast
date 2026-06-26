@@ -378,10 +378,21 @@ device = -1                         # -1 = system default camera; `--list-device
 [audio]
 enabled = true                      # on by default; --no-audio mutes
 device = -1                         # sounddevice input index; -1 = system default
-sample_rate = 8000                  # SID DAC sample rate; don't change unless you really mean it
+sample_rate = 10500                 # 4-bit $D418 DAC rate; don't change unless you really mean it
+backend = "auto"                    # video audio: "auto" (U64 Ultimate Audio FPGA
+                                    #   sampler when available, else DAC), "dac"
+                                    #   (lo-fi 4-bit $D418, all backends), "sampler"
+                                    #   (force the hi-fi FPGA PCM sampler)
+sampler_sample_rate = 44100         # sampler backend rate (1000..48000); CD quality
+sampler_bits = 16                   # sampler PCM depth: 8 (signed) or 16 (signed LE)
 mic_sensitivity = 1.5               # pre-DAC gain
 noise_gate = 0.05                   # below this RMS, sample is silenced
 ```
+
+On the Ultimate 64, `backend = "auto"` plays a video's soundtrack through the
+**Ultimate Audio FPGA PCM sampler** — far higher fidelity than the 4-bit DAC
+and entirely off the C64 bus. See "High-fidelity video audio" in
+[caveats.md](caveats.md). Mic/webcam audio always uses the 4-bit DAC.
 
 ### `[interstitial]`
 

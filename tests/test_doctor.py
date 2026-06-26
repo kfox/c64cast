@@ -273,10 +273,15 @@ class ReuStatusProbeTest(unittest.TestCase):
     def test_auto_use_reu_staged_is_not_a_hard_requirement(self):
         """The default `use_reu_staged = "auto"` is self-healing (it falls
         back to host-DMA when REU is off), so the doctor must NOT demand REU —
-        even with REU disabled and a bitmap scene, no REU diagnostic fires."""
+        even with REU disabled and a bitmap scene, no REU diagnostic fires.
+
+        backend = "dac" isolates this from the sampler path (the sampler is a
+        separate hard REU reason — its own provisioning test covers that)."""
         loaded = _load("""
             [ultimate64]
             url = "http://fake"
+            [audio]
+            backend = "dac"
             [video]
             use_reu_staged = "auto"
             [[scenes]]
@@ -576,11 +581,16 @@ class ProvisionReuTest(unittest.TestCase):
 
     def test_skipped_without_hard_opt_in(self):
         """use_reu_staged = "auto" is NOT a hard requirement (it self-heals to
-        host-DMA double-buffer), so it must not trigger provisioning."""
+        host-DMA double-buffer), so it must not trigger provisioning.
+
+        backend = "dac" isolates this from the sampler path (which IS a hard
+        REU reason — covered by ProvisionSamplerTest)."""
         api = _FakeApi(reu_status="Disabled", reu_size="2 MB")
         cfg = _cfg("""
             [ultimate64]
             url = "http://fake"
+            [audio]
+            backend = "dac"
             [video]
             use_reu_staged = "auto"
             [[scenes]]

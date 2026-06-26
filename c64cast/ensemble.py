@@ -68,6 +68,16 @@ class SystemStack:
     # no-REU backend, or --skip-probe). The change is volatile firmware state,
     # so a missed restore still clears on the next power-cycle.
     reu_restore: dict[str, str] | None = None
+    # Startup probe verdict: True iff the U64's Ultimate Audio FPGA PCM sampler
+    # is exposed + routed. Resolves [audio].backend for video scenes at
+    # build-time (incl. SIGHUP/control-plane reloads + ensemble followers).
+    # False under --skip-probe / a failed query / a no-sampler backend, so the
+    # backend degrades to the 4-bit DAC rather than producing silence.
+    sampler_available: bool = False
+    # Sampler config fields auto-provisioned for this run (doctor.provision_sampler),
+    # composite-keyed "category\x1ffield" -> original, restored at teardown. None
+    # when nothing changed (already enabled, no-sampler backend, or --skip-probe).
+    sampler_restore: dict[str, str] | None = None
     framebuffer: Framebuffer | None = None
     preview_window: PreviewWindow | None = None
     recorder: StreamRecorder | None = None
