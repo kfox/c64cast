@@ -46,6 +46,7 @@ from .c64 import CIA1, SCREEN
 from .modes import BitmapDisplayMode, DisplayMode
 from .palette import ColorFitAccumulator, ColorMapAccumulator
 from .profiler import get_profiler
+from .sampler import UltimateAudioSampler
 from .video import (
     AVFileSource,
     WebcamSource,
@@ -64,6 +65,13 @@ if TYPE_CHECKING:
     from .overlays import Overlay
 
 log = logging.getLogger(__name__)
+
+# A scene's audio object is either the shared 4-bit DAC streamer or (video
+# scenes on a sampler-capable U64) the Ultimate Audio FPGA sampler. Both
+# satisfy the scene-facing contract (sample_rate / position_seconds / stop /
+# push_samples / set_pre_emphasis); backend-specific bring-up branches narrow
+# via isinstance.
+SceneAudio = AudioStreamer | UltimateAudioSampler
 
 _C64_ASPECT = 320 / 200
 
@@ -135,7 +143,7 @@ class Scene:
     def __init__(
         self,
         api: C64Backend,
-        audio: AudioStreamer | None,
+        audio: SceneAudio | None,
         display_mode: DisplayMode | None,
         name: str,
     ):
@@ -291,7 +299,9 @@ class WebcamScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
-        if self.audio:
+        # The webcam mic path is always the 4-bit DAC streamer (the sampler is a
+        # video-only backend), so narrow to AudioStreamer for start_mic.
+        if isinstance(self.audio, AudioStreamer):
             # Mirror VideoScene: when the display mode installs the
             # bank-swap merged dispatcher at $0314 (audio_reu_pump_active
             # flag on a bitmap mode with use_reu_staged), the mic REU pump
@@ -535,8 +545,8 @@ class BlankScene(Scene):
         super().setup()
         self.start_time = time.time()
         # Only start mic capture if the scene opted in *and* the global
-        # audio is enabled — same model as WebcamScene.
-        if self.audio:
+        # audio is enabled — same model as WebcamScene. Always the DAC streamer.
+        if isinstance(self.audio, AudioStreamer):
             self.audio.start_mic(
                 self.audio_cfg.device, self.audio_cfg.mic_sensitivity, self.audio_cfg.noise_gate
             )
@@ -846,7 +856,7 @@ class VideoScene(Scene):
     def __init__(
         self,
         api: C64Backend,
-        audio: AudioStreamer | None,
+        audio: SceneAudio | None,
         display_mode: DisplayMode,
         file: str,
         prepend_alignment_marker: bool = False,
@@ -1044,7 +1054,15 @@ class VideoScene(Scene):
                 self.display_mode.set_color_map(None)
 
         has_audio = (self.source.a_stream is not None) and (self.audio is not None)
-        if has_audio and getattr(self.audio, "use_reu_pump", False):
+        if has_audio and isinstance(self.audio, UltimateAudioSampler):
+            # Ultimate Audio FPGA sampler path: bring up the streaming REU ring
+            # (prefill + gate the A↔B loop), then feed the demuxer's decoded
+            # int16 straight to its push_samples. No SID/$D418/NMI bring-up —
+            # the FPGA plays from REU off the C64 bus. position_seconds()/stop()
+            # are polymorphic, so _clock_s() + teardown() are unchanged.
+            self.audio.start()
+            self.source.start(audio_push=self.audio.push_samples)
+        elif has_audio and getattr(self.audio, "use_reu_pump", False):
             # REU-staged path: pre-decode entire audio track, 4-bit encode
             # with the same gain/dither pipeline as the host-DMA path uses
             # per sample, then upload to REU. Video frames still come from
@@ -1052,7 +1070,7 @@ class VideoScene(Scene):
             # demuxer SKIPS audio decode entirely (otherwise it competes
             # with video decode in the same thread for CPU, causing
             # noticeable video lag at scene start until the demuxer catches up).
-            assert self.audio is not None
+            assert isinstance(self.audio, AudioStreamer)  # DAC streamer (not sampler)
             audio_4bit = self._preencode_audio_for_reu()
             # Bitmap display modes (hires/mhires) push ~300 KB/sec via host
             # DMAWRITE which halts the C64 bus ~30 % of the time. NMI service
@@ -1093,7 +1111,7 @@ class VideoScene(Scene):
             )
             self.source.start(audio_push=None)
         elif has_audio:
-            assert self.audio is not None
+            assert isinstance(self.audio, AudioStreamer)  # DAC streamer (not sampler)
             self.audio.start_for_external_source()
             self.source.start(audio_push=self.audio.push_samples)
         else:
@@ -1114,7 +1132,9 @@ class VideoScene(Scene):
         brief blip at scene start, then real content begins. Used to
         anchor Cam Link captures to a known source-timeline-zero for
         cross-capture comparison."""
-        assert self.audio is not None
+        # The REU-pump pre-encode is a DAC-streamer-only path (the sampler
+        # streams 16-bit PCM through its own ring); narrow to AudioStreamer.
+        assert isinstance(self.audio, AudioStreamer)
         sr = self.audio.sample_rate
         # Decode full audio to int16 mono at sample rate.
         int16 = decode_audio_full(self.filepath, sr)
@@ -1162,6 +1182,12 @@ class VideoScene(Scene):
 
     def process_frame(self, current_time: float) -> bool:
         if self.source is None or self.source.finished:
+            # Tell a sampler the source is exhausted so position_seconds()
+            # clamps to the pushed total (no-op for the DAC streamer). Idempotent.
+            if self.audio is not None:
+                mark_eof = getattr(self.audio, "mark_eof", None)
+                if callable(mark_eof):
+                    mark_eof()
             return False
 
         clock_s = self._clock_s()

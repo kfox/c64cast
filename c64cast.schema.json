@@ -153,8 +153,28 @@
         },
         "sample_rate": {
           "type": "integer",
-          "description": "Audio sample rate in Hz fed to the SID DAC. Default 10500 lifts the Nyquist to ~5.25 kHz so fricatives/sibilants survive (8000 lost them); HW-verified safe on NTSC + PAL with no NMI handler overrun. NTSC can go to ~11025; keep PAL <= ~10500. Rates that overrun the handler are rejected at load (see c64.nmi_rate_safety).",
+          "description": "Audio sample rate in Hz fed to the SID DAC. Default 10500 lifts the Nyquist to ~5.25 kHz so fricatives/sibilants survive (8000 lost them); HW-verified safe on NTSC + PAL with no NMI handler overrun. NTSC can go to ~11025; keep PAL <= ~10500. Rates that overrun the handler are rejected at load (see c64.nmi_rate_safety). Sampler-backend playback uses [audio].sampler_sample_rate instead.",
           "default": 10500
+        },
+        "backend": {
+          "type": "string",
+          "description": "Video-audio backend: 'auto' (sampler on a capable U64, else DAC), 'dac' (4-bit $D418 NMI DAC, all backends, lo-fi), or 'sampler' (U64 'Ultimate Audio' FPGA PCM, high fidelity, off the C64 bus).",
+          "enum": [
+            "auto",
+            "dac",
+            "sampler"
+          ],
+          "default": "auto"
+        },
+        "sampler_sample_rate": {
+          "type": "integer",
+          "description": "Sample rate (Hz) for the Ultimate Audio sampler backend. 1000..48000; default 44100 (CD quality). The FPGA plays at the nearest divider of its 6.25 MHz reference (a <0.5% constant pitch offset, drift-free).",
+          "default": 44100
+        },
+        "sampler_bits": {
+          "type": "integer",
+          "description": "PCM bit depth for the Ultimate Audio sampler backend: 8 (signed) or 16 (signed little-endian). Default 16.",
+          "default": 16
         },
         "mic_sensitivity": {
           "type": "number",

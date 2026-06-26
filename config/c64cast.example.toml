@@ -209,6 +209,17 @@ double_buffer = "auto"              # Host-DMA double-buffer (page flip) for
 enabled = true                      # on by default; --no-audio mutes
 device = -1                         # -1 = system default input; -L lists indices
 sample_rate = 10500                 # SID DAC rate; 10500 keeps fricatives (>8000 Nyquist). NTSC≤~11025, PAL≤~10500
+backend = "auto"                    # video-audio backend: "auto" = U64 "Ultimate
+                                    # Audio" FPGA PCM sampler when available (high
+                                    # fidelity, off the C64 bus), else the 4-bit
+                                    # DAC; "dac" forces the lo-fi $D418 DAC (all
+                                    # backends); "sampler" forces the sampler
+                                    # (warns + falls back to DAC if unavailable).
+                                    # mic/webcam audio always uses the DAC.
+sampler_sample_rate = 44100         # Hz for the sampler backend (1000..48000).
+                                    # 44100 = CD quality (the FPGA plays at the
+                                    # nearest divider of its 6.25 MHz reference).
+sampler_bits = 16                   # sampler PCM depth: 8 (signed) or 16 (signed LE)
 mic_sensitivity = 1.5
 noise_gate = 0.05
 dither = false                      # TPDF dither pre-quantize. false (default

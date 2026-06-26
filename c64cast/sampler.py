@@ -277,6 +277,11 @@ class UltimateAudioSampler:
     reads a stale/lapped byte. No servo: the FPGA clock is exact.
     """
 
+    #: Marker so scenes can duck-type the sampler apart from AudioStreamer
+    #: (parallel to the streamer's ``use_reu_pump`` attribute) without importing
+    #: this module — VideoScene.setup branches on ``getattr(audio, "is_sampler")``.
+    is_sampler = True
+
     def __init__(
         self,
         api: C64Backend,
@@ -433,6 +438,12 @@ class UltimateAudioSampler:
         """Source exhausted — clamp ``position_seconds`` to the pushed total so
         an over-running wall clock can't desync the (now-ended) video."""
         self._eof = True
+
+    def set_pre_emphasis(self, amount: float | None) -> None:
+        """No-op: pre-emphasis is a 4-bit-DAC fidelity aid, irrelevant to the
+        16-bit sampler path. Present so the sampler satisfies the same
+        scene-facing contract as AudioStreamer (Scene.setup calls this on the
+        scene's audio object regardless of backend)."""
 
     def _read_consumed_bytes(self) -> int:
         if not self._running:

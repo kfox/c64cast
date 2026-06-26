@@ -5,18 +5,52 @@ why. Read this before you spend an evening debugging "it's almost
 working, but…". For end-user options see [usage.md](usage.md); for the
 architecture overview see [CLAUDE.md](../CLAUDE.md).
 
-## Audio is intentionally lo-fi
+## Audio is intentionally lo-fi (the 4-bit `$D418` DAC)
 
 The SID DAC streaming path writes 4-bit samples (0-15) to the SID volume
-nibble at $D418 at 8 kHz. That's an objectively bad audio format — but
+nibble at $D418 at ~10.5 kHz. That's an objectively bad audio format — but
 it's the format a real C64 plays back. You can raise `[audio]
-sample_rate` in config, but the C64-side NMI is sized for 8 kHz and
+sample_rate` in config, but the C64-side NMI is sized for that rate and
 nothing in the pipeline resamples; a different rate just plays at the
 wrong pitch.
 
 There is no master volume, no SID filter, no anti-aliasing. The noise
 gate (`noise_gate`) and pre-DAC gain (`mic_sensitivity`) are the only
 shaping knobs. Hum and hiss are part of the aesthetic.
+
+## High-fidelity video audio: the Ultimate Audio FPGA sampler (U64)
+
+On the Ultimate 64 the lo-fi DAC above is **not** the default for *video*
+playback. The U64 firmware exposes an "Ultimate Audio" FPGA PCM sampler at
+`$DF20-$DFFF` that plays 8/16-bit PCM (up to 48 kHz) **directly out of REU
+SDRAM** — the FPGA fetches and converts the samples itself, with **zero**
+SID / `$D418` / NMI / CPU / turbo involvement. So it sidesteps every bus-halt
+and badline problem the 4-bit DAC fights (it kept the DAC capped at ~16 kHz and
+20 fps), and it sounds like an actual sound card instead of a digi-player.
+
+`[audio].backend` selects it: `"auto"` (default) uses the sampler on a capable
+U64 and falls back to the 4-bit DAC otherwise; `"dac"` forces the lo-fi DAC
+(the only path on the TeensyROM, which has no FPGA sampler); `"sampler"` forces
+it and warns + falls back to the DAC if it isn't available. `sampler_sample_rate`
+(default 44100) and `sampler_bits` (8 or 16, default 16) tune quality. Mic and
+webcam audio always use the 4-bit DAC.
+
+Implementation (`c64cast/sampler.py`): a **streaming REU ring**. Channel 0 is
+programmed as an A↔B loop over a region of REU; a host writer thread REUWRITEs
+decoded PCM ahead of a *wall-clock-computed* read head and wraps. The FPGA
+sample clock is crystal-exact, so the read position is computed (never read
+back) and the whole thing is open-loop and drift-free — no servo, no governor,
+no NMI. The sample rate is the FPGA's exact `6.25 MHz / divider`, a constant
+<0.5 % offset from the nominal request (inaudible, and drift-free because A/V
+both ride the same clock). The ring lives in REU SDRAM, so a sampler run also
+provisions the REU (16 MB) — which makes overlay-free bitmap video resolve to
+the tear-free REU bank-swap path; the sampler installs no `$0314` IRQ, so the
+two coexist with no contention.
+
+Prerequisites on the U64 (auto-provisioned live + restored at teardown when
+missing, or set them yourself in F2): **C64 and Cartridge Settings → Map Ultimate
+Audio $DF20-DFFF = Enabled**, and **Audio Mixer → Vol Sampler L / Vol Sampler R**
+audible (0 dB, not OFF). `c64cast --doctor` reports the sampler's state.
 
 ## SID playback uses a C64-side player PRG, not `runners:sidplay`
 

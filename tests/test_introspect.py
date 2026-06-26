@@ -181,6 +181,16 @@ class ChoiceVocabSyncTest(unittest.TestCase):
         self.assertEqual(meta["choices"], cfgmod._AUDIO_SOURCE_CHOICES)
         self.assertEqual(meta["applies_to"], ("generative",))
 
+    def test_audio_backend_choices_pinned(self):
+        # The video-audio backend selector is a fixed literal set (no registry):
+        # pin it so a new value can't be added to AudioCfg.backend metadata
+        # without resolve_audio_backend + build_scene learning to honor it.
+        self.assertEqual(cfgmod._AUDIO_BACKEND_CHOICES, ("auto", "dac", "sampler"))
+        from dataclasses import fields
+
+        meta = {f.name: f for f in fields(cfgmod.AudioCfg)}["backend"].metadata
+        self.assertEqual(meta["choices"], cfgmod._AUDIO_BACKEND_CHOICES)
+
     def test_scene_types(self):
         self.assertEqual(set(cfgmod.SCENE_TYPES), set(introspect.scene_type_names()))
 

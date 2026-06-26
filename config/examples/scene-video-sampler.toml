@@ -1,0 +1,44 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: video playback with HIGH-FIDELITY audio via the U64's
+# "Ultimate Audio" FPGA PCM sampler (instead of the lo-fi 4-bit $D418 DAC).
+#
+# The sampler plays 8/16-bit PCM straight out of REU SDRAM with ZERO
+# SID/$D418/NMI/CPU involvement — so it is immune to the bus-halt problems the
+# 4-bit DAC fights, and sounds vastly better. It's U64-only (the TeensyROM has
+# no FPGA sampler and stays on the DAC). See sampler.py + docs/caveats.md.
+#
+# Requires the `video` extra (PyAV):
+#   pip install -e .[video]
+#
+# Prerequisites on the U64 (auto-provisioned live for this run when missing,
+# and restored at teardown — but you can also set them yourself in the F2 menu):
+#   * C64 and Cartridge Settings -> Map Ultimate Audio $DF20-DFFF = Enabled
+#   * Audio Mixer -> Vol Sampler L / Vol Sampler R audible (0 dB, not OFF)
+# The sampler's PCM ring lives in REU SDRAM, so the REU is enabled + sized to
+# 16 MB for this run too (also auto-provisioned + restored). With the sampler
+# off the C64 bus, video defaults to the tear-free REU bank-swap path.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-video-sampler.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[audio]
+enabled = true                # required for the soundtrack to be heard
+backend = "sampler"           # force the FPGA PCM sampler (default "auto" picks
+                              #   it automatically on a capable U64)
+sampler_sample_rate = 44100   # CD quality
+sampler_bits = 16             # 16-bit signed PCM (or 8 for signed 8-bit)
+
+[playlist]
+interleave_videos = false     # the single scene IS the video
+
+[[scenes]]
+type = "video"
+display = "mhires"            # bitmap video; sampler audio leaves the bus free
+# `file =` accepts a path, directory, glob, or comma-separated combination;
+# each setup picks a random match. Omit it to scan assets/videos/.
+file = "assets/videos/your-video.mp4"
+# No `duration_s` — video scenes run until EOF (the loader rejects the field);
+# single-scene mode loops the file forever.

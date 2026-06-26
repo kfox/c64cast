@@ -428,6 +428,9 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
                 # Catches the U2+ "emulated SID disabled" case where every
                 # tune is silent while video + the oscilloscope still work.
                 out.extend(_probe_sid_status(name, cfg, api))
+                # Probe the Ultimate Audio sampler state when the config will
+                # use it for video audio (backend auto/sampler + video scene).
+                out.extend(_probe_sampler_status(name, cfg, api))
         finally:
             api.close()
     return out
@@ -469,6 +472,15 @@ def _wants_reu(cfg: object) -> tuple[bool, list[str]]:
     # `is True` excludes both the "auto" string and any other truthy value.
     if video is not None and getattr(video, "use_reu_staged", False) is True:
         reasons.append("[video].use_reu_staged = true")
+    # The Ultimate Audio sampler streams its PCM ring out of REU SDRAM, so a run
+    # that will use it needs the REU enabled + sized. Provisioning it also makes
+    # "auto" video resolve to the tear-free REU bank-swap path — and since the
+    # sampler runs off the C64 bus with no $0314 IRQ, REU-staged video and the
+    # sampler coexist cleanly (no NMI/IRQ contention). Forward ref to
+    # _wants_sampler (both are module-level; resolved at call time).
+    wants_samp, _ = _wants_sampler(cfg)
+    if wants_samp:
+        reasons.append("[audio].backend sampler (REU-backed PCM ring)")
     return bool(reasons), reasons
 
 
@@ -625,6 +637,173 @@ def reu_is_enabled(api: object) -> bool | None:
     if err is not None or not section:
         return None
     return section.get(_REU_ENABLED_FIELD) == "Enabled"
+
+
+# ---- Ultimate Audio FPGA PCM sampler ($DF20-$DFFF) ----------------------
+# The $DF20 I/O map lives in "C64 and Cartridge Settings"; the stereo mixer
+# routing/level in "Audio Mixer". The presence of these config keys is how we
+# detect that the firmware exposes the sampler at all (sampler.py).
+_SAMPLER_MAP_CATEGORY = _REU_CONFIG_CATEGORY  # "C64 and Cartridge Settings"
+_SAMPLER_MAP_FIELD = "Map Ultimate Audio $DF20-DFFF"
+_SAMPLER_MIXER_CATEGORY = "Audio Mixer"
+_SAMPLER_VOL_FIELDS = ("Vol Sampler L", "Vol Sampler R")
+# The mixer volume enum's audible "0 dB" label. The firmware's volumes[] table
+# (u64_config.cc) stores it with a LEADING SPACE (" 0 dB", index 24); the REST
+# GET returns it verbatim and the PUT expects the same label, so match it.
+_SAMPLER_VOL_AUDIBLE = " 0 dB"
+_SAMPLER_VOL_OFF = "OFF"
+# Composite restore-key separator: provision_sampler spans two config
+# categories (map vs mixer), so the restore dict keys are "category\x1ffield".
+_RESTORE_SEP = "\x1f"
+
+
+def read_sampler_config(
+    api: object,
+) -> tuple[bool | None, bool | None, dict[str, str]]:
+    """Read the U64's Ultimate Audio sampler state over REST.
+
+    Returns ``(present, map_enabled, volumes)``:
+      * ``present`` — True if the firmware exposes the sampler config keys (it
+        has the feature), False if absent, None if the REST query failed.
+      * ``map_enabled`` — the $DF20 I/O-map enable (None when not present).
+      * ``volumes`` — current ``{field: value}`` for the Sampler mixer channels
+        (for restore). Reuses `_fetch_config_section` so it tracks firmware
+        response-shape variants identically to the REU/SID probes."""
+    cart, _d1, err1 = _fetch_config_section(
+        api, _SAMPLER_MAP_CATEGORY, field_hint=_SAMPLER_MAP_FIELD
+    )
+    mixer, _d2, err2 = _fetch_config_section(
+        api, _SAMPLER_MIXER_CATEGORY, field_hint=_SAMPLER_VOL_FIELDS[0]
+    )
+    if err1 is not None or err2 is not None:
+        return None, None, {}
+    map_raw = cart.get(_SAMPLER_MAP_FIELD)
+    present = (map_raw is not None) and all(f in mixer for f in _SAMPLER_VOL_FIELDS)
+    if not present:
+        return False, None, {}
+    volumes: dict[str, str] = {}
+    for field in _SAMPLER_VOL_FIELDS:
+        v = mixer.get(field)
+        if isinstance(v, str):
+            volumes[field] = v
+    return True, (map_raw == "Enabled"), volumes
+
+
+def sampler_is_available(api: object) -> bool | None:
+    """True iff the firmware exposes the Ultimate Audio sampler AND it is
+    currently usable (the $DF20 I/O map is enabled and at least one Sampler
+    mixer channel is not OFF). None when the REST query failed; False when the
+    feature is absent / mapped-off / muted.
+
+    Used by `cli._resolve_sampler_available` to resolve [audio].backend — None
+    or False degrades to the 4-bit DAC. Run AFTER `provision_sampler` so a box
+    this run just enabled reads as available."""
+    present, map_enabled, volumes = read_sampler_config(api)
+    if present is None:
+        return None
+    if not present:
+        return False
+    audible = any(v != _SAMPLER_VOL_OFF for v in volumes.values())
+    return bool(map_enabled) and audible
+
+
+def _wants_sampler(cfg: object) -> tuple[bool, list[str]]:
+    """Return (wants_sampler, reasons). The run wants the sampler when audio is
+    enabled, [audio].backend is auto/sampler (not the forced DAC), and there's a
+    video scene to play through it (the only scene type wired to the sampler)."""
+    reasons: list[str] = []
+    # Duck-type to avoid a circular doctor<->config import (see _wants_reu).
+    audio = getattr(cfg, "audio", None)
+    if audio is None or not getattr(audio, "enabled", False):
+        return False, reasons
+    backend = getattr(audio, "backend", "auto")
+    if backend not in ("auto", "sampler"):
+        return False, reasons
+    scenes = getattr(cfg, "scenes", None) or []
+    if any(getattr(s, "type", None) == "video" for s in scenes):
+        reasons.append(f"[audio].backend = {backend!r} + video scene(s)")
+    return bool(reasons), reasons
+
+
+def provision_sampler(api: object, cfg: object) -> dict[str, str] | None:
+    """Auto-enable the Ultimate Audio sampler for a run that will use it —
+    LIVE + VOLATILE (mirrors `provision_reu`). Enables the $DF20 I/O map if off
+    and unmutes the Sampler mixer channels if OFF, capturing the originals for
+    `restore_sampler` at teardown. Returns the restore dict (composite keys
+    ``"category\\x1ffield" -> original``) or None when nothing was changed.
+
+    Gated on ``profile.supports_sampler`` + not ``--skip-probe`` + `_wants_sampler`.
+    The change is NOT saved to flash, so it reverts on power-cycle even if the
+    restore is missed. Best-effort: a REST failure logs and returns what changed
+    so far (so teardown still restores it)."""
+    profile = getattr(api, "profile", None)
+    if profile is None or not getattr(profile, "supports_sampler", False):
+        return None
+    if getattr(getattr(cfg, "debug", None), "skip_probe", False):
+        return None
+    wants, reasons = _wants_sampler(cfg)
+    if not wants:
+        return None
+
+    import requests
+
+    present, map_enabled, volumes = read_sampler_config(api)
+    if present is None:
+        log.warning(
+            "sampler: config wants the Ultimate Audio sampler (%s) but its state "
+            "could not be read — leaving it unchanged.",
+            ", ".join(reasons),
+        )
+        return None
+    if not present:
+        # Firmware doesn't expose the sampler; resolve falls back to the DAC.
+        return None
+
+    restore: dict[str, str] = {}
+    if not map_enabled:
+        try:
+            api.put_config_item(_SAMPLER_MAP_CATEGORY, _SAMPLER_MAP_FIELD, "Enabled")  # type: ignore[attr-defined]
+        except requests.RequestException as e:
+            log.warning("sampler: could not enable %s over REST: %s", _SAMPLER_MAP_FIELD, e)
+            return restore or None
+        restore[f"{_SAMPLER_MAP_CATEGORY}{_RESTORE_SEP}{_SAMPLER_MAP_FIELD}"] = "Disabled"
+
+    for fieldname, cur in volumes.items():
+        if cur != _SAMPLER_VOL_OFF:
+            continue
+        try:
+            api.put_config_item(_SAMPLER_MIXER_CATEGORY, fieldname, _SAMPLER_VOL_AUDIBLE)  # type: ignore[attr-defined]
+        except requests.RequestException as e:
+            log.warning("sampler: could not unmute %s: %s", fieldname, e)
+        else:
+            restore[f"{_SAMPLER_MIXER_CATEGORY}{_RESTORE_SEP}{fieldname}"] = cur
+
+    if restore:
+        log.info(
+            "sampler: Ultimate Audio enabled for this run (%s) — live, volatile "
+            "(reverts on power-cycle), restored at teardown.",
+            ", ".join(reasons),
+        )
+    return restore or None
+
+
+def restore_sampler(api: object, restore: dict[str, str] | None) -> None:
+    """Put the sampler config fields changed by `provision_sampler` back to
+    their originals at teardown. No-op when nothing was provisioned. Best-effort
+    — a failed restore just logs (the change was volatile anyway)."""
+    if not restore:
+        return
+
+    import requests
+
+    for key, value in restore.items():
+        category, _, fieldname = key.partition(_RESTORE_SEP)
+        try:
+            api.put_config_item(category, fieldname, value)  # type: ignore[attr-defined]
+        except requests.RequestException as e:
+            log.warning("sampler: could not restore %s = %s: %s", fieldname, value, e)
+        else:
+            log.info("sampler: restored %s = %s", fieldname, value)
 
 
 # The Ultimate's emulated-SID enable lives here. Both U64 and U2+ expose it.
@@ -873,6 +1052,105 @@ def _probe_reu_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
                 "RAM Expansion Unit -> Enabled (size 16 MB). Save and reboot. "
                 "Alternatively, turn off the REU opt-in in your TOML."
             ),
+        )
+    ]
+
+
+def _probe_sampler_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+    """If the config will use the Ultimate Audio sampler for video audio, check
+    the U64's sampler state via REST. Returns an empty list when not wanted.
+    Emits:
+      * ok    — sampler mapped + audible (high-fidelity path ready), OR mapped
+                off / muted but the run will auto-enable it live, OR backend is
+                'auto' on hardware without the feature (falls back to the DAC)
+      * warn  — REST query failed, or an explicit 'sampler' on a no-sampler backend
+      * error — explicit 'sampler' but the U64 firmware lacks the feature
+    """
+    wants, reasons = _wants_sampler(cfg)
+    if not wants:
+        return []
+
+    subject = f"{name} (Ultimate Audio sampler)"
+    reason_str = ", ".join(reasons)
+    backend = getattr(getattr(cfg, "audio", None), "backend", "auto")
+    supports = bool(getattr(getattr(api, "profile", None), "supports_sampler", False))
+
+    if not supports:
+        # A non-sampler backend (TeensyROM): 'auto' silently uses the DAC; an
+        # explicit 'sampler' can't be honored.
+        if backend == "sampler":
+            return [
+                Diagnostic(
+                    level="warn",
+                    category="connectivity",
+                    subject=subject,
+                    message="[audio].backend = 'sampler' but this backend has no "
+                    "FPGA sampler — video audio uses the 4-bit DAC.",
+                    hint="Set [audio].backend = 'dac' or 'auto' for this backend.",
+                )
+            ]
+        return []
+
+    present, map_enabled, volumes = read_sampler_config(api)
+    if present is None:
+        return [
+            Diagnostic(
+                level="warn",
+                category="connectivity",
+                subject=subject,
+                message="REST query for the Ultimate Audio sampler state failed.",
+                hint=f"Config will use the sampler ({reason_str}). If video audio is "
+                "silent, check F2 -> C64 and Cartridge Settings -> Map Ultimate "
+                "Audio $DF20-DFFF, and F2 -> Audio Mixer -> Vol Sampler L/R.",
+            )
+        ]
+    if not present:
+        if backend == "sampler":
+            return [
+                Diagnostic(
+                    level="error",
+                    category="connectivity",
+                    subject=subject,
+                    message="[audio].backend = 'sampler' but this U64 firmware does "
+                    "not expose the Ultimate Audio sampler.",
+                    hint="Update the U64 firmware, or set [audio].backend = 'dac' / "
+                    "'auto' (auto falls back to the 4-bit DAC).",
+                )
+            ]
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message="firmware has no Ultimate Audio sampler; [audio].backend = "
+                "auto falls back to the 4-bit DAC.",
+            )
+        ]
+
+    audible = any(v != _SAMPLER_VOL_OFF for v in volumes.values())
+    if map_enabled and audible:
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message=f"Ultimate Audio mapped + audible — high-fidelity video "
+                f"audio ({reason_str}).",
+            )
+        ]
+    off_bits = []
+    if not map_enabled:
+        off_bits.append("$DF20 I/O map disabled")
+    if not audible:
+        off_bits.append("Sampler mixer channels OFF")
+    return [
+        Diagnostic(
+            level="ok",
+            category="connectivity",
+            subject=subject,
+            message=f"{' + '.join(off_bits)}; will be enabled live for this run ({reason_str}).",
+            hint="Auto-enable is volatile (reverts on power-cycle) and restored at "
+            "teardown. Set [audio].backend = 'dac' to use the 4-bit DAC instead.",
         )
     ]
 
