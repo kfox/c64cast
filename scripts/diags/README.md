@@ -31,13 +31,14 @@ These are **dev tools, not part of the shipped package** — they live under
   | `C64_DIAG_U2P_URL` | `http://192.168.2.65` | U2+ base URL |
   | `C64_DIAG_CV2` | `0` | Cam Link cv2 capture index |
   | `C64_DIAG_AVF_AUDIO` | `:3` | Cam Link avfoundation audio device |
+  | `C64_DIAG_VERIFY_WIDTH` | `960` | longest-edge px for captures saved via `save_image` (downscale default) |
 
 ## Tools
 
 | Tool | What it does |
 |------|--------------|
 | [`u64_probe.py`](u64_probe.py) | REST reachability + DMA-service (port 64) check; `--reset` / `--reset-only`. |
-| [`hdmi_capture.py`](hdmi_capture.py) | Grab still frame(s) from the Cam Link (VIC ground-truth) → `out/`. |
+| [`hdmi_capture.py`](hdmi_capture.py) | Grab still frame(s) from the Cam Link (VIC ground-truth) → `out/`. Downscales to `--width` (default 960px) so captures read back cheaply; `--full` keeps native 1080p for pixel-peeking. New capture tools should write via `_diaglib.save_image` for the same default. |
 | [`audio_capture.py`](audio_capture.py) | Record Cam Link audio via ffmpeg/avfoundation + `volumedetect` level summary. |
 | [`run_and_capture.py`](run_and_capture.py) | Launch c64cast with a config, capture A/V across the run, then stop + reset. |
 | [`make_fixtures.py`](make_fixtures.py) | Generate synthetic tone/clip/test-pattern A/V fixtures for the video path. |

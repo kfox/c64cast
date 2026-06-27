@@ -49,6 +49,35 @@ def stamped(name: str, ext: str) -> Path:
     return out_dir() / f"{name}_{ts}.{ext}"
 
 
+#: Default longest-edge (px) for verification captures written via ``save_image``.
+#: The Cam Link grabs 1080p, but the C64 active area is only 320x200 — a frame
+#: scaled to ~960px still resolves individual glyphs / per-cell colour / tearing,
+#: while costing a fraction of the image tokens a full 1080p PNG does when read
+#: back into an agent's context. Pixel-peeping (fine bottom-row glyph shimmer)
+#: can opt back to native with ``save_image(..., max_width=0)`` / a tool ``--full``.
+DEFAULT_VERIFY_WIDTH = int(os.environ.get("C64_DIAG_VERIFY_WIDTH", "960"))
+
+
+def save_image(frame, path, *, max_width: int = DEFAULT_VERIFY_WIDTH) -> tuple[int, int]:
+    """Write ``frame`` (a cv2 BGR ndarray) to ``path``, downscaled so its longest
+    edge is at most ``max_width`` px (``0`` = keep native). Returns the written
+    ``(w, h)``. Use this instead of a bare ``cv2.imwrite`` for any capture an
+    agent will Read back — a half-size frame is enough to verify what the VIC
+    rendered and keeps captures from dominating the context window."""
+    import cv2  # local import: keep module import cheap for non-capture tools
+
+    h, w = frame.shape[:2]
+    longest = max(w, h)
+    if max_width and longest > max_width:
+        scale = max_width / longest
+        frame = cv2.resize(
+            frame, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA
+        )
+        h, w = frame.shape[:2]
+    cv2.imwrite(str(path), frame)
+    return w, h
+
+
 # ---- hardware defaults (all env-overridable) ------------------------------
 
 #: Real Ultimate-64 (see auto-memory u64-hardware). Override: C64_DIAG_URL.
