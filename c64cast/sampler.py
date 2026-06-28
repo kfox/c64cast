@@ -49,6 +49,15 @@ SAMPLER_IO_BASE = 0xDF20  # channel 0 base; reads here give the IRQ status reg
 SAMPLER_VERSION_REG = 0xDF21  # reads $10 when the sampler is present
 SAMPLER_CHANNEL_STRIDE = 0x20  # each channel occupies 32 consecutive bytes
 SAMPLER_NUM_CHANNELS = 7
+# Nominal sampler reference: the FPGA's voice engine runs at an effective
+# 50 MHz on every platform (a fractional prescaler normalizes 50/62.5/66.66/100
+# MHz down to it) and produces one sample tick per 8 cycles, so the rate divider
+# is REF/rate with REF = 50 MHz / 8 = 6.25 MHz (per the firmware's sampler2.vhd).
+# This is the DESIGN value; a given unit's real rate can deviate (HW-measured on
+# one U64-II: ~2.1% slow, i.e. an effective REF ≈ 6.12 MHz). When the sampler
+# audio drifts against the host-clock-paced video, override the effective REF via
+# [audio].sampler_clock_hz (see config) so the resample target matches what the
+# FPGA actually plays. Calibrate with scripts/diags/sampler_clock_calib.py.
 SAMPLER_REF_CLOCK = 6_250_000  # the rate divider is REF / sample_rate
 
 # Channel register offsets (relative to the channel base).
@@ -116,14 +125,16 @@ _INT16_FULL_SCALE = 32768.0
 # --------------------------------------------------------------------------
 # Pure helpers (no hardware) — directly unit-testable.
 # --------------------------------------------------------------------------
-def divider_for_rate(rate: float) -> int:
-    """Sample-rate divider for the FPGA's 6.25 MHz reference (≥ 1)."""
+def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
+    """Sample-rate divider for the sampler reference clock (≥ 1). ``ref_clock``
+    defaults to the nominal 6.25 MHz; pass a per-unit calibrated value to
+    compensate a sampler that plays off-speed (see SAMPLER_REF_CLOCK)."""
     if rate <= 0:
         raise ValueError(f"rate must be positive, got {rate}")
-    return max(1, round(SAMPLER_REF_CLOCK / rate))
+    return max(1, round(ref_clock / rate))
 
 
-def actual_rate_for_divider(divider: int) -> float:
+def actual_rate_for_divider(divider: int, ref_clock: int = SAMPLER_REF_CLOCK) -> float:
     """The exact rate the FPGA plays at for a given divider (REF / divider).
 
     Differs from the nominal request by < 0.5% (e.g. 44100 → div 142 →
@@ -131,7 +142,7 @@ def actual_rate_for_divider(divider: int) -> float:
     nominal offset is an inaudible constant pitch shift, not a drift."""
     if divider <= 0:
         raise ValueError(f"divider must be positive, got {divider}")
-    return SAMPLER_REF_CLOCK / divider
+    return ref_clock / divider
 
 
 def bytes_per_sample(bits: int) -> int:
@@ -235,12 +246,15 @@ def program_channel(
     repeat_a: int = 0,
     repeat_b: int = 0,
     gate: bool = True,
+    ref_clock: int = SAMPLER_REF_CLOCK,
 ) -> None:
     """Program a sampler channel and (optionally) gate it on.
 
     All non-control registers are written and flushed first, then the control
-    byte — so the FPGA never starts playback against a half-written channel."""
-    divider = divider_for_rate(rate)
+    byte — so the FPGA never starts playback against a half-written channel.
+    ``ref_clock`` must match the one used to derive ``rate`` so the programmed
+    divider and the resample target agree (see SAMPLER_REF_CLOCK)."""
+    divider = divider_for_rate(rate, ref_clock)
     base = channel_base(channel)
     for offset, values in channel_register_writes(
         reu_offset=reu_offset,
@@ -308,6 +322,7 @@ class UltimateAudioSampler:
         lead_seconds: float = DEFAULT_LEAD_SECONDS,
         prebuffer_seconds: float = DEFAULT_PREBUFFER_SECONDS,
         queue_max_chunks: int = 256,
+        ref_clock_hz: int = SAMPLER_REF_CLOCK,
     ) -> None:
         self.api = api
         self.bits = bits
@@ -316,9 +331,14 @@ class UltimateAudioSampler:
         self._volume = volume
         self._pan = pan
 
+        # Per-unit calibration of the sampler reference clock. The divider we
+        # program AND the rate we resample/clock to both derive from this, so
+        # they stay consistent and the audio plays at the speed the FPGA
+        # actually clocks it out (see SAMPLER_REF_CLOCK / [audio].sampler_clock_hz).
+        self._ref_clock = ref_clock_hz
         self.bps = bytes_per_sample(bits)
-        self._divider = divider_for_rate(sample_rate)
-        self._actual_rate = actual_rate_for_divider(self._divider)
+        self._divider = divider_for_rate(sample_rate, self._ref_clock)
+        self._actual_rate = actual_rate_for_divider(self._divider, self._ref_clock)
         # AVFileSource resamples to this; feeding samples at the FPGA's real
         # rate is what makes the wall-clock read head drift-free.
         self.sample_rate = int(round(self._actual_rate))
@@ -393,18 +413,21 @@ class UltimateAudioSampler:
             repeat_a=0,
             repeat_b=self.ring_size,
             gate=True,
+            ref_clock=self._ref_clock,
         )
         self._gate_time = time.monotonic()
         self._running = True
         self._writer = threading.Thread(target=self._writer_loop, name="uaudio-writer", daemon=True)
         self._writer.start()
+        ref_note = "" if self._ref_clock == SAMPLER_REF_CLOCK else f", ref {self._ref_clock} Hz"
         log.info(
-            "sampler: streaming ring up — %d-bit @ %d Hz (div %d, %.2f Hz actual), "
+            "sampler: streaming ring up — %d-bit @ %d Hz (div %d, %.2f Hz actual%s), "
             "ring %d KiB @ $%06X, lead %.2f s",
             self.bits,
             self.sample_rate,
             self._divider,
             self._actual_rate,
+            ref_note,
             self.ring_size // 1024,
             self.ring_base,
             self._lead_target / self.bps / self._actual_rate,

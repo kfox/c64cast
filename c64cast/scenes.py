@@ -82,6 +82,11 @@ _C64_ASPECT = 320 / 200
 # on-screen settle and no startup pause. See VideoScene.setup.
 ONLINE_FIT_WARMUP_FRAMES = 48
 
+# How often (seconds) VideoScene emits the live A/V-lag debug line while a
+# video plays under -vv. The per-scene summary is logged once at teardown
+# (info, visible at -v). See VideoScene._log_av_lag.
+AV_LAG_LOG_INTERVAL_S = 2.0
+
 
 def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.ndarray:
     h, w = img.shape[:2]
@@ -899,6 +904,16 @@ class VideoScene(Scene):
         # derives this from a URL's t=/start= timestamp.
         self.start_s = max(0.0, start_s)
         self._last_rendered_img: np.ndarray | None = None
+        # A/V-lag telemetry (reset each setup): per-displayed-frame
+        # audio_clock - displayed_frame_pts. Small + (≤ one frame interval) is
+        # healthy; a growing + means the decoder is falling behind the
+        # audio-master clock (the 4K-decode-bound symptom). See _log_av_lag.
+        self._av_lag_min = math.inf
+        self._av_lag_max = -math.inf
+        self._av_lag_sum = 0.0
+        self._av_lag_count = 0
+        self._av_buf_min = math.inf
+        self._av_last_log_t = 0.0
         # Rolling-window auto_fit state (set up in setup() when [color].auto_fit
         # is on without force_palette). None = no online fit (pre-scanned or
         # disabled). See ONLINE_FIT_WARMUP_FRAMES.
@@ -991,12 +1006,18 @@ class VideoScene(Scene):
         # with its own gain and tells the demuxer to skip audio. Skipping the
         # scan in those cases removes a full audio decode from setup.
         will_push_audio = self.audio is not None and not getattr(self.audio, "use_reu_pump", False)
+        # The only resolution the display mode consumes (≤320×200). Passed to
+        # AVFileSource so it downscales each frame DURING decode instead of
+        # converting the full source frame — the supply-side fix for video
+        # lagging audio on heavy/4K clips. See video._plan_decode_size.
+        decode_target = getattr(self.display_mode, "frame_target_size", None)
         try:
             self.source = AVFileSource(
                 self.filepath,
                 target_sample_rate=sr,
                 scan_audio_peak=will_push_audio,
                 start_s=self.start_s,
+                decode_target_size=decode_target,
             )
         except PermissionError as e:
             log.error("video: permission denied opening %s (%s)", self.filepath, e)
@@ -1019,6 +1040,13 @@ class VideoScene(Scene):
         # decode (the bulk of the startup pause) from the common path.
         self._online_fit = None
         self._online_fit_frames = 0
+        # Reset A/V-lag telemetry so a looped/re-entered scene starts clean.
+        self._av_lag_min = math.inf
+        self._av_lag_max = -math.inf
+        self._av_lag_sum = 0.0
+        self._av_lag_count = 0
+        self._av_buf_min = math.inf
+        self._av_last_log_t = 0.0
         if self.display_mode is not None:
             if c.force_palette:
                 # One pre-scan pass derives the map (and the fit, since it's
@@ -1028,6 +1056,7 @@ class VideoScene(Scene):
                     fit_strength=c.auto_fit_strength if c.auto_fit else None,
                     map_colors=c.force_palette_colors,
                     map_indices=(c.force_palette_indices or None),
+                    decode_target_size=decode_target,
                 )
                 self.display_mode.set_color_fit(fit)
                 self.display_mode.set_color_map(cmap)
@@ -1208,6 +1237,7 @@ class VideoScene(Scene):
         if img is self._last_rendered_img:
             return True
         self._last_rendered_img = img
+        self._record_av_lag(clock_s, current_time)
         img = _crop_to_aspect(img)
         # Rolling-window auto_fit: fold the clean (pre-annotation) frame into
         # the accumulator and refresh the derived fit until the warmup window
@@ -1229,8 +1259,49 @@ class VideoScene(Scene):
         _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
         return True
 
+    def _record_av_lag(self, clock_s: float, current_time: float) -> None:
+        """Accumulate the A/V lag (audio clock − displayed-frame PTS) for the
+        just-selected frame and emit a live debug line at most every
+        AV_LAG_LOG_INTERVAL_S. The teardown summary reports the min/avg/max.
+
+        Lag is artifact-free (software-side, no capture): small + lag ≤ one
+        source-frame interval is healthy frame selection; a lag that climbs
+        while the decode buffer sits near 0 is the decoder failing to keep
+        real time (project_av_sync_decode_bound). Cheap — no allocation."""
+        assert self.source is not None
+        lag = clock_s - self.source.last_frame_pts
+        depth = self.source.video_buffer_depth
+        self._av_lag_min = min(self._av_lag_min, lag)
+        self._av_lag_max = max(self._av_lag_max, lag)
+        self._av_lag_sum += lag
+        self._av_lag_count += 1
+        self._av_buf_min = min(self._av_buf_min, depth)
+        if log.isEnabledFor(logging.DEBUG) and (
+            current_time - self._av_last_log_t >= AV_LAG_LOG_INTERVAL_S
+        ):
+            self._av_last_log_t = current_time
+            log.debug(
+                "video A/V lag: now=%+.0fms (min=%+.0f avg=%+.0f max=%+.0f) buf=%d over %d frames",
+                lag * 1000,
+                self._av_lag_min * 1000,
+                (self._av_lag_sum / self._av_lag_count) * 1000,
+                self._av_lag_max * 1000,
+                depth,
+                self._av_lag_count,
+            )
+
     def teardown(self) -> None:
         super().teardown()
+        if self._av_lag_count:
+            log.info(
+                "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
+                "min buffer depth=%d over %d displayed frames",
+                self._av_lag_min * 1000,
+                (self._av_lag_sum / self._av_lag_count) * 1000,
+                self._av_lag_max * 1000,
+                int(self._av_buf_min),
+                self._av_lag_count,
+            )
         if self.source:
             self.source.close()
             self.source = None

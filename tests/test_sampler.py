@@ -35,6 +35,18 @@ class PureHelperTest(unittest.TestCase):
         div = s.divider_for_rate(44100)
         self.assertAlmostEqual(s.actual_rate_for_divider(div), 6_250_000 / 142, places=2)
 
+    def test_ref_clock_calibration(self):
+        # A per-unit calibrated reference clock shifts BOTH the divider and the
+        # actual rate together — the resample target stays matched to the rate
+        # the FPGA actually clocks out (the A/V-sync drift fix). A lower ref
+        # picks a smaller divider (fewer cycles per sample → audio sped up).
+        ref = 6_120_000
+        div = s.divider_for_rate(44100, ref)
+        self.assertEqual(div, 139)  # round(6_120_000 / 44100)
+        self.assertAlmostEqual(s.actual_rate_for_divider(div, ref), ref / 139, places=2)
+        # Default arg still the nominal design value.
+        self.assertEqual(s.divider_for_rate(44100), s.divider_for_rate(44100, 6_250_000))
+
     def test_bytes_per_sample(self):
         self.assertEqual(s.bytes_per_sample(8), 1)
         self.assertEqual(s.bytes_per_sample(16), 2)

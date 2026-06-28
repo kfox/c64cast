@@ -72,6 +72,29 @@ _HIRES = [("normal",), ("edges",), ("edges_inverted",)]
 _MHIRES = [("percell",), ("cheap",), ("grayscale",)]
 
 
+class FrameTargetSizeTest(unittest.TestCase):
+    """`frame_target_size` is the single source of truth for both the compose
+    resize AND the video decoder's downscale plan, so it must equal the size
+    compose actually downscales to. This guards against the two drifting (a
+    decode plan keyed off a stale target would under/over-decode)."""
+
+    def test_hires_target_matches_compose(self):
+        mode = HiresDisplayMode("normal")
+        self.assertEqual(mode.frame_target_size, (320, 200))
+        buffers = mode.compose(_frame())
+        # 320×200 hires → 8000-byte bitmap (25 rows × 40 cells × 8 bytes).
+        self.assertEqual(len(buffers["bitmap"]), 8000)
+
+    def test_mhires_target_is_anamorphic(self):
+        # Width 160 < height 200: the planner must honor the taller axis.
+        self.assertEqual(MultiHiresDisplayMode("percell").frame_target_size, (160, 200))
+
+    def test_blank_has_no_target(self):
+        from c64cast.modes import BlankDisplayMode
+
+        self.assertIsNone(BlankDisplayMode().frame_target_size)
+
+
 class BitmapStructureTest(unittest.TestCase):
     """compose+push writes exactly the regions each mode owns, full-length."""
 

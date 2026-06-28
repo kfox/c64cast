@@ -12,6 +12,7 @@ from c64cast.video import (
     NORMALIZATION_TARGET_PEAK,
     AVFileSource,
     _compute_normalization_gain,
+    _plan_decode_size,
 )
 
 
@@ -144,11 +145,21 @@ class AVFileSourceEOFTest(unittest.TestCase):
 
 
 class _FakeFrame:
-    def __init__(self, pts: int):
+    def __init__(self, pts: int, width: int = 3840, height: int = 2160):
         self.pts = pts
+        self.width = width
+        self.height = height
+        self.reformat_calls: list[tuple[int, int, str]] = []
 
-    def to_ndarray(self, format: str):  # noqa: A002 - matches PyAV's kwarg name
-        return np.zeros((2, 2, 3), dtype=np.uint8)
+    def to_ndarray(self, format: str | None = None):  # noqa: A002 - PyAV's kwarg name
+        # Full-res convert path returns a frame at the native size.
+        return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+    def reformat(self, width: int, height: int, format: str):  # noqa: A002 - PyAV kwarg
+        # Mimic PyAV: yuv→bgr + downscale in one pass, yielding a new frame
+        # at the requested size whose to_ndarray() reflects it.
+        self.reformat_calls.append((width, height, format))
+        return _FakeFrame(self.pts, width=width, height=height)
 
 
 class _FakeStream:
@@ -187,6 +198,10 @@ class DemuxRebaseTest(unittest.TestCase):
         src.max_video_buffer = 240
         src._resampler = None
         src._audio_push = None
+        src._decode_target = None
+        src._decode_size = None
+        src._decode_planned = False
+        src.last_frame_pts = 0.0
         src.path = "fake"
         src.container = _FakeContainer([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
         src._demux_loop()
@@ -199,6 +214,113 @@ class DemuxRebaseTest(unittest.TestCase):
     def test_no_seek_unchanged(self):
         # First frame already at 0 → offset 0 → buffer unchanged.
         self.assertEqual(self._run_demux([0, 1, 2]), [0.0, 1.0, 2.0])
+
+
+class PlanDecodeSizeTest(unittest.TestCase):
+    """`_plan_decode_size` picks the smallest even decode size whose post-crop
+    dims still exceed the display target by DECODE_HEADROOM, never upscaling."""
+
+    def test_4k_to_hires_downscales(self):
+        # 3840×2160 (16:9) for a 320×200 (1.6) target. Crop trims width, so the
+        # height axis binds: decoded height ≥ 2×200 = 400 → 712×400.
+        plan = _plan_decode_size(3840, 2160, 320, 200)
+        assert plan is not None
+        dw, dh = plan
+        self.assertEqual((dw, dh), (712, 400))
+        # Post-crop both axes exceed the target with headroom.
+        crop_w = dh * (320 / 200)
+        self.assertGreaterEqual(crop_w, 320 * 2 - 1)
+        self.assertGreaterEqual(dh, 200 * 2)
+
+    def test_anamorphic_mhires_honors_height_axis(self):
+        # MHires target (160, 200): height (200) > width (160). A width-only cap
+        # would under-decode height and force an upscale; the planner must keep
+        # decoded height ≥ 2×200.
+        plan = _plan_decode_size(3840, 2160, 160, 200)
+        assert plan is not None
+        self.assertGreaterEqual(plan[1], 200 * 2)
+
+    def test_even_dimensions(self):
+        plan = _plan_decode_size(1920, 1080, 320, 200)
+        assert plan is not None
+        dw, dh = plan
+        self.assertEqual(dw % 2, 0)
+        self.assertEqual(dh % 2, 0)
+
+    def test_source_already_small_returns_none(self):
+        # A source at/below the needed resolution must not be upscaled.
+        self.assertIsNone(_plan_decode_size(320, 200, 320, 200))
+        self.assertIsNone(_plan_decode_size(400, 300, 320, 200))
+
+    def test_degenerate_dims_return_none(self):
+        self.assertIsNone(_plan_decode_size(0, 100, 320, 200))
+        self.assertIsNone(_plan_decode_size(100, 100, 0, 200))
+
+
+class DemuxDecodeDownscaleTest(unittest.TestCase):
+    """The demux loop reformats (downscales during decode) when a decode target
+    is set, and falls back to the full-res convert when it isn't."""
+
+    def _run(self, decode_target, src_w=3840, src_h=2160):
+        src = AVFileSource.__new__(AVFileSource)
+        src._closed = False
+        src._pts_offset = None
+        src.video_time_base = 1.0
+        src._video_buf = []
+        src._lock = threading.Lock()
+        src.max_video_buffer = 240
+        src._resampler = None
+        src._audio_push = None
+        src._decode_target = decode_target
+        src._decode_size = None
+        src._decode_planned = False
+        src.last_frame_pts = 0.0
+        src.path = "fake"
+        frame = _FakeFrame(0, width=src_w, height=src_h)
+        src.container = _FakeContainer([_FakePacket([frame])])
+        src._demux_loop()
+        return src, frame
+
+    def test_reformats_to_planned_size(self):
+        src, frame = self._run(decode_target=(320, 200))
+        # Planner ran and produced a sub-source size → reformat was used.
+        self.assertIsNotNone(src._decode_size)
+        self.assertEqual(len(frame.reformat_calls), 1)
+        w, h, fmt = frame.reformat_calls[0]
+        self.assertEqual((w, h), src._decode_size)
+        self.assertEqual(fmt, "bgr24")
+        # Buffered frame carries the downscaled dimensions, not the 4K source.
+        _, img = src._video_buf[0]
+        self.assertEqual(img.shape[:2], (h, w))
+
+    def test_no_target_uses_full_res_convert(self):
+        src, frame = self._run(decode_target=None)
+        self.assertIsNone(src._decode_size)
+        self.assertEqual(frame.reformat_calls, [])
+        _, img = src._video_buf[0]
+        self.assertEqual(img.shape[:2], (2160, 3840))
+
+    def test_small_source_skips_reformat(self):
+        # Source already ≤ target → planner returns None → full-res convert.
+        src, frame = self._run(decode_target=(320, 200), src_w=320, src_h=200)
+        self.assertIsNone(src._decode_size)
+        self.assertEqual(frame.reformat_calls, [])
+
+
+class CurrentFrameTelemetryTest(unittest.TestCase):
+    """`current_frame` records the displayed frame's PTS and `video_buffer_depth`
+    reports occupancy — the inputs to VideoScene's A/V-lag telemetry."""
+
+    def test_last_frame_pts_tracks_chosen_frame(self):
+        frames = [(0.0, np.zeros((2, 2, 3), np.uint8)), (1.0, np.ones((2, 2, 3), np.uint8))]
+        src = _make_av_source_stub(frames, eof=False)
+        src.current_frame(audio_position_s=1.5)
+        self.assertEqual(src.last_frame_pts, 1.0)
+
+    def test_buffer_depth(self):
+        frames = [(float(t), np.zeros((2, 2, 3), np.uint8)) for t in range(3)]
+        src = _make_av_source_stub(frames, eof=False)
+        self.assertEqual(src.video_buffer_depth, 3)
 
 
 if __name__ == "__main__":

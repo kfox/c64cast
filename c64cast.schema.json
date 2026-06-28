@@ -176,6 +176,11 @@
           "description": "PCM bit depth for the Ultimate Audio sampler backend: 8 (signed) or 16 (signed little-endian). Default 16.",
           "default": 16
         },
+        "sampler_clock_hz": {
+          "type": "integer",
+          "description": "Ultimate Audio sampler reference clock (Hz), used to derive the rate divider AND the resample target so they stay matched (heard speed = real_clock / this). Default 6250000 is the firmware's design value (safe for U2+, which clocks it correctly). If sampler audio drifts against the video over minutes, calibrate per-unit: scripts/diags/sampler_clock_calib.py gives a starting estimate, then tune by ear against a video (beep drifts AHEAD of the flash \u2192 raise this; BEHIND \u2192 lower it). Ear-tuned to 6155000 on one U64-II (the design value ran ~2% slow). Only affects the sampler backend.",
+          "default": 6250000
+        },
         "mic_sensitivity": {
           "type": "number",
           "description": "Microphone input gain multiplier.",

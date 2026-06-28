@@ -62,6 +62,68 @@ def _compute_normalization_gain(
     return min(max(gain, 1.0), max_gain)
 
 
+# The C64 display aspect every video frame is center-cropped to before the
+# display mode downscales it (must match scenes._C64_ASPECT / _crop_to_aspect —
+# kept local to avoid a scenes→video import cycle).
+_CROP_ASPECT = 320 / 200
+# How much bigger than the display mode's final target the decode output is
+# kept, in each axis, after the center-crop — so the mode's INTER_AREA resize
+# stays a pure downscale (never an upscale) with area-averaging headroom. 2.0
+# is the classic supersample-then-area-average margin; the result is quantized
+# to ≤16 colors / ≤320px anyway, so more is wasted decode and less risks
+# softness on a source already near the target. Decode is capped at the source
+# size regardless (never upscales the source).
+DECODE_HEADROOM = 2.0
+
+
+def _plan_decode_size(
+    src_w: int,
+    src_h: int,
+    target_w: int,
+    target_h: int,
+    headroom: float = DECODE_HEADROOM,
+) -> tuple[int, int] | None:
+    """Plan a decode ``(width, height)`` for a source frame that the scene will
+    center-crop to ``_CROP_ASPECT`` and the display mode will then downscale to
+    ``(target_w, target_h)``.
+
+    Returns the smallest even (w, h) — preserving the source aspect — whose
+    *post-crop* dimensions still exceed ``(target_w, target_h)`` by ``headroom``
+    in both axes, so the final resize is a pure INTER_AREA downscale. Returns
+    None when the source is already small enough that no downscale helps (the
+    planned size would meet or exceed the source), so the caller keeps the plain
+    full-resolution yuv→bgr convert.
+
+    The point: a 4K source frame decoded to a full-res BGR buffer then
+    cv2.resize-d to 320px costs ~40 ms/frame of host convert+resize — over the
+    ~33 ms budget at 30 fps — which starves the audio-master video clock and
+    makes playback lag + drift on clips the box can't decode in real time. Doing
+    the downscale *inside* the swscale pass (av.VideoFrame.reformat) drops that
+    to ~4 ms/frame: the conversion and every downstream op work on a ~640px
+    frame instead of 4K. See AVFileSource._demux_loop and
+    project_av_sync_decode_bound.
+    """
+    if src_w <= 0 or src_h <= 0 or target_w <= 0 or target_h <= 0:
+        return None
+    # Cropped source dimensions at _CROP_ASPECT — mirrors scenes._crop_to_aspect
+    # so the headroom math reflects the pixels that actually survive the crop.
+    ar = src_w / src_h
+    if ar > _CROP_ASPECT:  # wider than 1.6 → crop trims width
+        crop_w, crop_h = src_h * _CROP_ASPECT, float(src_h)
+    elif ar < _CROP_ASPECT:  # taller than 1.6 → crop trims height
+        crop_w, crop_h = float(src_w), src_w / _CROP_ASPECT
+    else:
+        crop_w, crop_h = float(src_w), float(src_h)
+    scale = headroom * max(target_w / crop_w, target_h / crop_h)
+    if scale >= 1.0:
+        return None  # source already at/below the resolution the mode needs
+    # Round to even dimensions (chroma-subsampled source codecs want even
+    # dims; swscale warns otherwise) and never below 2px.
+    dw = max(2, round(src_w * scale / 2) * 2)
+    dh = max(2, round(src_h * scale / 2) * 2)
+    return dw, dh
+
+
 # PyAV is imported lazily on first AVFileSource construction. On macOS the av
 # wheel bundles a different libavdevice major version than the cv2 wheel, so the
 # moment av's libavdevice loads on top of cv2's, the Obj-C runtime prints a
@@ -127,7 +189,12 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     return np.concatenate(chunks)
 
 
-def _scan_video_samples(path: str, accumulators: list[Any], max_samples: int = 120) -> bool:
+def _scan_video_samples(
+    path: str,
+    accumulators: list[Any],
+    max_samples: int = 120,
+    decode_target_size: tuple[int, int] | None = None,
+) -> bool:
     """Decode up to ``max_samples`` frames spread across ``path`` and feed each
     into every accumulator's ``.add(img_bgr)``.
 
@@ -136,6 +203,12 @@ def _scan_video_samples(path: str, accumulators: list[Any], max_samples: int = 1
     clean scan, False when PyAV is unavailable or decode failed (callers then
     treat each accumulator's result as None). Shared by the auto_fit and
     force_palette pre-scans so a source is decoded ONCE for both.
+
+    ``decode_target_size`` (the display mode's frame_target_size) downscales
+    each sampled frame DURING the yuv→bgr swscale pass (same win as playback —
+    see _plan_decode_size). Color statistics are distribution-based, so the
+    downscaled frame yields the same fit/palette as the full-res one at a
+    fraction of the cost.
     """
     if not accumulators or not _ensure_pyav():
         return False
@@ -147,10 +220,23 @@ def _scan_video_samples(path: str, accumulators: list[Any], max_samples: int = 1
             total = v_stream.frames or 0
             stride = max(1, total // max_samples) if total else 5
             taken = 0
+            decode_size: tuple[int, int] | None = None
+            planned = False
             for i, frame in enumerate(container.decode(v_stream)):
                 if i % stride:
                     continue
-                img = frame.to_ndarray(format="bgr24")
+                if not planned:
+                    planned = True
+                    if decode_target_size is not None:
+                        decode_size = _plan_decode_size(
+                            frame.width, frame.height, *decode_target_size
+                        )
+                if decode_size is not None:
+                    img = frame.reformat(
+                        width=decode_size[0], height=decode_size[1], format="bgr24"
+                    ).to_ndarray()
+                else:
+                    img = frame.to_ndarray(format="bgr24")
                 for acc in accumulators:
                     acc.add(img)
                 taken += 1
@@ -170,15 +256,18 @@ def prescan_source_color(
     fit_strength: float | None = None,
     map_colors: int | None = None,
     map_indices: list[int] | None = None,
+    decode_target_size: tuple[int, int] | None = None,
 ) -> tuple[ColorFit | None, ColorMap | None]:
     """Pre-scan a video once and derive the enabled per-source color stages.
 
     ``fit_strength`` not None enables the adaptive ColorFit ([color].auto_fit);
     ``map_colors``/``map_indices`` not None/empty enables the forced-palette
     ColorMap ([color].force_palette). Both stages share a single decode pass.
-    Returns (ColorFit|None, ColorMap|None); a disabled or failed stage is None,
-    so callers can unconditionally pass the results to set_color_fit /
-    set_color_map. See palette.ColorFitAccumulator / palette.ColorMapAccumulator.
+    ``decode_target_size`` downscales sampled frames during decode (see
+    _scan_video_samples). Returns (ColorFit|None, ColorMap|None); a disabled or
+    failed stage is None, so callers can unconditionally pass the results to
+    set_color_fit / set_color_map. See palette.ColorFitAccumulator /
+    palette.ColorMapAccumulator.
     """
     fit_acc = ColorFitAccumulator(strength=fit_strength) if fit_strength is not None else None
     map_acc = (
@@ -187,7 +276,7 @@ def prescan_source_color(
         else None
     )
     accs = [a for a in (fit_acc, map_acc) if a is not None]
-    if not _scan_video_samples(path, accs):
+    if not _scan_video_samples(path, accs, decode_target_size=decode_target_size):
         return None, None
     return (fit_acc.result() if fit_acc else None, map_acc.result() if map_acc else None)
 
@@ -274,6 +363,7 @@ class AVFileSource:
         source_noise_gate_enabled: bool = False,
         scan_audio_peak: bool = True,
         start_s: float = 0.0,
+        decode_target_size: tuple[int, int] | None = None,
     ):
         if not _ensure_pyav():
             raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
@@ -281,6 +371,19 @@ class AVFileSource:
         self.path = path
         self.target_sr = target_sample_rate
         self.max_video_buffer = max_video_buffer
+        # The display mode's frame_target_size (or None). When set, the demux
+        # loop downscales each frame to a small headroom multiple of it DURING
+        # the yuv→bgr swscale pass instead of converting the full source frame
+        # — the supply-side fix for video lagging audio on heavy/4K clips (the
+        # full-res convert+resize alone overran the per-frame budget). The
+        # actual decode size is planned once from the first frame's real
+        # dimensions (see _demux_loop + _plan_decode_size).
+        self._decode_target = decode_target_size
+        self._decode_size: tuple[int, int] | None = None
+        self._decode_planned = False
+        # PTS (rebased, seconds) of the frame current_frame() last returned —
+        # the A/V-lag telemetry in VideoScene reads it as displayed_frame_pts.
+        self.last_frame_pts: float = 0.0
         # Seconds into the source to begin playback (0 = from the start). When
         # set, the container is sought to the keyframe at/just-before this time
         # and frame PTS are rebased to ~0 (see _pts_offset + _demux_loop) so the
@@ -410,7 +513,36 @@ class AVFileSource:
                     return
                 if packet.stream.type == "video":
                     for frame in packet.decode():
-                        img = frame.to_ndarray(format="bgr24")
+                        # Plan the decode downscale once, from the first frame's
+                        # real dimensions. _decode_size None = source already
+                        # small enough (or no target) → plain full-res convert.
+                        if not self._decode_planned:
+                            self._decode_planned = True
+                            if self._decode_target is not None:
+                                self._decode_size = _plan_decode_size(
+                                    frame.width, frame.height, *self._decode_target
+                                )
+                                if self._decode_size is not None:
+                                    log.info(
+                                        "av %s: decoding %dx%d→%dx%d (display target %dx%d)",
+                                        os.path.basename(self.path),
+                                        frame.width,
+                                        frame.height,
+                                        self._decode_size[0],
+                                        self._decode_size[1],
+                                        self._decode_target[0],
+                                        self._decode_target[1],
+                                    )
+                        if self._decode_size is not None:
+                            # yuv→bgr + downscale in one swscale pass (cheap),
+                            # vs a full-res bgr buffer + a separate cv2.resize.
+                            img = frame.reformat(
+                                width=self._decode_size[0],
+                                height=self._decode_size[1],
+                                format="bgr24",
+                            ).to_ndarray()
+                        else:
+                            img = frame.to_ndarray(format="bgr24")
                         pts = (
                             float(frame.pts * self.video_time_base)
                             if frame.pts is not None
@@ -487,15 +619,23 @@ class AVFileSource:
             if not self._video_buf:
                 return None
             chosen_img: np.ndarray | None = None
+            chosen_pts = 0.0
             consumed_through = -1
             for i, (pts, img) in enumerate(self._video_buf):
                 if pts <= audio_position_s:
                     chosen_img = img
+                    chosen_pts = pts
                     consumed_through = i
                 else:
                     break
             if chosen_img is None:
                 return None
+            # Telemetry: the displayed frame's PTS. VideoScene logs
+            # audio_position_s - last_frame_pts as the A/V lag — small +
+            # (≤ one frame interval) is healthy; a growing + means the decoder
+            # is falling behind the audio-master clock (the 4K-decode-bound
+            # symptom). See VideoScene.process_frame / project_av_sync_decode_bound.
+            self.last_frame_pts = chosen_pts
             # Normally we keep the chosen frame in the buffer so a clock
             # stall doesn't black-frame the display ("keep the chosen one
             # in case the clock stalls and we need to re-emit it"). After
@@ -509,6 +649,14 @@ class AVFileSource:
             elif consumed_through > 0:
                 del self._video_buf[:consumed_through]
             return chosen_img
+
+    @property
+    def video_buffer_depth(self) -> int:
+        """Number of decoded frames waiting ahead of the consumer. Read by the
+        A/V-lag telemetry: a depth that stays near 0 while the lag grows is the
+        decoder-can't-keep-up signature."""
+        with self._lock:
+            return len(self._video_buf)
 
     @property
     def finished(self) -> bool:
