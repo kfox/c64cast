@@ -561,9 +561,12 @@ each plays for `duration_s` seconds, then advances. Common fields:
   * **Bitmap (hires/mhires) frame-pushing scenes** — `video`, live
     `webcam`, and `generative` with `audio_source = "mic"` — cap at
     **20 fps** while streaming digitized audio and at half rate
-    (30 NTSC / 25 PAL) when muted. Char modes (petscii/blank) stay at
-    the system rate. See "Bitmap video/webcam scenes default lower when
-    digitized audio streams" in [caveats.md](caveats.md).
+    (30 NTSC / 25 PAL) when muted. **Video on the U64 Ultimate Audio
+    sampler is the exception:** that audio is off the C64 bus, so it
+    uncaps to the full system rate (60/50) — which, via frame dedup,
+    plays back at the source video's own fps. Char modes (petscii/blank)
+    stay at the system rate. See "Bitmap video/webcam scenes default
+    lower when digitized audio streams" in [caveats.md](caveats.md).
   * **`waveform` and `midi`** default to half rate (30 NTSC / 25 PAL) —
     see "WaveformScene defaults to half the video rate" in
     [caveats.md](caveats.md).

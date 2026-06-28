@@ -2772,7 +2772,11 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
 
 
 def _frame_push_default_fps(
-    mode: DisplayMode, has_digitized_audio: bool, system: str
+    mode: DisplayMode,
+    has_digitized_audio: bool,
+    system: str,
+    *,
+    off_bus_audio: bool = False,
 ) -> float | None:
     """Default ``target_fps`` for a frame-pushing scene that can stream the
     4-bit ``$D418`` digitized-audio DAC (video / live webcam / generative-mic).
@@ -2786,13 +2790,31 @@ def _frame_push_default_fps(
     delta-cached screen — so they keep the playlist system default; this
     returns ``None`` for them and the caller leaves ``target_fps`` unset.
 
-    Worth revisiting these caps once the firmware no longer halts the CPU on
-    DMA writes (see ``u64ii_firmware_build`` / ``u64_zero_halt_dma_path``).
+    ``off_bus_audio`` is the Ultimate Audio FPGA PCM sampler (see sampler.py):
+    audio streams straight from REU with zero SID/``$D418``/NMI/CPU, so it does
+    NOT compete with frame uploads for the bus, and its presence forces the
+    tear-free REU-staged (bank-swap) video path — whose frame uploads are
+    bus-clean REUWRITEs, not CPU-halting host DMA. Both the audio-competition
+    cap (20) and the host-DMA tear cap (half-rate) therefore lift, so this
+    returns the **system rate** (60 NTSC / 50 PAL) as the poll *ceiling* only.
+    Because ``VideoScene`` dedups (it re-pushes only on a new source frame —
+    see scenes.py), this ceiling makes the *effective* push rate equal the
+    source video's own fps: a 24 fps clip pushes 24/s (every frame, none
+    dropped, no wasted re-pushes), a 30 fps clip 30/s, a 60 fps clip 60/s.
+    I.e. sampler bitmap video plays at the source rate, capped at the VIC
+    refresh — no artificial cap. HW-verified on .64 (audio stayed clean at a
+    real 60/s push; see ``reference_ultimate_audio_sampler`` fps A/B). Beats
+    ``has_digitized`` when both could apply.
+
+    Worth revisiting the DAC/muted caps once the firmware no longer halts the
+    CPU on DMA writes (see ``u64ii_firmware_build`` / ``u64_zero_halt_dma_path``).
     """
     if not mode.is_bitmapped:
         return None
     if has_digitized_audio:
         return 20.0
+    if off_bus_audio:
+        return 50.0 if system.upper() == "PAL" else 60.0
     return 25.0 if system.upper() == "PAL" else 30.0
 
 
@@ -2961,14 +2983,18 @@ def build_scene(
         if video_name:
             scene.name = video_name
         if s.target_fps is None:
-            # The sampler plays entirely off the C64 bus, so it does NOT impose
-            # the 4-bit DAC's bitmap fps cap (which exists only because the DAC's
-            # NMI + ring DMAWRITEs compete with frame uploads for the bus). Treat
-            # sampler audio as non-digitized so bitmap video gets the muted
-            # half-rate default (30/25) instead of 20 fps. (An HW fps A/B may
-            # raise this further — see reference_ultimate_audio_sampler.)
+            # The sampler plays entirely off the C64 bus, so it neither imposes
+            # the 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs
+            # compete with frame uploads for the bus) nor the muted half-rate
+            # cap (its REU-staged frame uploads are bus-clean, not host DMA).
+            # So sampler bitmap video uncaps to the system rate (60/50) — and
+            # because VideoScene dedups, the effective push rate then equals the
+            # source video's fps (24fps clip → 24/s, etc.). DAC video stays 20;
+            # muted bitmap stays 30/25. See _frame_push_default_fps.
             has_digitized_audio = video_audio is not None and not using_sampler
-            fps = _frame_push_default_fps(mode, has_digitized_audio, cfg.ultimate64.system)
+            fps = _frame_push_default_fps(
+                mode, has_digitized_audio, cfg.ultimate64.system, off_bus_audio=using_sampler
+            )
             if fps is not None:
                 scene.target_fps = fps
     elif s.type == "waveform":

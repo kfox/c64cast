@@ -87,6 +87,15 @@ def main() -> int:
     ap.add_argument(
         "--flash-color", type=int, default=1, help="border colour for the flash pulse (0-15)"
     )
+    ap.add_argument(
+        "--app-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="extra argument forwarded verbatim to `python -m c64cast` (repeatable); "
+        "e.g. --app-arg -v to surface INFO logs like the sampler write-ahead lead. "
+        "The app's stdout+stderr are tee'd to <label>_app.log under out/.",
+    )
     args = ap.parse_args()
 
     cfg = Path(args.config)
@@ -124,10 +133,13 @@ def main() -> int:
         print(f"[audio] recording {audio_len:g}s -> {wav}")
         time.sleep(1.5)  # let the avfoundation stream actually come up
 
-    print(f"[run] python -m c64cast --config {cfg}")
-    app = subprocess.Popen(
-        [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
-    )
+    app_argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url]
+    app_argv += args.app_arg
+    app_log = d.stamped(f"{args.label}_app", "log")
+    print(f"[run] {' '.join(app_argv[2:])}  (log -> {app_log})")
+    # Lifetime spans Popen → wait → close below, so a `with` doesn't fit.
+    app_log_fh = open(app_log, "w")  # noqa: SIM115
+    app = subprocess.Popen(app_argv, stdout=app_log_fh, stderr=subprocess.STDOUT)
 
     # Grab frames spread across the active window (after boot).
     import cv2
@@ -163,7 +175,7 @@ def main() -> int:
             cap.release()
             if ok and frame is not None:
                 p = out / f"{args.label}_frame{grabbed:02d}.png"
-                cv2.imwrite(str(p), frame)
+                d.save_image(frame, p)  # downscaled to ~960px (cheap to read back)
                 print(f"[frame] {p}")
                 grabbed += 1
         # idle out the remainder
@@ -183,6 +195,8 @@ def main() -> int:
             app.wait(timeout=8)
         except subprocess.TimeoutExpired:
             app.kill()
+        app_log_fh.close()
+        print(f"[run] app log: {app_log}")
         if audio_proc is not None:
             try:
                 audio_proc.wait(timeout=max(2.0, audio_len))

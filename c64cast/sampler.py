@@ -91,11 +91,22 @@ DEFAULT_RING_BASE = 0x200000
 # (~1.3 s at REUWRITE's ~820 KB/s) short. The whole track streams through it.
 DEFAULT_RING_SIZE = 0x100000  # 1 MiB
 
-# Buffering depth: how far the write head leads the read head. This IS the
-# push→hear latency (and so the constant A/V offset, harmless like the DAC's
-# ~1 s ring latency). Big enough to ride out PyAV decode hiccups + a REUWRITE
-# burst landing while the FPGA reads, small enough to keep latency low.
-DEFAULT_LEAD_SECONDS = 0.5
+# Buffering depth: how far the writer keeps the write head ahead of the read
+# head at runtime. This is *not* A/V latency — the video frame is selected by
+# the read head (position_seconds), so growing the lead only deepens the
+# decode-stall cushion; it doesn't shift sync. Bigger = rides out longer PyAV
+# decode hiccups (a 4K clip's per-frame decode briefly starves the single
+# demux+push thread — HW-measured lead dipping to ~9 KB / below panic at 0.5 s).
+# 1.0 s keeps the lead comfortably above the panic watermark even under 4K
+# decode, at the cost only of REU buffered ahead (well under the ring's ~5.9 s).
+DEFAULT_LEAD_SECONDS = 1.0
+
+# Startup seed: how much real PCM to prebuffer before gating the channel on.
+# Decoupled from (and smaller than) the runtime lead so playback starts
+# promptly — the writer then ramps the lead up to DEFAULT_LEAD_SECONDS as the
+# demuxer (which races ahead of real time at startup) delivers. The read head
+# begins at the first prebuffered sample, so this adds no startup delay.
+DEFAULT_PREBUFFER_SECONDS = 0.5
 
 REU_WRITE_SLICE = 32 * 1024  # cap per REUWRITE so a NEUTRAL pad can't burst huge
 SAMPLE_TAP_SIZE = 2048  # most-recent-samples tap for spectrum overlays
@@ -295,6 +306,7 @@ class UltimateAudioSampler:
         ring_base: int = DEFAULT_RING_BASE,
         ring_size: int = DEFAULT_RING_SIZE,
         lead_seconds: float = DEFAULT_LEAD_SECONDS,
+        prebuffer_seconds: float = DEFAULT_PREBUFFER_SECONDS,
         queue_max_chunks: int = 256,
     ) -> None:
         self.api = api
@@ -320,6 +332,11 @@ class UltimateAudioSampler:
         lead_bytes = int(self._actual_rate * lead_seconds) * self.bps
         # Keep the lead under half the ring so write-ahead can't lap the reader.
         self._lead_target = max(self.bps, min(lead_bytes, self.ring_size // 2))
+        # Startup prebuffer: seed only this much before gating (fast start),
+        # then let the writer ramp up to _lead_target. Clamp to the lead target
+        # so a misconfigured prebuffer can't exceed the runtime depth.
+        prebuf_bytes = int(self._actual_rate * prebuffer_seconds) * self.bps
+        self._prebuffer_target = max(self.bps, min(prebuf_bytes, self._lead_target))
         # Low watermark: the writer only NEUTRAL-pads (inserts silence) once the
         # lead drains this low — a genuine producer stall, not a queue that's
         # briefly empty because the writer is topping up toward the target.
@@ -347,15 +364,18 @@ class UltimateAudioSampler:
 
     # ---- bring-up ---------------------------------------------------------
     def start(self, prebuffer_timeout: float = 2.0) -> None:
-        """Prefill the ring with silence, prebuffer ``lead`` bytes of real PCM,
-        then gate the looping channel on.
+        """Prefill the ring with silence, prebuffer ``_prebuffer_target`` bytes
+        of real PCM, then gate the looping channel on.
 
         Prefilling the whole ring with NEUTRAL guarantees the FPGA never reads
         uninitialized REU even under a startup jitter spike; the prebuffer seeds
-        the write-ahead lead so the writer starts already ahead of the reader."""
+        the write-ahead lead so the writer starts already ahead of the reader.
+        Only the (smaller) prebuffer target is seeded before gating — the writer
+        then ramps the lead up to ``_lead_target`` — so playback starts promptly
+        while the runtime lead stays deep enough to ride out decode stalls."""
         self._prefill_neutral()
 
-        prebuf = self._collect_prebuffer(self._lead_target, prebuffer_timeout)
+        prebuf = self._collect_prebuffer(self._prebuffer_target, prebuffer_timeout)
         if prebuf:
             self._write_wrapped(0, prebuf)
         self._written = len(prebuf)

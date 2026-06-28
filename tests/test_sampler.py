@@ -204,6 +204,22 @@ class StreamerTest(unittest.TestCase):
         self.assertEqual(api.mem_writes[-1], ("DF20", "00"))
         self.assertFalse(smp._running)
 
+    def test_prebuffer_target_decoupled_from_lead(self):
+        # The runtime lead (1.0 s default) is deeper than the startup prebuffer
+        # (0.5 s default), so playback starts promptly while the writer keeps a
+        # cushion deep enough to ride out a 4K clip's decode stalls.
+        smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
+        self.assertLess(smp._prebuffer_target, smp._lead_target)
+        self.assertAlmostEqual(smp._prebuffer_target / smp._lead_target, 0.5, delta=0.05)
+
+    def test_prebuffer_clamped_to_lead_target(self):
+        # A prebuffer configured larger than the lead can't exceed the runtime
+        # depth (the writer never targets less than it seeds).
+        smp = _make(
+            _FakeBackend(), sample_rate=44100, bits=16, lead_seconds=0.2, prebuffer_seconds=1.0
+        )
+        self.assertEqual(smp._prebuffer_target, smp._lead_target)
+
     def test_get_recent_samples_returns_pushed(self):
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
         smp.push_samples(np.ones(100, dtype=np.int16) * 16384)
