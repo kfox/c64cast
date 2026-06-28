@@ -78,6 +78,7 @@ class FakeAPI:
     def write_region(self, addr, data, region_id=None, full_threshold=0.6):
         b = bytes(data)
         self.regions[addr] = b
+        self.ops.append(("write_region", addr, b, region_id))
         return len(b)
 
     def reu_write(self, reu_offset, data):
