@@ -1390,6 +1390,17 @@ class DisplayMode:
     # the overlay's separate writes (and vice versa) on the next frame.
     supports_compose = False
 
+    # The (width, height) compose()/render() downscales an incoming source
+    # frame to before quantizing — the *only* resolution this mode consumes
+    # (≤ 320×200 for every C64 mode). The single source of truth for both the
+    # compose resize AND the video decoder's downscale-during-decode plan
+    # (video._plan_decode_size): a 4K source frame for a 320px result is pure
+    # waste that blows the real-time decode budget, so AVFileSource reformats
+    # to a small headroom multiple of this during the yuv→bgr swscale pass
+    # instead of converting the full source frame. None = the mode renders no
+    # source frame (BlankDisplayMode), so the decoder keeps the native size.
+    frame_target_size: tuple[int, int] | None = None
+
     # Per-source adaptive color fit ([color].auto_fit). None = disabled (the
     # default for every mode); a scene that can pre-scan its source
     # (video / slideshow) installs one via set_color_fit. The chromatic
@@ -1599,6 +1610,7 @@ class PETSCIIDisplayMode(CharDisplayMode):
 
     name = "petscii"
     is_petscii_compatible = True
+    frame_target_size = (40, 25)
 
     def __init__(
         self,
@@ -1658,7 +1670,8 @@ class PETSCIIDisplayMode(CharDisplayMode):
         return self._style_name
 
     def compose(self, frame) -> ComposeBuffers:
-        img = cv2.resize(frame, (40, 25), interpolation=cv2.INTER_AREA)
+        assert self.frame_target_size is not None
+        img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
         if self._color_fit is not None:
             img = apply_color_fit(img, self._color_fit)
         screen, color = self._style.compose(img, self._channel_boost, self._hue_corrections)
@@ -1746,6 +1759,7 @@ class MCMDisplayMode(CharDisplayMode):
     """
 
     name = "mcm"
+    frame_target_size = (80, 50)
 
     def __init__(
         self,
@@ -1828,7 +1842,8 @@ class MCMDisplayMode(CharDisplayMode):
         self._last_bg = None  # force re-push of bg on first frame after setup
 
     def compose(self, frame) -> MCMComposeBuffers:
-        img = cv2.resize(frame, (80, 50), interpolation=cv2.INTER_AREA)
+        assert self.frame_target_size is not None
+        img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
         if self._force_palette and self._color_map is not None:
             # Forced-palette remap: emit exact C64 colors and skip the faithful
             # shaping stages + gray penalty (the remap already chose each color).
@@ -1931,6 +1946,7 @@ class HiresDisplayMode(BitmapDisplayMode):
     """
 
     name = "hires"
+    frame_target_size = (320, 200)
 
     def __init__(
         self,
@@ -2028,7 +2044,8 @@ class HiresDisplayMode(BitmapDisplayMode):
         return f"style={new_style}"
 
     def compose(self, frame) -> BitmapComposeBuffers:
-        img = cv2.resize(frame, (320, 200), interpolation=cv2.INTER_AREA)
+        assert self.frame_target_size is not None
+        img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
 
         if self.style == "normal":
             flat = np.clip(img.reshape(-1, 3).astype(np.float32), 0, 255)
@@ -2155,6 +2172,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
     """
 
     name = "mhires"
+    # 160 wide is the MCBM pixel grid (anamorphic — displayed stretched to
+    # 320); height 200 exceeds width here, so the decode planner must honor
+    # BOTH axes (see video._plan_decode_size).
+    frame_target_size = (160, 200)
 
     def __init__(
         self,
@@ -2344,7 +2365,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             api.invalidate_cache()
 
     def compose(self, frame) -> MHiresComposeBuffers:
-        img = cv2.resize(frame, (160, 200), interpolation=cv2.INTER_AREA)
+        assert self.frame_target_size is not None
+        img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
         if self._force_palette and self._color_map is not None:
             # Forced-palette remap: emit exact C64 colors and skip the faithful
             # shaping stages + gray penalty (the remap already chose each color).
