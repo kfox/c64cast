@@ -916,6 +916,10 @@ palette_mode = "grayscale"
 #                                       # independent of duration_s (the cycler
 #                                       # advances on its own timer and the
 #                                       # scene ends when duration_s expires).
+# aspect_mode = "crop"                 # crop (center-crop to fill — default) |
+#                                       # fit (letterbox/pillarbox so the whole
+#                                       # image shows, padded black) | stretch
+#                                       # (distort to fill).
 # palette_mode = "percell"             # percell | cheap | vivid | grayscale
 
 # --- Video playback ------------------------------------------

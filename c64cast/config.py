@@ -96,6 +96,9 @@ _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
 # Generative video sources + the per-scene pixel effects.
 _GENERATIVE_SOURCE_CHOICES = ("plasma", "tunnel", "fire")
 _EFFECT_CHOICES = ("trails", "pulse", "rgb_shift")
+# How a slideshow image is fit to the C64 aspect before the display mode
+# downscales it. See scenes._apply_aspect.
+_ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
 
 # Per-scene audio source for composable (generative) scenes — the AudioSource
 # building block in audio_source.py. "none" = silence; "mic" = live mic via the
@@ -747,6 +750,17 @@ class SceneCfg:
         default=5.0,
         metadata={
             "help": "Per-image dwell time before advancing (total runtime is duration_s).",
+            "applies_to": ("slideshow",),
+        },
+    )
+    aspect_mode: str = field(
+        default="crop",
+        metadata={
+            "help": "How each image is fit to the C64 4:2.5 aspect: 'crop' "
+            "(center-crop to fill — the default, edges lost), 'fit' "
+            "(letterbox/pillarbox so the whole image shows, padded black), or "
+            "'stretch' (distort to fill, no padding or cropping).",
+            "choices": _ASPECT_MODE_CHOICES,
             "applies_to": ("slideshow",),
         },
     )
@@ -2547,6 +2561,10 @@ def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
     )
     if s.image_duration_s <= 0:
         raise ValueError(f"slideshow: image_duration_s must be > 0, got {s.image_duration_s!r}")
+    if s.aspect_mode not in _ASPECT_MODE_CHOICES:
+        raise ValueError(
+            f"slideshow: aspect_mode must be one of {_ASPECT_MODE_CHOICES}, got {s.aspect_mode!r}"
+        )
     # Resolve "random" to a concrete mode for overlay-compat validation.
     # The actual scene re-resolves at every setup() so single-scene loops
     # get a fresh mode per iteration.
@@ -3071,6 +3089,7 @@ def build_scene(
             audio_reu_pump_active=audio_reu_pump_active,
             color=cfg.color,
             text_double_height=s.text_double_height,
+            aspect_mode=s.aspect_mode,
         )
     elif s.type == "generative":
         from .audio_source import (
