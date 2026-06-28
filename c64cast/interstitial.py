@@ -15,7 +15,7 @@ import numpy as np
 
 from .backend import C64Backend
 from .backgrounds import build as build_background
-from .c64 import RegionID
+from .c64 import CIA2, RegionID
 from .config import InterstitialCfg
 from .overlays import ascii_to_screen
 from .palette import C64_COLORS
@@ -96,6 +96,27 @@ class InterstitialScene(Scene):
         # Mode switch — drop the dirty cache or we may suppress a needed
         # frame-0 write that happens to look identical to the last scene.
         self.api.invalidate_cache()
+        # Defeat any lingering bitmap-scene raster IRQ before painting char
+        # mode. A preceding hires/mhires double-buffer scene hooks $0314 to a
+        # bank-swap handler that flips $DD00 (VIC bank 0 ↔ 2) every frame. Its
+        # teardown unhooks it, but a CTRL-skip can race that teardown and leave
+        # the handler live: because $D019's raster flag latches every frame
+        # regardless of $D01A, ANY IRQ (incl. the CIA #1 jiffy) still vectors
+        # through $C500, sees the raster bit, and re-flips $DD00 to bank 2 —
+        # right after we'd reset it. The VIC then reads its matrix from $8400
+        # (bank 2) and the card shows a screenful of the previous bitmap's
+        # leftover bytes as wrong glyphs, stable for its whole duration.
+        # So unhook the handler FIRST (restoring $0314 → $EA31 makes it
+        # unreachable by any IRQ), then disable the raster source, ack the
+        # latched flag, and only then pin the bank — order matters so nothing
+        # can re-flip $DD00 after the pin. Idempotent + safe: the interstitial
+        # is host-DMA char mode needing only the kernal jiffy IRQ (keyboard
+        # scan), so forcing the kernal vector never breaks anything here.
+        # See modes._uninstall_bank_swap_irq.
+        self.api.restore_kernal_irq_vector()
+        self.api.write_memory("d01a", "00")
+        self.api.write_memory("d019", "01")
+        self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
         # Standard PETSCII char mode, black border/bg.
         self.api.write_memory("d018", "14")
         self.api.write_memory("d016", "08")
@@ -116,6 +137,18 @@ class InterstitialScene(Scene):
         elapsed = current_time - self.start_time
         if elapsed >= self.duration_s:
             return False
+
+        # Re-assert VIC bank 0 every frame. setup() unhooks the prior bitmap
+        # scene's bank-swap raster IRQ ($0314 → $EA31) so no NEW invocation can
+        # fire, but a handler already DISPATCHED just before that vector write
+        # landed keeps running and does its `STA $DD00` (bank 2) AFTER setup's
+        # one-shot bank-0 write — leaving $DD00 stuck at bank 2 for the whole
+        # card (VIC reads its matrix from $8400 → a screenful of wrong glyphs).
+        # With the IRQ unhooked, at most that single late flip can happen, so
+        # rewriting bank 0 here corrects it on the very next frame and it can't
+        # recur. Cheap (1 byte) on a light char-mode card, and the card already
+        # repaints $0400/$D800 each frame, so the screen self-heals in lockstep.
+        self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
 
         # The background fills the strips above and below the text block.
         # Pass the rows occupied by the text so it doesn't paint over them.
