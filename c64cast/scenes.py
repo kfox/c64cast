@@ -89,6 +89,10 @@ AV_LAG_LOG_INTERVAL_S = 2.0
 
 
 def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.ndarray:
+    """Center-*crop* to ``target_ratio`` (fill/cover): trims the long axis so
+    the image fills the frame edge-to-edge, losing the cropped margins. The
+    default aspect handling for every source (and the only one webcam/video
+    use)."""
     h, w = img.shape[:2]
     ar = w / h if h else target_ratio
     if ar > target_ratio:
@@ -100,6 +104,54 @@ def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.nd
         y0 = (h - new_h) // 2
         return img[y0 : y0 + new_h, :]
     return img
+
+
+def _fit_to_aspect(
+    img: np.ndarray,
+    target_ratio: float = _C64_ASPECT,
+    pad_color: tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """Letterbox/pillarbox to ``target_ratio`` (contain): scale nothing, just
+    pad the short axis with ``pad_color`` bars so the *whole* image is visible.
+    The inverse trade-off to ``_crop_to_aspect`` — nothing is lost, but bars
+    appear. The bars are a single solid color so they quantize to one stable
+    palette cell (black by default → C64 index 0); for a still slideshow that's
+    flicker-free, which is why fit-mode is exposed there and not on video (where
+    per-frame bg0 churn would shimmer — see project_slideshow_aspect_fit)."""
+    h, w = img.shape[:2]
+    ar = w / h if h else target_ratio
+    if ar > target_ratio:
+        # Wider than target → keep full width, pad top/bottom.
+        new_h = round(w / target_ratio)
+        pad = max(0, new_h - h)
+        top = pad // 2
+        return cv2.copyMakeBorder(img, top, pad - top, 0, 0, cv2.BORDER_CONSTANT, value=pad_color)
+    if ar < target_ratio:
+        # Taller than target → keep full height, pad left/right.
+        new_w = round(h * target_ratio)
+        pad = max(0, new_w - w)
+        left = pad // 2
+        return cv2.copyMakeBorder(img, 0, 0, left, pad - left, cv2.BORDER_CONSTANT, value=pad_color)
+    return img
+
+
+def _apply_aspect(
+    img: np.ndarray,
+    aspect_mode: str = "crop",
+    target_ratio: float = _C64_ASPECT,
+) -> np.ndarray:
+    """Dispatch a source frame through the configured aspect handling before
+    the display mode downscales it to the C64 resolution:
+
+    * ``"crop"`` (default) — center-crop to fill (today's universal behavior).
+    * ``"fit"``  — letterbox/pillarbox so the whole image shows, padded black.
+    * ``"stretch"`` — no aspect handling; the mode's resize distorts to fill.
+    """
+    if aspect_mode == "fit":
+        return _fit_to_aspect(img, target_ratio)
+    if aspect_mode == "stretch":
+        return img
+    return _crop_to_aspect(img, target_ratio)
 
 
 def _display_name(path: str) -> str:
@@ -611,11 +663,18 @@ class SlideshowScene(Scene):
         audio_reu_pump_active: bool = False,
         color: ColorCfg | None = None,
         text_double_height: bool = False,
+        aspect_mode: str = "crop",
     ):
         from .config import PICTURE_EXTS, ColorCfg, resolve_file_spec
 
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
+        # How each image is fit to the C64 aspect before the display mode
+        # downscales it: "crop" (center-crop to fill — the default everywhere),
+        # "fit" (letterbox/pillarbox so the whole image shows), or "stretch"
+        # (no aspect handling — the mode's resize distorts to fill). See
+        # _apply_aspect.
+        self._aspect_mode = aspect_mode
         # The whole [color] section travels as one object — it drives both the
         # display-mode shaping (channel_boost / hue_corrections, applied at
         # construction) AND the per-image stages installed here at setup time:
@@ -749,7 +808,7 @@ class SlideshowScene(Scene):
                     return
                 continue
             self._current_path = path
-            self._current_img = _crop_to_aspect(img)
+            self._current_img = _apply_aspect(img, self._aspect_mode)
             if self.display_mode is not None:
                 # Per-image color stages: build the enabled accumulators, feed
                 # the one cropped image, install both results. None clears any

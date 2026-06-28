@@ -1698,6 +1698,16 @@
             "description": "Per-image dwell time before advancing (total runtime is duration_s).",
             "default": 5.0
           },
+          "aspect_mode": {
+            "type": "string",
+            "description": "How each image is fit to the C64 4:2.5 aspect: 'crop' (center-crop to fill \u2014 the default, edges lost), 'fit' (letterbox/pillarbox so the whole image shows, padded black), or 'stretch' (distort to fill, no padding or cropping).",
+            "enum": [
+              "crop",
+              "fit",
+              "stretch"
+            ],
+            "default": "crop"
+          },
           "input_source": {
             "type": "string",
             "description": "What counts as player input to reset the idle timeout: 'cia' (joystick bits at $DC00/$DC01), 'kernal' ($00C5/$00C6, only live while the kernal IRQ runs), 'auto' (both), or 'none' (pure timer, for demos). Never counts C=/SHIFT/CTRL.",

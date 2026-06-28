@@ -548,6 +548,16 @@ class ValidateSceneCfgTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "image_duration_s must be > 0"):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
+    def test_slideshow_aspect_mode_accepts_known_choices(self):
+        for mode in cfgmod._ASPECT_MODE_CHOICES:
+            s = cfgmod.SceneCfg(type="slideshow", file="pic.jpg", aspect_mode=mode)
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_slideshow_aspect_mode_rejects_unknown(self):
+        s = cfgmod.SceneCfg(type="slideshow", file="pic.jpg", aspect_mode="contain")
+        with self.assertRaisesRegex(ValueError, "aspect_mode must be one of"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
     def test_slideshow_display_random_resolves_to_known_mode(self):
         for _ in range(10):
             picked = cfgmod._resolve_slideshow_display("random")

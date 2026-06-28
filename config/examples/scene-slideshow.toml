@@ -46,3 +46,9 @@ duration_s = 60.0
 # of duration_s — the cycler advances on its own timer and the scene
 # ends when duration_s expires.
 image_duration_s = 5.0
+# `aspect_mode` — how each image is fit to the C64's 4:2.5 display before
+# the mode downscales it:
+#   "crop"    — center-crop to fill the frame (default; image edges are lost)
+#   "fit"     — letterbox/pillarbox so the WHOLE image shows, padded black
+#   "stretch" — distort to fill (no cropping, no bars)
+aspect_mode = "fit"
