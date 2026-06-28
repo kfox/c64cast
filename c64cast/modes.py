@@ -1530,15 +1530,23 @@ class BitmapDisplayMode(DisplayMode):
 
     @staticmethod
     def _blank_bitmap(api: C64Backend) -> None:
-        """Zero the on-screen $2000 bitmap so the window between enabling
-        bitmap mode and the first rendered frame shows a clean field instead
-        of uninitialized RAM ("garbled mess" at scene start). Call BEFORE
-        flipping $D011 to bitmap — while $2000 is still off-screen — for a
-        garbage-free transition. Non-REU path only (the REU path zeroes both
-        VIC banks itself). All-%00 bitmap means every pixel reads bg0, so
-        pairing this with a bg0 of 0 ($D021) yields a solid black screen
-        regardless of stale screen/colour RAM."""
+        """Zero the on-screen $2000 bitmap AND screen RAM ($0400) so the window
+        between enabling bitmap mode and the first rendered frame shows a clean
+        black field instead of uninitialized RAM ("garbled mess" at scene start)
+        or a ghost of the previous scene. Call BEFORE flipping $D011 to bitmap —
+        while $2000 is still off-screen — for a garbage-free transition. Non-REU
+        path only (the REU path zeroes both VIC banks itself).
+
+        An all-%00 bitmap selects each pixel's BACKGROUND colour. In hires that
+        background is the LOW nibble of the cell's screen-RAM byte ($0400), NOT
+        $D021 — so a zeroed bitmap over stale $0400 (e.g. the prior scene's
+        PETSCII codes / colour grid) renders a 40×25 colour ghost of the
+        previous content on engage. Zeroing screen RAM too forces every cell's
+        background to 0 (black). (In mhires/MCBM %00 reads $D021 instead, so the
+        screen-RAM clear is belt-and-braces there — the first frame repaints
+        both anyway.)"""
         api.write_memory_file("2000", bytes(8000))
+        api.write_memory_file(f"{SCREEN.RAM:04X}", bytes(SCREEN.N_CELLS))
 
     # --- Host-DMA double-buffer (no-REU backends, e.g. TeensyROM) -----------
     # Shared by Hires + MultiHires. The host writes bitmap+screen into the
@@ -1980,10 +1988,12 @@ class HiresDisplayMode(BitmapDisplayMode):
     def setup(self, api):
         super().setup(api)
         if not self.use_reu_staged and not self.double_buffer:
-            # Clean field before the bitmap-mode flip — kills the garbled
-            # uninitialized-RAM screen at scene start. In hires every pixel of
-            # an all-%0 bitmap reads each cell's BG nibble from $0400, which is
-            # 0 (black) after the BASIC clear-loop; the first frame repaints.
+            # Clean black field before the bitmap-mode flip — kills the garbled
+            # uninitialized-RAM screen AND the previous-scene colour ghost at
+            # scene start. In hires every pixel of an all-%0 bitmap reads its
+            # cell's BG nibble from screen RAM ($0400); _blank_bitmap zeros both
+            # $2000 and $0400 so that nibble is 0 (black) regardless of what the
+            # prior scene left in $0400. The first frame repaints both.
             self._blank_bitmap(api)
         api.write_memory("d011", "3b")
         api.write_memory("d018", "18")

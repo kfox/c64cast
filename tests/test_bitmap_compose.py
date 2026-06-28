@@ -122,6 +122,47 @@ class BitmapStructureTest(unittest.TestCase):
                 self.assertEqual(len(api.regions[COLOR_ADDR]), 1000)
 
 
+class BitmapEngageFlashTest(unittest.TestCase):
+    """Single-buffer (non-REU) setup must clear BOTH the $2000 bitmap and screen
+    RAM ($0400) BEFORE flipping $D011 into bitmap mode, so a bitmap scene doesn't
+    flash a colour ghost of the prior scene on engage. In hires a zeroed bitmap
+    selects each cell's BG nibble from $0400 — stale $0400 would render a 40×25
+    ghost; zeroing it forces solid black until the first frame repaints."""
+
+    def _ops_through_d011(self, mode) -> list[tuple]:
+        api = FakeAPI()
+        mode.setup(api)
+        return api.ops
+
+    def _assert_clears_before_bitmap_flip(self, ops):
+        def idx(pred):
+            return next(i for i, op in enumerate(ops) if pred(op))
+
+        bitmap_zero = idx(
+            lambda op: op[0] == "write_memory_file" and op[1] == "2000" and set(op[2]) == {0}
+        )
+        screen_zero = idx(
+            lambda op: op[0] == "write_memory_file" and op[1] == "0400" and set(op[2]) == {0}
+        )
+        d011_flip = idx(lambda op: op[0] == "write_memory" and op[1] == "D011" and op[2] == "3b")
+        self.assertLess(bitmap_zero, d011_flip, "bitmap zeroed after $D011 flip")
+        self.assertLess(screen_zero, d011_flip, "screen RAM zeroed after $D011 flip")
+
+    def test_hires_clears_bitmap_and_screen_before_flip(self):
+        for args in _HIRES:
+            with self.subTest(style=args[0]):
+                self._assert_clears_before_bitmap_flip(
+                    self._ops_through_d011(HiresDisplayMode(*args))
+                )
+
+    def test_mhires_clears_bitmap_and_screen_before_flip(self):
+        for args in _MHIRES:
+            with self.subTest(palette_mode=args[0]):
+                self._assert_clears_before_bitmap_flip(
+                    self._ops_through_d011(MultiHiresDisplayMode(*args))
+                )
+
+
 class BitmapDeterminismTest(unittest.TestCase):
     """Same frame through two fresh instances → identical bytes (catches state
     leakage / non-determinism in the compose path). Portable: compares two
