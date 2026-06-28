@@ -48,7 +48,8 @@ import numpy as np
 
 from .bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from .bitmap_text import load_glyphs as _load_glyphs
-from .c64 import CIA2, SCREEN, RegionID
+from .c64 import SCREEN, RegionID
+from .modes import engage_bitmap_mode
 from .palette import C64_COLORS
 from .sidemu import (
     ACCUMULATOR_RANGE,
@@ -97,9 +98,9 @@ BITMAP_STRIPS = [
 TITLE_ROW = 22
 META_ROW = 23
 
-# VIC register pokes used by _apply_vic_hires_bank. Hex strings match the
-# existing write_memory API. Named so the intent (bitmap mode, multicolor off,
-# screen page) is readable inline.
+# VIC register values _apply_vic_hires_bank passes to modes.engage_bitmap_mode.
+# Hex strings match the write_memory API. Named so the intent (bitmap mode,
+# multicolor off, screen page) is readable inline.
 D011_HIRES_ON = "3b"  # bitmap mode + display enable, raster MSB clear
 D016_STANDARD = "08"  # 40-col, no multicolor
 # $D018 selects the screen matrix (bits 7-4 = offset/$0400 within the bank)
@@ -360,26 +361,32 @@ class VoiceScopeRenderer:
         bitmap + screen matrix, paint the per-voice colors, and load the
         charset. The host scene paints its own title/meta text rows after.
 
+        The VIC bring-up goes through the shared ``modes.engage_bitmap_mode``
+        primitive — the SAME clear-then-flip path the Hires/MultiHires display
+        modes use — so the engage clean-field invariant (zero $2000 + the screen
+        matrix BEFORE the $D011 bitmap-mode flip) and any future VIC-register
+        change live in one place. The scope's legitimate differences are passed
+        as arguments: it RELOCATES the VIC bank (``dd00`` + ``bitmap_base`` /
+        ``screen_base`` / ``d018`` — bank 0↔2 per the SID's footprint) and clears
+        via the delta-cached ``write_region`` path under stable region IDs
+        (``WAVE_BITMAP`` / ``WAVE_SCREEN_CLEAR``) so the FULL screen matrix —
+        including the spacer rows (21, 24) the per-voice/title/meta paints don't
+        cover — is zeroed; in a relocated bank those cells are otherwise
+        uninitialized RAM that would render as garbage.
+
         Callers must ``invalidate_cache()`` first so a bank switch over the
         same addresses gets a clean delta baseline."""
-        # Select the VIC bank ($DD00) + sub-bank screen/bitmap offset ($D018).
-        self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{self._dd00:02X}")
-        # Same VIC pokes as HiresDisplayMode.setup().
-        self.api.write_memory("d011", D011_HIRES_ON)
-        self.api.write_memory("d018", f"{self._d018:02X}")
-        self.api.write_memory("d016", D016_STANDARD)
-        self.api.write_regs("d020", 0x00, 0x00)
-        # Clear bitmap + the FULL screen matrix once. The matrix clear zeroes
-        # the spacer rows (21, 24) the per-voice/title/meta paints below don't
-        # cover — in a relocated VIC bank those cells are uninitialized RAM
-        # that would otherwise render as garbage (bank 0 got them blanked by
-        # the BASIC clear screen). Per-voice/title/meta writes overwrite their
-        # rows on top (distinct region_ids; invalidate_cache already ran).
-        self.api.write_region(
-            self._bitmap_base, bytes(SCREEN.BITMAP_BYTES), region_id=RegionID.WAVE_BITMAP
-        )
-        self.api.write_region(
-            self._screen_base, bytes(SCREEN.N_CELLS), region_id=RegionID.WAVE_SCREEN_CLEAR
+        engage_bitmap_mode(
+            self.api,
+            d011=D011_HIRES_ON,
+            d018=f"{self._d018:02X}",
+            d016=D016_STANDARD,
+            bitmap_base=self._bitmap_base,
+            screen_base=self._screen_base,
+            dd00=self._dd00,
+            border=0x00,
+            bg0=0x00,
+            clear_region_ids=(RegionID.WAVE_BITMAP, RegionID.WAVE_SCREEN_CLEAR),
         )
         self._init_hires_colors()
         # Lazy-load the charset once. Glyph loading is process-wide cached so

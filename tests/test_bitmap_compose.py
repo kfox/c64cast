@@ -123,27 +123,41 @@ class BitmapStructureTest(unittest.TestCase):
 
 
 class BitmapEngageFlashTest(unittest.TestCase):
-    """Single-buffer (non-REU) setup must clear BOTH the $2000 bitmap and screen
-    RAM ($0400) BEFORE flipping $D011 into bitmap mode, so a bitmap scene doesn't
-    flash a colour ghost of the prior scene on engage. In hires a zeroed bitmap
-    selects each cell's BG nibble from $0400 — stale $0400 would render a 40×25
-    ghost; zeroing it forces solid black until the first frame repaints."""
+    """Single-buffer (non-REU) bring-up must clear BOTH the $2000 bitmap and
+    screen RAM ($0400) BEFORE flipping $D011 into bitmap mode, so a bitmap scene
+    doesn't flash a colour ghost of the prior scene on engage. In hires a zeroed
+    bitmap selects each cell's BG nibble from $0400 — stale $0400 would render a
+    40×25 ghost; zeroing it forces solid black until the first frame repaints.
+
+    The Hires/MultiHires display modes AND the waveform/midi voice scope all
+    bring up the bitmap through the SAME shared primitive (modes.engage_bitmap_mode),
+    so the invariant is asserted on both: the modes clear via write_memory_file
+    (one-time bulk), the scope via write_region (delta-cached, relocatable bank).
+    """
 
     def _ops_through_d011(self, mode) -> list[tuple]:
         api = FakeAPI()
         mode.setup(api)
         return api.ops
 
-    def _assert_clears_before_bitmap_flip(self, ops):
+    def _assert_clears_before_bitmap_flip(self, ops, *, via_region: bool = False):
         def idx(pred):
             return next(i for i, op in enumerate(ops) if pred(op))
 
-        bitmap_zero = idx(
-            lambda op: op[0] == "write_memory_file" and op[1] == "2000" and set(op[2]) == {0}
-        )
-        screen_zero = idx(
-            lambda op: op[0] == "write_memory_file" and op[1] == "0400" and set(op[2]) == {0}
-        )
+        if via_region:
+            bitmap_zero = idx(
+                lambda op: op[0] == "write_region" and op[1] == 0x2000 and set(op[2]) == {0}
+            )
+            screen_zero = idx(
+                lambda op: op[0] == "write_region" and op[1] == 0x0400 and set(op[2]) == {0}
+            )
+        else:
+            bitmap_zero = idx(
+                lambda op: op[0] == "write_memory_file" and op[1] == "2000" and set(op[2]) == {0}
+            )
+            screen_zero = idx(
+                lambda op: op[0] == "write_memory_file" and op[1] == "0400" and set(op[2]) == {0}
+            )
         d011_flip = idx(lambda op: op[0] == "write_memory" and op[1] == "D011" and op[2] == "3b")
         self.assertLess(bitmap_zero, d011_flip, "bitmap zeroed after $D011 flip")
         self.assertLess(screen_zero, d011_flip, "screen RAM zeroed after $D011 flip")
@@ -161,6 +175,38 @@ class BitmapEngageFlashTest(unittest.TestCase):
                 self._assert_clears_before_bitmap_flip(
                     self._ops_through_d011(MultiHiresDisplayMode(*args))
                 )
+
+    def test_voice_scope_clears_bitmap_and_screen_before_flip(self):
+        # The waveform/midi oscilloscope's _apply_vic_hires_bank shares the same
+        # engage_bitmap_mode primitive but clears via the delta-cached
+        # write_region path (it relocates the VIC bank). This is the path that
+        # used to clear AFTER the $D011 flip — the bug this unification fixes.
+        # MidiScene is the simplest host (fixed bank 0, no SID payload / threads).
+        from c64cast.midi_scene import MidiScene
+
+        api = FakeAPI()
+        scene = MidiScene(api, None)
+        scene._apply_vic_hires_bank()
+        self._assert_clears_before_bitmap_flip(api.ops, via_region=True)
+
+    def test_engage_primitive_configures_pointers_before_flip(self):
+        # The unified primitive must write the sub-bank pointers ($D018/$D016)
+        # BEFORE the $D011 flip, so bitmap mode reveals an already-configured
+        # field (a flip-first order would fetch the bitmap from a stale $D018
+        # for one frame). Guards the clear-then-flip ordering the modes + scope
+        # both now rely on.
+        from c64cast.modes import engage_bitmap_mode
+
+        api = FakeAPI()
+        engage_bitmap_mode(api, d011="3b", d018="18", d016="08")
+
+        def idx(addr):
+            return next(
+                i for i, op in enumerate(api.ops) if op[0] == "write_memory" and op[1] == addr
+            )
+
+        self.assertLess(idx("D018"), idx("D011"), "$D018 set after the bitmap flip")
+        self.assertLess(idx("D016"), idx("D011"), "$D016 set after the bitmap flip")
 
 
 class BitmapDeterminismTest(unittest.TestCase):

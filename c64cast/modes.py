@@ -1503,6 +1503,87 @@ class CharDisplayMode(DisplayMode):
     supports_compose = True
 
 
+def engage_bitmap_mode(
+    api: C64Backend,
+    *,
+    d011: str,
+    d018: str,
+    d016: str,
+    bitmap_base: int = VIC_BANK_0.BITMAP,
+    screen_base: int = SCREEN.RAM,
+    dd00: int | None = None,
+    border: int | None = None,
+    bg0: int | None = None,
+    clear: bool = True,
+    clear_region_ids: tuple[int, int] | None = None,
+) -> None:
+    """Canonical hires/mhires VIC bitmap-mode bring-up — the single place the
+    "clear-then-flip" engage invariant lives. Used by both ``BitmapDisplayMode``
+    (Hires/MultiHires single-buffer ``setup``) and ``VoiceScopeRenderer``
+    (waveform/midi scope ``_apply_vic_hires_bank``) so the ordering and the VIC
+    register set can't drift between them.
+
+    **The invariant:** zero the bitmap (``$2000``) AND screen RAM (``$0400``)
+    BEFORE writing ``$D011`` bitmap-on, so the window between the mode flip and
+    the first composed frame shows a clean black field — not uninitialized-RAM
+    garbage and not a colour ghost of the prior scene. A zeroed hires bitmap
+    makes every pixel select its cell's BACKGROUND colour, and in HIRES that
+    background is the LOW nibble of the cell's screen-RAM byte (NOT ``$D021``) —
+    so leaving stale ``$0400`` (e.g. the previous scene's PETSCII codes / colour
+    grid) paints a 40×25 colour ghost on engage. Zeroing ``$0400`` too forces
+    every cell's background to black. (In mhires/MCBM ``%00`` reads ``$D021``,
+    set here via ``bg0``, so the screen clear is belt-and-braces there.) ``$D011``
+    is written LAST so the configured sub-bank pointers + colours are already in
+    place when bitmap mode reveals them.
+
+    Parameters thread the legitimate per-caller differences (so this stays one
+    primitive, not a fork):
+
+    * ``d011`` / ``d018`` / ``d016`` — the VIC register values (hex strings).
+      Hires uses ``d016="08"`` (no multicolor); mhires ``d016="18"``.
+    * ``bitmap_base`` / ``screen_base`` — the bitmap + screen-matrix addresses.
+      Default to VIC bank 0 ($2000/$0400); the scope relocates these to bank 2.
+    * ``dd00`` — CIA2 ``$DD00`` VIC-bank select, written FIRST so the clear lands
+      in the bank VIC will fetch from. ``None`` leaves the bank as-is (kernal
+      default bank 0 — the display modes never relocate).
+    * ``border`` / ``bg0`` — ``$D020`` / ``$D021``; written as separate pokes
+      (callers that read back ``$D021`` independently rely on the standalone
+      register). ``None`` leaves that register untouched (hires sets neither in
+      setup — it manages the border per-frame; the REU mhires path leaves
+      ``$D021`` to its swap-tracker IRQ).
+    * ``clear`` — do the ``$2000`` + ``$0400`` zeroing. ``True`` for every
+      single-buffer path (the engage clean-field). The REU / host-DMA
+      double-buffer paths pass ``False`` because they zero both VIC *banks*
+      themselves; they still want the register pokes from here.
+    * ``clear_region_ids`` — ``(bitmap_region_id, screen_region_id)`` ⇒ clear via
+      the delta-cached ``write_region`` path (the scope, which relocates the VIC
+      bank and reuses the IDs as its spacer-row baseline). ``None`` ⇒ clear via
+      ``write_memory_file`` (the display modes' one-time bulk clear, which
+      bypasses the delta cache the first ``push`` rebuilds)."""
+    # 1. VIC bank select — before the clear so it lands in the fetched bank.
+    if dd00 is not None:
+        api.write_memory(f"{CIA2.PORT_A:04X}", f"{dd00:02X}")
+    # 2. Clear bitmap + screen matrix while $2000 is still OFF-screen (text
+    #    mode), so the $D011 flip in step 4 reveals a clean black field.
+    if clear:
+        if clear_region_ids is None:
+            api.write_memory_file(f"{bitmap_base:04X}", bytes(SCREEN.BITMAP_BYTES))
+            api.write_memory_file(f"{screen_base:04X}", bytes(SCREEN.N_CELLS))
+        else:
+            bitmap_region_id, screen_region_id = clear_region_ids
+            api.write_region(bitmap_base, bytes(SCREEN.BITMAP_BYTES), region_id=bitmap_region_id)
+            api.write_region(screen_base, bytes(SCREEN.N_CELLS), region_id=screen_region_id)
+    # 3. Configure the sub-bank pointers ($D018/$D016) + background colours.
+    api.write_memory("d018", d018)
+    api.write_memory("d016", d016)
+    if border is not None:
+        api.write_regs("d020", border)
+    if bg0 is not None:
+        api.write_regs("d021", bg0)
+    # 4. Flip $D011 into bitmap mode LAST — now the clean field is revealed.
+    api.write_memory("d011", d011)
+
+
 class BitmapDisplayMode(DisplayMode):
     """Mid-base for bitmap renderers (Hires, MultiHires).
 
@@ -1528,25 +1609,8 @@ class BitmapDisplayMode(DisplayMode):
     # screen / paint bank 0 next. Subclasses reset it in __init__/setup.
     _displayed_bank: int = 0
 
-    @staticmethod
-    def _blank_bitmap(api: C64Backend) -> None:
-        """Zero the on-screen $2000 bitmap AND screen RAM ($0400) so the window
-        between enabling bitmap mode and the first rendered frame shows a clean
-        black field instead of uninitialized RAM ("garbled mess" at scene start)
-        or a ghost of the previous scene. Call BEFORE flipping $D011 to bitmap —
-        while $2000 is still off-screen — for a garbage-free transition. Non-REU
-        path only (the REU path zeroes both VIC banks itself).
-
-        An all-%00 bitmap selects each pixel's BACKGROUND colour. In hires that
-        background is the LOW nibble of the cell's screen-RAM byte ($0400), NOT
-        $D021 — so a zeroed bitmap over stale $0400 (e.g. the prior scene's
-        PETSCII codes / colour grid) renders a 40×25 colour ghost of the
-        previous content on engage. Zeroing screen RAM too forces every cell's
-        background to 0 (black). (In mhires/MCBM %00 reads $D021 instead, so the
-        screen-RAM clear is belt-and-braces there — the first frame repaints
-        both anyway.)"""
-        api.write_memory_file("2000", bytes(8000))
-        api.write_memory_file(f"{SCREEN.RAM:04X}", bytes(SCREEN.N_CELLS))
+    # The clear-then-flip engage bring-up lives in the module-level
+    # `engage_bitmap_mode` (above) so it's shared with VoiceScopeRenderer.
 
     # --- Host-DMA double-buffer (no-REU backends, e.g. TeensyROM) -----------
     # Shared by Hires + MultiHires. The host writes bitmap+screen into the
@@ -1987,17 +2051,13 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def setup(self, api):
         super().setup(api)
-        if not self.use_reu_staged and not self.double_buffer:
-            # Clean black field before the bitmap-mode flip — kills the garbled
-            # uninitialized-RAM screen AND the previous-scene colour ghost at
-            # scene start. In hires every pixel of an all-%0 bitmap reads its
-            # cell's BG nibble from screen RAM ($0400); _blank_bitmap zeros both
-            # $2000 and $0400 so that nibble is 0 (black) regardless of what the
-            # prior scene left in $0400. The first frame repaints both.
-            self._blank_bitmap(api)
-        api.write_memory("d011", "3b")
-        api.write_memory("d018", "18")
-        api.write_memory("d016", "08")
+        # Single-buffer bring-up clears $2000+$0400 before the $D011 flip
+        # (engage clean-field — see engage_bitmap_mode); the REU / host-DMA
+        # double-buffer paths zero both VIC banks themselves below, so they pass
+        # clear=False and only take the register pokes. Hires manages the border
+        # per-frame, so no border/bg0 here.
+        single_buffer = not self.use_reu_staged and not self.double_buffer
+        engage_bitmap_mode(api, d011="3b", d018="18", d016="08", clear=single_buffer)
         self._last_bg = None
         if self.double_buffer:
             # Host-DMA double-buffer: zero both banks + install the minimal
@@ -2302,26 +2362,30 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
     def setup(self, api):
         super().setup(api)
-        if not self.use_reu_staged and not self.double_buffer:
-            # Clean black field before the bitmap-mode flip — kills the
-            # "garbled uninitialized RAM" screen during scene-start setup.
-            # (Double-buffer zeroes both banks itself, below.)
-            self._blank_bitmap(api)
-        api.write_memory("d011", "3b")
-        api.write_memory("d018", "18")
-        api.write_memory("d016", "18")
-        api.write_regs("d020", 0x00)
+        # Single-buffer bring-up clears $2000+$0400 before the $D011 flip (engage
+        # clean-field — see engage_bitmap_mode); the REU / host-DMA double-buffer
+        # paths zero both VIC banks themselves below (clear=False). border ($D020)
+        # = black on every path. bg0 ($D021) = black on the non-REU paths so the
+        # pre-first-frame screen is solid black (a zeroed mhires bitmap is all-%00
+        # → bg0); the REU path leaves $D021 to its swap-tracker IRQ.
+        single_buffer = not self.use_reu_staged and not self.double_buffer
+        engage_bitmap_mode(
+            api,
+            d011="3b",
+            d018="18",
+            d016="18",
+            border=0x00,
+            bg0=(None if self.use_reu_staged else 0x00),
+            clear=single_buffer,
+        )
         self._smoothed_cell_counts = None
         self._last_cand = None
         self._last_codes = None
         self._last_quantized = None
         self._bg0 = None
         if not self.use_reu_staged:
-            # bg0 = black so the pre-first-frame screen is solid black (the
-            # zeroed bitmap is all-%00 → bg0). Covers both the host-DMA single-
-            # buffer and double-buffer paths; _last_bg tracks it (single-buffer
-            # only — double-buffer flips $D021 via the swap tracker instead).
-            api.write_regs("d021", 0x00)
+            # _last_bg tracks the host-written $D021 (single-buffer only — the
+            # double-buffer path flips $D021 via the swap tracker instead).
             self._last_bg = 0
         if self.double_buffer:
             # Host-DMA double-buffer: zero both banks + install the minimal
