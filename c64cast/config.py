@@ -383,6 +383,19 @@ class AudioCfg:
             "or 16 (signed little-endian). Default 16."
         },
     )
+    sampler_clock_hz: int = field(
+        default=6_250_000,
+        metadata={
+            "help": "Ultimate Audio sampler reference clock (Hz), used to derive the "
+            "rate divider AND the resample target so they stay matched (heard speed = "
+            "real_clock / this). Default 6250000 is the firmware's design value (safe "
+            "for U2+, which clocks it correctly). If sampler audio drifts against the "
+            "video over minutes, calibrate per-unit: scripts/diags/sampler_clock_calib.py "
+            "gives a starting estimate, then tune by ear against a video (beep drifts "
+            "AHEAD of the flash → raise this; BEHIND → lower it). Ear-tuned to 6155000 on "
+            "one U64-II (the design value ran ~2% slow). Only affects the sampler backend."
+        },
+    )
     mic_sensitivity: float = field(
         default=1.5, metadata={"help": "Microphone input gain multiplier."}
     )
@@ -2951,6 +2964,7 @@ def build_scene(
                     api,
                     sample_rate=cfg.audio.sampler_sample_rate,
                     bits=cfg.audio.sampler_bits,
+                    ref_clock_hz=cfg.audio.sampler_clock_hz,
                 )
                 using_sampler = True
         assert s.file is not None  # narrowed by validate_scene_cfg
