@@ -7,6 +7,11 @@ picture at the system rate, so those scenes default to 20 fps (both NTSC and
 PAL); a bitmap scene without digitized audio defaults to half the system rate
 (30 NTSC / 25 PAL). Char modes (petscii/blank) stay on the playlist system
 default. Revisit when the firmware stops halting the bus on DMA writes.
+
+Video whose audio runs through the Ultimate Audio FPGA PCM sampler is the
+exception: that audio is off the C64 bus and forces the bus-clean REU-staged
+video path, so the bitmap caps lift and it defaults to the *full* system rate
+(60 NTSC / 50 PAL) — see the off_bus_audio branch of _frame_push_default_fps.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import replace
 from typing import cast
 
 from c64cast import config as cfgmod
@@ -51,6 +57,20 @@ class FramePushDefaultFpsTest(unittest.TestCase):
     def test_system_compare_is_case_insensitive(self):
         self.assertEqual(_frame_push_default_fps(_mode(True), False, "pal"), 25.0)
         self.assertEqual(_frame_push_default_fps(_mode(True), False, "ntsc"), 30.0)
+
+    def test_off_bus_audio_is_full_system_rate(self):
+        # Sampler audio is off the C64 bus + forces REU-staged (bus-clean)
+        # video, so the bitmap caps lift to the full system rate.
+        self.assertEqual(
+            _frame_push_default_fps(_mode(True), False, "NTSC", off_bus_audio=True), 60.0
+        )
+        self.assertEqual(
+            _frame_push_default_fps(_mode(True), False, "PAL", off_bus_audio=True), 50.0
+        )
+
+    def test_off_bus_audio_ignored_for_char_mode(self):
+        # Char modes stay on the system default regardless of audio backend.
+        self.assertIsNone(_frame_push_default_fps(_mode(False), False, "NTSC", off_bus_audio=True))
 
 
 class _BuildSceneFpsBase(unittest.TestCase):
@@ -136,6 +156,33 @@ class VideoFpsDefaultTest(_BuildSceneFpsBase):
         s = cfgmod.SceneCfg(type="video", display="petscii", file=self.vid)
         scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)
+
+    def test_sampler_bitmap_video_gets_full_system_rate(self):
+        # On a sampler-capable U64 with the sampler available, the video swaps
+        # the DAC streamer for the off-bus UltimateAudioSampler → full rate (60).
+        self.api.profile = replace(self.api.profile, supports_sampler=True)
+        cfg = self._cfg()
+        cfg.audio.backend = "sampler"
+        s = cfgmod.SceneCfg(type="video", display="mhires", file=self.vid)
+        scene = cfgmod.build_scene(s, cfg, self.api, self.audio, None, sampler_available=True)
+        self.assertEqual(scene.target_fps, 60.0)
+
+    def test_sampler_bitmap_video_full_rate_on_pal(self):
+        self.api.profile = replace(self.api.profile, supports_sampler=True)
+        cfg = self._cfg("PAL")
+        cfg.audio.backend = "auto"  # auto resolves to sampler when available
+        s = cfgmod.SceneCfg(type="video", display="hires", file=self.vid)
+        scene = cfgmod.build_scene(s, cfg, self.api, self.audio, None, sampler_available=True)
+        self.assertEqual(scene.target_fps, 50.0)
+
+    def test_sampler_unavailable_falls_back_to_dac_cap(self):
+        # backend=auto but the sampler isn't exposed → DAC streamer → 20.
+        self.api.profile = replace(self.api.profile, supports_sampler=True)
+        cfg = self._cfg()
+        cfg.audio.backend = "auto"
+        s = cfgmod.SceneCfg(type="video", display="mhires", file=self.vid)
+        scene = cfgmod.build_scene(s, cfg, self.api, self.audio, None, sampler_available=False)
+        self.assertEqual(scene.target_fps, 20.0)
 
 
 class GenerativeFpsDefaultTest(_BuildSceneFpsBase):

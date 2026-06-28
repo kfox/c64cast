@@ -36,7 +36,11 @@ interleave_videos = false     # the single scene IS the video
 
 [[scenes]]
 type = "video"
-display = "mhires"            # bitmap video; sampler audio leaves the bus free
+display = "mhires"            # bitmap video; sampler audio leaves the bus free,
+                              #   so this plays at the SOURCE video's frame rate
+                              #   (up to the 60/50 VIC refresh) instead of the
+                              #   bus-halt-capped 20/30 fps the 4-bit DAC forces.
+                              #   Set `target_fps` below to override.
 # `file =` accepts a path, directory, glob, or comma-separated combination;
 # each setup picks a random match. Omit it to scan assets/videos/.
 file = "assets/videos/your-video.mp4"

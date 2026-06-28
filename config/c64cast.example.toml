@@ -562,8 +562,11 @@ profile_interval = 10.0             # seconds between profiler summary lines
 #                 (60 NTSC / 50 PAL). Bitmap (hires/mhires) video, webcam,
 #                 and generative scenes default lower to stay under the DMA
 #                 bus-halt ceiling: 20 fps while streaming digitized audio,
-#                 else half rate (30 NTSC / 25 PAL). Waveform/midi also
-#                 default to half rate (see docs/caveats.md).
+#                 else half rate (30 NTSC / 25 PAL). EXCEPTION: video on the
+#                 U64 Ultimate Audio sampler is off-bus, so it keeps the full
+#                 system rate (60/50) — frame dedup makes it play at the source
+#                 video's own fps. Waveform/midi also default to half rate
+#                 (see docs/caveats.md).
 #   audio       — opt out of audio for this scene. Default: when
 #                 [audio].enabled is on (the default; --no-audio mutes),
 #                 every webcam, blank, and video scene plays its audio. Set

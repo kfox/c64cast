@@ -405,6 +405,15 @@ Defaults (all overridable with an explicit `target_fps`):
 * **Bitmap, no digitized audio → half rate (30 NTSC / 25 PAL).** A muted
   bitmap video / no-mic bitmap webcam still pushes full frames, so it gets the
   same half-rate treatment as `WaveformScene`.
+* **Bitmap video on the Ultimate Audio sampler → full system rate
+  (60 NTSC / 50 PAL).** The FPGA PCM sampler plays straight from REU with zero
+  bus involvement *and* forces the bus-clean REU-staged (bank-swap) video path,
+  so neither bus-halt cap above applies. The full-rate value is a *ceiling*:
+  because `VideoScene` only re-pushes a frame when the source yields a new one
+  (dedup), the effective push rate equals the source video's fps — a 24 fps clip
+  pushes 24/s, a 60 fps clip 60/s — i.e. source-rate playback, capped at the VIC
+  refresh. HW-verified on .64 (no added shimmer on real ≤30 fps content; audio
+  clean at a genuine 60/s push).
 * **Char modes (petscii / blank) → unchanged.** A 1 KB screen that the
   per-region delta cache mostly skips is cheap, so these keep the playlist
   system default (60 NTSC / 50 PAL).
