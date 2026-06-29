@@ -812,6 +812,7 @@ def build_stack(
         profiler=profiler,
         name=name,
         loop=cfg.playlist.loop,
+        fade_duration_s=cfg.playlist.fade_duration_s,
         audio=audio,
         audio_calibration=(
             {

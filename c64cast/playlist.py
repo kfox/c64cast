@@ -24,6 +24,7 @@ from .scenes import Scene
 if TYPE_CHECKING:
     from .config import SceneCfg
     from .ensemble import Ensemble
+    from .modes import DisplayMode
 
 InterstitialFactory = Callable[[str], Scene]
 FollowerSceneFactory = Callable[["SceneCfg"], Scene]
@@ -49,6 +50,7 @@ class Playlist:
         profiler: FrameProfiler | NullProfiler | None = None,
         name: str = "system",
         loop: bool = True,
+        fade_duration_s: float = 0.4,
         audio: Any = None,
         audio_calibration: dict[str, float] | None = None,
         menu_cfg: Any = None,
@@ -75,6 +77,16 @@ class Playlist:
         # instead of looping back / re-setting-up. See [playlist].loop in
         # config.py for the user-facing knob.
         self.loop = loop
+        # Scene fade transitions. fade_duration_s <= 0 disables (hard cuts).
+        # Fade-in overlaps the opening live frames (the display mode's
+        # fade_alpha ramps 0→1 as frames render); fade-out freezes the last
+        # composed frame and dims it to black before teardown on a NORMAL end.
+        # A CTRL skip cancels both (see the skip branch in _run_one_frame and
+        # the _ended_via_skip guard in _fade_out).
+        self.fade_duration_s = fade_duration_s
+        self._fade_in_remaining = 0
+        self._fade_in_total = 0
+        self._ended_via_skip = False
         self.api = api
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # Optional {display_mode_name: playback-rate multiplier} for servo pitch.
@@ -216,6 +228,89 @@ class Playlist:
             return 1.0 / float(mode_fps)
         return 1.0 / self.default_target_fps
 
+    def _fade_frames(self, scene: Scene) -> int:
+        """How many frames a fade spans for `scene` at its current frame rate.
+        0 when fades are disabled (fade_duration_s <= 0)."""
+        if self.fade_duration_s <= 0:
+            return 0
+        return max(1, round(self.fade_duration_s / self._frame_time_for(scene)))
+
+    def _fade_mode(self, scene: Scene) -> DisplayMode | None:
+        """The compose-based display mode the fade can drive, or None. Non-compose
+        scenes (waveform/midi oscilloscope, native launcher) and scenes without a
+        display mode are left untouched."""
+        dm: DisplayMode | None = getattr(scene, "display_mode", None)
+        if dm is not None and getattr(dm, "supports_compose", False):
+            return dm
+        return None
+
+    def _begin_fade_in(self, scene: Scene) -> None:
+        """Arm a fade-in for `scene`: start its display mode fully black and let
+        _run_one_frame ramp fade_alpha 0→1 over the opening live frames. No-op
+        (and clears any stale fade) when fades are off or unsupported."""
+        self._ended_via_skip = False
+        self._fade_in_remaining = 0
+        dm = self._fade_mode(scene)
+        if dm is None:
+            return
+        n = self._fade_frames(scene)
+        if n <= 0:
+            dm.fade_alpha = 1.0
+            return
+        dm.fade_alpha = 0.0
+        self._fade_in_remaining = n
+        self._fade_in_total = n
+
+    def _advance_fade_in(self, scene: Scene) -> None:
+        """Step the fade-in ramp one frame, before the scene composes. Called at
+        the top of each rendered frame so the dimming overlaps live playback."""
+        if self._fade_in_remaining <= 0:
+            return
+        dm = getattr(scene, "display_mode", None)
+        if dm is None:
+            self._fade_in_remaining = 0
+            return
+        done = self._fade_in_total - self._fade_in_remaining + 1
+        dm.fade_alpha = min(1.0, done / self._fade_in_total)
+        self._fade_in_remaining -= 1
+
+    def _cancel_fade_in(self, scene: Scene) -> None:
+        """Snap to full brightness and stop the fade-in ramp (CTRL skip)."""
+        self._fade_in_remaining = 0
+        dm = getattr(scene, "display_mode", None)
+        if dm is not None:
+            dm.fade_alpha = 1.0
+
+    def _fade_out(self, scene: Scene) -> None:
+        """Freeze the scene's last composed frame and dim it to black over the
+        fade window, then leave the mode at full brightness for the next scene.
+        Aborts immediately on a CTRL skip (consuming the event so it doesn't
+        also skip the next scene) or a stop request. No-op when fades are off,
+        the scene ended via skip, the mode can't compose, or nothing was
+        rendered yet."""
+        if self._ended_via_skip:
+            return
+        dm = self._fade_mode(scene)
+        if dm is None or dm._last_buffers is None:
+            return
+        n = self._fade_frames(scene)
+        if n <= 0:
+            return
+        frame_time = self._frame_time_for(scene)
+        for i in range(1, n + 1):
+            if self.stop_event.is_set():
+                break
+            if self.skip_event.is_set():
+                self.skip_event.clear()  # satisfied by ending the fade early
+                break
+            try:
+                dm.repush_faded(self.api, 1.0 - i / n)
+            except Exception:
+                self.log.exception("fade-out push failed on %r — ending fade", scene.name)
+                break
+            self.stop_event.wait(timeout=frame_time)
+        dm.fade_alpha = 1.0
+
     def _wait_for_audio_claim(self, scene: Scene) -> bool:
         """If the playlist is part of an ensemble and `scene` actually
         contends for audio (`competes_for_audio_lock()`), block until we
@@ -305,6 +400,7 @@ class Playlist:
             elif self.current.is_done:
                 if not self.loop:
                     self.log.info("scene %r finished and loop=False — stopping", self.current.name)
+                    self._fade_out(self.current)
                     self._safe_teardown(self.current)
                     self.current = None
                     self.stop_event.set()
@@ -313,6 +409,7 @@ class Playlist:
                 # for every scene type — webcam re-reads source, video
                 # re-opens the file, waveform restarts the SID.
                 scene = self.current
+                self._fade_out(scene)
                 self._safe_teardown(scene)
                 if not self._wait_for_audio_claim(scene):
                     self.current = None
@@ -327,12 +424,14 @@ class Playlist:
             self.index = resolved
             self._enter_interstitial()
         elif self.transitioning and self.current.is_done:
+            self._fade_out(self.current)
             self._safe_teardown(self.current)
             self.current = self.scenes[self.index]
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
             self._safe_setup(self.current)
             self.transitioning = False
         elif not self.transitioning and self.current.is_done:
+            self._fade_out(self.current)
             self._safe_teardown(self.current)
             next_index = self.index + 1
             if next_index >= len(self.scenes):
@@ -418,6 +517,9 @@ class Playlist:
     def _safe_setup(self, scene: Scene) -> None:
         self._maybe_install_conductor(scene)
         scene.setup()
+        # Arm the fade-in: the display mode starts black and ramps up over the
+        # opening live frames (driven by _advance_fade_in in _run_one_frame).
+        self._begin_fade_in(scene)
         # Adjust NMI latch for the new display mode (if audio is active and has
         # a calibration table). This restores pitch under the host-DMA servo by
         # boosting the NMI consumer rate back toward 8000 Hz after being throttled
@@ -539,6 +641,10 @@ class Playlist:
 
             stats_before = self.api.stats
 
+            # Step the fade-in ramp before the scene composes, so the opening
+            # frames render progressively brighter (overlapping live playback).
+            self._advance_fade_in(scene)
+
             with self.profiler.stage("cpu_render"):
                 try:
                     still_active = scene.process_frame(t0)
@@ -588,6 +694,10 @@ class Playlist:
                 else:
                     self.log.info("skip requested — advancing past %r", scene.name)
                     scene.is_done = True
+                    # A skip means "get to the next scene now" — abort any
+                    # in-progress fade-in and suppress the fade-out.
+                    self._cancel_fade_in(scene)
+                    self._ended_via_skip = True
                 self.skip_event.clear()
 
             # Cycle request (SHIFT key, or future POST /cycle):

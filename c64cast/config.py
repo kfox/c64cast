@@ -682,6 +682,15 @@ class PlaylistCfg:
             "pass; useful for 'play one video and quit')."
         },
     )
+    fade_duration_s: float = field(
+        default=0.4,
+        metadata={
+            "help": "Fade-in/out duration (seconds) at scene setup/teardown: non-black "
+            "pixels rise from black on entry and sink to black on a normal scene end, "
+            "across every compose-based display mode. 0 disables (hard cuts). A CTRL "
+            "skip aborts an in-progress fade immediately."
+        },
+    )
 
 
 @dataclass

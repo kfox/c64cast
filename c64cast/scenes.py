@@ -464,6 +464,14 @@ def _render_with_overlays(
                     scene.name,
                 )
                 ov._disabled = True
+    # Cache the full-brightness, post-overlay frame so a freeze+dim fade-out can
+    # re-push it without re-composing; then dim toward black if a fade is active.
+    # apply_fade never mutates the cached buffers, so the fade-out ramp always
+    # dims from the pristine frame. The fade folds over overlays too — they're
+    # part of the composed frame at this point.
+    display_mode._last_buffers = buffers
+    if display_mode.fade_alpha < 1.0:
+        buffers = display_mode.apply_fade(buffers)
     with prof.stage("push"):
         display_mode.push(api, buffers)
 

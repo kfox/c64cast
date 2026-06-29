@@ -83,6 +83,55 @@ def quantize_flat(flat_pixels: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Scene fade: per-palette-index dim toward black
+# ---------------------------------------------------------------------------
+
+_IDENTITY_FADE_LUT = np.arange(16, dtype=np.uint8)
+_FADE_LUT_CACHE: dict[tuple[int, tuple[int, ...] | None], np.ndarray] = {}
+
+
+def build_fade_lut(alpha: float, allowed: tuple[int, ...] | None = None) -> np.ndarray:
+    """Return a length-16 uint8 LUT mapping each palette index to its dimmed
+    counterpart at brightness ``alpha`` ∈ [0, 1].
+
+    The C64 has no global brightness register and its 16 palette indices are not
+    luminance-ordered, so a scene fade is expressed as a *palette remap*: for
+    each color ``c``, the LUT entry is the palette index nearest (in the same
+    weighted-BGR space the quantizer uses) to ``C64_PALETTE_BGR[c] * alpha``.
+    ``alpha >= 1`` is the identity; ``alpha = 0`` maps every entry to black
+    (index 0); black always maps to black. Applied to the color-bearing fields
+    of a composed frame (color RAM / screen-RAM color nibbles / bg registers)
+    while leaving the bitmap pixel-selectors untouched, this fades non-black
+    pixels toward black uniformly across every compose-based display mode.
+
+    ``allowed`` restricts the candidate output indices to a palette subset —
+    multicolor char mode's per-cell foreground can only be palette 0..7 (color
+    RAM bit 3 is the multicolor flag), so MCM passes ``allowed=(0..7)`` to keep
+    the dimmed foreground in range. ``None`` allows all 16.
+
+    Results are memoized on a 1/256-quantized alpha (and the allowed set) so a
+    steady fade ramp reuses a handful of LUTs rather than recomputing the
+    nearest-color search every frame.
+    """
+    if alpha >= 1.0 and allowed is None:
+        return _IDENTITY_FADE_LUT
+    key = 0 if alpha <= 0.0 else min(256, int(round(alpha * 256.0)))
+    cache_key = (key, allowed)
+    cached = _FADE_LUT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    scaled = C64_PALETTE_BGR * (key / 256.0)
+    dist = quantize_distances(scaled)  # (16, 16)
+    if allowed is None:
+        lut = np.argmin(dist, axis=1).astype(np.uint8)
+    else:
+        cand = np.asarray(allowed, dtype=np.intp)
+        lut = cand[np.argmin(dist[:, cand], axis=1)].astype(np.uint8)
+    _FADE_LUT_CACHE[cache_key] = lut
+    return lut
+
+
+# ---------------------------------------------------------------------------
 # Palette-mode helpers (used by MCM / MultiHires display modes)
 # ---------------------------------------------------------------------------
 
