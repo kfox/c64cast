@@ -38,6 +38,7 @@ from .palette import (
     apply_color_fit,
     apply_hue_corrections,
     boost_saturation,
+    build_fade_lut,
     make_gray_penalty,
     parse_channel_boost,
     parse_hue_corrections,
@@ -1361,6 +1362,16 @@ def _palette_mode_settings(mode: str) -> tuple[float, np.ndarray]:
 log = logging.getLogger(__name__)
 
 
+def _fade_nibbles(arr: np.ndarray, lut: np.ndarray) -> np.ndarray:
+    """Remap both nibbles of a uint8 array through a 16-entry palette LUT.
+
+    Bitmap modes pack two per-cell colors into one screen-RAM byte (hi nibble =
+    fg/c1, lo nibble = bg/c2); the scene fade dims each color independently."""
+    hi = lut[arr >> 4]
+    lo = lut[arr & 0x0F]
+    return ((hi << 4) | lo).astype(np.uint8)
+
+
 class DisplayMode:
     name = "base"
     # True when the scene paints into the bitmap area ($2000). Overlays that
@@ -1416,6 +1427,35 @@ class DisplayMode:
     # the remap only runs when the toggle is on AND a map has been installed.
     _color_map: ColorMap | None = None
     _force_palette: bool = False
+
+    # Scene fade (set/teardown transitions, driven by the Playlist). 1.0 = no
+    # fade; < 1.0 dims the composed frame's color-bearing fields toward black
+    # via a palette remap (see palette.build_fade_lut). `_last_buffers` caches
+    # the most recent full-brightness composed frame so the freeze+dim fade-out
+    # can re-push it at decreasing alpha without re-composing. Only the
+    # compose-based families (Char/Bitmap) implement apply_fade; the base is a
+    # no-op so non-compose modes are unaffected.
+    fade_alpha: float = 1.0
+    _last_buffers: ComposeBuffers | None = None
+
+    def apply_fade(self, buffers: ComposeBuffers) -> ComposeBuffers:
+        """Return `buffers` with color-bearing fields dimmed toward black at
+        ``self.fade_alpha``. Never mutates the input (so the cached pristine
+        buffers survive a multi-frame fade-out). Base: identity."""
+        return buffers
+
+    def repush_faded(self, api: C64Backend, alpha: float) -> None:
+        """Re-push the last composed frame dimmed to ``alpha`` — the freeze+dim
+        fade-out. No-op when nothing has been composed yet (e.g. a scene torn
+        down before its first frame)."""
+        if self._last_buffers is None:
+            return
+        saved = self.fade_alpha
+        self.fade_alpha = alpha
+        try:
+            self.push(api, self.apply_fade(self._last_buffers))
+        finally:
+            self.fade_alpha = saved
 
     def set_color_fit(self, fit: ColorFit | None) -> None:
         """Install (or clear) the per-source adaptive color fit. Called by
@@ -1501,6 +1541,16 @@ class CharDisplayMode(DisplayMode):
     is_bitmapped = False
     default_target_fps = None  # follow the playlist's NTSC/PAL default
     supports_compose = True
+
+    def apply_fade(self, buffers: ComposeBuffers) -> ComposeBuffers:
+        """Char modes carry per-cell foreground color in the `color` buffer
+        (color RAM low nibble); screen RAM holds glyph codes, not colors. Dim
+        the foreground; black cells (color 0) stay black. MCM overrides to also
+        dim its shared bg registers and constrain the multicolor foreground."""
+        out: ComposeBuffers = dict(buffers)  # type: ignore[assignment]
+        lut = build_fade_lut(self.fade_alpha)
+        out["color"] = lut[buffers["color"]]
+        return out
 
 
 def engage_bitmap_mode(
@@ -1666,6 +1716,17 @@ class BitmapDisplayMode(DisplayMode):
         _install_bank_swap_irq(
             api, HOSTDMA_SWAP_IRQ_HANDLER, HOSTDMA_TRACKER_LEN, audio_pump_active=False
         )
+
+    def apply_fade(self, buffers: BitmapComposeBuffers) -> BitmapComposeBuffers:
+        """Hires per-cell colors are packed into the screen byte (hi nibble =
+        fg, lo nibble = bg) plus the global bg/border scalar; the bitmap is a
+        per-pixel fg/bg selector, so it's left untouched. Dim both nibbles and
+        the bg. MultiHires overrides to also dim its per-cell color RAM (c3)."""
+        out: BitmapComposeBuffers = dict(buffers)  # type: ignore[assignment]
+        lut = build_fade_lut(self.fade_alpha)
+        out["screen"] = _fade_nibbles(buffers["screen"], lut)
+        out["bg"] = int(lut[buffers["bg"]])
+        return out
 
 
 class PETSCIIDisplayMode(CharDisplayMode):
@@ -1984,6 +2045,22 @@ class MCMDisplayMode(CharDisplayMode):
             self._last_bg = bg.copy()
         api.write_region(0x0400, buffers["screen"].tobytes(), region_id=RegionID.SCREEN)
         api.write_region(0xD800, buffers["color"].tobytes(), region_id=RegionID.COLOR)
+
+    def apply_fade(self, buffers: MCMComposeBuffers) -> MCMComposeBuffers:
+        """MCM colors live in three places: the shared bg0/bg1/bg2 registers
+        (`bg`, any palette index) and the per-cell multicolor foreground stored
+        in color RAM as ``fg | 8`` with ``fg`` ∈ 0..7. Dim all four; the screen
+        buffer is 2-bit selectors among them, so it's left untouched. The
+        foreground uses a 0..7-constrained LUT so the dimmed value stays a legal
+        multicolor color (and the bit-3 flag is preserved)."""
+        alpha = self.fade_alpha
+        lut = build_fade_lut(alpha)
+        fg_lut = build_fade_lut(alpha, allowed=tuple(range(8)))
+        out: MCMComposeBuffers = dict(buffers)  # type: ignore[assignment]
+        color = buffers["color"]
+        out["color"] = (fg_lut[color & 0x07] | 0x08).astype(np.uint8)
+        out["bg"] = lut[buffers["bg"]]
+        return out
 
 
 HIRES_STYLES = ("normal", "edges", "edges_inverted")
@@ -2500,6 +2577,17 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
         api.write_region(0xD800, color_bytes, region_id=RegionID.COLOR)
         api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)
+
+    def apply_fade(self, buffers: MHiresComposeBuffers) -> MHiresComposeBuffers:
+        """MultiHires colors: screen byte packs c1 (hi nibble) + c2 (lo nibble),
+        color RAM holds the per-cell c3, and `bg` is bg0 — all palette indices.
+        The bitmap holds 2-bit selectors among {bg0, c1, c2, c3}, so dimming
+        those four (via the parent's screen+bg fade plus c3 here) fades the
+        whole frame; the bitmap is untouched."""
+        out: MHiresComposeBuffers = super().apply_fade(buffers)  # type: ignore[assignment]
+        lut = build_fade_lut(self.fade_alpha)
+        out["color"] = lut[buffers["color"]]
+        return out
 
     def _compose_global(self, d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         """Legacy path: pick 4 global palette slots for the whole frame.

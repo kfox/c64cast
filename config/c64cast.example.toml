@@ -410,6 +410,11 @@ loop = true                         # restart from scene 1 after the last
                                     # streamer cleanly after one pass
                                     # (useful for "play one video and
                                     # quit"). CLI: --loop / --no-loop.
+fade_duration_s = 0.4               # fade each scene up from black on entry
+                                    # and down to black on a normal end
+                                    # (all compose-based display modes). 0
+                                    # disables (hard cuts). A CTRL skip aborts
+                                    # an in-progress fade immediately.
 # songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"   # optional;
 #                                    waveform scenes use this to auto-pick a
 #                                    duration when duration_s is omitted.
