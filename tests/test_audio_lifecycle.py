@@ -269,17 +269,17 @@ class PitchCompensationLatchTest(unittest.TestCase):
 class NmiRateSafetyTest(unittest.TestCase):
     """The NMI sample-rate guard (c64.nmi_rate_safety) + its config wiring.
 
-    The handler completes in <=81 cycles (badline worst case); a sample period
-    shorter than that queues NMIs and drops pitch. PAL's slower clock = tighter
-    ceiling than NTSC. See [[project-nmi-rate-intelligibility]]."""
+    The handler completes in <=68 cycles (HW-measured 2026-07-02, badline worst
+    case); a sample period shorter than that queues NMIs and drops pitch. PAL's
+    slower clock = tighter ceiling than NTSC. See [[project-nmi-rate-intelligibility]]."""
 
     def test_default_rate_is_safe_both_standards(self):
         from c64cast.c64 import nmi_rate_safety
         from c64cast.config import AudioCfg
 
-        self.assertEqual(AudioCfg().sample_rate, 10500)
+        self.assertEqual(AudioCfg().sample_rate, 11600)
         for system in ("NTSC", "PAL"):
-            self.assertEqual(nmi_rate_safety(system, 10500)[0], "ok")
+            self.assertEqual(nmi_rate_safety(system, 11600)[0], "ok")
 
     def test_legacy_and_candidate_rates_ok(self):
         from c64cast.c64 import nmi_rate_safety
@@ -299,10 +299,10 @@ class NmiRateSafetyTest(unittest.TestCase):
     def test_marginal_rate_warns(self):
         from c64cast.c64 import nmi_rate_safety
 
-        # 12000 → period ~85 (NTSC) / ~82 (PAL): above the 81-cycle handler but
-        # inside the 88-cycle entry-latency margin → warn, not error.
+        # 14000 → period ~73 (NTSC) / ~70 (PAL): above the 68-cycle handler
+        # onset but inside the 75-cycle safety margin → warn, not error.
         for system in ("NTSC", "PAL"):
-            self.assertEqual(nmi_rate_safety(system, 12000)[0], "warn")
+            self.assertEqual(nmi_rate_safety(system, 14000)[0], "warn")
 
     def test_pal_ceiling_below_ntsc(self):
         from c64cast.c64 import max_safe_sample_rate
@@ -340,7 +340,7 @@ class NmiRateSafetyTest(unittest.TestCase):
     def test_config_validate_passes_default(self):
         from c64cast.config import Config, validate_nmi_sample_rate
 
-        validate_nmi_sample_rate(Config())  # default 10500, no raise
+        validate_nmi_sample_rate(Config())  # default 11600, no raise
 
 
 class NmiRateAdaptiveStepTest(unittest.TestCase):
@@ -348,11 +348,11 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
 
     Drives the measured consumer rate toward target by stepping the CIA #2 latch.
     Rate/latch are inverse, so R too slow → SMALLER latch (faster). NTSC@10500:
-    nominal_latch=96 (period 97), ceiling_latch=87 (period 88, the handler budget).
-    See [[project-nmi-rate-intelligibility]] / [[project-hostdma-servo-pitch-compensation]]."""
+    nominal_latch=96 (period 97), ceiling_latch=74 (period 75, the measured
+    handler budget). See [[project-nmi-rate-intelligibility]] / [[project-hostdma-servo-pitch-compensation]]."""
 
     NOMINAL = 96  # _nmi_latch_value() for NTSC @ 10500
-    CEILING = 87  # NMI_SAFE_MIN_PERIOD_CYCLES (88) - 1
+    CEILING = 74  # NMI_SAFE_MIN_PERIOD_CYCLES (75) - 1
     TARGET = 10500.0
 
     def _step(self, r_rate: float, latch: int) -> int:

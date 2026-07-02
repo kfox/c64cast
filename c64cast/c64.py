@@ -383,28 +383,40 @@ def cpu_clock(system: str) -> int:
 # ---------------------------------------------------------------------------
 # NMI audio sample-rate safety budget.
 # ---------------------------------------------------------------------------
-# The $D418 DAC NMI handler (audio.NMI_ROUTINE) pulls one sample per fire. It
-# completes in 41 cycles on the fast path and 81 cycles when a VIC-II badline
-# steals 40 cycles mid-handler. The NMI also can't be serviced until the
-# in-progress instruction finishes (up to ~7 cycles). If the sample PERIOD
-# (= cpu_clock / sample_rate) is shorter than the handler can complete, NMIs
-# queue and fire back-to-back — samples stretch and pitch drops (the measured
-# 16 kHz failure shifted a 440 Hz tone to 421 Hz; see the audio.py docstring).
+# The $D418 DAC NMI handler (audio.NMI_ROUTINE) pulls one sample per fire. If
+# the sample PERIOD (= cpu_clock / sample_rate) is shorter than the handler can
+# complete (fast path + a VIC-II badline steal + entry latency for the
+# in-progress instruction), NMIs queue and fire back-to-back — the effective
+# consumption rate falls below the configured rate, so samples stretch and
+# pitch drops.
 #
-# PAL is tighter than NTSC: its slower clock means fewer cycles per period at
-# the same rate, so the safe ceiling is lower (~10.5 kHz PAL vs ~11.6 kHz NTSC).
-# HW-measured 2026-06-15: NTSC@11025 and PAL@10500 both ran with the NMI
-# consumer tracking ~98% of the configured rate (no overrun); 8 kHz→~10.5 kHz
-# recovers the 4-5.5 kHz fricative band the old 4 kHz Nyquist discarded.
-NMI_HANDLER_WORST_CYCLES: Final = 81  # 41 work + 40 badline steal
-NMI_ENTRY_LATENCY_CYCLES: Final = 7  # worst-case wait for the in-progress instr
-NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 88
+# These are now DIRECTLY HW-MEASURED, superseding the earlier 81/40-cycle
+# cycle-count ESTIMATE (which put the ceiling at a conservative ~11.6 kHz NTSC).
+# 2026-07-02, ring-prefill tone sweep on a real NTSC C64 with a TeensyROM+
+# (scripts/diags/tr_nmi_rate_ceiling.py, display on = 25 badlines/frame, the
+# same badline load char AND bitmap modes carry): the effective consumer rate
+# tracked the configured rate within ±0.7% cleanly THROUGH 14 kHz (period 73
+# cycles), began slipping ~1% at 15 kHz (68 cycles = overrun ONSET), and
+# hard-plateaued ~15.3 kHz at 16 kHz. So the true handler worst-case completion
+# is ~68 cycles, not the estimated 88, and clean operation holds to a 73-cycle
+# period. This is a 6510/badline property (host feed uses the prefill loop, so
+# it's independent of the C64/backend and of TR firmware).
+#
+# PAL is tighter than NTSC (slower clock = fewer cycles per period at the same
+# rate), and the sweep unit was NTSC, so the ceiling keeps a margin above the
+# measured onset for PAL + chip/temperature variation: SAFE (clean) = 75-cycle
+# period → ~13.6 kHz NTSC / ~13.1 kHz PAL; below the 68-cycle onset (≥ ~15 kHz
+# NTSC) is a hard "error". HW-verified end-to-end 2026-07-02: petscii video +
+# host-DMA DAC on the TR ran clean (no underruns) at 11.6 kHz and 13.5 kHz.
+NMI_HANDLER_WORST_CYCLES: Final = 68  # HW-measured overrun onset (was est. 81)
+NMI_ENTRY_LATENCY_CYCLES: Final = 7  # safety margin (entry latency + PAL/unit variation)
+NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 75
 
 
 def max_safe_sample_rate(system: str) -> int:
     """Highest sample rate whose NMI period stays at/above the safe minimum
-    (handler worst case + entry latency) for `system`. ~11.6 kHz NTSC / ~11.1
-    kHz PAL — but ears/HW put the comfortable default lower (10.5 kHz)."""
+    (measured handler worst case + margin) for `system`. ~13.6 kHz NTSC / ~13.1
+    kHz PAL (HW-measured 2026-07-02) — the comfortable default sits lower."""
     return int(cpu_clock(system) // NMI_SAFE_MIN_PERIOD_CYCLES)
 
 

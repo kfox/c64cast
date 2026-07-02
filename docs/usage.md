@@ -378,7 +378,7 @@ device = -1                         # -1 = system default camera; `--list-device
 [audio]
 enabled = true                      # on by default; --no-audio mutes
 device = -1                         # sounddevice input index; -1 = system default
-sample_rate = 10500                 # 4-bit $D418 DAC rate; don't change unless you really mean it
+sample_rate = 11600                 # 4-bit $D418 DAC rate; HW ceiling ~13.6k NTSC/~13.1k PAL
 backend = "auto"                    # video audio: "auto" (U64 Ultimate Audio FPGA
                                     #   sampler when available, else DAC), "dac"
                                     #   (lo-fi 4-bit $D418, all backends), "sampler"
