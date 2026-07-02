@@ -282,6 +282,12 @@ UI); see [docs/caveats.md](docs/caveats.md) for the PSID-only limitation.
 * The [HVSC](https://hvsc.c64.org/) team for the SID archive and the
   Songlengths database.
 * [PyAV](https://github.com/PyAV-Org/PyAV) for the video path.
+* Pex 'Mahoney' Tufvesson for the 8-bit `$D418` DAC technique (his
+  ["Musings in the Key of C64" white paper](https://livet.se/mahoney/c64-files/Musings_in_the_key_of_C64_by_Pex_Mahoney_Tufvesson.pdf))
+  behind the optional `dac_curve = "mahoney_ultisid"` audio path, Jürgen
+  Wothke (websid) for the effective-bit analysis, Antonio Savona / Broken
+  Bytes for the 48 kHz `$D418` write-up, and [CodeBase64](https://codebase64.org/)
+  for the reference material.
 
 ## License
 

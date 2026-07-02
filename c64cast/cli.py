@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from . import (
     __version__,
+    dac_calibration,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
 )
 from . import config as cfgmod
@@ -272,6 +273,15 @@ def build_parser() -> argparse.ArgumentParser:
         "once), check optional extras + probe each U64, then "
         "exit. Add --skip-probe for a fast, offline, "
         "hardware-free config check.",
+    )
+    debug.add_argument(
+        "--calibrate-dac",
+        action="store_true",
+        help="Measure the connected SID's Mahoney 8-bit $D418 DAC transfer curve "
+        "(requires a capture device — Cam Link — on the SID audio output) and save "
+        "a per-system calibrated table, then exit. Playback with [audio].dac_curve "
+        "= 'auto' (the default) then uses it automatically. Most valuable for "
+        "physical 6581/8580 chips and SID replacements, which vary chip-to-chip.",
     )
     debug.add_argument(
         "--log-file",
@@ -680,6 +690,12 @@ def build_stack(
     # _resolve_sampler_available so the probe sees it on; restored at teardown.
     sampler_restore = _doctor.provision_sampler(api, cfg)
 
+    # Resolve the system-aware [audio].dac_curve ("auto"/"calibrated") to a
+    # concrete (label, table) for this backend + any per-unit calibration.
+    dac_curve_label, dac_table = dac_calibration.resolve_dac_curve_for_backend(cfg)
+    if cfg.audio.enabled and dac_curve_label != cfg.audio.dac_curve:
+        log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve_label)
+
     audio = (
         AudioStreamer(
             api,
@@ -687,6 +703,8 @@ def build_stack(
             cfg.ultimate64.system,
             dither=cfg.audio.dither,
             digi_boost=cfg.audio.digi_boost,
+            dac_curve=dac_curve_label,
+            dac_table=dac_table,
             sid_filter_cutoff=cfg.audio.sid_filter_cutoff,
             use_reu_pump=cfg.audio.use_reu_pump,
             reu_pump_governor=cfg.audio.reu_pump_governor,
@@ -1065,6 +1083,34 @@ def main(argv=None) -> int:
             cfgs[0].hardware.backend,
         )
 
+    if args.calibrate_dac:
+        # Measure the connected SID's Mahoney $D418 transfer curve + persist a
+        # per-system calibrated table, then exit. Single-system operation.
+        cfg = cfgs[0]
+        if len(cfgs) > 1:
+            log.warning(
+                "--calibrate-dac operates on one system; calibrating the first (%s)",
+                loaded.names[0],
+            )
+        if not AUDIO_AVAILABLE:
+            log.error(
+                "--calibrate-dac needs audio capture (sounddevice). Install the "
+                "'mic' extra: uv sync --extra mic"
+            )
+            return 3
+        dev = (
+            args.audio_device if args.audio_device is not None and args.audio_device >= 0 else None
+        )
+        be = make_backend(cfg)
+        try:
+            dac_calibration.run_calibration(be, cfg, device=dev, log_fn=lambda m: log.info("%s", m))
+        except dac_calibration.CaptureUnavailableError as e:
+            log.error("%s", e)
+            return 3
+        finally:
+            be.close()
+        return 0
+
     if args.doctor:
         # Doctor uses the merged configs so CLI flags (e.g. --skip-probe) and
         # the C64CAST_DMA_PASSWORD env var take effect on the probe.
@@ -1095,6 +1141,7 @@ def main(argv=None) -> int:
         try:
             cfgmod.validate_nmi_sample_rate(cfg)
             cfgmod.validate_sampler_cfg(cfg)
+            cfgmod.validate_dac_curve_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5

@@ -12,7 +12,8 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.api import Ultimate64API
-from c64cast.audio import SAMPLE_TAP_SIZE, AudioStreamer
+from c64cast.audio import NEUTRAL_SAMPLE, SAMPLE_TAP_SIZE, AudioStreamer
+from c64cast.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
 
 
 def _new_streamer(monkeypatch_api=True) -> AudioStreamer:
@@ -37,6 +38,9 @@ def _new_streamer(monkeypatch_api=True) -> AudioStreamer:
     s._tap_lock = threading.Lock()
     s.dither_enabled = True
     s.digi_boost = False
+    s.dac_curve_name = "linear"
+    s._dac_curve = None
+    s._neutral_byte = NEUTRAL_SAMPLE
     s.sid_filter_cutoff = 0
     s._full_underruns = 0
     s._partial_underruns = 0
@@ -139,6 +143,46 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         s._queued_samples = s._max_queued_samples
         n = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=False)
         self.assertEqual(n, 0, "drop-on-full path should push 0 samples")
+
+
+class DacCurveEncodeTest(unittest.TestCase):
+    """The Mahoney companding path threaded through _encode_and_enqueue: the
+    ring bytes must be the curve's $D418 codes, not the 4-bit nibble."""
+
+    def _curved_streamer(self) -> AudioStreamer:
+        s = _new_streamer()
+        s.dac_curve_name = "mahoney_ultisid"
+        s._dac_curve = np.frombuffer(MAHONEY_ULTISID, dtype=np.uint8)
+        s._neutral_byte = int(s._dac_curve[NEUTRAL_INDEX])
+        return s
+
+    def test_exact_zero_encodes_to_curve_neutral(self):
+        s = self._curved_streamer()
+        s._encode_and_enqueue(np.zeros(512, dtype=np.float32))
+        blob = s.q.get()
+        neutral = int(MAHONEY_ULTISID[NEUTRAL_INDEX])
+        self.assertTrue(
+            all(v == neutral for v in blob),
+            f"exact-zero should encode to sidtable[128]={neutral}; got {set(blob)}",
+        )
+
+    def test_full_scale_maps_to_curve_endpoints(self):
+        s = self._curved_streamer()
+        s.dither_enabled = False
+        s._encode_and_enqueue(np.array([1.0, -1.0], dtype=np.float32))
+        blob = s.q.get()
+        self.assertEqual(blob[0], MAHONEY_ULTISID[255])
+        self.assertEqual(blob[1], MAHONEY_ULTISID[0])
+
+    def test_bytes_exceed_4bit_range(self):
+        # The whole point: curve bytes use the full 0..255 $D418 range, not
+        # the 0..15 volume nibble. A mid-amplitude sweep must produce a byte
+        # with bits set above the low nibble.
+        s = self._curved_streamer()
+        s.dither_enabled = False
+        s._encode_and_enqueue(np.linspace(-1, 1, 256, dtype=np.float32))
+        blob = s.q.get()
+        self.assertTrue(any(v > 15 for v in blob), "expected full-byte $D418 codes")
 
 
 class WorkerBatchingTest(unittest.TestCase):

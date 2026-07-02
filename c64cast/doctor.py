@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import IO, Literal
 
 from .c64 import max_safe_sample_rate, nmi_rate_safety
-from .config import LoadResult, validate_scene_cfg
+from .config import ConfigError, LoadResult, validate_dac_curve_cfg, validate_scene_cfg
 from .orchestrator import OrchestratorError
 
 log = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_probe_environment())
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
+    out.extend(_validate_dac_curve(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
     out.extend(_probe_extras())
@@ -259,6 +260,55 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
                         ),
                     )
                 )
+    return out
+
+
+def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unknown [audio].dac_curve name or the dac_curve + digi_boost
+    conflict per system, and report how a system-aware curve ("auto"/
+    "calibrated") resolves for the configured backend. Offline — delegates to
+    config.validate_dac_curve_cfg + dac_calibration."""
+    from . import dac_calibration
+
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_dac_curve_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/dac_curve",
+                    message=str(e),
+                    hint="See [audio].dac_curve in the config reference / --describe section:audio.",
+                )
+            )
+            continue
+        if not cfg.audio.enabled or cfg.audio.dac_curve not in ("auto", "calibrated"):
+            continue
+        # Report resolution of the system-aware curves (and flag an explicit
+        # 'calibrated' with no table on disk — a runtime error otherwise).
+        try:
+            label, _ = dac_calibration.resolve_dac_curve_for_backend(cfg)
+            out.append(
+                Diagnostic(
+                    level="ok",
+                    category="audio",
+                    subject=f"{name}/dac_curve",
+                    message=f"{cfg.audio.dac_curve!r} resolves to {label!r} on this system.",
+                )
+            )
+        except ValueError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/dac_curve",
+                    message=str(e),
+                    hint="Run `c64cast -u <target> --calibrate-dac`, or set dac_curve = 'auto'.",
+                )
+            )
     return out
 
 
@@ -1173,7 +1223,7 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         by_category.setdefault(d.category, []).append(d)
 
     # Stable ordering by category, then error > warn > ok within each.
-    category_order = ["environment", "scene", "orchestrator", "extras", "connectivity"]
+    category_order = ["environment", "scene", "audio", "orchestrator", "extras", "connectivity"]
     for cat in category_order:
         rows = by_category.get(cat)
         if not rows:

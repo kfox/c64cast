@@ -41,6 +41,10 @@ config/*.toml
 !config/c64cast.example.toml
 # diag tool captures/fixtures; the tools are tracked
 scripts/diags/out/
+# per-system DAC calibration tables (captured from real hardware via
+# --calibrate-dac; machine-specific, not source). Only the README is tracked.
+calibration/*
+!calibration/README.md
 # legacy: local stream recordings outside assets/
 recordings/
 *.mp4
