@@ -265,7 +265,11 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
 
 def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [audio].dac_curve name or the dac_curve + digi_boost
-    conflict per system. Offline — delegates to config.validate_dac_curve_cfg."""
+    conflict per system, and report how a system-aware curve ("auto"/
+    "calibrated") resolves for the configured backend. Offline — delegates to
+    config.validate_dac_curve_cfg + dac_calibration."""
+    from . import dac_calibration
+
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         try:
@@ -278,6 +282,31 @@ def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
                     subject=f"{name}/dac_curve",
                     message=str(e),
                     hint="See [audio].dac_curve in the config reference / --describe section:audio.",
+                )
+            )
+            continue
+        if not cfg.audio.enabled or cfg.audio.dac_curve not in ("auto", "calibrated"):
+            continue
+        # Report resolution of the system-aware curves (and flag an explicit
+        # 'calibrated' with no table on disk — a runtime error otherwise).
+        try:
+            label, _ = dac_calibration.resolve_dac_curve_for_backend(cfg)
+            out.append(
+                Diagnostic(
+                    level="ok",
+                    category="audio",
+                    subject=f"{name}/dac_curve",
+                    message=f"{cfg.audio.dac_curve!r} resolves to {label!r} on this system.",
+                )
+            )
+        except ValueError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/dac_curve",
+                    message=str(e),
+                    hint="Run `c64cast -u <target> --calibrate-dac`, or set dac_curve = 'auto'.",
                 )
             )
     return out
@@ -1194,7 +1223,7 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         by_category.setdefault(d.category, []).append(d)
 
     # Stable ordering by category, then error > warn > ok within each.
-    category_order = ["environment", "scene", "orchestrator", "extras", "connectivity"]
+    category_order = ["environment", "scene", "audio", "orchestrator", "extras", "connectivity"]
     for cat in category_order:
         rows = by_category.get(cat)
         if not rows:

@@ -427,22 +427,27 @@ class AudioCfg:
             "the master mixer, raising $D418 playback level."
         },
     )
-    # Mahoney 8-bit $D418 companding. "linear" = the classic 4-bit volume-nibble
-    # DAC. "mahoney_ultisid" parks the SID voices as DC sources and writes the
-    # full $D418 byte per sample (volume + filter-mode + 3-off bits) for ~6-7
-    # effective bits — using a baked table measured on the U64's emulated
-    # UltiSID (deterministic across units). Physical 6581/8580 chips vary too
-    # much chip-to-chip for a baked table (per-unit calibration is a follow-up).
-    # Mutually exclusive with digi_boost. See dac_curves.py + CLAUDE.md.
+    # Mahoney 8-bit $D418 companding. "auto" (default) picks the best curve for
+    # the connected system: a per-unit calibrated table if one exists (see
+    # --calibrate-dac), else "mahoney_ultisid" on the Ultimate (its emulated SID
+    # is deterministic), else "linear" (a physical/unknown SID with no
+    # calibration — the baked emulated table would not match it). "linear" = the
+    # classic 4-bit volume-nibble DAC. "mahoney_ultisid" parks the SID voices as
+    # DC sources and writes the full $D418 byte per sample (volume + filter-mode
+    # + 3-off bits) for ~6-7 effective bits, using a baked table measured on the
+    # U64's emulated UltiSID. "calibrated" forces this system's calibrated table
+    # (errors if none). Non-linear curves are mutually exclusive with digi_boost.
+    # See dac_curves.py, dac_calibration.py + CLAUDE.md.
     dac_curve: str = field(
-        default="linear",
+        default="auto",
         metadata={
-            "help": "SID $D418 DAC companding curve. 'linear' = classic 4-bit volume "
-            "nibble. 'mahoney_ultisid' = Mahoney 8-bit technique (full $D418 byte, "
-            "~6-7 effective bits) with the baked emulated-UltiSID table; requires "
-            "the Mahoney SID env (auto-installed) and is mutually exclusive with "
-            "digi_boost. Baked table is for the U64 emulated SID; physical chips "
-            "need per-unit calibration.",
+            "help": "SID $D418 DAC companding curve. 'auto' (default) = per-system "
+            "calibrated table if present, else 'mahoney_ultisid' on the Ultimate, "
+            "else 'linear'. 'linear' = classic 4-bit volume nibble. 'mahoney_ultisid' "
+            "= Mahoney 8-bit technique (full $D418 byte, ~6-7 effective bits) with the "
+            "baked emulated-UltiSID table. 'calibrated' = this system's per-unit table "
+            "from --calibrate-dac (errors if none). Non-linear curves require the "
+            "Mahoney SID env (auto-installed) and are mutually exclusive with digi_boost.",
             "choices": DAC_CURVE_CHOICES,
         },
     )
@@ -2769,7 +2774,11 @@ def validate_dac_curve_cfg(cfg: Config) -> None:
             f"[audio].dac_curve must be one of {', '.join(DAC_CURVE_CHOICES)}, "
             f"got {cfg.audio.dac_curve!r}"
         )
-    if cfg.audio.dac_curve != "linear" and cfg.audio.digi_boost:
+    # An EXPLICIT non-linear curve conflicts with digi_boost (both park the 3 SID
+    # voices as DC sources for different DAC schemes). "auto" is not a conflict:
+    # it yields to digi_boost by resolving to linear (see
+    # dac_calibration.resolve_dac_curve_for_backend).
+    if cfg.audio.dac_curve in ("mahoney_ultisid", "calibrated") and cfg.audio.digi_boost:
         raise ConfigError(
             "[audio].dac_curve and [audio].digi_boost are mutually exclusive "
             "(both park the SID voices as DC sources for different DAC schemes). "

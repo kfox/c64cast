@@ -1172,6 +1172,7 @@ class AudioStreamer:
         dither: bool = True,
         digi_boost: bool = False,
         dac_curve: str = "linear",
+        dac_table: bytes | None = None,
         sid_filter_cutoff: int = 0,
         use_reu_pump: bool = False,
         reu_pump_governor: bool = True,
@@ -1198,7 +1199,11 @@ class AudioStreamer:
         # $D418 table; it requires the Mahoney SID env (voices parked as DC
         # sources) which _upload_nmi_and_buffers installs, and is mutually
         # exclusive with digi_boost (both commandeer the 3 voices differently).
-        table = resolve_dac_curve(dac_curve)
+        # dac_table lets a caller pass an already-resolved table (e.g. a
+        # per-system calibrated one, or the system-aware "auto"/"calibrated"
+        # resolution done in cli); the dac_curve string is then just the label
+        # shown in logs. Without it we resolve the baked-table name here.
+        table = dac_table if dac_table is not None else resolve_dac_curve(dac_curve)
         if table is not None and digi_boost:
             # Config validation should have caught this; be safe and let the
             # curve win (digi_boost's DC bias would corrupt the Mahoney levels).

@@ -243,8 +243,11 @@ digi_boost = false                  # **EXPERIMENTAL** — lock SID voices 2–3
                                     # voices 2–3 only. On 8580s/emulated
                                     # SIDs this is mandatory; on 6581 just
                                     # louder. Defaults off.
-dac_curve = "linear"                # SID $D418 DAC companding curve.
-                                    # "linear" (default) = classic 4-bit
+dac_curve = "auto"                  # SID $D418 DAC companding curve.
+                                    # "auto" (default) = per-system calibrated
+                                    # table if one exists (see --calibrate-dac),
+                                    # else "mahoney_ultisid" on the Ultimate,
+                                    # else "linear". "linear" = classic 4-bit
                                     # volume-nibble DAC. "mahoney_ultisid" =
                                     # the Mahoney 8-bit technique: park the SID
                                     # voices as DC sources and write the FULL
@@ -253,10 +256,13 @@ dac_curve = "linear"                # SID $D418 DAC companding curve.
                                     # bits. The baked table was measured on the
                                     # U64's emulated UltiSID (deterministic
                                     # across units); physical 6581/8580 chips
-                                    # vary too much for a baked table and need
-                                    # per-unit calibration (a follow-up).
-                                    # Auto-installs the Mahoney SID env and is
-                                    # mutually exclusive with digi_boost.
+                                    # vary too much for a baked table, so run
+                                    # --calibrate-dac to measure one (used
+                                    # automatically by "auto"). "calibrated"
+                                    # forces this system's table (errors if
+                                    # none). Non-linear curves auto-install the
+                                    # Mahoney SID env and are mutually
+                                    # exclusive with digi_boost.
                                     # NOTE: does not affect the Ultimate Audio
                                     # sampler path (U64 video default), which
                                     # bypasses $D418 entirely — this shapes the

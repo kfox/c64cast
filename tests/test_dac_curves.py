@@ -42,7 +42,14 @@ class ResolveDacCurveTest(unittest.TestCase):
             resolve_dac_curve("nope")
 
     def test_choices_list(self):
-        self.assertEqual(DAC_CURVE_CHOICES, ["linear", "mahoney_ultisid"])
+        # "auto" + "calibrated" are system-aware (resolved in dac_calibration);
+        # the baked names resolve here.
+        self.assertEqual(DAC_CURVE_CHOICES, ["auto", "linear", "mahoney_ultisid", "calibrated"])
+
+    def test_system_aware_names_are_not_baked_tables(self):
+        for name in ("auto", "calibrated"):
+            with self.assertRaises(ValueError):
+                resolve_dac_curve(name)
 
 
 class EncodeCurveTest(unittest.TestCase):
