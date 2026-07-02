@@ -81,6 +81,7 @@ from .c64 import (
     SID,
     VECTORS,
 )
+from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import AudioDSP, DSPParams
 
 log = logging.getLogger(__name__)
@@ -182,20 +183,36 @@ INT16_FULL_SCALE = 32768.0  # divisor to map int16 → float [-1, 1]
 INT16_MAX = 32767  # int16 saturation bounds (np.iinfo(np.int16))
 INT16_MIN = -32768
 
+# Float-sample → 8-bit amplitude index for the Mahoney companding path:
+# 128 + x * AMP_SCALE, clipped to [0, 255]. Centers a [-1, 1] input on 128
+# (silence). The index then looks up the curve's $D418 byte via sidtable[idx].
+DAC_AMP_CENTER = 128
+DAC_AMP_SCALE = 128.0
+DAC_AMP_MAX = 255
+
 
 def encode_floats_to_dac(
     floats: np.ndarray,
     *,
     dither: bool,
     rng: np.random.Generator | None = None,
+    curve: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Quantize float audio samples in [-1, 1] to 4-bit SID DAC codes (the
-    0..15 volume nibble), as a uint8 array. Single source of truth for the
-    DAC encoding shared by every input path (host-DMA mic, REU mic, offline
-    video pre-encode) — the quantization math must stay identical across
-    them or REU-mode and host-mode levels would silently diverge.
+    """Quantize float audio samples in [-1, 1] to SID ``$D418`` DAC bytes, as a
+    uint8 array. Single source of truth for the DAC encoding shared by every
+    input path (host-DMA mic, REU mic, offline video pre-encode) — the
+    quantization math must stay identical across them or REU-mode and host-mode
+    levels would silently diverge.
 
-    TPDF dither (``dither=True``): a triangular ±1 DAC-LSB random offset added
+    curve: when ``None`` (default) the samples are quantized to the 4-bit SID
+    volume nibble (0..15) — the legacy linear path, bit-identical to before.
+    When a 256-entry amplitude→``$D418`` table is passed (see
+    ``dac_curves.resolve_dac_curve``), samples are mapped to an 8-bit amplitude
+    index centered on 128 and looked up in the table, yielding the Mahoney
+    full-byte codes (0..255, ~6-7 effective bits). The caller must have written
+    the Mahoney SID env for those bytes to decode correctly.
+
+    TPDF dither (``dither=True``): a triangular ±1 LSB random offset added
     pre-quantization, decorrelating the rounding error from the signal. At
     4 bits the coarse rounding otherwise produces signal-correlated harmonic
     distortion (buzz/chop on speech); dither turns the same total error into
@@ -203,12 +220,19 @@ def encode_floats_to_dac(
     comes from subtracting two independent uniform [0, 1) draws (Wannamaker
     1992). Exact-zero input samples skip dither so gated silence stays silent
     (the mic + AVFileSource noise gates zero the noise floor — adding hiss
-    there would repaint what they cleared).
+    there would repaint what they cleared). For the companding path the same
+    dither is folded in the amplitude-index domain (±1 index step).
 
     rng: when None (default) uses numpy's legacy global RNG, matching the
     realtime callback paths; pass a Generator for thread-local / reproducible
     dither (the offline pre-encode path does)."""
-    vol_float = (floats + 1.0) * DAC_VOLUME_SCALE
+    if curve is None:
+        scale = DAC_VOLUME_SCALE
+        code_float = (floats + 1.0) * scale
+        code_max = DAC_MAX_VOLUME
+    else:
+        code_float = DAC_AMP_CENTER + floats * DAC_AMP_SCALE
+        code_max = DAC_AMP_MAX
     if dither:
         if rng is None:
             d = np.random.random_sample(floats.shape).astype(np.float32) - np.random.random_sample(
@@ -219,8 +243,13 @@ def encode_floats_to_dac(
                 floats.shape, dtype=np.float32
             )
         d[floats == 0] = 0.0
-        vol_float = vol_float + d
-    return np.clip(vol_float, 0, DAC_MAX_VOLUME).astype(np.uint8)
+        code_float = code_float + d
+    idx = np.clip(code_float, 0, code_max).astype(np.uint8)
+    if curve is None:
+        return idx
+    # Amplitude index → measured $D418 byte. curve is uint8[256]; fancy-index
+    # is bounds-safe because idx was clipped to [0, 255].
+    return curve[idx]
 
 
 # Queue + backpressure sizing.
@@ -1040,6 +1069,20 @@ SID_DIGIBOOST_CONTROL = 0x49  # gate + pulse + test
 SID_DIGIBOOST_SR = 0xF0  # sustain=$F, release=0
 SID_GATE_OFF = 0x40  # pulse waveform, gate=0 → envelope release
 
+# --- Mahoney 8-bit $D418 DAC env (white paper §XIV) ----------------------
+# Park all 3 voices as steady DC sources (pulse + TEST + GATE, ADSR held) with
+# voices 1+2 routed through the analog filter. With this env, the FULL $D418
+# byte written per NMI sample — volume nibble (0-3) + filter HP/BP/LP mode bits
+# (4-6) + "voice-3 OFF" (7) — additively/subtractively re-routes the parked DC
+# voices to ~256 distinct output levels (~6-7 effective bits) instead of the 16
+# the volume nibble gives alone. Written ONCE; the per-sample NMI handler is
+# unchanged. Mutually exclusive with digi-boost (both park the voices, for
+# different DAC schemes). See dac_curves.py for the amplitude→$D418 tables.
+SID_MAHONEY_CONTROL = 0x49  # pulse + TEST (osc frozen at DC) + GATE
+SID_MAHONEY_AD = 0x0F  # attack=0, decay=15
+SID_MAHONEY_SR = 0xFF  # sustain=15, release=15
+SID_MAHONEY_RES_FILT = 0x03  # route voices 1+2 through filter, resonance=0
+
 
 def _servo_period(
     gap: int,
@@ -1128,6 +1171,7 @@ class AudioStreamer:
         *,
         dither: bool = True,
         digi_boost: bool = False,
+        dac_curve: str = "linear",
         sid_filter_cutoff: int = 0,
         use_reu_pump: bool = False,
         reu_pump_governor: bool = True,
@@ -1148,6 +1192,28 @@ class AudioStreamer:
         self.system = system
         self.dither_enabled = dither
         self.digi_boost = digi_boost
+        # Mahoney 8-bit $D418 companding curve (see dac_curves.py). "linear"
+        # (default) → self._dac_curve is None and the encoder keeps the legacy
+        # 4-bit path bit-identical. An active curve is a uint8[256] amplitude→
+        # $D418 table; it requires the Mahoney SID env (voices parked as DC
+        # sources) which _upload_nmi_and_buffers installs, and is mutually
+        # exclusive with digi_boost (both commandeer the 3 voices differently).
+        table = resolve_dac_curve(dac_curve)
+        if table is not None and digi_boost:
+            # Config validation should have caught this; be safe and let the
+            # curve win (digi_boost's DC bias would corrupt the Mahoney levels).
+            log.warning("audio: dac_curve=%s overrides digi_boost (mutually exclusive)", dac_curve)
+            self.digi_boost = False
+        self.dac_curve_name = dac_curve
+        # Ring rest value: the curve's mid-scale (silence) byte when companding,
+        # else the linear 4-bit neutral. Used for ring prefill + underrun/EOF pads.
+        self._dac_curve: np.ndarray | None
+        if table is not None:
+            self._dac_curve = np.frombuffer(table, dtype=np.uint8)
+            self._neutral_byte = int(self._dac_curve[NEUTRAL_INDEX])
+        else:
+            self._dac_curve = None
+            self._neutral_byte = NEUTRAL_SAMPLE
         self.sid_filter_cutoff = sid_filter_cutoff
         # Host-side DSP applied to float samples before the 4-bit DAC encode.
         # Built per input source: line sources (video/WAV) default to a
@@ -1283,6 +1349,13 @@ class AudioStreamer:
         self._tap_lock = threading.Lock()
 
     # ---- 6502 bring-up -------------------------------------------------------
+    @property
+    def dac_curve(self) -> np.ndarray | None:
+        """Active Mahoney companding table (uint8[256] amplitude→$D418), or
+        None for the legacy linear 4-bit path. Read by scenes doing offline
+        REU pre-encoding so their bytes match the realtime callback paths."""
+        return self._dac_curve
+
     def _upload_nmi_and_buffers(self) -> None:
         nmi = bytearray(NMI_ROUTINE)
         nmi[NMI_ROUTINE_PATCH_OFFSET_READ_HI] = RING_BUFFER_HI
@@ -1290,15 +1363,49 @@ class AudioStreamer:
         nmi[NMI_ROUTINE_PATCH_OFFSET_RESET_HI] = RING_BUFFER_HI
         self.api.write_memory_file(f"{NMI_ROUTINE_ADDR:04X}", bytes(nmi))
         self.api.write_memory_file(
-            f"{RING_BUFFER_ADDR:04X}", bytes([NEUTRAL_SAMPLE] * RING_BUFFER_SIZE)
+            f"{RING_BUFFER_ADDR:04X}", bytes([self._neutral_byte] * RING_BUFFER_SIZE)
         )
         # Disable CIA #2 IRQs, clear ICR, then point NMI vector → $C020.
         self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
         self.api.write_regs(
             f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
         )
-        if self.digi_boost:
+        if self._dac_curve is not None:
+            self._enable_mahoney_env()
+        elif self.digi_boost:
             self._enable_digi_boost()
+
+    def _enable_mahoney_env(self) -> None:
+        """Install the Mahoney 8-bit ``$D418`` DAC environment (white paper
+        §XIV): park all 3 SID voices as steady DC sources (pulse + TEST + GATE,
+        ADSR sustained) with voices 1+2 routed through the analog filter.
+
+        With this env in place, the full ``$D418`` byte the NMI handler writes
+        per sample selects one of ~256 distinct output levels (the volume
+        nibble scales the parked DC, and the filter-mode + voice-3-OFF bits
+        re-route it additively/subtractively) — ~6-7 effective bits vs the 16
+        the volume nibble gives alone. Written ONCE; the per-sample NMI handler
+        is unchanged. Mutually exclusive with digi-boost. See dac_curves.py.
+        """
+        for v in range(SID.N_VOICES):
+            base = SID.voice_base(v)
+            # AD (attack=0, decay=15) + adjacent SR (sustain=15, release=15).
+            self.api.write_regs(f"{base + SID.OFF_AD:04X}", SID_MAHONEY_AD, SID_MAHONEY_SR)
+            self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_MAHONEY_CONTROL:02X}")
+        # Filter cutoff maxed ($D415/$D416 adjacent) then route voices 1+2
+        # through the filter with resonance 0 ($D417).
+        self.api.write_regs(f"{SID.FC_LO:04X}", 0xFF, 0xFF)
+        self.api.write_memory(f"{SID.RES_FILT:04X}", f"{SID_MAHONEY_RES_FILT:02X}")
+        log.info("audio: Mahoney 8-bit $D418 env engaged (dac_curve=%s)", self.dac_curve_name)
+
+    def _disable_mahoney_env(self) -> None:
+        """Release the gate on all 3 voices. Best-effort — called from stop()."""
+        for v in range(SID.N_VOICES):
+            base = SID.voice_base(v)
+            try:
+                self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_GATE_OFF:02X}")
+            except Exception as e:
+                log.debug("mahoney env teardown voice %d failed: %s", v, e)
 
     def _enable_digi_boost(self) -> None:
         """Lock all 3 SID voices into a steady DC pulse so the master volume
@@ -1551,14 +1658,14 @@ class AudioStreamer:
                         # Idle: no producer data, no NMI to feed.
                         continue
                     # Real underrun: refresh ring with silence.
-                    chunk_buf[:] = bytes([NEUTRAL_SAMPLE] * self.chunk_size)
+                    chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
                     n = self.chunk_size
                     self._full_underruns += 1
                 elif n < self.chunk_size and prebuffered:
                     # Partial chunk: pad to keep pace math simple. Pad
                     # bytes are NOT counted in from_queue.
                     pad = self.chunk_size - n
-                    chunk_buf[n : n + pad] = bytes([NEUTRAL_SAMPLE]) * pad
+                    chunk_buf[n : n + pad] = bytes([self._neutral_byte]) * pad
                     n = self.chunk_size
                     self._partial_underruns += 1
 
@@ -1832,7 +1939,7 @@ class AudioStreamer:
             return 0
         floats = self._apply_dsp(floats)
         self._push_to_tap(floats.astype(np.float32, copy=False))
-        vol = encode_floats_to_dac(floats, dither=self.dither_enabled)
+        vol = encode_floats_to_dac(floats, dither=self.dither_enabled, curve=self._dac_curve)
         n = int(vol.size)
         payload = vol.tobytes()
         # Sample-count backpressure. Reading _queued_samples without the GIL
@@ -1886,7 +1993,7 @@ class AudioStreamer:
             mono[np.abs(mono) < self.noise_gate] = 0
         mono = self._apply_dsp(mono.astype(np.float32, copy=False))
         self._push_to_tap(mono)
-        vol = encode_floats_to_dac(mono, dither=self.dither_enabled)
+        vol = encode_floats_to_dac(mono, dither=self.dither_enabled, curve=self._dac_curve)
         self._push_mic_to_reu(vol.tobytes())
 
     def _push_mic_to_reu(self, encoded: bytes) -> None:
@@ -1987,7 +2094,7 @@ class AudioStreamer:
         log.info(
             "audio[reu mic]: prefilling REU ring at $%06X (%d bytes)", REU_MIC_BASE, REU_MIC_SIZE
         )
-        pad = bytes([NEUTRAL_SAMPLE] * REU_UPLOAD_SLICE)
+        pad = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
         for off in range(0, REU_MIC_SIZE, REU_UPLOAD_SLICE):
             n = min(REU_UPLOAD_SLICE, REU_MIC_SIZE - off)
             self.api.reu_write(REU_MIC_BASE + off, pad[:n])
@@ -2294,7 +2401,7 @@ class AudioStreamer:
             self.api.reu_write(REU_AUDIO_BASE + off, audio_4bit[off : off + REU_UPLOAD_SLICE])
         # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
         # end-of-source plays silence instead of garbage.
-        pad_payload = bytes([NEUTRAL_SAMPLE] * REU_UPLOAD_SLICE)
+        pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
         pad_off = len(audio_4bit)
         pad_end = pad_off + eof_pad_bytes
         while pad_off < pad_end:
@@ -2311,7 +2418,7 @@ class AudioStreamer:
         # there'd be ~1s of silence before the REU pump catches up.
         prefill = audio_4bit[:RING_BUFFER_SIZE]
         if len(prefill) < RING_BUFFER_SIZE:
-            prefill = prefill + bytes([NEUTRAL_SAMPLE] * (RING_BUFFER_SIZE - len(prefill)))
+            prefill = prefill + bytes([self._neutral_byte] * (RING_BUFFER_SIZE - len(prefill)))
         self.api.write_memory_file(f"{RING_BUFFER_ADDR:04X}", prefill)
 
         # 3. Install REU pump IRQ handler at $C100 and initialize REU regs.
@@ -2536,6 +2643,8 @@ class AudioStreamer:
             self.api.write_memory("D418", "00")
             if self.digi_boost:
                 self._disable_digi_boost()
+            elif self._dac_curve is not None:
+                self._disable_mahoney_env()
             self.api.write_regs(
                 f"{VECTORS.NMI:04X}", KERNAL.DEFAULT_NMI & 0xFF, (KERNAL.DEFAULT_NMI >> 8) & 0xFF
             )

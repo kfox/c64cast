@@ -67,6 +67,9 @@ def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
     s._tap_lock = threading.Lock()
     s.dither_enabled = False
     s.digi_boost = False
+    s.dac_curve_name = "linear"
+    s._dac_curve = None
+    s._neutral_byte = NEUTRAL_SAMPLE
     s.sid_filter_cutoff = 0
     s.use_reu_pump = use_reu_pump
     # Default OFF so the bring-up tests below assert the plain open-loop handler

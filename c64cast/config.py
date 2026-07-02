@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
 from .c64 import nmi_rate_safety
+from .dac_curves import DAC_CURVE_CHOICES
 from .dsp import DSPParams
 
 if TYPE_CHECKING:
@@ -424,6 +425,25 @@ class AudioCfg:
         metadata={
             "help": "EXPERIMENTAL: lock SID voices to a DC pulse so the ADSR D/As bias "
             "the master mixer, raising $D418 playback level."
+        },
+    )
+    # Mahoney 8-bit $D418 companding. "linear" = the classic 4-bit volume-nibble
+    # DAC. "mahoney_ultisid" parks the SID voices as DC sources and writes the
+    # full $D418 byte per sample (volume + filter-mode + 3-off bits) for ~6-7
+    # effective bits — using a baked table measured on the U64's emulated
+    # UltiSID (deterministic across units). Physical 6581/8580 chips vary too
+    # much chip-to-chip for a baked table (per-unit calibration is a follow-up).
+    # Mutually exclusive with digi_boost. See dac_curves.py + CLAUDE.md.
+    dac_curve: str = field(
+        default="linear",
+        metadata={
+            "help": "SID $D418 DAC companding curve. 'linear' = classic 4-bit volume "
+            "nibble. 'mahoney_ultisid' = Mahoney 8-bit technique (full $D418 byte, "
+            "~6-7 effective bits) with the baked emulated-UltiSID table; requires "
+            "the Mahoney SID env (auto-installed) and is mutually exclusive with "
+            "digi_boost. Baked table is for the U64 emulated SID; physical chips "
+            "need per-unit calibration.",
+            "choices": DAC_CURVE_CHOICES,
         },
     )
     # 11-bit cutoff maps roughly 0→200 Hz … 2047→20 kHz on a 6581, but the
@@ -2735,6 +2755,25 @@ def validate_sampler_cfg(cfg: Config) -> None:
         raise ConfigError(
             "[audio].sampler_sample_rate must be 1000..48000 Hz, got "
             f"{cfg.audio.sampler_sample_rate}"
+        )
+
+
+def validate_dac_curve_cfg(cfg: Config) -> None:
+    """Guard [audio].dac_curve: reject an unknown curve name and the
+    dac_curve + digi_boost combination (both commandeer the 3 SID voices for
+    different DAC schemes). No-op when audio is disabled."""
+    if not cfg.audio.enabled:
+        return
+    if cfg.audio.dac_curve not in DAC_CURVE_CHOICES:
+        raise ConfigError(
+            f"[audio].dac_curve must be one of {', '.join(DAC_CURVE_CHOICES)}, "
+            f"got {cfg.audio.dac_curve!r}"
+        )
+    if cfg.audio.dac_curve != "linear" and cfg.audio.digi_boost:
+        raise ConfigError(
+            "[audio].dac_curve and [audio].digi_boost are mutually exclusive "
+            "(both park the SID voices as DC sources for different DAC schemes). "
+            "Set digi_boost = false to use the Mahoney curve."
         )
 
 

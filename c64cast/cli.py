@@ -687,6 +687,7 @@ def build_stack(
             cfg.ultimate64.system,
             dither=cfg.audio.dither,
             digi_boost=cfg.audio.digi_boost,
+            dac_curve=cfg.audio.dac_curve,
             sid_filter_cutoff=cfg.audio.sid_filter_cutoff,
             use_reu_pump=cfg.audio.use_reu_pump,
             reu_pump_governor=cfg.audio.reu_pump_governor,
@@ -1095,6 +1096,7 @@ def main(argv=None) -> int:
         try:
             cfgmod.validate_nmi_sample_rate(cfg)
             cfgmod.validate_sampler_cfg(cfg)
+            cfgmod.validate_dac_curve_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5

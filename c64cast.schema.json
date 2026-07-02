@@ -201,6 +201,15 @@
           "description": "EXPERIMENTAL: lock SID voices to a DC pulse so the ADSR D/As bias the master mixer, raising $D418 playback level.",
           "default": false
         },
+        "dac_curve": {
+          "type": "string",
+          "description": "SID $D418 DAC companding curve. 'linear' = classic 4-bit volume nibble. 'mahoney_ultisid' = Mahoney 8-bit technique (full $D418 byte, ~6-7 effective bits) with the baked emulated-UltiSID table; requires the Mahoney SID env (auto-installed) and is mutually exclusive with digi_boost. Baked table is for the U64 emulated SID; physical chips need per-unit calibration.",
+          "enum": [
+            "linear",
+            "mahoney_ultisid"
+          ],
+          "default": "linear"
+        },
         "sid_filter_cutoff": {
           "type": "integer",
           "description": "SID low-pass cutoff for the PWM carrier voice (0 = disabled). Attenuates the carrier above the audio band.",

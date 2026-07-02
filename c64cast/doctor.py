@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import IO, Literal
 
 from .c64 import max_safe_sample_rate, nmi_rate_safety
-from .config import LoadResult, validate_scene_cfg
+from .config import ConfigError, LoadResult, validate_dac_curve_cfg, validate_scene_cfg
 from .orchestrator import OrchestratorError
 
 log = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_probe_environment())
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
+    out.extend(_validate_dac_curve(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
     out.extend(_probe_extras())
@@ -259,6 +260,26 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
                         ),
                     )
                 )
+    return out
+
+
+def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unknown [audio].dac_curve name or the dac_curve + digi_boost
+    conflict per system. Offline — delegates to config.validate_dac_curve_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_dac_curve_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/dac_curve",
+                    message=str(e),
+                    hint="See [audio].dac_curve in the config reference / --describe section:audio.",
+                )
+            )
     return out
 
 

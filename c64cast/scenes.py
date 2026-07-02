@@ -1253,7 +1253,9 @@ class VideoScene(Scene):
         # _encode_and_enqueue. No-op when [dsp].enabled is false.
         floats = self.audio.process_offline_dsp(floats)
         rng = np.random.default_rng() if self.audio.dither_enabled else None
-        vol = encode_floats_to_dac(floats, dither=self.audio.dither_enabled, rng=rng)
+        vol = encode_floats_to_dac(
+            floats, dither=self.audio.dither_enabled, rng=rng, curve=self.audio.dac_curve
+        )
         # numpy.ndarray.tobytes() returns Any per the stubs; cast for strict
         # mypy. Runtime guarantee: ndarray.tobytes() returns bytes.
         encoded = bytes(vol.tobytes())
