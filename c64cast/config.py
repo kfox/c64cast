@@ -343,12 +343,14 @@ class AudioCfg:
         default=-1, metadata={"help": "Audio input device index; -1 = system default microphone."}
     )
     sample_rate: int = field(
-        default=10500,
+        default=11600,
         metadata={
-            "help": "Audio sample rate in Hz fed to the SID DAC. Default 10500 lifts "
-            "the Nyquist to ~5.25 kHz so fricatives/sibilants survive (8000 lost "
-            "them); HW-verified safe on NTSC + PAL with no NMI handler overrun. NTSC "
-            "can go to ~11025; keep PAL <= ~10500. Rates that overrun the handler are "
+            "help": "Audio sample rate in Hz fed to the SID DAC. Default 11600 lifts "
+            "the Nyquist to ~5.8 kHz so fricatives/sibilants survive (8000 lost them); "
+            "HW-verified clean on a real NTSC C64 (no NMI handler overrun) and safe on "
+            "PAL. The measured handler ceiling is ~13.6 kHz NTSC / ~13.1 kHz PAL — "
+            "char/light scenes hold cleanly near it, but bitmap+digi has heavier "
+            "bus-halt loss so leave more margin there. Rates past the ceiling are "
             "rejected at load (see c64.nmi_rate_safety). Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
