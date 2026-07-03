@@ -153,8 +153,8 @@
         },
         "sample_rate": {
           "type": "integer",
-          "description": "Audio sample rate in Hz fed to the SID DAC. Default 11600 lifts the Nyquist to ~5.8 kHz so fricatives/sibilants survive (8000 lost them); HW-verified clean on a real NTSC C64 (no NMI handler overrun) and safe on PAL. The measured handler ceiling is ~13.6 kHz NTSC / ~13.1 kHz PAL \u2014 char/light scenes hold cleanly near it, but bitmap+digi has heavier bus-halt loss so leave more margin there. Rates past the ceiling are rejected at load (see c64.nmi_rate_safety). Sampler-backend playback uses [audio].sampler_sample_rate instead.",
-          "default": 11600
+          "description": "Audio sample rate in Hz fed to the SID DAC. Default 12000 lifts the Nyquist to ~6.0 kHz so fricatives/sibilants survive (8000 lost them). HW-verified clean on a real NTSC U64-II via a pitch A/B sweep (no NMI handler overrun) in both char and bitmap modes, and safe on PAL. Note the REAL streaming ceiling sits BELOW the isolated-handler ceiling (max_safe_sample_rate ~13.6 kHz NTSC): the host-DMA audio ring writes themselves halt the 6510 and steal cycles from the NMI handler, so the overrun onset under the live pipeline was measured at ~12500 Hz (identical in char and bitmap \u2014 the audio feed, not the video, is the driver). 12000 keeps margin below that. Rates past the isolated-handler ceiling are rejected at load (see c64.nmi_rate_safety). Sampler-backend playback uses [audio].sampler_sample_rate instead.",
+          "default": 12000
         },
         "backend": {
           "type": "string",

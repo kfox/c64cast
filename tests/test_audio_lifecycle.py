@@ -277,9 +277,9 @@ class NmiRateSafetyTest(unittest.TestCase):
         from c64cast.c64 import nmi_rate_safety
         from c64cast.config import AudioCfg
 
-        self.assertEqual(AudioCfg().sample_rate, 11600)
+        self.assertEqual(AudioCfg().sample_rate, 12000)
         for system in ("NTSC", "PAL"):
-            self.assertEqual(nmi_rate_safety(system, 11600)[0], "ok")
+            self.assertEqual(nmi_rate_safety(system, 12000)[0], "ok")
 
     def test_legacy_and_candidate_rates_ok(self):
         from c64cast.c64 import nmi_rate_safety
@@ -340,7 +340,7 @@ class NmiRateSafetyTest(unittest.TestCase):
     def test_config_validate_passes_default(self):
         from c64cast.config import Config, validate_nmi_sample_rate
 
-        validate_nmi_sample_rate(Config())  # default 11600, no raise
+        validate_nmi_sample_rate(Config())  # default 12000, no raise
 
 
 class NmiRateAdaptiveStepTest(unittest.TestCase):
