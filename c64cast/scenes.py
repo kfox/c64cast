@@ -934,6 +934,7 @@ class VideoScene(Scene):
         prepend_alignment_marker: bool = False,
         color: ColorCfg | None = None,
         start_s: float = 0.0,
+        tempo_scale: float = 1.0,
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
@@ -970,6 +971,12 @@ class VideoScene(Scene):
         # to AVFileSource at setup(), which seeks + rebases PTS. Quick playback
         # derives this from a URL's t=/start= timestamp.
         self.start_s = max(0.0, start_s)
+        # Bitmap + $D418-DAC tempo compensation factor (1.0 = off). < 1.0 tells
+        # AVFileSource to time-compress the audio by 1/tempo_scale (pitch-
+        # preserving) and scale video PTS by tempo_scale, cancelling the ~1/s
+        # bitmap+DAC slowdown so content plays at real time. Resolved in
+        # config.build_scene (gated to the host-DMA DAC path over bitmap modes).
+        self._tempo_scale = tempo_scale
         self._last_rendered_img: np.ndarray | None = None
         # A/V-lag telemetry (reset each setup): per-displayed-frame
         # audio_clock - displayed_frame_pts. Small + (≤ one frame interval) is
@@ -1085,6 +1092,7 @@ class VideoScene(Scene):
                 scan_audio_peak=will_push_audio,
                 start_s=self.start_s,
                 decode_target_size=decode_target,
+                tempo_scale=self._tempo_scale,
             )
         except PermissionError as e:
             log.error("video: permission denied opening %s (%s)", self.filepath, e)
@@ -1345,30 +1353,44 @@ class VideoScene(Scene):
         self._av_lag_sum += lag
         self._av_lag_count += 1
         self._av_buf_min = min(self._av_buf_min, depth)
+        # clock/wall: how fast the master clock (position_seconds on the DAC/
+        # sampler paths, else wall) advances vs real time. ~1.0 is real-time;
+        # <1.0 flags the host-DMA servo under-draining the ring under bitmap
+        # DMA load — the raw bitmap+DAC speed fraction `s`. It stays ~s even
+        # with tempo compensation ON (that pre-compresses CONTENT, not the drain
+        # clock), so it's the calibration gauge for [audio].dac_bitmap_tempo_*
+        # (see scripts/diags/mhires_tempo_clock_ab.py + mhires_dac_tempo_stretch).
+        wall = current_time - self._start_time
+        clock_wall = clock_s / wall if wall > 0 else 0.0
         if log.isEnabledFor(logging.DEBUG) and (
             current_time - self._av_last_log_t >= AV_LAG_LOG_INTERVAL_S
         ):
             self._av_last_log_t = current_time
             log.debug(
-                "video A/V lag: now=%+.0fms (min=%+.0f avg=%+.0f max=%+.0f) buf=%d over %d frames",
+                "video A/V lag: now=%+.0fms (min=%+.0f avg=%+.0f max=%+.0f) "
+                "buf=%d clock/wall=%.4f over %d frames",
                 lag * 1000,
                 self._av_lag_min * 1000,
                 (self._av_lag_sum / self._av_lag_count) * 1000,
                 self._av_lag_max * 1000,
                 depth,
+                clock_wall,
                 self._av_lag_count,
             )
 
     def teardown(self) -> None:
         super().teardown()
         if self._av_lag_count:
+            wall = time.time() - self._start_time
+            clock_wall = self._clock_s() / wall if wall > 0 else 0.0
             log.info(
                 "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
-                "min buffer depth=%d over %d displayed frames",
+                "min buffer depth=%d, clock/wall=%.4f over %d displayed frames",
                 self._av_lag_min * 1000,
                 (self._av_lag_sum / self._av_lag_count) * 1000,
                 self._av_lag_max * 1000,
                 int(self._av_buf_min),
+                clock_wall,
                 self._av_lag_count,
             )
         if self.source:

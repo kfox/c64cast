@@ -266,6 +266,16 @@
           "type": "number",
           "description": "Host-DMA servo playback-rate multiplier for Blank mode (no video input; 1.0 = none).",
           "default": 1.0
+        },
+        "dac_bitmap_tempo_hires": {
+          "type": "number",
+          "description": "Observed $D418-DAC playback-speed fraction on Hires / Hires-edges bitmap modes (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Default 0.89 = U64-II NTSC (Hires drains slightly faster than MHires); re-measure per platform (PAL / TR+).",
+          "default": 0.89
+        },
+        "dac_bitmap_tempo_mhires": {
+          "type": "number",
+          "description": "Observed $D418-DAC playback-speed fraction on MultiHires bitmap mode (measure via clock/wall). Content is time-compressed by 1/value (pitch-preserving) so bitmap+DAC video plays at real time. 1.0 = off. Host-DMA DAC path only \u2014 no effect on the Ultimate Audio sampler or the REU pump. Default 0.88 = U64-II NTSC; re-measure per platform (PAL / TR+).",
+          "default": 0.88
         }
       }
     },

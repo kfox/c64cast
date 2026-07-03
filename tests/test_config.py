@@ -976,5 +976,125 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
                 self._build("https://youtu.be/abc")
 
 
+class DacBitmapTempoValidationTest(unittest.TestCase):
+    """validate_dac_bitmap_tempo_cfg bounds the bitmap+DAC tempo fractions to
+    0.5..1.0 (atempo's single-stage floor; 1.0 = off)."""
+
+    def _cfg(self, **audio_kw) -> cfgmod.Config:
+        cfg = cfgmod.Config()
+        for k, v in audio_kw.items():
+            setattr(cfg.audio, k, v)
+        return cfg
+
+    def test_defaults_ok(self):
+        cfgmod.validate_dac_bitmap_tempo_cfg(self._cfg())  # default 0.88
+
+    def test_off_value_ok(self):
+        cfgmod.validate_dac_bitmap_tempo_cfg(
+            self._cfg(dac_bitmap_tempo_hires=1.0, dac_bitmap_tempo_mhires=1.0)
+        )
+
+    def test_lower_bound_ok(self):
+        cfgmod.validate_dac_bitmap_tempo_cfg(self._cfg(dac_bitmap_tempo_mhires=0.5))
+
+    def test_below_floor_raises(self):
+        with self.assertRaisesRegex(cfgmod.ConfigError, "dac_bitmap_tempo_mhires"):
+            cfgmod.validate_dac_bitmap_tempo_cfg(self._cfg(dac_bitmap_tempo_mhires=0.4))
+
+    def test_above_one_raises(self):
+        with self.assertRaisesRegex(cfgmod.ConfigError, "dac_bitmap_tempo_hires"):
+            cfgmod.validate_dac_bitmap_tempo_cfg(self._cfg(dac_bitmap_tempo_hires=1.1))
+
+    def test_noop_when_audio_disabled(self):
+        # A bad value shouldn't block a run with audio off.
+        cfg = self._cfg(dac_bitmap_tempo_hires=0.1)
+        cfg.audio.enabled = False
+        cfgmod.validate_dac_bitmap_tempo_cfg(cfg)
+
+
+class BuildSceneTempoScaleTest(unittest.TestCase):
+    """build_scene resolves VideoScene._tempo_scale: the observed bitmap+DAC
+    speed fraction on the host-DMA DAC path over a bitmap mode, else 1.0 (off)
+    for the sampler, the REU pump, char modes, and muted scenes."""
+
+    def setUp(self):
+        from c64cast.audio import AudioStreamer
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.clip = os.path.join(self._tmp.name, "clip.mp4")
+        with open(self.clip, "wb") as f:
+            f.write(b"\x00")  # resolve_file_spec only checks existence + ext
+        self.audio = cast(AudioStreamer, object())
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _scene(self, cfg: cfgmod.Config, *, display: str, audio, **build_kw):
+        from c64cast.scenes import VideoScene
+
+        s = cfgmod.SceneCfg(type="video", display=display, file=self.clip)
+        scene = cfgmod.build_scene(s, cfg, cast(C64Backend, FakeAPI()), audio, None, **build_kw)
+        assert isinstance(scene, VideoScene)
+        return scene
+
+    def _dac_cfg(self) -> cfgmod.Config:
+        cfg = cfgmod.Config()
+        cfg.audio.backend = "dac"
+        # Distinct per-mode values prove the mode→field mapping.
+        cfg.audio.dac_bitmap_tempo_hires = 0.90
+        cfg.audio.dac_bitmap_tempo_mhires = 0.80
+        return cfg
+
+    def test_dac_mhires_uses_mhires_factor(self):
+        scene = self._scene(self._dac_cfg(), display="mhires", audio=self.audio)
+        self.assertEqual(scene._tempo_scale, 0.80)
+
+    def test_dac_hires_uses_hires_factor(self):
+        scene = self._scene(self._dac_cfg(), display="hires", audio=self.audio)
+        self.assertEqual(scene._tempo_scale, 0.90)
+
+    def test_dac_hires_edges_uses_hires_factor(self):
+        # hires_edges shares the Hires VIC fetch → the hires factor.
+        scene = self._scene(self._dac_cfg(), display="hires_edges", audio=self.audio)
+        self.assertEqual(scene._tempo_scale, 0.90)
+
+    def test_dac_petscii_is_off(self):
+        scene = self._scene(self._dac_cfg(), display="petscii", audio=self.audio)
+        self.assertEqual(scene._tempo_scale, 1.0)
+
+    def test_dac_mcm_is_off(self):
+        scene = self._scene(self._dac_cfg(), display="mcm", audio=self.audio)
+        self.assertEqual(scene._tempo_scale, 1.0)
+
+    def test_muted_bitmap_is_off(self):
+        # No audio streamer → nothing to compensate.
+        scene = self._scene(self._dac_cfg(), display="mhires", audio=None)
+        self.assertEqual(scene._tempo_scale, 1.0)
+
+    def test_reu_pump_bitmap_is_off(self):
+        cfg = self._dac_cfg()
+        cfg.audio.use_reu_pump = True
+        scene = self._scene(cfg, display="mhires", audio=self.audio)
+        self.assertEqual(scene._tempo_scale, 1.0)
+
+    def test_sampler_bitmap_is_off(self):
+        # Sampler path (off the C64 bus) never stretches → no compensation.
+        cfg = self._dac_cfg()
+        cfg.audio.backend = "auto"
+        import dataclasses
+
+        api = FakeAPI()
+        api.profile = dataclasses.replace(api.profile, supports_sampler=True)
+        with mock.patch("c64cast.sampler.UltimateAudioSampler", return_value=object()):
+            from c64cast.scenes import VideoScene
+
+            s = cfgmod.SceneCfg(type="video", display="mhires", file=self.clip)
+            scene = cfgmod.build_scene(
+                s, cfg, cast(C64Backend, api), self.audio, None, sampler_available=True
+            )
+        assert isinstance(scene, VideoScene)
+        self.assertEqual(scene._tempo_scale, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

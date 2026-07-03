@@ -393,6 +393,26 @@ pitch_mult_mhires = 1.0      # MultiHires (REU-staged bitmap + $D800 color RAM).
 pitch_mult_mcm = 1.0         # MCM (char mode).
 pitch_mult_blank = 1.0       # Blank (no video input).
 
+# --- bitmap + $D418-DAC tempo compensation (static; per-mode) ---
+# ORTHOGONAL to pitch_mult_* above (those shorten the C64 NMI rate to fix PITCH;
+# these fix TEMPO). They apply ONLY on the host-DMA 4-bit $D418 DAC path
+# ([audio].backend = "dac") over a BITMAP display mode (hires/hires_edges/
+# mhires). There the audio worker shares the single socket-DMA link with heavy
+# REU bank-swap bitmap writes; the host-DMA servo reads the ring pointer biased
+# under that load and throttles the worker ~12%, so video (slaved to the audio
+# drain clock) + audio play ~1/value SLOW at CORRECT pitch (the $D418 output
+# rate stays ≈ sample_rate — a pitch-preserving time stretch). The fix pre-
+# compresses the content by 1/value: audio time-compressed pitch-preserving (via
+# atempo), video PTS × value — so the system's own ~1/value stretch nets to real
+# time, in sync, pitch intact. NO effect on the off-bus Ultimate Audio sampler
+# (the U64 video default), the REU pump, or char modes.
+#
+# Default 0.88 = the measured U64-II NTSC speed fraction (clock/wall). Other
+# platforms differ (U64+PAL, U2P, TR+ PAL/NTSC) — measure per platform with
+# scripts/diags/mhires_tempo_clock_ab.py and set here. 1.0 = compensation off.
+dac_bitmap_tempo_hires = 0.89   # Hires / Hires-edges DAC speed fraction.
+dac_bitmap_tempo_mhires = 0.88  # MultiHires DAC speed fraction (heavier load).
+
 [vision]
 # Camera-as-input: webcam hand-gesture control via MediaPipe HandLandmarker.
 # Needs the 'vision' extra (mediapipe) + a downloaded model file (see

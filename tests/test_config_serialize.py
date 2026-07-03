@@ -122,6 +122,15 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
         self.assertEqual(reloaded, cfg)
         self.assertIs(reloaded.scenes[0].audio, False)
 
+    def test_dac_bitmap_tempo_non_default(self):
+        cfg = cfgmod.Config()
+        cfg.audio.dac_bitmap_tempo_hires = 0.91
+        cfg.audio.dac_bitmap_tempo_mhires = 0.86
+        reloaded = _reload(cfg)
+        self.assertEqual(reloaded, cfg)
+        self.assertEqual(reloaded.audio.dac_bitmap_tempo_hires, 0.91)
+        self.assertEqual(reloaded.audio.dac_bitmap_tempo_mhires, 0.86)
+
     def test_string_escaping(self):
         cfg = cfgmod.Config()
         cfg.scenes = [
