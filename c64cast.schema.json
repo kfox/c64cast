@@ -234,8 +234,8 @@
         },
         "nmi_rate_adaptive": {
           "type": "boolean",
-          "description": "Adaptive NMI-rate compensation: closed-loop on the measured C64 consumer rate, raises the NMI rate so bus-halt-throttled playback stays at the authored sample_rate (fixes the video slowdown, keeps full bandwidth). Supersedes pitch_mult_* (which apply only when this is false). Host-DMA path only.",
-          "default": true
+          "description": "Adaptive NMI-rate compensation: closed-loop on the measured C64 consumer rate, raises the NMI rate to cancel a video slowdown from bus-halt-stolen NMI ticks. DEFAULT OFF \u2014 modern fps caps + REU-staged double-buffer drove that loss to ~0, so this only adds pitch error now. Supersedes pitch_mult_* when on. Host-DMA path only.",
+          "default": false
         },
         "source_alignment_marker": {
           "type": "boolean",
@@ -244,18 +244,18 @@
         },
         "pitch_mult_petscii": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for PETSCII mode (light char-mode load; 1.0 = none. U64-II NTSC: good at 1.0).",
+          "description": "Host-DMA servo playback-rate multiplier for PETSCII mode (light char-mode load). 1.0 = none (default; U64-II NTSC is dead-on).",
           "default": 1.0
         },
         "pitch_mult_hires": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges modes (REU-staged bitmap; bank-swap IRQ residual). U64-II NTSC ears-tuned to 1.02; override for TR+ or PAL.",
-          "default": 1.02
+          "description": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges modes. 1.0 = none (default; modern fps caps + REU staging leave ~0 loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts.",
+          "default": 1.0
         },
         "pitch_mult_mhires": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for MultiHires mode (REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC ears-tuned to 1.015; override for TR+ or PAL.",
-          "default": 1.015
+          "description": "Host-DMA servo playback-rate multiplier for MultiHires mode. 1.0 = none (default; modern fps caps + REU staging leave ~0 loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts.",
+          "default": 1.0
         },
         "pitch_mult_mcm": {
           "type": "number",
