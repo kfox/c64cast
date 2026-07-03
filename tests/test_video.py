@@ -11,7 +11,9 @@ from c64cast.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
     AVFileSource,
+    _build_atempo_graph,
     _compute_normalization_gain,
+    _ensure_pyav,
     _plan_decode_size,
 )
 
@@ -201,6 +203,8 @@ class DemuxRebaseTest(unittest.TestCase):
         src._decode_target = None
         src._decode_size = None
         src._decode_planned = False
+        src._tempo_scale = 1.0
+        src._atempo_graph = None
         src.last_frame_pts = 0.0
         src.path = "fake"
         src.container = _FakeContainer([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
@@ -274,6 +278,8 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         src._decode_target = decode_target
         src._decode_size = None
         src._decode_planned = False
+        src._tempo_scale = 1.0
+        src._atempo_graph = None
         src.last_frame_pts = 0.0
         src.path = "fake"
         frame = _FakeFrame(0, width=src_w, height=src_h)
@@ -321,6 +327,72 @@ class CurrentFrameTelemetryTest(unittest.TestCase):
         frames = [(float(t), np.zeros((2, 2, 3), np.uint8)) for t in range(3)]
         src = _make_av_source_stub(frames, eof=False)
         self.assertEqual(src.video_buffer_depth, 3)
+
+
+@unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+class AtempoTempoCompensationTest(unittest.TestCase):
+    """Bitmap+DAC tempo compensation: the atempo graph time-compresses audio
+    (pitch-preserving) by 1/tempo_scale, so the emitted sample count is ≈
+    tempo_scale × the input count. Drives the real AVFileSource emit path
+    (_drain_atempo / _flush_atempo / _emit_audio) through a __new__ stub so no
+    container/file is needed."""
+
+    SR = 8000
+
+    def _stub(self, tempo_scale: float, sink) -> AVFileSource:
+        src = AVFileSource.__new__(AVFileSource)
+        src.path = "test.mp4"
+        src._closed = False
+        src.audio_gain = 1.0
+        src.audio_noise_gate = 0
+        src._tempo_scale = tempo_scale
+        src._audio_push = sink.append
+        src._atempo_graph = _build_atempo_graph(self.SR, tempo_scale)
+        return src
+
+    def _feed(self, src: AVFileSource, total_samples: int, frame_len: int = 1024) -> None:
+        import av
+
+        pts = 0
+        for _ in range(0, total_samples, frame_len):
+            arr = np.random.randint(-2000, 2000, frame_len).astype(np.int16).reshape(1, -1)
+            frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
+            frame.sample_rate = self.SR
+            frame.pts = pts
+            pts += frame_len
+            src._atempo_graph.push(frame)
+            src._drain_atempo()
+
+    def test_output_length_matches_tempo_scale(self):
+        for s in (0.88, 0.75, 0.5):
+            sink: list[np.ndarray] = []
+            src = self._stub(s, sink)
+            n_in = 400_000  # large enough that atempo's fixed tail is negligible
+            self._feed(src, n_in)
+            src._flush_atempo()
+            n_out = sum(a.size for a in sink)
+            ratio = n_out / n_in
+            self.assertAlmostEqual(ratio, s, delta=0.01, msg=f"tempo_scale={s}: ratio {ratio:.4f}")
+
+    def test_flush_emits_buffered_tail(self):
+        # Without the EOF flush, the last atempo-buffered frames are lost.
+        sink: list[np.ndarray] = []
+        src = self._stub(0.88, sink)
+        self._feed(src, 40_000)
+        pre_flush = sum(a.size for a in sink)
+        src._flush_atempo()
+        post_flush = sum(a.size for a in sink)
+        self.assertGreater(post_flush, pre_flush)
+
+    def test_gain_applied_on_compensated_path(self):
+        # _emit_audio must still apply normalization gain when routing through
+        # the graph (the refactor moved gain/gate into the shared helper).
+        sink: list[np.ndarray] = []
+        src = self._stub(0.88, sink)
+        src.audio_gain = 2.0
+        arr = np.full(4096, 1000, np.int16)
+        src._emit_audio(arr)
+        self.assertTrue(all((a == 2000).all() for a in sink))
 
 
 if __name__ == "__main__":

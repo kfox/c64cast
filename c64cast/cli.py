@@ -1142,6 +1142,7 @@ def main(argv=None) -> int:
             cfgmod.validate_nmi_sample_rate(cfg)
             cfgmod.validate_sampler_cfg(cfg)
             cfgmod.validate_dac_curve_cfg(cfg)
+            cfgmod.validate_dac_bitmap_tempo_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5

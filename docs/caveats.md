@@ -52,6 +52,40 @@ missing, or set them yourself in F2): **C64 and Cartridge Settings → Map Ultim
 Audio $DF20-DFFF = Enabled**, and **Audio Mixer → Vol Sampler L / Vol Sampler R**
 audible (0 dB, not OFF). `c64cast --doctor` reports the sampler's state.
 
+## Forced-DAC bitmap video plays ~12% slow (tempo compensation)
+
+Force `[audio].backend = "dac"` on a **bitmap** display mode (hires / hires_edges
+/ mhires) — or run the always-DAC TeensyROM+ — and video+audio play **~12% slow
+at correct pitch**. The default U64 video path (the off-bus sampler above) and
+the char modes (petscii/mcm) are unaffected.
+
+Cause: video is slaved to the audio **drain clock** (`AudioStreamer.
+position_seconds` → `VideoScene._clock_s`). In bitmap mode the audio worker
+shares the single socket-DMA link with heavy REU bank-swap bitmap writes; the
+host-DMA servo reads the ring pointer biased under that load and throttles the
+worker ~12% (`clock/wall` ≈ 0.88 mhires vs ≈1.0 petscii, servo-tuning-
+independent). The `$D418` **output** rate stays ≈ `sample_rate` (a pure 1000 Hz
+tone reads ~993 Hz → pitch correct), so it's a **pitch-preserving time stretch**:
+the ring under-fills and the NMI re-reads/duplicates samples at the right
+per-sample rate. No host-side servo tuning fixes both speed *and* smoothness
+(servo on = smooth but slow; open-loop = correct tempo but skips; REU-pump =
+wobbly — all confirmed by ear).
+
+Fix: because the stretch is pitch-preserving, **pre-compress the content in the
+time domain by the inverse factor** so it nets to real time. `[audio].
+dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` (defaults **0.89 hires /
+0.88 mhires**, the measured U64-II NTSC speed fractions `s`) drive it: for the gated bitmap+DAC path,
+`AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
+`atempo` filter graph and multiplies each video PTS by `s`. The existing
+drain-clock A/V sync (which reads ~`s`) then lands both content streams at real
+time, in sync, pitch intact. `clock/wall` telemetry still reads ~`s` **by design**
+(it gauges the drain rate; the compensation makes *content* real-time, not the
+drain clock). Set the field to `1.0` to disable. Other platforms (U64+PAL, U2P,
+TR+ PAL/NTSC) have different `s` — measure per platform with
+`scripts/diags/mhires_tempo_clock_ab.py`. This is orthogonal to the
+`[audio].pitch_mult_*` NMI-rate knobs (which correct *pitch*, not tempo). See the
+`video.py` tempo-compensation note in [architecture.md](architecture.md).
+
 ## SID playback uses a C64-side player PRG, not `runners:sidplay`
 
 `WaveformScene` deliberately avoids the U64 firmware's

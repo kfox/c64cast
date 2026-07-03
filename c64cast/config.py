@@ -550,11 +550,17 @@ class AudioCfg:
     # ALL DEFAULT 1.0 (no compensation). The earlier bitmap defaults (hires 1.02,
     # mhires 1.015) were ear-tuned when bitmap video cost ~2% of NMI ticks — but
     # the bitmap+digi fps cap + REU-staged double-buffer since drove that loss to
-    # ~0 (HW 2026-07-02: DAC-path mhires video plays at +0.07% with NO
+    # ~0 (HW 2026-07-02: DAC-path mhires video plays at +0.07% PITCH with NO
     # compensation; 1.015 now overcorrects to +1.36% HIGH). So the modern U64-II
-    # NTSC platform wants no static compensation. Re-tune per system ONLY if a
-    # platform actually shows drift (PAL @ 50fps, or the lower-latency TR+
+    # NTSC platform wants no static PITCH compensation. Re-tune per system ONLY if
+    # a platform actually shows pitch drift (PAL @ 50fps, or the lower-latency TR+
     # backend, may differ — measure with scripts/diags/nmi_pitch_ab.py).
+    #
+    # NOTE: that "+0.07%" measurement was PITCH only (a pure-tone frequency read),
+    # and is correct. It is TEMPO-BLIND: on the host-DMA DAC path over a bitmap
+    # mode the content still plays ~12% SLOW at that correct pitch (the servo
+    # under-drains the ring). Tempo is fixed SEPARATELY by dac_bitmap_tempo_*
+    # below (time-domain pre-compression), not by these NMI-rate multipliers.
     pitch_mult_petscii: float = field(
         default=1.00,
         metadata={
@@ -590,6 +596,49 @@ class AudioCfg:
         metadata={
             "help": "Host-DMA servo playback-rate multiplier for Blank mode "
             "(no video input; 1.0 = none)."
+        },
+    )
+    # ---- bitmap + $D418-DAC tempo compensation (static; per-mode) -----------
+    # ORTHOGONAL to pitch_mult_* (which shorten the C64 NMI rate to fix PITCH).
+    # These fix TEMPO on the host-DMA 4-bit DAC path over a BITMAP display mode
+    # only. There, the audio worker shares the single socket-DMA link with heavy
+    # REU bank-swap bitmap writes; the host-DMA servo reads the ring pointer
+    # biased under that load and throttles the worker ~12%, so video (slaved to
+    # the drain clock) + audio play ~1/value SLOW at CORRECT pitch (the $D418
+    # output rate stays ≈ sample_rate — a pitch-preserving time stretch, the ring
+    # under-fills and the NMI re-reads samples). The fix pre-compresses the
+    # content in the time domain by 1/value (audio time-compressed pitch-
+    # preserving via atempo; video PTS × value) so the system's own ~1/value
+    # stretch lands both at real time, in sync, pitch intact. `hires_edges`
+    # scenes use dac_bitmap_tempo_hires (same VIC fetch as hires). No effect on
+    # the off-bus Ultimate Audio sampler (the U64 video default), the REU pump,
+    # or char modes (petscii/mcm/blank) — those stay at real time already.
+    #
+    # Default 0.88 = the measured U64-II NTSC mhires speed fraction (clock/wall).
+    # Other platforms (U64+PAL, U2P, TR+ PAL/NTSC) have different fractions —
+    # measure per platform with scripts/diags/mhires_tempo_clock_ab.py and set
+    # here. 1.0 = compensation off.
+    dac_bitmap_tempo_hires: float = field(
+        default=0.89,
+        metadata={
+            "help": "Observed $D418-DAC playback-speed fraction on Hires / "
+            "Hires-edges bitmap modes (measure via clock/wall). Content is "
+            "time-compressed by 1/value (pitch-preserving) so bitmap+DAC video "
+            "plays at real time. 1.0 = off. Host-DMA DAC path only — no effect "
+            "on the Ultimate Audio sampler or the REU pump. Default 0.89 = "
+            "U64-II NTSC (Hires drains slightly faster than MHires); re-measure "
+            "per platform (PAL / TR+)."
+        },
+    )
+    dac_bitmap_tempo_mhires: float = field(
+        default=0.88,
+        metadata={
+            "help": "Observed $D418-DAC playback-speed fraction on MultiHires "
+            "bitmap mode (measure via clock/wall). Content is time-compressed by "
+            "1/value (pitch-preserving) so bitmap+DAC video plays at real time. "
+            "1.0 = off. Host-DMA DAC path only — no effect on the Ultimate Audio "
+            "sampler or the REU pump. Default 0.88 = U64-II NTSC; re-measure per "
+            "platform (PAL / TR+)."
         },
     )
 
@@ -2791,6 +2840,26 @@ def validate_dac_curve_cfg(cfg: Config) -> None:
         )
 
 
+def validate_dac_bitmap_tempo_cfg(cfg: Config) -> None:
+    """Guard the bitmap+DAC tempo-compensation fractions ([audio].
+    dac_bitmap_tempo_hires / _mhires): each must be 0.5..1.0. The lower bound is
+    atempo's single-stage floor — content is time-compressed by 1/value, and
+    atempo only spans 0.5..2.0 per stage, so value < 0.5 → factor > 2.0 can't be
+    realized in one filter. 1.0 = compensation off. No-op when audio is
+    disabled."""
+    if not cfg.audio.enabled:
+        return
+    for name, value in (
+        ("dac_bitmap_tempo_hires", cfg.audio.dac_bitmap_tempo_hires),
+        ("dac_bitmap_tempo_mhires", cfg.audio.dac_bitmap_tempo_mhires),
+    ):
+        if not 0.5 <= value <= 1.0:
+            raise ConfigError(
+                f"[audio].{name} must be 0.5..1.0 (observed playback-speed "
+                f"fraction; 1.0 = off), got {value}"
+            )
+
+
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:
     """Pre-construction validation for a SceneCfg.
 
@@ -3049,6 +3118,27 @@ def build_scene(
                     ref_clock_hz=cfg.audio.sampler_clock_hz,
                 )
                 using_sampler = True
+        # Bitmap + $D418-DAC tempo compensation. On the host-DMA 4-bit DAC path
+        # over a bitmap mode, heavy REU bank-swap bitmap writes bias the audio
+        # servo and time-stretch playback ~1/s SLOW at correct pitch. Pre-
+        # compress the content by 1/s (audio time-compress + video PTS × s) so it
+        # nets to real time. Gated OFF (tempo_scale 1.0) for the off-bus sampler,
+        # the REU pump, char modes, and muted scenes — none of which stretch.
+        # `using_sampler` False with audio present means the DAC path.
+        from .modes import BitmapDisplayMode, MultiHiresDisplayMode
+
+        tempo_scale = 1.0
+        if (
+            video_audio is not None
+            and not using_sampler
+            and not cfg.audio.use_reu_pump
+            and isinstance(mode, BitmapDisplayMode)
+        ):
+            tempo_scale = (
+                cfg.audio.dac_bitmap_tempo_mhires
+                if isinstance(mode, MultiHiresDisplayMode)
+                else cfg.audio.dac_bitmap_tempo_hires
+            )
         assert s.file is not None  # narrowed by validate_scene_cfg
         # A single media URL (YouTube et al.) is resolved here — the ONE
         # resolution path shared with quick playback — so config-driven videos
@@ -3075,6 +3165,7 @@ def build_scene(
             prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
             color=cfg.color,
             start_s=start_s or 0.0,
+            tempo_scale=tempo_scale,
         )
         if video_name:
             scene.name = video_name

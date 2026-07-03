@@ -155,6 +155,32 @@ def _ensure_pyav() -> bool:
     return PYAV_AVAILABLE
 
 
+def _build_atempo_graph(target_sample_rate: int, tempo_scale: float):
+    """Build a one-stage `atempo` filter graph that time-compresses mono/s16
+    audio (pitch-preserving) by ``1 / tempo_scale``. Fed the s16/mono/
+    target_sample_rate frames the AVFileSource resampler already produces, so
+    the abuffer format is fixed. Used by the bitmap+DAC tempo-compensation path
+    (see AVFileSource + the `video.py` note in docs/architecture.md).
+
+    Callers keep ``tempo_scale`` in (0, 1) (validate_dac_bitmap_tempo_cfg bounds
+    it to 0.5..1.0), so ``1/tempo_scale`` lands in (1.0, 2.0] — inside atempo's
+    single-stage 0.5..2.0 range. Requires PyAV (`_ensure_pyav()` first)."""
+    graph = av.filter.Graph()
+    abuffer = graph.add(
+        "abuffer",
+        sample_rate=str(target_sample_rate),
+        sample_fmt="s16",
+        channel_layout="mono",
+        time_base=f"1/{target_sample_rate}",
+    )
+    atempo = graph.add("atempo", f"{1.0 / tempo_scale:.6f}")
+    sink = graph.add("abuffersink")
+    abuffer.link_to(atempo)
+    atempo.link_to(sink)
+    graph.configure()
+    return graph
+
+
 def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     """Decode the entire audio track of ``path`` to mono int16 at
     ``target_sample_rate``. Returns a single contiguous np.ndarray.
@@ -364,6 +390,7 @@ class AVFileSource:
         scan_audio_peak: bool = True,
         start_s: float = 0.0,
         decode_target_size: tuple[int, int] | None = None,
+        tempo_scale: float = 1.0,
     ):
         if not _ensure_pyav():
             raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
@@ -415,6 +442,32 @@ class AVFileSource:
             )
         else:
             self._resampler = None
+
+        # Bitmap + $D418-DAC tempo compensation. On the host-DMA 4-bit DAC path
+        # over a bitmap display mode, heavy REU bank-swap bitmap writes bias the
+        # audio servo and time-stretch playback ~1/tempo_scale SLOW at correct
+        # pitch (a pitch-preserving stretch — the ring under-fills and the NMI
+        # re-reads samples). We pre-compress the content by the inverse factor so
+        # the system's own stretch nets to real time: audio time-compressed
+        # pitch-preserving by 1/tempo_scale via an `atempo` filter graph (fed the
+        # existing s16/mono/target_sr resampler output), and video PTS × tempo_
+        # scale (in _demux_loop). tempo_scale == 1.0 (sampler / REU pump / char /
+        # muted, per config.build_scene's gate) is a no-op — no graph, PTS
+        # untouched. atempo spans 0.5..2.0/stage; validate_dac_bitmap_tempo_cfg
+        # keeps tempo_scale ≥ 0.5 so 1/tempo_scale ≤ 2.0 fits one stage.
+        self._tempo_scale = tempo_scale
+        # av.filter.Graph when tempo compensation is active, else None. Typed
+        # Any because `av` is a lazily-imported module-global (`av: Any`), so
+        # `av.filter.Graph` isn't usable as a static type here.
+        self._atempo_graph: Any = None
+        if self.a_stream is not None and tempo_scale < 1.0:
+            self._atempo_graph = _build_atempo_graph(target_sample_rate, tempo_scale)
+            log.info(
+                "av %s: bitmap+DAC tempo compensation ON (s=%.4f → atempo=%.4f)",
+                os.path.basename(self.path),
+                tempo_scale,
+                1.0 / tempo_scale,
+            )
 
         # PTS-sorted decoded video frames: (pts_seconds, BGR np.ndarray)
         self._video_buf: list[tuple[float, np.ndarray]] = []
@@ -504,6 +557,47 @@ class AVFileSource:
         self._demux_thread = threading.Thread(target=self._demux_loop, daemon=True, name="av-demux")
         self._demux_thread.start()
 
+    def _emit_audio(self, arr: np.ndarray) -> None:
+        """Apply the noise gate + normalization gain to a mono int16 sample
+        array and hand it to the audio consumer. Shared by the direct path and
+        the atempo-compensated path."""
+        if self._audio_push is None:
+            return
+        if self.audio_noise_gate > 0:
+            # Zero source-noise-floor samples BEFORE gain so the encoder doesn't
+            # jitter between NEUTRAL and ±1 at amplified noise levels.
+            arr = np.where(np.abs(arr) < self.audio_noise_gate, np.int16(0), arr)
+        if self.audio_gain != 1.0:
+            arr = np.clip(arr.astype(np.float32) * self.audio_gain, INT16_MIN, INT16_MAX).astype(
+                np.int16
+            )
+        self._audio_push(arr.astype(np.int16, copy=False))
+
+    def _drain_atempo(self) -> None:
+        """Pull every time-compressed frame the atempo graph can currently
+        produce and emit it. BlockingIOError = "no frame ready yet" (need more
+        input); EOFError = graph fully drained after the EOS push."""
+        assert self._atempo_graph is not None
+        while True:
+            try:
+                out = self._atempo_graph.pull()
+            except (av.error.BlockingIOError, av.error.EOFError):
+                return
+            self._emit_audio(out.to_ndarray().reshape(-1))
+
+    def _flush_atempo(self) -> None:
+        """At EOF, signal end-of-stream to the atempo graph and drain the
+        compressed tail still buffered in the filter (otherwise the last
+        fraction of a second is lost). No-op when tempo compensation is off, the
+        consumer has gone away, or the scene was torn down mid-stream."""
+        if self._atempo_graph is None or self._audio_push is None or self._closed:
+            return
+        try:
+            self._atempo_graph.push(None)
+            self._drain_atempo()
+        except (av.error.EOFError, av.error.BlockingIOError):
+            pass
+
     def _demux_loop(self):
         # Differentiate "container hit EOF" (expected, info) from "decode blew
         # up mid-stream" (unexpected, log full traceback).
@@ -558,6 +652,13 @@ class AVFileSource:
                         if self._pts_offset is None:
                             self._pts_offset = pts
                         pts -= self._pts_offset
+                        # Bitmap+DAC tempo compensation: compress the video
+                        # timeline by tempo_scale so it stays in lock-step with
+                        # the 1/tempo_scale-compressed audio (both then net to
+                        # real time under the ~tempo_scale drain-clock slowdown).
+                        # No-op when tempo_scale == 1.0.
+                        if self._tempo_scale != 1.0:
+                            pts *= self._tempo_scale
                         # Backpressure: wait if the buffer is at capacity.
                         # The old behavior (silent-drop oldest frames) was a
                         # safety net under host-DMA mode, where AudioStreamer's
@@ -587,22 +688,18 @@ class AVFileSource:
                 ):
                     for frame in packet.decode():
                         for resampled in self._resampler.resample(frame):
-                            arr = resampled.to_ndarray().reshape(-1)
-                            if self.audio_noise_gate > 0:
-                                # Zero source-noise-floor samples BEFORE
-                                # gain so the encoder doesn't jitter
-                                # between NEUTRAL and ±1 at amplified
-                                # noise levels.
-                                arr = np.where(
-                                    np.abs(arr) < self.audio_noise_gate, np.int16(0), arr
-                                )
-                            if self.audio_gain != 1.0:
-                                arr = np.clip(
-                                    arr.astype(np.float32) * self.audio_gain, INT16_MIN, INT16_MAX
-                                ).astype(np.int16)
-                            self._audio_push(arr.astype(np.int16, copy=False))
+                            if self._atempo_graph is not None:
+                                # Time-compress (pitch-preserving) through the
+                                # atempo graph before emit. The graph buffers, so
+                                # one input frame yields 0..N output frames.
+                                self._atempo_graph.push(resampled)
+                                self._drain_atempo()
+                            else:
+                                self._emit_audio(resampled.to_ndarray().reshape(-1))
+            self._flush_atempo()
             log.debug("demux %s: EOF", self.path)
         except (EOFError, StopIteration):
+            self._flush_atempo()
             log.debug("demux %s: EOF", self.path)
         except Exception:
             log.exception("demux %s crashed", self.path)

@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import IO, Literal
 
 from .c64 import max_safe_sample_rate, nmi_rate_safety
-from .config import ConfigError, LoadResult, validate_dac_curve_cfg, validate_scene_cfg
+from .config import (
+    ConfigError,
+    LoadResult,
+    validate_dac_bitmap_tempo_cfg,
+    validate_dac_curve_cfg,
+    validate_scene_cfg,
+)
 from .orchestrator import OrchestratorError
 
 log = logging.getLogger(__name__)
@@ -87,6 +93,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve(loaded))
+    out.extend(_validate_dac_bitmap_tempo(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
     out.extend(_probe_extras())
@@ -307,6 +314,26 @@ def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
                     subject=f"{name}/dac_curve",
                     message=str(e),
                     hint="Run `c64cast -u <target> --calibrate-dac`, or set dac_curve = 'auto'.",
+                )
+            )
+    return out
+
+
+def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an out-of-range [audio].dac_bitmap_tempo_* fraction per system.
+    Offline — delegates to config.validate_dac_bitmap_tempo_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_dac_bitmap_tempo_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/dac_bitmap_tempo",
+                    message=str(e),
+                    hint="Measure with scripts/diags/mhires_tempo_clock_ab.py, or set to 1.0 (off).",
                 )
             )
     return out
