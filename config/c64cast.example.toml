@@ -344,25 +344,20 @@ host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
                                     # a ring. Pure host-side timing — no C64
                                     # writes, so none of the REU servo's glitch.
                                     # On by default; false = open-loop A/B.
-nmi_rate_adaptive = true            # Adaptive NMI-rate compensation. The
-                                    # host_dma_servo above stops the echo but
-                                    # locks playback to the bus-halt-throttled
-                                    # consumer R → video plays slow (more on
-                                    # high-motion content). This closed loop
-                                    # instead RAISES the nominal NMI rate until
-                                    # the measured R lands back at sample_rate,
-                                    # so playback keeps correct speed + pitch AND
-                                    # full bandwidth (vs resampling down to R),
-                                    # auto-tracking the load. Clamped to the
-                                    # handler cycle budget so it never overruns.
-                                    # Supersedes pitch_mult_* below (those apply
-                                    # only when this is false). Host-DMA path
-                                    # only; on by default. A brief warm-up gate
-                                    # holds the rate steady right after a start /
-                                    # seek / big frame-drop (the spin-up R reads
-                                    # are unrepresentative) so it doesn't audibly
-                                    # glide the pitch chasing them, then trims
-                                    # from a settled estimate.
+nmi_rate_adaptive = false           # Adaptive NMI-rate compensation. Built to
+                                    # cancel a video slowdown from bus-halt-stolen
+                                    # NMI ticks — but the bitmap+digi fps cap, the
+                                    # VideoScene frame dedup, and REU-staged
+                                    # double-buffering have driven that loss to ~0,
+                                    # so it now only INJECTS pitch error (its R
+                                    # estimator reads ~12% high off torn DMA read-
+                                    # backs and drives the rate the wrong way).
+                                    # DEFAULT OFF: at the nominal latch DAC-path
+                                    # video plays dead-on (HW: +0.07% vs source),
+                                    # and host_dma_servo above still centers the
+                                    # ring. Turn on only for a platform that truly
+                                    # loses ticks (PAL / TeensyROM+), where the
+                                    # estimator bias would need fixing first.
 source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # 100 ms 200→3500 Hz linear chirp to the
                                     # pre-encoded REU audio so Cam Link
@@ -376,28 +371,26 @@ source_alignment_marker = false     # **DEBUG/CAPTURE ONLY** — prepend a
                                     # listening. Only honored on the REU pump
                                     # path; host-DMA scenes are unmarked.
 
-# --- host-DMA servo pitch compensation (static; legacy) ---
-# NOTE: these apply ONLY when nmi_rate_adaptive = false. The default adaptive
-# loop above supersedes them (it tracks the content-dependent loss a fixed
-# constant can't); keep them for the adaptive-off path and PAL/TR+ hand-tuning.
-# The host_dma_servo (above) kills the echo but locks playback to the C64 NMI
-# consumer rate R, which runs slightly below the nominal 8000 Hz because the
-# display steals NMI ticks (VIC badlines + host-DMA video writes + the REU
-# bank-swap raster IRQ on staged bitmap modes) — so playback comes out a touch
-# slow (pitch + speed together). Each multiplier below is a per-display-mode
-# *playback-rate multiplier*: >1.0 speeds playback up to cancel that slowdown,
-# 1.0 = no change. c64cast converts it to a shorter CIA #2 Timer A period
-# (faster NMI → faster R; rate and latch are inversely related), applied once per
-# scene change. hires_edges scenes use pitch_mult_hires (same VIC fetch).
-# Defaults were tuned BY EAR on a real U64-II (NTSC, 60fps, default
-# use_reu_staged="auto" so bitmap video rides the bus-clean REU bank-swap →
-# residual loss is small). They're standard/backend coupled: PAL (50fps) and the
-# lower-latency TR+ backend want their own ears-on values. Only active when
-# host_dma_servo = true; ignored on the REU pump path.
-pitch_mult_petscii = 1.0     # PETSCII (char mode) — good at 1.0 on U64-II NTSC.
-pitch_mult_hires = 1.02      # Hires / Hires-edges (REU-staged bitmap).
-pitch_mult_mhires = 1.015    # MultiHires (REU-staged bitmap + $D800 color RAM).
-pitch_mult_mcm = 1.0         # MCM (char mode) — good at 1.0 on U64-II NTSC.
+# --- host-DMA servo pitch compensation (static; per-mode) ---
+# These apply ONLY when nmi_rate_adaptive = false (now the default). Each cancels
+# the video slowdown from bus-halt-stolen NMI ticks for one display mode: >1.0
+# speeds playback up, 1.0 = no change. c64cast converts a multiplier to a shorter
+# CIA #2 Timer A period (faster NMI → faster R; rate and latch are inversely
+# related), applied once per scene change. hires_edges scenes use pitch_mult_hires
+# (same VIC fetch). Only active when host_dma_servo = true; ignored on the REU
+# pump path.
+#
+# ALL DEFAULT 1.0 (no compensation). The old bitmap defaults (hires 1.02, mhires
+# 1.015) were ear-tuned when bitmap video cost ~2% of NMI ticks — but the
+# bitmap+digi fps cap + REU-staged double-buffer since drove that loss to ~0
+# (HW 2026-07-02: DAC-path mhires plays at +0.07% with no compensation; 1.015 now
+# OVERcorrects to +1.36% high). Re-tune per system ONLY if a platform actually
+# drifts (PAL @ 50fps or the lower-latency TR+ backend may differ — measure with
+# scripts/diags/nmi_pitch_ab.py).
+pitch_mult_petscii = 1.0     # PETSCII (char mode).
+pitch_mult_hires = 1.0       # Hires / Hires-edges (REU-staged bitmap).
+pitch_mult_mhires = 1.0      # MultiHires (REU-staged bitmap + $D800 color RAM).
+pitch_mult_mcm = 1.0         # MCM (char mode).
 pitch_mult_blank = 1.0       # Blank (no video input).
 
 [vision]

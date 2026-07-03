@@ -501,22 +501,28 @@ class AudioCfg:
             "host-side timing, no C64 writes. Not the REU pump path."
         },
     )
-    # The static host_dma_servo locks playback to the bus-halt-throttled NMI
-    # consumer R, so video plays slow (content-dependent: motion → VIC DMA →
-    # stolen NMI ticks). This adaptive loop instead RAISES the nominal NMI rate
-    # until the measured R lands back at sample_rate — correct speed + pitch,
-    # full bandwidth (vs resampling down to R), auto-tracking the load. Clamped
-    # to the handler cycle budget (never overruns). Supersedes the static
-    # pitch_mult_* below (they apply only when this is false). Default on per
-    # "prefer best quality". Host-DMA path only (REU pump has its own governor).
+    # Adaptive NMI-rate compensation: a closed loop that RAISES the nominal NMI
+    # rate to cancel the video slowdown from bus-halt-stolen NMI ticks. Built
+    # when bitmap video cost ~2-14% of ticks — but the bitmap+digi fps cap, the
+    # VideoScene frame dedup, and REU-staged double-buffering have since driven
+    # that loss to ~0 (HW 2026-07-02: with NO compensation, DAC-path mhires video
+    # plays at +0.07% on a near-static clip and -0.01% on a high-motion one). With
+    # the loss gone the loop only INJECTS error: its dR/dt R estimator reads ~12%
+    # high (torn DMA read-back of the $C025/$C026 read pointer), so it drives the
+    # latch the wrong way — measured -8.5% slow on one clip, content-dependent and
+    # non-deterministic. So DEFAULT OFF: playing at the nominal latch is dead-on
+    # (host_dma_servo still centers the ring — that's orthogonal to pitch). Kept
+    # as a knob for platforms that may still lose ticks (PAL, TeensyROM+), where
+    # the estimator bias would need fixing first. See the nmi_adaptive_rate_obsolete
+    # note + scripts/diags/nmi_pitch_ab.py.
     nmi_rate_adaptive: bool = field(
-        default=True,
+        default=False,
         metadata={
             "help": "Adaptive NMI-rate compensation: closed-loop on the measured "
-            "C64 consumer rate, raises the NMI rate so bus-halt-throttled "
-            "playback stays at the authored sample_rate (fixes the video "
-            "slowdown, keeps full bandwidth). Supersedes pitch_mult_* (which "
-            "apply only when this is false). Host-DMA path only."
+            "C64 consumer rate, raises the NMI rate to cancel a video slowdown "
+            "from bus-halt-stolen NMI ticks. DEFAULT OFF — modern fps caps + "
+            "REU-staged double-buffer drove that loss to ~0, so this only adds "
+            "pitch error now. Supersedes pitch_mult_* when on. Host-DMA path only."
         },
     )
     # See c64cast.audio_marker for the find-marker analysis helper. Only the
@@ -528,49 +534,44 @@ class AudioCfg:
             "capture-alignment anchor. Turn OFF for production listening."
         },
     )
-    # ---- host-DMA servo pitch compensation (static; legacy path) ------------
-    # NOTE: these STATIC per-mode multipliers apply only when
-    # nmi_rate_adaptive = false. The default adaptive loop above supersedes them
-    # (it tracks the content-dependent loss a fixed constant can't). Kept for the
-    # adaptive-off path and for PAL/TR+ hand-tuning where adaptive headroom is
-    # tight.
-    # The host-DMA audio servo (eliminates echo) locks playback to the C64 NMI
-    # consumer rate R. R runs slightly below the nominal 8000 Hz because the
-    # display steals NMI ticks (VIC badlines + any host-DMA video writes +, for
-    # REU-staged bitmap modes, the per-frame bank-swap raster IRQ), so playback
-    # comes out a touch slow (pitch + speed down together). Each multiplier below
-    # is a **playback-rate multiplier** for one display mode: >1.0 speeds playback
-    # up to cancel the slowdown, 1.0 = no change. The AudioStreamer converts it to
-    # a shorter CIA #2 Timer A period (faster NMI → faster R; rate and latch are
+    # ---- host-DMA servo pitch compensation (static; per-mode) ---------------
+    # These STATIC per-mode playback-rate multipliers apply only when
+    # nmi_rate_adaptive = false (now the default). Each cancels the video
+    # slowdown from bus-halt-stolen NMI ticks for one display mode: >1.0 speeds
+    # playback up, 1.0 = no change. The AudioStreamer converts a multiplier to a
+    # shorter CIA #2 Timer A period (faster NMI → faster R; rate and latch are
     # inversely related). `hires_edges` scenes use pitch_mult_hires (same VIC
-    # fetch). Defaults were tuned BY EAR on a real U64-II (NTSC, 60fps, the
-    # default use_reu_staged="auto" — bitmap video over the bus-clean REU
-    # bank-swap, so the residual loss is small: ~2% bitmap, ~0% char). An earlier
-    # 13.6%/1.1575 estimate for mhires was measured with video on the *host-DMA*
-    # path and is wrong for the auto-staged default. Values are backend- and
-    # standard-coupled: PAL (50fps → fewer halts/sec) and the lower-latency TR+
-    # backend want their own ears-on values; override per system.
+    # fetch).
+    #
+    # ALL DEFAULT 1.0 (no compensation). The earlier bitmap defaults (hires 1.02,
+    # mhires 1.015) were ear-tuned when bitmap video cost ~2% of NMI ticks — but
+    # the bitmap+digi fps cap + REU-staged double-buffer since drove that loss to
+    # ~0 (HW 2026-07-02: DAC-path mhires video plays at +0.07% with NO
+    # compensation; 1.015 now overcorrects to +1.36% HIGH). So the modern U64-II
+    # NTSC platform wants no static compensation. Re-tune per system ONLY if a
+    # platform actually shows drift (PAL @ 50fps, or the lower-latency TR+
+    # backend, may differ — measure with scripts/diags/nmi_pitch_ab.py).
     pitch_mult_petscii: float = field(
         default=1.00,
         metadata={
             "help": "Host-DMA servo playback-rate multiplier for PETSCII mode "
-            "(light char-mode load; 1.0 = none. U64-II NTSC: good at 1.0)."
+            "(light char-mode load). 1.0 = none (default; U64-II NTSC is dead-on)."
         },
     )
     pitch_mult_hires: float = field(
-        default=1.02,
+        default=1.00,
         metadata={
             "help": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges "
-            "modes (REU-staged bitmap; bank-swap IRQ residual). U64-II NTSC "
-            "ears-tuned to 1.02; override for TR+ or PAL."
+            "modes. 1.0 = none (default; modern fps caps + REU staging leave ~0 "
+            "loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts."
         },
     )
     pitch_mult_mhires: float = field(
-        default=1.015,
+        default=1.00,
         metadata={
-            "help": "Host-DMA servo playback-rate multiplier for MultiHires mode "
-            "(REU-staged bitmap + host-DMA $D800 color RAM). U64-II NTSC "
-            "ears-tuned to 1.015; override for TR+ or PAL."
+            "help": "Host-DMA servo playback-rate multiplier for MultiHires mode. "
+            "1.0 = none (default; modern fps caps + REU staging leave ~0 loss on "
+            "U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts."
         },
     )
     pitch_mult_mcm: float = field(
