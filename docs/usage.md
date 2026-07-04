@@ -37,6 +37,19 @@ message pointing back to this section. The U64 REST endpoint is still
 used for the operations that have no DMA equivalent (reads, runners,
 machine reset, the startup reachability probe).
 
+**Enable the REST / web server too.** The REST endpoint is a *separate*
+service from Socket DMA (it listens on TCP port 80, not 64). On some
+firmware it is a distinct toggle — on the retail **C64 Ultimate** it is
+**Network Settings → Web Remote Control Service** (older U64/U2+
+firmware serves it alongside the web UI). With DMA on but REST off, the
+socket connects and DMA-rendered scenes (video, slideshow, webcam,
+blank) still paint — but reads (physical-keyboard control), machine
+reset, SID playback, and the `.prg`/`.crt` launcher all go over REST and
+will not work. `--doctor` reflects this: it is a **warning** for a
+DMA-only playlist, but an **error** when the playlist has a `waveform`,
+`launcher`, or `generative` + `audio_source = "sid"` scene (those start
+via the REST `run_prg` endpoint and cannot run without it).
+
 Reference: [Ultimate-64 docs](https://1541u-documentation.readthedocs.io/en/latest/)
 and the protocol source at
 [GideonZ/1541ultimate/software/network/socket_dma.cc](https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc).

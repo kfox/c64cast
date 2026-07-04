@@ -224,6 +224,67 @@ class ConnectivityProbeTest(unittest.TestCase):
         conn = [d for d in diags if d.category == "connectivity"]
         self.assertEqual(conn, [])
 
+    def _probe_with_dead_rest(self, toml: str) -> list:
+        """DMA connects (Ultimate64API.__init__ mocked to no-op) but the REST
+        probe returns None (web server down). Returns the connectivity diags."""
+        from c64cast.api import Ultimate64API
+
+        loaded = _load(toml)
+        with mock.patch.object(Ultimate64API, "__init__", return_value=None):
+            api_instance = Ultimate64API.__new__(Ultimate64API)
+            api_instance.base_url = "http://fake"
+            api_instance.session = mock.MagicMock()
+            api_instance.probe = mock.MagicMock(return_value=None)
+            api_instance.close = mock.MagicMock()
+            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+                diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.category == "connectivity"]
+
+    def test_rest_probe_failure_is_error_for_sid_scene(self):
+        """A waveform scene starts via the REST run_prg endpoint, so a dead
+        REST link (DMA up, web server down) is an error, not a warning."""
+        conn = self._probe_with_dead_rest("""
+            [ultimate64]
+            url = "http://fake"
+            [[scenes]]
+            type = "waveform"
+            file = "assets/sids/x.sid"
+        """)
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("REST probe failed", conn[0].message)
+        self.assertIn("cannot start", conn[0].message)
+        self.assertIn("waveform", conn[0].message)
+        assert conn[0].hint is not None
+        self.assertIn("web/remote-control service", conn[0].hint)
+
+    def test_rest_probe_failure_is_error_for_launcher_scene(self):
+        conn = self._probe_with_dead_rest("""
+            [ultimate64]
+            url = "http://fake"
+            [[scenes]]
+            type = "launcher"
+            file = "assets/prg/x.prg"
+        """)
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("launcher", conn[0].message)
+
+    def test_rest_probe_failure_is_warn_for_dma_only_scene(self):
+        """Video / slideshow / webcam / blank scenes paint entirely over DMA,
+        so a dead REST link only degrades (keyboard/reset/launch) — a warning."""
+        conn = self._probe_with_dead_rest("""
+            [ultimate64]
+            url = "http://fake"
+            [[scenes]]
+            type = "webcam"
+            display = "petscii"
+        """)
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "warn")
+        self.assertIn("REST probe failed", conn[0].message)
+        self.assertNotIn("cannot start", conn[0].message)
+
 
 class ReuStatusProbeTest(unittest.TestCase):
     """REU enable check fires only when the config opts into a REU path.
