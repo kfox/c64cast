@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from .c64 import nmi_rate_safety
 from .dac_curves import DAC_CURVE_CHOICES
 from .dsp import DSPParams
+from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 
 if TYPE_CHECKING:
     from .audio import AudioStreamer
@@ -394,16 +395,17 @@ class AudioCfg:
         },
     )
     sampler_clock_hz: int = field(
-        default=6_250_000,
+        default=SAMPLER_REF_CLOCK_DEFAULT,
         metadata={
             "help": "Ultimate Audio sampler reference clock (Hz), used to derive the "
             "rate divider AND the resample target so they stay matched (heard speed = "
-            "real_clock / this). Default 6250000 is the firmware's design value (safe "
-            "for U2+, which clocks it correctly). If sampler audio drifts against the "
-            "video over minutes, calibrate per-unit: scripts/diags/sampler_clock_calib.py "
-            "gives a starting estimate, then tune by ear against a video (beep drifts "
-            "AHEAD of the flash → raise this; BEHIND → lower it). Ear-tuned to 6155000 on "
-            "one U64-II (the design value ran ~2% slow). Only affects the sampler backend."
+            "real_clock / this). Default is the MEASURED effective clock of the shipping "
+            "U64 firmware (~6160000 Hz): the FPGA runs ~1.44% slow vs the 6250000 Hz "
+            "design nominal, so nominal made sampler audio drift against video. This is a "
+            "firmware property (same across U64 units), not per-unit — so it ships baked "
+            "in. If a firmware update fixes the clock (or on hardware that clocks it "
+            "correctly), set 6250000. Re-measure with scripts/diags/sampler_av_align_calib.py "
+            "(prints the value). Only affects the sampler backend."
         },
     )
     mic_sensitivity: float = field(
