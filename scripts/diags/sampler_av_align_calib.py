@@ -5,10 +5,14 @@ sampler's true reference clock, via a differential SID-vs-sampler drift run.
 Why this method
 ---------------
 The sampler plays PCM out of a REU ring at REF/divider; a U64's real REF differs
-from the firmware-nominal 6.25 MHz (~2% slow), so sampler audio drifts against the
-host-clock-paced video. Measuring that with a single captured pitch is limited by
-the Cam Link path's own ASRC offset (~0.5%) AND a uniform ~9-10% sample-rate
-compression in the avfoundation capture (see avfoundation_capture_drops_samples).
+from the firmware-nominal 6.25 MHz (~1.44% slow), so sampler audio drifts against
+the host-clock-paced video. Measuring that with a single captured pitch is limited
+by the Cam Link path's own ASRC offset (~0.5%) AND — the bigger problem — a uniform
+time compression in the avfoundation capture: it drops samples under heavy host DMA
+load (the sampler's own REU-streaming writes, bitmap re-uploads elsewhere), so the
+recorded timeline runs short by a DMA-LOAD-DEPENDENT factor (~0.90 in a light click
+train, ~0.77-0.87 under this tool's streaming — see avfoundation_capture_drops_samples).
+It is NOT the sampler and NOT a fixed capture-clock constant.
 
 This tool sidesteps ALL of that. At each wall-clock instant t_k = k*period it emits
 TWO markers that both land in the SAME captured audio stream:
