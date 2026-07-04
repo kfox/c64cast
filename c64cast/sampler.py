@@ -53,12 +53,26 @@ SAMPLER_NUM_CHANNELS = 7
 # 50 MHz on every platform (a fractional prescaler normalizes 50/62.5/66.66/100
 # MHz down to it) and produces one sample tick per 8 cycles, so the rate divider
 # is REF/rate with REF = 50 MHz / 8 = 6.25 MHz (per the firmware's sampler2.vhd).
-# This is the DESIGN value; a given unit's real rate can deviate (HW-measured on
-# one U64-II: ~2.1% slow, i.e. an effective REF ≈ 6.12 MHz). When the sampler
-# audio drifts against the host-clock-paced video, override the effective REF via
-# [audio].sampler_clock_hz (see config) so the resample target matches what the
-# FPGA actually plays. Calibrate with scripts/diags/sampler_clock_calib.py.
+# This is the DESIGN value — used to derive the divider table and pinned by tests.
+# The real FPGA clock deviates from it (see SAMPLER_REF_CLOCK_DEFAULT).
 SAMPLER_REF_CLOCK = 6_250_000  # the rate divider is REF / sample_rate
+
+# Measured effective reference on the shipping U64 firmware. The FPGA's real
+# sampler clock runs ~1.44% SLOW vs the 6.25 MHz design nominal, so at the
+# nominal REF sampler audio plays slow and drifts against the host-clock-paced
+# video over minutes. Crucially this is a FIRMWARE/FPGA-derivation property —
+# identical across U64 units on the same firmware, NOT chip-to-chip variation —
+# so it ships as the DEFAULT ([audio].sampler_clock_hz) rather than a per-unit
+# calibration file. Measured rigorously with scripts/diags/sampler_av_align_calib.py
+# (differential SID-vs-sampler-tone drift over 36 markers/180 s, immune to the
+# Cam Link capture's own rate error because both markers ride one captured
+# stream): a nominal-driven run measured 6.157 MHz, and confirmation runs driven
+# AT the candidate converged to ~6.16 MHz — a run driven at this value showed a
+# residual drift of only -1.3 ms per 5 s (17x better than nominal; ALIGNED).
+# Re-measure and update after any firmware release that changes sampler timing
+# (the diag prints the new value). Units/firmware that clock the sampler
+# correctly can override back to SAMPLER_REF_CLOCK (6.25 MHz).
+SAMPLER_REF_CLOCK_DEFAULT = 6_160_000
 
 # Channel register offsets (relative to the channel base).
 REG_CONTROL = 0x00

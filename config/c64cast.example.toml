@@ -220,15 +220,14 @@ sampler_sample_rate = 44100         # Hz for the sampler backend (1000..48000).
                                     # 44100 = CD quality (the FPGA plays at the
                                     # nearest divider of its 6.25 MHz reference).
 sampler_bits = 16                   # sampler PCM depth: 8 (signed) or 16 (signed LE)
-sampler_clock_hz = 6250000          # sampler reference clock (Hz). 6250000 = the
-                                    # firmware design value (safe for U2+, which clocks
-                                    # it correctly). A unit's real clock can differ: if
-                                    # sampler audio drifts vs the video over minutes,
-                                    # calibrate per-unit. scripts/diags/sampler_clock_calib.py
-                                    # gives a starting estimate; then tune by EAR against a
-                                    # video — beep drifts AHEAD of the flash: raise this;
-                                    # BEHIND: lower it (~6000 Hz per 0.1%). Ear-tuned to
-                                    # 6155000 on one U64-II (the design value ran ~2% slow).
+sampler_clock_hz = 6160000          # sampler reference clock (Hz). Default is the
+                                    # MEASURED effective clock of the shipping U64 firmware
+                                    # (the FPGA runs ~1.44% slow vs the 6250000 Hz design
+                                    # nominal). It's a firmware property, same across U64
+                                    # units, so it's baked in — no per-unit calibration.
+                                    # If a firmware update fixes the clock (or on hardware
+                                    # that clocks it correctly), set 6250000. Re-measure
+                                    # with scripts/diags/sampler_av_align_calib.py.
 mic_sensitivity = 1.5
 noise_gate = 0.05
 dither = false                      # TPDF dither pre-quantize. false (default
