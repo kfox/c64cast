@@ -532,6 +532,20 @@ class LayoutHelpersTest(unittest.TestCase):
         center_idx = line.find("MID")
         self.assertGreaterEqual(center_idx, left_end + 1)
 
+    def test_mirror_glyph_h_reverses_row_bits(self):
+        # Horizontally mirroring a glyph reverses the bit order of each row
+        # byte — turning the ROM left-arrow into a right-arrow. A single set
+        # MSB maps to a single set LSB and vice-versa; a palindromic row is
+        # unchanged; mirroring twice is the identity.
+        from c64cast.voice_scope import _mirror_glyph_h
+
+        glyph = bytes([0b10000000, 0b00000001, 0b00011000, 0b11110000, 0, 0, 0, 0])
+        mirrored = _mirror_glyph_h(glyph)
+        self.assertEqual(
+            mirrored, bytes([0b00000001, 0b10000000, 0b00011000, 0b00001111, 0, 0, 0, 0])
+        )
+        self.assertEqual(_mirror_glyph_h(mirrored), glyph)
+
 
 # ---------------------------------------------------------------------------
 # WaveformScene
@@ -828,22 +842,23 @@ class WaveformSceneTest(unittest.TestCase):
         finally:
             scene.teardown()
 
-    def test_cycle_style_repaints_title_row_hires(self):
-        # SHIFT-cycling the subtune must re-push the title row so the
-        # displayed song number reflects the new subtune.
+    def test_cycle_style_repaints_metadata_row_hires(self):
+        # SHIFT-cycling the subtune must re-push the metadata row so the
+        # displayed song number reflects the new subtune (the song number
+        # lives on the metadata row; the title row stays fixed across subtunes).
         from c64cast.c64 import SCREEN
-        from c64cast.waveform import TITLE_ROW, WaveformScene
+        from c64cast.waveform import META_ROW, WaveformScene
 
         api = FakeAPI()
         scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
         scene.setup()
         try:
-            title_addr = SCREEN.BITMAP + TITLE_ROW * 320
-            before = api.regions[title_addr]
+            meta_addr = SCREEN.BITMAP + META_ROW * 320
+            before = api.regions[meta_addr]
             scene.cycle_style(api)
-            after = api.regions[title_addr]
+            after = api.regions[meta_addr]
             self.assertNotEqual(
-                before, after, "title row bitmap must change when the song number is repainted"
+                before, after, "metadata row bitmap must change when the song number is repainted"
             )
         finally:
             scene.teardown()
@@ -863,13 +878,65 @@ class WaveformSceneTest(unittest.TestCase):
         try:
             api = FakeAPI()
             scene = WaveformScene(api, audio=None, file=wide_path, song=3, duration_s=10.0)
-            line, song_col = scene._build_title_line()
-            # The song number must appear as "03" (zero-padded), not "3".
-            self.assertEqual(line[song_col : song_col + 2], "03")
-            # And the full "(SONG 03/11)" must be present in the line.
-            self.assertIn("(SONG 03/11)", line)
+            line = scene._build_metadata_line()
+            # The song number must appear as "SONG 03/11" (zero-padded), not "3".
+            self.assertIn("SONG 03/11", line)
         finally:
             os.unlink(wide_path)
+
+    def test_title_line_is_name_and_composer(self):
+        # The title row carries the song title (left) and composer (right),
+        # with no song number (that moved to the metadata row).
+        from c64cast.waveform import WaveformScene
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        line = scene._build_title_line()
+        self.assertEqual(len(line), 40)
+        self.assertTrue(line.startswith("TEST"))
+        self.assertTrue(line.rstrip().endswith("AUTHOR"))
+        self.assertNotIn("SONG", line)
+
+    def test_clock_display_matches_system_no_arrow(self):
+        # A SID composed for NTSC, played on an NTSC system, shows the native
+        # standard alone (no mismatch arrow).
+        from c64cast.waveform import _SYSTEM_MISMATCH_ARROW, WaveformScene
+
+        # flags: clock NTSC (bits 2-3 = 10), model 8580 (bits 4-5 = 10) → 0x28.
+        hdr = _make_sid_header(flags=0x0028)
+        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
+            f.write(hdr)
+            f.write(bytes(2048))
+            path = f.name
+        try:
+            api = FakeAPI()
+            scene = WaveformScene(
+                api, audio=None, file=path, song=1, duration_s=10.0, system="NTSC"
+            )
+            self.assertEqual(scene._build_clock_display(), "NTSC 8580")
+            self.assertNotIn(_SYSTEM_MISMATCH_ARROW, scene._build_clock_display())
+        finally:
+            os.unlink(path)
+
+    def test_clock_display_shows_arrow_on_system_mismatch(self):
+        # A PAL-composed SID played on an NTSC system shows "PAL<arrow>NTSC" so
+        # the mismatch is visible; the arrow is the mirror-glyph sentinel.
+        from c64cast.waveform import _SYSTEM_MISMATCH_ARROW, WaveformScene
+
+        # flags: clock PAL (bits 2-3 = 01), model 6581 (bits 4-5 = 01) → 0x14.
+        hdr = _make_sid_header(flags=0x0014)
+        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
+            f.write(hdr)
+            f.write(bytes(2048))
+            path = f.name
+        try:
+            api = FakeAPI()
+            scene = WaveformScene(
+                api, audio=None, file=path, song=1, duration_s=10.0, system="NTSC"
+            )
+            self.assertEqual(scene._build_clock_display(), f"PAL{_SYSTEM_MISMATCH_ARROW}NTSC 6581")
+        finally:
+            os.unlink(path)
 
     def test_invalid_color_mode_raises(self):
         from c64cast.waveform import WaveformScene

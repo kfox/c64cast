@@ -14,9 +14,12 @@ per-voice state and emits the per-frame oscilloscope traces. Audio
 remains U64-native; the host emulator's would-be audio is discarded.
 
 Display is 320×200 hires bitmap. Three strips of 56 rows each; one
-pixel per column per voice. Bottom 24 rows carry two text lines (title
-+ composer; copyright + SID chip + clock) rendered directly into the
-bitmap from the C64 character ROM — see TITLE_ROW / META_ROW.
+pixel per column per voice. Bottom 24 rows carry two text lines — the
+title row (song title + composer) and the metadata row ("SONG xx/yy" +
+copyright, then the SID's clock + chip, e.g. "PAL 8580"; a clock that
+differs from the current playback system shows as "PAL→NTSC") — rendered
+directly into the bitmap from the C64 character ROM (see TITLE_ROW /
+META_ROW).
 
 Coloring:
   * ``per_voice``    — each voice gets a fixed color from `voice_colors`.
@@ -77,25 +80,33 @@ from .voice_scope import (
     _PERSISTENCE_RANDOM_CHOICES,  # noqa: F401  (re-exported)
     BITMAP_STRIPS,  # noqa: F401  (re-exported)
     BITMAP_W,  # noqa: F401  (re-exported)
+    CELL_PX,
     D018_HIRES_BITMAP,
+    LEFT_ARROW_SCREEN_CODE,
     META_ROW,
     METADATA_TEXT_COLOR,
     PERSISTENCE_NAMES,  # noqa: F401  (re-exported)
     RANDOM_PERSISTENCE,
-    SCREEN_W_CHARS,
     TIME_BASE_NAMES,  # noqa: F401  (re-exported)
     TIME_BASE_WALLCLOCK,
     TITLE_ROW,
     TITLE_TEXT_COLOR,
     VoiceScopeRenderer,
-    _layout_lcr,
+    _layout_lcr,  # noqa: F401  (re-exported; tests import from this module)
     _layout_lr,
+    _mirror_glyph_h,
 )
 
 if TYPE_CHECKING:
     from .songlengths import LengthsDB
 
 log = logging.getLogger(__name__)
+
+# Placeholder char embedded in the metadata line at the system-mismatch arrow
+# position. Never appears in real SID text (title/composer/copyright are
+# printable), so _paint_metadata_row can swap it for the mirrored right-arrow
+# glyph without colliding with genuine content.
+_SYSTEM_MISMATCH_ARROW = "\x01"
 
 # Bank 1 display addresses. The audio ring at $4000-$5FFF is dormant during a
 # waveform scene (the SID plays on the real chip; setup() stops the ring), so
@@ -395,6 +406,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # per-tune from the host emulator in _resolve_poll_rate(). An explicit
         # reg_poll_hz pins the rate and disables auto-detection.
         self._user_reg_poll_hz = reg_poll_hz
+        # Current playback system's video standard ("PAL"/"NTSC"), surfaced in
+        # the metadata row alongside the SID's composed-for standard so a
+        # mismatch (e.g. a PAL tune on this NTSC machine) is visible.
+        self._system = "PAL" if system.upper() == "PAL" else "NTSC"
         self._video_hz = 50.0 if system.upper() == "PAL" else 60.0
         # Host-emu clock anchor. The poll thread derives its PLAY-tick count
         # from wall-clock elapsed since the real SID started (set in setup()
@@ -414,12 +429,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # hold a frozen flat scope for the rest of duration_s.
         self._ever_sounded = False
         self._silence_since: float | None = None
-
-        # Cell column where the song number's first digit lands in the title
-        # row — recomputed each time the title row is rebuilt, since title-
-        # truncation rules can move the number's position. (self._glyphs is
-        # initialized by _init_scope_knobs and loaded by _apply_vic_hires_bank.)
-        self._song_num_col: int = 0
 
         # Display location (VIC bank), resolved per-tune in setup() by
         # _choose_display_layout and re-resolved per-subtune in cycle_style().
@@ -1078,8 +1087,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # 2-11 → bank 1). cue_song_reinit doesn't touch VIC, so we move
         # $DD00/$D018, clear the new bank, and repaint via _apply_display_bank.
         # When the bank is unchanged (or no renderable candidate was found),
-        # just repaint the title row so the song number updates — the delta
-        # cache is still valid (bitmap + screen RAM weren't disturbed).
+        # just repaint the metadata row so the song number updates — the delta
+        # cache is still valid (bitmap + screen RAM weren't disturbed). The
+        # title row (name/composer) is identical across subtunes, so it isn't
+        # touched.
         if chosen_layout is not None and chosen_layout != (
             self._screen_base,
             self._bitmap_base,
@@ -1099,7 +1110,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.api.invalidate_cache()
             self._apply_display_bank()
         else:
-            self._paint_title_row()
+            self._paint_metadata_row()
 
         return f"song {self.song}/{n}"
 
@@ -1291,44 +1302,43 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
     # ---- hires text rows ---------------------------------------------------
 
-    def _build_title_line(self) -> tuple[str, int]:
-        """Return (40-char title line, cell column of song-number's first
-        digit). Song number is always zero-padded to the width of
-        num_songs (so "03/11" not "3/11") — keeps the SHIFT-update window
-        a constant width and column regardless of which subtune is current."""
+    def _build_title_line(self) -> str:
+        """Return the 40-char title row: song title left-justified, composer
+        right-justified. The song number lives on the metadata row now (see
+        _build_metadata_line), so this row is stable across subtune switches."""
         name = (self.header.name.strip() or os.path.basename(self._sid_file)).upper()
         author = self.header.author.strip().upper() or "?"
-        w = self._song_num_width
-        # The space + "(SONG " prefix is included in the suffix so the
-        # song-number column is derivable from len(left) + len(prefix).
-        prefix = " (SONG "
-        suffix_after_num = f"/{self.header.num_songs})"
-        # Reserve right-side budget for the composer + the always-present
-        # song-suffix. Whatever's left goes to the name.
-        max_author = 18
-        if len(author) > max_author:
-            author = author[:max_author]
-        fixed_right_w = len(prefix) + w + len(suffix_after_num) + len(author) + 1
-        max_name = SCREEN_W_CHARS - fixed_right_w
-        if len(name) > max_name:
-            name = name[: max(0, max_name)]
-        song_str = f"{self.song:0{w}d}"
-        left = f"{name}{prefix}{song_str}{suffix_after_num}"
-        line = _layout_lr(left, author)
-        # song_num_col is where the first digit lands in the final line
-        # (left starts at column 0, name + prefix precede the number).
-        song_col = len(name) + len(prefix)
-        return line, song_col
+        return _layout_lr(name, author)
+
+    def _build_clock_display(self) -> str:
+        """Return the right-justified metadata field: the SID's composed-for
+        video standard + chip (e.g. "PAL 8580"). When the SID targets one
+        definite standard that differs from the current playback system, show
+        the mismatch as "native→system" (e.g. "PAL→NTSC 8580") — the arrow is a
+        mirrored left-arrow glyph, placed by _paint_metadata_row. Ambiguous
+        ("PAL+NTSC"), unknown, or matching standards show the native value
+        alone."""
+        native = (self.header.clock or "").upper()
+        chip = self.header.sid_model or "?"
+        if native in ("PAL", "NTSC") and native != self._system:
+            clock = f"{native}{_SYSTEM_MISMATCH_ARROW}{self._system}"
+        else:
+            clock = native or "?"
+        return f"{clock} {chip}"
 
     def _build_metadata_line(self) -> str:
+        """Return the 40-char metadata row: "SONG xx/yy" + copyright left-
+        justified, clock + chip right-justified. The song number is zero-padded
+        to the width of num_songs (so "01/11" not "1/11") — keeps the SHIFT-
+        update window a constant width regardless of which subtune is current."""
+        w = self._song_num_width
+        song_str = f"{self.song:0{w}d}"
         copyright_str = (self.header.released.strip() or "?").upper()
-        chip = self.header.sid_model or "?"
-        clock = self.header.clock or "?"
-        return _layout_lcr(copyright_str, chip, clock)
+        left = f"SONG {song_str}/{self.header.num_songs}  {copyright_str}"
+        return _layout_lr(left, self._build_clock_display())
 
     def _paint_title_row(self) -> None:
-        line, song_col = self._build_title_line()
-        self._song_num_col = song_col
+        line = self._build_title_line()
         fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
         self._paint_text_row(
             TITLE_ROW, line, fg, RegionID.WAVE_TITLE_BITMAP, RegionID.WAVE_TITLE_SCREEN
@@ -1337,6 +1347,21 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _paint_metadata_row(self) -> None:
         line = self._build_metadata_line()
         fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
+        # The mismatch arrow is a right-arrow synthesized by horizontally
+        # mirroring the ROM left-arrow (← screen code $1F) — the charset has no
+        # native → cell. Only build the override when the sentinel is present.
+        glyph_overrides: dict[str, bytes] | None = None
+        if _SYSTEM_MISMATCH_ARROW in line:
+            assert self._glyphs is not None
+            left_arrow = self._glyphs[
+                LEFT_ARROW_SCREEN_CODE * CELL_PX : (LEFT_ARROW_SCREEN_CODE + 1) * CELL_PX
+            ]
+            glyph_overrides = {_SYSTEM_MISMATCH_ARROW: _mirror_glyph_h(left_arrow)}
         self._paint_text_row(
-            META_ROW, line, fg, RegionID.WAVE_META_BITMAP, RegionID.WAVE_META_SCREEN
+            META_ROW,
+            line,
+            fg,
+            RegionID.WAVE_META_BITMAP,
+            RegionID.WAVE_META_SCREEN,
+            glyph_overrides=glyph_overrides,
         )
