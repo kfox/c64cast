@@ -478,16 +478,42 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
                     )
                     out.extend(_probe_reu_unavailable(name, cfg, api))
             elif status is None:
-                out.append(
-                    Diagnostic(
-                        level="warn",
-                        category="connectivity",
-                        subject=name,
-                        message=f"DMA reachable at {url} but REST probe failed",
-                        hint="REST is only used for reads + runners; writes "
-                        "still work via DMA. Check Command Interface toggle.",
+                wants_runner, runner_reasons = _wants_rest_runner(cfg)
+                if wants_runner:
+                    # SID playback + .prg/.crt launch start via the REST
+                    # run_prg endpoint, so a dead REST link means these scenes
+                    # cannot run at all — an error, not a warning.
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="connectivity",
+                            subject=name,
+                            message=(
+                                f"DMA reachable at {url} but REST probe failed "
+                                f"— scenes that launch a program cannot start "
+                                f"({', '.join(runner_reasons)})"
+                            ),
+                            hint="The SID player and .prg/.crt launcher use the "
+                            "Ultimate's REST run_prg endpoint. Enable the "
+                            "Ultimate's web/remote-control service (F2 -> "
+                            "Network Settings), or use only DMA-rendered scenes "
+                            "(video/slideshow/webcam/blank).",
+                        )
                     )
-                )
+                else:
+                    out.append(
+                        Diagnostic(
+                            level="warn",
+                            category="connectivity",
+                            subject=name,
+                            message=f"DMA reachable at {url} but REST probe failed",
+                            hint="REST powers reads (keyboard control), machine "
+                            "reset, and program launch; writes still work via "
+                            "DMA so DMA-rendered scenes play. Enable the "
+                            "Ultimate's web/remote-control service (F2 -> "
+                            "Network Settings) if you need those.",
+                        )
+                    )
             else:
                 out.append(
                     Diagnostic(
@@ -905,6 +931,38 @@ def _wants_sid_audio(cfg: object) -> tuple[bool, list[str]]:
         reasons.append("waveform (SID oscilloscope) scene(s)")
     if "midi" in types:
         reasons.append("midi scene(s)")
+    return bool(reasons), reasons
+
+
+def _wants_rest_runner(cfg: object) -> tuple[bool, list[str]]:
+    """Return (wants, reasons). True when the config has a scene that STARTS
+    via the Ultimate's REST `run_prg`/`run_crt` endpoint — SID playback
+    (`run_sid_player`) or a native .prg/.crt launcher (`launch_program`).
+    Those scenes cannot start at all when REST is down, so on the Ultimate a
+    failed REST probe with any of them present is an error, not a warning.
+
+    Video / slideshow / webcam / blank / midi / generative-without-SID scenes
+    paint entirely over DMA (writes) and keep working without REST, so they do
+    NOT escalate the probe failure. (`reset()` is also REST-only on the
+    Ultimate, but it is caught + non-fatal — the picture still paints — so it
+    is not on its own grounds for an error.) TR is handled on its own branch;
+    its SID player + launcher use pure-DMA vector-swap / LaunchFile, not REST.
+    """
+    reasons: list[str] = []
+    # Duck-type to avoid a circular doctor<->config import (see _wants_reu).
+    scenes = getattr(cfg, "scenes", None) or []
+    types = {getattr(s, "type", None) for s in scenes}
+    if "waveform" in types:
+        reasons.append("waveform (SID player via run_prg) scene(s)")
+    if "launcher" in types:
+        reasons.append("launcher (.prg/.crt via run_prg) scene(s)")
+    # A generative SourceScene with audio_source = "sid" kicks run_sid_player
+    # the same way a waveform scene does (see scenes.py SourceScene.setup).
+    if any(
+        getattr(s, "type", None) == "generative" and getattr(s, "audio_source", None) == "sid"
+        for s in scenes
+    ):
+        reasons.append("generative scene with audio_source = 'sid' (run_prg)")
     return bool(reasons), reasons
 
 
