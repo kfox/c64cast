@@ -159,6 +159,17 @@ _PERSISTENCE_RANDOM_CHOICES = ("short", "medium", "long")
 # the on-C64 menu). Aliased to the historical private names so the rest of this
 # module — and its byte-for-byte oscilloscope output — is unchanged.
 
+# Screen code of the C64 left-arrow (←) glyph in the uppercase charset (ASCII
+# "_" / PETSCII $5F maps here). Horizontally mirroring it yields a right-arrow
+# (→) — a glyph the C64 charset has no native cell for; see _mirror_glyph_h.
+LEFT_ARROW_SCREEN_CODE = 0x1F
+
+
+def _mirror_glyph_h(glyph: bytes) -> bytes:
+    """Horizontally flip an 8-byte cell glyph by bit-reversing each row byte.
+    Used to synthesize a right-arrow from the ROM's left-arrow glyph."""
+    return bytes(int(f"{b:08b}"[::-1], 2) for b in glyph)
+
 
 def _layout_lr(left: str, right: str, width: int = SCREEN_W_CHARS) -> str:
     """Build a width-char line: `left` left-justified, `right` right-justified,
@@ -449,12 +460,24 @@ class VoiceScopeRenderer:
     # ---- hires text rows ---------------------------------------------------
 
     def _paint_text_row(
-        self, cell_row: int, text: str, fg: int, bitmap_region_id: int, screen_region_id: int
+        self,
+        cell_row: int,
+        text: str,
+        fg: int,
+        bitmap_region_id: int,
+        screen_region_id: int,
+        glyph_overrides: dict[str, bytes] | None = None,
     ) -> None:
         """Render a 40-char line into one bitmap cell-row + matching FG
         color into screen RAM. Caller supplies the two region IDs so the
         delta cache absorbs unchanged columns on re-paint (a SHIFT-driven
-        title repaint typically only changes ~2 digit cells, ~16 bytes)."""
+        title repaint typically only changes ~2 digit cells, ~16 bytes).
+
+        ``glyph_overrides`` maps a character to an explicit 8-byte cell glyph,
+        bypassing the ROM lookup for that char — used to place synthesized
+        glyphs (e.g. a mirrored right-arrow) the charset has no native cell for.
+        Defaults to None → byte-identical to the ROM-only path for all other
+        callers."""
         assert self._glyphs is not None
         assert len(text) == SCREEN_W_CHARS, (
             f"text row must be exactly {SCREEN_W_CHARS} chars, got {len(text)}"
@@ -462,10 +485,13 @@ class VoiceScopeRenderer:
         glyphs = self._glyphs
         bitmap_bytes = bytearray(SCREEN_W_CHARS * CELL_PX)
         for col, ch in enumerate(text):
-            sc = _ascii_to_screen_code(ch)
-            bitmap_bytes[col * CELL_PX : (col + 1) * CELL_PX] = glyphs[
-                sc * CELL_PX : (sc + 1) * CELL_PX
-            ]
+            override = glyph_overrides.get(ch) if glyph_overrides else None
+            if override is not None:
+                cell = override
+            else:
+                sc = _ascii_to_screen_code(ch)
+                cell = glyphs[sc * CELL_PX : (sc + 1) * CELL_PX]
+            bitmap_bytes[col * CELL_PX : (col + 1) * CELL_PX] = cell
         bitmap_addr = self._bitmap_base + cell_row * BITMAP_CELL_ROW_BYTES
         self.api.write_region(bitmap_addr, bytes(bitmap_bytes), region_id=bitmap_region_id)
         fg_byte = (fg & COLOR_NIBBLE_MASK) << 4  # FG in high nibble, BG = 0
