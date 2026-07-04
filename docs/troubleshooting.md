@@ -158,6 +158,17 @@ You didn't install the `video` extra
 but PyAV is not installed; skipping videos" and continues
 without videos.
 
+### "A streaming/YouTube video stops partway with `OSError: [Errno 5] Input/output error`"
+
+The demuxer logged `demux <url> crashed` with an `Input/output error`
+traceback out of `container.demux()`. A yt-dlp-resolved YouTube URL is a
+single `googlevideo` CDN stream that the CDN throttles and periodically
+drops mid-playback. `AVFileSource` now opens remote (`http(s)://`) inputs
+with FFmpeg's reconnect options, so a transient drop resumes automatically
+instead of crashing. If a stream still fails to the end, the URL may have
+expired (yt-dlp URLs carry an `expire=` timestamp) — re-run to re-resolve
+it, or play a local copy of the file.
+
 ### "`waveform` scene plays for 180 s and stops, but the tune is longer"
 
 Default duration is 180 s when no SongLengths DB is configured. Two
