@@ -14,6 +14,7 @@ from c64cast.video import (
     _build_atempo_graph,
     _compute_normalization_gain,
     _ensure_pyav,
+    _is_remote_url,
     _plan_decode_size,
 )
 
@@ -27,6 +28,17 @@ def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> A
     src._lock = threading.Lock()
     src._eof = eof
     return src
+
+
+class RemoteUrlTest(unittest.TestCase):
+    def test_http_and_https_are_remote(self):
+        self.assertTrue(_is_remote_url("http://example.com/a.mp4"))
+        self.assertTrue(_is_remote_url("https://rr4.googlevideo.com/videoplayback?x=1"))
+
+    def test_local_paths_are_not_remote(self):
+        self.assertFalse(_is_remote_url("/Users/kfox/assets/videos/clip.mp4"))
+        self.assertFalse(_is_remote_url("assets/videos/clip.webm"))
+        self.assertFalse(_is_remote_url("file:///tmp/clip.mp4"))
 
 
 class NormalizationGainTest(unittest.TestCase):

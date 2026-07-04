@@ -46,6 +46,40 @@ NORMALIZATION_MAX_GAIN = 16.0
 # * 0.5 / 7.5. Pre-gain gate threshold = NEUTRAL_BAND_INT16 / gain.
 NEUTRAL_BAND_INT16 = INT16_FULL_SCALE * 0.5 / DAC_VOLUME_SCALE
 
+# FFmpeg http/https protocol reconnect options. A resolved YouTube stream is a
+# single progressive googlevideo CDN URL; the CDN throttles (see the `cps=` and
+# `ratebypass` query params) and drops the connection mid-stream, which surfaces
+# as `OSError: [Errno 5] Input/output error` out of `container.demux()` and
+# kills playback. These make FFmpeg transparently re-establish the HTTP
+# connection and resume from the current byte offset instead of erroring out:
+#   reconnect                  reconnect on connection close / EOF
+#   reconnect_streamed         reconnect for non-seekable (streamed) inputs
+#   reconnect_on_network_error reconnect on any network error mid-stream
+#   reconnect_delay_max        cap the exponential backoff (seconds)
+# Applied only to remote URLs (see `_av_open`) — harmless for local files but
+# these are http-protocol-only options, so we scope them to avoid FFmpeg
+# warning about unrecognized options on a file:// / plain-path input.
+_HTTP_RECONNECT_OPTIONS = {
+    "reconnect": "1",
+    "reconnect_streamed": "1",
+    "reconnect_on_network_error": "1",
+    "reconnect_delay_max": "5",
+}
+
+
+def _is_remote_url(path: str) -> bool:
+    """True for http(s) inputs, which get the FFmpeg reconnect options."""
+    return path.startswith(("http://", "https://"))
+
+
+def _av_open(path: str):
+    """`av.open` wrapper that injects the HTTP reconnect options for remote
+    URLs so a transient CDN drop mid-stream resumes instead of crashing the
+    demuxer. Local paths open unchanged."""
+    if _is_remote_url(path):
+        return av.open(path, options=_HTTP_RECONNECT_OPTIONS)
+    return av.open(path)
+
 
 def _compute_normalization_gain(
     peak_int16: int,
@@ -195,7 +229,7 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     """
     if not _ensure_pyav():
         raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
-    container = av.open(path)
+    container = _av_open(path)
     try:
         if not container.streams.audio:
             raise RuntimeError(f"no audio stream in {path}")
@@ -239,7 +273,7 @@ def _scan_video_samples(
     if not accumulators or not _ensure_pyav():
         return False
     try:
-        container = av.open(path)
+        container = _av_open(path)
         try:
             v_stream = container.streams.video[0]
             v_stream.thread_type = "AUTO"
@@ -420,7 +454,7 @@ class AVFileSource:
         # can be rebased to a ~0 origin. None until that first frame arrives.
         self._pts_offset: float | None = None
 
-        self.container = av.open(path)
+        self.container = _av_open(path)
         self.v_stream = self.container.streams.video[0]
         self.a_stream = self.container.streams.audio[0] if self.container.streams.audio else None
 
@@ -524,7 +558,7 @@ class AVFileSource:
         its first frame."""
         peak = 0
         try:
-            container = av.open(self.path)
+            container = _av_open(self.path)
             try:
                 a_stream = container.streams.audio[0]
                 # Match the played portion: with a start_s seek, normalize over
