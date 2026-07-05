@@ -225,5 +225,94 @@ class TimingRecipeTest(unittest.TestCase):
         self.assertFalse(u.dropped)
 
 
+class EncodeTest(unittest.TestCase):
+    """The pack side (encode_*), inverse of decode(). The core invariant is the
+    round-trip: decode(encode_registers(regs)) == regs."""
+
+    def test_register_roundtrip(self):
+        # A spread of offsets across voices, filter, and volume — with a value
+        # whose 8th bit exercises the MSB packing (0x1FF & 0xFF = 0xFF).
+        regs = {0x00: 0x34, 0x01: 0x12, 0x05: 0xF0, 0x18: 0x0F, 0x15: 0xAB, 0x16: 0xFF}
+        u = _ok(asid.encode_registers(regs))
+        self.assertEqual(u.command, asid.CMD_REG)
+        self.assertEqual(u.chip_index, 0)
+        self.assertEqual(u.regs, regs)
+        self.assertEqual(u.control_first, {})
+
+    def test_control_register_roundtrip_no_restart(self):
+        # A plain control write (no control_first) must land on the offset and
+        # carry no hard-restart marker.
+        u = _ok(asid.encode_registers({0x04: 0x41}))
+        self.assertEqual(u.regs, {0x04: 0x41})
+        self.assertEqual(u.control_first, {})
+
+    def test_hard_restart_roundtrip(self):
+        # control_first[voice] (gate-off pre-restart) + final gate-on value →
+        # decode surfaces both: regs holds the final, control_first the first.
+        regs = {0x04: 0x41}  # voice 1 final: pulse + gate on
+        u = _ok(asid.encode_registers(regs, control_first={0: 0x40}))  # gate off
+        self.assertEqual(u.regs[0x04], 0x41)
+        self.assertEqual(u.control_first, {0: 0x40})
+
+    def test_multi_sid_chip_index_roundtrip(self):
+        for chip in (1, 2, 16):
+            with self.subTest(chip=chip):
+                u = _ok(asid.encode_registers({0x00: 0x22}, chip_index=chip))
+                self.assertEqual(u.chip_index, chip)
+                self.assertEqual(u.regs, {0x00: 0x22})
+
+    def test_empty_registers_encode_to_zero_masks(self):
+        msg = asid.encode_registers({})
+        # 0x2D, 0x4E, 4 zero mask, 4 zero msb, no data.
+        self.assertEqual(msg, [asid.ASID_MANUFACTURER_ID, asid.CMD_REG, 0, 0, 0, 0, 0, 0, 0, 0])
+        u = _ok(msg)
+        self.assertEqual(u.regs, {})
+
+    def test_fixed_wire_vector(self):
+        # Pin the exact bytes for a single voice-1 freq-lo=0x01 (ASID id 0) write
+        # so an accidental repacking change is caught: id 0 → mask byte0 bit0.
+        self.assertEqual(
+            asid.encode_registers({0x00: 0x01}),
+            [asid.ASID_MANUFACTURER_ID, asid.CMD_REG, 0x01, 0, 0, 0, 0, 0, 0, 0, 0x01],
+        )
+
+    def test_all_registers_roundtrip(self):
+        # Every non-control offset + the three control offsets → a full frame.
+        regs = {off: (off * 7 + 3) & 0xFF for off in range(0x19)}
+        u = _ok(asid.encode_registers(regs))
+        self.assertEqual(u.regs, regs)
+
+    def test_start_stop_roundtrip(self):
+        self.assertTrue(_ok(asid.encode_start()).playing)
+        self.assertFalse(_ok(asid.encode_stop()).playing)
+
+    def test_chars_roundtrip(self):
+        u = _ok(asid.encode_chars("HELLO 64"))
+        self.assertEqual(u.text, "HELLO 64")
+
+    def test_chars_non_ascii_becomes_question(self):
+        u = _ok(asid.encode_chars("café"))
+        self.assertEqual(u.text, "caf?")
+
+    def test_speed_roundtrip(self):
+        u = _ok(asid.encode_speed("NTSC", multiplier=4, frame_delta_us=20000))
+        self.assertEqual(u.system, "NTSC")
+        self.assertEqual(u.speed_multiplier, 4)
+        self.assertEqual(u.frame_delta_us, 20000)
+
+    def test_speed_pal_no_frame_delta(self):
+        u = _ok(asid.encode_speed("PAL"))
+        self.assertEqual(u.system, "PAL")
+        self.assertEqual(u.speed_multiplier, 1)
+        # No frame-delta bytes sent → decoder leaves it unset.
+        self.assertIsNone(u.frame_delta_us)
+
+    def test_sid_type_roundtrip(self):
+        u = _ok(asid.encode_sid_type(2, "8580"))
+        self.assertEqual(u.chip_index, 2)
+        self.assertEqual(u.chip_type, "8580")
+        self.assertEqual(_ok(asid.encode_sid_type(0, "6581")).chip_type, "6581")
+
+
 if __name__ == "__main__":
     unittest.main()

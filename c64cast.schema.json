@@ -1585,6 +1585,13 @@
             "description": "SID subtune index to play (0 = the SID's default; 1-based otherwise). For generative scenes, only with audio_source = sid.",
             "default": 0
           },
+          "asid_broadcast_port": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Act as an ASID host: emit ASID MIDI SysEx (packed SID register writes) out this MIDI output port so external ASID clients (TherapSID, SidStation, USBSID-Pico, DeepSID, another c64cast) play the tune in sync with the on-screen scope. Value is a case-insensitive port-name substring; 'default' or unset-with-broadcast-on uses the first available output. Unset = no broadcast. Needs the `midi` extra."
+          },
           "color_mode": {
             "type": "string",
             "description": "Oscilloscope coloring: fixed per voice, or by current waveform type.",

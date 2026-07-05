@@ -6,10 +6,13 @@ synthesizes the sound. Each message is ``F0 2D <cmd> <payload...> F7``; mido
 hands us the bytes between ``F0`` and ``F7`` as ``msg.data``, i.e.
 ``(0x2D, cmd, *payload)``.
 
-This module is a **pure** decoder — no mido, no hardware — so it's trivially
-unit-testable: feed a byte sequence, assert the resulting register map. The
-:class:`~c64cast.asid_scene.AsidScene` owns the MIDI port, the register shadow,
-the DMA writes, and the oscilloscope.
+This module is a **pure** codec — no mido, no hardware — so it's trivially
+unit-testable: feed a byte sequence, assert the resulting register map, or pack
+a register map back into bytes. :func:`decode` is the receive side (used by
+:class:`~c64cast.asid_scene.AsidScene`, which owns the MIDI port, the register
+shadow, the DMA writes, and the oscilloscope); the ``encode_*`` functions are
+the send side (used by :class:`~c64cast.asid_broadcast.AsidBroadcaster` to drive
+external ASID clients), and ``decode(encode_registers(regs)) == regs`` round-trips.
 
 Honored: ``0x4E`` register data (the workhorse — SID chip 0), the multi-SID
 streams ``0x50``-``0x5F`` (SID2..SID17, same packed format → chips 1..16),
@@ -74,6 +77,22 @@ _ASID_REG_TO_OFFSET: tuple[int, ...] = (
 # Voice control-register ID ranges within _ASID_REG_TO_OFFSET.
 _CTRL_FIRST_BASE = 22  # ids 22,23,24 → voice 0,1,2 (first write)
 _CTRL_SECOND_BASE = 25  # ids 25,26,27 → voice 0,1,2 (second write)
+
+# Encoder maps (inverse of _ASID_REG_TO_OFFSET). The 22 non-control registers
+# (ids 0-21) each map to exactly one SID offset, so the inverse is a clean dict.
+# The three control registers are ambiguous (offset → id 22-24 first write AND
+# id 25-27 second write), so they're handled separately via _CONTROL_OFFSET_TO_VOICE.
+_OFFSET_TO_ASID_REG: dict[int, int] = {
+    off: rid for rid, off in enumerate(_ASID_REG_TO_OFFSET[:_CTRL_FIRST_BASE])
+}
+# Voice control-register offset ($D4xx - $D400) → voice index, for the
+# 22-24 (first) / 25-27 (second) ASID id pairs.
+_CONTROL_OFFSET_TO_VOICE: dict[int, int] = {0x04: 0, 0x0B: 1, 0x12: 2}
+
+# SID voice gate bit (control register bit 0). Used to synthesize the first
+# (gate-off) control write for a hard restart when only a boolean retrigger
+# flag is available (the host emulator collapses the intra-tick gate pulse).
+_SID_GATE = 0x01
 
 
 @dataclass
@@ -229,3 +248,115 @@ def _decode_sid_type(payload: Sequence[int]) -> AsidUpdate:
         update.chip_index = payload[0]
         update.chip_type = "8580" if (payload[1] & 0x01) else "6581"
     return update
+
+
+# ---------------------------------------------------------------------------
+# Encoder — the *pack* side, inverse of decode(). Pure (no mido/hardware): each
+# helper returns the SysEx inner bytes (the F0..F7 payload starting with the
+# 0x2D manufacturer id) — exactly what decode() consumes and what
+# mido.Message('sysex', data=...) wants. c64cast uses this to act as an ASID
+# *host* (see :mod:`c64cast.asid_broadcast`): drive external ASID clients from
+# the frame-by-frame $D4xx register image WaveformScene already reconstructs.
+# ---------------------------------------------------------------------------
+
+
+def encode_registers(
+    regs: dict[int, int],
+    *,
+    chip_index: int = 0,
+    control_first: dict[int, int] | None = None,
+) -> list[int]:
+    """Pack a set of SID register writes into a ``0x4E`` (chip 0) or
+    ``0x50 + (chip_index - 1)`` (extra chips) SysEx payload — the inverse of
+    :func:`_decode_registers`.
+
+    ``regs`` maps a SID register offset (``0x00``-``0x18``, i.e. ``addr - $D400``)
+    to its 8-bit value. Non-control offsets map to a single ASID register id
+    (0-21). A control register (offsets ``0x04``/``0x0B``/``0x12``) carries its
+    final value on the *second-write* id (25-27); when ``control_first`` names
+    that voice, its (gate-off, pre-restart) value is additionally emitted on the
+    *first-write* id (22-24) so a receiver replays the hard-restart pulse.
+
+    Registers are packed in ascending ASID-id order: 4 mask bytes flag which
+    ids are present (id ``i*7 + b`` = mask byte ``i`` bit ``b``), 4 msb bytes
+    carry each value's 8th bit, then the low 7 bits of each present value.
+    Returns ``[0x2D, cmd, *mask4, *msb4, *reg_data]``; an empty ``regs`` yields
+    just the (all-zero) mask/msb bytes, which the broadcaster skips.
+    """
+    ids: dict[int, int] = {}
+    for offset, value in regs.items():
+        voice = _CONTROL_OFFSET_TO_VOICE.get(offset)
+        if voice is not None:
+            # Final control value → second-write id; a differing pre-restart
+            # value → first-write id (surfaced by decode() as control_first).
+            ids[_CTRL_SECOND_BASE + voice] = value & 0xFF
+            if control_first is not None and voice in control_first:
+                ids[_CTRL_FIRST_BASE + voice] = control_first[voice] & 0xFF
+        else:
+            rid = _OFFSET_TO_ASID_REG.get(offset)
+            if rid is not None:
+                ids[rid] = value & 0xFF
+    mask = [0, 0, 0, 0]
+    msb = [0, 0, 0, 0]
+    reg_data: list[int] = []
+    for rid in sorted(ids):
+        byte_idx, bit = divmod(rid, 7)
+        mask[byte_idx] |= 1 << bit
+        value = ids[rid]
+        msb[byte_idx] |= ((value >> 7) & 1) << bit
+        reg_data.append(value & 0x7F)
+    cmd = CMD_REG if chip_index == 0 else CMD_MULTI_SID_LO + (chip_index - 1)
+    return [ASID_MANUFACTURER_ID, cmd, *mask, *msb, *reg_data]
+
+
+def encode_start() -> list[int]:
+    """0x4C start-playback message."""
+    return [ASID_MANUFACTURER_ID, CMD_START]
+
+
+def encode_stop() -> list[int]:
+    """0x4D stop-playback message."""
+    return [ASID_MANUFACTURER_ID, CMD_STOP]
+
+
+def encode_chars(text: str) -> list[int]:
+    """0x4F display-characters message (7-bit ASCII; non-ASCII → '?')."""
+    return [
+        ASID_MANUFACTURER_ID,
+        CMD_CHARS,
+        *((ord(c) & 0x7F) if ord(c) < 0x80 else ord("?") for c in text),
+    ]
+
+
+def encode_speed(
+    system: str = "PAL",
+    *,
+    multiplier: int = 1,
+    frame_delta_us: int = 0,
+    buffering: bool = False,
+) -> list[int]:
+    """0x31 speed-settings message — inverse of :func:`_decode_speed`.
+
+    ``system`` sets bit 0 (0 = PAL, 1 = NTSC); ``multiplier`` (1..16) → bits 1-4;
+    ``buffering`` → bit 6. A nonzero ``frame_delta_us`` (0..65535) appends the
+    three 7-bit frame-delta bytes; 0 omits them (the client falls back to the
+    multiplier)."""
+    data0 = 1 if system.upper() == "NTSC" else 0
+    data0 |= ((max(1, min(multiplier, 16)) - 1) & 0x0F) << 1
+    if buffering:
+        data0 |= 0x40
+    payload = [data0]
+    if frame_delta_us:
+        fd = max(0, min(int(frame_delta_us), 0xFFFF))
+        payload += [fd & 0x7F, (fd >> 7) & 0x7F, (fd >> 14) & 0x03]
+    return [ASID_MANUFACTURER_ID, CMD_SPEED, *payload]
+
+
+def encode_sid_type(chip_index: int, chip_type: str) -> list[int]:
+    """0x32 SID-type message — inverse of :func:`_decode_sid_type`."""
+    return [
+        ASID_MANUFACTURER_ID,
+        CMD_SID_TYPE,
+        chip_index & 0x7F,
+        1 if str(chip_type) == "8580" else 0,
+    ]

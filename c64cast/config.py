@@ -951,6 +951,18 @@ class SceneCfg:
             "applies_to": ("waveform", "generative"),
         },
     )
+    asid_broadcast_port: str | None = field(
+        default=None,
+        metadata={
+            "help": "Act as an ASID host: emit ASID MIDI SysEx (packed SID "
+            "register writes) out this MIDI output port so external ASID clients "
+            "(TherapSID, SidStation, USBSID-Pico, DeepSID, another c64cast) play "
+            "the tune in sync with the on-screen scope. Value is a case-insensitive "
+            "port-name substring; 'default' or unset-with-broadcast-on uses the "
+            "first available output. Unset = no broadcast. Needs the `midi` extra.",
+            "applies_to": ("waveform",),
+        },
+    )
     color_mode: str = field(
         default="per_voice",
         metadata={
@@ -3294,6 +3306,7 @@ def build_scene(
             persistence=s.persistence,
             scroll_columns=s.scroll_columns,
             songlengths_db=db,
+            broadcast_port=s.asid_broadcast_port,
         )
         if s.name:
             scene.name = s.name

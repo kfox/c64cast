@@ -908,6 +908,11 @@ palette_mode = "grayscale"
 # file = "assets/sids/your-tune.sid"
 # song = 0                              # 0 = SID's default; 1+ = subtune
 # duration_s = 180.0                    # omit if [playlist].songlengths_file is set
+# # ASID host: emit ASID MIDI SysEx out this output port so external ASID
+# # clients (TherapSID, SidStation, USBSID-Pico, DeepSID, another c64cast)
+# # play the tune in sync with the on-screen scope. Substring match; needs
+# # the `midi` extra. Unset = no broadcast.
+# # asid_broadcast_port = "IAC"
 # color_mode = "per_voice"              # per_voice | per_waveform
 # voice_colors = ["cyan", "yellow", "light green"]
 # # target_fps = 30.0                   # default = HALF system rate (30 NTSC / 25 PAL); see docs/caveats.md

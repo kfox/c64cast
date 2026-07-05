@@ -105,6 +105,7 @@ from .voice_scope import (
 )
 
 if TYPE_CHECKING:
+    from .asid_broadcast import AsidBroadcaster
     from .songlengths import LengthsDB
 
 log = logging.getLogger(__name__)
@@ -317,6 +318,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         scroll_columns: int | list[int] = 0,
         reg_poll_hz: float | None = None,
         songlengths_db: LengthsDB | None = None,
+        broadcast_port: str | None = None,
     ):
         """Initialize the scene.
 
@@ -433,6 +435,18 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._sid_start_time = 0.0
         self._ticks_done = 0
         self._resolve_poll_rate()
+
+        # ASID host/broadcast: when a broadcast MIDI port is configured, the
+        # poll thread packs each PLAY tick's $D4xx image into ASID SysEx and
+        # ships it out so external ASID clients play the tune in sync (see
+        # asid_broadcast.py). Constructed up front so a missing `midi` extra
+        # fails fast at scene-build; the port is opened in setup(). None when
+        # broadcasting is off (the common case) — zero overhead in _poll_regs.
+        self._broadcaster: AsidBroadcaster | None = None
+        if broadcast_port is not None:
+            from .asid_broadcast import AsidBroadcaster
+
+            self._broadcaster = AsidBroadcaster(broadcast_port, system=self._system)
 
         self.start_time = 0.0
         # (Per-(voice, chip) last-waveform tracking for per_waveform color
@@ -857,6 +871,33 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._resolve_poll_rate()
         self._poll.start()
 
+        # Announce the tune on the ASID broadcast port (opens it on first call).
+        self._broadcaster_announce()
+
+    def _broadcaster_announce(self) -> None:
+        """(Re)announce the current tune on the ASID broadcast port: start +
+        speed + SID type(s) + now-playing text, and reset the delta baseline so
+        the next frame is a full image. Called from setup() and after a subtune
+        cycle. No-op when broadcasting is off."""
+        if self._broadcaster is None:
+            return
+        # Only chip 0's model is reliably known (PSID header, primary chip); a
+        # combined "6581+8580" or "?" is left unset (client keeps its default).
+        model = self.header.sid_model if self.header.sid_model in ("6581", "8580") else None
+        chip_types: list[str | None] = [None] * self._n_sids
+        if self._n_sids:
+            chip_types[0] = model
+        name = self.header.name.strip() or os.path.splitext(os.path.basename(self._sid_file))[0]
+        author = self.header.author.strip()
+        text = f"{name} / {author}" if author else name
+        try:
+            self._broadcaster.start(
+                frame_rate_hz=self._reg_poll_hz, chip_types=chip_types, text=text
+            )
+        except Exception:
+            log.warning("waveform: ASID broadcast start failed — disabling", exc_info=True)
+            self._broadcaster = None
+
     def _apply_sid_hw_config(self) -> None:
         """Map the U64's SID chips to a multi-SID tune's own $Dxxx addresses so
         every chip is audible on the real hardware. Snapshots the prior config
@@ -908,6 +949,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def teardown(self):
         super().teardown()
         self._poll.stop()
+        # Stop broadcasting (0x4D + close port) before silencing the SID so a
+        # listening client stops in step. Best-effort; never blocks teardown.
+        if self._broadcaster is not None:
+            try:
+                self._broadcaster.stop()
+            except Exception:
+                log.debug("waveform: ASID broadcast stop failed", exc_info=True)
+            self._broadcaster = None
         self._restore_sid_hw_config()
         # Order: vector first, then silence. If silence happened first,
         # the IRQ could fire between the volume-clear and gate-clears,
@@ -1179,6 +1228,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._resolve_poll_rate()
         self._poll.start()
 
+        # Re-announce on the ASID broadcast port: new subtune → new rate/text
+        # and a fresh full-frame baseline for any listening client.
+        self._broadcaster_announce()
+
         # Re-point the display if the new subtune needs a different VIC bank
         # than the current one (e.g. Times of Lore: song 1 → bank 2, songs
         # 2-11 → bank 1). cue_song_reinit doesn't touch VIC, so we move
@@ -1323,6 +1376,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     emu.update_registers(snapshot, retrigger=self._host_emu.retriggers(bank))
                     emu.advance_envelopes(self._poll_dt)
                 self._reg_buf = self._host_emu.regs(0)
+            # ASID host: ship this PLAY tick's per-chip $D4xx image out the
+            # broadcast port (one frame per tick = the tune's true cadence).
+            # Outside the reg lock — the broadcaster reads its own snapshots.
+            if self._broadcaster is not None:
+                self._broadcaster.send_frame(
+                    [self._host_emu.regs(b) for b in range(self._n_sids)],
+                    retrigger=[self._host_emu.retriggers(b) for b in range(self._n_sids)],
+                )
         self._ticks_done += n
 
     # ---- VIC setup ---------------------------------------------------------
