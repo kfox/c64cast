@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from .c64 import nmi_rate_safety
 from .dac_curves import DAC_CURVE_CHOICES
 from .dsp import DSPParams
+from .palette import resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 
 if TYPE_CHECKING:
@@ -1169,14 +1170,19 @@ class SceneCfg:
             "apply": "live",
         },
     )
-    border: int = field(
-        default=0,
-        metadata={"help": "Border palette index 0..15 (blank scenes).", "applies_to": ("blank",)},
-    )
-    background: int = field(
+    border: int | str = field(
         default=0,
         metadata={
-            "help": "Background palette index 0..15 (blank scenes).",
+            "help": "Border color (blank scenes): a C64 color name (fuzzy + "
+            'case-insensitive, e.g. "light blue") or a palette index 0..15.',
+            "applies_to": ("blank",),
+        },
+    )
+    background: int | str = field(
+        default=0,
+        metadata={
+            "help": "Background color (blank scenes): a C64 color name (fuzzy + "
+            'case-insensitive, e.g. "light blue") or a palette index 0..15.',
             "applies_to": ("blank",),
         },
     )
@@ -1387,20 +1393,14 @@ class ColorCfg:
             "'percell+forced' stop once enabled."
         },
     )
-    force_palette_colors: int = field(
+    force_palette_colors: int | list[int | str] = field(
         default=16,
         metadata={
-            "help": "Number of distinct C64 colors to spread the source across "
-            "when force_palette is on (2..16). Ignored when "
-            "force_palette_indices is set."
-        },
-    )
-    force_palette_indices: list[int] = field(
-        default_factory=list,
-        metadata={
-            "help": "Explicit C64 palette index whitelist (0..15) for "
-            "force_palette; its length sets the color count and overrides "
-            "force_palette_colors. Empty = use all 16 (or the count)."
+            "help": "How force_palette allocates C64 colors: either an int count "
+            "of distinct colors to spread the source across (2..16), OR an "
+            "explicit list of colors to whitelist — each a color name (fuzzy + "
+            'case-insensitive, e.g. "light blue", "lgrn", "blk") or an '
+            "index 0..15. A list's length sets the color count."
         },
     )
 
@@ -1742,22 +1742,37 @@ def _validate_double_buffer(video: VideoCfg) -> None:
 
 
 def _validate_force_palette(color: ColorCfg) -> None:
-    """Range-check the [color].force_palette knobs at load/doctor time so a bad
-    value surfaces before the playlist runs, not mid-stream at pre-scan."""
-    if not (2 <= color.force_palette_colors <= 16):
+    """Range-check + normalize the [color].force_palette_colors knob at
+    load/doctor time so a bad value surfaces before the playlist runs, not
+    mid-stream at pre-scan. A list of color names/indices is resolved and
+    written back as a canonical list[int] (so serialization stays stable)."""
+    fp = color.force_palette_colors
+    if isinstance(fp, list):
+        if not (2 <= len(fp) <= 16):
+            raise ValueError(
+                f"color.force_palette_colors list must have 2..16 entries, got {len(fp)}"
+            )
+        try:
+            color.force_palette_colors = [resolve_color(c) for c in fp]
+        except ValueError as e:
+            raise ValueError(f"color.force_palette_colors: {e}") from e
+    elif isinstance(fp, bool) or not isinstance(fp, int):
         raise ValueError(
-            f"color.force_palette_colors must be in 2..16, got {color.force_palette_colors}"
+            f"color.force_palette_colors must be an int (2..16) or a list of colors, got {fp!r}"
         )
-    idx = color.force_palette_indices
-    if idx:
-        if not (2 <= len(idx) <= 16):
-            raise ValueError(f"color.force_palette_indices must list 2..16 entries, got {len(idx)}")
-        for i in idx:
-            if not (0 <= int(i) <= 15):
-                raise ValueError(
-                    f"color.force_palette_indices entries must be C64 palette "
-                    f"indices 0..15, got {i}"
-                )
+    elif not (2 <= fp <= 16):
+        raise ValueError(f"color.force_palette_colors must be in 2..16, got {fp}")
+
+
+def resolved_force_palette(color: ColorCfg) -> tuple[int, list[int] | None]:
+    """Derive the (n_colors, indices) pair the color-map accumulator wants from
+    the unified force_palette_colors field (validated/normalized by
+    _validate_force_palette): a list -> (len, list); an int -> (count, None)."""
+    fp = color.force_palette_colors
+    if isinstance(fp, list):
+        idx = [int(c) for c in fp]
+        return len(idx), idx
+    return int(fp), None
 
 
 def load(path: str | None) -> Config:
@@ -2304,8 +2319,8 @@ def resolve_audio_backend(
 def _build_display_mode(
     name: str,
     palette_mode: str = "percell",
-    border: int = 0,
-    background: int = 0,
+    border: int | str = 0,
+    background: int | str = 0,
     style: str = "default",
     use_reu_staged: bool = False,
     double_buffer: bool = False,
@@ -2313,6 +2328,11 @@ def _build_display_mode(
     color: ColorCfg | None = None,
     text_double_height: bool = False,
 ) -> DisplayMode:
+    # border/background may be a C64 color name or an index; resolve to a plain
+    # index here — the single point every scene's border/background flows
+    # through — so the mode constructors (and callers) only ever see an int.
+    border = resolve_color(border)
+    background = resolve_color(background)
     # Imported inside the function to keep config.py importable in test
     # contexts that stub out the heavy modules.
     from .modes import (

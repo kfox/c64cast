@@ -554,14 +554,12 @@
           "default": false
         },
         "force_palette_colors": {
-          "type": "integer",
-          "description": "Number of distinct C64 colors to spread the source across when force_palette is on (2..16). Ignored when force_palette_indices is set.",
+          "type": [
+            "integer",
+            "array"
+          ],
+          "description": "How force_palette allocates C64 colors: either an int count of distinct colors to spread the source across (2..16), OR an explicit list of colors to whitelist \u2014 each a color name (fuzzy + case-insensitive, e.g. \"light blue\", \"lgrn\", \"blk\") or an index 0..15. A list's length sets the color count.",
           "default": 16
-        },
-        "force_palette_indices": {
-          "type": "array",
-          "description": "Explicit C64 palette index whitelist (0..15) for force_palette; its length sets the color count and overrides force_palette_colors. Empty = use all 16 (or the count).",
-          "default": []
         }
       }
     },
@@ -1553,13 +1551,19 @@
             "default": false
           },
           "border": {
-            "type": "integer",
-            "description": "Border palette index 0..15 (blank scenes).",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Border color (blank scenes): a C64 color name (fuzzy + case-insensitive, e.g. \"light blue\") or a palette index 0..15.",
             "default": 0
           },
           "background": {
-            "type": "integer",
-            "description": "Background palette index 0..15 (blank scenes).",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Background color (blank scenes): a C64 color name (fuzzy + case-insensitive, e.g. \"light blue\") or a palette index 0..15.",
             "default": 0
           },
           "file": {

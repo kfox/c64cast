@@ -59,7 +59,7 @@ from typing import Any
 import numpy as np
 
 from ..c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN
-from ..palette import C64_COLORS, C64_SPECTRUM_INDICES
+from ..palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
 from . import (
     Overlay,
     ascii_to_screen,
@@ -168,11 +168,12 @@ def _resolve_color(name: str) -> int:
         return -1
     if name == "random":
         return int(random.choice(C64_SPECTRUM_INDICES))
-    if name in C64_COLORS:
-        return C64_COLORS[name]
-    raise ValueError(
-        f"big_text: unknown color {name!r}. Use a C64 color name, 'rainbow', or 'random'."
-    )
+    try:
+        return resolve_color(name)
+    except ValueError:
+        raise ValueError(
+            f"big_text: unknown color {name!r}. Use a C64 color name, 'rainbow', or 'random'."
+        ) from None
 
 
 @register("big_text")

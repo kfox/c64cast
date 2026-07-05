@@ -12,6 +12,8 @@ import numpy as np
 
 from c64cast.palette import (
     _PALETTE_HUES_DEG,
+    C64_COLOR_NAMES,
+    C64_COLORS,
     C64_PALETTE_BGR,
     CHANNEL_BOOST,
     CHROMATIC_INDICES,
@@ -28,13 +30,80 @@ from c64cast.palette import (
     apply_color_fit,
     apply_hue_corrections,
     boost_saturation,
+    color_display_name,
     make_gray_penalty,
     parse_channel_boost,
     parse_hue_corrections,
     pick_diverse_top_n,
     quantize_distances,
     quantize_flat,
+    resolve_color,
 )
+
+
+class ResolveColorTest(unittest.TestCase):
+    def test_display_names_align_with_palette(self):
+        self.assertEqual(len(C64_COLOR_NAMES), 16)
+        self.assertEqual(C64_COLOR_NAMES[0], "Black")
+        self.assertEqual(C64_COLOR_NAMES[12], "Medium Gray")
+        self.assertEqual(C64_COLOR_NAMES[14], "Light Blue")
+        self.assertEqual(color_display_name(13), "Light Green")
+
+    def test_int_passthrough_in_range(self):
+        for i in range(16):
+            self.assertEqual(resolve_color(i), i)
+
+    def test_int_out_of_range_raises_without_default(self):
+        with self.assertRaises(ValueError):
+            resolve_color(16)
+        with self.assertRaises(ValueError):
+            resolve_color(-1)
+
+    def test_canonical_and_int_valued_string(self):
+        self.assertEqual(resolve_color("light blue"), 14)
+        self.assertEqual(resolve_color("14"), 14)
+
+    def test_case_insensitive(self):
+        self.assertEqual(resolve_color("BLK"), 0)
+        self.assertEqual(resolve_color("Light Blue"), 14)
+        self.assertEqual(resolve_color("LIGHT GREEN"), 13)
+
+    def test_fuzzy_abbreviations(self):
+        self.assertEqual(resolve_color("lgrn"), 13)
+        self.assertEqual(resolve_color("blk"), 0)
+        self.assertEqual(resolve_color("dgry"), 11)
+        self.assertEqual(resolve_color("med gry"), 12)
+
+    def test_gray_variants_all_medium(self):
+        for spelling in ("gray", "grey", "gry", "mgry", "mgray", "mgrey"):
+            self.assertEqual(resolve_color(spelling), 12, spelling)
+
+    def test_grey_gray_equivalence_for_modifiers(self):
+        self.assertEqual(resolve_color("light grey"), resolve_color("light gray"))
+        self.assertEqual(resolve_color("dark grey"), 11)
+
+    def test_separators_normalized(self):
+        self.assertEqual(resolve_color("light-blue"), 14)
+        self.assertEqual(resolve_color("light_green"), 13)
+
+    def test_default_fallback_logs_warning(self):
+        with self.assertLogs("c64cast.palette", level="WARNING") as cm:
+            self.assertEqual(resolve_color("chartreuse", default=1), 1)
+        self.assertTrue(any("chartreuse" in m for m in cm.output))
+
+    def test_unknown_without_default_raises_with_names(self):
+        with self.assertRaises(ValueError) as ctx:
+            resolve_color("chartreuse")
+        self.assertIn("chartreuse", str(ctx.exception))
+        self.assertIn("Light Blue", str(ctx.exception))
+
+    def test_bool_rejected(self):
+        with self.assertRaises(ValueError):
+            resolve_color(True)
+
+    def test_every_canonical_name_resolves_to_its_index(self):
+        for name, idx in C64_COLORS.items():
+            self.assertEqual(resolve_color(name), idx, name)
 
 
 class QuantizeTest(unittest.TestCase):

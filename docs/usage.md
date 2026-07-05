@@ -932,8 +932,8 @@ type = "blank"
 display = "blank"                   # "blank" (or omit — the default is accepted too)
 name = "Title Card"
 duration_s = 12.0
-border = 0                          # 0..15 palette index for the border
-background = 6                      # 0..15 palette index for the canvas
+border = "black"                    # C64 color name (fuzzy) or index 0..15
+background = "blue"                 # C64 color name (fuzzy) or index 0..15
 ```
 
 No video input — every cell starts as `SC_SPACE` with FG = `background`,

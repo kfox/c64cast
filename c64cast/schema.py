@@ -19,10 +19,28 @@ from . import introspect
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
+def _split_union(type_str: str) -> list[str]:
+    """Split a union annotation on top-level '|' only, leaving '|' inside
+    brackets intact (so 'int | list[int | str]' -> ['int', 'list[int | str]'])."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(type_str):
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            parts.append(type_str[start:i])
+            start = i + 1
+    parts.append(type_str[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
 def _json_type(type_str: str) -> dict[str, Any]:
     """Map a Python annotation string (e.g. 'str', 'int | None',
-    'int | list[int]', 'list[str]') to the JSON-type portion of a schema."""
-    parts = [p.strip() for p in type_str.split("|")] if type_str else []
+    'int | list[int | str]', 'list[str]') to the JSON-type portion of a schema."""
+    parts = _split_union(type_str) if type_str else []
     json_types: list[str] = []
     for p in parts:
         if p == "None":

@@ -13,7 +13,7 @@ import time
 import numpy as np
 
 from ..c64 import SCREEN
-from ..palette import C64_COLORS
+from ..palette import C64_COLORS, resolve_color
 from . import SC_SPACE, Overlay, ascii_to_screen, register
 
 log = logging.getLogger(__name__)
@@ -49,8 +49,8 @@ class MarqueeBase(Overlay):
             raise ValueError(f"row must be 0..{SCREEN_H - 1}")
         self.row = row
         self.speed = float(speed_cells_per_s)
-        self.fg = C64_COLORS.get(fg_color, C64_COLORS["yellow"])
-        self.bg = C64_COLORS.get(bg_color, C64_COLORS["black"])
+        self.fg = resolve_color(fg_color, default=C64_COLORS["yellow"])
+        self.bg = resolve_color(bg_color, default=C64_COLORS["black"])
         self.start_time = 0.0
 
     def _current_text(self) -> str:

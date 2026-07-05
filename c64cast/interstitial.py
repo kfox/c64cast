@@ -18,7 +18,7 @@ from .backgrounds import build as build_background
 from .c64 import CIA2, RegionID
 from .config import InterstitialCfg
 from .overlays import ascii_to_screen
-from .palette import C64_COLORS
+from .palette import C64_COLORS, resolve_color
 from .scenes import Scene
 
 log = logging.getLogger(__name__)
@@ -61,10 +61,12 @@ def _resolve_line_colors(text_color: str, n_lines: int) -> list[int]:
     if text_color == "random":
         c = random.choice(LEGIBLE_COLORS)
         return [c] * n_lines
-    if text_color not in C64_COLORS:
+    try:
+        idx = resolve_color(text_color)
+    except ValueError:
         log.warning("unknown text_color %r — using white", text_color)
         return [C64_COLORS["white"]] * n_lines
-    return [C64_COLORS[text_color]] * n_lines
+    return [idx] * n_lines
 
 
 class InterstitialScene(Scene):

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import difflib
+import logging
+import re
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 C64_COLORS = {
     "black": 0,
@@ -25,6 +30,143 @@ C64_COLORS = {
     "light blue": 14,
     "light gray": 15,
 }
+
+# Canonical Title-Case display names, index-aligned to C64_COLORS. Used for
+# error messages, --describe/help, and the wizard. "gray" is preferred over
+# "grey", and index 12 reads "Medium Gray" to disambiguate it from the dark
+# (11) and light (15) grays.
+C64_COLOR_NAMES: tuple[str, ...] = (
+    "Black",
+    "White",
+    "Red",
+    "Cyan",
+    "Purple",
+    "Green",
+    "Blue",
+    "Yellow",
+    "Orange",
+    "Brown",
+    "Light Red",
+    "Dark Gray",
+    "Medium Gray",
+    "Light Green",
+    "Light Blue",
+    "Light Gray",
+)
+
+
+def color_display_name(index: int) -> str:
+    """The Title-Case display name for a C64 palette index (0..15)."""
+    return C64_COLOR_NAMES[index & 0x0F]
+
+
+# --- Fuzzy color-name resolution -------------------------------------------
+# _COLOR_ALIASES maps many spellings/abbreviations to a palette index so config
+# color knobs accept forgiving names (case-insensitive, "lgrn", "mgry", "blk",
+# grey==gray, ...). Built once at import from a modifier x hue grammar plus the
+# handful of modifier+hue combinations the C64 palette actually has.
+_MODIFIER_ALIASES: dict[str, list[str]] = {
+    "light": ["light", "lt", "l", "lite"],
+    "dark": ["dark", "dk", "d"],
+    "medium": ["medium", "med", "mid", "m"],
+}
+# hue name -> (base palette index, spelling aliases)
+_HUE_ALIASES: dict[str, tuple[int, list[str]]] = {
+    "black": (0, ["black", "blk", "bk"]),
+    "white": (1, ["white", "wht", "wh"]),
+    "red": (2, ["red", "rd"]),
+    "cyan": (3, ["cyan", "cyn", "cy"]),
+    "purple": (4, ["purple", "purp", "prpl", "pur", "violet", "magenta"]),
+    "green": (5, ["green", "grn", "gn"]),
+    "blue": (6, ["blue", "blu", "bl"]),
+    "yellow": (7, ["yellow", "yel", "ylw", "yl"]),
+    "orange": (8, ["orange", "org", "orng", "ora"]),
+    "brown": (9, ["brown", "brn", "bwn"]),
+    # bare "gray" == medium gray (index 12)
+    "gray": (12, ["gray", "grey", "gry", "gy"]),
+}
+# (modifier, hue) -> index, for the combinations the palette actually contains.
+_MODIFIER_COMBOS: dict[tuple[str, str], int] = {
+    ("light", "red"): 10,
+    ("dark", "gray"): 11,
+    ("medium", "gray"): 12,
+    ("light", "green"): 13,
+    ("light", "blue"): 14,
+    ("light", "gray"): 15,
+}
+
+
+def _build_color_aliases() -> dict[str, int]:
+    aliases: dict[str, int] = {}
+    # bare hues (no modifier)
+    for _hue, (idx, spellings) in _HUE_ALIASES.items():
+        for sp in spellings:
+            aliases.setdefault(sp, idx)
+    # modifier + hue combos, in both spaced ("med gry") and compact ("mgry") forms
+    for (mod, hue), idx in _MODIFIER_COMBOS.items():
+        _, hue_spellings = _HUE_ALIASES[hue]
+        for m in _MODIFIER_ALIASES[mod]:
+            for h in hue_spellings:
+                aliases.setdefault(f"{m} {h}", idx)
+                aliases.setdefault(f"{m}{h}", idx)
+    return aliases
+
+
+_COLOR_ALIASES: dict[str, int] = _build_color_aliases()
+
+
+def _normalize_color_token(token: str) -> str:
+    """Lower, unify separators to spaces, collapse whitespace, grey->gray."""
+    norm = re.sub(r"[-_]+", " ", token.strip().lower())
+    norm = re.sub(r"\s+", " ", norm)
+    return norm.replace("grey", "gray")
+
+
+def resolve_color(token: int | str, *, default: int | None = None) -> int:
+    """Resolve a C64 color name or index to a palette index (0..15).
+
+    Accepts an int (or int-valued string), a canonical name ("light blue"), or a
+    fuzzy/abbreviated spelling ("lgrn", "mgry", "blk", "grey"). Matching is
+    case-insensitive with a difflib fallback for near-misses. On no match,
+    returns ``default`` if given, else raises ValueError listing the valid
+    names. This is the single color-name resolver shared by every config knob.
+    """
+    if isinstance(token, bool):  # bool is an int subclass — reject explicitly
+        raise ValueError(f"invalid C64 color: {token!r}")
+    if isinstance(token, int):
+        if 0 <= token <= 15:
+            return token
+        if default is not None:
+            log.warning(
+                "C64 palette index %d out of range 0..15 — using %s",
+                token,
+                color_display_name(default),
+            )
+            return default
+        raise ValueError(f"C64 palette index must be 0..15, got {token}")
+
+    norm = _normalize_color_token(token)
+    if norm.isdigit():
+        return resolve_color(int(norm), default=default)
+    if norm in _COLOR_ALIASES:
+        return _COLOR_ALIASES[norm]
+    if norm in C64_COLORS:
+        return C64_COLORS[norm]
+    close = difflib.get_close_matches(norm, _COLOR_ALIASES.keys(), n=1, cutoff=0.6)
+    if close:
+        return _COLOR_ALIASES[close[0]]
+    if default is not None:
+        log.warning(
+            "unknown C64 color %r — using %s (valid: %s)",
+            token,
+            color_display_name(default),
+            ", ".join(C64_COLOR_NAMES),
+        )
+        return default
+    raise ValueError(
+        f"unknown C64 color {token!r}; valid colors are: " + ", ".join(C64_COLOR_NAMES)
+    )
+
 
 C64_PALETTE_BGR = np.array(
     [

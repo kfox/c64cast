@@ -14,7 +14,13 @@ patterns that keep the suite hardware-free. For runtime behavior see
 * Screen-code (not PETSCII) for anything that writes to $0400. Use
   `overlays.ascii_to_screen()` for the common ASCII case.
 * C64 color names come from `palette.C64_COLORS` (`"yellow"`,
-  `"light green"`, etc.). Accept the string; look up the byte.
+  `"light green"`, etc.). For any color a user can type in a config,
+  resolve it with `palette.resolve_color(name, default=...)` rather than a
+  bare `C64_COLORS[...]` lookup — it's case-insensitive and fuzzy
+  (`"lgrn"`, `"mgry"`, `"blk"`, `grey`==`gray` all resolve), logs a
+  warning when it falls back to the default, and is the one shared resolver
+  every color knob uses. Use `palette.C64_COLOR_NAMES[i]` for a Title-Case
+  display name.
 * Type-annotate (Python 3.11+, `from __future__ import annotations`).
   The codebase is gradually-typed; new code should keep up.
 * No emojis, no comments that just restate the code. Keep doc comments

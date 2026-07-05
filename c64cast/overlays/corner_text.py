@@ -16,7 +16,7 @@ import logging
 import numpy as np
 
 from ..c64 import SCREEN
-from ..palette import C64_COLORS
+from ..palette import C64_COLORS, resolve_color
 from ..text_surface import TextSurface
 from ..text_surface import corner_origin as _surface_corner_origin
 from . import Overlay, ascii_to_screen
@@ -58,9 +58,9 @@ def paint_corner_string(
     height = len(lines)
     col, row = _surface_corner_origin(corner, width, height, surface.cols, surface.rows)
 
-    fg = C64_COLORS.get(fg_color, C64_COLORS["white"])
+    fg = resolve_color(fg_color, default=C64_COLORS["white"])
     draw_chars = bg_color != "none"
-    bg = C64_COLORS.get(bg_color, 0)  # 0 (black) when "none"
+    bg = resolve_color(bg_color, default=0) if draw_chars else 0  # 0 (black) when "none"
 
     for i, text in enumerate(lines):
         encoded = np.frombuffer(ascii_to_screen(text.ljust(width)), dtype=np.uint8)

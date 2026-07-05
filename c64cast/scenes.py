@@ -661,8 +661,8 @@ class SlideshowScene(Scene):
         image_duration_s: float = 5.0,
         display_spec: str = "mhires",
         palette_mode: str = "percell",
-        border: int = 0,
-        background: int = 0,
+        border: int | str = 0,
+        background: int | str = 0,
         style: str = "default",
         use_reu_staged: bool | str = "auto",
         double_buffer: bool | str = "auto",
@@ -827,9 +827,10 @@ class SlideshowScene(Scene):
                     fit_acc.add(self._current_img)
                     self.display_mode.set_color_fit(fit_acc.result())
                 if c.force_palette:
-                    map_acc = ColorMapAccumulator(
-                        n_colors=c.force_palette_colors, indices=c.force_palette_indices or None
-                    )
+                    from .config import resolved_force_palette
+
+                    n_colors, indices = resolved_force_palette(c)
+                    map_acc = ColorMapAccumulator(n_colors=n_colors, indices=indices)
                     map_acc.add(self._current_img)
                     self.display_mode.set_color_map(map_acc.result())
             self.name = f"Slideshow: {_display_name(path)}"
@@ -1124,13 +1125,16 @@ class VideoScene(Scene):
         self._av_last_log_t = 0.0
         if self.display_mode is not None:
             if c.force_palette:
+                from .config import resolved_force_palette
+
                 # One pre-scan pass derives the map (and the fit, since it's
                 # already decoding). None clears stale state from a prior file.
+                map_colors, map_indices = resolved_force_palette(c)
                 fit, cmap = prescan_source_color(
                     self.filepath,
                     fit_strength=c.auto_fit_strength if c.auto_fit else None,
-                    map_colors=c.force_palette_colors,
-                    map_indices=(c.force_palette_indices or None),
+                    map_colors=map_colors,
+                    map_indices=map_indices,
                     decode_target_size=decode_target,
                 )
                 self.display_mode.set_color_fit(fit)

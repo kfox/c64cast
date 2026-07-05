@@ -501,11 +501,12 @@ auto_fit_strength = 1.0
 # slideshow only (needs a pre-scan), mcm/mhires only. Also reachable at runtime
 # via the SHIFT cycle's "percell+forced" stop once enabled.
 force_palette = false
-# force_palette_colors: how many distinct C64 colors to spread across, 2..16.
+# force_palette_colors: either an int count of distinct C64 colors to spread the
+# source across (2..16), OR an explicit list of colors to whitelist. List entries
+# may be color names (fuzzy + case-insensitive — "light blue", "lgrn", "blk",
+# "mgry" all resolve) or raw indices 0..15; a list's length sets the color count.
 force_palette_colors = 16
-# force_palette_indices: optional explicit C64 index whitelist (0..15). When set,
-# its length sets the color count and overrides force_palette_colors. Empty = all.
-force_palette_indices = []
+# force_palette_colors = ["black", "red", "purple", "light blue"]  # explicit set
 #
 # hue_corrections: the C64's single purple (index 4) is a bright magenta, so
 # dark real-world violets quantize to gray/blue and never to purple. The
@@ -836,8 +837,8 @@ palette_mode = "vivid"
 type = "blank"
 name = "Title Card"
 duration_s = 12.0
-border = 0                              # 0..15 — palette index for the border
-background = 6                          # 0..15 — palette index for the canvas
+border = "black"                        # C64 color name (fuzzy) or index 0..15
+background = "blue"                     # C64 color name (fuzzy) or index 0..15
 
   [[scenes.overlays]]
   type = "big_text"
