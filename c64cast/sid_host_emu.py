@@ -26,6 +26,7 @@ identically regardless of which path reports them first.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from py65.devices.mpu6502 import MPU
@@ -112,6 +113,11 @@ class SidHeader:
     # Decoded PSID v2+ flags. None on v1 headers (no flags field).
     clock: str | None  # "PAL", "NTSC", "PAL+NTSC", "?" or None
     sid_model: str | None  # "6581", "8580", "6581+8580", "?" or None
+    # $Dxxx base address of every SID chip the tune drives, chip 0 first
+    # (always $D400). A single-SID tune yields (0xD400,); a 3SID tune yields
+    # e.g. (0xD400, 0xD420, 0xD440). Parsed from the PSID v3/v4 second/third
+    # SID-address bytes ($7A/$7B). See parse_sid_header.
+    sid_addresses: tuple[int, ...] = (SID.BASE,)
 
 
 # PSID v2+ flags byte 1 (low-order) layout — clock at bits 2-3, primary
@@ -121,13 +127,32 @@ class SidHeader:
 _CLOCK_TABLE = {0: "?", 1: "PAL", 2: "NTSC", 3: "PAL+NTSC"}
 _MODEL_TABLE = {0: "?", 1: "6581", 2: "8580", 3: "6581+8580"}
 
+# PSID extra-SID address bytes: secondSIDAddress at $7A (v3+), thirdSIDAddress
+# at $7B (v4+). The byte encodes the middle nibble of a $Dxx0 base: address =
+# $D000 | (byte << 4), so 0x42 → $D420, 0x50 → $D500, 0xE0 → $DE00. Zero means
+# "no chip". The spec only permits even bytes in $42-$FE resolving to the
+# $D420-$D7E0 and $DE00-$DFE0 windows; we accept any nonzero byte that lands in
+# the $D000-$DFF0 I/O page and ignore the rest (a malformed byte → single SID).
+_SECOND_SID_ADDR = 0x7A
+_THIRD_SID_ADDR = 0x7B
+
+
+def _decode_extra_sid_addr(byte: int) -> int | None:
+    """Decode a PSID extra-SID address byte to a $Dxx0 base, or None if the
+    byte is 0 (absent) or resolves outside the $D000-$DFF0 I/O page."""
+    if byte == 0:
+        return None
+    addr = 0xD000 | (byte << 4)
+    return addr if 0xD000 <= addr <= 0xDFF0 else None
+
 
 def parse_sid_header(data: bytes) -> SidHeader:
     """Parse the PSID/RSID v1+ header. Validates magic, returns metadata.
 
     Reads the v2+ flags field at offset 0x76 (2 bytes, big-endian) to
     surface SID chip model + PAL/NTSC clock. v1 headers (length 118)
-    leave both as None."""
+    leave both as None. On PSID v3/v4 headers, reads the second/third
+    SID-address bytes ($7A/$7B) into `sid_addresses` (chip 0 = $D400 first)."""
     if len(data) < 22:
         raise ValueError("SID file too short to contain a header")
     magic = data[:4]
@@ -142,6 +167,16 @@ def parse_sid_header(data: bytes) -> SidHeader:
         flags_lo = data[0x77]
         clock = _CLOCK_TABLE[(flags_lo >> 2) & 0x03]
         sid_model = _MODEL_TABLE[(flags_lo >> 4) & 0x03]
+    # Extra SID chips (v3 adds a 2nd, v4 a 3rd). Chip 0 is always $D400.
+    addresses = [SID.BASE]
+    if version >= 3 and len(data) > _SECOND_SID_ADDR:
+        second = _decode_extra_sid_addr(data[_SECOND_SID_ADDR])
+        if second is not None:
+            addresses.append(second)
+    if version >= 4 and len(data) > _THIRD_SID_ADDR and len(addresses) == 2:
+        third = _decode_extra_sid_addr(data[_THIRD_SID_ADDR])
+        if third is not None:
+            addresses.append(third)
     return SidHeader(
         magic=magic.decode("ascii"),
         version=version,
@@ -154,7 +189,41 @@ def parse_sid_header(data: bytes) -> SidHeader:
         else "",
         clock=clock,
         sid_model=sid_model,
+        sid_addresses=tuple(addresses),
     )
+
+
+# Filename fallback for tunes whose header understates the SID count (or
+# predates v3/v4): HVSC names multi-SID files "..._<N>SID.sid". Only ever used
+# to *raise* the header count, never lower it. Clamped to 2-8.
+_FILENAME_SID_COUNT_RE = re.compile(r"(?i)(\d)sid\.sid$")
+# Stride between synthesized canonical chip bases when the count comes from the
+# filename but the header gives no addresses ($D400, $D420, $D440, ...). Matches
+# plan_sid_map's default UltiSID split stride and the most common HVSC layout.
+_CANONICAL_SID_STRIDE = 0x20
+_MAX_SIDS = 8
+
+
+def detect_sid_addresses(path: str | None, data: bytes) -> tuple[int, ...]:
+    """The $Dxxx base of every SID chip a tune drives, chip 0 ($D400) first.
+
+    Authoritative source is the PSID v3/v4 header (`SidHeader.sid_addresses`). A
+    filename ``_<N>SID.sid`` hint can *raise* the count above what the header
+    declares (the ambiguous case of a v1/v2 header that can't declare extra
+    chips) — the extra chips get canonical stride-$20 bases appended, since the
+    filename carries no address info. Never lowers the header's count. The
+    result has 1..8 entries; a plain single-SID tune yields ``($D400,)``."""
+    try:
+        addresses = list(parse_sid_header(data).sid_addresses)
+    except ValueError:
+        addresses = [SID.BASE]
+    if path is not None:
+        m = _FILENAME_SID_COUNT_RE.search(path)
+        if m:
+            want = min(int(m.group(1)), _MAX_SIDS)
+            while len(addresses) < want:
+                addresses.append(SID.BASE + len(addresses) * _CANONICAL_SID_STRIDE)
+    return tuple(addresses[:_MAX_SIDS])
 
 
 def _sid_payload_extent(sid_bytes: bytes) -> tuple[int, int]:
@@ -232,10 +301,14 @@ class TrappedRam:
     py65 source: every read goes through MPU.ByteAt → self.memory[addr],
     every write is a direct subscript-store).
 
-    Writes to $D400-$D418 land in both the RAM array AND a 25-byte
-    `sid_shadow` buffer that the scene reads via SidHostEmu.regs().
+    Writes to any configured SID chip's registers ($D400-$D418, plus each
+    extra chip's $Dxx0 bank on a multi-SID tune) land in both the RAM array AND
+    that chip's 25-byte `sid_shadows[bank]` buffer, which the scene reads via
+    SidHostEmu.regs(bank). Single-SID (the default `sid_bases=($D400,)`) shadows
+    only $D400 — byte-identical to the prior $D400-only trap.
 
-    `gate_low_seen[v]` is set whenever a write clears voice v's gate bit.
+    `gate_low_banks[bank][v]` is set whenever a write clears chip `bank` voice
+    v's gate bit.
     SID players retrigger a note with a "hard restart": gate off then on,
     often within a single PLAY call. The 25-byte shadow keeps only the
     final write, so such a retrigger would read as gate-still-high (no
@@ -260,15 +333,16 @@ class TrappedRam:
 
     __slots__ = (
         "ram",
-        "sid_shadow",
+        "sid_bases",
+        "sid_shadows",
+        "_addr_map",
         "footprint",
         "access",
-        "gate_low_seen",
+        "gate_low_banks",
         "cia1_timer_a_written",
     )
 
-    _SID_HI = SID.BASE + SID_REG_COUNT  # exclusive upper bound
-    # Voice control-register offsets within $D400 (gate bit lives here).
+    # Voice control-register offsets within a SID (gate bit lives here).
     _CONTROL_OFFSETS = frozenset(
         v * SID.BYTES_PER_VOICE + SID.OFF_CONTROL for v in range(SID.N_VOICES)
     )
@@ -276,7 +350,12 @@ class TrappedRam:
     # these from INIT to set its PLAY call rate; see SidHostEmu.play_rate_hz.
     _CIA1_TIMER_A = frozenset((CIA1.TIMER_A_LO, CIA1.TIMER_A_HI))
 
-    def __init__(self, track_footprint: bool = False, track_access: bool = False) -> None:
+    def __init__(
+        self,
+        track_footprint: bool = False,
+        track_access: bool = False,
+        sid_bases: tuple[int, ...] = (SID.BASE,),
+    ) -> None:
         self.ram = bytearray(65536)
         # Fill ROM-mapped region with $60 (RTS) so any unexpected JSR
         # into BASIC/kernal space returns cleanly.
@@ -286,10 +365,20 @@ class TrappedRam:
         for vec in (_VEC_NMI, _VEC_RESET, _VEC_IRQ):
             self.ram[vec] = _RTS_TARGET & 0xFF
             self.ram[vec + 1] = (_RTS_TARGET >> 8) & 0xFF
-        self.sid_shadow = bytearray(SID_REG_COUNT)
-        # Per-voice "gate cleared during this tick" flags (hard-restart
+        # One 25-byte register shadow per SID chip the tune drives, plus an
+        # absolute-address → (bank, offset) lookup so the write trap routes each
+        # $Dxxx write to the right chip in one dict.get. Single-SID (the default)
+        # is byte-identical to the old $D400-only path.
+        self.sid_bases = sid_bases
+        self.sid_shadows = [bytearray(SID_REG_COUNT) for _ in sid_bases]
+        self._addr_map: dict[int, tuple[int, int]] = {
+            base + off: (bank, off)
+            for bank, base in enumerate(sid_bases)
+            for off in range(SID_REG_COUNT)
+        }
+        # Per-(chip, voice) "gate cleared during this tick" flags (hard-restart
         # detection). Reset each tick by SidHostEmu.tick_play.
-        self.gate_low_seen = bytearray(SID.N_VOICES)
+        self.gate_low_banks = [bytearray(SID.N_VOICES) for _ in sid_bases]
         # 64 KB write-footprint bitmap (1 = written at least once), or None
         # when footprint tracking is disabled (the normal scope path).
         self.footprint: bytearray | None = bytearray(65536) if track_footprint else None
@@ -313,14 +402,16 @@ class TrappedRam:
             self.access[addr] = 1
         if addr in self._CIA1_TIMER_A:
             self.cia1_timer_a_written = True
-        if SID.BASE <= addr < self._SID_HI:
-            off = addr - SID.BASE
-            self.sid_shadow[off] = val
+        hit = self._addr_map.get(addr)
+        if hit is not None:
+            bank, off = hit
+            self.sid_shadows[bank][off] = val
             # A write that clears a voice's gate bit flags a (possibly
             # intra-tick) gate-low — recovered by retriggers() as a
             # hard-restart even when the shadow's final value is gate-high.
             if off in self._CONTROL_OFFSETS and not (val & SID.GATE):
-                self.gate_low_seen[(off - SID.OFF_CONTROL) // SID.BYTES_PER_VOICE] = 1
+                voice = (off - SID.OFF_CONTROL) // SID.BYTES_PER_VOICE
+                self.gate_low_banks[bank][voice] = 1
 
 
 class SidHostEmu:
@@ -344,9 +435,18 @@ class SidHostEmu:
         song: int = 0,
         track_footprint: bool = False,
         track_access: bool = False,
+        sid_bases: tuple[int, ...] | None = None,
     ) -> None:
         self._parsed = parse_psid_for_player(sid_bytes, song=song)
-        self._memory = TrappedRam(track_footprint=track_footprint, track_access=track_access)
+        # SID chip bases to shadow. Default: the tune's own header addresses
+        # (chip 0 = $D400). A caller (WaveformScene) may override to honor a
+        # filename ``_NSID`` hint the header understates. Chip 0 always $D400.
+        if sid_bases is None:
+            sid_bases = parse_sid_header(sid_bytes).sid_addresses
+        self.sid_bases: tuple[int, ...] = sid_bases
+        self._memory = TrappedRam(
+            track_footprint=track_footprint, track_access=track_access, sid_bases=sid_bases
+        )
         self._mpu = MPU(memory=self._memory)
         # Set processor flags to a sane post-init state. I=1 (IRQs
         # disabled) matches what the real 6510 looks like immediately
@@ -371,12 +471,18 @@ class SidHostEmu:
             self._parsed.init_addr, a=(self._parsed.song_to_play - 1) & 0xFF, tag="init"
         )
 
-    def regs(self) -> bytes:
-        """Return a 25-byte snapshot of $D400-$D418. Always exactly
-        SID_REG_COUNT bytes; pre-INIT this is all zeros, post-INIT it
-        reflects whatever the tune set during init, post-`tick_play`
-        the last frame's writes."""
-        return bytes(self._memory.sid_shadow)
+    @property
+    def n_sids(self) -> int:
+        """Number of SID chips this emulator shadows (>= 1)."""
+        return len(self.sid_bases)
+
+    def regs(self, bank: int = 0) -> bytes:
+        """Return a 25-byte snapshot of chip `bank`'s $D4xx registers. Always
+        exactly SID_REG_COUNT bytes; pre-INIT this is all zeros, post-INIT it
+        reflects whatever the tune set during init, post-`tick_play` the last
+        frame's writes. `bank` 0 is the primary $D400 chip (the only chip on a
+        single-SID tune)."""
+        return bytes(self._memory.sid_shadows[bank])
 
     def tick_play(self) -> None:
         """Run one PLAY pass. Re-entrant call into `play_addr`, same
@@ -384,12 +490,15 @@ class SidHostEmu:
         bounds a degenerate PLAY (one that spins waiting for a raster
         or an IRQ that will never fire in this emulator) so the render
         thread isn't starved."""
-        # Clear hard-restart flags so retriggers() reflects only this tick.
-        self._memory.gate_low_seen[:] = bytes(SID.N_VOICES)
+        # Clear hard-restart flags (all chips) so retriggers() reflects only
+        # this tick.
+        for gl in self._memory.gate_low_banks:
+            gl[:] = bytes(SID.N_VOICES)
         self._run_routine(self._parsed.play_addr, tag="play")
 
-    def retriggers(self) -> tuple[bool, bool, bool]:
-        """Per-voice hard-restart detection for the most recent tick_play().
+    def retriggers(self, bank: int = 0) -> tuple[bool, bool, bool]:
+        """Per-voice hard-restart detection for chip `bank` on the most recent
+        tick_play().
 
         A voice whose control register was written gate-low at some point
         during the tick but whose final shadow gate is high underwent a
@@ -399,8 +508,8 @@ class SidHostEmu:
         (sustain=0) leads re-attack on every note instead of flatlining
         after their first decay. Voices that ended gate-low are ordinary
         note-offs handled by the shadow's gate edge, so they're excluded."""
-        gl = self._memory.gate_low_seen
-        shadow = self._memory.sid_shadow
+        gl = self._memory.gate_low_banks[bank]
+        shadow = self._memory.sid_shadows[bank]
         result = []
         for v in range(SID.N_VOICES):
             final_gate = bool(shadow[v * SID.BYTES_PER_VOICE + SID.OFF_CONTROL] & SID.GATE)

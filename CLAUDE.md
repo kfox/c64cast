@@ -112,7 +112,10 @@ c64cast/
 │                     glyph text rows, per-voice render paths + knobs) used
 │                     by both WaveformScene and MidiScene
 ├── waveform.py       WaveformScene: 3-voice SID oscilloscope (full-screen),
-│                     SID-file playback; inherits VoiceScopeRenderer
+│                     SID-file playback; inherits VoiceScopeRenderer.
+│                     Auto-detects 2SID/3SID tunes (PSID $7A/$7B addrs +
+│                     _NSID.sid filename fallback) → split scope (one window
+│                     per chip) + maps the U64's extra SID cores for audio
 ├── midi_scene.py     MidiScene: live MIDI input → SID synth + 3-voice
 │                     oscilloscope (inherits VoiceScopeRenderer; bitmap-only)
 ├── asid.py           Pure ASID-protocol decoder: ASID MIDI SysEx (packed SID
@@ -126,6 +129,11 @@ c64cast/
 ├── sid_host_emu.py   py65 host-side SID register tracker — runs the
 │                     SID file in parallel on a pure-Python 6502 to
 │                     recover live $D4xx state the U64 won't read back
+│                     (multi-bank: shadows every chip on a multi-SID tune);
+│                     detect_sid_addresses(path,data) = chip count/addresses
+├── sid_hw_config.py  Shared U64 multi-SID REST plumbing: snapshot / apply /
+│                     restore the SID address+socket config (used by AsidScene
+│                     + WaveformScene; gated on api.profile.supports_config)
 ├── songlengths.py    HVSC SongLengths.md5 parser + lookup
 ├── framebuffer.py    Software VIC mirror used by preview + recording
 ├── preview.py        Pygame preview window + cv2.VideoWriter recorder

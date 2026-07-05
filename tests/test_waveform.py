@@ -1365,6 +1365,9 @@ class WaveformPollCatchupTest(unittest.TestCase):
         scene._host_emu.regs.return_value = bytes(25)
         scene._host_emu.retriggers.return_value = (False, False, False)
         scene.emulator = MagicMock()
+        # _poll_regs feeds every chip's emulator; for a single-SID tune that's
+        # just the primary. Point the list at the same stub the test asserts on.
+        scene._emulators = [scene.emulator]
         scene._reg_poll_hz = 60.0
         scene._poll_dt = 1.0 / 60.0
         scene._ticks_done = 0
