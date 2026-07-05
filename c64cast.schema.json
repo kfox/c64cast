@@ -1727,6 +1727,16 @@
             ],
             "description": "MIDI input port name substring the ASID host streams to; unset = first available port."
           },
+          "asid_multi_sid": {
+            "type": "boolean",
+            "description": "Honor ASID multi-SID streams (commands 0x50-0x5F) by configuring the U64 for multiple SIDs and routing each chip to its own address (prefers physical socket SIDs). U64 only \u2014 ignored on backends without the config API, where extra chips downmix to the primary SID.",
+            "default": true
+          },
+          "asid_max_sids": {
+            "type": "integer",
+            "description": "Cap on the number of SID chips a multi-SID ASID stream may map on the U64 (1-8). Chips beyond the cap downmix to the primary SID.",
+            "default": 8
+          },
           "image_duration_s": {
             "type": "number",
             "description": "Per-image dwell time before advancing (total runtime is duration_s).",

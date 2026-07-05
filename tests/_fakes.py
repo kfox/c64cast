@@ -53,6 +53,11 @@ class FakeAPI:
         self.cue_song_reinit_play_banks: list[int | None] = []
         self.canned_regs: bytes = bytes(25)
         self.socket_dma = FakeSocketDMA()
+        # Device config API (Ultimate REST) surface for multi-SID tests. Tests
+        # opt in via `api.profile = HardwareProfile(..., supports_config=True)`
+        # and seed `config_store` to model detected sockets / current values.
+        self.config_puts: list[tuple[str, str, str]] = []
+        self.config_store: dict[str, dict[str, str]] = {}
         # Hardware capability profile — mirrors the real backends' `profile`.
         # Defaults (supports_reu=True) make build_scene resolve the no-REU
         # double_buffer "auto" path OFF, so existing tests see no change; tests
@@ -120,6 +125,15 @@ class FakeAPI:
     def cue_song_reinit(self, song, *, play_bank=None):
         self.cue_song_reinits.append(song)
         self.cue_song_reinit_play_banks.append(play_bank)
+
+    def put_config_item(self, category, item, value, *, timeout=3.0):
+        self.config_puts.append((category, item, value))
+        self.config_store.setdefault(category, {})[item] = value
+
+    def get_config_category(self, category, *, timeout=3.0):
+        # Tests seed `config_store[category] = {item: value}` to model detected
+        # sockets / current addressing; default is an empty category.
+        return dict(self.config_store.get(category, {}))
 
     def silence_sid(self):
         self.regs["SILENCE"] = ()

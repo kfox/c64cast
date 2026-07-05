@@ -26,9 +26,16 @@
 # `asid_port` is a substring match against available input port names.
 # Empty string ("" or commented out) picks the first available port.
 #
-# Known v1 limits: multi-SID / OPL-FM / cycle-accurate timing streams are
-# recognised but not applied (one physical SID); very high multispeed tunes are
-# frame-decimated to protect the DMA link.
+# Multi-SID (U64 only): ASID streams carrying several chips (commands 0x50-0x5F)
+# are honored — c64cast configures the U64 for multiple SIDs live (preferring
+# physical socket SIDs, then UltiSID cores) and routes each chip to its own
+# address, and the scope subdivides each voice row horizontally, one window per
+# chip (voice 1 of every chip side by side, etc.). The prior U64 SID-address
+# config is restored on teardown. On backends without the config API (TeensyROM)
+# or with `asid_multi_sid = false`, extra chips downmix to the primary SID.
+#
+# Known v1 limits: OPL-FM / cycle-accurate timing streams are recognised but not
+# applied; very high multispeed tunes are frame-decimated to protect the DMA link.
 #
 # Run:
 #   python -m c64cast --config config/examples/scene-asid.toml
@@ -43,6 +50,8 @@ interleave_videos = false
 type = "asid"
 name = "ASID"
 asid_port = ""                # "" = first port; or e.g. "IAC", "loopMIDI"
+asid_multi_sid = true         # honor multi-SID streams on the U64 (see above)
+asid_max_sids = 8             # cap on mapped SID chips (1-8); surplus downmixes
 # Oscilloscope knobs (shared with the waveform / midi scenes):
 voice_colors = ["light green", "cyan", "yellow"]
 color_mode = "per_voice"      # per_voice | per_waveform

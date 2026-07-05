@@ -11,11 +11,14 @@ unit-testable: feed a byte sequence, assert the resulting register map. The
 :class:`~c64cast.asid_scene.AsidScene` owns the MIDI port, the register shadow,
 the DMA writes, and the oscilloscope.
 
-Only the single-SID subset is honored: ``0x4E`` register data (the workhorse),
+Honored: ``0x4E`` register data (the workhorse — SID chip 0), the multi-SID
+streams ``0x50``-``0x5F`` (SID2..SID17, same packed format → chips 1..16),
 ``0x4C``/``0x4D`` start/stop, ``0x4F`` character display, ``0x31`` speed
-(PAL/NTSC + multiplier), and ``0x32`` SID type. Multi-SID (``0x50``-``0x5F``),
-OPL-FM (``0x60``), and the ``0x30`` timing recipe are recognized but dropped
-(one physical SID; no OPL). See docs/architecture.md for the rationale.
+(PAL/NTSC + multiplier), and ``0x32`` SID type (per chip). OPL-FM (``0x60``) and
+the ``0x30`` timing recipe are recognized but dropped (no OPL; the plain write
+order suffices). Every register/type update carries a ``chip_index`` so the
+scene can route it to the matching SID address (see :mod:`c64cast.asid_sidmap`
+for the U64 address map). See docs/architecture.md for the rationale.
 
 The ASID ``0x4E`` payload orders the three voice control registers last
 (register IDs 22-27) so a frame can carry a *second* write to each control
@@ -85,8 +88,9 @@ class AsidUpdate:
     system: str | None = None  # "PAL" | "NTSC" (0x31)
     speed_multiplier: int | None = None  # 1..16 (0x31)
     frame_delta_us: int | None = None  # 0x31, 0 if unspecified
-    chip_type: str | None = None  # "6581" | "8580" for the primary SID (0x32)
-    dropped: bool = False  # command recognized but not applied (multi-SID/OPL/timing)
+    chip_type: str | None = None  # "6581" | "8580" for chip `chip_index` (0x32)
+    chip_index: int = 0  # SID chip this update targets: 0 = 0x4E, k = 0x50+(k-1); also 0x32
+    dropped: bool = False  # command recognized but not applied (OPL/timing)
 
 
 def decode(data: Sequence[int]) -> AsidUpdate | None:
@@ -101,7 +105,11 @@ def decode(data: Sequence[int]) -> AsidUpdate | None:
     cmd = data[1]
     payload = data[2:]
     if cmd == CMD_REG:
-        return _decode_registers(payload)
+        return _decode_registers(payload, chip_index=0)
+    if CMD_MULTI_SID_LO <= cmd <= CMD_MULTI_SID_HI:
+        # 0x50 = SID2 (chip 1) .. 0x5F = SID17 (chip 16). Same packed format
+        # as 0x4E, just targeting a higher chip index.
+        return _decode_registers(payload, chip_index=cmd - CMD_MULTI_SID_LO + 1)
     if cmd == CMD_START:
         return AsidUpdate(command=cmd, playing=True)
     if cmd == CMD_STOP:
@@ -112,8 +120,8 @@ def decode(data: Sequence[int]) -> AsidUpdate | None:
         return _decode_speed(payload)
     if cmd == CMD_SID_TYPE:
         return _decode_sid_type(payload)
-    # Recognized-but-unsupported (multi-SID, OPL-FM, timing) and anything
-    # unknown: flag as dropped so the scene can warn once and move on.
+    # Recognized-but-unsupported (OPL-FM, timing) and anything unknown: flag as
+    # dropped so the scene can warn once and move on.
     return AsidUpdate(command=cmd, dropped=True)
 
 
@@ -130,8 +138,8 @@ def _iter_masked(mask4: Sequence[int], msb4: Sequence[int]) -> Iterator[tuple[in
                 yield byte_idx * 7 + bit, (sbyte >> bit) & 1
 
 
-def _decode_registers(payload: Sequence[int]) -> AsidUpdate:
-    update = AsidUpdate(command=CMD_REG)
+def _decode_registers(payload: Sequence[int], *, chip_index: int) -> AsidUpdate:
+    update = AsidUpdate(command=CMD_REG, chip_index=chip_index)
     if len(payload) < 8:
         return update  # malformed / empty — no registers to apply
     mask4 = payload[0:4]
@@ -183,6 +191,8 @@ def _decode_speed(payload: Sequence[int]) -> AsidUpdate:
 
 def _decode_sid_type(payload: Sequence[int]) -> AsidUpdate:
     update = AsidUpdate(command=CMD_SID_TYPE)
-    if len(payload) >= 2 and payload[0] == 0:  # only the primary SID matters here
+    if len(payload) >= 2:
+        # data0 = chip index (0 = SID1), data1 bit0 = 0:6581 / 1:8580.
+        update.chip_index = payload[0]
         update.chip_type = "8580" if (payload[1] & 0x01) else "6581"
     return update

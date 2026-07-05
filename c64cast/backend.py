@@ -108,6 +108,7 @@ class HardwareProfile:
     supports_run_prg: bool = True  # launch a PRG (clear-loop, SID player)
     supports_run_crt: bool = True  # launch a CRT (cartridge)
     supports_reu: bool = True  # REU writes (use_reu_pump / use_reu_staged)
+    supports_config: bool = False  # writable/readable device config API (Ultimate REST)
     supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
@@ -141,6 +142,7 @@ ULTIMATE_PROFILE = HardwareProfile(
     supports_run_prg=True,
     supports_run_crt=True,
     supports_reu=True,
+    supports_config=True,  # REST config API (/v1/configs) — live SID address map, REU, sampler
     supports_sampler=True,  # "Ultimate Audio" FPGA PCM sampler (gated by probe)
     reu_bus_clean=True,  # U64 REUWRITE is an ARM-side memcpy; no bus halt
     writes_are_acked=False,  # socket DMAWRITE is fire-and-forget
@@ -171,6 +173,7 @@ TEENSYROM_PROFILE = HardwareProfile(
     supports_run_prg=True,  # PostFile + LaunchFile
     supports_run_crt=True,  # RemoteLaunch handles CRT launch
     supports_reu=False,  # no REUWRITE opcode
+    supports_config=False,  # no device config API (Ultimate-only REST surface)
     supports_sampler=False,  # no FPGA PCM sampler (Ultimate-only feature)
     reu_bus_clean=False,
     writes_are_acked=True,  # every write returns Ack/Fail -> flush ~free
@@ -330,6 +333,14 @@ class C64Backend(ABC):
         ``profile.supports_reu`` (Ultimate-only) before invoking, so a backend
         without an REU never reaches this."""
         raise BackendCapabilityError("put_config_item")
+
+    def get_config_category(self, category: str, *, timeout: float = 3.0) -> dict[str, str]:
+        """Read one device config category as ``{item_name: current_value}``
+        (Ultimate REST: ``GET /v1/configs/<category>``). Default raises — only
+        the Ultimate exposes a readable config surface. Callers gate on
+        ``profile.supports_config`` first (AsidScene reads the SID socket
+        detection + snapshots the SID address map to restore on teardown)."""
+        raise BackendCapabilityError("get_config_category")
 
     # ---- semantic write helpers ---------------------------------------
     # Pure writes presuming the standard C64 memory map + kernal IRQ chain.

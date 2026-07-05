@@ -154,6 +154,77 @@ class AsidSceneTest(unittest.TestCase):
         self.assertIn("SILENCE", api.regs)  # SID silenced
         self.assertIn("DD00", api.memories)  # VIC bank restored
 
+    # ---- multi-SID ----------------------------------------------------------
+    def _make_multi(self, sockets=None, **kwargs):
+        """A scene on a config-capable (Ultimate-like) backend. `sockets` seeds
+        the detected-socket category, e.g. {"SID Detected Socket 1": "6581"}."""
+        from c64cast.asid_scene import AsidScene
+        from c64cast.backend import HardwareProfile
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
+        if sockets:
+            from c64cast.asid_sidmap import CAT_SOCKETS
+
+            api.config_store[CAT_SOCKETS] = dict(sockets)
+        scene = AsidScene(api, None, **kwargs)
+        return scene, api
+
+    def _multi_msg(self, chip_index: int, values: dict[int, int]) -> tuple[int, ...]:
+        cmd = asid.CMD_MULTI_SID_LO + (chip_index - 1)
+        return (asid.ASID_MANUFACTURER_ID, cmd, *_reg_msg(values)[2:])
+
+    def test_multi_sid_disabled_without_config_api(self):
+        # Default FakeAPI has supports_config=False → multi-SID inactive.
+        scene, _ = self._make()
+        self.assertFalse(scene._multi_sid)
+        with self.assertLogs("c64cast.asid_scene", level="WARNING"):
+            scene._handle_sysex(self._multi_msg(1, {0: 0x11}))
+        # Downmixed to the primary shadow (chip 0), not chip 1.
+        self.assertEqual(scene._sid_shadows[0][0x00], 0x11)
+        self.assertEqual(scene._sid_shadows[1][0x00], 0x00)
+
+    def test_multi_sid_routes_and_reconfigures(self):
+        scene, api = self._make_multi()
+        self._bring_up(scene)
+        # A SID2 (chip 1) frame arrives.
+        scene._handle_sysex(self._multi_msg(1, {0: 0x22, 21: 0x0F}))
+        self.assertEqual(scene._max_chip_seen, 1)
+        # process_frame grows the map on the main thread.
+        scene.process_frame(0.0)
+        self.assertEqual(scene._active_chips, 2)
+        self.assertEqual(scene._n_windows, 2)
+        # The U64 address map was configured live.
+        self.assertTrue(any(cat == "SID Addressing" for cat, _, _ in api.config_puts))
+        # Chip 1 flushes to its own (non-$D400) address.
+        scene._flush_to_sid()
+        chip1_addr = f"{scene._chip_addresses[1]:04X}"
+        self.assertIn(chip1_addr, api.regs)
+        self.assertNotEqual(chip1_addr, f"{SID.BASE:04X}")
+        self.assertEqual(api.regs[chip1_addr][0x00], 0x22)
+
+    def test_multi_sid_prefers_physical_socket(self):
+        scene, _ = self._make_multi(sockets={"SID Detected Socket 1": "6581"})
+        scene._socket_present = scene._detect_sockets()
+        self.assertEqual(scene._socket_present, (True, False))
+        scene._reconfigure_chips(2)
+        # Chip 0 → the physical socket at $D400; chip 1 → an UltiSID above it.
+        self.assertEqual(scene._chip_addresses[0], SID.BASE)
+        self.assertGreater(scene._chip_addresses[1], SID.BASE)
+
+    def test_multi_sid_teardown_restores_config(self):
+        from c64cast.asid_sidmap import CAT_ADDRESSING
+
+        scene, api = self._make_multi()
+        # Seed a prior addressing value so restore has something to write back.
+        api.config_store[CAT_ADDRESSING] = {"UltiSID Range Split": "Off"}
+        self._bring_up(scene)
+        scene._reconfigure_chips(3)
+        api.config_puts.clear()
+        scene.teardown()
+        # The snapshotted split value is restored.
+        self.assertIn((CAT_ADDRESSING, "UltiSID Range Split", "Off"), api.config_puts)
+
     def test_setup_opens_port_and_starts_threads(self):
         scene, api = self._make()
         with mock.patch.object(scene, "_open_port"):

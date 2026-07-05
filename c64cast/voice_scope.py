@@ -221,8 +221,35 @@ def _layout_lcr(left: str, center: str, right: str, width: int = SCREEN_W_CHARS)
     return "".join(line)
 
 
+def _compute_window_slices(n: int) -> list[tuple[int, int]]:
+    """Divide the 320px (40-cell) strip width into `n` cell-aligned windows,
+    returning ``(x_off_px, width_px)`` per window. The 40 cells split as evenly
+    as possible with the remainder given to the earliest windows, so every
+    window is a whole number of 8px cells (keeps ``packbits`` + color RAM
+    cell-aligned). ``n=1 → [(0, 320)]`` (identity — the single-chip default).
+
+    Used by the multi-chip AsidScene "split" scope: window `c` of a voice strip
+    shows chip `c`'s copy of that voice, side by side."""
+    if n <= 1:
+        return [(0, BITMAP_W)]
+    base, rem = divmod(SCREEN_W_CHARS, n)
+    slices: list[tuple[int, int]] = []
+    x_cell = 0
+    for i in range(n):
+        cells = base + (1 if i < rem else 0)
+        slices.append((x_cell * CELL_PX, cells * CELL_PX))
+        x_cell += cells
+    return slices
+
+
 class VoiceScopeRenderer:
-    """Mixin providing the hires 3-voice oscilloscope render core.
+    """Mixin providing the hires oscilloscope render core.
+
+    Renders three vertically-stacked voice strips; each strip is optionally
+    subdivided into ``_n_windows`` side-by-side horizontal windows (one per SID
+    chip — the multi-chip "split" scope). With one window (the default) the
+    output is byte-identical to the pre-multi-chip renderer, so WaveformScene /
+    MidiScene are unaffected.
 
     See the module docstring for the attribute contract a host scene must
     satisfy. All bitmap/screen writes go through ``write_region`` so the
@@ -238,6 +265,28 @@ class VoiceScopeRenderer:
     _bitmap_base: int
     _dd00: int
     _d018: int
+    # Multi-chip split scope: window `c` of a strip is sourced from
+    # ``_emulators[c]`` (falls back to ``[self.emulator]`` when a host scene
+    # doesn't set it). Set by _init_scope_knobs.
+    _emulators: list[SIDEmulator]
+    _n_windows: int
+    _window_slices: list[tuple[int, int]]
+
+    def _scope_emulators(self) -> list[SIDEmulator]:
+        """The per-window SID sources — ``self._emulators`` if a host scene set
+        it, else the single ``self.emulator`` (single-chip default)."""
+        emus = getattr(self, "_emulators", None)
+        return emus if emus else [self.emulator]
+
+    def _set_window_count(self, n: int) -> None:
+        """Reflow the split scope to `n` chip windows (multi-chip scenes call
+        this when the SID count changes). Recomputes the cell-aligned window
+        slices and forces the fast render path for n>1 (see _init_scope_knobs)."""
+        self._n_windows = max(1, n)
+        self._window_slices = _compute_window_slices(self._n_windows)
+        if self._n_windows > 1:
+            self._voice_render_modes = ["fast"] * 3
+            self._fast_path = True
 
     # ---- knob parsing / buffer allocation ----------------------------------
 
@@ -252,11 +301,17 @@ class VoiceScopeRenderer:
         persistence: str,
         scroll_columns: int | list[int],
         frame_time_s: float,
+        n_windows: int = 1,
     ) -> None:
         """Validate + normalize the visualization knobs and derive the
         per-voice render modes. Sets every knob attribute in the contract
         plus the (initially-None) per-render buffers. Raises ValueError on
-        any invalid knob — matching the prior in-__init__ validation."""
+        any invalid knob — matching the prior in-__init__ validation.
+
+        ``n_windows`` (default 1) is the number of side-by-side chip windows per
+        strip. Single-chip scenes (waveform/midi) omit it → byte-identical
+        output. When >1 the per-voice scroll/echo modes are forced to "fast"
+        (per-window persistence buffers are out of scope for v1)."""
         if color_mode not in ("per_voice", "per_waveform"):
             raise ValueError("voice_scope: color_mode must be 'per_voice' or 'per_waveform'")
         if time_base not in TIME_BASE_NAMES:
@@ -347,6 +402,21 @@ class VoiceScopeRenderer:
         # all when every voice is in "fast" mode.
         self._fast_path = all(m == "fast" for m in self._voice_render_modes)
 
+        # Multi-chip split layout. >1 window forces the fast render path:
+        # per-window scroll/echo would need every persistence buffer re-keyed to
+        # (voice, chip) with per-window widths — out of scope for v1.
+        if n_windows < 1:
+            raise ValueError(f"voice_scope: n_windows must be >= 1, got {n_windows!r}")
+        self._n_windows = n_windows
+        self._window_slices = _compute_window_slices(n_windows)
+        if n_windows > 1 and not self._fast_path:
+            log.warning(
+                "voice_scope: scroll/persistence not supported for the multi-chip "
+                "split scope — forcing the fast render path"
+            )
+            self._voice_render_modes = ["fast"] * 3
+            self._fast_path = True
+
         # Charset (loaded once, cached process-wide) — set by the bring-up.
         self._glyphs: bytes | None = None
 
@@ -406,19 +476,34 @@ class VoiceScopeRenderer:
 
     def _init_hires_colors(self) -> None:
         """Write per-voice FG/BG colors to the screen-RAM cells under
-        each voice's bitmap strip."""
-        for v_idx, (top, bot) in enumerate(BITMAP_STRIPS):
+        each voice's bitmap strip (one color per chip window)."""
+        for v_idx in range(len(BITMAP_STRIPS)):
             color = self._initial_voice_color(v_idx)
-            cell_row_top = top // CELL_PX
-            cell_row_bot = bot // CELL_PX
-            n_rows = cell_row_bot - cell_row_top
-            byte = (color & COLOR_NIBBLE_MASK) << 4  # FG = color, BG = black
-            block = bytes([byte] * (n_rows * SCREEN_W_CHARS))
-            self.api.write_region(
-                self._screen_base + cell_row_top * SCREEN_W_CHARS,
-                block,
-                region_id=RegionID.WAVE_SCREEN + v_idx,
-            )
+            self._paint_strip_color_row(v_idx, [color] * self._n_windows)
+
+    def _paint_strip_color_row(self, v_idx: int, window_colors: list[int]) -> None:
+        """Write the whole voice strip's FG-nibble color block once (region
+        ``WAVE_SCREEN + v_idx``), coloring each chip window's cell columns from
+        ``window_colors`` (one palette index per window, length == n_windows).
+
+        With one window this is byte-identical to a uniform strip fill. Writing
+        the entire strip as a single region keeps the delta cache's stable-
+        address contract intact (per-window sub-address writes under one region
+        id would corrupt it)."""
+        top, bot = BITMAP_STRIPS[v_idx]
+        cell_row_top = top // CELL_PX
+        n_rows = (bot - top) // CELL_PX
+        row = np.zeros(SCREEN_W_CHARS, dtype=np.uint8)  # BG=black in cells not covered
+        for (x_off, w), color in zip(self._window_slices, window_colors, strict=False):
+            c0 = x_off // CELL_PX
+            c1 = (x_off + w) // CELL_PX
+            row[c0:c1] = (color & COLOR_NIBBLE_MASK) << 4  # FG in high nibble
+        block = np.tile(row, n_rows).tobytes()
+        self.api.write_region(
+            self._screen_base + cell_row_top * SCREEN_W_CHARS,
+            block,
+            region_id=RegionID.WAVE_SCREEN + v_idx,
+        )
 
     # ---- per-voice color resolution ----------------------------------------
 
@@ -427,10 +512,11 @@ class VoiceScopeRenderer:
             return C64_COLORS.get(self.voice_color_names[v_idx], C64_COLORS["white"])
         return C64_COLORS.get(self.waveform_color_names["off"], C64_COLORS["dark gray"])
 
-    def _voice_color_now(self, v_idx: int) -> int:
+    def _voice_color_now(self, v_idx: int, emulator: SIDEmulator | None = None) -> int:
         if self.color_mode == "per_voice":
             return C64_COLORS.get(self.voice_color_names[v_idx], C64_COLORS["white"])
-        v = self.emulator.voices[v_idx]
+        emu = emulator if emulator is not None else self.emulator
+        v = emu.voices[v_idx]
         wave = primary_waveform(v.control)
         name = {
             WAVE_TRIANGLE: "triangle",
@@ -444,18 +530,12 @@ class VoiceScopeRenderer:
     def _repaint_voice_color(self, v_idx: int, color: int | None = None) -> None:
         """Re-write the screen-RAM FG-nibble cells under the given voice's
         bitmap strip with `color` (a C64 palette index), or the voice's current
-        color when None. MidiScene passes an explicit gray to dim idle voices."""
+        color when None — broadcast to every chip window. MidiScene passes an
+        explicit gray to dim idle voices. Multi-chip scenes that need distinct
+        per-window colors call ``_paint_strip_color_row`` directly."""
         if color is None:
             color = self._voice_color_now(v_idx)
-        top, bot = BITMAP_STRIPS[v_idx]
-        cell_row_top = top // 8
-        n_rows = (bot - top) // 8
-        block = bytes([((color & 0x0F) << 4)] * (n_rows * SCREEN_W_CHARS))
-        self.api.write_region(
-            self._screen_base + cell_row_top * SCREEN_W_CHARS,
-            block,
-            region_id=RegionID.WAVE_SCREEN + v_idx,
-        )
+        self._paint_strip_color_row(v_idx, [color] * self._n_windows)
 
     # ---- hires text rows ---------------------------------------------------
 
@@ -502,9 +582,11 @@ class VoiceScopeRenderer:
 
     # ---- hires rendering ---------------------------------------------------
 
-    def _voice_time_window_s(self, v_idx: int, n_cols: int) -> float:
+    def _voice_time_window_s(
+        self, v_idx: int, n_cols: int, *, emulator: SIDEmulator | None = None
+    ) -> float:
         """Return the audio time spanned by `n_cols` columns for voice
-        v_idx.
+        v_idx (of `emulator`, defaulting to the scene's primary SID).
 
         Per-column time is consistent regardless of mode: in scroll mode,
         a batch of n_new columns covers (n_new / BITMAP_W) of the
@@ -517,25 +599,29 @@ class VoiceScopeRenderer:
         auto: a full screen-width window = auto_cycles * (1/freq_hz).
         Falls back to wallclock for silent voices (freq=0, wave=off, or
         envelope=0)."""
+        emu = emulator if emulator is not None else self.emulator
         if self.time_base == TIME_BASE_WALLCLOCK:
             full_window = self._frame_time_s
         else:
-            v = self.emulator.voices[v_idx]
+            v = emu.voices[v_idx]
             wave = primary_waveform(v.control)
             if v.freq == 0 or wave == 0 or v.envelope_level <= 0.0:
                 full_window = self._frame_time_s
             else:
                 # SID freq (Hz) = freq_reg * clock / 2^24; period = 1/freq_hz.
-                period_s = ACCUMULATOR_RANGE / (v.freq * self.emulator.clock)
+                period_s = ACCUMULATOR_RANGE / (v.freq * emu.clock)
                 full_window = self.auto_cycles * period_s
         return full_window * n_cols / BITMAP_W
 
     # ---- per-voice render helpers -----------------------------------------
 
-    def _compute_ys(self, v_idx: int, top: int, bot: int, n_new: int) -> np.ndarray:
-        """Sample n_new audio samples for voice v_idx at the per-voice
-        time window and map to pixel-row y in absolute bitmap coords
-        (top..bot-1)."""
+    def _compute_ys(
+        self, v_idx: int, top: int, bot: int, n_new: int, *, emulator: SIDEmulator | None = None
+    ) -> np.ndarray:
+        """Sample n_new audio samples for voice v_idx (of `emulator`, default
+        the primary SID) at the per-voice time window and map to pixel-row y in
+        absolute bitmap coords (top..bot-1)."""
+        emu = emulator if emulator is not None else self.emulator
         mid = (top + bot) // 2
         half_h = (bot - top) // 2 - 1
         # Hold the register lock only for the emulator reads + sample
@@ -543,8 +629,8 @@ class VoiceScopeRenderer:
         # accumulator is advanced here). Released before mask packing + DMA
         # so the poll thread is never blocked across the wire.
         with self._reg_lock:
-            time_window_s = self._voice_time_window_s(v_idx, n_new)
-            samples = self.emulator.voice_samples(v_idx, n_new, time_window_s)
+            time_window_s = self._voice_time_window_s(v_idx, n_new, emulator=emu)
+            samples = emu.voice_samples(v_idx, n_new, time_window_s)
         ys = (mid - samples * half_h).astype(np.int32)
         np.clip(ys, top, bot - 1, out=ys)
         return ys
@@ -587,10 +673,30 @@ class VoiceScopeRenderer:
     def _render_voice_fast(self, v_idx: int, top: int, bot: int) -> None:
         """Default redraw-from-scratch: sample → mask → pack → write.
         No persistent state. Output bytes are identical to the pre-knob
-        bool-canvas implementation when all voices take this path."""
-        ys = self._compute_ys(v_idx, top, bot, BITMAP_W)
-        mask = self._span_mask(ys, top, bot, prev_y=None)
-        self._write_bitmap_strip(v_idx, top, bot, mask)
+        bool-canvas implementation when all voices take this path.
+
+        With multiple chip windows, each window `c` is sampled from
+        ``emulators[c]`` into its horizontal slice of one full-strip canvas,
+        with a 1px dark gutter between chips, then a single bitmap write."""
+        slices = self._window_slices
+        if len(slices) == 1:
+            # Identity path — byte-for-byte the single-chip render.
+            ys = self._compute_ys(v_idx, top, bot, BITMAP_W)
+            mask = self._span_mask(ys, top, bot, prev_y=None)
+            self._write_bitmap_strip(v_idx, top, bot, mask)
+            return
+        emus = self._scope_emulators()
+        canvas = np.zeros((bot - top, BITMAP_W), dtype=bool)
+        last = len(slices) - 1
+        for c, (x_off, w) in enumerate(slices):
+            if c >= len(emus):
+                continue  # no chip for this window yet → leave it blank
+            ys = self._compute_ys(v_idx, top, bot, w, emulator=emus[c])
+            submask = self._span_mask(ys, top, bot, prev_y=None)
+            canvas[:, x_off : x_off + w] = submask
+            if c < last:  # 1px separator gutter between chips
+                canvas[:, x_off + w - 1] = False
+        self._write_bitmap_strip(v_idx, top, bot, canvas)
 
     def _render_voice_scroll(self, v_idx: int, top: int, bot: int) -> None:
         """FIFO scroll: shift the persistent strip left by N cols, draw

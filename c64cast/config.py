@@ -1014,6 +1014,26 @@ class SceneCfg:
             "applies_to": ("asid",),
         },
     )
+    asid_multi_sid: bool = field(
+        default=True,
+        metadata={
+            "help": "Honor ASID multi-SID streams (commands 0x50-0x5F) by "
+            "configuring the U64 for multiple SIDs and routing each chip to its "
+            "own address (prefers physical socket SIDs). U64 only — ignored on "
+            "backends without the config API, where extra chips downmix to the "
+            "primary SID.",
+            "applies_to": ("asid",),
+        },
+    )
+    asid_max_sids: int = field(
+        default=8,
+        metadata={
+            "help": "Cap on the number of SID chips a multi-SID ASID stream may "
+            "map on the U64 (1-8). Chips beyond the cap downmix to the primary "
+            "SID.",
+            "applies_to": ("asid",),
+        },
+    )
     # MIDI scene kwargs.
     midi_port: str | None = field(
         default=None,
@@ -2664,6 +2684,8 @@ def _validate_asid(s: SceneCfg) -> DisplayMode:
     # bitmap-only (hires), so synthesise a hires display_mode for overlay
     # compatibility (PETSCII overlays rejected).
     _validate_scope_knobs(s, "asid")
+    if not (1 <= s.asid_max_sids <= 8):
+        raise ValueError(f"asid: asid_max_sids must be in 1..8, got {s.asid_max_sids!r}")
     return _build_display_mode("hires")
 
 
@@ -3402,6 +3424,8 @@ def build_scene(
             scroll_columns=s.scroll_columns,
             target_fps=s.target_fps,
             system=cfg.ultimate64.system,
+            multi_sid=s.asid_multi_sid,
+            max_sids=s.asid_max_sids,
             name=s.name or "ASID",
         )
     # Video scenes set their own video-driven duration in __init__
