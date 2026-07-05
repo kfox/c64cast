@@ -215,6 +215,62 @@ config (one window, byte-identical to before). Verified on U64-II hardware:
 `Enchanted_Forest_3SID.sid` → 3 windows, all 9 voices audible as each chip
 enters.
 
+### ASID buffered ring player (cycle-accurate multispeed)
+
+`AsidScene`'s default *coalesced* path folds incoming ASID register frames into
+per-chip shadows and flushes one `$D400-$D418` block write per chip at ≤60 Hz
+(host socket DMA). That's fine for single-speed tunes but **drops intermediate
+frames** on multispeed content (`0x31` up to 16×, or a small `frame_delta_us`
+pushes frames far faster than 60 Hz): arpeggios, fast vibrato, and
+gate-off→gate-on hard restarts get mangled, and every flush is a bus-halting,
+wall-clock-jittered burst.
+
+The *buffered* path (`asid_buffered_player`, default `auto`) fixes this on the
+U64 by moving frame consumption onto the C64. The host serializes each frame
+into a fixed-size slot and REUWRITEs it (bus-clean) into a REU ring ahead of a
+**computed** read head; a 6502 player fired by CIA #1 Timer A at the ASID
+cadence pops one slot per tick and applies the writes honoring the `0x30`
+write-order + inter-write waits — no frames dropped, decoupled from host jitter.
+It is the open-loop producer-ahead-of-read-head pattern the FPGA sampler uses
+(the C64 crystal is exact, so no servo and **no C64→host reads during
+playback** — it obeys the "don't rapid-poll the U64 during capture" rule) with
+an IRQ ring consumer modeled on the REU audio pump. `AsidScene` runs no `$D418`
+DAC, so the whole `$C000` page and the REU are free for it. See
+[asid_player.py](../c64cast/asid_player.py).
+
+**U64 only.** It needs a bus-clean `reu_write` (`profile.supports_reu`).
+`auto` engages it where an REU exists and stays coalesced otherwise; `on` forces
+it (warns + falls back on a no-REU backend); `off` always coalesces. TeensyROM /
+any no-REU backend keeps the coalesced path unchanged (and its display is never
+blanked). A buffered run folds the ASID ring into the REU auto-provisioner
+(`doctor._wants_reu`), so the REU is enabled + sized like the sampler's.
+
+**v1 limitations (documented, not over-engineered):**
+
+* **Frame-fit ceiling.** The handler's per-frame cost (per-op overhead + `0x30`
+  waits, summed across all chips) must fit the frame period. Realistic content
+  fits — it's how the tune runs natively — but a pathological 8-SID × 16× frame
+  can overrun and queue ticks, an inherent limit like the NMI DAC cycle budget.
+* **Coarse cycle delay.** The on-C64 busy-wait approximates each `0x30`
+  `wait_cycles` within a few cycles (~`DELAY_CYCLES_PER_UNIT` per unit) — far
+  better than dropped/instant, a refinement target if it ever matters audibly.
+* **Frame grouping** assumes chip 0 (`0x4E`) is written every frame in
+  multi-SID (the emit boundary); single-SID is unaffected. Costs one frame of
+  constant latency.
+* **Real-time cadence, open-loop lead.** The ASID host feeds frames in real time
+  at exactly the consume cadence, so the ring's write-ahead lead can never *grow*
+  past the startup prebuffer (unlike the FPGA sampler, whose demuxer races ahead
+  of real time). The prebuffer is therefore seeded to the full lead for maximum
+  jitter cushion; a genuine producer stall pads a **hold** (the SID holds its
+  last state — graceful, no echo). Two consequences learned on hardware: the
+  player **arms lazily** — the read-head clock + `$0314` swap wait for the
+  prebuffer, or the read head runs away before the host starts streaming and
+  every real frame lands in an already-consumed slot; and a `0x31` speed message
+  is honored **before** arming, or the player would arm at the wrong (initial
+  video-rate) cadence and decimate the tune to that rate. HW-verified on the
+  U64-II: at 2× multispeed the buffered audio modulates at exactly 2× the
+  coalesced path's rate (spectral-flux measured).
+
 ### TeensyROM: pure-DMA `$0314` vector-swap launch (no `run_prg`)
 
 The host-side orchestration above (parse / layout / build / divider

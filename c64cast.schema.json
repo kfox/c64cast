@@ -1741,6 +1741,16 @@
             "description": "Cap on the number of SID chips a multi-SID ASID stream may map on the U64 (1-8). Chips beyond the cap downmix to the primary SID.",
             "default": 8
           },
+          "asid_buffered_player": {
+            "type": "string",
+            "description": "Cycle-accurate buffered playback: consume ASID frames on a C64-side REU ring player (CIA #1 Timer A IRQ) instead of coalescing block writes on the host. Fixes dropped frames on multispeed tunes (0x31 up to 16x) \u2014 arps/vibrato/hard restarts survive \u2014 and honors the 0x30 write-order/wait recipe. U64 only (needs a bus-clean REU): 'auto' = on when the backend has an REU, else the coalesced path; 'on' = force it (warns + falls back on a no-REU backend); 'off' = always coalesce.",
+            "enum": [
+              "auto",
+              "on",
+              "off"
+            ],
+            "default": "auto"
+          },
           "image_duration_s": {
             "type": "number",
             "description": "Per-image dwell time before advancing (total runtime is duration_s).",

@@ -34,8 +34,19 @@
 # config is restored on teardown. On backends without the config API (TeensyROM)
 # or with `asid_multi_sid = false`, extra chips downmix to the primary SID.
 #
-# Known v1 limits: OPL-FM / cycle-accurate timing streams are recognised but not
-# applied; very high multispeed tunes are frame-decimated to protect the DMA link.
+# Cycle-accurate multispeed (U64 only): `asid_buffered_player` moves frame
+# consumption onto the C64 — a CIA #1 Timer A 6502 player pops one serialized
+# frame per tick from a REU ring, honoring the ASID 0x30 write-order/wait recipe.
+# This fixes the coalesced path's dropped frames on multispeed tunes (0x31 up to
+# 16x): arpeggios, fast vibrato, and hard restarts survive. Default `auto` turns
+# it on wherever the backend has an REU; `off` forces the host-coalesced flush;
+# `on` forces the ring player (warns + falls back on a no-REU backend). On
+# TeensyROM / no-REU backends the coalesced path is used regardless.
+#
+# Known v1 limits: OPL-FM streams are recognised but not applied; the buffered
+# player's cycle delay is coarse, and a pathological 8-SID x 16x frame can
+# overrun the frame period. With the buffered player off, high-multispeed tunes
+# are frame-decimated to protect the DMA link.
 #
 # Run:
 #   python -m c64cast --config config/examples/scene-asid.toml
@@ -52,6 +63,8 @@ name = "ASID"
 asid_port = ""                # "" = first port; or e.g. "IAC", "loopMIDI"
 asid_multi_sid = true         # honor multi-SID streams on the U64 (see above)
 asid_max_sids = 8             # cap on mapped SID chips (1-8); surplus downmixes
+asid_buffered_player = "auto" # auto | on | off — cycle-accurate C64-side ring
+                              # player for multispeed tunes (U64 only; see above)
 # Oscilloscope knobs (shared with the waveform / midi scenes):
 voice_colors = ["light green", "cyan", "yellow"]
 color_mode = "per_voice"      # per_voice | per_waveform

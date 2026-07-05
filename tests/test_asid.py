@@ -55,12 +55,12 @@ class DecodeDispatchTest(unittest.TestCase):
         self.assertIs(_ok((asid.ASID_MANUFACTURER_ID, asid.CMD_STOP)).playing, False)
 
     def test_unsupported_commands_dropped(self):
-        # Multi-SID (0x50-0x5F) is now honored (see MultiSidTest); only OPL-FM
-        # and the timing recipe remain dropped.
-        for cmd in (asid.CMD_TIMING, asid.CMD_OPL):
-            u = _ok((asid.ASID_MANUFACTURER_ID, cmd, 0x00))
-            self.assertTrue(u.dropped, f"command 0x{cmd:02X} should be dropped")
-            self.assertFalse(u.regs)
+        # Multi-SID (0x50-0x5F) is honored (see MultiSidTest) and the timing
+        # recipe (0x30) is now decoded (see TimingRecipeTest); only OPL-FM
+        # remains dropped.
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_OPL, 0x00))
+        self.assertTrue(u.dropped, "OPL-FM should be dropped")
+        self.assertFalse(u.regs)
 
 
 class MultiSidTest(unittest.TestCase):
@@ -168,6 +168,14 @@ class OtherCommandsTest(unittest.TestCase):
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x00))
         self.assertEqual(u.system, "PAL")
         self.assertEqual(u.speed_multiplier, 1)
+        self.assertIs(u.buffering_requested, False)
+
+    def test_speed_buffering_bit(self):
+        # data0 bit 6 set → the host requests client-side buffering.
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x40))
+        self.assertIs(u.buffering_requested, True)
+        self.assertEqual(u.system, "PAL")
+        self.assertEqual(u.speed_multiplier, 1)
 
     def test_sid_type_primary(self):
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 0, 1))
@@ -182,6 +190,39 @@ class OtherCommandsTest(unittest.TestCase):
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 1, 1))
         self.assertEqual(u.chip_index, 1)
         self.assertEqual(u.chip_type, "8580")
+
+
+class TimingRecipeTest(unittest.TestCase):
+    def test_identity_order_no_waits(self):
+        # Two pairs, register ids 0 and 1, both wait 0.
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x00, 0x00, 0x01, 0x00)
+        u = _ok(payload)
+        self.assertFalse(u.dropped)
+        self.assertEqual(u.timing_recipe, [(0, 0), (1, 0)])
+
+    def test_reg_id_low_six_bits(self):
+        # data0 low 6 bits carry the register index; bits 6-7 are the wait MSB /
+        # reserved and must not bleed into the id.
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x1B, 0x00)
+        self.assertEqual(_ok(payload).timing_recipe, [(0x1B, 0)])
+
+    def test_wait_cycles_packing(self):
+        # wait bit 7 rides in data0 bit 6; wait bits 0-6 in data1. 0xFF = 255.
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x40, 0x7F)
+        self.assertEqual(_ok(payload).timing_recipe, [(0, 255)])
+        # Only the low 7 bits of data1 count; a stray high bit is masked off.
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x00, 0x0A)
+        self.assertEqual(_ok(payload).timing_recipe, [(0, 10)])
+
+    def test_odd_trailing_byte_ignored(self):
+        # A dangling half-pair is dropped (whole pairs only).
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x02, 0x00, 0x03)
+        self.assertEqual(_ok(payload).timing_recipe, [(2, 0)])
+
+    def test_empty_recipe(self):
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING))
+        self.assertEqual(u.timing_recipe, [])
+        self.assertFalse(u.dropped)
 
 
 if __name__ == "__main__":

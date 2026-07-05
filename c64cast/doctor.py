@@ -208,12 +208,22 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
                 )
             else:
                 role = " (follower-only)" if s.follower_only else ""
+                extra = ""
+                if s.type == "asid":
+                    mode = s.asid_buffered_player
+                    extra = (
+                        ", buffered ring player (REU)"
+                        if mode in ("auto", "on")
+                        else ", coalesced flush"
+                    )
+                    if mode == "auto":
+                        extra += " when REU present"
                 out.append(
                     Diagnostic(
                         level="ok",
                         category="scene",
                         subject=subject,
-                        message=f"{s.type}/{s.display}, {len(s.overlays)} overlay(s){role}",
+                        message=f"{s.type}/{s.display}, {len(s.overlays)} overlay(s){role}{extra}",
                     )
                 )
     return out
@@ -584,6 +594,18 @@ def _wants_reu(cfg: object) -> tuple[bool, list[str]]:
     wants_samp, _ = _wants_sampler(cfg)
     if wants_samp:
         reasons.append("[audio].backend sampler (REU-backed PCM ring)")
+    # A buffered ASID scene streams frame-slots out of a REU ring, so a run with
+    # one (asid_buffered_player auto/on) needs the REU enabled + sized. "auto"
+    # only turns on where an REU exists — and provision_reu is itself gated on
+    # supports_reu — so both auto and on are a genuine want here (unlike video's
+    # self-healing use_reu_staged = "auto").
+    scenes = getattr(cfg, "scenes", None) or []
+    if any(
+        getattr(s, "type", None) == "asid"
+        and getattr(s, "asid_buffered_player", "auto") in ("auto", "on")
+        for s in scenes
+    ):
+        reasons.append("[[scenes]] asid with asid_buffered_player (REU ring player)")
     return bool(reasons), reasons
 
 
