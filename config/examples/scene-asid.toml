@@ -1,0 +1,52 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: ASID stream → real SID + oscilloscope.
+#
+# Turns c64cast into an ASID *client*. An ASID *host* — DeepSID (in a browser),
+# SIDFactory II, Plogue chipsynth C64, Elektron ASID-XP — streams packed SID
+# register writes over MIDI SysEx; this scene decodes them, plays them on the
+# U64's real SID chip, and draws a full-screen hires oscilloscope of the three
+# voices. Voices draw in color while sounding and gray out when idle; the bottom
+# rows show the play state / SID type and either the host's "now playing" text
+# (ASID 0x4F) or a per-voice waveform + volume summary. (Bitmap-only: PETSCII
+# overlays don't apply, like a waveform scene.)
+#
+# Unlike the `midi` scene (which synthesises SID writes from notes/CCs), ASID
+# carries the finished register bytes — the whole tune, exactly as its player
+# would write it — so there are no synth knobs here. This is a NEW INPUT path,
+# not an audio change: it plays only SID chip-music (not arbitrary/PCM audio),
+# and leaves the video-audio backends untouched.
+#
+# Requires:
+#   - The `midi` extra (`pip install -e .[midi]`): mido + python-rtmidi.
+#     ASID rides the same MIDI transport.
+#   - An ASID host pointed at a MIDI port. On macOS, enable IAC in Audio MIDI
+#     Setup and select it as the host's ASID output; on Linux, `modprobe
+#     snd-virmidi`. DeepSID (Settings → ASID) is the easiest smoke test.
+#
+# `asid_port` is a substring match against available input port names.
+# Empty string ("" or commented out) picks the first available port.
+#
+# Known v1 limits: multi-SID / OPL-FM / cycle-accurate timing streams are
+# recognised but not applied (one physical SID); very high multispeed tunes are
+# frame-decimated to protect the DMA link.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-asid.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "asid"
+name = "ASID"
+asid_port = ""                # "" = first port; or e.g. "IAC", "loopMIDI"
+# Oscilloscope knobs (shared with the waveform / midi scenes):
+voice_colors = ["light green", "cyan", "yellow"]
+color_mode = "per_voice"      # per_voice | per_waveform
+time_base = "wallclock"       # wallclock | auto (auto sizes the window per pitch)
+persistence = "off"           # off | short | medium | long | random
+scroll_columns = 0            # 0 = redraw; >0 = FIFO scroll (int or [v1,v2,v3])
+# target_fps = 30             # default = half video rate (30 NTSC / 25 PAL)

@@ -53,7 +53,7 @@ _CORE_SCENE_FIELDS = frozenset(
 
 # Scene types whose audio is driven by the scene/program itself, not the
 # global [audio] streamer — the wizard doesn't ask "enable audio?" for these.
-_SELF_AUDIO_TYPES = frozenset({"waveform", "midi", "launcher"})
+_SELF_AUDIO_TYPES = frozenset({"waveform", "midi", "asid", "launcher"})
 
 
 # ---------------------------------------------------------------------------

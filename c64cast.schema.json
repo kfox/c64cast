@@ -754,6 +754,7 @@
               "video",
               "waveform",
               "midi",
+              "asid",
               "slideshow",
               "launcher",
               "generative"
@@ -793,7 +794,7 @@
               "number",
               "null"
             ],
-            "description": "Per-scene frame-rate cap; unset = playlist default (60/50). Bitmap (hires/mhires) video/webcam/generative scenes default lower to stay under the DMA bus-halt ceiling: 20 fps while streaming digitized audio, else half rate (30/25). Waveform/midi default to half rate too."
+            "description": "Per-scene frame-rate cap; unset = playlist default (60/50). Bitmap (hires/mhires) video/webcam/generative scenes default lower to stay under the DMA bus-halt ceiling: 20 fps while streaming digitized audio, else half rate (30/25). Waveform/midi/asid default to half rate too."
           },
           "audio": {
             "type": [
@@ -1718,6 +1719,13 @@
             "type": "integer",
             "description": "SID master volume nibble (0..15) for MIDI notes; CC7.",
             "default": 15
+          },
+          "asid_port": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "MIDI input port name substring the ASID host streams to; unset = first available port."
           },
           "image_duration_s": {
             "type": "number",
