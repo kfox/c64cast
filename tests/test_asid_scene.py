@@ -56,6 +56,10 @@ class AsidSceneTest(unittest.TestCase):
         from c64cast.asid_scene import AsidScene
 
         api = FakeAPI()
+        # These tests exercise the coalesced flush path specifically; the FakeAPI
+        # reports supports_reu, so the "auto" default would otherwise engage the
+        # buffered ring player. The buffered path has its own class below.
+        kwargs.setdefault("buffered_player", "off")
         scene = AsidScene(api, None, **kwargs)
         return scene, api
 
@@ -167,6 +171,7 @@ class AsidSceneTest(unittest.TestCase):
             from c64cast.asid_sidmap import CAT_SOCKETS
 
             api.config_store[CAT_SOCKETS] = dict(sockets)
+        kwargs.setdefault("buffered_player", "off")  # coalesced-path multi-SID tests
         scene = AsidScene(api, None, **kwargs)
         return scene, api
 
@@ -237,6 +242,97 @@ class AsidSceneTest(unittest.TestCase):
             self.assertIsNotNone(scene._reader_thread)
         finally:
             scene.teardown()
+
+
+@unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
+class AsidBufferedPlayerTest(unittest.TestCase):
+    """The buffered ring-player path: frame grouping, serialization to the ring
+    player, and REU gating. The player's own ring math is tested in
+    test_asid_player; here we assert the scene wires frames into it."""
+
+    def _make(self, **kwargs):
+        from c64cast.asid_scene import AsidScene
+
+        api = FakeAPI()  # supports_reu=True → "auto" engages the buffered player
+        scene = AsidScene(api, None, buffered_player="auto", **kwargs)
+        return scene, api
+
+    def test_auto_engages_when_reu_present(self):
+        scene, _ = self._make()
+        self.assertTrue(scene._use_buffered_player)
+        self.assertIsNotNone(scene._player)
+
+    def test_off_forces_coalesced(self):
+        from c64cast.asid_scene import AsidScene
+
+        scene = AsidScene(FakeAPI(), None, buffered_player="off")
+        self.assertFalse(scene._use_buffered_player)
+        self.assertIsNone(scene._player)
+
+    def test_on_without_reu_warns_and_falls_back(self):
+        from c64cast.asid_scene import AsidScene
+        from c64cast.backend import HardwareProfile
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(name="Fake", family="fake", supports_reu=False)
+        with self.assertLogs("c64cast.asid_scene", level="WARNING"):
+            scene = AsidScene(api, None, buffered_player="on")
+        self.assertFalse(scene._use_buffered_player)
+
+    def test_frame_boundary_pushes_a_slot(self):
+        scene, _ = self._make()
+        player = scene._player
+        assert player is not None
+        pushed: list[bytes] = []
+        # Replace the real player with a stub capturing push_frame.
+        player.push_frame = pushed.append  # type: ignore[method-assign]
+        # First 0x4E starts a frame; the second 0x4E flushes the first.
+        scene._handle_sysex(_reg_msg({0: 0x34, 1: 0x12, 22: 0x41, 21: 0x0F}))
+        self.assertTrue(scene._frame_has_data)
+        self.assertEqual(pushed, [])  # not emitted until the boundary
+        scene._handle_sysex(_reg_msg({0: 0x40}))
+        self.assertEqual(len(pushed), 1)
+        self.assertEqual(len(pushed[0]), player.slot_size)
+        # The emitted slot carries the first frame's ops (n_ops > 0).
+        self.assertGreater(pushed[0][0], 0)
+
+    def test_stop_boundary_flushes_partial_frame(self):
+        scene, _ = self._make()
+        player = scene._player
+        assert player is not None
+        pushed: list[bytes] = []
+        player.push_frame = pushed.append  # type: ignore[method-assign]
+        scene._handle_sysex(_reg_msg({0: 0x34, 22: 0x41}))
+        scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_STOP))
+        self.assertEqual(len(pushed), 1)
+        self.assertFalse(scene._frame_has_data)
+
+    def test_speed_message_retunes_player(self):
+        scene, _ = self._make()
+        player = scene._player
+        assert player is not None
+        rates: list[float] = []
+        player.set_frame_rate = rates.append  # type: ignore[method-assign]
+        player._armed = True  # so _apply_speed forwards
+        # NTSC, multiplier 4 (data0 bits 1-4 = 3 → ×4).
+        scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (3 << 1) | 0x01))
+        self.assertTrue(rates)
+        self.assertAlmostEqual(rates[-1], 60.0 * 4, delta=1.0)
+
+    def test_recipe_stored_from_timing_message(self):
+        scene, _ = self._make()
+        scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x01, 0x00, 0x00, 0x00))
+        self.assertEqual(scene._recipe, [(1, 0), (0, 0)])
+
+    def test_wants_reu_flags_buffered_asid(self):
+        from c64cast.config import Config, SceneCfg
+        from c64cast.doctor import _wants_reu
+
+        cfg = Config()
+        cfg.scenes = [SceneCfg(type="asid", asid_buffered_player="on")]
+        wants, reasons = _wants_reu(cfg)
+        self.assertTrue(wants)
+        self.assertTrue(any("asid" in r for r in reasons))
 
 
 if __name__ == "__main__":

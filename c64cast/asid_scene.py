@@ -27,10 +27,17 @@ host-side :class:`~c64cast.sidemu.SIDEmulator`. The difference is the input:
 MidiScene *synthesizes* SID writes from notes/CCs, while AsidScene receives the
 finished register bytes and just relays them.
 
-Register frames are coalesced and flushed to the SID at a bounded rate (see
-``_FLUSH_INTERVAL_S``). Each flush is one ``$D400-$D418`` block write per dirty
-chip; a within-frame gate-off→gate-on "hard restart" additionally emits the
-first control value just before the block so the pulse reaches the chip.
+**Two playback paths.** The default *coalesced* path folds register frames into
+per-chip shadows and flushes one ``$D400-$D418`` block write per dirty chip at a
+bounded rate (see ``_FLUSH_INTERVAL_S``); a within-frame gate-off→gate-on "hard
+restart" additionally emits the first control value just before the block so the
+pulse reaches the chip. This is host-driven and drops intermediate frames on
+multispeed tunes. The *buffered* path (U64 only, ``asid_buffered_player``) hands
+frames to a C64-side REU ring player (:mod:`c64cast.asid_player`) that consumes
+one frame per CIA #1 Timer A tick at the ASID cadence — cycle-accurate, no frames
+dropped (arps/vibrato/hard restarts survive multispeed). The reader still folds
+every frame into the shadows + host emulators so the oscilloscope tracks all
+voices in both paths; only the SID *write* mechanism differs.
 
 Display is bitmap-only (hires), so PETSCII overlays don't apply. Requires the
 ``midi`` extra (``pip install c64cast[midi]``) — ASID rides the same MIDI
@@ -46,6 +53,7 @@ from typing import Any
 
 from . import asid
 from ._pollthread import PollThread
+from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, plan_sid_map
 from .c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
 from .palette import C64_COLORS
@@ -126,6 +134,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         system: str = "NTSC",
         multi_sid: bool = True,
         max_sids: int | None = None,
+        buffered_player: str = "auto",
         name: str = "ASID",
     ):
         super().__init__(api, audio, None, name)
@@ -156,6 +165,21 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # config API (Ultimate REST). Off ⇒ extra chips downmix to the primary.
         self._multi_sid = multi_sid and bool(getattr(api.profile, "supports_config", False))
         self._max_sids = MAX_SIDS if max_sids is None else max(1, min(max_sids, MAX_SIDS))
+
+        # Buffered C64-side ring player (cycle-accurate multispeed) — U64 only
+        # (needs bus-clean reu_write). "auto" ⇒ on when the backend has an REU;
+        # "on" warns + falls back on a no-REU backend; "off" forces the coalesced
+        # path. When active, the reader serializes frames into the REU ring
+        # instead of coalescing block writes (both paths still feed the scope).
+        supports_reu = bool(getattr(api.profile, "supports_reu", False))
+        want = (buffered_player or "auto").lower()
+        self._use_buffered_player = want in ("auto", "on") and supports_reu
+        if want == "on" and not supports_reu:
+            log.warning(
+                "AsidScene: asid_buffered_player = 'on' but the backend has no REU "
+                "— falling back to the coalesced flush path"
+            )
+        self._player: AsidRingPlayer | None = None
 
         # One host-side SID model + register shadow per chip, pre-allocated to
         # the max so the reader thread never grows the lists (the render thread
@@ -207,6 +231,16 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._pending_ctrl_first: dict[int, dict[int, int]] = {}  # chip -> {voice: fval}
         self._warned_cmds: set[int] = set()
         self._warned_downmix = False
+        # Buffered-path per-frame accumulation (reader thread only). A frame is
+        # every 0x50-0x5F between two chip-0 (0x4E) messages; emitted on the next
+        # 0x4E / start / stop. Deltas (not the full shadow) are serialized, so
+        # arps/vibrato/hard restarts replay exactly. The 0x30 recipe (if any)
+        # orders the writes + carries their inter-write waits.
+        self._frame_regs: dict[int, dict[int, int]] = {}  # chip -> {offset: value}
+        self._frame_ctrl_first: dict[int, dict[int, int]] = {}  # chip -> {voice: fval}
+        self._frame_has_data = False
+        self._recipe: list[tuple[int, int]] | None = None
+        self._frame_rate_hz = self._video_hz  # ASID cadence (0x31 retunes it)
         # Highest chip index seen on the wire (reader thread); process_frame
         # compares against _active_chips to trigger a live remap on the main
         # thread (avoids mutating display state from the reader).
@@ -220,6 +254,12 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._reader_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._dirty = True  # force first text-row paint
+
+        # Construct the ring player up front (its queue accepts pushes before the
+        # writer thread is armed) so the reader can enqueue frames as soon as it
+        # starts; setup() arms it once the bitmap is up.
+        if self._use_buffered_player:
+            self._player = AsidRingPlayer(api, system=system, n_chips=1)
 
     # ---- MIDI plumbing -------------------------------------------------------
     def _open_port(self):
@@ -297,10 +337,10 @@ class AsidScene(VoiceScopeRenderer, Scene):
     def _handle_sysex(self, data) -> None:
         """Decode one ASID SysEx message and fold it into the pending state.
 
-        Runs on the reader thread. The per-chip register shadows are only ever
-        touched here (single-threaded), so they need no lock; the emulators
-        (shared with the render + envelope threads) are guarded in
-        _flush_to_sid."""
+        Runs on the reader thread. The per-chip register shadows + frame
+        accumulators are only ever touched here (single-threaded), so they need
+        no lock; the emulators (shared with the render + envelope threads) are
+        guarded in _flush_to_sid / _emit_buffered_frame."""
         update = asid.decode(data)
         if update is None:
             return  # foreign SysEx — not ASID
@@ -308,21 +348,39 @@ class AsidScene(VoiceScopeRenderer, Scene):
             if update.command not in self._warned_cmds:
                 self._warned_cmds.add(update.command)
                 log.warning(
-                    "AsidScene: ignoring unsupported ASID command 0x%02X (OPL-FM / timing)",
+                    "AsidScene: ignoring unsupported ASID command 0x%02X (OPL-FM)",
                     update.command,
                 )
             return
+        if update.command == asid.CMD_TIMING:
+            # 0x30 write-order/wait recipe. Only the buffered player replays it
+            # (the coalesced path writes the whole image at once); store it for
+            # subsequent frames either way.
+            self._recipe = update.timing_recipe or None
+            return
         if update.regs:
             chip = self._chip_for(update.chip_index)
+            # Buffered path: a chip-0 (0x4E) message starts a new frame, so emit
+            # the accumulated previous frame first.
+            if self._use_buffered_player and update.chip_index == 0 and self._frame_has_data:
+                self._emit_buffered_frame()
             shadow = self._sid_shadows[chip]
             for offset, value in update.regs.items():
                 shadow[offset] = value & 0xFF
-            if update.control_first:
-                cf = self._pending_ctrl_first.setdefault(chip, {})
-                for voice, fval in update.control_first.items():
-                    cf[voice] = fval
-            self._dirty_chips.add(chip)
-            self._pending_flush = True
+            if self._use_buffered_player:
+                fr = self._frame_regs.setdefault(chip, {})
+                fr.update((o, v & 0xFF) for o, v in update.regs.items())
+                if update.control_first:
+                    cf = self._frame_ctrl_first.setdefault(chip, {})
+                    cf.update(update.control_first)
+                self._frame_has_data = True
+            else:
+                if update.control_first:
+                    cf = self._pending_ctrl_first.setdefault(chip, {})
+                    for voice, fval in update.control_first.items():
+                        cf[voice] = fval
+                self._dirty_chips.add(chip)
+                self._pending_flush = True
             if self._multi_sid and update.chip_index > self._max_chip_seen:
                 # Grow handled on the main thread (process_frame) to keep display
                 # mutation off the reader thread.
@@ -330,15 +388,22 @@ class AsidScene(VoiceScopeRenderer, Scene):
         if update.text is not None:
             self._status_text = update.text
             self._dirty = True
-        if update.playing is not None and update.playing != self._playing:
-            self._playing = update.playing
-            self._dirty = True
+        if update.playing is not None:
+            # Emit any partial frame before a start/stop boundary (buffered path).
+            if self._use_buffered_player and self._frame_has_data:
+                self._emit_buffered_frame()
+            if update.playing != self._playing:
+                self._playing = update.playing
+                self._dirty = True
         if update.system is not None and update.system != self.system:
             self.system = update.system
             with self._reg_lock:
                 for emu in self._emulators:
                     emu.clock = CLOCK_NTSC if update.system == "NTSC" else CLOCK_PAL
+            self._video_hz = 50.0 if update.system.upper() == "PAL" else 60.0
             self._dirty = True
+        if update.command == asid.CMD_SPEED:
+            self._apply_speed(update)
         if (
             update.chip_index == 0
             and update.chip_type is not None
@@ -346,6 +411,55 @@ class AsidScene(VoiceScopeRenderer, Scene):
         ):
             self._chip_type = update.chip_type
             self._dirty = True
+
+    def _apply_speed(self, update: asid.AsidUpdate) -> None:
+        """Retune the buffered player's consume rate from a 0x31 message.
+
+        Frame delta (µs) wins when present; else the speed multiplier scales the
+        system video rate. A no-op for the coalesced path (it flushes on its own
+        timer)."""
+        if update.frame_delta_us:
+            rate = 1_000_000.0 / update.frame_delta_us
+        elif update.speed_multiplier:
+            rate = self._video_hz * update.speed_multiplier
+        else:
+            rate = self._video_hz
+        self._frame_rate_hz = rate
+        if self._use_buffered_player and self._player is not None:
+            self._player.set_frame_rate(rate)
+
+    def _emit_buffered_frame(self) -> None:
+        """Serialize the accumulated frame (all mapped chips) into one ring slot,
+        push it to the player, and mirror it into the host emulators for the
+        scope. Reader thread."""
+        player = self._player
+        if player is not None and self._frame_has_data:
+            all_ops: list[tuple[int, int, int]] = []
+            emu_updates: list[tuple[int, tuple[bool, ...] | None]] = []
+            for chip in range(self._active_chips):
+                regs = self._frame_regs.get(chip)
+                if not regs or chip >= len(self._chip_addresses):
+                    continue
+                base = self._chip_addresses[chip]
+                ctrl_first = self._frame_ctrl_first.get(chip, {})
+                all_ops.extend(serialize_frame(regs, ctrl_first, base, self._recipe))
+                retrigger = None
+                if ctrl_first:
+                    mask = [False] * SID.N_VOICES
+                    for voice in ctrl_first:
+                        mask[voice] = True
+                    retrigger = tuple(mask)
+                emu_updates.append((chip, retrigger))
+            player.push_frame(pack_slot(all_ops, player.slot_size))
+            # Mirror into the emulators (scope) — the C64 plays the real SID.
+            with self._reg_lock:
+                for chip, retrigger in emu_updates:
+                    self._emulators[chip].update_registers(
+                        bytes(self._sid_shadows[chip]), retrigger=retrigger
+                    )
+        self._frame_regs.clear()
+        self._frame_ctrl_first.clear()
+        self._frame_has_data = False
 
     def _flush_to_sid(self) -> None:
         """Write the accumulated per-chip register shadows to the real SID(s)
@@ -401,6 +515,12 @@ class AsidScene(VoiceScopeRenderer, Scene):
         apply_sid_map(self.api, sid_map)
         self._chip_addresses = list(sid_map.addresses)
         self._active_chips = sid_map.n
+        # Resize the buffered ring player for the new chip count (bigger slot).
+        # Frames the reader serializes during the brief re-init window are
+        # self-describing (n_ops-bounded) and any wrong-sized ones the writer
+        # drops, so a couple of transient frames may be skipped — no corruption.
+        if self._use_buffered_player and self._player is not None:
+            self._player.reinit(sid_map.n)
         log.info(
             "AsidScene: mapped %d SID chip(s) → %s",
             sid_map.n,
@@ -483,6 +603,10 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._stop.clear()
         self._reader_thread = threading.Thread(target=self._reader, daemon=True, name="asid-reader")
         self._reader_thread.start()
+        # Arm the buffered ring player after the reader (so its prebuffer can draw
+        # from frames already streaming in) but before the scope needs it.
+        if self._use_buffered_player and self._player is not None:
+            self._player.start(self._frame_rate_hz)
         self._poll = PollThread(self._tick_envelopes, period=self._poll_dt, name="asid-env")
         self._poll.start()
         self._dirty = True
@@ -541,6 +665,11 @@ class AsidScene(VoiceScopeRenderer, Scene):
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=1.0)
             self._reader_thread = None
+        # Stop the ring player FIRST: it restores $0314 → the kernal IRQ tail and
+        # the CIA #1 latch, so the C64 stops popping the ring before we silence
+        # the SID(s) and restore the display below.
+        if self._player is not None:
+            self._player.stop()
         if self._midi_port is not None:
             try:
                 self._midi_port.close()

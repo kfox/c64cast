@@ -121,10 +121,17 @@ c64cast/
 ├── midi_scene.py     MidiScene: live MIDI input → SID synth + 3-voice
 │                     oscilloscope (inherits VoiceScopeRenderer; bitmap-only)
 ├── asid.py           Pure ASID-protocol decoder: ASID MIDI SysEx (packed SID
-│                     register writes) → AsidUpdate (no mido/hardware deps)
+│                     register writes) → AsidUpdate (no mido/hardware deps);
+│                     decodes the 0x30 timing recipe + 0x31 buffering bit
 ├── asid_scene.py     AsidScene: receive an ASID stream (DeepSID/SIDFactory II/
 │                     Plogue/…) and play it on the real SID + 3-voice scope
-│                     (ASID *client*; sibling of MidiScene; bitmap-only)
+│                     (ASID *client*; sibling of MidiScene; bitmap-only).
+│                     Coalesced host flush by default; buffered C64-side ring
+│                     player (asid_player) for cycle-accurate multispeed on U64
+├── asid_player.py    Buffered ASID ring player (U64): serialize each frame →
+│                     fixed slot in a REU ring; a CIA #1 Timer A 6502 player
+│                     pops one slot/tick honoring 0x30 order+waits (no frames
+│                     dropped on multispeed). Open-loop, sampler.py pattern
 ├── sidemu.py         Minimal SID waveform synthesizer (per-voice +
 │                     ADSR; no filter/mixing) — drives the oscilloscope
 │                     trace from live $D400-$D418 snapshots
@@ -247,3 +254,5 @@ in this file.
 - **Ensemble audio coordination.** In ensemble mode (`[ensemble]` in the master TOML) at most one system's playlist may hold the ensemble audio slot — tracked as `Ensemble.audio_holder` + `audio_lock` in [ensemble.py](c64cast/ensemble.py). Scenes whose class sets `WANTS_AUDIO_LOCK = True` (`VideoScene`, `WaveformScene`, `MidiScene`, `LauncherScene`) try to claim the slot in `Playlist._resolve_next_index`; on contention they get **skipped** to the next non-gated scene in the playlist, with `_safe_teardown` releasing the slot when the holder's scene ends. (`LauncherScene` overrides `competes_for_audio_lock()` so `bypass_audio_lock = true` opts out — several systems can then run interactive launchers at once, each player hearing their own SID.) Live scenes (`WebcamScene`, `BlankScene`) are built with `audio = None` in ensemble mode regardless of TOML — they never compete for the SID. Single-system runs keep `ensemble = None` and bypass the gate entirely. An ensemble system whose playlist is entirely audio-bearing scenes will idle when the slot is held elsewhere; the loader emits a WARNING on this configuration.
 
 - **TR launch/upload errors surface the firmware's reason.** `teensyrom_dma._expect_ack` captures the trailing text the TR emits after a NAK and puts it in the raised error — `TRBusyError` (subclass of `TRError`) on a `"Busy!"` reply (program running / menu handler inactive), and the literal text (`"Not enough room"`, `"File already exists."`, …) appended otherwise — instead of a bare `FailToken (0x9B7F)`. **Known pre-existing issue (under investigation, NOT yet fixed):** the TR launcher (`launch_program` = PostFile + LaunchFile) can produce an intermittently-corrupt upload — the keyboard poller's `ReadC64Mem` (and likely the launcher's own input poll) shares the TR link with the launcher's reset+PostFile, and a poll read landing in the post-reset chatter can desync the stream so the next PostFile drops a byte (the `.prg` loads one byte short → `?SYNTAX ERROR`). It's a race (intermittent; reliable single-threaded + on the Ultimate). Candidate fixes (desync-safe `read_segment`, poller suspend across reset+upload, pre-upload drain) need a soak harness to verify. See [docs/caveats.md](docs/caveats.md) + [[tr_launcher_poller_upload_race]].
+
+- **ASID buffered ring player = cycle-accurate multispeed (U64 only).** `AsidScene`'s default coalesced flush (≤60 Hz block writes) drops intermediate frames on multispeed ASID tunes (0x31 up to 16×) — arps/vibrato/hard restarts mangled. `asid_buffered_player` (auto/on/off, default **auto** → on when `profile.supports_reu`) moves consumption onto the C64: the host serializes each frame into a fixed slot + REUWRITEs it into a ring at `$300000` ahead of a **computed** read head, and a **CIA #1 Timer A** 6502 player at `$C000` pops one slot/tick honoring the 0x30 write-order+waits (open-loop, no servo, **no C64→host reads during playback** — sampler.py pattern; consumer modeled on the tracked REU audio pump). AsidScene runs no `$D418` DAC so `$C000` + the REU are free. TR/no-REU keep the coalesced path (never blank the TR). A buffered run folds into `doctor._wants_reu` (REU auto-provisioned). Wire format + 6502 blob + producer in [asid_player.py](c64cast/asid_player.py); v1 limits (frame-fit ceiling, coarse cycle delay) in [docs/caveats.md](docs/caveats.md). See [[project_asid_cycle_accurate_player]].

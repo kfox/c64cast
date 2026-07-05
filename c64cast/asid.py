@@ -14,11 +14,18 @@ the DMA writes, and the oscilloscope.
 Honored: ``0x4E`` register data (the workhorse — SID chip 0), the multi-SID
 streams ``0x50``-``0x5F`` (SID2..SID17, same packed format → chips 1..16),
 ``0x4C``/``0x4D`` start/stop, ``0x4F`` character display, ``0x31`` speed
-(PAL/NTSC + multiplier), and ``0x32`` SID type (per chip). OPL-FM (``0x60``) and
-the ``0x30`` timing recipe are recognized but dropped (no OPL; the plain write
-order suffices). Every register/type update carries a ``chip_index`` so the
+(PAL/NTSC + multiplier + buffering bit), ``0x32`` SID type (per chip), and the
+``0x30`` timing recipe (per-register write order + inter-write wait cycles,
+decoded into :attr:`AsidUpdate.timing_recipe`). OPL-FM (``0x60``) is recognized
+but dropped (no OPL). Every register/type update carries a ``chip_index`` so the
 scene can route it to the matching SID address (see :mod:`c64cast.asid_sidmap`
 for the U64 address map). See docs/architecture.md for the rationale.
+
+The ``0x30`` recipe used to be dropped: the coalesced flush path applies the
+whole register image at once, so the plain write order sufficed. The buffered
+C64-side ring player (see :mod:`c64cast.asid_player`) *does* honor it — it
+replays each frame's writes on the real SID in the recipe's order with the
+recipe's inter-write waits — so the decoder now surfaces it.
 
 The ASID ``0x4E`` payload orders the three voice control registers last
 (register IDs 22-27) so a frame can carry a *second* write to each control
@@ -38,8 +45,8 @@ from dataclasses import dataclass, field
 ASID_MANUFACTURER_ID = 0x2D
 
 # Commands (see spec/protocol.md).
-CMD_TIMING = 0x30  # SID write order & timing recipe (dropped)
-CMD_SPEED = 0x31  # PAL/NTSC + speed multiplier + frame delta
+CMD_TIMING = 0x30  # SID write order & inter-write wait recipe
+CMD_SPEED = 0x31  # PAL/NTSC + speed multiplier + frame delta + buffering bit
 CMD_SID_TYPE = 0x32  # 6581 / 8580
 CMD_START = 0x4C  # start playback
 CMD_STOP = 0x4D  # stop playback
@@ -88,9 +95,14 @@ class AsidUpdate:
     system: str | None = None  # "PAL" | "NTSC" (0x31)
     speed_multiplier: int | None = None  # 1..16 (0x31)
     frame_delta_us: int | None = None  # 0x31, 0 if unspecified
+    buffering_requested: bool | None = None  # 0x31 data0 bit 6 (host asks the client to buffer)
     chip_type: str | None = None  # "6581" | "8580" for chip `chip_index` (0x32)
     chip_index: int = 0  # SID chip this update targets: 0 = 0x4E, k = 0x50+(k-1); also 0x32
-    dropped: bool = False  # command recognized but not applied (OPL/timing)
+    # 0x30 write-order/wait recipe: ordered (asid_reg_id, wait_cycles) pairs, one
+    # per write-order position. wait_cycles (0..255) is the C64-cycle delay to
+    # apply AFTER that register's write. Empty list = no recipe carried.
+    timing_recipe: list[tuple[int, int]] = field(default_factory=list)
+    dropped: bool = False  # command recognized but not applied (OPL-FM)
 
 
 def decode(data: Sequence[int]) -> AsidUpdate | None:
@@ -120,8 +132,10 @@ def decode(data: Sequence[int]) -> AsidUpdate | None:
         return _decode_speed(payload)
     if cmd == CMD_SID_TYPE:
         return _decode_sid_type(payload)
-    # Recognized-but-unsupported (OPL-FM, timing) and anything unknown: flag as
-    # dropped so the scene can warn once and move on.
+    if cmd == CMD_TIMING:
+        return _decode_timing(payload)
+    # Recognized-but-unsupported (OPL-FM) and anything unknown: flag as dropped
+    # so the scene can warn once and move on.
     return AsidUpdate(command=cmd, dropped=True)
 
 
@@ -182,10 +196,29 @@ def _decode_speed(payload: Sequence[int]) -> AsidUpdate:
     data0 = payload[0]
     update.system = "NTSC" if (data0 & 0x01) else "PAL"
     update.speed_multiplier = ((data0 >> 1) & 0x0F) + 1  # bits 1-4 → 1..16
+    update.buffering_requested = bool(data0 & 0x40)  # bit 6
     if len(payload) >= 4:
         update.frame_delta_us = (
             (payload[1] & 0x7F) | ((payload[2] & 0x7F) << 7) | ((payload[3] & 0x03) << 14)
         )
+    return update
+
+
+def _decode_timing(payload: Sequence[int]) -> AsidUpdate:
+    """Decode a 0x30 recipe into ordered ``(asid_reg_id, wait_cycles)`` pairs.
+
+    The payload is up to 28 two-byte pairs; pair *i* gives the ASID register id
+    to write at write-order position *i* (``data0`` bits 0-5) and the cycle delay
+    to apply after it (``data0`` bit 6 = wait bit 7, ``data1`` bits 0-6 = wait
+    bits 0-6 → 0..255). Truncated/odd-length payloads decode the whole pairs
+    present and stop (the caller falls back to the default order for the rest)."""
+    update = AsidUpdate(command=CMD_TIMING)
+    for i in range(0, len(payload) - 1, 2):
+        data0 = payload[i]
+        data1 = payload[i + 1]
+        reg_id = data0 & 0x3F
+        wait = (((data0 >> 6) & 0x01) << 7) | (data1 & 0x7F)
+        update.timing_recipe.append((reg_id, wait))
     return update
 
 

@@ -1035,6 +1035,21 @@ class SceneCfg:
             "applies_to": ("asid",),
         },
     )
+    asid_buffered_player: str = field(
+        default="auto",
+        metadata={
+            "help": "Cycle-accurate buffered playback: consume ASID frames on a "
+            "C64-side REU ring player (CIA #1 Timer A IRQ) instead of coalescing "
+            "block writes on the host. Fixes dropped frames on multispeed tunes "
+            "(0x31 up to 16x) — arps/vibrato/hard restarts survive — and honors "
+            "the 0x30 write-order/wait recipe. U64 only (needs a bus-clean REU): "
+            "'auto' = on when the backend has an REU, else the coalesced path; "
+            "'on' = force it (warns + falls back on a no-REU backend); 'off' = "
+            "always coalesce.",
+            "choices": ("auto", "on", "off"),
+            "applies_to": ("asid",),
+        },
+    )
     # MIDI scene kwargs.
     midi_port: str | None = field(
         default=None,
@@ -2706,6 +2721,10 @@ def _validate_asid(s: SceneCfg) -> DisplayMode:
     _validate_scope_knobs(s, "asid")
     if not (1 <= s.asid_max_sids <= 8):
         raise ValueError(f"asid: asid_max_sids must be in 1..8, got {s.asid_max_sids!r}")
+    if s.asid_buffered_player not in ("auto", "on", "off"):
+        raise ValueError(
+            f"asid: asid_buffered_player must be auto|on|off, got {s.asid_buffered_player!r}"
+        )
     return _build_display_mode("hires")
 
 
@@ -3446,6 +3465,7 @@ def build_scene(
             system=cfg.ultimate64.system,
             multi_sid=s.asid_multi_sid,
             max_sids=s.asid_max_sids,
+            buffered_player=s.asid_buffered_player,
             name=s.name or "ASID",
         )
     # Video scenes set their own video-driven duration in __init__
