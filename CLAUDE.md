@@ -115,6 +115,11 @@ c64cast/
 │                     SID-file playback; inherits VoiceScopeRenderer
 ├── midi_scene.py     MidiScene: live MIDI input → SID synth + 3-voice
 │                     oscilloscope (inherits VoiceScopeRenderer; bitmap-only)
+├── asid.py           Pure ASID-protocol decoder: ASID MIDI SysEx (packed SID
+│                     register writes) → AsidUpdate (no mido/hardware deps)
+├── asid_scene.py     AsidScene: receive an ASID stream (DeepSID/SIDFactory II/
+│                     Plogue/…) and play it on the real SID + 3-voice scope
+│                     (ASID *client*; sibling of MidiScene; bitmap-only)
 ├── sidemu.py         Minimal SID waveform synthesizer (per-voice +
 │                     ADSR; no filter/mixing) — drives the oscilloscope
 │                     trace from live $D400-$D418 snapshots

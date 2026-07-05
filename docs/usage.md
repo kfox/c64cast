@@ -81,7 +81,7 @@ Optional-dep groups in [pyproject.toml](../pyproject.toml):
 | `preview`     | `pygame`                              | Local preview window mirroring the U64 + recording     |
 | `control`     | `fastapi`, `uvicorn`                  | HTTP control plane (pause/resume/skip/reload)          |
 | `obs`         | `obsws-python`                        | `obs_status` overlay — polls OBS WebSocket v5          |
-| `midi`        | `mido`, `python-rtmidi`               | `midi` scenes — live MIDI input → SID synth + scope    |
+| `midi`        | `mido`, `python-rtmidi`               | `midi` + `asid` scenes — MIDI/ASID input → SID + scope |
 | `logging`     | `rich`                                | Colored timestamped terminal logging (RichHandler)     |
 | `wizard`      | `questionary`                         | `--init` interactive config builder                    |
 | `all`         | every runtime extra above             | The "give me everything" install                       |
@@ -564,7 +564,7 @@ Each `[[scenes]]` block is a scene; they run in declaration order and
 each plays for `duration_s` seconds, then advances. Common fields:
 
 * `type` — `"webcam"`, `"video"`, `"slideshow"`, `"waveform"`,
-  `"midi"`, `"blank"`, `"launcher"`, or `"generative"`
+  `"midi"`, `"asid"`, `"blank"`, `"launcher"`, or `"generative"`
 * `duration_s` — seconds before advancing. Rejected on `video`
   scenes — they run until the video file ends.
 * `name` — display name (shown in the interstitial). Optional.
@@ -580,8 +580,8 @@ each plays for `duration_s` seconds, then advances. Common fields:
     plays back at the source video's own fps. Char modes (petscii/blank)
     stay at the system rate. See "Bitmap video/webcam scenes default
     lower when digitized audio streams" in [caveats.md](caveats.md).
-  * **`waveform` and `midi`** default to half rate (30 NTSC / 25 PAL) —
-    see "WaveformScene defaults to half the video rate" in
+  * **`waveform`, `midi`, and `asid`** default to half rate (30 NTSC /
+    25 PAL) — see "WaveformScene defaults to half the video rate" in
     [caveats.md](caveats.md).
 
 If a scene's `duration_s` expires while an overlay reports itself busy
@@ -891,6 +891,38 @@ top voice). With `midi_voice_mode = "multitimbral"`, MIDI channels route to
 fixed voices (`midi_voice_channels`, default channels 1/2/3 → voices 1/2/3),
 each voice monophonic with last-note priority; notes on unmapped channels are
 ignored. In multitimbral mode Program Change targets only the message's channel.
+
+### `type = "asid"`
+
+```toml
+[[scenes]]
+type = "asid"
+asid_port = ""                      # "" = first available port; substring match also works
+voice_colors = ["light green", "cyan", "yellow"]
+color_mode = "per_voice"            # per_voice | per_waveform
+duration_s = 300.0
+```
+
+Requires the `midi` extra (`pip install -e .[midi]`) — ASID rides the same MIDI
+transport. This makes c64cast an **ASID client**: an ASID *host* (DeepSID in a
+browser, SIDFactory II, Plogue chipsynth C64, Elektron ASID-XP) streams packed
+SID register writes over MIDI SysEx, and c64cast plays them on the **real SID
+chip** while drawing the same 3-voice oscilloscope as the waveform/midi scenes.
+Point the host's ASID output at a MIDI port c64cast can open — on macOS enable
+IAC in Audio MIDI Setup; on Linux `modprobe snd-virmidi`. DeepSID (Settings →
+ASID) is the easiest smoke test.
+
+Unlike `midi`, this scene has **no synth knobs** — ASID carries the whole tune's
+register state, so it just relays it. It's a new *input* path, not an audio
+change: it plays only SID chip-music (not arbitrary/PCM audio) and leaves the
+video-audio backends untouched. Register frames are coalesced and flushed to the
+SID at a bounded rate to protect the DMA link.
+
+> **v1 limits.** Multi-SID (ASID `0x50-0x5F`), OPL-FM (`0x60`), and the
+> cycle-accurate timing recipe (`0x30`) are recognized but not applied — one
+> physical SID, no OPL. Very high multispeed tunes are frame-decimated to stay
+> under the DMA write ceiling. The host's "now playing" text (ASID `0x4F`) shows
+> on the bottom row when sent.
 
 ### `type = "blank"`
 

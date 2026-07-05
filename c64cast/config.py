@@ -125,6 +125,7 @@ SCENE_TYPES = (
     "video",
     "waveform",
     "midi",
+    "asid",
     "slideshow",
     "launcher",
     "generative",
@@ -806,6 +807,7 @@ class SceneCfg:
                 "blank",
                 "waveform",
                 "midi",
+                "asid",
                 "slideshow",
                 "launcher",
                 "generative",
@@ -863,7 +865,7 @@ class SceneCfg:
             "Bitmap (hires/mhires) video/webcam/generative scenes default "
             "lower to stay under the DMA bus-halt ceiling: 20 fps while "
             "streaming digitized audio, else half rate (30/25). "
-            "Waveform/midi default to half rate too.",
+            "Waveform/midi/asid default to half rate too.",
             "apply": "live",
         },
     )
@@ -953,21 +955,21 @@ class SceneCfg:
         metadata={
             "help": "Oscilloscope coloring: fixed per voice, or by current waveform type.",
             "choices": _COLOR_MODE_CHOICES,
-            "applies_to": ("waveform", "midi"),
+            "applies_to": ("waveform", "midi", "asid"),
         },
     )
     voice_colors: list[str] = field(
         default_factory=list,
         metadata={
             "help": "Per-voice trace colors (C64 color names) for color_mode=per_voice.",
-            "applies_to": ("waveform", "midi"),
+            "applies_to": ("waveform", "midi", "asid"),
         },
     )
     waveform_colors: dict[str, str] = field(
         default_factory=dict,
         metadata={
             "help": "Per-waveform-type colors (e.g. pulse=cyan) for color_mode=per_waveform.",
-            "applies_to": ("waveform", "midi"),
+            "applies_to": ("waveform", "midi", "asid"),
         },
     )
     time_base: str = field(
@@ -976,14 +978,14 @@ class SceneCfg:
             "help": "Scope time window: 'wallclock' (1 row = 1 frame) or 'auto' "
             "(per-voice window sized so auto_cycles cycles fit).",
             "choices": _TIME_BASE_CHOICES,
-            "applies_to": ("waveform", "midi"),
+            "applies_to": ("waveform", "midi", "asid"),
         },
     )
     auto_cycles: float = field(
         default=4.0,
         metadata={
             "help": "Complete cycles per render window when time_base = 'auto'.",
-            "applies_to": ("waveform", "midi"),
+            "applies_to": ("waveform", "midi", "asid"),
         },
     )
     persistence: str = field(
@@ -991,7 +993,7 @@ class SceneCfg:
         metadata={
             "help": "Trace decay/trail length ('off' redraws each frame).",
             "choices": _PERSISTENCE_CHOICES,
-            "applies_to": ("waveform", "midi"),
+            "applies_to": ("waveform", "midi", "asid"),
         },
     )
     # Scalar broadcasts to all 3 voices; a list of 3 assigns per voice.
@@ -1000,7 +1002,16 @@ class SceneCfg:
         metadata={
             "help": "FIFO-scroll the strip left by N columns/frame (0 = redraw). "
             "Int or a list of 3 per-voice ints.",
-            "applies_to": ("waveform", "midi"),
+            "applies_to": ("waveform", "midi", "asid"),
+        },
+    )
+    # ASID scene kwargs.
+    asid_port: str | None = field(
+        default=None,
+        metadata={
+            "help": "MIDI input port name substring the ASID host streams to; "
+            "unset = first available port.",
+            "applies_to": ("asid",),
         },
     )
     # MIDI scene kwargs.
@@ -2055,7 +2066,7 @@ def load_master(path: str | None) -> LoadResult:
     )
 
 
-_AUDIO_BEARING_SCENE_TYPES = frozenset({"video", "waveform", "midi", "launcher"})
+_AUDIO_BEARING_SCENE_TYPES = frozenset({"video", "waveform", "midi", "asid", "launcher"})
 
 
 def _scene_contends_for_audio(s: SceneCfg) -> bool:
@@ -2647,6 +2658,15 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
     return _build_display_mode("hires")
 
 
+def _validate_asid(s: SceneCfg) -> DisplayMode:
+    # AsidScene carries the SID state in the stream, so it has no synth knobs
+    # to validate — only the shared oscilloscope knobs. Like MidiScene it's
+    # bitmap-only (hires), so synthesise a hires display_mode for overlay
+    # compatibility (PETSCII overlays rejected).
+    _validate_scope_knobs(s, "asid")
+    return _build_display_mode("hires")
+
+
 def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
         s, DEFAULT_SLIDESHOW_DIR, PICTURE_EXTS, label="slideshow", drop_hint="a .jpg/.png"
@@ -2911,6 +2931,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         mode = _validate_waveform(s, cfg)
     elif s.type == "midi":
         mode = _validate_midi(s)
+    elif s.type == "asid":
+        mode = _validate_asid(s)
     elif s.type == "slideshow":
         mode = _validate_slideshow(s, cfg)
     elif s.type == "generative":
@@ -2921,7 +2943,7 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     else:
         raise ValueError(
             f"unknown scene type {s.type!r} "
-            "(known: webcam, blank, video, waveform, midi, "
+            "(known: webcam, blank, video, waveform, midi, asid, "
             "slideshow, launcher, generative). Note: scrolling_text is now an "
             "overlay — attach it via [[scenes.overlays]]."
         )
@@ -3334,7 +3356,7 @@ def build_scene(
             bypass_audio_lock=s.bypass_audio_lock,
             name=s.name,
         )
-    else:  # s.type == "midi" (validator already rejected unknown types)
+    elif s.type == "midi":
         from .midi_scene import MidiScene
 
         a, d, sus, r = s.midi_adsr
@@ -3363,6 +3385,24 @@ def build_scene(
             target_fps=s.target_fps,
             system=cfg.ultimate64.system,
             name=s.name or "MIDI",
+        )
+    else:  # s.type == "asid" (validator already rejected unknown types)
+        from .asid_scene import AsidScene
+
+        scene = AsidScene(
+            api,
+            audio,
+            port=s.asid_port,
+            voice_colors=s.voice_colors or None,
+            color_mode=s.color_mode,
+            waveform_colors=s.waveform_colors or None,
+            time_base=s.time_base,
+            auto_cycles=s.auto_cycles,
+            persistence=s.persistence,
+            scroll_columns=s.scroll_columns,
+            target_fps=s.target_fps,
+            system=cfg.ultimate64.system,
+            name=s.name or "ASID",
         )
     # Video scenes set their own video-driven duration in __init__
     # (math.inf) — `validate_scene_cfg` above already rejected any explicit

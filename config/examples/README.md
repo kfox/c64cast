@@ -65,6 +65,7 @@ Exit with `Ctrl+C`.
 | `scene-video-sampler.toml`        | Video + hi-fi audio via the U64 Ultimate Audio FPGA sampler. |
 | `scene-waveform.toml`             | SID jukebox + oscilloscope. Requires a `.sid` file.        |
 | `scene-midi.toml`                 | MIDI → SID synth. Requires `midi` extra + MIDI source.     |
+| `scene-asid.toml`                 | ASID stream (DeepSID/SF2/…) → real SID. Requires `midi` extra + ASID host. |
 | `scene-launcher.toml`             | Launch a native `.prg`/`.crt` and hand over the machine.   |
 | `scene-generative-plasma.toml`    | Procedural plasma rendered as a multicolor bitmap.         |
 | `scene-generative-petscii.toml`   | The same plasma source rendered as PETSCII glyphs.         |
@@ -134,6 +135,7 @@ Five files exercise the audio path; the first three require `[audio] enabled = t
 | `scene-video-sampler.toml`        | Video soundtrack via Ultimate Audio FPGA sampler |
 | `scene-waveform.toml`             | Native SID playback of a `.sid` file             |
 | `scene-midi.toml`                 | MIDI input → in-process SID synth (needs `midi`) |
+| `scene-asid.toml`                 | ASID stream → real SID + scope (needs `midi`)    |
 
 The waveform and MIDI scenes drive the U64's SID chip directly and ignore
 the `[audio]` section.

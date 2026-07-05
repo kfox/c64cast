@@ -26,7 +26,7 @@ Some features have been much more thoroughly tested than others.
   `blank` is a no-video PETSCII canvas built for title cards + overlays.
 * **Playlist + scenes** — TOML-defined sequence of scenes (webcam,
   video, still-image slideshow, SID waveform visualizer,
-  MIDI → SID synth, blank canvas). Auto-interleaves video spots if
+  MIDI → SID synth, ASID client, blank canvas). Auto-interleaves video spots if
   you drop video files into
   the videos directory. **Single-scene mode** kicks in automatically when the
   playlist defines exactly one scene: no interstitial, no CTRL skip, and
@@ -45,6 +45,10 @@ Some features have been much more thoroughly tested than others.
 * **MIDI → SID** — bridge a live MIDI source (USB controller, DAW) into
   the U64's SID and visualize each voice the same way the waveform scene
   does. Requires the `midi` extra.
+* **ASID client** — receive the ASID protocol (streamed SID register
+  writes over MIDI SysEx) from any ASID host — DeepSID in a browser,
+  SIDFactory II, Plogue chipsynth C64 — and play it on the U64's real SID
+  with the same 3-voice oscilloscope. Requires the `midi` extra.
 * **Audio streaming** — mic input or PyAV-decoded movie audio resampled to
   8 kHz mono and bit-banged through `$D418` via an NMI ring buffer.
 * **Live control** — Commodore key pauses, CTRL key skips, optional
