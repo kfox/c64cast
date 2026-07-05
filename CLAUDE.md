@@ -62,7 +62,9 @@ The config defines the **playlist** (which scenes run, in what order, for how lo
 
 ```
 c64cast/
-├── palette.py        C64 palette + fast vectorized quantizer
+├── palette.py        C64 palette + fast vectorized quantizer +
+│                     resolve_color (the shared fuzzy, case-insensitive
+│                     color-name→index resolver) + C64_COLOR_NAMES
 ├── socket_dma.py     SocketDMAClient: persistent TCP socket to U64 port 64
 │                     for memory writes (opcode 0xFF06)
 ├── api.py            Ultimate64API: routes writes through socket_dma +

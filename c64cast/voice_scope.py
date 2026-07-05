@@ -50,7 +50,7 @@ from .bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from .bitmap_text import load_glyphs as _load_glyphs
 from .c64 import SCREEN, RegionID
 from .modes import engage_bitmap_mode
-from .palette import C64_COLORS
+from .palette import C64_COLORS, resolve_color
 from .sidemu import (
     ACCUMULATOR_RANGE,
     WAVE_NOISE,
@@ -368,7 +368,9 @@ class VoiceScopeRenderer:
         # corresponds to one history slot drawn at that gray; the current
         # frame is overlaid on top in the voice's regular color.
         echo_names = PERSISTENCE_ECHOES[self.persistence]
-        self._echo_colors: list[int] = [C64_COLORS.get(n, C64_COLORS["black"]) for n in echo_names]
+        self._echo_colors: list[int] = [
+            resolve_color(n, default=C64_COLORS["black"]) for n in echo_names
+        ]
         self._echo_depth = len(self._echo_colors)
         # Echo mode is per-voice only meaningful when no scroll: scroll
         # already gives a natural "trail off the left edge" effect, and
@@ -509,12 +511,12 @@ class VoiceScopeRenderer:
 
     def _initial_voice_color(self, v_idx: int) -> int:
         if self.color_mode == "per_voice":
-            return C64_COLORS.get(self.voice_color_names[v_idx], C64_COLORS["white"])
-        return C64_COLORS.get(self.waveform_color_names["off"], C64_COLORS["dark gray"])
+            return resolve_color(self.voice_color_names[v_idx], default=C64_COLORS["white"])
+        return resolve_color(self.waveform_color_names["off"], default=C64_COLORS["dark gray"])
 
     def _voice_color_now(self, v_idx: int, emulator: SIDEmulator | None = None) -> int:
         if self.color_mode == "per_voice":
-            return C64_COLORS.get(self.voice_color_names[v_idx], C64_COLORS["white"])
+            return resolve_color(self.voice_color_names[v_idx], default=C64_COLORS["white"])
         emu = emulator if emulator is not None else self.emulator
         v = emu.voices[v_idx]
         wave = primary_waveform(v.control)
@@ -525,7 +527,7 @@ class VoiceScopeRenderer:
             WAVE_NOISE: "noise",
             0: "off",
         }[wave]
-        return C64_COLORS.get(self.waveform_color_names[name], C64_COLORS["white"])
+        return resolve_color(self.waveform_color_names[name], default=C64_COLORS["white"])
 
     def _repaint_voice_color(self, v_idx: int, color: int | None = None) -> None:
         """Re-write the screen-RAM FG-nibble cells under the given voice's

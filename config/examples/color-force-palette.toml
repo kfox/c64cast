@@ -28,8 +28,9 @@ enabled = true                # required for the soundtrack to be heard
 
 [color]
 force_palette = true          # the showcase: deliberate false-color remap
-force_palette_colors = 16     # spread the source across all 16 C64 colors
-# force_palette_indices = [0, 2, 4, 6, 14]   # or pin an explicit palette
+force_palette_colors = 16     # int = spread the source across all 16 C64 colors
+# force_palette_colors = ["black", "red", "purple", "blue", "light blue"]  # or an
+#                             # explicit set — names (fuzzy) or indices 0..15
 
 [playlist]
 interleave_videos = false        # the single scene IS the demo

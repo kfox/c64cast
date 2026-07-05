@@ -14,6 +14,7 @@ from _fakes import FakeAPI
 
 from c64cast import config as cfgmod
 from c64cast.backend import C64Backend
+from c64cast.modes import BlankDisplayMode
 
 
 class ConfigLoaderTest(unittest.TestCase):
@@ -147,26 +148,80 @@ hue_hi_deg = 195
         c = cfgmod.Config().color
         self.assertFalse(c.force_palette)
         self.assertEqual(c.force_palette_colors, 16)
-        self.assertEqual(c.force_palette_indices, [])
+        self.assertEqual(cfgmod.resolved_force_palette(c), (16, None))
 
-    def test_color_section_parses_force_palette(self):
-        cfg = self._load(
-            "[color]\nforce_palette = true\nforce_palette_colors = 8\n"
-            "force_palette_indices = [0, 2, 6]\n"
-        )
+    def test_force_palette_colors_int_count(self):
+        cfg = self._load("[color]\nforce_palette = true\nforce_palette_colors = 8\n")
         self.assertTrue(cfg.color.force_palette)
         self.assertEqual(cfg.color.force_palette_colors, 8)
-        self.assertEqual(cfg.color.force_palette_indices, [0, 2, 6])
+        self.assertEqual(cfgmod.resolved_force_palette(cfg.color), (8, None))
+
+    def test_force_palette_colors_index_list(self):
+        cfg = self._load("[color]\nforce_palette_colors = [0, 2, 6]\n")
+        self.assertEqual(cfg.color.force_palette_colors, [0, 2, 6])
+        self.assertEqual(cfgmod.resolved_force_palette(cfg.color), (3, [0, 2, 6]))
+
+    def test_force_palette_colors_name_list_normalizes_to_ints(self):
+        # Names (fuzzy + case-insensitive) and indices may be mixed; the loader
+        # canonicalizes the whole list to palette indices.
+        cfg = self._load('[color]\nforce_palette_colors = ["black", "RED", "lgrn", 14]\n')
+        self.assertEqual(cfg.color.force_palette_colors, [0, 2, 13, 14])
+        self.assertEqual(cfgmod.resolved_force_palette(cfg.color), (4, [0, 2, 13, 14]))
 
     def test_force_palette_colors_out_of_range_raises(self):
         with self.assertRaises(ValueError) as ctx:
             self._load("[color]\nforce_palette_colors = 1\n")
         self.assertIn("force_palette_colors", str(ctx.exception))
 
-    def test_force_palette_indices_bad_index_raises(self):
+    def test_force_palette_colors_short_list_raises(self):
         with self.assertRaises(ValueError) as ctx:
-            self._load("[color]\nforce_palette_indices = [0, 99]\n")
-        self.assertIn("force_palette_indices", str(ctx.exception))
+            self._load("[color]\nforce_palette_colors = [0]\n")
+        self.assertIn("force_palette_colors", str(ctx.exception))
+
+    def test_force_palette_colors_bad_index_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load("[color]\nforce_palette_colors = [0, 99]\n")
+        self.assertIn("force_palette_colors", str(ctx.exception))
+
+    def test_force_palette_colors_unknown_name_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[color]\nforce_palette_colors = ["black", "chartreuse"]\n')
+        self.assertIn("chartreuse", str(ctx.exception))
+
+    def test_force_palette_indices_now_unknown_key(self):
+        # The old field was removed; a config still using it should warn (and be
+        # dropped) rather than silently take effect.
+        with self.assertLogs("c64cast.config", level="WARNING") as cm:
+            cfg = self._load("[color]\nforce_palette_indices = [0, 2]\n")
+        self.assertFalse(hasattr(cfg.color, "force_palette_indices"))
+        self.assertTrue(any("force_palette_indices" in m for m in cm.output))
+
+    def test_scene_border_background_accept_names(self):
+        # border/background take a fuzzy color name or an index; the name is
+        # preserved in the SceneCfg and resolved to an index when the display
+        # mode is built.
+        cfg = self._load(
+            '[[scenes]]\ntype = "blank"\ndisplay = "blank"\n'
+            'border = "light blue"\nbackground = "blk"\n'
+        )
+        s = cfg.scenes[0]
+        self.assertEqual(s.border, "light blue")
+        self.assertEqual(s.background, "blk")
+        dm = cfgmod._validate_blank(s, cfg)
+        assert isinstance(dm, BlankDisplayMode)
+        self.assertEqual(dm.border, 14)
+        self.assertEqual(dm.background, 0)
+
+    def test_scene_border_index_still_works(self):
+        cfg = self._load('[[scenes]]\ntype = "blank"\ndisplay = "blank"\nborder = 6\n')
+        dm = cfgmod._validate_blank(cfg.scenes[0], cfg)
+        assert isinstance(dm, BlankDisplayMode)
+        self.assertEqual(dm.border, 6)
+
+    def test_scene_border_unknown_name_raises_at_build(self):
+        cfg = self._load('[[scenes]]\ntype = "blank"\ndisplay = "blank"\nborder = "chartreuse"\n')
+        with self.assertRaises(ValueError):
+            cfgmod._validate_blank(cfg.scenes[0], cfg)
 
 
 class DoubleBufferTest(unittest.TestCase):

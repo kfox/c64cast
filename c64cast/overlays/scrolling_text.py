@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..c64 import SCREEN
-from ..palette import C64_COLORS
+from ..palette import C64_COLORS, resolve_color
 from . import (
     SC_SPACE,
     Overlay,
@@ -77,7 +77,7 @@ class ScrollingTextOverlay(Overlay):
             raise ValueError(f"scrolling_text: row must be 0..{SCREEN_H - 1}")
         self.row = row
         self.speed = float(speed_cells_per_s)
-        self.bg_color = C64_COLORS[bg_color] if bg_color in C64_COLORS else C64_COLORS["black"]
+        self.bg_color = resolve_color(bg_color, default=C64_COLORS["black"])
         # Accept either ScrollMessage instances or dicts (TOML inline tables).
         self.messages: list[ScrollMessage] = []
         for m in messages:
@@ -90,7 +90,7 @@ class ScrollingTextOverlay(Overlay):
         # Pre-resolve color indices and pre-encode screen codes.
         self._encoded: list[tuple[bytes, int]] = []
         for m in self.messages:
-            color_idx = C64_COLORS.get(m.color, C64_COLORS["white"])
+            color_idx = resolve_color(m.color, default=C64_COLORS["white"])
             self._encoded.append((ascii_to_screen(m.text), color_idx))
         # Per-message durations: scroll-in + pause + scroll-out, padded by
         # pre_delay so consecutive messages don't crowd each other.

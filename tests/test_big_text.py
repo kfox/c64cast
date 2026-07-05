@@ -44,7 +44,7 @@ class ConstructionTest(unittest.TestCase):
 
     def test_unknown_color_raises(self):
         with self.assertRaises(ValueError):
-            _make_overlay(messages=[{"text": "X", "color": "magenta"}])
+            _make_overlay(messages=[{"text": "X", "color": "chartreuse"}])
 
     def test_unknown_message_keys_raises(self):
         # The simplified overlay only accepts {text, color} — extras reject.

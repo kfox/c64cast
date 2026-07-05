@@ -18,7 +18,7 @@ import os
 import numpy as np
 
 from ..c64 import SCREEN
-from ..palette import C64_COLORS
+from ..palette import C64_COLORS, resolve_color
 from ..text_surface import corner_origin as _surface_corner_origin
 from . import Overlay, ascii_to_screen, register
 from .corner_text import VALID_CORNERS, corner_origin
@@ -110,9 +110,9 @@ class LogoOverlay(Overlay):
         self.corner = corner
         self.row = row
         self.col = col
-        self.fg = C64_COLORS.get(fg_color, C64_COLORS["white"])
+        self.fg = resolve_color(fg_color, default=C64_COLORS["white"])
         self.bg_name = bg_color
-        self.bg = C64_COLORS.get(bg_color, C64_COLORS["black"])
+        self.bg = resolve_color(bg_color, default=C64_COLORS["black"])
         if self._placeholder:
             self.lines = _placeholder_art(file)
         else:
