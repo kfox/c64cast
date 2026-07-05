@@ -1192,6 +1192,26 @@ class Ultimate64API(_SidPlayerBackend):
         r = self.session.put(url, params={"value": value}, timeout=timeout)
         r.raise_for_status()
 
+    def get_config_category(self, category: str, *, timeout: float = 3.0) -> dict[str, str]:
+        """Read one Ultimate config category LIVE over the REST config API.
+
+        ``GET /v1/configs/<category>`` → ``{"<category>": {"<item>": <value>,
+        ...}}`` (see the firmware's ``emit_store``). Returns the inner
+        ``{item: value}`` map with every value coerced to ``str`` (enum items
+        come back as their label string, value items as integers). Used by
+        AsidScene to read `SID Detected Socket 1/2` (prefer-physical policy) and
+        to snapshot the `SID Addressing` map so teardown can restore it. Raises
+        ``requests.RequestException`` on transport/HTTP failure; callers treat
+        the read as best-effort."""
+        from urllib.parse import quote
+
+        url = f"{self.base_url}/v1/configs/{quote(category)}"
+        r = self.session.get(url, timeout=timeout)
+        r.raise_for_status()
+        body = r.json()
+        inner = body.get(category, {}) if isinstance(body, dict) else {}
+        return {k: str(v) for k, v in inner.items()} if isinstance(inner, dict) else {}
+
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Upload and run a tiny BASIC program: `10 PRINT CHR$(147) : 20 GOTO 20`.
 

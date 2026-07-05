@@ -55,10 +55,44 @@ class DecodeDispatchTest(unittest.TestCase):
         self.assertIs(_ok((asid.ASID_MANUFACTURER_ID, asid.CMD_STOP)).playing, False)
 
     def test_unsupported_commands_dropped(self):
-        for cmd in (asid.CMD_TIMING, asid.CMD_MULTI_SID_LO, asid.CMD_MULTI_SID_HI, asid.CMD_OPL):
+        # Multi-SID (0x50-0x5F) is now honored (see MultiSidTest); only OPL-FM
+        # and the timing recipe remain dropped.
+        for cmd in (asid.CMD_TIMING, asid.CMD_OPL):
             u = _ok((asid.ASID_MANUFACTURER_ID, cmd, 0x00))
             self.assertTrue(u.dropped, f"command 0x{cmd:02X} should be dropped")
             self.assertFalse(u.regs)
+
+
+class MultiSidTest(unittest.TestCase):
+    def test_primary_reg_command_is_chip_zero(self):
+        self.assertEqual(_ok(_reg_msg({0: 0x34})).chip_index, 0)
+
+    def test_multi_sid_low_is_chip_one(self):
+        # 0x50 carries SID2 = chip index 1, same packed format as 0x4E.
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_MULTI_SID_LO, *_reg_msg({0: 0x34})[2:])
+        u = _ok(payload)
+        self.assertEqual(u.chip_index, 1)
+        self.assertEqual(u.regs, {0x00: 0x34})
+
+    def test_multi_sid_indices_span_the_range(self):
+        # 0x50..0x5F → chips 1..16.
+        for cmd in range(asid.CMD_MULTI_SID_LO, asid.CMD_MULTI_SID_HI + 1):
+            payload = (asid.ASID_MANUFACTURER_ID, cmd, *_reg_msg({1: 0x12})[2:])
+            u = _ok(payload)
+            self.assertEqual(u.chip_index, cmd - asid.CMD_MULTI_SID_LO + 1)
+            self.assertEqual(u.regs, {0x01: 0x12})
+
+    def test_multi_sid_hard_restart_still_decodes(self):
+        # The double-control-write hard restart works per chip.
+        payload = (
+            asid.ASID_MANUFACTURER_ID,
+            asid.CMD_MULTI_SID_LO,
+            *_reg_msg({22: 0x08, 25: 0x41})[2:],
+        )
+        u = _ok(payload)
+        self.assertEqual(u.chip_index, 1)
+        self.assertEqual(u.regs[0x04], 0x41)
+        self.assertEqual(u.control_first, {0: 0x08})
 
 
 class RegisterDataTest(unittest.TestCase):
@@ -136,16 +170,18 @@ class OtherCommandsTest(unittest.TestCase):
         self.assertEqual(u.speed_multiplier, 1)
 
     def test_sid_type_primary(self):
-        self.assertEqual(
-            _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 0, 1)).chip_type, "8580"
-        )
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 0, 1))
+        self.assertEqual(u.chip_type, "8580")
+        self.assertEqual(u.chip_index, 0)
         self.assertEqual(
             _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 0, 0)).chip_type, "6581"
         )
 
-    def test_sid_type_secondary_chip_ignored(self):
-        # Chip index 1 (a second SID) has no primary chip_type effect.
-        self.assertIsNone(_ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 1, 1)).chip_type)
+    def test_sid_type_secondary_chip_carries_index(self):
+        # Chip index 1 (a second SID) reports its own type against chip_index 1.
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 1, 1))
+        self.assertEqual(u.chip_index, 1)
+        self.assertEqual(u.chip_type, "8580")
 
 
 if __name__ == "__main__":
