@@ -65,9 +65,16 @@ from .sid_host_emu import (
     _overlaps,
     _play_bank_for_footprints,
     _sid_payload_extent,
+    detect_sid_addresses,
     parse_sid_header,
     ram_play_access_footprint,
     ram_write_footprint,
+)
+from .sid_hw_config import (
+    apply_sid_map,
+    detect_sockets,
+    restore_sid_config,
+    snapshot_sid_config,
 )
 from .sidemu import SIDEmulator, primary_waveform
 
@@ -392,9 +399,17 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             frame_time_s=1.0 / self.target_fps,
         )
 
-        self.emulator = SIDEmulator(system=system)
+        # One SIDEmulator + scope window per SID chip the tune drives (multi-SID
+        # tunes show all chips' voices side by side). Single-SID is one window,
+        # byte-identical to the pre-multi-SID renderer. Rebuilt per setup() pick.
         self._reg_buf: bytes | None = None
         self._reg_lock = threading.Lock()
+        self._rebuild_scope_for_sids()
+        # U64 multi-SID hardware config (address map for the tune's extra SID
+        # chips). Snapshotted before we change it, restored on teardown. Only
+        # touched for multi-SID tunes on a config-capable backend (U64); None
+        # means "nothing applied, nothing to restore".
+        self._saved_sid_config: dict[tuple[str, str], str] | None = None
         # Default the poll rate to the system video rate — that's the
         # SID's effective PLAY-per-frame cadence on a kernal IRQ, so
         # matching it keeps the host emulator's writes in step with
@@ -420,9 +435,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._resolve_poll_rate()
 
         self.start_time = 0.0
-        # Track the last waveform per voice so per_waveform color RAM
-        # writes only fire on transitions.
-        self._last_voice_wave: list[int] = [-1, -1, -1]
+        # (Per-(voice, chip) last-waveform tracking for per_waveform color
+        # transitions is initialized in _rebuild_scope_for_sids, called above.)
         # End-of-tune silence detection (Part 3): arm only after the tune
         # has actually produced sound, then end the scene after a sustained
         # all-voices-silent window so a short non-looping subtune doesn't
@@ -508,12 +522,20 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self.sid_bytes = sid_bytes
         self.header = header
         self.song = self._song_arg if self._song_arg > 0 else header.start_song
+        # How many SID chips this tune drives, and their $Dxxx bases (chip 0 =
+        # $D400). From the PSID v3/v4 header, raised by an ``_NSID.sid`` filename
+        # hint. A multi-SID tune gets one scope window + one host-emu shadow per
+        # chip; on the U64 the extra SID cores are mapped in setup(). See
+        # detect_sid_addresses.
+        self._sid_addresses = detect_sid_addresses(path, sid_bytes)
+        self._n_sids = len(self._sid_addresses)
         # The host emulator runs the same SID file in parallel on a
         # pure-Python 6502 so we can recover live $D4xx register state
         # — the U64's SID is faithful to real hardware (writes only,
         # reads return 0). Construction loads + runs INIT once; each
-        # tick_play() advances one PLAY pass. See sid_host_emu.py.
-        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song)
+        # tick_play() advances one PLAY pass. A multi-SID tune shadows every
+        # chip's register bank. See sid_host_emu.py.
+        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song, sid_bases=self._sid_addresses)
         # PLAY pre-flight: reject tunes whose PLAY spins past the cycle cap
         # on every pass (see _PLAY_PREFLIGHT_TICKS). Done here so the picker
         # skips them and a single-file scene aborts with a clear message,
@@ -569,6 +591,22 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             f"{len(self._candidates)} candidate(s) but none could be "
             f"loaded; last error: {last_error}"
         )
+
+    def _rebuild_scope_for_sids(self) -> None:
+        """(Re)build one SIDEmulator + scope window per SID chip the current
+        tune drives, and reflow the split scope. Called from __init__ and each
+        setup() after the tune is (re-)picked — a different tune may need a
+        different chip count. Single-SID → one window (identity render, byte-for
+        byte the pre-multi-SID output). The scope's ``_render_voice_fast`` samples
+        window ``c`` from ``self._emulators[c]``; ``self.emulator`` stays the
+        primary ($D400) chip for the single-window/back-compat paths."""
+        n = self._n_sids
+        self._emulators = [SIDEmulator(system=self.system) for _ in range(n)]
+        self.emulator = self._emulators[0]
+        self._set_window_count(n)
+        # Per-(voice, chip) last waveform-select, for per_waveform color-change
+        # detection. -1 forces the first paint.
+        self._last_window_wave: list[list[int]] = [[-1] * n for _ in range(3)]
 
     def _resolve_duration_for_current_sid(self) -> float:
         """Compute the playback duration for self.sid_bytes + self.song.
@@ -629,7 +667,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.is_done = True
             return
         self.start_time = time.time()
-        self._last_voice_wave = [-1, -1, -1]
+        # Reflow the scope to the (possibly re-picked) tune's SID count before
+        # any painting — a pool re-pick may have loaded a tune with a different
+        # number of chips.
+        self._rebuild_scope_for_sids()
         self._ever_sounded = False
         self._silence_since = None
         overlay_names = [getattr(ov, "name", type(ov).__name__) for ov in self.overlays]
@@ -754,6 +795,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         play_bank = _play_bank_for_footprints(footprint, display_footprint)
         self._current_needs_basic_out = play_bank == CPU.PORT_BASIC_OUT
 
+        # Multi-SID: map the U64's extra SID chips to this tune's own addresses
+        # BEFORE the C64-side player runs INIT, so INIT's writes to the extra
+        # chips land on mapped cores rather than open bus. No-op for single-SID
+        # or on a backend without a SID config API (the scope still shows every
+        # chip; only $D400 sounds). Restored in teardown.
+        self._apply_sid_hw_config()
+
         # Upload the SID payload + tiny player MC, DEFERRING the audible start
         # so the oscilloscope is on screen before the first note (the whole
         # point of this scene — show the waveforms *during* playback, not just
@@ -809,9 +857,58 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._resolve_poll_rate()
         self._poll.start()
 
+    def _apply_sid_hw_config(self) -> None:
+        """Map the U64's SID chips to a multi-SID tune's own $Dxxx addresses so
+        every chip is audible on the real hardware. Snapshots the prior config
+        for teardown. No-op for single-SID tunes (the $D400 chip already plays)
+        and on backends without a SID config API (TeensyROM) — the scope still
+        shows every chip; only $D400 sounds there. Best-effort; a REST failure
+        never aborts the scene."""
+        if self._n_sids < 2:
+            return
+        if not getattr(self.api.profile, "supports_config", False):
+            log.info(
+                "waveform: %d-SID tune but backend has no SID config API — "
+                "showing every chip's scope; only $D400 will be audible",
+                self._n_sids,
+            )
+            return
+        from .asid_sidmap import plan_sid_map, plan_sid_map_for_addresses
+
+        socket1, socket2 = detect_sockets(self.api)
+        sid_map = plan_sid_map_for_addresses(
+            self._sid_addresses, socket1_present=socket1, socket2_present=socket2
+        )
+        if sid_map is None:
+            # The tune's exact addresses aren't realizable on 2 sockets + 2
+            # cores; fall back to the canonical layout so at least the
+            # consecutive-address chips sound (the scope stays correct
+            # regardless — it's driven by the host emu, not the hardware map).
+            log.warning(
+                "waveform: SID addresses %s not exactly realizable on this U64 "
+                "— using canonical %d-SID layout (some chips may be silent)",
+                ", ".join(f"${a:04X}" for a in self._sid_addresses),
+                self._n_sids,
+            )
+            sid_map = plan_sid_map(self._n_sids, socket1_present=socket1, socket2_present=socket2)
+        self._saved_sid_config = snapshot_sid_config(self.api)
+        apply_sid_map(self.api, sid_map)
+        log.info(
+            "waveform: mapped %d SID chip(s) → %s",
+            self._n_sids,
+            ", ".join(f"${a:04X}" for a in sid_map.addresses),
+        )
+
+    def _restore_sid_hw_config(self) -> None:
+        """Restore the SID address config snapshotted by _apply_sid_hw_config."""
+        if self._saved_sid_config:
+            restore_sid_config(self.api, self._saved_sid_config)
+            self._saved_sid_config = None
+
     def teardown(self):
         super().teardown()
         self._poll.stop()
+        self._restore_sid_hw_config()
         # Order: vector first, then silence. If silence happened first,
         # the IRQ could fire between the volume-clear and gate-clears,
         # rewriting both. Flush after the vector write so it has actually
@@ -1027,7 +1124,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         self.song = new_song
         self._current_needs_basic_out = new_needs_basic_out
-        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song)
+        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song, sid_bases=self._sid_addresses)
         # Re-resolve duration. Explicit user value always wins. Otherwise
         # use the length the skip loop already looked up (so we don't
         # re-query the DB for the same song). On a DB miss or all-skipped
@@ -1049,7 +1146,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # envelope dt doesn't accumulate the cycle-induced gap.
         now = time.time()
         self.start_time = now
-        self._last_voice_wave = [-1, -1, -1]
+        self._last_window_wave = [[-1] * self._n_sids for _ in range(3)]
         self._ever_sounded = False
         self._silence_since = None
 
@@ -1216,12 +1313,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         n = min(n, self._MAX_CATCHUP_TICKS)
         for _ in range(n):
             self._host_emu.tick_play()
-            snapshot = self._host_emu.regs()
-            retrig = self._host_emu.retriggers()
+            # One shadow + emulator per SID chip. Single-SID is the bank-0 path;
+            # a multi-SID tune updates every chip window's source. Register
+            # tracking + ADSR advance run per caught-up tick so no gate edge is
+            # missed. _reg_buf mirrors the primary chip for back-compat readers.
             with self._reg_lock:
-                self._reg_buf = snapshot
-                self.emulator.update_registers(snapshot, retrigger=retrig)
-                self.emulator.advance_envelopes(self._poll_dt)
+                for bank, emu in enumerate(self._emulators):
+                    snapshot = self._host_emu.regs(bank)
+                    emu.update_registers(snapshot, retrigger=self._host_emu.retriggers(bank))
+                    emu.advance_envelopes(self._poll_dt)
+                self._reg_buf = self._host_emu.regs(0)
         self._ticks_done += n
 
     # ---- VIC setup ---------------------------------------------------------
@@ -1254,24 +1355,34 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         # Register tracking + ADSR advancement happen on the poll thread now
         # (see _poll_regs). Here we only read the resulting voice state under
-        # the lock to drive coloring + the end-of-tune silence check.
+        # the lock to drive coloring + the end-of-tune silence check. Per-window
+        # controls (one column per SID chip) so per_waveform coloring is
+        # per-(voice, chip); env levels span every chip so the silence check
+        # doesn't end a tune whose primary chip rests while another plays.
         with self._reg_lock:
-            controls = [v.control for v in self.emulator.voices]
-            env_levels = [v.envelope_level for v in self.emulator.voices]
+            window_controls = [[emu.voices[v].control for emu in self._emulators] for v in range(3)]
+            env_levels = [v.envelope_level for emu in self._emulators for v in emu.voices]
 
         # End-of-tune detection: a short non-looping subtune that has gone
         # fully silent ends the scene early instead of holding a flat scope.
         if self._check_end_of_tune(current_time, env_levels):
             return False
 
-        # Per-waveform color updates (only emit when the waveform select
+        # Per-waveform color updates (only emit when a window's waveform select
         # actually changes — change-detection avoids the cost in normal frames).
+        # For single-SID this is byte-identical to the prior per-voice repaint.
         if self.color_mode == "per_waveform":
             for v_idx in range(3):
-                wave_now = primary_waveform(controls[v_idx])
-                if wave_now != self._last_voice_wave[v_idx]:
-                    self._repaint_voice_color(v_idx)
-                    self._last_voice_wave[v_idx] = wave_now
+                changed = False
+                colors: list[int] = []
+                for c, ctrl in enumerate(window_controls[v_idx]):
+                    wave_now = primary_waveform(ctrl)
+                    if wave_now != self._last_window_wave[v_idx][c]:
+                        changed = True
+                        self._last_window_wave[v_idx][c] = wave_now
+                    colors.append(self._voice_color_now(v_idx, self._emulators[c]))
+                if changed:
+                    self._paint_strip_color_row(v_idx, colors)
 
         self._render_hires()
         return True

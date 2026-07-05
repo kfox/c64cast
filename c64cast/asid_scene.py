@@ -46,17 +46,16 @@ from typing import Any
 
 from . import asid
 from ._pollthread import PollThread
-from .asid_sidmap import (
-    CAT_ADDRESSING,
-    CAT_SOCKETS,
-    ITEM_SOCKET1_TYPE,
-    ITEM_SOCKET2_TYPE,
-    MAX_SIDS,
-    plan_sid_map,
-)
+from .asid_sidmap import MAX_SIDS, plan_sid_map
 from .c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
 from .palette import C64_COLORS
 from .scenes import Scene
+from .sid_hw_config import (
+    apply_sid_map,
+    detect_sockets,
+    restore_sid_config,
+    snapshot_sid_config,
+)
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
     D018_HIRES_BITMAP,
@@ -103,15 +102,6 @@ _WAVE_ABBREV = {
 _MODE_VOL_OFFSET = SID.MODE_VOL - SID.BASE
 
 # Config items snapshotted before a multi-SID remap and restored on teardown.
-_MANAGED_ADDRESSING_ITEMS = (
-    "SID Socket 1 Address",
-    "SID Socket 2 Address",
-    "UltiSID 1 Address",
-    "UltiSID 2 Address",
-    "UltiSID Range Split",
-    "Auto Address Mirroring",
-)
-_MANAGED_SOCKET_ITEMS = ("SID Socket 1", "SID Socket 2")
 
 
 class AsidScene(VoiceScopeRenderer, Scene):
@@ -392,37 +382,12 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._pending_flush = bool(self._dirty_chips) or bool(self._pending_ctrl_first)
 
     # ---- multi-SID configuration ---------------------------------------------
-    def _detect_sockets(self) -> tuple[bool, bool]:
-        """Read which physical SID sockets carry a detected chip (best-effort)."""
-        try:
-            sockets = self.api.get_config_category(CAT_SOCKETS)
-        except Exception:
-            log.debug("AsidScene: socket detection read failed", exc_info=True)
-            return (False, False)
-        s1 = sockets.get(ITEM_SOCKET1_TYPE, "None") not in ("None", "")
-        s2 = sockets.get(ITEM_SOCKET2_TYPE, "None") not in ("None", "")
-        return (s1, s2)
-
     def _snapshot_config(self) -> None:
         """Snapshot the SID-address config we're about to change, once, so
         teardown can restore it (best-effort)."""
         if self._saved_config is not None:
             return
-        saved: dict[tuple[str, str], str] = {}
-        try:
-            addressing = self.api.get_config_category(CAT_ADDRESSING)
-            sockets = self.api.get_config_category(CAT_SOCKETS)
-        except Exception:
-            log.debug("AsidScene: config snapshot read failed", exc_info=True)
-            self._saved_config = {}  # nothing to restore
-            return
-        for item in _MANAGED_ADDRESSING_ITEMS:
-            if item in addressing:
-                saved[(CAT_ADDRESSING, item)] = addressing[item]
-        for item in _MANAGED_SOCKET_ITEMS:
-            if item in sockets:
-                saved[(CAT_SOCKETS, item)] = sockets[item]
-        self._saved_config = saved
+        self._saved_config = snapshot_sid_config(self.api)
 
     def _reconfigure_chips(self, n: int) -> None:
         """Grow the active SID map to `n` chips: configure the U64 address map
@@ -433,13 +398,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         sid_map = plan_sid_map(
             n, socket1_present=self._socket_present[0], socket2_present=self._socket_present[1]
         )
-        for (category, item), value in sid_map.config.items():
-            try:
-                self.api.put_config_item(category, item, value)
-            except Exception:
-                log.warning(
-                    "AsidScene: failed to set %s/%s=%s", category, item, value, exc_info=True
-                )
+        apply_sid_map(self.api, sid_map)
         self._chip_addresses = list(sid_map.addresses)
         self._active_chips = sid_map.n
         log.info(
@@ -460,15 +419,8 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._dirty = True
 
     def _restore_config(self) -> None:
-        if not self._saved_config:
-            return
-        for (category, item), value in self._saved_config.items():
-            try:
-                self.api.put_config_item(category, item, value)
-            except Exception:
-                log.debug(
-                    "AsidScene: config restore of %s/%s failed", category, item, exc_info=True
-                )
+        if self._saved_config:
+            restore_sid_config(self.api, self._saved_config)
 
     # ---- info text rows ------------------------------------------------------
     def _build_title_line(self) -> str:
@@ -518,7 +470,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # info rows, allocate render buffers, then start the MIDI reader +
         # envelope ticker. No SID pre-programming — the ASID stream sets it all.
         if self._multi_sid:
-            self._socket_present = self._detect_sockets()
+            self._socket_present = detect_sockets(self.api)
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
         self._window_sounding = [[False] * MAX_SIDS for _ in range(SID.N_VOICES)]

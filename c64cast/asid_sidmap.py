@@ -158,3 +158,97 @@ def plan_sid_map(
     config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
 
     return SidMap(addresses=tuple(addresses), config=config, requested=requested)
+
+
+# Split label → (per-core instance capacity, base-address alignment). The
+# firmware force-aligns a split core's base: 1/2 → $40, 1/4 → $80 (see the
+# module docstring / u64_config.cc fix_splits). Split off → any $20-granular
+# base. Both UltiSID cores share ONE split setting.
+_SPLIT_LEVELS: tuple[tuple[str, int, int], ...] = (
+    (SPLIT_OFF, 1, 0x20),
+    (SPLIT_HALF, 2, 0x40),
+    (SPLIT_QUARTER, 4, 0x80),
+)
+# Lowest base an UltiSID core may sit at ($D400 page; below this is unmapped).
+_ULTISID_MIN_BASE = 0xD400
+
+
+def _plan_ultisid_cores(targets: list[int]) -> tuple[str, list[int]] | None:
+    """Cover `targets` (a list of $Dxx0 bases) with up to two UltiSID cores that
+    share one split. Returns ``(split_label, [core_base, ...])`` or None if two
+    cores can't realize the set. Extra instances a split creates beyond the
+    targets are harmless (that address simply stays silent)."""
+    if not targets:
+        return (SPLIT_OFF, [])
+    for split, cap, align in _SPLIT_LEVELS:
+        bases: list[int] = []
+        covered: set[int] = set()
+        realizable = True
+        for t in sorted(set(targets)):
+            if t in covered:
+                continue
+            base = t & ~(align - 1) & 0xFFFF
+            if base < _ULTISID_MIN_BASE:
+                realizable = False
+                break
+            window = {base + k * _SPLIT_STRIDE for k in range(cap)}
+            if t not in window:  # alignment pushed the window past t
+                realizable = False
+                break
+            bases.append(base)
+            covered |= window
+            if len(bases) > 2:
+                realizable = False
+                break
+        if realizable and len(bases) <= 2 and all(t in covered for t in targets):
+            return (split, bases)
+    return None
+
+
+def plan_sid_map_for_addresses(
+    addresses: tuple[int, ...],
+    *,
+    socket1_present: bool = False,
+    socket2_present: bool = False,
+) -> SidMap | None:
+    """Plan a U64 address map that answers at a SID *file's own* fixed chip
+    addresses (chip 0 = $D400), unlike :func:`plan_sid_map` which chooses its own
+    canonical layout. A `.sid` tune writes to the exact $Dxxx bases in its PSID
+    header, so the hardware must respond there or those chips stay silent.
+
+    Physical sockets (fixed $D400/$D420) serve a target when present and asked
+    for; the rest come from up to two UltiSID cores sharing one split. Returns a
+    :class:`SidMap` whose ``addresses`` echo the requested bases verbatim, or
+    **None** when the set isn't realizable on 2 sockets + 2 cores (caller falls
+    back to :func:`plan_sid_map`)."""
+    if not addresses:
+        return None
+    targets = sorted(set(addresses))
+    config: dict[tuple[str, str], str] = {}
+
+    socket_specs = []
+    if socket1_present:
+        socket_specs.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0]))
+    if socket2_present:
+        socket_specs.append((ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1]))
+    served_by_socket: set[int] = set()
+    for addr_item, en_item, base in socket_specs:
+        if base in targets:
+            config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
+            config[(CAT_SOCKETS, en_item)] = "Enabled"
+            served_by_socket.add(base)
+
+    remaining = [t for t in targets if t not in served_by_socket]
+    core_plan = _plan_ultisid_cores(remaining)
+    if core_plan is None:
+        return None
+    split_label, core_bases = core_plan
+    config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split_label
+    config[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)] = (
+        f"${core_bases[0]:04X}" if core_bases else ADDR_UNMAPPED
+    )
+    config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = (
+        f"${core_bases[1]:04X}" if len(core_bases) > 1 else ADDR_UNMAPPED
+    )
+    config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
+    return SidMap(addresses=tuple(addresses), config=config, requested=len(addresses))

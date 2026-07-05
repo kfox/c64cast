@@ -186,6 +186,35 @@ overlap that region. `WaveformScene.setup()` calls `audio.stop()` before
 SID setup so the NMI handler is silent during playback, but the bytes
 remain installed for any later scene that re-arms audio.
 
+### Multi-SID (2SID/3SID) tunes: split scope, best-effort U64 audio
+
+A multi-SID PSID writes to extra SID chips at fixed `$Dxxx` addresses
+declared in its v3/v4 header (`secondSIDAddress` `$7A`, `thirdSIDAddress`
+`$7B`; each byte `b` → base `$D000 | b<<4`). `WaveformScene` auto-detects the
+count (`sid_host_emu.detect_sid_addresses`, with an `_<N>SID.sid` filename
+fallback when the header understates it) and shows a **split scope** — one
+side-by-side window per chip in each voice row. The single host `SidHostEmu`
+shadows every chip's register bank (the one 6502 already writes them all), so
+the display is always correct regardless of hardware.
+
+**Audio is best-effort on the U64 and unavailable elsewhere.** The tune's
+writes only make sound where the U64 has a SID mapped to that exact address,
+so `_apply_sid_hw_config` maps the U64's UltiSID cores (and sockets) to the
+tune's own addresses before the player's INIT runs
+([asid_sidmap.plan_sid_map_for_addresses](../c64cast/asid_sidmap.py)). The
+firmware exposes ≤2 sockets (`$D400`/`$D420`) + 2 UltiSID cores sharing one
+range split (`1/2` → `$40`-aligned, `1/4` → `$80`-aligned; stride `$20`), so
+consecutive layouts (`$D400/$D420/$D440`) and two-page layouts
+(`$D400`+`$D500`) realize exactly; a scattered set needing three core windows
+(`$D400`+`$DE00`+`$DF00`) can't, and falls back to the canonical
+`plan_sid_map` layout (some chips silent — the scope stays correct). The prior
+config is snapshotted and restored on teardown ([sid_hw_config.py](../c64cast/sid_hw_config.py)).
+Backends without a SID config API (TeensyROM) skip this: every chip's scope
+still renders; only `$D400` is audible. Single-SID tunes never touch the
+config (one window, byte-identical to before). Verified on U64-II hardware:
+`Enchanted_Forest_3SID.sid` → 3 windows, all 9 voices audible as each chip
+enters.
+
 ### TeensyROM: pure-DMA `$0314` vector-swap launch (no `run_prg`)
 
 The host-side orchestration above (parse / layout / build / divider

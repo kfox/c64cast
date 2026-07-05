@@ -129,5 +129,68 @@ class RealizationOracleTest(unittest.TestCase):
                         self._assert_realizable(sm)
 
 
+def _realized_addresses(sm: m.SidMap) -> set[int]:
+    """Every $Dxxx base the config in `sm` makes a chip answer at (port of the
+    firmware address math via _realize_core)."""
+    realized: list[int] = []
+    cfg = sm.config
+    for addr_item in (m.ITEM_SOCKET1_ADDR, m.ITEM_SOCKET2_ADDR):
+        v = cfg.get((m.CAT_ADDRESSING, addr_item))
+        if v and v != m.ADDR_UNMAPPED:
+            realized.append(int(v.lstrip("$"), 16))
+    split = cfg.get((m.CAT_ADDRESSING, m.ITEM_ULTISID_SPLIT), m.SPLIT_OFF)
+    for core_item in (m.ITEM_ULTISID1_ADDR, m.ITEM_ULTISID2_ADDR):
+        v = cfg.get((m.CAT_ADDRESSING, core_item))
+        if v and v != m.ADDR_UNMAPPED:
+            realized.extend(_realize_core(int(v.lstrip("$"), 16), split))
+    return set(realized)
+
+
+class PlanForAddressesTest(unittest.TestCase):
+    """plan_sid_map_for_addresses: realize a SID file's *own* fixed chip
+    addresses, or return None when the hardware can't."""
+
+    def _assert_realizes(self, addrs, **kw):
+        sm = m.plan_sid_map_for_addresses(tuple(addrs), **kw)
+        self.assertIsNotNone(sm, f"{[hex(a) for a in addrs]} unexpectedly unrealizable")
+        assert sm is not None  # narrow for type checker
+        self.assertEqual(sm.addresses, tuple(addrs))  # routed verbatim
+        realized = _realized_addresses(sm)
+        for a in addrs:
+            self.assertIn(a, realized, f"${a:04X} not realized by {sm.config}")
+
+    def test_single_sid(self):
+        self._assert_realizes([0xD400])
+
+    def test_consecutive_two(self):
+        self._assert_realizes([0xD400, 0xD420])
+
+    def test_consecutive_three(self):
+        self._assert_realizes([0xD400, 0xD420, 0xD440])
+
+    def test_two_distinct_pages(self):
+        self._assert_realizes([0xD400, 0xD500])
+
+    def test_second_sid_at_de00(self):
+        self._assert_realizes([0xD400, 0xDE00])
+
+    def test_socket_serves_matching_target(self):
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420), socket1_present=True, socket2_present=True
+        )
+        assert sm is not None
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Enabled")
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET2_EN)], "Enabled")
+        self.assertIn(0xD400, _realized_addresses(sm))
+        self.assertIn(0xD420, _realized_addresses(sm))
+
+    def test_three_scattered_pages_unrealizable(self):
+        # $D400 + $DE00 + $DF00 needs 3 core windows — only 2 cores exist.
+        self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, 0xDE00, 0xDF00)))
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(m.plan_sid_map_for_addresses(()))
+
+
 if __name__ == "__main__":
     unittest.main()

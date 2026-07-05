@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import unittest
 
-from c64cast.sid_host_emu import SidHostEmu
+from c64cast.sid_host_emu import SidHostEmu, detect_sid_addresses, parse_sid_header
 
 # ---------------------------------------------------------------------------
 # Synthetic-SID helper
@@ -236,7 +236,7 @@ class RetriggerDetectionTest(unittest.TestCase):
         play_steady = bytes([0xA9, 0x41, 0x8D, 0x04, 0xD4, 0x60])  # gate high
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=play_steady)
         emu = SidHostEmu(sid)
-        emu._memory.gate_low_seen[0] = 1  # poison as if a prior tick saw low
+        emu._memory.gate_low_banks[0][0] = 1  # poison as if a prior tick saw low
         emu.tick_play()
         self.assertEqual(emu.retriggers(), (False, False, False))
 
@@ -349,6 +349,120 @@ class RamWriteFootprintTest(unittest.TestCase):
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
         emu = SidHostEmu(sid)
         self.assertIsNone(emu._memory.footprint)
+
+
+def _sid_with_extra_addrs(
+    *,
+    version: int,
+    second: int = 0,
+    third: int = 0,
+    play_code: bytes = _PLAY_WRITES,
+) -> bytes:
+    """A synthetic PSID whose header declares the given version and second/third
+    SID-address bytes (offsets $7A/$7B)."""
+    sid = bytearray(_make_synthetic_sid(init_code=_INIT_RTS, play_code=play_code))
+    sid[4:6] = version.to_bytes(2, "big")
+    sid[0x7A] = second
+    sid[0x7B] = third
+    return bytes(sid)
+
+
+class HeaderSidAddressTest(unittest.TestCase):
+    """parse_sid_header.sid_addresses: PSID v3/v4 second/third-SID addresses."""
+
+    def test_v4_three_sids(self):
+        # 0x42 → $D420, 0x44 → $D440 (address = $D000 | byte<<4).
+        h = parse_sid_header(_sid_with_extra_addrs(version=4, second=0x42, third=0x44))
+        self.assertEqual(h.sid_addresses, (0xD400, 0xD420, 0xD440))
+
+    def test_v3_second_only_ignores_third(self):
+        # v3 has a second-SID field but no third — the $7B byte is ignored.
+        h = parse_sid_header(_sid_with_extra_addrs(version=3, second=0x50, third=0x44))
+        self.assertEqual(h.sid_addresses, (0xD400, 0xD500))
+
+    def test_v2_has_no_extra_addresses(self):
+        h = parse_sid_header(_sid_with_extra_addrs(version=2, second=0x42, third=0x44))
+        self.assertEqual(h.sid_addresses, (0xD400,))
+
+    def test_third_ignored_when_second_absent(self):
+        # A third address with no second collapses to single-SID (can't have a
+        # 3rd chip without a 2nd).
+        h = parse_sid_header(_sid_with_extra_addrs(version=4, second=0x00, third=0x44))
+        self.assertEqual(h.sid_addresses, (0xD400,))
+
+
+class DetectSidAddressesTest(unittest.TestCase):
+    """detect_sid_addresses: header authority + filename _NSID fallback."""
+
+    def test_header_is_authoritative(self):
+        sid = _sid_with_extra_addrs(version=4, second=0x42, third=0x44)
+        self.assertEqual(detect_sid_addresses(None, sid), (0xD400, 0xD420, 0xD440))
+
+    def test_filename_raises_count_with_canonical_fillers(self):
+        # v2 header (single SID) but the filename says 3SID → synthesize
+        # canonical stride-$20 bases for the chips the header can't describe.
+        sid = _sid_with_extra_addrs(version=2)
+        self.assertEqual(
+            detect_sid_addresses("tunes/Great_Song_3SID.sid", sid),
+            (0xD400, 0xD420, 0xD440),
+        )
+
+    def test_header_beats_smaller_filename_hint(self):
+        # A 2SID header must not be lowered by a "_1SID" filename.
+        sid = _sid_with_extra_addrs(version=3, second=0x50)
+        self.assertEqual(detect_sid_addresses("x_1SID.sid", sid), (0xD400, 0xD500))
+
+    def test_plain_single_sid(self):
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
+        self.assertEqual(detect_sid_addresses("tune.sid", sid), (0xD400,))
+
+
+class MultiBankTrapTest(unittest.TestCase):
+    """TrappedRam/SidHostEmu shadow every configured SID chip's register bank."""
+
+    # PLAY writes a distinct byte to V1-control of three chips: $D404/$D424/$D444.
+    _PLAY_THREE_CHIPS = bytes(
+        [
+            0xA9,
+            0x11,
+            0x8D,
+            0x04,
+            0xD4,  # STA $D404 = $11 (chip 0)
+            0xA9,
+            0x22,
+            0x8D,
+            0x24,
+            0xD4,  # STA $D424 = $22 (chip 1)
+            0xA9,
+            0x33,
+            0x8D,
+            0x44,
+            0xD4,  # STA $D444 = $33 (chip 2)
+            0x60,
+        ]
+    )
+
+    def test_each_bank_captured(self):
+        sid = _sid_with_extra_addrs(
+            version=4, second=0x42, third=0x44, play_code=self._PLAY_THREE_CHIPS
+        )
+        emu = SidHostEmu(sid, sid_bases=(0xD400, 0xD420, 0xD440))
+        emu.tick_play()
+        self.assertEqual(emu.n_sids, 3)
+        self.assertEqual(emu.regs(0)[4], 0x11)
+        self.assertEqual(emu.regs(1)[4], 0x22)
+        self.assertEqual(emu.regs(2)[4], 0x33)
+
+    def test_single_sid_ignores_other_banks(self):
+        # Default single-SID trap shadows only $D400; writes to $D424 land in
+        # RAM but not the shadow (byte-identical to the pre-multi-SID path).
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=self._PLAY_THREE_CHIPS)
+        emu = SidHostEmu(sid)
+        emu.tick_play()
+        self.assertEqual(emu.n_sids, 1)
+        self.assertEqual(emu.regs(0)[4], 0x11)
+        self.assertEqual(emu._memory.ram[0xD424], 0x22)  # reached RAM
+        self.assertEqual(len(emu._memory.sid_shadows), 1)  # but not shadowed
 
 
 if __name__ == "__main__":
