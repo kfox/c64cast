@@ -283,9 +283,11 @@ class Scene:
         fps_str = f"{self.target_fps:.0f}fps" if self.target_fps else "auto-fps"
         overlay_names = [getattr(ov, "name", type(ov).__name__) for ov in self.overlays]
         ov_str = ", ".join(overlay_names) if overlay_names else "no overlays"
-        # VideoScene sets duration_s = math.inf because its lifetime
-        # is video-driven; format that distinctly instead of "inf.0s".
-        dur_str = "video-driven" if math.isinf(self.duration_s) else f"{self.duration_s:.1f}s"
+        # duration_s = math.inf means the scene never auto-advances: a video
+        # (lifetime is video-driven, ends on EOF) or a single-scene
+        # webcam/blank (runs until stopped). Format that distinctly instead
+        # of "inf.0s".
+        dur_str = "unbounded" if math.isinf(self.duration_s) else f"{self.duration_s:.1f}s"
         log.info(
             "scene %r: mode=%s duration=%s %s [%s]", self.name, mode_name, dur_str, fps_str, ov_str
         )

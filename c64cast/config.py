@@ -795,12 +795,17 @@ class SceneCfg:
         default=None,
         metadata={"help": "Display name (shown in interstitials/logs; ensemble match key)."},
     )
-    # None = scene-type default (30s for webcam/blank, songlengths-or-30s for
-    # waveform/midi). Video scenes reject any value (video-driven).
+    # None = scene-type default: webcam/blank run forever in a single-scene
+    # playlist (else 30s so a rotation still advances), songlengths-or-30s for
+    # waveform/midi, 30s for slideshow/generative. 0 = run forever (any type).
+    # Video scenes reject any value (video-driven).
     duration_s: float | None = field(
         default=None,
         metadata={
-            "help": "Seconds before auto-advance. Unset = scene-type default. "
+            "help": "Seconds before auto-advance; 0 = run forever. Unset = "
+            "scene-type default (webcam/blank run forever when they're the "
+            "only scene, else 30s; waveform = song length or 30s; "
+            "slideshow/generative = 30s). "
             "Video scenes reject this (they run until the file ends). "
             "For launcher this is the idle timeout (reset by player input).",
             "applies_to": (
@@ -2982,6 +2987,11 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
             "Remove the field (it would be a silent no-op here)."
         )
 
+    # duration_s = 0 is the "run forever" sentinel; negatives are a typo.
+    # (Video rejects any duration_s below in _validate_video.)
+    if s.duration_s is not None and s.duration_s < 0:
+        raise ValueError(f"duration_s must be >= 0 (0 = run forever), got {s.duration_s!r}")
+
     if s.type == "webcam":
         mode = _display_mode_for_scene(s.display, s, cfg)
     elif s.type == "blank":
@@ -3468,11 +3478,27 @@ def build_scene(
             buffered_player=s.asid_buffered_player,
             name=s.name or "ASID",
         )
-    # Video scenes set their own video-driven duration in __init__
-    # (math.inf) — `validate_scene_cfg` above already rejected any explicit
-    # duration_s on them, so honor that by not overwriting it here.
-    if s.duration_s is not None and s.type != "video":
-        scene.duration_s = s.duration_s
+    # Duration resolution. `scene.duration_s = math.inf` means "run until
+    # stopped" (the scene never auto-advances).
+    #   * explicit duration_s == 0 → the "run forever" sentinel (any type);
+    #   * explicit duration_s  > 0 → honored verbatim;
+    #   * unset (None): webcam/blank default to infinite in a SINGLE-scene
+    #     playlist ("leave the camera running"), but keep the base 30 s in a
+    #     multi-scene playlist so the rotation still advances — an infinite
+    #     live scene never becomes is_done and would wedge the playlist. Every
+    #     other type keeps the default already set above (video's video-driven
+    #     math.inf, waveform's song-length, etc.).
+    # Video scenes set their own math.inf in __init__ and reject explicit
+    # duration_s in _validate_video, so leave them untouched here.
+    if s.type != "video":
+        # A single configured scene stays single-scene: interleave_videos is
+        # skipped for a 1-scene playlist (see scenes_from_config), so the
+        # scene count is the whole story here.
+        single_scene_playlist = len(cfg.scenes) <= 1
+        if s.duration_s is not None:
+            scene.duration_s = math.inf if s.duration_s == 0 else s.duration_s
+        elif s.type in ("webcam", "blank") and single_scene_playlist:
+            scene.duration_s = math.inf
     if s.target_fps is not None:
         scene.target_fps = float(s.target_fps)
     # Per-scene pixel effect (validated frame-bearing in validate_scene_cfg).
@@ -3568,7 +3594,8 @@ def scenes_from_config(
                 api, None, HiresDisplayMode(style="edges"), source, cfg.audio, "Live Hi-Res Edges"
             )
         )
-        base[-1].duration_s = 30.0
+        # The sole scene when nothing is configured — leave it running.
+        base[-1].duration_s = math.inf
 
     if not cfg.playlist.interleave_videos:
         return base
