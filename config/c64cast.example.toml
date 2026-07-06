@@ -607,8 +607,10 @@ profile_interval = 10.0             # seconds between profiler summary lines
 # Scenes run in declaration order; each plays for `duration_s` seconds,
 # then advances. Common fields:
 #   type        — "webcam" | "video" | "waveform" | "midi"
-#   duration_s  — seconds before advancing. Rejected on `video`
-#                 scenes (they run until the video file ends).
+#   duration_s  — seconds before advancing; 0 = run forever. Unset =
+#                 scene-type default (webcam/blank run forever when they're
+#                 the only scene, else 30s). Rejected on `video` scenes
+#                 (they run until the video file ends).
 #   name        — display name (used by the interstitial). Optional.
 #   target_fps  — per-scene FPS cap. Default: system rate
 #                 (60 NTSC / 50 PAL). Bitmap (hires/mhires) video, webcam,

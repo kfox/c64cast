@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import tempfile
 import unittest
@@ -462,6 +463,16 @@ class ValidateSceneCfgTest(unittest.TestCase):
 
     def test_valid_blank_scene_passes(self):
         s = cfgmod.SceneCfg(type="blank")
+        cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_negative_duration_rejected(self):
+        s = cfgmod.SceneCfg(type="blank", duration_s=-1.0)
+        with self.assertRaisesRegex(ValueError, "duration_s must be >= 0"):
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_zero_duration_allowed(self):
+        # 0 is the "run forever" sentinel, not an error.
+        s = cfgmod.SceneCfg(type="blank", duration_s=0)
         cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_blank_scene_rejects_wrong_display(self):
@@ -937,6 +948,65 @@ class SceneAudioAttachmentTest(unittest.TestCase):
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
         scene = cfgmod.build_scene(s, self.cfg, self.api, self.audio_sentinel, self.source)
         self.assertIsNone(scene.pre_emphasis)
+
+
+class SceneDurationDefaultTest(unittest.TestCase):
+    """build_scene's duration resolution: webcam/blank default to infinite
+    in a single-scene playlist ("leave the camera running"), keep 30 s in a
+    multi-scene playlist (so the rotation still advances), and treat
+    duration_s = 0 as a universal "run forever" sentinel."""
+
+    def setUp(self):
+        import os
+        import sys
+        from typing import cast
+
+        from c64cast.api import Ultimate64API
+        from c64cast.video import WebcamSource
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+        from _fakes import FakeAPI
+
+        self.api = cast(Ultimate64API, FakeAPI())
+        self.source = cast(WebcamSource, object())
+
+    def _cfg(self, *scenes: cfgmod.SceneCfg) -> cfgmod.Config:
+        cfg = cfgmod.Config()
+        cfg.scenes = list(scenes)
+        return cfg
+
+    def _build(self, cfg: cfgmod.Config, s: cfgmod.SceneCfg):
+        return cfgmod.build_scene(s, cfg, self.api, None, self.source)
+
+    def test_single_scene_webcam_unset_is_infinite(self):
+        s = cfgmod.SceneCfg(type="webcam", display="petscii")
+        scene = self._build(self._cfg(s), s)
+        self.assertTrue(math.isinf(scene.duration_s))
+
+    def test_single_scene_blank_unset_is_infinite(self):
+        s = cfgmod.SceneCfg(type="blank")
+        scene = self._build(self._cfg(s), s)
+        self.assertTrue(math.isinf(scene.duration_s))
+
+    def test_multi_scene_webcam_unset_stays_30s(self):
+        # Two scenes → rotation; an infinite live scene would wedge it, so
+        # the webcam keeps the finite base default and advances.
+        s = cfgmod.SceneCfg(type="webcam", display="petscii")
+        other = cfgmod.SceneCfg(type="blank")
+        scene = self._build(self._cfg(s, other), s)
+        self.assertEqual(scene.duration_s, 30.0)
+
+    def test_zero_is_run_forever_sentinel_even_in_multi_scene(self):
+        # Explicit 0 overrides the finite multi-scene default.
+        s = cfgmod.SceneCfg(type="webcam", display="petscii", duration_s=0)
+        other = cfgmod.SceneCfg(type="blank")
+        scene = self._build(self._cfg(s, other), s)
+        self.assertTrue(math.isinf(scene.duration_s))
+
+    def test_positive_duration_honored(self):
+        s = cfgmod.SceneCfg(type="webcam", display="petscii", duration_s=45.0)
+        scene = self._build(self._cfg(s), s)
+        self.assertEqual(scene.duration_s, 45.0)
 
 
 class FollowerOnlyRotationFilterTest(unittest.TestCase):

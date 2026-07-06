@@ -785,7 +785,7 @@
               "number",
               "null"
             ],
-            "description": "Seconds before auto-advance. Unset = scene-type default. Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input)."
+            "description": "Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input)."
           },
           "target_fps": {
             "type": [
