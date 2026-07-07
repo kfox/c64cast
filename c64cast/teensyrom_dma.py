@@ -49,16 +49,13 @@ the extra installed.
 from __future__ import annotations
 
 import contextlib
-import glob
-import json
 import logging
 import socket
-import subprocess
-import sys
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -133,97 +130,76 @@ class TRTransport(ABC):
     def description(self) -> str: ...
 
 
-# The Teensy enumerates as a driverless USB-CDC device whose node name is
-# /dev/cu.usbmodem<serial><iface> — the board's USB serial number plus a
-# trailing interface digit. system_profiler reports the serial number under
-# `USBDeviceKeySerialNumber` on a node named "TeensyROM". We query *both* USB
-# data types so one call covers macOS generations: `SPUSBHostDataType` is the
-# current key, `SPUSBDataType` the older one (system_profiler emits whichever
-# exist; the recursive walk doesn't care which).
-_MACOS_USB_PROFILE_CMD = ("system_profiler", "SPUSBHostDataType", "SPUSBDataType", "-json")
-_TEENSYROM_USB_NAME = "TeensyROM"
-_MACOS_CU_PREFIX = "/dev/cu.usbmodem"
+# The TeensyROM is a Teensy 4.1 enumerating as a USB-CDC device under PJRC's
+# USB vendor id 0x16C0; the TeensyROM firmware's USB type reports product id
+# 0x0489. We identify the board by (VID, PID) rather than by device-node name
+# because that pair is the only stable, cross-platform key: macOS names the
+# node /dev/cu.usbmodem<serial>, Linux /dev/ttyACM*, and Windows COM<N> — none
+# of them derivable from each other. Where the OS also surfaces the USB product
+# string ("TeensyROM"), a name match is accepted as a fallback; Windows' generic
+# usbser.sys driver drops that string (product is None, description is the bare
+# "USB Serial Device (COMn)"), which is exactly why the (VID, PID) key leads.
+_TEENSY_USB_VID = 0x16C0
+_TEENSYROM_USB_PID = 0x0489
+_TEENSYROM_PRODUCT_NAME = "teensyrom"  # matched case-insensitively
 
 
-def _teensyrom_serials_from_profiler(payload: object) -> list[str]:
-    """Walk a parsed `system_profiler -json` payload and return the USB serial
-    number of every attached TeensyROM (a recursive search, since the USB tree
-    nests devices under hub `_items`). Pure — unit-tested against a fixture."""
-    out: list[str] = []
+def _is_teensyrom_port(info: object) -> bool:
+    """True if a pyserial ``ListPortInfo`` describes an attached TeensyROM.
 
-    def walk(node: object) -> None:
-        if isinstance(node, dict):
-            if node.get("_name") == _TEENSYROM_USB_NAME:
-                serial = node.get("USBDeviceKeySerialNumber")
-                if serial:
-                    out.append(str(serial))
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(payload)
-    return out
+    Pure + duck-typed (reads only ``.vid``/``.pid``/``.product``/``.description``)
+    so it is unit-testable without hardware. Primary key is the (VID, PID) pair;
+    a case-insensitive "teensyrom" product/description substring is accepted as a
+    fallback for platforms that expose the USB product string."""
+    vid = getattr(info, "vid", None)
+    pid = getattr(info, "pid", None)
+    if vid == _TEENSY_USB_VID and pid == _TEENSYROM_USB_PID:
+        return True
+    for text in (getattr(info, "product", None), getattr(info, "description", None)):
+        if text and _TEENSYROM_PRODUCT_NAME in text.lower():
+            return True
+    return False
 
 
-def _device_for_serial(serial: str, candidates: list[str] | None = None) -> str | None:
-    """Resolve a USB serial number to its `/dev/cu.usbmodem*` node by PREFIX
-    match — the device name carries a trailing interface digit
-    (serial 19307560 → /dev/cu.usbmodem193075601), so a literal append wouldn't
-    exist. `candidates` is injectable for tests; None globs the real /dev."""
-    if candidates is None:
-        candidates = glob.glob(f"{_MACOS_CU_PREFIX}{serial}*")
-    return sorted(candidates)[0] if candidates else None
-
-
-def _macos_teensyrom_serials() -> list[str]:
-    """Run system_profiler and extract TeensyROM USB serials. Best-effort:
-    returns [] (never raises) if the tool is missing, errors, or emits non-JSON."""
+def _list_comports() -> list[Any]:
+    """Enumerate serial ports via pyserial, returning ``ListPortInfo``-like
+    objects (typed ``Any`` — pyserial ships no types and the matcher reads the
+    fields via getattr). Best-effort: returns [] if pyserial (the ``tr`` extra)
+    is missing or enumeration fails. Isolated behind this helper so tests can
+    inject fake ports without requiring the extra to be installed."""
     try:
-        proc = subprocess.run(
-            _MACOS_USB_PROFILE_CMD,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        log.debug("TR serial auto-detect: system_profiler unavailable: %s", e)
-        return []
-    if proc.returncode != 0 or not proc.stdout:
-        log.debug("TR serial auto-detect: system_profiler exit=%d", proc.returncode)
+        from serial.tools import list_ports  # lazy: only the serial transport needs it
+    except ImportError as e:
+        log.debug("TR serial auto-detect: pyserial unavailable: %s", e)
         return []
     try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        log.debug("TR serial auto-detect: bad system_profiler JSON: %s", e)
+        return list(list_ports.comports())
+    except Exception as e:  # pragma: no cover - defensive; comports enumerates the OS
+        log.debug("TR serial auto-detect: comports() failed: %s", e)
         return []
-    return _teensyrom_serials_from_profiler(payload)
 
 
 def autodetect_serial_port() -> str | None:
     """Best-effort: find the attached TeensyROM's USB-serial device path.
 
-    macOS only for now (other platforms return None — to be added later): query
-    system_profiler for the board's USB serial number, then glob
-    `/dev/cu.usbmodem<serial>*` for the matching node. Returns the path, or None
-    when not on macOS, no TeensyROM is attached, or no device node matches (the
-    caller then falls back to requiring an explicit `[teensyrom].serial_port`)."""
-    if sys.platform != "darwin":
-        return None  # Linux (/dev/serial/by-id) + Windows TBD
-    matches = [(s, _device_for_serial(s)) for s in _macos_teensyrom_serials()]
-    found = [(serial, dev) for serial, dev in matches if dev]
+    Cross-platform via pyserial's ``list_ports.comports()`` (macOS
+    /dev/cu.usbmodem*, Linux /dev/ttyACM*, Windows COMn) — each entry already
+    carries the resolved device path plus USB (VID, PID) and product metadata, so
+    no per-platform node resolution is needed. Returns the device of the first
+    matching board, or None when pyserial is missing, no TeensyROM is attached,
+    or none matches (the caller then falls back to requiring an explicit
+    ``[teensyrom].serial_port``). Never raises."""
+    found: list[str] = sorted(str(p.device) for p in _list_comports() if _is_teensyrom_port(p))
     if not found:
         return None
     if len(found) > 1:
         log.warning(
             "TR serial auto-detect: multiple TeensyROM boards attached (%s) — using "
             "%s; set [teensyrom].serial_port to pick a specific one",
-            [serial for serial, _ in found],
-            found[0][1],
+            found,
+            found[0],
         )
-    return found[0][1]
+    return found[0]
 
 
 class SerialTransport(TRTransport):
