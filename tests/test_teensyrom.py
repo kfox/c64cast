@@ -535,63 +535,70 @@ class ReuCoercionTest(unittest.TestCase):
         self.assertIs(cfg.video.use_reu_staged, True)
 
 
+class _FakePort:
+    """Minimal stand-in for pyserial's ListPortInfo (duck-typed by the matcher)."""
+
+    def __init__(self, device, vid=None, pid=None, product=None, description=None):
+        self.device = device
+        self.vid = vid
+        self.pid = pid
+        self.product = product
+        self.description = description
+
+
 class TRSerialAutodetectTest(unittest.TestCase):
-    """Pure-helper tests for macOS serial-device auto-detection (no subprocess,
-    no real /dev)."""
+    """Cross-platform serial-device auto-detection via pyserial's list_ports
+    (no hardware; fake ListPortInfo objects, comports() patched)."""
 
-    def test_serials_from_profiler_walks_nested_usb_tree(self):
-        from c64cast.teensyrom_dma import _teensyrom_serials_from_profiler
+    # A TeensyROM as it enumerates on Windows: correct (VID, PID) but the
+    # generic usbser.sys driver exposes no product string.
+    WINDOWS = _FakePort(
+        "COM19", vid=0x16C0, pid=0x0489, product=None, description="USB Serial Device (COM19)"
+    )
+    # As it enumerates on macOS/Linux, where the USB product string surfaces.
+    MACOS = _FakePort(
+        "/dev/cu.usbmodem193075601", vid=0x16C0, pid=0x0489, product="TeensyROM"
+    )
+    OTHER = _FakePort("COM3", vid=0x1234, pid=0x5678, product="Some Modem")
 
-        # system_profiler nests devices under hub `_items`; the walk recurses.
-        payload = {
-            "SPUSBHostDataType": [
-                {
-                    "_name": "USB hub",
-                    "_items": [
-                        {"_name": "TeensyROM", "USBDeviceKeySerialNumber": "19307560"},
-                        {"_name": "Some Webcam", "USBDeviceKeySerialNumber": "deadbeef"},
-                    ],
-                }
-            ]
-        }
-        self.assertEqual(_teensyrom_serials_from_profiler(payload), ["19307560"])
+    def test_matches_by_vid_pid_when_product_missing(self):
+        from c64cast.teensyrom_dma import _is_teensyrom_port
 
-    def test_serials_from_profiler_empty_when_no_teensyrom(self):
-        from c64cast.teensyrom_dma import _teensyrom_serials_from_profiler
+        self.assertTrue(_is_teensyrom_port(self.WINDOWS))
 
-        self.assertEqual(_teensyrom_serials_from_profiler({"SPUSBHostDataType": []}), [])
+    def test_matches_by_product_name_fallback(self):
+        from c64cast.teensyrom_dma import _is_teensyrom_port
 
-    def test_device_for_serial_prefix_matches_trailing_iface_digit(self):
-        from c64cast.teensyrom_dma import _device_for_serial
+        # Product string alone identifies it even if the (VID, PID) is unknown.
+        self.assertTrue(_is_teensyrom_port(_FakePort("COM7", product="TeensyROM v1")))
 
-        # Real case: serial 19307560 -> /dev/cu.usbmodem193075601 (the device
-        # node carries a trailing interface digit, so a literal append fails;
-        # a prefix match resolves it).
-        self.assertEqual(
-            _device_for_serial("19307560", ["/dev/cu.usbmodem193075601"]),
-            "/dev/cu.usbmodem193075601",
-        )
+    def test_rejects_non_teensyrom_port(self):
+        from c64cast.teensyrom_dma import _is_teensyrom_port
 
-    def test_device_for_serial_none_when_no_match(self):
-        from c64cast.teensyrom_dma import _device_for_serial
+        self.assertFalse(_is_teensyrom_port(self.OTHER))
 
-        self.assertIsNone(_device_for_serial("19307560", []))
+    def _patch_comports(self, ports):
+        return mock.patch("serial.tools.list_ports.comports", return_value=ports)
 
-    def test_device_for_serial_picks_lowest_when_multiple_ifaces(self):
-        from c64cast.teensyrom_dma import _device_for_serial
-
-        self.assertEqual(
-            _device_for_serial(
-                "19307560", ["/dev/cu.usbmodem193075603", "/dev/cu.usbmodem193075601"]
-            ),
-            "/dev/cu.usbmodem193075601",
-        )
-
-    def test_autodetect_returns_none_off_macos(self):
+    def test_autodetect_returns_matching_device(self):
         from c64cast import teensyrom_dma
 
-        with mock.patch.object(teensyrom_dma.sys, "platform", "linux"):
+        with self._patch_comports([self.OTHER, self.WINDOWS]):
+            self.assertEqual(teensyrom_dma.autodetect_serial_port(), "COM19")
+
+    def test_autodetect_returns_none_when_no_match(self):
+        from c64cast import teensyrom_dma
+
+        with self._patch_comports([self.OTHER]):
             self.assertIsNone(teensyrom_dma.autodetect_serial_port())
+
+    def test_autodetect_warns_and_picks_lowest_on_multiple_boards(self):
+        from c64cast import teensyrom_dma
+
+        second = _FakePort("COM20", vid=0x16C0, pid=0x0489)
+        with self._patch_comports([second, self.WINDOWS]):
+            with self.assertLogs("c64cast.teensyrom_dma", level="WARNING"):
+                self.assertEqual(teensyrom_dma.autodetect_serial_port(), "COM19")
 
 
 class MakeBackendTest(unittest.TestCase):
