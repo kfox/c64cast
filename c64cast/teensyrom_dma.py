@@ -55,6 +55,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -160,6 +161,24 @@ def _is_teensyrom_port(info: object) -> bool:
     return False
 
 
+def _list_comports() -> list[Any]:
+    """Enumerate serial ports via pyserial, returning ``ListPortInfo``-like
+    objects (typed ``Any`` — pyserial ships no types and the matcher reads the
+    fields via getattr). Best-effort: returns [] if pyserial (the ``tr`` extra)
+    is missing or enumeration fails. Isolated behind this helper so tests can
+    inject fake ports without requiring the extra to be installed."""
+    try:
+        from serial.tools import list_ports  # lazy: only the serial transport needs it
+    except ImportError as e:
+        log.debug("TR serial auto-detect: pyserial unavailable: %s", e)
+        return []
+    try:
+        return list(list_ports.comports())
+    except Exception as e:  # pragma: no cover - defensive; comports enumerates the OS
+        log.debug("TR serial auto-detect: comports() failed: %s", e)
+        return []
+
+
 def autodetect_serial_port() -> str | None:
     """Best-effort: find the attached TeensyROM's USB-serial device path.
 
@@ -170,17 +189,7 @@ def autodetect_serial_port() -> str | None:
     matching board, or None when pyserial is missing, no TeensyROM is attached,
     or none matches (the caller then falls back to requiring an explicit
     ``[teensyrom].serial_port``). Never raises."""
-    try:
-        from serial.tools import list_ports  # lazy: only the serial transport needs it
-    except ImportError as e:
-        log.debug("TR serial auto-detect: pyserial unavailable: %s", e)
-        return None
-    try:
-        ports = list(list_ports.comports())
-    except Exception as e:  # pragma: no cover - defensive; comports enumerates the OS
-        log.debug("TR serial auto-detect: comports() failed: %s", e)
-        return None
-    found: list[str] = sorted(str(p.device) for p in ports if _is_teensyrom_port(p))
+    found: list[str] = sorted(str(p.device) for p in _list_comports() if _is_teensyrom_port(p))
     if not found:
         return None
     if len(found) > 1:

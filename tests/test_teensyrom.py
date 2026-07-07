@@ -556,9 +556,7 @@ class TRSerialAutodetectTest(unittest.TestCase):
         "COM19", vid=0x16C0, pid=0x0489, product=None, description="USB Serial Device (COM19)"
     )
     # As it enumerates on macOS/Linux, where the USB product string surfaces.
-    MACOS = _FakePort(
-        "/dev/cu.usbmodem193075601", vid=0x16C0, pid=0x0489, product="TeensyROM"
-    )
+    MACOS = _FakePort("/dev/cu.usbmodem193075601", vid=0x16C0, pid=0x0489, product="TeensyROM")
     OTHER = _FakePort("COM3", vid=0x1234, pid=0x5678, product="Some Modem")
 
     def test_matches_by_vid_pid_when_product_missing(self):
@@ -578,7 +576,9 @@ class TRSerialAutodetectTest(unittest.TestCase):
         self.assertFalse(_is_teensyrom_port(self.OTHER))
 
     def _patch_comports(self, ports):
-        return mock.patch("serial.tools.list_ports.comports", return_value=ports)
+        # Patch the isolated enumeration helper (not serial.tools.list_ports)
+        # so these tests don't require the 'tr' extra / pyserial in CI.
+        return mock.patch("c64cast.teensyrom_dma._list_comports", return_value=ports)
 
     def test_autodetect_returns_matching_device(self):
         from c64cast import teensyrom_dma

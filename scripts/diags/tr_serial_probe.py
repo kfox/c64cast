@@ -44,8 +44,10 @@ def main() -> int:
         autodetect_serial_port,
     )
 
-    print(f"looking for : VID={_TEENSY_USB_VID:#06x} PID={_TEENSYROM_USB_PID:#06x} "
-          f'(or product/description containing "teensyrom")\n')
+    print(
+        f"looking for : VID={_TEENSY_USB_VID:#06x} PID={_TEENSYROM_USB_PID:#06x} "
+        f'(or product/description containing "teensyrom")\n'
+    )
 
     ports = list(list_ports.comports())
     if not ports:
