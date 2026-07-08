@@ -1,0 +1,30 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a mirrored-symmetric ink-blot rendered as a multicolor
+# bitmap.
+#
+# A single 2D random walk (fixed seed, precomputed once at startup) is
+# progressively revealed as scene-time advances and reflected across the
+# vertical center line — the classic Rorschach symmetry. The reveal follows a
+# grow-then-recede triangle wave so the loop never visibly pops back to
+# empty (xscreensaver's rorschach.c instead draws a few more walk points
+# every frame without ever resetting).
+#
+# Reactive: loudness (`level`) scales the whole blot larger, and a strong
+# transient jumps the reveal forward — a "restart" flash without discarding
+# the underlying walk.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-rorschach.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Rorschach (mhires)"
+source = "rorschach"
+display = "mhires"
+duration_s = 30.0

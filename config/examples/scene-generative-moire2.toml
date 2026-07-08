@@ -1,0 +1,29 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a moiré interference pattern rendered as a multicolor
+# bitmap.
+#
+# Two concentric-ring distance fields, centered on drifting points either
+# side of frame-center, are summed — where the rings from each field line up
+# they reinforce, where they fall out of step they cancel, producing the
+# classic moiré beat pattern (xscreensaver's moire2.c gets the same effect by
+# XOR-compositing two arc bitmaps; this is the closed-form equivalent).
+#
+# Reactive: the center separation breathes with the music's tempo
+# (`beat_phase`), and each ring family tracks a different SID voice's live
+# pitch, so the pattern's density visibly follows the tune.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-moire2.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Moiré (mhires)"
+source = "moire2"
+display = "mhires"
+duration_s = 30.0

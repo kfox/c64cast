@@ -101,7 +101,8 @@ c64cast/
 │                     (composable FrameSource × AudioSource × display × effect)
 ├── frame_source.py   FrameSource protocol + BaseFrameSource (read(t, mod))
 ├── generators.py     GenerativeSource registry (plasma, tunnel, fire,
-│                     mandelbrot); pure-numpy, deterministic-in-t; reactive
+│                     mandelbrot, moire2, halo, epicycle, hopalong,
+│                     rorschach); pure-numpy, deterministic-in-t; reactive
 │                     when fed a MusicModulation
 ├── effects.py        FrameEffect registry (trails, pulse, rgb_shift) — pre-
 │                     quantization frame xform; reactive when fed a MusicModulation

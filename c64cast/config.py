@@ -97,7 +97,17 @@ _INPUT_SOURCE_CHOICES = ("cia", "kernal", "auto", "none")
 # Mirror generators.generator_names() / effects.effect_names() (hardcoded to
 # keep config import-light; a drift test in test_introspect pins the match).
 # Generative video sources + the per-scene pixel effects.
-_GENERATIVE_SOURCE_CHOICES = ("plasma", "tunnel", "fire", "mandelbrot")
+_GENERATIVE_SOURCE_CHOICES = (
+    "plasma",
+    "tunnel",
+    "fire",
+    "mandelbrot",
+    "moire2",
+    "halo",
+    "epicycle",
+    "hopalong",
+    "rorschach",
+)
 _EFFECT_CHOICES = ("trails", "pulse", "rgb_shift")
 # How a slideshow image is fit to the C64 aspect before the display mode
 # downscales it. See scenes._apply_aspect.

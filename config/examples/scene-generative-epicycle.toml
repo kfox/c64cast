@@ -1,0 +1,30 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: a Fourier epicycle chain (circles spinning around the
+# tip of the previous circle) rendered as a multicolor bitmap.
+#
+# The combined tip position is the vector sum of rotating phasors
+# `r_i * exp(j*(w_i*t + phi_i))`; radii taper geometrically per arm so each
+# ring stays visually distinct (a spirograph look) rather than collapsing
+# into the tight cluster a strict harmonic Fourier series would produce at
+# only 5 terms. The arm chain (circle + spoke) is drawn each frame along with
+# a fading trail of the tip's recent path.
+#
+# Reactive: the first few arms' spin rates track live SID voice pitches
+# (`voice_freqs`) instead of their fixed harmonic, so the chain's shape
+# visibly follows the tune; loudness scales every arm's radius.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-epicycle.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Epicycle (mhires)"
+source = "epicycle"
+display = "mhires"
+duration_s = 30.0
