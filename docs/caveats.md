@@ -115,6 +115,19 @@ screen. The kernal IRQ keeps firing regardless, so PLAY runs at the
 system rate and `$028D` keeps updating for the keyboard poller.
 Audio still comes from the real SID chip.
 
+**Pre-blank before the kick (Ultimate only).** `runners:run_prg` soft-resets
+the C64, and like any reset it has a reset-latency window during which the
+VIC still holds the *outgoing* scene's mode/bank/bitmap — so without a guard,
+launching the SID player over a previous hires/mhires scene (another
+waveform, or a video/generative bitmap scene) briefly flashes that scene's
+leftover bitmap RAM before the kernal reinitializes VIC and `WaveformScene`
+re-engages its own bitmap mode. `Ultimate64API._launch_sid_player` blanks the
+display (`blank_display()`, DEN off) immediately before DMA'ing the SID
+blobs, the same guard `reset()` uses for the same reason. The TeensyROM
+backend never does this (see the vector-swap note below): its "kick" doesn't
+reset the machine, and turning DEN off there would stall the cycle-clean DMA
+gate.
+
 ### Per-call memory banking (`$01`)
 
 The player banks the 6510 CPU port at `$0001` **per call**, matching the

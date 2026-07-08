@@ -1325,12 +1325,21 @@ class Ultimate64API(_SidPlayerBackend):
         MC at $C300 survives) and RUNs the stub; BASIC's SYS jumps to the player
         MC, which installs the IRQ and spins forever (never re-entering BASIC).
 
+        Blanks the display first (same guard as `reset()`): run_prg's reset has
+        its own reset-latency window during which the VIC still holds the
+        OUTGOING scene's mode/bank, so without this a bitmap/hires scene (e.g.
+        another waveform or a video scene) flashes its leftover bitmap RAM until
+        the kernal reinitializes VIC and, in turn, `_setup_hires()` re-engages
+        the scope. This is the same class of glitch `reset()`'s pre-blank fixes;
+        `run_prg` here is a parallel reset path that needs the same guard.
+
         `avoid` is unused here (no trampoline to place). `defer_audio` is ignored:
         run_prg is a synchronous reset+RUN that also re-inits VIC to text mode, so
         there's no loaded-but-silent window to hold — audio starts here. Returns
         True so `run_sid_player` runs the standard finalize (timestamp + divider).
         WaveformScene's `begin_sid_audio()` is then a no-op, and it (re)asserts the
         bitmap display *after* this call as it always has."""
+        self.blank_display()
         self._write_sid_blobs(parsed, layout, mc, reinit)
         self.flush()
         basic_stub = _build_basic_sys_stub(layout.player_base)
