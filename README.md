@@ -336,8 +336,8 @@ targets:
 
 * [Gideon Zweijtzer](https://1541ultimate.net/) for the Ultimate 64
   hardware and firmware.
-* Travis Smith for the [TeensyROM+ cartridge](https://lectronz.com/products/teensyrom),
-  firmware updates, and hands-on testing.
+* Travis Smith for the [TeensyROM+](https://github.com/SensoriumEmbedded/TeensyROM) -
+  including cartridge, firmware, hands-on testing, and suggestions.
 * [Bo Zimmerman](http://zimmers.net) for his excellent online and physical
   collections of all things Commodore.
 * The [HVSC](https://hvsc.c64.org/) team for the SID archive and the
