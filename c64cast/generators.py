@@ -76,6 +76,12 @@ class GenerativeSource(BaseFrameSource):
 
     name = "base"
 
+    # Live-tunable params: name -> (min, max) for a CC-style [0, 1] sweep.
+    # midi_control.py scales into this range and setattr()s directly —
+    # only declare independent single-numeric fields here (a plain
+    # setattr is GIL-atomic; a value split across two fields wouldn't be).
+    LIVE_PARAMS: dict[str, tuple[float, float]] = {}
+
     # Reactive-modulation mapping constants (used only on the music-reactive
     # render path; the unmodulated path never touches them). Tuned on real HW
     # (Cam Link A/B vs the static path) so the reaction is unmistakable after
@@ -127,6 +133,8 @@ class PlasmaSource(GenerativeSource):
     """Classic sine-sum plasma whose hue cycles over time. The spatial field
     is precomputed once; per-frame work is one modulo + HSV→BGR convert."""
 
+    LIVE_PARAMS = {"speed": (0.0, 2.0), "scale": (0.1, 4.0)}
+
     def __init__(
         self,
         *,
@@ -163,6 +171,8 @@ class PlasmaSource(GenerativeSource):
 class TunnelSource(GenerativeSource):
     """Infinite-zoom tunnel: hue is driven by per-pixel depth (1/radius) and
     angle, scrolled over time. Depth + angle fields are precomputed once."""
+
+    LIVE_PARAMS = {"speed": (0.0, 2.0)}
 
     def __init__(self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, speed: float = 0.5):
         super().__init__(width=width, height=height)
@@ -225,6 +235,8 @@ class FireSource(GenerativeSource):
     # Reactive gains (None path uses gain=1, flare=0 — plain rising fire).
     _LEVEL_HEIGHT = 0.85  # extra heat gain at full level (taller, hotter flames)
     _ONSET_FLARE = 0.80  # extra heat gain on a full-strength transient
+
+    LIVE_PARAMS = {"scroll_speed": (0.0, 4.0)}
 
     def __init__(
         self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, scroll_speed: float = 1.1

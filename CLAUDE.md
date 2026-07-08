@@ -147,6 +147,11 @@ c64cast/
 ├── framebuffer.py    Software VIC mirror used by preview + recording
 ├── preview.py        Pygame preview window + cv2.VideoWriter recorder
 ├── control_plane.py  FastAPI HTTP control plane (pause/resume/skip/reload)
+├── midi_control.py   Process-wide MIDI control surface for live performance:
+│                     scene jumps/style-cycle/transport via Playlist Events +
+│                     live effect/generator param sweeps via LIVE_PARAMS;
+│                     own MIDI port (separate from MidiScene), MIDI channel
+│                     selects the target ensemble system
 ├── c64.py            Centralized C64 hardware constants (VIC/SID/CIA/KERNAL)
 ├── interstitial.py   InterstitialScene: centered "UP NEXT" text + parallax bg
 ├── backgrounds.py    Parallax background styles for the interstitial

@@ -27,6 +27,7 @@ from .config import (
     LoadResult,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
+    validate_midi_control_cfg,
     validate_scene_cfg,
 )
 from .orchestrator import OrchestratorError
@@ -53,7 +54,7 @@ _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("preview", "pygame", "[preview] enabled local window"),
     ("control", "fastapi", "[control] enabled HTTP plane"),
     ("obs", "obsws_python", "obs_status overlay"),
-    ("midi", "mido", "midi scenes"),
+    ("midi", "mido", "midi scenes; [midi_control] live control"),
     ("logging", "rich", "colored log output"),
     ("vision", "mediapipe", "[vision] enabled gesture control"),
     ("tr", "serial", "TeensyROM serial backend"),
@@ -94,6 +95,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve(loaded))
     out.extend(_validate_dac_bitmap_tempo(loaded))
+    out.extend(_validate_midi_control(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
     out.extend(_probe_extras())
@@ -347,6 +349,35 @@ def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
     return out
+
+
+def _validate_midi_control(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag a malformed [midi_control] section. Process-wide (like
+    [control]), so this validates loaded.master_midi_control once rather
+    than looping per system. Offline — delegates to
+    config.validate_midi_control_cfg."""
+    try:
+        validate_midi_control_cfg(loaded.master_midi_control)
+    except ConfigError as e:
+        return [
+            Diagnostic(
+                level="error",
+                category="midi_control",
+                subject="midi_control",
+                message=str(e),
+                hint="See [midi_control] in the config reference / --describe section:midi_control.",
+            )
+        ]
+    if loaded.master_midi_control.enabled:
+        return [
+            Diagnostic(
+                level="ok",
+                category="midi_control",
+                subject="midi_control",
+                message=f"{len(loaded.master_midi_control.cc_map)} cc_map entries configured.",
+            )
+        ]
+    return []
 
 
 def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]:
@@ -1330,7 +1361,15 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         by_category.setdefault(d.category, []).append(d)
 
     # Stable ordering by category, then error > warn > ok within each.
-    category_order = ["environment", "scene", "audio", "orchestrator", "extras", "connectivity"]
+    category_order = [
+        "environment",
+        "scene",
+        "audio",
+        "midi_control",
+        "orchestrator",
+        "extras",
+        "connectivity",
+    ]
     for cat in category_order:
         rows = by_category.get(cat)
         if not rows:

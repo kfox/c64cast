@@ -118,6 +118,17 @@ class Playlist:
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
         self.cycle_event = threading.Event()
+        # Jump-to-index request (e.g. from midi_control.py). Reuses
+        # skip_event to force the current scene done at the next clean
+        # frame boundary; _advance() then consumes _jump_target instead of
+        # advancing to index+1. Locked because it's written from whatever
+        # thread requests the jump and read from the run-loop thread.
+        # Last-write-wins: a burst of requests before the run loop drains
+        # collapses to the final target, which is correct for a performer
+        # mashing pads.
+        self._jump_target: int | None = None
+        self._jump_skip_interstitial = True
+        self._jump_lock = threading.Lock()
         # On-C64 menu plumbing. menu_event is toggled by the poller on SPACE
         # (open when running / close when open); menu_active is held set by the
         # run loop while the MenuOverlay is injected, which flips the poller into
@@ -178,6 +189,32 @@ class Playlist:
             self._pending_scenes = list(new_scenes)
             self._pending_interstitial = new_interstitial
             self.reload_event.set()
+
+    def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
+        """Cut to scenes[index] at the next clean frame boundary (reuses
+        skip_event to force the current scene done — see _advance's
+        end-of-scene branch, which consumes _jump_target in place of the
+        usual index+1). No-op in single-scene mode (nowhere to jump to).
+
+        skip_interstitial=True (the default, and what a live-performance
+        control surface should always pass) bypasses the "UP NEXT" card
+        entirely for a hard cut, still gated on the ensemble audio claim
+        for the target scene like single-scene looping is. False routes
+        through the normal transitioning/interstitial path instead, for
+        callers that still want the card.
+
+        Known limitation: a jump requested while self.current is None
+        (the brief startup / finished-without-loop window) is dropped —
+        re-send once the playlist has a current scene."""
+        if self.single_scene:
+            self.log.debug("jump to %d ignored — single-scene mode", index)
+            return
+        if not 0 <= index < len(self.scenes):
+            raise ValueError(f"jump index {index} out of range (0..{len(self.scenes) - 1})")
+        with self._jump_lock:
+            self._jump_target = index
+            self._jump_skip_interstitial = skip_interstitial
+        self.skip_event.set()
 
     def _apply_reload(self) -> None:
         """Swap in the queued scenes + interstitial factory. The current
@@ -433,6 +470,31 @@ class Playlist:
         elif not self.transitioning and self.current.is_done:
             self._fade_out(self.current)
             self._safe_teardown(self.current)
+            with self._jump_lock:
+                jump_target = self._jump_target
+                jump_skip_interstitial = self._jump_skip_interstitial
+                self._jump_target = None
+            if jump_target is not None:
+                self.index = jump_target
+                if jump_skip_interstitial:
+                    scene = self.scenes[self.index]
+                    if not self._wait_for_audio_claim(scene):
+                        self.current = None
+                        return
+                    self.log.info(
+                        "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
+                    )
+                    self.current = scene
+                    self._safe_setup(self.current)
+                    self.transitioning = False
+                    return
+                resolved = self._resolve_next_index()
+                if resolved is None:
+                    self.current = None
+                    return
+                self.index = resolved
+                self._enter_interstitial()
+                return
             next_index = self.index + 1
             if next_index >= len(self.scenes):
                 if not self.loop:

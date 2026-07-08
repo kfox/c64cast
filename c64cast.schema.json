@@ -719,6 +719,282 @@
         }
       }
     },
+    "midi_control": {
+      "type": "object",
+      "description": "MIDI CC control surface for live performance: scene jumps, style cycling, transport, live effect params (extra).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Run the MIDI control listener; requires the 'midi' extra.",
+          "default": false
+        },
+        "port": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "MIDI input port name (substring match, case-insensitive). None = first available port."
+        },
+        "broadcast_channel": {
+          "type": "integer",
+          "description": "1-based MIDI channel that targets every system at once in ensemble mode. Other channels 1..N target the Nth system in ensemble order. Ignored in single-system mode (the one playlist is always the target).",
+          "default": 16
+        },
+        "jump_transition": {
+          "type": "string",
+          "description": "How a 'jump' action changes scenes: 'cut' (instant, no interstitial \u2014 the live-performance default) or 'interstitial' (routes through the normal UP-NEXT card).",
+          "enum": [
+            "cut",
+            "interstitial"
+          ],
+          "default": "cut"
+        },
+        "cc_map": {
+          "type": "array",
+          "description": "MIDI-message -> action mappings ([[midi_control.cc_map]] tables); see --describe section:midi_control. Set to [] to disable the shipped defaults, or override/extend individual entries. Each entry: type ('cc'|'note'|'pc'), number (0-127), action ('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'); 'jump' also needs an int scene; 'param' also needs a string target ('effect.<name>' or 'source.<name>', matching a LIVE_PARAMS entry on the current scene's effect/generator).",
+          "default": [
+            {
+              "type": "note",
+              "number": 36,
+              "action": "skip"
+            },
+            {
+              "type": "note",
+              "number": 37,
+              "action": "cycle_style"
+            },
+            {
+              "type": "note",
+              "number": 38,
+              "action": "toggle_pause"
+            },
+            {
+              "type": "note",
+              "number": 39,
+              "action": "jump",
+              "scene": 0
+            },
+            {
+              "type": "note",
+              "number": 40,
+              "action": "jump",
+              "scene": 0
+            },
+            {
+              "type": "note",
+              "number": 41,
+              "action": "jump",
+              "scene": 1
+            },
+            {
+              "type": "note",
+              "number": 42,
+              "action": "jump",
+              "scene": 2
+            },
+            {
+              "type": "note",
+              "number": 43,
+              "action": "jump",
+              "scene": 3
+            },
+            {
+              "type": "note",
+              "number": 44,
+              "action": "jump",
+              "scene": 4
+            },
+            {
+              "type": "note",
+              "number": 45,
+              "action": "jump",
+              "scene": 5
+            },
+            {
+              "type": "note",
+              "number": 46,
+              "action": "jump",
+              "scene": 6
+            },
+            {
+              "type": "note",
+              "number": 47,
+              "action": "jump",
+              "scene": 7
+            },
+            {
+              "type": "note",
+              "number": 48,
+              "action": "jump",
+              "scene": 8
+            },
+            {
+              "type": "note",
+              "number": 49,
+              "action": "jump",
+              "scene": 9
+            },
+            {
+              "type": "note",
+              "number": 50,
+              "action": "jump",
+              "scene": 10
+            },
+            {
+              "type": "note",
+              "number": 51,
+              "action": "jump",
+              "scene": 11
+            },
+            {
+              "type": "note",
+              "number": 52,
+              "action": "jump",
+              "scene": 12
+            },
+            {
+              "type": "note",
+              "number": 53,
+              "action": "jump",
+              "scene": 13
+            },
+            {
+              "type": "note",
+              "number": 54,
+              "action": "jump",
+              "scene": 14
+            },
+            {
+              "type": "note",
+              "number": 55,
+              "action": "jump",
+              "scene": 15
+            },
+            {
+              "type": "pc",
+              "number": 0,
+              "action": "jump",
+              "scene": 0
+            },
+            {
+              "type": "pc",
+              "number": 1,
+              "action": "jump",
+              "scene": 1
+            },
+            {
+              "type": "pc",
+              "number": 2,
+              "action": "jump",
+              "scene": 2
+            },
+            {
+              "type": "pc",
+              "number": 3,
+              "action": "jump",
+              "scene": 3
+            },
+            {
+              "type": "pc",
+              "number": 4,
+              "action": "jump",
+              "scene": 4
+            },
+            {
+              "type": "pc",
+              "number": 5,
+              "action": "jump",
+              "scene": 5
+            },
+            {
+              "type": "pc",
+              "number": 6,
+              "action": "jump",
+              "scene": 6
+            },
+            {
+              "type": "pc",
+              "number": 7,
+              "action": "jump",
+              "scene": 7
+            },
+            {
+              "type": "pc",
+              "number": 8,
+              "action": "jump",
+              "scene": 8
+            },
+            {
+              "type": "pc",
+              "number": 9,
+              "action": "jump",
+              "scene": 9
+            },
+            {
+              "type": "pc",
+              "number": 10,
+              "action": "jump",
+              "scene": 10
+            },
+            {
+              "type": "pc",
+              "number": 11,
+              "action": "jump",
+              "scene": 11
+            },
+            {
+              "type": "pc",
+              "number": 12,
+              "action": "jump",
+              "scene": 12
+            },
+            {
+              "type": "pc",
+              "number": 13,
+              "action": "jump",
+              "scene": 13
+            },
+            {
+              "type": "pc",
+              "number": 14,
+              "action": "jump",
+              "scene": 14
+            },
+            {
+              "type": "pc",
+              "number": 15,
+              "action": "jump",
+              "scene": 15
+            },
+            {
+              "type": "cc",
+              "number": 13,
+              "action": "param",
+              "target": "effect.decay"
+            },
+            {
+              "type": "cc",
+              "number": 14,
+              "action": "param",
+              "target": "source.speed"
+            },
+            {
+              "type": "cc",
+              "number": 15,
+              "action": "param",
+              "target": "source.scale"
+            },
+            {
+              "type": "cc",
+              "number": 16,
+              "action": "param",
+              "target": "source.scroll_speed"
+            }
+          ]
+        }
+      }
+    },
     "menu": {
       "type": "object",
       "description": "On-C64 SPACE-key menu for live scene tweaks.",

@@ -1602,6 +1602,99 @@ class ControlPlaneCfg:
     )
 
 
+_MIDI_CC_TYPE_CHOICES = ("cc", "note", "pc")
+_MIDI_ACTION_CHOICES = (
+    "pause",
+    "resume",
+    "toggle_pause",
+    "skip",
+    "cycle_style",
+    "jump",
+    "param",
+)
+
+# Shipped out of the box so MIDI control works with no config edits, per a
+# typical 16-pad-grid + knob-bank live controller (Launch Control XL / APC
+# style). See midi_control.py's module docstring for the full mapping
+# rationale; kept here (not imported from midi_control.py) so config stays
+# import-light, same rationale as the DAC_CURVE_CHOICES-style constants above.
+_DEFAULT_MIDI_CC_MAP: tuple[dict[str, Any], ...] = (
+    {"type": "note", "number": 36, "action": "skip"},
+    {"type": "note", "number": 37, "action": "cycle_style"},
+    {"type": "note", "number": 38, "action": "toggle_pause"},
+    {"type": "note", "number": 39, "action": "jump", "scene": 0},  # "home"/panic
+    # Scene-jump bank: notes 40-55 -> scenes 0-15 (a 16-pad grid row/block),
+    # and the same bank via Program Change for foot-controller performers.
+    *({"type": "note", "number": 40 + i, "action": "jump", "scene": i} for i in range(16)),
+    *({"type": "pc", "number": i, "action": "jump", "scene": i} for i in range(16)),
+    # Knob bank: deliberately clear of MidiScene's CC1/7/71-75 synth-control
+    # range, in case a shared controller feeds both via a virtual MIDI Thru.
+    # A CC mapped to a scene whose current effect/source doesn't declare that
+    # LIVE_PARAM is a silent no-op — safe to leave mapped across any playlist.
+    {"type": "cc", "number": 13, "action": "param", "target": "effect.decay"},
+    {"type": "cc", "number": 14, "action": "param", "target": "source.speed"},
+    {"type": "cc", "number": 15, "action": "param", "target": "source.scale"},
+    {"type": "cc", "number": 16, "action": "param", "target": "source.scroll_speed"},
+)
+
+
+@dataclass
+class MidiControlCfg:
+    """Process-wide MIDI control surface for live performance: scene jumps,
+    style cycling, transport, and live effect/generator parameter sweeps
+    from a MIDI controller. Off by default; requires the `midi` extra.
+
+    Opens its OWN mido.open_input() — a separate port from any MidiScene's,
+    even if both read the same physical controller via OS-level MIDI
+    routing (mido ports are exclusive opens). One listener governs the
+    whole ensemble (mirrors [control]): MIDI channel selects which system a
+    message targets, so a performer retargets with a controller-side
+    channel switch instead of a config/menu round trip."""
+
+    enabled: bool = field(
+        default=False,
+        metadata={"help": "Run the MIDI control listener; requires the 'midi' extra."},
+    )
+    port: str | None = field(
+        default=None,
+        metadata={
+            "help": "MIDI input port name (substring match, case-insensitive). "
+            "None = first available port."
+        },
+    )
+    broadcast_channel: int = field(
+        default=16,
+        metadata={
+            "help": "1-based MIDI channel that targets every system at once in "
+            "ensemble mode. Other channels 1..N target the Nth system in "
+            "ensemble order. Ignored in single-system mode (the one playlist "
+            "is always the target)."
+        },
+    )
+    jump_transition: str = field(
+        default="cut",
+        metadata={
+            "help": "How a 'jump' action changes scenes: 'cut' (instant, no "
+            "interstitial — the live-performance default) or 'interstitial' "
+            "(routes through the normal UP-NEXT card).",
+            "choices": ("cut", "interstitial"),
+        },
+    )
+    cc_map: list[dict[str, Any]] = field(
+        default_factory=lambda: [dict(d) for d in _DEFAULT_MIDI_CC_MAP],
+        metadata={
+            "help": "MIDI-message -> action mappings ([[midi_control.cc_map]] "
+            "tables); see --describe section:midi_control. Set to [] to disable "
+            "the shipped defaults, or override/extend individual entries. Each "
+            "entry: type ('cc'|'note'|'pc'), number (0-127), action "
+            "('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|"
+            "'param'); 'jump' also needs an int scene; 'param' also needs a "
+            "string target ('effect.<name>' or 'source.<name>', matching a "
+            "LIVE_PARAMS entry on the current scene's effect/generator)."
+        },
+    )
+
+
 @dataclass
 class MenuCfg:
     """On-C64 menu. When enabled, SPACE on the C64 keyboard opens an on-screen
@@ -1665,6 +1758,7 @@ class Config:
     color: ColorCfg = field(default_factory=ColorCfg)
     dsp: DSPCfg = field(default_factory=DSPCfg)
     control: ControlPlaneCfg = field(default_factory=ControlPlaneCfg)
+    midi_control: MidiControlCfg = field(default_factory=MidiControlCfg)
     menu: MenuCfg = field(default_factory=MenuCfg)
     # Set only on the master Config produced by load_master(). Per-system
     # Configs in the returned list always have ensemble = None.
@@ -1838,6 +1932,7 @@ def load(path: str | None) -> Config:
         ("recording", cfg.recording),
         ("dsp", cfg.dsp),
         ("control", cfg.control),
+        ("midi_control", cfg.midi_control),
         ("menu", cfg.menu),
     ):
         if section in data:
@@ -2004,13 +2099,16 @@ class LoadResult:
     In single-system mode: `cfgs = [the_one_config]`, `names = ["system"]`,
     `paths = [args.config or None]`, `is_ensemble = False`.
     `master_control` holds the master TOML's [control] section (in
-    single-system mode this is just the loaded config's [control])."""
+    single-system mode this is just the loaded config's [control]).
+    `master_midi_control` is the [midi_control] analog — also process-wide,
+    not per-system-cascaded (see _CASCADE_SECTIONS)."""
 
     cfgs: list[Config]
     names: list[str]
     paths: list[str | None]
     is_ensemble: bool
     master_control: ControlPlaneCfg
+    master_midi_control: MidiControlCfg
 
 
 def load_master(path: str | None) -> LoadResult:
@@ -2032,6 +2130,7 @@ def load_master(path: str | None) -> LoadResult:
                 paths=[None],
                 is_ensemble=False,
                 master_control=cfg.control,
+                master_midi_control=cfg.midi_control,
             )
         path = DEFAULT_CONFIG_PATH
 
@@ -2053,6 +2152,7 @@ def load_master(path: str | None) -> LoadResult:
             paths=[path],
             is_ensemble=False,
             master_control=cfg.control,
+            master_midi_control=cfg.midi_control,
         )
 
     log.info("loading ensemble master %s", path)
@@ -2076,6 +2176,7 @@ def load_master(path: str | None) -> LoadResult:
         ("preview", defaults.preview),
         ("recording", defaults.recording),
         ("control", defaults.control),
+        ("midi_control", defaults.midi_control),
         ("menu", defaults.menu),
     ):
         if section in raw:
@@ -2118,6 +2219,7 @@ def load_master(path: str | None) -> LoadResult:
         paths=paths,
         is_ensemble=True,
         master_control=defaults.control,
+        master_midi_control=defaults.midi_control,
     )
 
 
@@ -2946,6 +3048,58 @@ def validate_dac_bitmap_tempo_cfg(cfg: Config) -> None:
                 f"[audio].{name} must be 0.5..1.0 (observed playback-speed "
                 f"fraction; 1.0 = off), got {value}"
             )
+
+
+def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
+    """Guard [midi_control]: jump_transition choice, broadcast_channel
+    range, and every cc_map entry's shape. Takes the already-resolved
+    MidiControlCfg (loaded.master_midi_control in ensemble mode, else
+    cfgs[0].midi_control — see cli.py) rather than a whole Config, since
+    [midi_control] is process-wide like [control], not per-system-cascaded.
+    No-op when disabled."""
+    if not midi_cfg.enabled:
+        return
+    if midi_cfg.jump_transition not in ("cut", "interstitial"):
+        raise ConfigError(
+            "[midi_control].jump_transition must be 'cut' or 'interstitial', "
+            f"got {midi_cfg.jump_transition!r}"
+        )
+    if not 1 <= midi_cfg.broadcast_channel <= 16:
+        raise ConfigError(
+            f"[midi_control].broadcast_channel must be 1..16, got {midi_cfg.broadcast_channel}"
+        )
+    for i, entry in enumerate(midi_cfg.cc_map):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"[midi_control].cc_map[{i}] must be a table, got {entry!r}")
+        kind = entry.get("type")
+        if kind not in _MIDI_CC_TYPE_CHOICES:
+            raise ConfigError(
+                f"[midi_control].cc_map[{i}].type must be one of "
+                f"{', '.join(_MIDI_CC_TYPE_CHOICES)}, got {kind!r}"
+            )
+        number = entry.get("number")
+        if not isinstance(number, int) or not 0 <= number <= 127:
+            raise ConfigError(f"[midi_control].cc_map[{i}].number must be 0..127, got {number!r}")
+        action = entry.get("action")
+        if action not in _MIDI_ACTION_CHOICES:
+            raise ConfigError(
+                f"[midi_control].cc_map[{i}].action must be one of "
+                f"{', '.join(_MIDI_ACTION_CHOICES)}, got {action!r}"
+            )
+        if action == "jump" and not isinstance(entry.get("scene"), int):
+            raise ConfigError(f"[midi_control].cc_map[{i}] action 'jump' needs an int 'scene'")
+        if action == "param":
+            target = entry.get("target")
+            if (
+                not isinstance(target, str)
+                or "." not in target
+                or target.split(".", 1)[0] not in ("effect", "source")
+            ):
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'param' needs a string 'target' "
+                    "of the form 'effect.<name>' or 'source.<name>', got "
+                    f"{target!r}"
+                )
 
 
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:

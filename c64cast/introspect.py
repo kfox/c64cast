@@ -133,6 +133,12 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
         "Host-side audio DSP before the 4-bit DAC: compressor/limiter, expander (replaces the hard gate), pre-emphasis, and mic AGC.",
     ),
     ("control", cfgmod.ControlPlaneCfg, "HTTP control plane (extra)."),
+    (
+        "midi_control",
+        cfgmod.MidiControlCfg,
+        "MIDI CC control surface for live performance: scene jumps, style "
+        "cycling, transport, live effect params (extra).",
+    ),
     ("menu", cfgmod.MenuCfg, "On-C64 SPACE-key menu for live scene tweaks."),
 )
 
