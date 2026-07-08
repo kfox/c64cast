@@ -462,8 +462,8 @@ sustainable rate at the lower end of that range.
 ## `WaveformScene` duration
 
 The U64's sidplay endpoint doesn't tell us when a tune ends, and the
-SID file itself doesn't carry song-length data. Two ways to know how
-long to play a track:
+SID file itself doesn't carry song-length data. Ways to know how long
+to play a track:
 
 1. Set `duration_s = N` in the scene config (overrides any DB lookup).
 2. Configure `[playlist] songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"`
@@ -471,10 +471,14 @@ long to play a track:
    keyed by an MD5 of the SID **data payload** (not the header) and
    covers most HVSC tunes — the file ships inside a full HVSC unpack at
    `C64Music/DOCUMENTS/Songlengths.md5`.
+3. Do nothing: if you unpacked HVSC under `assets/sids/` (either the
+   whole `C64Music/` tree or just its contents), `songlengths_file` is
+   auto-detected — see `assets/sids/README.md`. This is what quick
+   playback (positional `MEDIA` args, no `--config`) relies on, since it
+   has no `[playlist]` section to set the field in.
 
-If neither applies, the waveform scene defaults to 180 s — usually wrong
-for a specific tune. Pick one of the two options above for SID jukebox
-setups.
+If none of these apply, the waveform scene defaults to 180 s — usually
+wrong for a specific tune.
 
 ## `WaveformScene` defaults to half the video rate (DMA ceiling)
 

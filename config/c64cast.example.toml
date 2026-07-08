@@ -455,6 +455,9 @@ fade_duration_s = 0.4               # fade each scene up from black on entry
 # songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"   # optional;
 #                                    waveform scenes use this to auto-pick a
 #                                    duration when duration_s is omitted.
+#                                    Left unset, an HVSC unpacked under
+#                                    assets/sids/ is auto-detected — set to
+#                                    "" to disable auto-detection.
 
 [preview]
 enabled = false                     # requires the `preview` extra
@@ -930,8 +933,9 @@ palette_mode = "grayscale"
 # Plays a .sid file on the U64 and visualises the three voices.
 #
 # Drop SIDs into assets/sids/ (HVSC is the canonical archive: hvsc.c64.org).
-# Without the songlengths DB you must set duration_s; with the DB it's
-# looked up automatically.
+# Without a songlengths DB you must set duration_s; with one, the true
+# duration is looked up automatically. Unpacking HVSC under assets/sids/
+# gets you the DB for free (auto-detected — see assets/sids/README.md).
 #
 # [[scenes]]
 # type = "waveform"
@@ -945,7 +949,7 @@ palette_mode = "grayscale"
 # #   file = "assets/sids/Tune1.sid, assets/sids/Tune2.sid"
 # file = "assets/sids/your-tune.sid"
 # song = 0                              # 0 = SID's default; 1+ = subtune
-# duration_s = 180.0                    # omit if [playlist].songlengths_file is set
+# duration_s = 180.0                    # omit if a songlengths DB is set or auto-detected
 # color_mode = "per_voice"              # per_voice | per_waveform
 # voice_colors = ["cyan", "yellow", "light green"]
 # # target_fps = 30.0                   # default = HALF system rate (30 NTSC / 25 PAL); see docs/caveats.md

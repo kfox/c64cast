@@ -390,12 +390,36 @@ class FormatTomlErrorTest(unittest.TestCase):
 
 class LoadSonglengthsTest(unittest.TestCase):
     def setUp(self):
-        # Memoization cache is module-global — clear it between tests.
+        # Memoization caches are module-global — clear between tests.
         cfgmod._songlengths_cache.clear()
+        self._orig_autodetected = cfgmod._songlengths_autodetected
+        cfgmod._songlengths_autodetected = cfgmod._UNSET
 
-    def test_none_path_returns_none(self):
-        self.assertIsNone(cfgmod._load_songlengths(None))
-        self.assertIsNone(cfgmod._load_songlengths(""))
+    def tearDown(self):
+        cfgmod._songlengths_autodetected = self._orig_autodetected
+
+    def test_empty_string_disables_autodetect(self):
+        # Explicit "" opts out — unlike None, it never probes assets/sids/.
+        with mock.patch.object(cfgmod, "_autodetect_songlengths_path") as auto:
+            self.assertIsNone(cfgmod._load_songlengths(""))
+            auto.assert_not_called()
+
+    def test_none_path_autodetects_when_present(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".md5", delete=False) as f:
+            f.write("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=1:23\n")
+            path = f.name
+        try:
+            with mock.patch.object(cfgmod, "_autodetect_songlengths_path", return_value=path):
+                with self.assertLogs("c64cast.config", level="INFO") as logs:
+                    db = cfgmod._load_songlengths(None)
+            self.assertIsNotNone(db)
+            self.assertTrue(any("auto-detected" in m for m in logs.output))
+        finally:
+            os.unlink(path)
+
+    def test_none_path_returns_none_when_nothing_detected(self):
+        with mock.patch.object(cfgmod, "_autodetect_songlengths_path", return_value=None):
+            self.assertIsNone(cfgmod._load_songlengths(None))
 
     def test_missing_file_warns_and_caches_none(self):
         with self.assertLogs("c64cast.config", level="WARNING"):
@@ -415,6 +439,60 @@ class LoadSonglengthsTest(unittest.TestCase):
             self.assertIs(db1, db2)  # second call hits the cache
         finally:
             os.unlink(path)
+
+
+class AutodetectSonglengthsTest(unittest.TestCase):
+    def setUp(self):
+        self._orig_autodetected = cfgmod._songlengths_autodetected
+        cfgmod._songlengths_autodetected = cfgmod._UNSET
+
+    def tearDown(self):
+        cfgmod._songlengths_autodetected = self._orig_autodetected
+
+    def test_no_root_dir_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "assets", "sids")
+            self.assertIsNone(cfgmod._autodetect_songlengths_path(missing))
+
+    def test_finds_full_hvsc_tree_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = os.path.join(tmp, "C64Music", "DOCUMENTS")
+            os.makedirs(docs)
+            expected = os.path.join(docs, "Songlengths.md5")
+            open(expected, "w").close()
+            self.assertEqual(cfgmod._autodetect_songlengths_path(tmp), expected)
+
+    def test_finds_contents_only_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = os.path.join(tmp, "DOCUMENTS")
+            os.makedirs(docs)
+            expected = os.path.join(docs, "Songlengths.md5")
+            open(expected, "w").close()
+            self.assertEqual(cfgmod._autodetect_songlengths_path(tmp), expected)
+
+    def test_falls_back_to_full_scan_for_nonstandard_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            odd = os.path.join(tmp, "somewhere", "else")
+            os.makedirs(odd)
+            expected = os.path.join(odd, "Songlengths.md5")
+            open(expected, "w").close()
+            self.assertEqual(cfgmod._autodetect_songlengths_path(tmp), expected)
+
+    def test_no_match_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "MUSICIANS"))
+            self.assertIsNone(cfgmod._autodetect_songlengths_path(tmp))
+
+    def test_result_is_memoized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = os.path.join(tmp, "DOCUMENTS")
+            os.makedirs(docs)
+            open(os.path.join(docs, "Songlengths.md5"), "w").close()
+            first = cfgmod._autodetect_songlengths_path(tmp)
+            # A second call with a different (nonexistent) root still
+            # returns the memoized first result — proves it isn't re-probed.
+            second = cfgmod._autodetect_songlengths_path(os.path.join(tmp, "nope"))
+            self.assertEqual(first, second)
 
 
 class MergeCLITest(unittest.TestCase):

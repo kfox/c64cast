@@ -423,7 +423,8 @@ background = "random"               # starfield|petscii_bars|raster_bars|checker
 videos_dir = "assets/videos"
 interleave_videos = true
 loop = true                                              # false = exit after one pass
-songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"  # optional, for waveform scenes
+songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"  # optional, for waveform scenes;
+                                                                      # auto-detected under assets/sids/ if unset
 ```
 
 When `interleave_videos` is true and `videos_dir` contains any video files (and
