@@ -28,6 +28,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertIn("plasma", names)
         self.assertIn("tunnel", names)
         self.assertIn("fire", names)
+        self.assertIn("mandelbrot", names)
 
     def test_live_params_declared_with_valid_ranges(self):
         # midi_control.py scales a CC into each declared (min, max) range and
@@ -37,6 +38,7 @@ class GeneratorTest(unittest.TestCase):
             "plasma": {"speed", "scale"},
             "tunnel": {"speed"},
             "fire": {"scroll_speed"},
+            "mandelbrot": {"zoom_speed", "cycle_speed"},
         }
         for name in generator_names():
             g = build_generator(name)
@@ -79,7 +81,7 @@ class GeneratorTest(unittest.TestCase):
         # the historical pure-time output for every generator (the offline
         # renderer + drift tests rely on this — even fire, whose scroll is a
         # pure function of t rather than a stateful cellular sim).
-        for name in ("plasma", "tunnel", "fire"):
+        for name in ("plasma", "tunnel", "fire", "mandelbrot"):
             g = build_generator(name)
             np.testing.assert_array_equal(g.render(0.7), g.render(0.7, None))
             np.testing.assert_array_equal(g.read(0.7), g.render(0.7, None))
@@ -130,6 +132,30 @@ class GeneratorTest(unittest.TestCase):
         m0 = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         m1 = MusicModulation(0.3, 0.0, 2.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         self.assertFalse(np.array_equal(g.render(1.0, m0), g.render(1.0, m1)))
+
+    def test_mandelbrot_frame_shape_and_determinism(self):
+        g = build_generator("mandelbrot")
+        f0 = g.render(0.0)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.0))
+        self.assertFalse(np.array_equal(f0, g.render(30.0)))  # zoom has advanced
+
+    def test_mandelbrot_interior_is_black(self):
+        # The starting (scale=1) view frames the whole set, so some pixels
+        # must land strictly inside it (never escape) and render pure black
+        # regardless of the cycling hue.
+        g = build_generator("mandelbrot")
+        frame = g.render(0.0)
+        self.assertTrue((frame.sum(axis=-1) == 0).any())
+
+    def test_mandelbrot_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("mandelbrot")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
 
 
 class EffectTest(unittest.TestCase):

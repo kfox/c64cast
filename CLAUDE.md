@@ -100,8 +100,9 @@ c64cast/
 │                     + Launcher (native .prg/.crt handoff) + SourceScene
 │                     (composable FrameSource × AudioSource × display × effect)
 ├── frame_source.py   FrameSource protocol + BaseFrameSource (read(t, mod))
-├── generators.py     GenerativeSource registry (plasma, tunnel, fire); pure-
-│                     numpy, deterministic-in-t; reactive when fed a MusicModulation
+├── generators.py     GenerativeSource registry (plasma, tunnel, fire,
+│                     mandelbrot); pure-numpy, deterministic-in-t; reactive
+│                     when fed a MusicModulation
 ├── effects.py        FrameEffect registry (trails, pulse, rgb_shift) — pre-
 │                     quantization frame xform; reactive when fed a MusicModulation
 ├── audio_source.py   AudioSource registry (Null/Mic/SidFile) for SourceScene
