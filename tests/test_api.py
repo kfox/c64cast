@@ -55,7 +55,7 @@ from c64cast.api import (
     _PlayerLayout,
     parse_psid_for_player,
 )
-from c64cast.c64 import CPU, VECTORS
+from c64cast.c64 import CPU, VECTORS, VIC
 from c64cast.socket_dma import SocketDMAError
 
 
@@ -177,10 +177,21 @@ class RunSidPlayerTest(unittest.TestCase):
         self.api = Ultimate64API("http://example.invalid")
         # Stub the wire-level write + flush + REST POST so the test runs
         # against in-process state only.
+        # dma_writes tracks the SID-upload contract this class tests (payload
+        # / player MC / re-INIT stub); the pre-flight blank_display() write to
+        # $D011 (see _launch_sid_player) is recorded separately since it's
+        # orthogonal to that contract and would otherwise shift every
+        # index-based assertion below.
         self.dma_writes: list[tuple[int, bytes]] = []
-        self.api._emit = lambda addr, payload: (  # type: ignore[method-assign]
-            self.dma_writes.append((addr, bytes(payload)))
-        )
+        self.blank_writes: list[tuple[int, bytes]] = []
+
+        def _fake_emit(addr, payload):
+            if addr == VIC.D011_CONTROL_1:
+                self.blank_writes.append((addr, bytes(payload)))
+            else:
+                self.dma_writes.append((addr, bytes(payload)))
+
+        self.api._emit = _fake_emit  # type: ignore[method-assign]
         patch.object(self.api, "flush").start()
         self.posts: list[tuple[str, bytes]] = []
 
