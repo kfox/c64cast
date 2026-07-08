@@ -2081,7 +2081,8 @@
             "enum": [
               "plasma",
               "tunnel",
-              "fire"
+              "fire",
+              "mandelbrot"
             ],
             "default": "plasma"
           },
