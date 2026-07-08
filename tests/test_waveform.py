@@ -1184,6 +1184,29 @@ class WaveformSceneTest(unittest.TestCase):
         finally:
             scene.teardown()
 
+    def test_no_db_uses_fallback_duration_silently(self):
+        # No songlengths DB at all is the expected, common state (no HVSC
+        # unpacked) — must NOT warn, just fall back quietly.
+        from c64cast.waveform import WaveformScene
+
+        api = FakeAPI()
+        with self.assertNoLogs("c64cast.waveform", level="WARNING"):
+            scene = WaveformScene(api, audio=None, file=self.sid_path, song=1)
+        self.assertAlmostEqual(scene.duration_s, WaveformScene.FALLBACK_DURATION_S)
+
+    def test_db_miss_warns_and_uses_fallback_duration(self):
+        # A DB is configured/detected but has no entry for this tune — that's
+        # the surprising case worth flagging, unlike having no DB at all.
+        from c64cast.waveform import WaveformScene
+
+        api = FakeAPI()
+        fake_db = MagicMock()
+        fake_db.lookup.return_value = None
+        with self.assertLogs("c64cast.waveform", level="WARNING") as cap:
+            scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
+        self.assertAlmostEqual(scene.duration_s, WaveformScene.FALLBACK_DURATION_S)
+        self.assertTrue(any("not found in songlengths DB" in m for m in cap.output))
+
     def test_cycle_style_explicit_duration_survives_cycle(self):
         # A user-set duration_s must NOT be overwritten by a re-lookup —
         # explicit user intent wins, same as __init__'s precedence.
@@ -1279,7 +1302,8 @@ class WaveformSceneTest(unittest.TestCase):
         api = FakeAPI()
         fake_db = MagicMock()
         fake_db.lookup.side_effect = [None, None]  # init + cycle, both miss
-        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
+        with self.assertLogs("c64cast.waveform", level="WARNING"):
+            scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
         scene.setup()
         try:
             scene.cycle_style(api)
