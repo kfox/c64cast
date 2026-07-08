@@ -69,6 +69,12 @@ class FrameEffect:
 
     name = "base"
 
+    # Live-tunable params: name -> (min, max) for a CC-style [0, 1] sweep.
+    # midi_control.py scales into this range and setattr()s directly —
+    # only declare independent single-numeric fields here (a plain
+    # setattr is GIL-atomic; a value split across two fields wouldn't be).
+    LIVE_PARAMS: dict[str, tuple[float, float]] = {}
+
     def apply(
         self, frame: np.ndarray, t: float, modulation: MusicModulation | None = None
     ) -> np.ndarray:
@@ -95,6 +101,8 @@ class TrailsEffect(FrameEffect):
     _ONSET_DECAY = 0.12  # extra decay (longer tail) at a full transient
     _LEVEL_DECAY = 0.06  # extra decay from sustained loudness
     _MAX_DECAY = 0.97  # hard ceiling — must stay < 1 or the tail never fades
+
+    LIVE_PARAMS = {"decay": (0.0, 0.96)}  # stays under _MAX_DECAY's reactive headroom
 
     def __init__(self, decay: float = 0.85):
         self.decay = float(decay)

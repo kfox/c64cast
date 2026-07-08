@@ -923,6 +923,39 @@ class PrintReportTest(unittest.TestCase):
         self.assertEqual(doctor.print_report(diags, file=buf), 1)
         self.assertIn("[ERR ]", buf.getvalue())
 
+    def test_midi_control_category_is_rendered(self):
+        # Regression: category_order previously omitted "midi_control", so
+        # a midi_control Diagnostic was silently dropped from the printed
+        # report (still counted in the ok/warn/error totals, but invisible
+        # to the reader — the worst kind of drift, since nothing failed).
+        diags = [doctor.Diagnostic("ok", "midi_control", "midi_control", "11 entries")]
+        buf = io.StringIO()
+        doctor.print_report(diags, file=buf)
+        self.assertIn("MIDI_CONTROL", buf.getvalue())
+        self.assertIn("11 entries", buf.getvalue())
+
+    def test_every_category_used_in_source_is_in_category_order(self):
+        # General drift guard: every category="..." literal doctor.py
+        # actually constructs a Diagnostic with must be covered by
+        # print_report's category_order, or it silently vanishes from the
+        # printed report (same failure class as the midi_control omission
+        # above — this test would have caught it).
+        import inspect
+        import re
+
+        source = inspect.getsource(doctor)
+        used = set(re.findall(r'category="([a-z_]+)"', source))
+        self.assertTrue(used, "regex found no categories — pattern drifted from doctor.py's style")
+        # Extract print_report's category_order literal the same way, so
+        # this test doesn't need to import a private name.
+        report_source = inspect.getsource(doctor.print_report)
+        order_match = re.search(r"category_order = \[(.*?)\]", report_source, re.DOTALL)
+        assert order_match is not None
+        covered = set(re.findall(r'"([a-z_]+)"', order_match.group(1)))
+        self.assertEqual(
+            used - covered, set(), "categories missing from print_report's category_order"
+        )
+
 
 class EnvironmentProbeTest(unittest.TestCase):
     """The env probe is the dev-environment guard: it catches the desynced

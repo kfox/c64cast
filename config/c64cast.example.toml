@@ -577,6 +577,42 @@ enabled = false                     # requires the `control` extra
 host = "127.0.0.1"
 port = 8765
 
+[midi_control]
+# Process-wide MIDI control surface for live performance: scene jumps,
+# style cycling, transport, and live effect/generator parameter sweeps
+# from a MIDI controller. Off by default; requires the `midi` extra. Opens
+# its OWN MIDI input port — separate from any [[scenes]] type = "midi"
+# port, even on the same physical controller. One listener governs the
+# whole ensemble: MIDI channel selects which system a message targets.
+enabled = false
+port = ""                           # substring match; "" = first available port
+broadcast_channel = 16              # this channel targets every ensemble system at once;
+                                    #   other channels target the Nth system in ensemble order
+jump_transition = "cut"             # "cut" (instant, no interstitial) | "interstitial"
+
+# Ships with a sensible default cc_map (transport on notes 36-39, a 16-scene
+# jump bank on notes 40-55 + Program Change 0-15, a knob bank on CC13-16) if
+# left unset — see `--describe section:midi_control` for the full default.
+# Setting cc_map here (as below) REPLACES it wholesale, not merges — copy the
+# default from --describe first if you just want to add to it.
+[[midi_control.cc_map]]
+type = "note"
+number = 36
+action = "skip"
+
+[[midi_control.cc_map]]
+type = "note"
+number = 40
+action = "jump"
+scene = 0
+
+[[midi_control.cc_map]]
+type = "cc"
+number = 13
+action = "param"
+target = "effect.decay"             # "effect.<name>" | "source.<name>", matching a
+                                    #   LIVE_PARAMS entry on the current scene's effect/generator
+
 [menu]
 # On-C64 menu: SPACE opens an on-screen panel of context-sensitive knobs for
 # the current scene (palette mode, PETSCII style, …) with a live preview;

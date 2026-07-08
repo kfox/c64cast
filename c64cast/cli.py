@@ -1003,6 +1003,7 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
             paths=[None],
             is_ensemble=False,
             master_control=cfg.control,
+            master_midi_control=cfg.midi_control,
         )
         return loaded, [cfg]
 
@@ -1122,6 +1123,7 @@ def main(argv=None) -> int:
             paths=loaded.paths,
             is_ensemble=loaded.is_ensemble,
             master_control=loaded.master_control,
+            master_midi_control=loaded.master_midi_control,
         )
         diagnostics = validate_load_result(merged, probe_u64=not cfgs[0].debug.skip_probe)
         return print_report(diagnostics)
@@ -1217,6 +1219,7 @@ def main(argv=None) -> int:
             )
 
     control_server = None
+    midi_control_listener = None
 
     # SIGTERM → graceful shutdown. SIGINT continues to raise KeyboardInterrupt
     # via the default handler so the user can still Ctrl+C interactively.
@@ -1303,8 +1306,33 @@ def main(argv=None) -> int:
             except RuntimeError as e:
                 log.error("control plane disabled: %s", e)
 
+        # Optional MIDI control surface for live performance. One listener
+        # for the whole ensemble (like [control]); MIDI channel selects the
+        # target system. See midi_control.py's module docstring for the
+        # latency rationale.
+        midi_cfg = loaded.master_midi_control if loaded.is_ensemble else cfgs[0].midi_control
+        if midi_cfg.enabled:
+            try:
+                cfgmod.validate_midi_control_cfg(midi_cfg)
+                from .midi_control import build_midi_control_listener
+
+                midi_control_listener = build_midi_control_listener(
+                    playlists={st.name: st.playlist for st in stacks},
+                    cfg=midi_cfg,
+                )
+                midi_control_listener.start()
+            except (cfgmod.ConfigError, RuntimeError, ValueError) as e:
+                log.error("MIDI control disabled: %s", e)
+
         _run_playlists(stacks, stop_event)
     finally:
+        # Stop input surfaces before tearing down what they act on — same
+        # ordering the keyboard/vision controllers already follow.
+        if midi_control_listener is not None:
+            try:
+                midi_control_listener.stop()
+            except Exception:
+                log.exception("MIDI control shutdown failed")
         if control_server is not None:
             try:
                 control_server.stop()

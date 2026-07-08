@@ -29,6 +29,33 @@ class GeneratorTest(unittest.TestCase):
         self.assertIn("tunnel", names)
         self.assertIn("fire", names)
 
+    def test_live_params_declared_with_valid_ranges(self):
+        # midi_control.py scales a CC into each declared (min, max) range and
+        # setattr()s it directly — a malformed range would silently corrupt
+        # a live-performance param sweep, so pin the shape here.
+        expected = {
+            "plasma": {"speed", "scale"},
+            "tunnel": {"speed"},
+            "fire": {"scroll_speed"},
+        }
+        for name in generator_names():
+            g = build_generator(name)
+            live_params = g.LIVE_PARAMS
+            self.assertEqual(set(live_params), expected.get(name, set()), name)
+            for param, (lo, hi) in live_params.items():
+                self.assertLess(lo, hi, f"{name}.{param}")
+                self.assertTrue(hasattr(g, param), f"{name}.{param} not a real attribute")
+
+    def test_live_params_settable_via_generic_setattr(self):
+        # The exact mechanism midi_control.py uses: setattr(obj, name, val)
+        # with no per-class wiring. Constructed directly (not via the
+        # registry) so the concrete type declares `speed` for pyright.
+        g = generators.PlasmaSource()
+        lo, hi = g.LIVE_PARAMS["speed"]
+        mid = lo + 0.5 * (hi - lo)
+        setattr(g, "speed", mid)  # noqa: B010 — exercises the dynamic-name path deliberately
+        self.assertAlmostEqual(g.speed, mid)
+
     def test_plasma_frame_shape_and_determinism(self):
         g = build_generator("plasma")
         f0 = g.render(0.0)
@@ -106,6 +133,27 @@ class GeneratorTest(unittest.TestCase):
 
 
 class EffectTest(unittest.TestCase):
+    def test_live_params_declared_with_valid_ranges(self):
+        # midi_control.py scales a CC into each declared (min, max) range and
+        # setattr()s it directly — pin the shape for every registered
+        # effect, including pulse/rgb_shift (which inherit the empty base
+        # default: no persistent knob worth exposing, a mapped CC no-ops).
+        expected = {"trails": {"decay"}, "pulse": set(), "rgb_shift": set()}
+        for name in expected:
+            eff = build_effect(name)
+            live_params = eff.LIVE_PARAMS
+            self.assertEqual(set(live_params), expected[name], name)
+            for param, (lo, hi) in live_params.items():
+                self.assertLess(lo, hi, f"{name}.{param}")
+                self.assertTrue(hasattr(eff, param), f"{name}.{param} not a real attribute")
+
+    def test_live_params_settable_via_generic_setattr(self):
+        eff = TrailsEffect()
+        lo, hi = eff.LIVE_PARAMS["decay"]
+        mid = lo + 0.5 * (hi - lo)
+        setattr(eff, "decay", mid)  # noqa: B010 — exercises the dynamic-name path deliberately
+        self.assertAlmostEqual(eff.decay, mid)
+
     def test_trails_first_frame_passthrough_then_blends(self):
         eff = build_effect("trails")
         a = np.zeros((4, 4, 3), np.uint8)

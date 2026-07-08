@@ -494,6 +494,211 @@ class PlaylistTest(unittest.TestCase):
         self.assertGreaterEqual(s.teardown_count, 1, "skip should tear down the current scene")
         self.assertGreater(counter["n"], 1, "skip should land on a new interstitial")
 
+    # --- request_jump -------------------------------------------------------
+
+    def test_request_jump_single_scene_is_noop(self):
+        pl = Playlist(
+            [FakeScene("A", frames_until_done=10_000_000)],
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.request_jump(0)
+        self.assertIsNone(pl._jump_target)
+        self.assertFalse(pl.skip_event.is_set())
+
+    def test_request_jump_out_of_range_raises(self):
+        pl = Playlist(
+            [FakeScene("A", frames_until_done=1), FakeScene("B", frames_until_done=1)],
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        with self.assertRaises(ValueError):
+            pl.request_jump(5)
+
+    def test_request_jump_last_write_wins(self):
+        pl = Playlist(
+            [FakeScene(n, frames_until_done=1) for n in "ABC"],
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=threading.Event(),
+            interstitial_factory=_transition_factory()[0],
+        )
+        pl.request_jump(1)
+        pl.request_jump(2)
+        self.assertEqual(pl._jump_target, 2)
+
+    def test_request_jump_lands_on_target_index(self):
+        # A long-running scene at index 0; jump straight to index 2 (C) —
+        # the walk-forward index+1 path must never land there on its own
+        # within the short run window.
+        scenes = [
+            FakeScene("A", frames_until_done=10_000_000),
+            FakeScene("B", frames_until_done=1),
+            FakeScene("C", frames_until_done=10_000_000),
+        ]
+        api = FakeApi()
+        stop = threading.Event()
+        factory, counter = _transition_factory()
+        pl = Playlist(
+            scenes,
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
+        def fire_jump():
+            time.sleep(0.05)
+            pl.request_jump(2)
+            time.sleep(0.2)
+            stop.set()
+
+        threading.Thread(target=fire_jump, daemon=True).start()
+        pl.run()
+        self.assertGreaterEqual(scenes[2].setup_count, 1, "jump should land on scene C")
+        self.assertEqual(scenes[1].setup_count, 0, "jump must skip scene B entirely")
+
+    def test_request_jump_skip_interstitial_bypasses_the_card(self):
+        # Both scenes run "forever" (target_fps=200 over a 0.25s window
+        # can't reach 10M frames) so the only scene transition possible in
+        # this window is the jump itself — a stray natural completion of B
+        # can't sneak in an unrelated interstitial and confound the count.
+        scenes = [
+            FakeScene("A", frames_until_done=10_000_000),
+            FakeScene("B", frames_until_done=10_000_000),
+        ]
+        api = FakeApi()
+        stop = threading.Event()
+        factory, counter = _transition_factory()
+        pl = Playlist(
+            scenes,
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
+        result: dict[str, int | None] = {"baseline": None}
+
+        def fire_jump():
+            # Wait past the playlist's own startup interstitial (every
+            # playlist enters scene 0 via one "UP NEXT" card) so the
+            # baseline below reflects a settled, running scene A —
+            # otherwise a race against that first card would make the
+            # baseline nondeterministic. Assertions run in the main thread
+            # after pl.run() returns (an AssertionError raised here, in a
+            # background thread, wouldn't fail the test).
+            deadline = time.time() + 1.0
+            while scenes[0].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
+            result["baseline"] = counter["n"]
+            pl.request_jump(1, skip_interstitial=True)
+            time.sleep(0.2)
+            stop.set()
+
+        threading.Thread(target=fire_jump, daemon=True).start()
+        pl.run()
+        baseline = result["baseline"]
+        assert baseline is not None, "startup interstitial never completed"
+        self.assertEqual(counter["n"], baseline, "a cut jump must never build an interstitial")
+        self.assertGreaterEqual(scenes[1].setup_count, 1)
+
+    def test_request_jump_interstitial_transition_uses_the_card(self):
+        scenes = [
+            FakeScene("A", frames_until_done=10_000_000),
+            FakeScene("B", frames_until_done=10_000_000),
+        ]
+        api = FakeApi()
+        stop = threading.Event()
+        factory, counter = _transition_factory()
+        pl = Playlist(
+            scenes,
+            api,
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop,
+            interstitial_factory=factory,
+        )
+
+        result: dict[str, int | None] = {"baseline": None}
+
+        def fire_jump():
+            deadline = time.time() + 1.0
+            while scenes[0].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
+            result["baseline"] = counter["n"]
+            pl.request_jump(1, skip_interstitial=False)
+            time.sleep(0.2)
+            stop.set()
+
+        threading.Thread(target=fire_jump, daemon=True).start()
+        pl.run()
+        baseline = result["baseline"]
+        assert baseline is not None, "startup interstitial never completed"
+        self.assertGreater(
+            counter["n"], baseline, "an interstitial-routed jump must build the card"
+        )
+        self.assertGreaterEqual(scenes[1].setup_count, 1, "must still land on the target scene")
+
+    def test_jump_to_audio_gated_scene_waits_on_the_same_gate_as_looping(self):
+        # A jump target that competes for the ensemble audio lock must
+        # block via _wait_for_audio_claim (the same gate single-scene
+        # looping uses) rather than silently falling through to
+        # _resolve_next_index's skip-past-gated-scenes behavior. Proven
+        # here by pre-setting stop_event so the wait exits immediately
+        # with current=None, instead of landing on the gated scene.
+        from unittest.mock import MagicMock
+
+        from c64cast.ensemble import Ensemble, SystemStack
+
+        def _stack(name):
+            return SystemStack(
+                name=name,
+                cfg=MagicMock(),
+                api=MagicMock(),
+                audio=None,
+                source=None,
+                playlist=MagicMock(),
+                key_poller=MagicMock(),
+                framebuffer=None,
+                preview_window=None,
+                recorder=None,
+            )
+
+        class AudioGatedScene(FakeScene):
+            def competes_for_audio_lock(self):
+                return True
+
+        a = FakeScene("A", frames_until_done=1)
+        b = AudioGatedScene("B", frames_until_done=1)
+        stop_event = threading.Event()
+        pl = Playlist(
+            [a, b],
+            FakeApi(),
+            target_fps=200.0,
+            heartbeat_interval=0.0,
+            stop_event=stop_event,
+            interstitial_factory=_transition_factory()[0],
+        )
+        ens = Ensemble(stacks=[_stack("sys"), _stack("other")], stop_event=stop_event)
+        ens.try_claim_audio("other")  # slot held elsewhere
+        pl.ensemble = ens
+        pl.current = a
+        a.is_done = True
+        stop_event.set()  # wait loop inside _wait_for_audio_claim exits immediately
+        pl.request_jump(1)
+        pl._advance()
+        self.assertIsNone(pl.current)
+
     # --- busy-deferral (overlay.is_busy() defers scene teardown) ---------
 
     def test_busy_overlay_defers_scene_teardown(self):
