@@ -39,15 +39,19 @@ RSS tickers, logos, large scrolling text messages, OBS status, and more.
   open-bus zeros, so the tune is run a second time on a host-side
   [py65 6502 emulator](c64cast/sid_host_emu.py) that traps `$D400-$D418`
   writes and feeds them to an in-process [SID emulator](c64cast/sidemu.py).
+  Handles multiSID playback — up to 8 SID chips using U64 UltiSIDs.
+* **MIDI control** — control playlists or various scene parameters
+  using an external MIDI controller, with configurable controls.
+  Requires the `midi` extra.
 * **MIDI → SID** — bridge a live MIDI source (USB controller, DAW) into
   the U64's SID and visualize each voice the same way the waveform scene
   does. Requires the `midi` extra.
-* **ASID client** — receive the ASID protocol (streamed SID register
+* **ASID client** — receive ASID protocol messages (streamed SID register
   writes over MIDI SysEx) from any ASID host — DeepSID in a browser,
   SIDFactory II, Plogue chipsynth C64 — and play it on the U64's real SID
   with the same 3-voice oscilloscope. Requires the `midi` extra.
 * **Audio streaming** — mic input or PyAV-decoded movie audio resampled to
-  8 kHz mono and bit-banged through `$D418` via an NMI ring buffer.
+  12 kHz mono and bit-banged through `$D418` via an NMI ring buffer.
 * **Live control** — Commodore key pauses, CTRL key skips, optional
   FastAPI control plane (`/pause`, `/resume`, `/skip`, `/reload`) for
   remote control, `SIGHUP` to reload config without restarting.
@@ -60,17 +64,19 @@ RSS tickers, logos, large scrolling text messages, OBS status, and more.
 git clone https://github.com/kfox/c64cast
 cd c64cast
 
+# Installing [uv](https://github.com/astral-sh/uv) is recommended.
+# Optionally, use mise + direnv; direnv activates .venv for you.
 # Hard deps + every optional extra + dev tooling, into a uv-managed .venv.
-# (This repo uses mise + direnv + uv; direnv activates .venv for you.)
+
 uv sync --all-extras
 
 # Plain-pip alternative (no uv): runtime extras only — the dev tools are a
 # PEP 735 dependency-group, installed separately:
 #   pip install -e .[all] && pip install --group dev
 
-# "Hello world": scrolls big text across a solid canvas. Needs NOTHING but
-# a reachable U64 — no webcam, mic, SID, or video files. Edit the URL at the
-# top of the file to point at your U64, then run it. Ctrl-C to exit.
+# "Hello world": scrolls big text across a solid canvas. Requires a
+# reachable U64/TR+ — no webcam, mic, SID, or video files. Edit the URL at the
+# top of the file to point at your U64/TR+, then run it. Ctrl-C to exit.
 python -m c64cast --config config/examples/hello.toml
 
 # Override the connection target without editing the file:
@@ -224,7 +230,48 @@ shell.
 * [CLAUDE.md](CLAUDE.md) — architecture notes for code-spelunking AI
   assistants and for humans who like dense reference material
 
+## Hardware needed
+
+One of the following:
+
+* An [Ultimate 64](https://ultimate64.com/) — confirmed with Elite I, Elite II,
+  Ultimate II+ cartridge, or Commodore 64 Ultimate. Best results will be
+  obtained from using the Elite II or the Commodore 64 Ultimate.
+  Under **F2 → Network Settings**, enable **Ultimate DMA Service**,
+  **Command Interface** (TCP port 64 — the Command
+  Interface toggle gates command dispatch even when the socket is open),
+  and **Ultimate Audio** for streaming PCM audio.
+  The REST API is used for the few operations that have no DMA equivalent.
+* A [TeensyROM+ Multi-Capable Cartridge for C64/128](https://lectronz.com/products/teensyrom)
+  plugged into an original Commodore 64 or one of the above modern
+  "ultimate" equivalents.
+
+Depending on how you use it, you'll also want some of these things:
+
+* Any C64 video output path supported by a U64/C64.
+* A webcam (any cv2-compatible USB device) for live capture scenes.
+* A microphone for live audio; otherwise the audio path can sit
+  idle or play a video's soundtrack via PyAV.
+* A MIDI controller if you want to use MIDI scenes or control
+  playlists/scenes via MIDI CC messages.
+* An HDMI capture device if you want to capture output directly from a
+  U64 or C64 equipped with a Kawari Large. Example capture devices include
+  the Elgato Cam Link 4K or the Genki ShadowCast.
+
+There is no software emulator path for the *streaming* side — c64cast
+writes directly to U64 memory/registers over the Ultimate DMA Service
+(TCP port 64), with REST used only for the few non-DMA operations. SID
+playback is
+driven by a small player PRG uploaded into C64 RAM so the real 6510
+calls PLAY at IRQ time (the U64 firmware's `runners:sidplay` runner is
+deliberately avoided because it hijacks the HDMI output with its own
+UI); see [docs/caveats.md](docs/caveats.md) for the PSID-only limitation.
+
 ## Development
+
+An HDMI capture device (see above) is highly recommended for development.
+There are some diagnostic scripts in the [scripts/diags](scripts/diags)
+subdirectory that can make use of an attached capture device, if present.
 
 ```bash
 uv sync --all-extras    # or: pip install -e .[all] && pip install --group dev
@@ -249,46 +296,26 @@ targets:
   clean      remove build artifacts
 ```
 
-## Hardware needed
-
-* An [Ultimate 64](https://ultimate64.com/) — confirmed with Elite I or II,
-  some testing done with the Ultimate II+ cartridge, as well. Likely to work
-  with the new Commodore 64 Ultimate, which is similar to the Elite II.
-  Under **F2 → Network Settings**, *both* **Ultimate DMA Service** and
-  **Command Interface** must be enabled (TCP port 64 — the Command
-  Interface toggle gates command dispatch even when the socket is open).
-  The REST API is used for the few operations that have no DMA equivalent.
-* Any C64 video output path supported by the U64 or C64 with U2+ cartridge.
-* A webcam (any cv2-compatible USB device) if you want the live capture
-  scenes.
-* A microphone if you want live audio; otherwise the audio path can sit
-  idle or play a movie file's soundtrack via PyAV.
-* C64cast has thus far only been tested on modern macOS systems, but
-  should work on any platform that supports Python 3 and the required
-  third-party libraries.
-
-There is no software emulator path for the *streaming* side — c64cast
-writes directly to U64 memory/registers over the Ultimate DMA Service
-(TCP port 64), with REST used only for the few non-DMA operations. SID
-playback is
-driven by a small player PRG uploaded into C64 RAM so the real 6510
-calls PLAY at IRQ time (the U64 firmware's `runners:sidplay` runner is
-deliberately avoided because it hijacks the HDMI output with its own
-UI); see [docs/caveats.md](docs/caveats.md) for the PSID-only limitation.
-
 ## Acknowledgments
 
 * [Gideon Zweijtzer](https://1541ultimate.net/) for the Ultimate 64
   hardware and firmware.
+* Travis Smith for the [TeensyROM+ cartridge](https://lectronz.com/products/teensyrom),
+  firmware updates, and hands-on testing.
+* [Bo Zimmerman](http://zimmers.net) for his excellent online and physical
+  collections of all things Commodore.
 * The [HVSC](https://hvsc.c64.org/) team for the SID archive and the
   Songlengths database.
-* [PyAV](https://github.com/PyAV-Org/PyAV) for the video path.
 * Pex 'Mahoney' Tufvesson for the 8-bit `$D418` DAC technique (his
   ["Musings in the Key of C64" white paper](https://livet.se/mahoney/c64-files/Musings_in_the_key_of_C64_by_Pex_Mahoney_Tufvesson.pdf))
-  behind the optional `dac_curve = "mahoney_ultisid"` audio path, Jürgen
-  Wothke (websid) for the effective-bit analysis, Antonio Savona / Broken
-  Bytes for the 48 kHz `$D418` write-up, and [CodeBase64](https://codebase64.org/)
-  for the reference material.
+  behind the optional `dac_curve = "mahoney_ultisid"` audio path.
+* Jürgen Wothke (websid) for the effective-bit of analysis of Mahoney's 8-bit
+  companding LUT techique.
+* Antonio Savona for the
+  [48 kHz `$D418` write-up](https://brokenbytes.blogspot.com/2018/03/a-48khz-digital-music-player-for.html).
+* [CodeBase64](https://codebase64.net/) for the extensive reference material.
+* Many open source contributors for all of the _many_ Python packages
+  that make this app possible. <3
 
 ## License
 
