@@ -2082,7 +2082,12 @@
               "plasma",
               "tunnel",
               "fire",
-              "mandelbrot"
+              "mandelbrot",
+              "moire2",
+              "halo",
+              "epicycle",
+              "hopalong",
+              "rorschach"
             ],
             "default": "plasma"
           },

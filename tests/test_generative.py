@@ -29,6 +29,11 @@ class GeneratorTest(unittest.TestCase):
         self.assertIn("tunnel", names)
         self.assertIn("fire", names)
         self.assertIn("mandelbrot", names)
+        self.assertIn("moire2", names)
+        self.assertIn("halo", names)
+        self.assertIn("epicycle", names)
+        self.assertIn("hopalong", names)
+        self.assertIn("rorschach", names)
 
     def test_live_params_declared_with_valid_ranges(self):
         # midi_control.py scales a CC into each declared (min, max) range and
@@ -39,6 +44,11 @@ class GeneratorTest(unittest.TestCase):
             "tunnel": {"speed"},
             "fire": {"scroll_speed"},
             "mandelbrot": {"zoom_speed", "cycle_speed"},
+            "moire2": {"ring_freq", "drift_speed"},
+            "halo": {"drift_speed", "pulse_speed"},
+            "epicycle": {"speed"},
+            "hopalong": {"a", "drift_speed"},
+            "rorschach": {"grow_speed"},
         }
         for name in generator_names():
             g = build_generator(name)
@@ -81,7 +91,7 @@ class GeneratorTest(unittest.TestCase):
         # the historical pure-time output for every generator (the offline
         # renderer + drift tests rely on this — even fire, whose scroll is a
         # pure function of t rather than a stateful cellular sim).
-        for name in ("plasma", "tunnel", "fire", "mandelbrot"):
+        for name in generator_names():
             g = build_generator(name)
             np.testing.assert_array_equal(g.render(0.7), g.render(0.7, None))
             np.testing.assert_array_equal(g.read(0.7), g.render(0.7, None))
@@ -156,6 +166,103 @@ class GeneratorTest(unittest.TestCase):
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_moire2_frame_shape_and_reacts_to_voice_freq(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("moire2")
+        f0 = g.render(2.0)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(2.0))
+        base = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        driven = MusicModulation(0.3, 0.0, 0.0, 120.0, (200.0, 0.0, 0.0), (True, False, False))
+        # A driving voice pitch nudges ring_a's frequency, changing the field.
+        self.assertFalse(np.array_equal(g.render(2.0, base), g.render(2.0, driven)))
+
+    def test_halo_frame_shape_and_onset_spawns_extra_halo(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("halo")
+        f0 = g.render(1.0)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(1.0))
+        rest = MusicModulation(0.2, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.2, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        # The onset-triggered center halo only appears when onset > 0.
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_halo_level_grows_radius(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("halo")
+        quiet = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        loud = MusicModulation(1.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        # Bigger halos ⇒ more lit pixels overall.
+        self.assertGreater(int(g.render(1.0, loud).sum()), int(g.render(1.0, quiet).sum()))
+
+    def test_epicycle_frame_shape_and_voice_freq_changes_shape(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("epicycle")
+        f0 = g.render(3.0)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(3.0))
+        base = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        driven = MusicModulation(0.3, 0.0, 0.0, 120.0, (300.0, 150.0, 0.0), (True, True, False))
+        self.assertFalse(np.array_equal(g.render(3.0, base), g.render(3.0, driven)))
+
+    def test_epicycle_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("epicycle")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_hopalong_frame_shape_and_determinism(self):
+        g = build_generator("hopalong")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(5.0)))  # `a` has drifted
+
+    def test_hopalong_reacts_to_level_and_onset(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("hopalong")
+        rest = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.8, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        # Perturbing `a` reshapes the attractor entirely (chaotic sensitivity).
+        self.assertFalse(np.array_equal(g.render(1.0, rest), g.render(1.0, hit)))
+
+    def test_rorschach_frame_shape_and_grows_over_time(self):
+        g = build_generator("rorschach")
+        f0 = g.render(0.0)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.0))
+        # More of the walk is revealed partway into the grow cycle than at
+        # the very start ⇒ strictly more lit pixels.
+        self.assertGreater(int(g.render(5.0).sum()), int(f0.sum()))
+
+    def test_rorschach_mirror_symmetric(self):
+        g = build_generator("rorschach")
+        frame = g.render(5.0)
+        mask = frame.sum(axis=-1) > 0
+        # Mirrored across the vertical center column.
+        np.testing.assert_array_equal(mask, mask[:, ::-1])
+
+    def test_rorschach_onset_jumps_reveal(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("rorschach")
+        rest = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.0, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(0.0, hit).sum()), int(g.render(0.0, rest).sum()))
 
 
 class EffectTest(unittest.TestCase):

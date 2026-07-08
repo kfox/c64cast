@@ -1,0 +1,31 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: the Hopalong chaotic point-map attractor (Barry Martin's
+# `x' = y - sign(x)*sqrt(|b*x - c|)`, `y' = a - x`) rendered as a multicolor
+# bitmap.
+#
+# Thousands of starting points are iterated in parallel (numpy-vectorized
+# across the batch) into a log-scaled density accumulator every frame — the
+# batch is small enough to re-run from scratch each tick, so a slow
+# sinusoidal drift of the `a` constant keeps the attractor's shape breathing
+# continuously.
+#
+# Reactive: loudness and a beat-locked term perturb the `a`/`b` constants
+# continuously (the shape swells with the music), and a transient adds a
+# one-frame kick to `a` — the attractor visibly reshapes on a hit, a side
+# effect of the map's chaotic sensitivity to its constants.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-hopalong.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Hopalong (mhires)"
+source = "hopalong"
+display = "mhires"
+duration_s = 30.0
