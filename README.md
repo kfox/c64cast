@@ -7,56 +7,92 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Stream live AV through an [Ultimate 64](https://ultimate64.com/) or [TeensyROM+](https://lectronz.com/products/teensyrom) so a real
-C64 becomes a programmable display + audio device. Webcam frames are
-quantized in real time to one of several VIC-II display modes (PETSCII, MCM,
-hi-res bitmap, multicolor hi-res), audio is fed through the
-SID's DAC or streamed via Ultimate Audio, and optional, stackable **overlays** can be
-used to decorate scenes with scrolling text, PETSCII spectrum analyzers, clocks, weather,
-RSS tickers, logos, large scrolling text messages, OBS status, and more.
+c64cast turns a real Commodore 64 — driven over the network through an
+[Ultimate 64](https://ultimate64.com/) or
+[TeensyROM+](https://lectronz.com/products/teensyrom) — into a programmable
+display and audio device. It runs a **playlist of scenes** on the real
+hardware: play videos and images, stream a live webcam, visualize SID music
+on a 3-voice oscilloscope, synthesize a MIDI keyboard or an ASID stream
+through the real SID chip, render reactive generative visuals, or hand the
+machine over to a native game or demo. Frames from any source are quantized
+in real time to a VIC-II display mode (PETSCII, MCM, hi-res bitmap, multicolor
+hi-res); audio plays through the SID's `$D418` DAC or the hi-fi Ultimate Audio
+PCM sampler. Stackable **overlays** decorate any scene with scrolling text,
+spectrum analyzers, clocks, weather, RSS, logos, and more — and **ensemble
+mode** drives a whole wall of C64s at once.
+
+## What do you want to do?
+
+Every row below is a runnable, single-scene demo — pass it to
+`--config` and it loops forever until you Ctrl+C. Point it at your
+hardware with `-u` (see [Quick start](#quick-start)).
+[`docs/usage.md`](docs/usage.md) documents every option for these
+scenes and overlays.
+
+| I want to…                          | Try                                                       | Reference |
+|-------------------------------------|-----------------------------------------------------------|-----------|
+| Play a video (or YouTube URL)       | `c64cast clip.mp4` · [`scene-video.toml`](config/examples/scene-video.toml) | [Quick playback](docs/usage.md#quick-playback-positional-media-args) |
+| Show a live webcam as C64 art       | [`scene-webcam-petscii.toml`](config/examples/scene-webcam-petscii.toml)    | [Scenes](docs/usage.md#scenes) |
+| Visualize a SID tune (oscilloscope) | [`scene-waveform.toml`](config/examples/scene-waveform.toml)                | [Scenes](docs/usage.md#scenes) |
+| Play a SID from a MIDI keyboard     | [`scene-midi.toml`](config/examples/scene-midi.toml)                       | [Scenes](docs/usage.md#scenes) |
+| Stream from DeepSID / SIDFactory II | [`scene-asid.toml`](config/examples/scene-asid.toml)                       | [Scenes](docs/usage.md#scenes) |
+| Slideshow of images                 | [`scene-slideshow.toml`](config/examples/scene-slideshow.toml)             | [Scenes](docs/usage.md#scenes) |
+| Generative / music-reactive visuals | [`scene-generative-plasma.toml`](config/examples/scene-generative-plasma.toml) | [Scenes](docs/usage.md#scenes) |
+| Run a native `.prg`/`.crt` game or demo | [`scene-launcher.toml`](config/examples/scene-launcher.toml)           | [Scenes](docs/usage.md#scenes) |
+| An info board (clock/weather/RSS)   | [`overlay-clock.toml`](config/examples/overlay-clock.toml)                 | [Overlays](docs/usage.md#overlays) |
+| Drive multiple C64s as one video wall | [`ensemble/master.toml`](config/examples/ensemble/master.toml)          | [Ensemble mode](docs/usage.md#ensemble-mode-multi-system) |
+
+See [`config/examples/README.md`](config/examples/README.md) for the
+full demo index (one TOML per scene type and per overlay).
 
 ## Features
 
-* **Six display modes** — `hires`, `hires_edges`, `mhires`, `petscii`,
-  `mcm`, `blank`. Each has its own vectorized quantizer that lands close
-  to 30 fps for bitmap modes and 50/60 fps for char modes over a LAN.
-  `blank` is a no-video PETSCII canvas built for title cards + overlays.
-* **Playlist + scenes** — TOML-defined sequence of scenes (webcam,
-  video, still-image slideshow, SID waveform visualizer,
-  MIDI → SID synth, ASID client, blank canvas). Auto-interleaves video spots if
-  you drop video files into
-  the videos directory. **Single-scene mode** kicks in automatically when the
-  playlist defines exactly one scene: no interstitial, no CTRL skip, and
-  the scene loops forever — perfect for the per-feature demo configs in
-  [`config/examples/`](config/examples/).
-* **Overlays** that stack on any compatible scene:
-  scrolling text, marquee, RSS ticker, PETSCII spectrum analyzer, clock,
-  weather, callsign, countdown, network info, multi-line logo,
-  demo-scene big text, OBS Studio status.
-* **SID oscilloscope** — plays a `.sid` file natively on the U64 (via a
-  small player PRG, not the firmware's own runner) and shows a per-voice
-  waveform trace. The U64's SID registers are write-only and read back as
-  open-bus zeros, so the tune is run a second time on a host-side
-  [py65 6502 emulator](c64cast/sid_host_emu.py) that traps `$D400-$D418`
-  writes and feeds them to an in-process [SID emulator](c64cast/sidemu.py).
-  Handles multiSID playback — up to 8 SID chips using U64 UltiSIDs.
-* **MIDI control** — control playlists or various scene parameters
-  using an external MIDI controller, with configurable controls.
-  Requires the `midi` extra.
+**Scenes** — a TOML playlist runs any mix of these on the real C64, each
+for a set duration, with an "UP NEXT" interstitial between them:
+
+* **Video** — MP4/MKV/etc. (and YouTube/other URLs via yt-dlp), soundtrack
+  and all, keyed off the audio clock so A/V can't drift.
+* **Webcam** — live capture quantized to any display mode in real time.
+* **Slideshow** — still images from a directory/glob, aspect-fit.
+* **SID waveform** — plays a `.sid` natively on the C64 (via a small
+  player PRG, not the firmware's own runner) with a per-voice oscilloscope.
+  Handles multi-SID tunes — up to 8 chips using the U64's UltiSIDs.
 * **MIDI → SID** — bridge a live MIDI source (USB controller, DAW) into
-  the U64's SID and visualize each voice the same way the waveform scene
-  does. Requires the `midi` extra.
-* **ASID client** — receive ASID protocol messages (streamed SID register
-  writes over MIDI SysEx) from any ASID host — DeepSID in a browser,
-  SIDFactory II, Plogue chipsynth C64 — and play it on the U64's real SID
-  with the same 3-voice oscilloscope. Requires the `midi` extra.
-* **Audio streaming** — mic input or PyAV-decoded movie audio resampled to
-  12 kHz mono and bit-banged through `$D418` via an NMI ring buffer.
-* **Live control** — Commodore key pauses, CTRL key skips, optional
-  FastAPI control plane (`/pause`, `/resume`, `/skip`, `/reload`) for
-  remote control, `SIGHUP` to reload config without restarting.
-* **Preview window + recording** — optional pygame mirror of what the U64
-  is showing, plus cv2-based stream recording to MP4.
+  the real SID and visualize each voice (`midi` extra).
+* **ASID client** — receive an ASID stream (DeepSID in a browser,
+  SIDFactory II, Plogue chipsynth C64, …) and play it on the real SID with
+  the same 3-voice scope (`midi` extra).
+* **Generative** — procedural plasma/tunnel/fire sources, optionally
+  music-reactive and with pixel effects (trails, pulse, RGB shift).
+* **Launcher** — hand the machine over to a native `.prg`/`.crt` game or
+  demo, then reclaim it.
+* **Blank** — a solid PETSCII canvas for title cards + overlays.
+
+**Display + audio** — six VIC-II display modes (`hires`, `hires_edges`,
+`mhires`, `petscii`, `mcm`, `blank`), each with its own vectorized
+quantizer (~30 fps bitmap, 50/60 fps char over a LAN). Audio plays through
+the SID's 4-bit `$D418` DAC or, on the U64, the high-fidelity Ultimate
+Audio FPGA PCM sampler.
+
+**Overlays** — stack on any compatible scene: scrolling text, marquee, RSS
+ticker, PETSCII spectrum analyzer, clock, weather, callsign, countdown,
+network info, multi-line logo, demo-scene big text, OBS Studio status.
+
+**Ensemble mode** — one process drives **N Ultimate 64s at once** as a
+video wall, with cross-system orchestration (e.g. a `big_text` message
+scrolling across every screen as a single canvas).
+
+**Control surfaces** — the C64 keyboard itself (C= pauses, CTRL skips,
+SHIFT cycles the style), an on-C64 SPACE menu for live scene tweaks, webcam
+hand gestures (`vision` extra), a FastAPI control plane (`/pause`,
+`/resume`, `/skip`, `/reload`), MIDI CC control, and `SIGHUP` to reload the
+config.
+
+**Quick playback** — skip the config file entirely and pass media straight
+on the command line: `c64cast clip.mp4 tune.sid pics/` plays each in turn.
+
+**Preview + recording** — an optional pygame mirror of what the C64 is
+showing, plus cv2-based recording to MP4.
 
 ## Quick start
 
