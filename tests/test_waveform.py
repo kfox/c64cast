@@ -1203,7 +1203,9 @@ class WaveformSceneTest(unittest.TestCase):
         fake_db = MagicMock()
         fake_db.lookup.return_value = None
         with self.assertLogs("c64cast.waveform", level="WARNING") as cap:
-            scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
+            scene = WaveformScene(
+                api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db
+            )
         self.assertAlmostEqual(scene.duration_s, WaveformScene.FALLBACK_DURATION_S)
         self.assertTrue(any("not found in songlengths DB" in m for m in cap.output))
 
@@ -1303,7 +1305,9 @@ class WaveformSceneTest(unittest.TestCase):
         fake_db = MagicMock()
         fake_db.lookup.side_effect = [None, None]  # init + cycle, both miss
         with self.assertLogs("c64cast.waveform", level="WARNING"):
-            scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db)
+            scene = WaveformScene(
+                api, audio=None, file=self.sid_path, song=1, songlengths_db=fake_db
+            )
         scene.setup()
         try:
             scene.cycle_style(api)
