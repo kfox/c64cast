@@ -345,8 +345,9 @@ targets:
 * Pex 'Mahoney' Tufvesson for the 8-bit `$D418` DAC technique (his
   ["Musings in the Key of C64" white paper](https://livet.se/mahoney/c64-files/Musings_in_the_key_of_C64_by_Pex_Mahoney_Tufvesson.pdf))
   behind the optional `dac_curve = "mahoney_ultisid"` audio path.
-* Jürgen Wothke (websid) for the effective-bit of analysis of Mahoney's 8-bit
-  companding LUT techique.
+* Jürgen Wothke (webSID / Tiny'R'Sid) for
+  [documenting the `$D418` filter-bit "almost 8-bit" playback approach](https://www.wothke.ch/tinyrsid/index.php/digi-samples)
+  behind Mahoney's technique.
 * Antonio Savona for the
   [48 kHz `$D418` write-up](https://brokenbytes.blogspot.com/2018/03/a-48khz-digital-music-player-for.html).
 * [CodeBase64](https://codebase64.net/) for the extensive reference material.
