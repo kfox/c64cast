@@ -16,7 +16,9 @@ url = "http://ultimate-64-ii.lan"
 
 [playlist]
 interleave_videos = false
-# Uncomment + point at the HVSC SongLengths.md5 to auto-pick a duration:
+# Auto-detected if you unpacked HVSC under assets/sids/ (whole C64Music/
+# tree or just its contents) — no need to set this explicitly unless your
+# SongLengths.md5 lives elsewhere:
 # songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"
 
 [[scenes]]
@@ -30,7 +32,7 @@ type = "waveform"
 # Omit the field entirely to fall back to scanning assets/sids/.
 file = "assets/sids/your-tune.sid"
 song = 0                 # 0 = SID's default; 1+ selects a subtune
-duration_s = 180.0       # only used if songlengths_file isn't set
+duration_s = 180.0       # explicit value wins; comment out to use songlengths_file instead
 color_mode = "per_voice" # per_voice | per_waveform
 voice_colors = ["cyan", "yellow", "light green"]
 # --- Visualization knobs (all compose). Uncomment to try. ---

@@ -398,7 +398,7 @@
             "string",
             "null"
           ],
-          "description": "Path to an HVSC Songlengths.md5 file; gives waveform scenes their true duration when duration_s is unset."
+          "description": "Path to an HVSC Songlengths.md5 file; gives waveform scenes their true duration when duration_s is unset. Left unset (the default), an unpacked HVSC under assets/sids/ (either the whole C64Music/ tree or just its contents) is auto-detected. Set to an empty string to disable auto-detection."
         },
         "loop": {
           "type": "boolean",

@@ -171,12 +171,15 @@ it, or play a local copy of the file.
 
 ### "`waveform` scene plays for 180 s and stops, but the tune is longer"
 
-Default duration is 180 s when no SongLengths DB is configured. Two
-fixes:
+Default duration is 180 s when no SongLengths DB is configured or
+auto-detected. Fixes:
 
 1. Set `duration_s = <seconds>` on the scene explicitly.
 2. Configure `[playlist] songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"`
    and the loader will look up the tune's real length.
+3. Unpack HVSC under `assets/sids/` — the loader auto-detects
+   `Songlengths.md5` there with no config needed (this is what quick
+   playback, which has no `[playlist]` section, relies on).
 
 See [caveats.md → "WaveformScene duration"](caveats.md#waveformscene-duration).
 

@@ -15,8 +15,15 @@ visualization. PSID-only — RSIDs are refused (see
 ## Sources
 
 - **HVSC** (High Voltage SID Collection): https://hvsc.c64.org/
-  — Tens of thousands of curated SIDs. Drop the `C64Music/` tree anywhere
-    and point your config at the individual files you want to play.
+  — Tens of thousands of curated SIDs. Unpack the `C64Music/` tree (or just
+    its contents) directly into this directory — `assets/sids/C64Music/` or
+    `assets/sids/` itself — and c64cast auto-detects the bundled
+    `DOCUMENTS/Songlengths.md5`, so `waveform` scenes get each tune's real
+    duration with no config needed (`[playlist].songlengths_file` overrides
+    the auto-detected path if you unpack HVSC somewhere else; set it to
+    `""` to disable auto-detection). Unpacking elsewhere still works for
+    playback — you'd just set `songlengths_file` explicitly to get true
+    durations.
 - **CSDb releases**: https://csdb.dk/ — Often bundle a `.sid` alongside the
   demo it was written for.
 

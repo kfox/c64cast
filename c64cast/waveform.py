@@ -269,6 +269,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     END_SILENCE_S = 6.0
     ENV_SILENCE_EPS = 1e-3
 
+    # Used by _resolve_duration_for_current_sid when neither an explicit
+    # duration_s nor a songlengths DB match is available.
+    FALLBACK_DURATION_S = 180.0
+
     # Host-emu PLAY pre-flight. After loading a tune we run this many PLAY
     # passes; if EVERY one bails at the host emulator's cycle cap (instead
     # of returning normally in the usual ~1-2k cycles), the tune spins on a
@@ -610,7 +614,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
     def _resolve_duration_for_current_sid(self) -> float:
         """Compute the playback duration for self.sid_bytes + self.song.
-        Order: explicit user duration_s > songlengths DB > 180s default."""
+        Order: explicit user duration_s > songlengths DB > fallback default."""
         if self._explicit_duration_s is not None:
             return float(self._explicit_duration_s)
         if self.songlengths_db is not None:
@@ -623,7 +627,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     looked_up,
                 )
                 return float(looked_up)
-        return 180.0
+            # A DB is available but this tune/subtune isn't in it — worth a
+            # warning (unlike "no DB configured at all", which is the
+            # expected, silent state for anyone without HVSC's SongLengths.md5).
+            log.warning(
+                "waveform: %s #%d not found in songlengths DB — using %.0fs fallback duration",
+                os.path.basename(self._sid_file),
+                self.song,
+                self.FALLBACK_DURATION_S,
+            )
+        return self.FALLBACK_DURATION_S
 
     # ---- bring-up / bring-down ---------------------------------------------
 

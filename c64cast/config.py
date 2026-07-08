@@ -756,7 +756,10 @@ class PlaylistCfg:
         default=None,
         metadata={
             "help": "Path to an HVSC Songlengths.md5 file; gives waveform scenes their "
-            "true duration when duration_s is unset."
+            "true duration when duration_s is unset. Left unset (the default), an "
+            "unpacked HVSC under assets/sids/ (either the whole C64Music/ tree or "
+            "just its contents) is auto-detected. Set to an empty string to disable "
+            "auto-detection."
         },
     )
     # See CLAUDE.md 'Playlist loop control' for single- vs multi-scene behavior.
@@ -2523,12 +2526,60 @@ def _build_display_mode(
 
 
 _songlengths_cache: dict[str, LengthsDB | None] = {}
+_AUTODETECT_SONGLENGTHS_ROOT = "assets/sids"
+
+
+class _Unset:
+    pass
+
+
+_UNSET: Any = _Unset()
+_songlengths_autodetected: str | None | Any = _UNSET
+
+
+def _autodetect_songlengths_path(root: str = _AUTODETECT_SONGLENGTHS_ROOT) -> str | None:
+    """Best-effort discovery of an unpacked HVSC's SongLengths.md5 under
+    ``assets/sids`` (see assets/sids/README.md), for when
+    ``[playlist].songlengths_file`` is left unset. Checks the two layouts an
+    HVSC unpack actually produces before falling back to a full scan for a
+    nonstandard placement. Memoized (including the "not found" result) since
+    an HVSC tree is tens of thousands of files."""
+    global _songlengths_autodetected
+    if _songlengths_autodetected is not _UNSET:
+        return _songlengths_autodetected
+    found: str | None = None
+    for candidate in (
+        os.path.join(root, "C64Music", "DOCUMENTS", "Songlengths.md5"),
+        os.path.join(root, "DOCUMENTS", "Songlengths.md5"),
+    ):
+        if os.path.isfile(candidate):
+            found = candidate
+            break
+    else:
+        if os.path.isdir(root):
+            matches = sorted(
+                os.path.join(dirpath, name)
+                for dirpath, _dirnames, filenames in os.walk(root)
+                for name in filenames
+                if name.lower() == "songlengths.md5"
+            )
+            found = matches[0] if matches else None
+    _songlengths_autodetected = found
+    return found
 
 
 def _load_songlengths(path: str | None) -> LengthsDB | None:
-    """Memoized load of the HVSC SongLengths database. Returns None if no
-    path is configured or the file is missing/unreadable."""
-    if not path:
+    """Memoized load of the HVSC SongLengths database. If ``path`` is unset
+    (None — the field's default), auto-detects an unpacked HVSC under
+    ``assets/sids``; an explicit empty string opts out of auto-detection.
+    Returns None if no path is configured/detected or the file is
+    missing/unreadable."""
+    if path is None:
+        path = _autodetect_songlengths_path()
+        if path is None:
+            return None
+        log.info("playlist.songlengths_file not set; auto-detected HVSC database at %s", path)
+    elif not path:
         return None
     if path in _songlengths_cache:
         return _songlengths_cache[path]
