@@ -7,16 +7,13 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Stream live AV through an [Ultimate 64](https://ultimate64.com/) so a real
+Stream live AV through an [Ultimate 64](https://ultimate64.com/) or [TeensyROM+](https://lectronz.com/products/teensyrom) so a real
 C64 becomes a programmable display + audio device. Webcam frames are
 quantized in real time to one of several VIC-II display modes (PETSCII, MCM,
 hi-res bitmap, multicolor hi-res), audio is fed through the
-SID's 4-bit DAC, and optional, stackable **overlays** can be used to decorate
-scenes with scrolling text, PETSCII spectrum analyzers, clocks, weather, RSS tickers,
-logos, large scrolling text messages, OBS status, and more.
-
-Much of this code is still considered experimental — features will likely change.
-Some features have been much more thoroughly tested than others.
+SID's DAC or streamed via Ultimate Audio, and optional, stackable **overlays** can be
+used to decorate scenes with scrolling text, PETSCII spectrum analyzers, clocks, weather,
+RSS tickers, logos, large scrolling text messages, OBS status, and more.
 
 ## Features
 
