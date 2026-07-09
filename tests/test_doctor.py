@@ -9,8 +9,11 @@ import textwrap
 import unittest
 from unittest import mock
 
+from _fakes import FakeAPI
+
 from c64cast import config as cfgmod
 from c64cast import doctor
+from c64cast.backend import HardwareProfile
 
 
 def _write(path: str, body: str) -> None:
@@ -1026,6 +1029,54 @@ class EnvironmentProbeTest(unittest.TestCase):
         with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
             diags = doctor.validate_load_result(_load(""), probe_u64=False)
         self.assertTrue(any(d.category == "environment" for d in diags))
+
+
+class DacCalibrationStatusProbeTest(unittest.TestCase):
+    """_probe_dac_calibration_status is the LIVE counterpart to the offline
+    _validate_dac_curve check: it can read which SID socket is actually
+    mapped to $D400 right now, so it's precise where the offline check is
+    only approximate."""
+
+    def _cfg(self, dac_curve: str = "auto") -> cfgmod.Config:
+        loaded = _load(f"""
+            [ultimate64]
+            url = "http://fake"
+            [audio]
+            enabled = true
+            dac_curve = "{dac_curve}"
+            [[scenes]]
+            type = "webcam"
+            display = "petscii"
+        """)
+        return loaded.cfgs[0]
+
+    def test_not_wanted_when_audio_disabled(self):
+        cfg = self._cfg()
+        cfg.audio.enabled = False
+        self.assertEqual(doctor._probe_dac_calibration_status("sys", cfg, FakeAPI()), [])
+
+    def test_not_wanted_for_explicit_linear(self):
+        cfg = self._cfg("linear")
+        self.assertEqual(doctor._probe_dac_calibration_status("sys", cfg, FakeAPI()), [])
+
+    def test_auto_with_no_calibration_is_ok(self):
+        cfg = self._cfg("auto")
+        api = FakeAPI()
+        api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=True)
+        diags = doctor._probe_dac_calibration_status("sys", cfg, api)
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("mahoney_ultisid", diags[0].message)
+
+    def test_calibrated_missing_is_error_with_hint(self):
+        cfg = self._cfg("calibrated")
+        api = FakeAPI()
+        api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=True)
+        diags = doctor._probe_dac_calibration_status("sys", cfg, api)
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
+        self.assertIsNotNone(diags[0].hint)
+        self.assertIn("--calibrate-dac", diags[0].hint or "")
 
 
 if __name__ == "__main__":

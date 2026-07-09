@@ -1212,6 +1212,24 @@ class Ultimate64API(_SidPlayerBackend):
         inner = body.get(category, {}) if isinstance(body, dict) else {}
         return {k: str(v) for k, v in inner.items()} if isinstance(inner, dict) else {}
 
+    def get_device_info(self, *, timeout: float = 3.0) -> dict[str, str]:
+        """Read device identity LIVE over the REST API.
+
+        ``GET /v1/info`` → ``{"product": ..., "firmware_version": ...,
+        "fpga_version": ..., "hostname": ..., "unique_id": ..., ...}``. The
+        ``unique_id`` (e.g. ``"5D327C"``) is a stable per-unit identifier —
+        unlike the host/IP, it survives a DHCP re-lease — so
+        :mod:`c64cast.dac_calibration` uses it to key a system's calibrated
+        DAC table. Raises ``requests.RequestException`` on transport/HTTP
+        failure (older firmware without ``/v1/info``, unreachable device);
+        callers treat the read as best-effort and fall back to a host-keyed
+        name."""
+        url = f"{self.base_url}/v1/info"
+        r = self.session.get(url, timeout=timeout)
+        r.raise_for_status()
+        body = r.json()
+        return {k: str(v) for k, v in body.items()} if isinstance(body, dict) else {}
+
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Upload and run a tiny BASIC program: `10 PRINT CHR$(147) : 20 GOTO 20`.
 

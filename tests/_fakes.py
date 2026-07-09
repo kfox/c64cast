@@ -58,6 +58,9 @@ class FakeAPI:
         # and seed `config_store` to model detected sockets / current values.
         self.config_puts: list[tuple[str, str, str]] = []
         self.config_store: dict[str, dict[str, str]] = {}
+        # GET /v1/info surface for dac_calibration key resolution tests. None
+        # (default) mirrors a backend/firmware with no /v1/info (raises).
+        self.device_info: dict[str, str] | None = None
         # Hardware capability profile — mirrors the real backends' `profile`.
         # Defaults (supports_reu=True) make build_scene resolve the no-REU
         # double_buffer "auto" path OFF, so existing tests see no change; tests
@@ -134,6 +137,14 @@ class FakeAPI:
         # Tests seed `config_store[category] = {item: value}` to model detected
         # sockets / current addressing; default is an empty category.
         return dict(self.config_store.get(category, {}))
+
+    def get_device_info(self, *, timeout=3.0):
+        # Tests seed `device_info` (dict) to model GET /v1/info; leaving it
+        # None mirrors a backend/firmware with no /v1/info (raises, like the
+        # real BackendCapabilityError default).
+        if self.device_info is None:
+            raise RuntimeError("no device info (fake)")
+        return dict(self.device_info)
 
     def silence_sid(self):
         self.regs["SILENCE"] = ()

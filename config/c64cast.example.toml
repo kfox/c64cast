@@ -267,6 +267,17 @@ dac_curve = "auto"                  # SID $D418 DAC companding curve.
                                     # bypasses $D418 entirely — this shapes the
                                     # $D418 DAC used by TeensyROM+ audio and
                                     # mic/webcam audio.
+# dac_calibration_profile = "my-breadbin"  # Override the auto-derived
+                                    # calibration file key (device unique_id /
+                                    # TR USB serial number) with this name —
+                                    # calibration/dac/profile-<name>.json. Use
+                                    # when a TeensyROM+ moves between physical
+                                    # C64s: it has no config API to detect
+                                    # which SID it's plugged into, so name each
+                                    # host's calibration once at
+                                    # --calibrate-dac time and pass the same
+                                    # name on every playback run against that
+                                    # host. Unset (default) = auto-derive.
 sid_filter_cutoff = 0               # SID LP filter for PWM carrier rejection.
                                     # 0 = off. When > 0, routes voice 1
                                     # through the SID low-pass filter at this

@@ -469,6 +469,23 @@ class AudioCfg:
             "choices": DAC_CURVE_CHOICES,
         },
     )
+    # Overrides system_calibration_key's auto-derived identity (device
+    # unique_id / TR USB serial number / legacy host-based fallback) with a
+    # user-chosen name. Mainly for a roaming TeensyROM+: it has no config API,
+    # so it can't tell which physical SID it's currently plugged into — naming
+    # a profile at --calibrate-dac time and passing the same name on every
+    # playback run against that host is the only way to keep calibrations
+    # straight when the cartridge moves between machines. See dac_calibration.py.
+    dac_calibration_profile: str | None = field(
+        default=None,
+        metadata={
+            "help": "Override the auto-derived calibration file key (device unique_id / "
+            "TR USB serial) with this name — calibration/dac/profile-<name>.json. Use "
+            "when a TeensyROM+ moves between physical C64s: name each host's calibration "
+            "once at --calibrate-dac time, then pass the same name on every playback run "
+            "against that host."
+        },
+    )
     # 11-bit cutoff maps roughly 0→200 Hz … 2047→20 kHz on a 6581, but the
     # mapping is non-linear and varies per chip. Start ~1500 and tune by ear.
     sid_filter_cutoff: int = field(
@@ -2292,6 +2309,7 @@ CLI_TO_CFG = {
     "sample_rate": ("audio", "sample_rate"),
     "mic_sensitivity": ("audio", "mic_sensitivity"),
     "noise_gate": ("audio", "noise_gate"),
+    "dac_calibration_profile": ("audio", "dac_calibration_profile"),
     "vision": ("vision", "enabled"),
     "vision_model": ("vision", "model_path"),
     "videos": ("playlist", "videos_dir"),

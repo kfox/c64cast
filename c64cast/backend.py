@@ -342,6 +342,15 @@ class C64Backend(ABC):
         detection + snapshots the SID address map to restore on teardown)."""
         raise BackendCapabilityError("get_config_category")
 
+    def get_device_info(self, *, timeout: float = 3.0) -> dict[str, str]:
+        """Read device identity (Ultimate REST: ``GET /v1/info`` —
+        ``product``/``hostname``/``unique_id``/firmware+fpga versions).
+        Default raises — only the Ultimate exposes this endpoint. Used by
+        :mod:`c64cast.dac_calibration` to key a per-unit calibration file by
+        the device's stable ``unique_id`` instead of its (DHCP-mutable) host
+        address."""
+        raise BackendCapabilityError("get_device_info")
+
     # ---- semantic write helpers ---------------------------------------
     # Pure writes presuming the standard C64 memory map + kernal IRQ chain.
     # Default impls raise here on the ABC; BufferedWriteBackend (which every

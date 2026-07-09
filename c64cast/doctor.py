@@ -575,6 +575,11 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
                 # Probe the Ultimate Audio sampler state when the config will
                 # use it for video audio (backend auto/sampler + video scene).
                 out.extend(_probe_sampler_status(name, cfg, api))
+                # Probe DAC calibration status live — the offline
+                # _validate_dac_curve check can't know which physical SID
+                # socket is currently mapped to $D400, so it's approximate;
+                # this one is precise.
+                out.extend(_probe_dac_calibration_status(name, cfg, api))
         finally:
             api.close()
     return out
@@ -1341,6 +1346,55 @@ def _probe_sampler_status(name: str, cfg: object, api: object) -> list[Diagnosti
             "teardown. Set [audio].backend = 'dac' to use the 4-bit DAC instead.",
         )
     ]
+
+
+def _wants_dac_calibration_check(cfg: object) -> bool:
+    """The run wants a DAC calibration check when audio is enabled and
+    [audio].dac_curve is a system-aware curve ('auto' or 'calibrated')."""
+    audio = getattr(cfg, "audio", None)
+    if audio is None or not getattr(audio, "enabled", False):
+        return False
+    return getattr(audio, "dac_curve", "auto") in ("auto", "calibrated")
+
+
+def _probe_dac_calibration_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+    """If [audio].dac_curve is 'auto'/'calibrated', report the LIVE-resolved
+    calibration: which key/file applies and whether it actually matches
+    what's currently mapped to $D400 (a live SID-addressing read — the
+    offline _validate_dac_curve check can't do this, so it's only
+    approximate). Emits:
+      * ok    — resolves to a calibrated table, or 'auto' cleanly falls back
+                to the baked/linear default
+      * error — [audio].dac_curve = 'calibrated' but no matching table
+    """
+    if not _wants_dac_calibration_check(cfg):
+        return []
+    from . import dac_calibration
+
+    subject = f"{name} (DAC calibration)"
+    curve = getattr(getattr(cfg, "audio", None), "dac_curve", "auto")
+    try:
+        label, table = dac_calibration.resolve_dac_curve_for_backend(
+            cfg,  # type: ignore[arg-type]
+            be=api,  # type: ignore[arg-type]
+        )
+    except ValueError as e:
+        return [
+            Diagnostic(
+                level="error",
+                category="connectivity",
+                subject=subject,
+                message=str(e),
+                hint="Run `c64cast -u <target> --calibrate-dac`, or set "
+                "[audio].dac_curve = 'auto'.",
+            )
+        ]
+    key = dac_calibration.resolve_calibration_key(cfg, api)  # type: ignore[arg-type]
+    if table is not None:
+        message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
+    else:
+        message = f"no calibration applies right now (key {key!r}); resolves to {label!r}."
+    return [Diagnostic(level="ok", category="connectivity", subject=subject, message=message)]
 
 
 # ---------------------------------------------------------------------------
