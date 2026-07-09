@@ -212,6 +212,13 @@
           ],
           "default": "auto"
         },
+        "dac_calibration_profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Override the auto-derived calibration file key (device unique_id / TR USB serial) with this name \u2014 calibration/dac/profile-<name>.json. Use when a TeensyROM+ moves between physical C64s: name each host's calibration once at --calibrate-dac time, then pass the same name on every playback run against that host."
+        },
         "sid_filter_cutoff": {
           "type": "integer",
           "description": "SID low-pass cutoff for the PWM carrier voice (0 = disabled). Attenuates the carrier above the audio band.",

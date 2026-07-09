@@ -60,6 +60,9 @@ _SECTION_DC = {
 #   pre_emphasis    — default is None (source-aware auto: mic 0.7 / line 0.6),
 #                     not representable as a TOML value. Shown commented in
 #                     [dsp]; an uncommented number would force all sources.
+#   dac_calibration_profile — default is None (auto-derive from device
+#                     identity); a name is only needed for a roaming
+#                     TeensyROM+. Shown commented in [audio].
 _COVERAGE_EXEMPT = {
     ("ultimate64", "dma_password"),
     ("playlist", "songlengths_file"),
@@ -67,6 +70,7 @@ _COVERAGE_EXEMPT = {
     ("debug", "frame_numbers"),
     ("color", "hue_corrections"),
     ("dsp", "pre_emphasis"),
+    ("audio", "dac_calibration_profile"),
 }
 
 

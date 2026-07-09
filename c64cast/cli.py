@@ -174,6 +174,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Threshold below which mic input is muted (default: {audio_def.noise_gate})",
     )
+    a.add_argument(
+        "--dac-calibration-profile",
+        default=None,
+        help="Override the auto-derived DAC calibration file key with this name "
+        "(calibration/dac/profile-<name>.json), for both --calibrate-dac and "
+        "playback. Use when a TeensyROM+ moves between physical C64s: name each "
+        f"host's calibration once, reuse the name on every run there (default: "
+        f"{audio_def.dac_calibration_profile})",
+    )
 
     vis = p.add_argument_group("vision input")
     vis.add_argument(
@@ -279,9 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Measure the connected SID's Mahoney 8-bit $D418 DAC transfer curve "
         "(requires a capture device — Cam Link — on the SID audio output) and save "
-        "a per-system calibrated table, then exit. Playback with [audio].dac_curve "
-        "= 'auto' (the default) then uses it automatically. Most valuable for "
-        "physical 6581/8580 chips and SID replacements, which vary chip-to-chip.",
+        "a per-device calibrated table, then exit. On a U64/U2+, every populated "
+        "physical SID socket is measured independently. Playback with "
+        "[audio].dac_curve = 'auto' (the default) then uses the applicable table "
+        "automatically. Most valuable for physical 6581/8580 chips and SID "
+        "replacements, which vary chip-to-chip.",
     )
     debug.add_argument(
         "--log-file",
@@ -692,7 +703,7 @@ def build_stack(
 
     # Resolve the system-aware [audio].dac_curve ("auto"/"calibrated") to a
     # concrete (label, table) for this backend + any per-unit calibration.
-    dac_curve_label, dac_table = dac_calibration.resolve_dac_curve_for_backend(cfg)
+    dac_curve_label, dac_table = dac_calibration.resolve_dac_curve_for_backend(cfg, be=api)
     if cfg.audio.enabled and dac_curve_label != cfg.audio.dac_curve:
         log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve_label)
 
