@@ -8,10 +8,9 @@ the MD5 of each SID file to a list of per-subtune durations. Format:
 
 Each `dur` is "M:SS" or "M:SS.mmm". Subtune 1 → durations[0], etc.
 
-We compute the MD5 over the SID file's data area only (per HVSC spec —
-the data starts at the `data_offset` field of the PSID header so users
-who rewrite metadata fields don't break the lookup). For RSID files the
-spec is the same.
+The key is a plain MD5 of the whole SID file (header + data) — see
+`md5_of_sid` for why this isn't the fancier field-selective digest
+libsidplayfp's `SidTune::createMD5()` computes.
 
 Usage:
     from c64cast.songlengths import LengthsDB, song_length
@@ -46,17 +45,15 @@ def _parse_duration(text: str) -> float | None:
 
 
 def md5_of_sid(sid_bytes: bytes) -> str:
-    """Return the HVSC-style MD5 hex digest of a SID file's data payload.
+    """Return the HVSC-style MD5 hex digest for a SID file.
 
-    Per the HVSC spec, the hash covers the SID's loaded data only — not
-    the PSID/RSID header fields. The header's `data_offset` (bytes 6-7,
-    big-endian) tells us where the payload starts."""
-    if len(sid_bytes) < 8:
-        raise ValueError("SID file too short for header")
-    data_offset = int.from_bytes(sid_bytes[6:8], "big")
-    if data_offset >= len(sid_bytes):
-        raise ValueError(f"SID data_offset {data_offset} >= file size {len(sid_bytes)}")
-    return hashlib.md5(sid_bytes[data_offset:]).hexdigest()
+    Despite what libsidplayfp's own `createMD5()` computes (a fingerprint
+    over selected header fields + data, deliberately excluding the free-text
+    name/author/released strings so re-tagged rips still match), the
+    Songlengths.md5 shipped with the HVSC is keyed by a plain MD5 of the
+    *entire raw file*, header included — verified directly against entries
+    in DOCUMENTS/Songlengths.md5 (e.g. Galway's Times_of_Lore.sid)."""
+    return hashlib.md5(sid_bytes).hexdigest()
 
 
 @dataclass
@@ -93,11 +90,7 @@ class LengthsDB:
     def lookup(self, sid_bytes: bytes, song: int = 1) -> float | None:
         """Return the duration for `song` (1-based) of the given SID, or
         None if the SID isn't in the DB or the subtune index is unknown."""
-        try:
-            digest = md5_of_sid(sid_bytes)
-        except ValueError:
-            return None
-        durs = self.entries.get(digest)
+        durs = self.entries.get(md5_of_sid(sid_bytes))
         if durs is None:
             return None
         idx = song - 1
