@@ -16,14 +16,15 @@ class SongLengthsTest(unittest.TestCase):
     def test_parse_and_lookup(self):
         from c64cast.songlengths import LengthsDB, md5_of_sid
 
-        # Build a minimal SID with a known data section.
+        # Build a minimal SID; HVSC keys Songlengths.md5 by a plain MD5 of
+        # the whole file (header included), not just the data payload.
         header = bytearray(124)
         header[0:4] = b"PSID"
         header[6:8] = (0x7C).to_bytes(2, "big")  # data_offset = 124
         header[14:16] = (3).to_bytes(2, "big")
         data_payload = b"\x12\x34" * 32
         sid_bytes = bytes(header) + data_payload
-        expected_md5 = hashlib.md5(data_payload).hexdigest()
+        expected_md5 = hashlib.md5(sid_bytes).hexdigest()
 
         with tempfile.NamedTemporaryFile("w", suffix=".md5", delete=False) as f:
             f.write("; comment\n")
