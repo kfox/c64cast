@@ -112,18 +112,28 @@ class SidHeader:
     released: str
     # Decoded PSID v2+ flags. None on v1 headers (no flags field).
     clock: str | None  # "PAL", "NTSC", "PAL+NTSC", "?" or None
-    sid_model: str | None  # "6581", "8580", "6581+8580", "?" or None
+    sid_model: (
+        str | None
+    )  # "6581", "8580", "6581+8580", "?" or None — chip 0 only, == sid_models[0]
     # $Dxxx base address of every SID chip the tune drives, chip 0 first
     # (always $D400). A single-SID tune yields (0xD400,); a 3SID tune yields
     # e.g. (0xD400, 0xD420, 0xD440). Parsed from the PSID v3/v4 second/third
     # SID-address bytes ($7A/$7B). See parse_sid_header.
     sid_addresses: tuple[int, ...] = (SID.BASE,)
+    # Per-chip model, same length/order as sid_addresses (sid_models[0] ==
+    # sid_model). An entry is None when that chip's model bits aren't
+    # trustworthy — the header version/address-byte gating that makes the
+    # chip's own address entry exist is exactly what makes its model bits
+    # meaningful; see parse_sid_header.
+    sid_models: tuple[str | None, ...] = (None,)
 
 
-# PSID v2+ flags byte 1 (low-order) layout — clock at bits 2-3, primary
-# SID model at bits 4-5. Higher-order model bits for 2nd/3rd SIDs live in
-# byte 0 of the 2-byte flags field; the waveform UI only surfaces the
-# primary chip + clock so we ignore the rest.
+# PSID v2+ flags field (2 bytes, big-endian, at offset 0x76-0x77) layout:
+# clock is bits 2-3 and sidModel1 is bits 4-5, both in the LOW byte (0x77).
+# sidModel2 (bits 6-7) is *also* in the low byte, alongside model1 — only
+# sidModel3 (bits 8-9, i.e. bits 0-1 of the HIGH byte 0x76) lives in the
+# high byte. (A prior version of this comment claimed model2 lived in the
+# high byte too — wrong; only model3 does.)
 _CLOCK_TABLE = {0: "?", 1: "PAL", 2: "NTSC", 3: "PAL+NTSC"}
 _MODEL_TABLE = {0: "?", 1: "6581", 2: "8580", 3: "6581+8580"}
 
@@ -149,10 +159,13 @@ def _decode_extra_sid_addr(byte: int) -> int | None:
 def parse_sid_header(data: bytes) -> SidHeader:
     """Parse the PSID/RSID v1+ header. Validates magic, returns metadata.
 
-    Reads the v2+ flags field at offset 0x76 (2 bytes, big-endian) to
-    surface SID chip model + PAL/NTSC clock. v1 headers (length 118)
-    leave both as None. On PSID v3/v4 headers, reads the second/third
-    SID-address bytes ($7A/$7B) into `sid_addresses` (chip 0 = $D400 first)."""
+    Reads the v2+ flags field at offset 0x76-0x77 (2 bytes, big-endian) to
+    surface SID chip model(s) + PAL/NTSC clock. v1 headers (length 118)
+    leave clock/sid_model/sid_models as None. On PSID v3/v4 headers, reads
+    the second/third SID-address bytes ($7A/$7B) into `sid_addresses` (chip
+    0 = $D400 first), and gates model2/model3 on those same address bytes
+    being present — a chip's model is only trusted if the header actually
+    declares that chip exists (mirrors the firmware's ConfigSIDs)."""
     if len(data) < 22:
         raise ValueError("SID file too short to contain a header")
     magic = data[:4]
@@ -160,23 +173,30 @@ def parse_sid_header(data: bytes) -> SidHeader:
         raise ValueError(f"not a SID file (expected PSID/RSID magic, got {magic!r})")
     version = int.from_bytes(data[4:6], "big")
     clock: str | None = None
-    sid_model: str | None = None
+    model1: str | None = None
+    model2: str | None = None
+    model3: str | None = None
     if version >= 2 and len(data) >= 0x78:
-        # flags lives at 0x76 (16 bits big-endian); clock/model bits are in
-        # the low byte (0x77).
-        flags_lo = data[0x77]
-        clock = _CLOCK_TABLE[(flags_lo >> 2) & 0x03]
-        sid_model = _MODEL_TABLE[(flags_lo >> 4) & 0x03]
+        flags = (data[0x76] << 8) | data[0x77]
+        clock = _CLOCK_TABLE[(flags >> 2) & 0x03]
+        model1 = _MODEL_TABLE[(flags >> 4) & 0x03]
+        if version >= 3:
+            model2 = _MODEL_TABLE[(flags >> 6) & 0x03]
+        if version >= 4:
+            model3 = _MODEL_TABLE[(flags >> 8) & 0x03]
     # Extra SID chips (v3 adds a 2nd, v4 a 3rd). Chip 0 is always $D400.
     addresses = [SID.BASE]
+    models = [model1]
     if version >= 3 and len(data) > _SECOND_SID_ADDR:
         second = _decode_extra_sid_addr(data[_SECOND_SID_ADDR])
         if second is not None:
             addresses.append(second)
+            models.append(model2)
     if version >= 4 and len(data) > _THIRD_SID_ADDR and len(addresses) == 2:
         third = _decode_extra_sid_addr(data[_THIRD_SID_ADDR])
         if third is not None:
             addresses.append(third)
+            models.append(model3)
     return SidHeader(
         magic=magic.decode("ascii"),
         version=version,
@@ -188,8 +208,9 @@ def parse_sid_header(data: bytes) -> SidHeader:
         if len(data) >= 118
         else "",
         clock=clock,
-        sid_model=sid_model,
+        sid_model=model1,
         sid_addresses=tuple(addresses),
+        sid_models=tuple(models),
     )
 
 

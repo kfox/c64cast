@@ -95,6 +95,12 @@ auto_reu = true                     # auto-enable + size (16 MB) the U64 REU,
                                     # Removes the manual F2 enable step. false =
                                     # manage the REU yourself. No effect without
                                     # an REU (TeensyROM) or under --skip-probe.
+sid_model = "auto"                  # auto | 6581 | 8580 | off — match a .sid
+                                    # file's PSID-requested chip model to the
+                                    # U64's actual SID hardware (swap sockets,
+                                    # or fall back to an UltiSID core). "auto"
+                                    # reads the header per chip; an explicit
+                                    # 6581/8580 forces every chip; off disables.
 
 [video]
 device = -1                         # -1 = system default camera; `--list-devices` to enumerate

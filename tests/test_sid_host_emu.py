@@ -356,12 +356,18 @@ def _sid_with_extra_addrs(
     version: int,
     second: int = 0,
     third: int = 0,
+    flags: int = 0,
     play_code: bytes = _PLAY_WRITES,
 ) -> bytes:
-    """A synthetic PSID whose header declares the given version and second/third
-    SID-address bytes (offsets $7A/$7B)."""
+    """A synthetic PSID whose header declares the given version, second/third
+    SID-address bytes (offsets $7A/$7B), and 16-bit flags word (offset
+    $76-$77, big-endian) — clock at bits 2-3, sidModel1 at bits 4-5,
+    sidModel2 at bits 6-7 (same low byte as model1), sidModel3 at bits 8-9
+    (bits 0-1 of the high byte)."""
     sid = bytearray(_make_synthetic_sid(init_code=_INIT_RTS, play_code=play_code))
     sid[4:6] = version.to_bytes(2, "big")
+    sid[0x76] = (flags >> 8) & 0xFF
+    sid[0x77] = flags & 0xFF
     sid[0x7A] = second
     sid[0x7B] = third
     return bytes(sid)
@@ -389,6 +395,67 @@ class HeaderSidAddressTest(unittest.TestCase):
         # 3rd chip without a 2nd).
         h = parse_sid_header(_sid_with_extra_addrs(version=4, second=0x00, third=0x44))
         self.assertEqual(h.sid_addresses, (0xD400,))
+
+
+class HeaderSidModelsTest(unittest.TestCase):
+    """parse_sid_header.sid_models: per-chip model bits, gated on the same
+    version + address-byte conditions as sid_addresses (SID Player
+    Autoconfig)."""
+
+    # model1=8580(2) at bits 4-5, model2=6581(1) at bits 6-7 (same low byte),
+    # model3=6581+8580(3) at bits 0-1 of the high byte.
+    _FLAGS_M1_8580_M2_6581_M3_BOTH = (3 << 8) | (1 << 6) | (2 << 4)
+
+    def test_v4_three_sids_all_models_decoded(self):
+        h = parse_sid_header(
+            _sid_with_extra_addrs(
+                version=4,
+                second=0x42,
+                third=0x44,
+                flags=self._FLAGS_M1_8580_M2_6581_M3_BOTH,
+            )
+        )
+        self.assertEqual(h.sid_models, ("8580", "6581", "6581+8580"))
+        self.assertEqual(h.sid_model, "8580")
+        self.assertEqual(h.sid_models[0], h.sid_model)
+
+    def test_v3_second_address_zero_leaves_model2_absent(self):
+        # version >= 3 but the 2nd-SID address byte is 0 (no chip declared) —
+        # model2 must not be trusted even though the flag bits are set.
+        h = parse_sid_header(
+            _sid_with_extra_addrs(version=3, second=0x00, flags=self._FLAGS_M1_8580_M2_6581_M3_BOTH)
+        )
+        self.assertEqual(h.sid_addresses, (0xD400,))
+        self.assertEqual(h.sid_models, ("8580",))
+
+    def test_v3_second_present_model2_decoded_model3_gated_by_version(self):
+        h = parse_sid_header(
+            _sid_with_extra_addrs(version=3, second=0x42, flags=self._FLAGS_M1_8580_M2_6581_M3_BOTH)
+        )
+        # v3 has no third-SID field at all, so only two chips/models exist.
+        self.assertEqual(h.sid_addresses, (0xD400, 0xD420))
+        self.assertEqual(h.sid_models, ("8580", "6581"))
+
+    def test_v4_third_address_zero_leaves_model3_absent(self):
+        h = parse_sid_header(
+            _sid_with_extra_addrs(
+                version=4, second=0x42, third=0x00, flags=self._FLAGS_M1_8580_M2_6581_M3_BOTH
+            )
+        )
+        self.assertEqual(h.sid_addresses, (0xD400, 0xD420))
+        self.assertEqual(h.sid_models, ("8580", "6581"))
+
+    def test_v1_header_has_no_model(self):
+        sid = bytearray(_make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES))
+        sid[4:6] = (1).to_bytes(2, "big")  # v1: no flags field at all
+        h = parse_sid_header(bytes(sid))
+        self.assertIsNone(h.sid_model)
+        self.assertEqual(h.sid_models, (None,))
+
+    def test_v2_single_sid_model1_only(self):
+        h = parse_sid_header(_sid_with_extra_addrs(version=2, flags=2 << 4))  # model1=8580
+        self.assertEqual(h.sid_addresses, (0xD400,))
+        self.assertEqual(h.sid_models, ("8580",))
 
 
 class DetectSidAddressesTest(unittest.TestCase):

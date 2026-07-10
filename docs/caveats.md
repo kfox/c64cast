@@ -228,6 +228,37 @@ config (one window, byte-identical to before). Verified on U64-II hardware:
 `Enchanted_Forest_3SID.sid` → 3 windows, all 9 voices audible as each chip
 enters.
 
+### SID Player Autoconfig: chip model matching, not just addressing
+
+Multi-SID address routing (above) only guarantees a chip is *audible*
+somewhere — it says nothing about whether that chip *sounds like* what the
+tune expects. A `.sid` file's PSID header can separately declare which chip
+model (6581/8580) each voice was composed for
+(`sid_host_emu.SidHeader.sid_models`); without checking it, c64cast just
+plays the tune on whatever chip currently answers its address, silently
+wrong-sounding when that chip's model doesn't match. `--sid-model` /
+`[ultimate64].sid_model` (`"auto"` by default) ports the 1541ultimate
+firmware's own "SID Player Autoconfig" into c64cast's playback path: before
+`run_sid_player`, `sid_autoconfig.apply_sid_autoconfig` compares the header's
+per-chip requirement against what's actually socketed
+(`sid_hw_config.detect_socket_models`) and, if they don't match, swaps to the
+other physical socket if it has the right chip, else falls back to an
+UltiSID FPGA core set to a fixed representative filter curve (`"6581"` /
+`"8580 Lo"`).
+
+**Real-hardware limitation inherited from firmware: a genuinely fixed
+physical 6581 or 8580 chip cannot be reconfigured to the other model.**
+Autoconfig can only *route around* a mismatched chip — swap which socket
+answers the address, or fall back to the emulated UltiSID core — it can
+never transmute the chip itself. A system with two physical sockets and both
+populated with the same model (e.g. two 6581s, as measured on the dev U64
+used to build this feature) can never satisfy an 8580-tagged tune from a
+socket; it always falls back to UltiSID for that case, same as a
+single-socket or bare-UltiSID board would. `--sid-model off` disables header
+inspection entirely (matches firmware's `CFG_PLAYER_AUTOCONFIG` disabled
+state); an explicit `--sid-model 6581`/`8580` forces that model for every
+chip in the tune, ignoring what the header says.
+
 ### ASID buffered ring player (cycle-accurate multispeed)
 
 `AsidScene`'s default *coalesced* path folds incoming ASID register frames into
