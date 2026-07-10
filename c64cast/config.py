@@ -1471,21 +1471,25 @@ class ColorCfg:
             "help": "Spatial dither applied before nearest-palette quantization "
             "on mhires/mcm/hires. 'auto' picks the best method that's actually "
             "useful for the scene: floyd-steinberg (highest quality) for static "
-            "scenes (slideshow), ordered (vectorized, temporally stable — no "
-            "added shimmer) for motion scenes (video/webcam/generative). Any "
-            "value can be forced on any scene; floyd-steinberg/atkinson are a "
-            "Python-level per-pixel loop and can shimmer frame-to-frame on "
-            "motion (see docs/caveats.md).",
+            "scenes (slideshow), blue_noise (vectorized, temporally stable — no "
+            "added shimmer, and no Bayer grid structure) for motion scenes "
+            "(video/webcam/generative). Any value can be forced on any scene; "
+            "floyd-steinberg/atkinson are a Python-level per-pixel loop and can "
+            "shimmer frame-to-frame on motion; 'ordered' (Bayer) is the older "
+            "motion default and still available if the cross-hatch pattern is "
+            "wanted (see docs/caveats.md).",
             "choices": ("auto",) + DITHER_METHODS,
         },
     )
     dither_strength: float = field(
         default=0.5,
         metadata={
-            "help": "Dither strength, roughly 0..2.0. For 'ordered' it scales the "
-            "Bayer threshold spread; for floyd-steinberg/atkinson it scales how "
-            "much of each pixel's quantization error is diffused to its "
-            "neighbors (1.0 = the textbook kernel weights)."
+            "help": "Dither strength, roughly 0..2.0. For 'ordered'/'blue_noise' "
+            "it scales the threshold spread (same scale for both, so switching "
+            "between them doesn't need a strength retune); for "
+            "floyd-steinberg/atkinson it scales how much of each pixel's "
+            "quantization error is diffused to its neighbors (1.0 = the "
+            "textbook kernel weights)."
         },
     )
     color_match: str = field(
@@ -3235,20 +3239,24 @@ _STATIC_DITHER_SCENE_TYPES = frozenset({"slideshow"})
 def resolve_dither_method(dither_setting: str, scene_type: str) -> str:
     """Resolve [color].dither's `"auto"` to a concrete dither.DITHER_METHODS
     value for a given scene type; an explicit non-auto value passes through
-    unchanged (a user may force floyd-steinberg/atkinson on a motion scene
-    and accept the framerate/shimmer caveat — see docs/caveats.md).
+    unchanged (a user may force floyd-steinberg/atkinson, or the older
+    'ordered' Bayer method, on a motion scene and accept the caveats — see
+    docs/caveats.md).
 
     `"auto"` picks the best method that's actually USEFUL for the scene, not
     merely a safe default: static scenes (slideshow) get floyd-steinberg,
     the highest-quality method, since it's composed once and cost is a
     non-issue; everything else (video/webcam/generative — anything that
-    recomposes every frame) gets ordered, the best method that stays
-    realtime (vectorized) and temporally stable (Bayer's fixed tiling means
-    the same pixel position always dithers the same way, so it doesn't add
-    frame-to-frame shimmer the way independently-diffused frames would)."""
+    recomposes every frame) gets blue_noise, the best method that stays
+    realtime (vectorized) and temporally stable (its fixed tiling means the
+    same pixel position always dithers the same way, so it doesn't add
+    frame-to-frame shimmer the way independently-diffused frames would) —
+    strictly better than 'ordered' (Bayer) at the same cost, since it drops
+    Bayer's visible cross-hatch/grid structure without giving up either
+    property (see dither.py's module docstring)."""
     if dither_setting != "auto":
         return dither_setting
-    return "floyd-steinberg" if scene_type in _STATIC_DITHER_SCENE_TYPES else "ordered"
+    return "floyd-steinberg" if scene_type in _STATIC_DITHER_SCENE_TYPES else "blue_noise"
 
 
 def validate_dither_cfg(cfg: Config) -> None:

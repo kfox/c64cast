@@ -1228,17 +1228,18 @@ class DacBitmapTempoValidationTest(unittest.TestCase):
 class DitherResolutionTest(unittest.TestCase):
     """resolve_dither_method's "auto" picks the best method that's actually
     USEFUL per scene type: floyd-steinberg (composed once, cost is a
-    non-issue) for static slideshow scenes, ordered (vectorized, no added
-    shimmer) for everything recomposed every frame. Non-auto values pass
+    non-issue) for static slideshow scenes, blue_noise (vectorized, no added
+    shimmer, no Bayer grid structure) for everything recomposed every frame.
+    Non-auto values — including the older 'ordered' Bayer method — pass
     through unchanged regardless of scene type."""
 
     def test_auto_resolves_static_scene_to_floyd_steinberg(self):
         self.assertEqual(cfgmod.resolve_dither_method("auto", "slideshow"), "floyd-steinberg")
 
-    def test_auto_resolves_motion_scenes_to_ordered(self):
+    def test_auto_resolves_motion_scenes_to_blue_noise(self):
         for scene_type in ("video", "webcam", "generative"):
             with self.subTest(scene_type=scene_type):
-                self.assertEqual(cfgmod.resolve_dither_method("auto", scene_type), "ordered")
+                self.assertEqual(cfgmod.resolve_dither_method("auto", scene_type), "blue_noise")
 
     def test_explicit_value_passes_through_on_any_scene_type(self):
         for scene_type in ("slideshow", "video", "webcam", "generative"):
@@ -1247,6 +1248,7 @@ class DitherResolutionTest(unittest.TestCase):
                     cfgmod.resolve_dither_method("floyd-steinberg", scene_type), "floyd-steinberg"
                 )
                 self.assertEqual(cfgmod.resolve_dither_method("none", scene_type), "none")
+                self.assertEqual(cfgmod.resolve_dither_method("ordered", scene_type), "ordered")
 
 
 class ValidateDitherCfgTest(unittest.TestCase):

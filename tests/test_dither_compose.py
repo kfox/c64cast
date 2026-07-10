@@ -3,8 +3,9 @@
 Complements tests/test_dither.py (which tests the dither.py primitives in
 isolation) by driving each display mode's real compose() with dithering
 enabled, checking it produces correctly-shaped, in-range buffers and that
-"ordered"/"floyd-steinberg" actually change the quantized output relative to
-"none" on a smooth gradient (where dithering has visible work to do).
+"ordered"/"blue_noise"/"floyd-steinberg" actually change the quantized output
+relative to "none" on a smooth gradient (where dithering has visible work to
+do).
 """
 
 # FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
@@ -43,6 +44,14 @@ class MultiHiresDitherTest(unittest.TestCase):
         self.assertEqual(len(buffers["color"]), 1000)
         self.assertTrue(0 <= buffers["bg"] <= 15)
 
+    def test_blue_noise_produces_valid_buffers(self):
+        mode = MultiHiresDisplayMode("percell", dither_method="blue_noise", dither_strength=0.5)
+        buffers = mode.compose(_gradient())
+        self.assertEqual(len(buffers["bitmap"]), 8000)
+        self.assertEqual(len(buffers["screen"]), 1000)
+        self.assertEqual(len(buffers["color"]), 1000)
+        self.assertTrue(0 <= buffers["bg"] <= 15)
+
     def test_floyd_steinberg_produces_valid_buffers(self):
         mode = MultiHiresDisplayMode(
             "percell", dither_method="floyd-steinberg", dither_strength=0.5
@@ -64,6 +73,26 @@ class MultiHiresDitherTest(unittest.TestCase):
             "percell", dither_method="ordered", dither_strength=1.0
         ).compose(frame)
         self.assertFalse(np.array_equal(plain["bitmap"], dithered["bitmap"]))
+
+    def test_blue_noise_changes_bitmap_vs_none_on_gradient(self):
+        frame = _gradient()
+        plain = MultiHiresDisplayMode("percell", dither_method="none").compose(frame)
+        dithered = MultiHiresDisplayMode(
+            "percell", dither_method="blue_noise", dither_strength=1.0
+        ).compose(frame)
+        self.assertFalse(np.array_equal(plain["bitmap"], dithered["bitmap"]))
+
+    def test_blue_noise_differs_from_ordered_on_gradient(self):
+        # Confirms the modes.py dispatch actually selects a different mask
+        # per method rather than both methods silently sharing one offset.
+        frame = _gradient()
+        ordered = MultiHiresDisplayMode(
+            "percell", dither_method="ordered", dither_strength=1.0
+        ).compose(frame)
+        blue_noise = MultiHiresDisplayMode(
+            "percell", dither_method="blue_noise", dither_strength=1.0
+        ).compose(frame)
+        self.assertFalse(np.array_equal(ordered["bitmap"], blue_noise["bitmap"]))
 
     def test_floyd_steinberg_changes_bitmap_vs_none_on_gradient(self):
         frame = _gradient()
@@ -93,6 +122,13 @@ class MCMDitherTest(unittest.TestCase):
         self.assertEqual(len(buffers["color"]), 1000)
         self.assertTrue(bool(((buffers["color"] & 0x08) == 0x08).all()))  # multicolor bit set
 
+    def test_blue_noise_produces_valid_buffers(self):
+        mode = MCMDisplayMode(dither_method="blue_noise", dither_strength=0.5)
+        buffers = mode.compose(_gradient())
+        self.assertEqual(len(buffers["screen"]), 1000)
+        self.assertEqual(len(buffers["color"]), 1000)
+        self.assertTrue(bool(((buffers["color"] & 0x08) == 0x08).all()))
+
     def test_floyd_steinberg_produces_valid_buffers(self):
         mode = MCMDisplayMode(dither_method="floyd-steinberg", dither_strength=0.5)
         buffers = mode.compose(_gradient())
@@ -112,6 +148,12 @@ class MCMDitherTest(unittest.TestCase):
 class HiresDitherTest(unittest.TestCase):
     def test_ordered_produces_valid_buffers(self):
         mode = HiresDisplayMode("normal", dither_method="ordered", dither_strength=0.5)
+        buffers = mode.compose(_gradient())
+        self.assertEqual(len(buffers["bitmap"]), 8000)
+        self.assertEqual(len(buffers["screen"]), 1000)
+
+    def test_blue_noise_produces_valid_buffers(self):
+        mode = HiresDisplayMode("normal", dither_method="blue_noise", dither_strength=0.5)
         buffers = mode.compose(_gradient())
         self.assertEqual(len(buffers["bitmap"]), 8000)
         self.assertEqual(len(buffers["screen"]), 1000)

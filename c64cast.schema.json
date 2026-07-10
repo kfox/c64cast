@@ -581,11 +581,12 @@
         },
         "dither": {
           "type": "string",
-          "description": "Spatial dither applied before nearest-palette quantization on mhires/mcm/hires. 'auto' picks the best method that's actually useful for the scene: floyd-steinberg (highest quality) for static scenes (slideshow), ordered (vectorized, temporally stable \u2014 no added shimmer) for motion scenes (video/webcam/generative). Any value can be forced on any scene; floyd-steinberg/atkinson are a Python-level per-pixel loop and can shimmer frame-to-frame on motion (see docs/caveats.md).",
+          "description": "Spatial dither applied before nearest-palette quantization on mhires/mcm/hires. 'auto' picks the best method that's actually useful for the scene: floyd-steinberg (highest quality) for static scenes (slideshow), blue_noise (vectorized, temporally stable \u2014 no added shimmer, and no Bayer grid structure) for motion scenes (video/webcam/generative). Any value can be forced on any scene; floyd-steinberg/atkinson are a Python-level per-pixel loop and can shimmer frame-to-frame on motion; 'ordered' (Bayer) is the older motion default and still available if the cross-hatch pattern is wanted (see docs/caveats.md).",
           "enum": [
             "auto",
             "none",
             "ordered",
+            "blue_noise",
             "floyd-steinberg",
             "atkinson"
           ],
@@ -593,7 +594,7 @@
         },
         "dither_strength": {
           "type": "number",
-          "description": "Dither strength, roughly 0..2.0. For 'ordered' it scales the Bayer threshold spread; for floyd-steinberg/atkinson it scales how much of each pixel's quantization error is diffused to its neighbors (1.0 = the textbook kernel weights).",
+          "description": "Dither strength, roughly 0..2.0. For 'ordered'/'blue_noise' it scales the threshold spread (same scale for both, so switching between them doesn't need a strength retune); for floyd-steinberg/atkinson it scales how much of each pixel's quantization error is diffused to its neighbors (1.0 = the textbook kernel weights).",
           "default": 0.5
         },
         "color_match": {

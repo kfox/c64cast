@@ -29,7 +29,7 @@ from .c64 import (
     VIC_BANK_2,
     RegionID,
 )
-from .dither import bayer_offset, error_diffuse_cells
+from .dither import bayer_offset, blue_noise_offset, error_diffuse_cells
 from .palette import (
     C64_PALETTE_BGR,
     CELL_STRATEGIES,
@@ -65,6 +65,11 @@ from .text_surface import (
     MHiresTextSurface,
     TextSurface,
 )
+
+# Both are pure additive (h, w) offsets with the same strength semantics
+# (see dither.py) — dispatch table for the three compose() call sites below
+# rather than duplicating the ordered/blue_noise branch three times.
+_ORDERED_DITHER_OFFSET_FNS = {"ordered": bayer_offset, "blue_noise": blue_noise_offset}
 
 
 class ComposeBuffers(TypedDict):
@@ -2139,9 +2144,10 @@ class MCMDisplayMode(CharDisplayMode):
             # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)
             flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
-            if self._dither_method == "ordered":
+            offset_fn = _ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
+            if offset_fn is not None:
                 w, h = self.frame_target_size
-                offset = bayer_offset(h, w, self._dither_strength)
+                offset = offset_fn(h, w, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
             # Single distance matrix (with gray penalty, scaled to the active
             # metric) shared across all downstream decisions — per-pixel argmin,
@@ -2385,8 +2391,9 @@ class HiresDisplayMode(BitmapDisplayMode):
 
         if self.style == "normal":
             flat = np.clip(img.reshape(-1, 3).astype(np.float32), 0, 255)
-            if self._dither_method == "ordered":
-                offset = bayer_offset(200, 320, self._dither_strength)
+            offset_fn = _ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
+            if offset_fn is not None:
+                offset = offset_fn(200, 320, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
             quantized = quantize_flat_for(flat, perceptual=self._perceptual).reshape(200, 320)
             counts = np.bincount(quantized.ravel(), minlength=16)
@@ -2772,9 +2779,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)
             flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
-            if self._dither_method == "ordered":
+            offset_fn = _ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
+            if offset_fn is not None:
                 w, h = self.frame_target_size
-                offset = bayer_offset(h, w, self._dither_strength)
+                offset = offset_fn(h, w, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
             # In-place gray-penalty add (scaled to the active metric) avoids a
             # second (N,16) float32 alloc.

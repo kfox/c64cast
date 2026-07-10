@@ -503,14 +503,17 @@ channel_boost = [1.3, 1.2, 1.0]
 # dither: spatial dither applied before nearest-palette quantization on
 # mhires/mcm/hires. "auto" (default) picks the best method that's actually
 # useful for the scene: floyd-steinberg (highest quality) for static scenes
-# (slideshow), ordered (vectorized, temporally stable — no shimmer) for
-# motion scenes (video/webcam/generative). Force "none" / "ordered" /
-# "floyd-steinberg" / "atkinson" on any scene; floyd-steinberg/atkinson are a
+# (slideshow), blue_noise (vectorized, temporally stable — no shimmer, no
+# Bayer grid structure) for motion scenes (video/webcam/generative). Force
+# "none" / "ordered" / "blue_noise" / "floyd-steinberg" / "atkinson" on any
+# scene; "ordered" is the classic Bayer 8x8 look (same cost as blue_noise,
+# visible cross-hatch at C64 resolution); floyd-steinberg/atkinson are a
 # per-pixel Python loop and can shimmer frame-to-frame if forced onto motion.
 dither = "auto"
-# dither_strength: roughly 0..2.0. Scales the ordered method's Bayer spread,
-# or how much of each pixel's quantization error floyd-steinberg/atkinson
-# diffuse to neighbors (1.0 = textbook kernel weights).
+# dither_strength: roughly 0..2.0. Scales the ordered/blue_noise threshold
+# spread (same scale for both), or how much of each pixel's quantization
+# error floyd-steinberg/atkinson diffuse to neighbors (1.0 = textbook kernel
+# weights).
 dither_strength = 0.5
 #
 # color_match: color space for the nearest-palette match on the quantizing
