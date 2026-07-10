@@ -287,7 +287,8 @@ class PercellFillerSafetyTest(unittest.TestCase):
         mode = MultiHiresDisplayMode("percell")
         d = np.full((32000, 16), 1e6, dtype=np.float32)
         d[np.arange(32000), targets] = 0.0
-        return mode._compose_percell(d)
+        flat = np.zeros((32000, 3), dtype=np.float32)  # unused: dither_method="none"
+        return mode._compose_percell(d, flat)
 
     def test_no_color_outside_present_set(self):
         # Mostly black (index 0) with a few accent pixels from a 4-color cast
@@ -332,7 +333,8 @@ class PercellBg0HysteresisTest(unittest.TestCase):
         and return the chosen bg0. Reuses `mode` so EMA + sticky bg0 persist."""
         d = np.full((32000, 16), 1e6, dtype=np.float32)
         d[np.arange(32000), targets] = 0.0
-        return mode._compose_percell(d)[3]
+        flat = np.zeros((32000, 3), dtype=np.float32)  # unused: dither_method="none"
+        return mode._compose_percell(d, flat)[3]
 
     @staticmethod
     def _split(n_black: int, fill: int) -> np.ndarray:

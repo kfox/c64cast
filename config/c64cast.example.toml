@@ -500,6 +500,19 @@ fourcc = "mp4v"
 # starved warm colors). Omit / leave empty for the built-in default below.
 channel_boost = [1.3, 1.2, 1.0]
 #
+# dither: spatial dither applied before nearest-palette quantization on
+# mhires/mcm/hires. "auto" (default) picks the best method that's actually
+# useful for the scene: floyd-steinberg (highest quality) for static scenes
+# (slideshow), ordered (vectorized, temporally stable — no shimmer) for
+# motion scenes (video/webcam/generative). Force "none" / "ordered" /
+# "floyd-steinberg" / "atkinson" on any scene; floyd-steinberg/atkinson are a
+# per-pixel Python loop and can shimmer frame-to-frame if forced onto motion.
+dither = "auto"
+# dither_strength: roughly 0..2.0. Scales the ordered method's Bayer spread,
+# or how much of each pixel's quantization error floyd-steinberg/atkinson
+# diffuse to neighbors (1.0 = textbook kernel weights).
+dither_strength = 0.5
+#
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video
 # and slideshow scenes only (webcam can't pre-scan), c64cast pre-scans the

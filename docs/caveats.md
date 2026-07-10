@@ -699,7 +699,9 @@ favor — so red is now neutral. Override per-config via `[color].channel_boost`
 
 This stage is orthogonal to `palette_mode`, which only chooses the VIC-II
 per-cell slot-allocation strategy. If you tune `[color]` and only some modes
-change, that's why (hires ignores it).
+change, that's why (hires ignores it). `[color].dither` is a separate,
+independent pre-quantization stage that DOES apply to hires (as well as mcm
+and mhires) — see the section below.
 
 ### `[color].auto_fit` — per-source adaptive fit (on by default)
 
@@ -731,6 +733,30 @@ downscale, so per-frame cost is two LUT passes. Webcam scenes never call
 `set_color_fit` (they can't pre-scan, and a per-frame fit would flicker), so the
 path is a no-op there — `_color_fit` stays `None`. See
 `palette.ColorFitAccumulator` / `apply_color_fit` and `video.prescan_color_fit`.
+
+## Floyd-Steinberg/Atkinson dither is a per-pixel Python loop — fine for stills, not for forced-on video
+
+`[color].dither` (default `"auto"`) adds spatial dithering to mhires/mcm/hires
+before quantization. `"ordered"` (the Bayer 8×8 pattern) is a single vectorized
+array op and holds realtime frame rates with no added shimmer — `"auto"` picks
+it for every motion scene (video/webcam/generative). `"floyd-steinberg"` and
+`"atkinson"` are a **sequential per-pixel error-diffusion loop** (`dither.py`):
+each pixel's quantization error is pushed onto its not-yet-visited neighbors,
+which is inherently non-vectorizable (every pixel's candidate distances depend
+on its predecessors' diffused error). `"auto"` only ever picks these for
+**static** scenes (slideshow — composed once per image, so the per-pixel cost
+is a non-issue), never for video/webcam/generative.
+
+You *can* force `dither = "floyd-steinberg"` (or `"atkinson"`) onto a motion
+scene explicitly, but two things follow: it's slower per composed frame (a
+Python loop over every cell's in-cell pixels, vectorized across cells but not
+across pixels-within-a-cell), and because each frame re-diffuses from scratch
+with no persisted state, the pattern is **independent frame to frame** — unlike
+Bayer's fixed, position-deterministic offset, so it reads as shimmer on video
+even though any single frame looks great. This is a deliberate trade the config
+lets you make (e.g. a slow-motion or mostly-static video clip may look fine),
+not a bug — see the `[color].dither` note under `modes.py` in
+docs/architecture.md for the mechanism.
 
 ## `Scene.video_buffer.maxlen` is "Optional[int]" to Pylance
 

@@ -101,6 +101,16 @@ class ColorSectionTest(unittest.TestCase):
         self.assertEqual(cfgmod.Config().color.hue_corrections, [])
         self.assertFalse(cfgmod.Config().color.hue_corrections_replace_defaults)
 
+    def test_dither_defaults(self):
+        c = cfgmod.Config().color
+        self.assertEqual(c.dither, "auto")
+        self.assertEqual(c.dither_strength, 0.5)
+
+    def test_color_section_parses_dither(self):
+        cfg = self._load('[color]\ndither = "ordered"\ndither_strength = 1.25\n')
+        self.assertEqual(cfg.color.dither, "ordered")
+        self.assertEqual(cfg.color.dither_strength, 1.25)
+
     def test_color_section_parses_channel_boost(self):
         cfg = self._load("[color]\nchannel_boost = [1.1, 1.2, 1.3]\n")
         self.assertEqual(cfg.color.channel_boost, [1.1, 1.2, 1.3])
@@ -1213,6 +1223,53 @@ class DacBitmapTempoValidationTest(unittest.TestCase):
         cfg = self._cfg(dac_bitmap_tempo_hires=0.1)
         cfg.audio.enabled = False
         cfgmod.validate_dac_bitmap_tempo_cfg(cfg)
+
+
+class DitherResolutionTest(unittest.TestCase):
+    """resolve_dither_method's "auto" picks the best method that's actually
+    USEFUL per scene type: floyd-steinberg (composed once, cost is a
+    non-issue) for static slideshow scenes, ordered (vectorized, no added
+    shimmer) for everything recomposed every frame. Non-auto values pass
+    through unchanged regardless of scene type."""
+
+    def test_auto_resolves_static_scene_to_floyd_steinberg(self):
+        self.assertEqual(cfgmod.resolve_dither_method("auto", "slideshow"), "floyd-steinberg")
+
+    def test_auto_resolves_motion_scenes_to_ordered(self):
+        for scene_type in ("video", "webcam", "generative"):
+            with self.subTest(scene_type=scene_type):
+                self.assertEqual(cfgmod.resolve_dither_method("auto", scene_type), "ordered")
+
+    def test_explicit_value_passes_through_on_any_scene_type(self):
+        for scene_type in ("slideshow", "video", "webcam", "generative"):
+            with self.subTest(scene_type=scene_type):
+                self.assertEqual(
+                    cfgmod.resolve_dither_method("floyd-steinberg", scene_type), "floyd-steinberg"
+                )
+                self.assertEqual(cfgmod.resolve_dither_method("none", scene_type), "none")
+
+
+class ValidateDitherCfgTest(unittest.TestCase):
+    def test_default_config_is_valid(self):
+        cfgmod.validate_dither_cfg(cfgmod.Config())
+
+    def test_unknown_method_raises(self):
+        cfg = cfgmod.Config()
+        cfg.color.dither = "bogus"
+        with self.assertRaisesRegex(cfgmod.ConfigError, "dither"):
+            cfgmod.validate_dither_cfg(cfg)
+
+    def test_strength_out_of_range_raises(self):
+        cfg = cfgmod.Config()
+        cfg.color.dither_strength = 3.0
+        with self.assertRaisesRegex(cfgmod.ConfigError, "dither_strength"):
+            cfgmod.validate_dither_cfg(cfg)
+
+    def test_negative_strength_raises(self):
+        cfg = cfgmod.Config()
+        cfg.color.dither_strength = -0.1
+        with self.assertRaisesRegex(cfgmod.ConfigError, "dither_strength"):
+            cfgmod.validate_dither_cfg(cfg)
 
 
 class BuildSceneTempoScaleTest(unittest.TestCase):

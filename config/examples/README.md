@@ -72,6 +72,7 @@ Exit with `Ctrl+C`.
 | `scene-generative-sid.toml`       | Plasma × SID playback — music-reactive composable scene.   |
 | `scene-generative-fire.toml`      | Fire generator × SID playback (the loudest reactive look). |
 | `color-force-palette.toml`        | EXTREME `[color].force_palette` remap. Needs PyAV.         |
+| `color-dither.toml`                | Spatial dither (`[color].dither`) on a slideshow.           |
 | `teensyrom-blank.toml`            | TeensyROM+ backend → blank canvas + scrolling text.        |
 
 ### Effect demos

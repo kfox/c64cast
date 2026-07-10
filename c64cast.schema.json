@@ -578,6 +578,23 @@
           ],
           "description": "How force_palette allocates C64 colors: either an int count of distinct colors to spread the source across (2..16), OR an explicit list of colors to whitelist \u2014 each a color name (fuzzy + case-insensitive, e.g. \"light blue\", \"lgrn\", \"blk\") or an index 0..15. A list's length sets the color count.",
           "default": 16
+        },
+        "dither": {
+          "type": "string",
+          "description": "Spatial dither applied before nearest-palette quantization on mhires/mcm/hires. 'auto' picks the best method that's actually useful for the scene: floyd-steinberg (highest quality) for static scenes (slideshow), ordered (vectorized, temporally stable \u2014 no added shimmer) for motion scenes (video/webcam/generative). Any value can be forced on any scene; floyd-steinberg/atkinson are a Python-level per-pixel loop and can shimmer frame-to-frame on motion (see docs/caveats.md).",
+          "enum": [
+            "auto",
+            "none",
+            "ordered",
+            "floyd-steinberg",
+            "atkinson"
+          ],
+          "default": "auto"
+        },
+        "dither_strength": {
+          "type": "number",
+          "description": "Dither strength, roughly 0..2.0. For 'ordered' it scales the Bayer threshold spread; for floyd-steinberg/atkinson it scales how much of each pixel's quantization error is diffused to its neighbors (1.0 = the textbook kernel weights).",
+          "default": 0.5
         }
       }
     },
