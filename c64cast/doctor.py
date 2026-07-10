@@ -25,8 +25,10 @@ from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .config import (
     ConfigError,
     LoadResult,
+    resolve_dither_method,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
+    validate_dither_cfg,
     validate_midi_control_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
@@ -97,6 +99,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_dac_curve(loaded))
     out.extend(_validate_dac_bitmap_tempo(loaded))
     out.extend(_validate_sid_model(loaded))
+    out.extend(_validate_dither(loaded))
     out.extend(_validate_midi_control(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
@@ -369,6 +372,45 @@ def _validate_sid_model(loaded: LoadResult) -> list[Diagnostic]:
                     message=str(e),
                     hint="See [ultimate64].sid_model in the config reference / "
                     "--describe section:ultimate64.",
+                )
+            )
+    return out
+
+
+def _validate_dither(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unknown [color].dither name / out-of-range dither_strength, and
+    report how "auto" resolves per scene (see config.resolve_dither_method).
+    Offline — delegates to config.validate_dither_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_dither_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="color",
+                    subject=f"{name}/dither",
+                    message=str(e),
+                    hint="See [color].dither in the config reference / --describe section:color.",
+                )
+            )
+            continue
+        if cfg.color.dither != "auto":
+            continue
+        for s in cfg.scenes:
+            if s.type not in ("webcam", "video", "slideshow", "generative"):
+                continue
+            resolved = resolve_dither_method(cfg.color.dither, s.type)
+            out.append(
+                Diagnostic(
+                    level="ok",
+                    category="color",
+                    subject=f"{name}/{s.name or s.type}/dither",
+                    message=(
+                        f"'auto' resolves to {resolved!r} for this {s.type} scene "
+                        f"(strength {cfg.color.dither_strength})."
+                    ),
                 )
             )
     return out
@@ -1503,6 +1545,7 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         "environment",
         "scene",
         "audio",
+        "color",
         "midi_control",
         "orchestrator",
         "extras",

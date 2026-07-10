@@ -28,6 +28,7 @@ from .c64 import (
     VIC_BANK_2,
     RegionID,
 )
+from .dither import bayer_offset, error_diffuse_cells
 from .palette import (
     C64_PALETTE_BGR,
     DEFAULT_HUE_CORRECTIONS,
@@ -1901,6 +1902,8 @@ class MCMDisplayMode(CharDisplayMode):
         hue_corrections_replace: bool = False,
         channel_boost: list[float] | None = None,
         force_palette: bool = False,
+        dither_method: str = "none",
+        dither_strength: float = 0.5,
     ):
         _validate_palette_mode(palette_mode)
         # The forced-palette preset pairs with percell (see cycle_style); when
@@ -1914,6 +1917,8 @@ class MCMDisplayMode(CharDisplayMode):
         self._channel_boost, self._hue_corrections = _resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
+        self._dither_method = dither_method
+        self._dither_strength = dither_strength
         self._last_bg: np.ndarray | None = None
         # grayscale uses a fixed bg slot assignment so the per-cell screen
         # nibbles don't shuffle frame-to-frame — see GRAYSCALE_* comment up top.
@@ -1989,6 +1994,10 @@ class MCMDisplayMode(CharDisplayMode):
             # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)
             flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
+            if self._dither_method == "ordered":
+                w, h = self.frame_target_size
+                offset = bayer_offset(h, w, self._dither_strength)
+                flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
             # Single distance matrix (with gray penalty) shared across all
             # downstream decisions — per-pixel argmin, the bg picker, and the
             # per-cell fg search all need to agree on which palette entry "wins"
@@ -2026,9 +2035,35 @@ class MCMDisplayMode(CharDisplayMode):
         minv = np.minimum(fg_d, bg_min)  # (1000, 4, 8)
         err_per_fg = minv.sum(axis=1)  # (1000, 8)
         best_fg = err_per_fg.argmin(axis=1)  # (1000,)
-        idx = np.arange(1000)
-        fg_wins = fg_d[idx, :, best_fg] < bg_min[:, :, 0]  # (1000, 4)
-        fa = np.where(fg_wins, 3, bg_argmin).astype(np.int64)  # (1000, 4)
+
+        force_palette_active = self._force_palette and self._color_map is not None
+        if self._dither_method in ("floyd-steinberg", "atkinson") and not force_palette_active:
+            # Re-dither each cell's own 2×2 pixels against its resolved
+            # candidate set {bg0, bg1, bg2, fg} — candidate SELECTION (bg,
+            # best_fg above) stays on the EMA-smoothed histogram for temporal
+            # stability; only the per-pixel fill dithers. Candidate order
+            # matches the fa code convention (0/1/2 = bg slot, 3 = fg), so the
+            # returned code IS fa directly.
+            pixels_cell = (
+                flat.reshape(50, 80, 3)
+                .reshape(25, 2, 40, 2, 3)
+                .transpose(0, 2, 1, 3, 4)
+                .reshape(1000, 2, 2, 3)
+            )
+            cand_bgr = np.concatenate(
+                [
+                    np.broadcast_to(C64_PALETTE_BGR[bg], (1000, 3, 3)),
+                    C64_PALETTE_BGR[best_fg][:, None, :],
+                ],
+                axis=1,
+            )  # (1000, 4, 3)
+            fa = error_diffuse_cells(
+                pixels_cell, cand_bgr, self._dither_method, self._dither_strength
+            ).reshape(1000, 4)
+        else:
+            idx = np.arange(1000)
+            fg_wins = fg_d[idx, :, best_fg] < bg_min[:, :, 0]  # (1000, 4)
+            fa = np.where(fg_wins, 3, bg_argmin).astype(np.int64)  # (1000, 4)
 
         screen = ((fa[:, 0] << 6) | (fa[:, 1] << 4) | (fa[:, 2] << 2) | fa[:, 3]).astype(np.uint8)
         color = (best_fg + 8).astype(np.uint8)  # high bit = multicolor
@@ -2104,9 +2139,13 @@ class HiresDisplayMode(BitmapDisplayMode):
         use_reu_staged: bool = False,
         double_buffer: bool = False,
         audio_reu_pump_active: bool = False,
+        dither_method: str = "none",
+        dither_strength: float = 0.5,
     ):
         _validate_hires_style(style)
         self.style = style
+        self._dither_method = dither_method
+        self._dither_strength = dither_strength
         self._last_bg: int | None = None
         self.use_reu_staged = use_reu_staged
         # Host-DMA double-buffer (no-REU backends, e.g. TeensyROM): tear-free
@@ -2196,10 +2235,37 @@ class HiresDisplayMode(BitmapDisplayMode):
 
         if self.style == "normal":
             flat = np.clip(img.reshape(-1, 3).astype(np.float32), 0, 255)
+            if self._dither_method == "ordered":
+                offset = bayer_offset(200, 320, self._dither_strength)
+                flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
             quantized = quantize_flat(flat).reshape(200, 320)
             counts = np.bincount(quantized.ravel(), minlength=16)
             bg = int(counts.argmax())
-            is_fg = quantized != bg
+            sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
+            if self._dither_method in ("floyd-steinberg", "atkinson"):
+                # Re-dither each 8×8 cell's own pixels against its 2-color set
+                # {bg, cell fg} — the fg PICK stays the cheap single-pixel
+                # sample above (temporal stability / cost), only the per-pixel
+                # fill dithers.
+                pixels_cell = (
+                    flat.reshape(200, 320, 3)
+                    .reshape(25, 8, 40, 8, 3)
+                    .transpose(0, 2, 1, 3, 4)
+                    .reshape(1000, 8, 8, 3)
+                )
+                cand_bgr = np.stack(
+                    [
+                        np.broadcast_to(C64_PALETTE_BGR[bg], (1000, 3)),
+                        C64_PALETTE_BGR[sample_fg.ravel()],
+                    ],
+                    axis=1,
+                )  # (1000, 2, 3)
+                codes = error_diffuse_cells(
+                    pixels_cell, cand_bgr, self._dither_method, self._dither_strength
+                )
+                is_fg = codes.reshape(25, 40, 8, 8).transpose(0, 2, 1, 3).reshape(200, 320) == 1
+            else:
+                is_fg = quantized != bg
             fg_const: int | None = None
         else:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -2336,6 +2402,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         channel_boost: list[float] | None = None,
         force_palette: bool = False,
         text_double_height: bool = False,
+        dither_method: str = "none",
+        dither_strength: float = 0.5,
     ):
         _validate_palette_mode(palette_mode)
         # Text overlays render double-wide ("chunky") by default — an 8×8 glyph
@@ -2353,6 +2421,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._channel_boost, self._hue_corrections = _resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
+        self._dither_method = dither_method
+        self._dither_strength = dither_strength
         # Per-palette pairwise distances (no penalty — this is for the
         # "snap unused indices to their nearest of the 4 winners" remap,
         # which is a pure color-space neighbour query, not a chromatic-
@@ -2530,12 +2600,16 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)
             flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
+            if self._dither_method == "ordered":
+                w, h = self.frame_target_size
+                offset = bayer_offset(h, w, self._dither_strength)
+                flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
             # In-place gray-penalty add avoids a second (N,16) float32 alloc.
             d = quantize_distances(flat)
             d += self._gray_penalty
 
         if self.palette_mode == "percell":
-            bitmap_ram, screen_ram, color_ram, bg0 = self._compose_percell(d)
+            bitmap_ram, screen_ram, color_ram, bg0 = self._compose_percell(d, flat)
         else:
             bitmap_ram, screen_ram, color_ram, bg0 = self._compose_global(d)
         return {
@@ -2633,7 +2707,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         color_ram = np.full(1000, c3, dtype=np.uint8)
         return bitmap_ram, screen_ram, color_ram, bg0
 
-    def _compose_percell(self, d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    def _compose_percell(
+        self, d: np.ndarray, flat: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         """Per-cell path: pick bg0 globally, then for each 4×8 cell pick
         its own top-3 non-bg0 colors by population. Each pixel resolves
         against its cell's local {bg0, c1, c2, c3} set, so screen RAM and
@@ -2750,34 +2826,57 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         top3 = np.sort(top3, axis=1)
         cand = np.column_stack([np.full(1000, bg0, dtype=np.int64), top3])  # (1000, 4)
 
-        # Per-cell-pixel distance to the 4 candidates (gather, not broadcast).
-        d_cand = np.take_along_axis(
-            d_cell, cand[:, None, :].repeat(32, axis=1), axis=2
-        )  # (1000,32,4)
-        codes = d_cand.argmin(axis=2).astype(np.uint8)  # 0..3
+        if self._dither_method in ("floyd-steinberg", "atkinson"):
+            # Re-dither each cell's own 8×4 pixels against its resolved
+            # candidate set {bg0, c1, c2, c3} — candidate SELECTION (cand,
+            # above) stays on the EMA-smoothed histogram + hysteresis for
+            # temporal stability; only the per-pixel fill dithers. No
+            # cross-frame code hysteresis here: error diffusion recomputes
+            # its own state from scratch each frame (see dither.py), so the
+            # previous frame's codes aren't meaningful to blend in.
+            pixels_cell = (
+                flat.reshape(25, 8, 40, 4, 3).transpose(0, 2, 1, 3, 4).reshape(1000, 8, 4, 3)
+            )
+            cand_bgr = C64_PALETTE_BGR[cand]  # (1000, 4, 3)
+            codes = error_diffuse_cells(
+                pixels_cell, cand_bgr, self._dither_method, self._dither_strength
+            )  # (1000, 8, 4) uint8, already in codes_rc's layout
+            codes_rc = codes
+            self._last_codes = codes.reshape(1000, 32)
+            self._last_cand = cand
+        else:
+            # Per-cell-pixel distance to the 4 candidates (gather, not broadcast).
+            d_cand = np.take_along_axis(
+                d_cell, cand[:, None, :].repeat(32, axis=1), axis=2
+            )  # (1000,32,4)
+            codes = d_cand.argmin(axis=2).astype(np.uint8)  # 0..3
 
-        # Per-pixel hysteresis: keep the previous frame's code when it's
-        # within PERCELL_CODE_HYSTERESIS_BONUS of the new minimum distance,
-        # but only for cells whose cand is bit-identical to last frame (a
-        # change in any cand slot means the codes 0..3 no longer point at
-        # the same palette entries they did last frame, so previous codes
-        # are meaningless). Suppresses the per-pixel boundary flicker that
-        # remains after the per-cell EMA stabilises {bg0,c1,c2,c3}.
-        if self._last_codes is not None and self._last_cand is not None:
-            cell_unchanged = np.all(cand == self._last_cand, axis=1)  # (1000,) bool
-            if cell_unchanged.any():
-                last = self._last_codes  # (1000, 32) uint8
-                d_last = np.take_along_axis(d_cand, last[..., None].astype(np.intp), axis=2)[
-                    ..., 0
-                ]  # (1000, 32)
-                d_min = np.take_along_axis(d_cand, codes[..., None].astype(np.intp), axis=2)[..., 0]
-                keep = ((d_last - d_min) <= PERCELL_CODE_HYSTERESIS_BONUS) & cell_unchanged[:, None]
-                codes = np.where(keep, last, codes).astype(np.uint8)
-        self._last_codes = codes
-        self._last_cand = cand
+            # Per-pixel hysteresis: keep the previous frame's code when it's
+            # within PERCELL_CODE_HYSTERESIS_BONUS of the new minimum distance,
+            # but only for cells whose cand is bit-identical to last frame (a
+            # change in any cand slot means the codes 0..3 no longer point at
+            # the same palette entries they did last frame, so previous codes
+            # are meaningless). Suppresses the per-pixel boundary flicker that
+            # remains after the per-cell EMA stabilises {bg0,c1,c2,c3}.
+            if self._last_codes is not None and self._last_cand is not None:
+                cell_unchanged = np.all(cand == self._last_cand, axis=1)  # (1000,) bool
+                if cell_unchanged.any():
+                    last = self._last_codes  # (1000, 32) uint8
+                    d_last = np.take_along_axis(d_cand, last[..., None].astype(np.intp), axis=2)[
+                        ..., 0
+                    ]  # (1000, 32)
+                    d_min = np.take_along_axis(d_cand, codes[..., None].astype(np.intp), axis=2)[
+                        ..., 0
+                    ]
+                    keep = ((d_last - d_min) <= PERCELL_CODE_HYSTERESIS_BONUS) & cell_unchanged[
+                        :, None
+                    ]
+                    codes = np.where(keep, last, codes).astype(np.uint8)
+            self._last_codes = codes
+            self._last_cand = cand
+            codes_rc = codes.reshape(1000, 8, 4)
 
         # Pack into bitmap layout: 8 rows × 4 px per cell → 8 bytes per cell.
-        codes_rc = codes.reshape(1000, 8, 4)
         bitmap_ram = (
             (
                 (codes_rc[..., 0] << 6)

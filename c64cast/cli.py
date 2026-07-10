@@ -1165,6 +1165,7 @@ def main(argv=None) -> int:
             cfgmod.validate_dac_curve_cfg(cfg)
             cfgmod.validate_dac_bitmap_tempo_cfg(cfg)
             cfgmod.validate_sid_model_cfg(cfg)
+            cfgmod.validate_dither_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5

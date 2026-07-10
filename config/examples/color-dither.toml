@@ -1,0 +1,40 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: spatial dither ([color].dither) on a slideshow.
+#
+# Requires no extras beyond the base install.
+#
+# Every mhires/mcm/hires frame is quantized to a handful of C64 colors per
+# cell; without dithering a smooth gradient (sky, skin tones, a soft shadow)
+# bands visibly. dither = "floyd-steinberg" diffuses each pixel's quantization
+# error onto its neighbors, breaking the bands up into a fine-grained texture
+# that reads as smooth gradation from a normal viewing distance — the classic
+# print-halftone / retro-image-converter trick.
+#
+# This demo forces floyd-steinberg explicitly. Left on the default "auto",
+# slideshow scenes already get floyd-steinberg (best quality; composed once
+# per image so the per-pixel cost is a non-issue) while video/webcam/
+# generative scenes get "ordered" instead (vectorized + temporally stable —
+# floyd-steinberg/atkinson are a Python-level per-pixel loop that can shimmer
+# frame-to-frame if forced onto motion; see docs/caveats.md).
+#
+# Run:
+#   python -m c64cast --config config/examples/color-dither.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[color]
+dither = "floyd-steinberg"    # the showcase: "ordered" and "atkinson" also selectable
+dither_strength = 0.5         # 0..~2.0; how much error gets diffused per pixel
+
+[playlist]
+interleave_videos = false        # the single scene IS the demo
+
+[[scenes]]
+type = "slideshow"
+display = "mhires"            # dither applies on mhires / mcm / hires
+palette_mode = "percell"
+image_duration_s = 8.0
+# Drop your own images here. Omit the field to fall back to scanning
+# assets/pictures/ (a photo with a smooth gradient shows the effect best).
+file = "assets/pictures"

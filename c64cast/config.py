@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from .c64 import nmi_rate_safety
 from .dac_curves import DAC_CURVE_CHOICES
+from .dither import DITHER_METHODS
 from .dsp import DSPParams
 from .palette import resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
@@ -1464,6 +1465,29 @@ class ColorCfg:
             "index 0..15. A list's length sets the color count."
         },
     )
+    dither: str = field(
+        default="auto",
+        metadata={
+            "help": "Spatial dither applied before nearest-palette quantization "
+            "on mhires/mcm/hires. 'auto' picks the best method that's actually "
+            "useful for the scene: floyd-steinberg (highest quality) for static "
+            "scenes (slideshow), ordered (vectorized, temporally stable — no "
+            "added shimmer) for motion scenes (video/webcam/generative). Any "
+            "value can be forced on any scene; floyd-steinberg/atkinson are a "
+            "Python-level per-pixel loop and can shimmer frame-to-frame on "
+            "motion (see docs/caveats.md).",
+            "choices": ("auto",) + DITHER_METHODS,
+        },
+    )
+    dither_strength: float = field(
+        default=0.5,
+        metadata={
+            "help": "Dither strength, roughly 0..2.0. For 'ordered' it scales the "
+            "Bayer threshold spread; for floyd-steinberg/atkinson it scales how "
+            "much of each pixel's quantization error is diffused to its "
+            "neighbors (1.0 = the textbook kernel weights)."
+        },
+    )
 
 
 @dataclass
@@ -2492,6 +2516,7 @@ def _build_display_mode(
     audio_reu_pump_active: bool = False,
     color: ColorCfg | None = None,
     text_double_height: bool = False,
+    dither_method: str = "none",
 ) -> DisplayMode:
     # border/background may be a C64 color name or an index; resolve to a plain
     # index here — the single point every scene's border/background flows
@@ -2516,6 +2541,7 @@ def _build_display_mode(
     hue_corrections = color.hue_corrections
     hue_corrections_replace = color.hue_corrections_replace_defaults
     force_palette = color.force_palette
+    dither_strength = color.dither_strength
     if name == "hires_edges":
         return HiresDisplayMode(
             style="edges",
@@ -2529,6 +2555,8 @@ def _build_display_mode(
             use_reu_staged=use_reu_staged,
             double_buffer=double_buffer,
             audio_reu_pump_active=audio_reu_pump_active,
+            dither_method=dither_method,
+            dither_strength=dither_strength,
         )
     if name == "petscii":
         return PETSCIIDisplayMode(
@@ -2545,6 +2573,8 @@ def _build_display_mode(
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
+            dither_method=dither_method,
+            dither_strength=dither_strength,
         )
     if name == "mhires":
         return MultiHiresDisplayMode(
@@ -2557,6 +2587,8 @@ def _build_display_mode(
             hue_corrections_replace=hue_corrections_replace,
             force_palette=force_palette,
             text_double_height=text_double_height,
+            dither_method=dither_method,
+            dither_strength=dither_strength,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
@@ -2771,6 +2803,7 @@ def _display_mode_for_scene(
         audio_reu_pump_active=cfg.audio.use_reu_pump,
         color=cfg.color,
         text_double_height=s.text_double_height,
+        dither_method=resolve_dither_method(cfg.color.dither, s.type),
     )
 
 
@@ -3148,6 +3181,47 @@ def validate_dac_bitmap_tempo_cfg(cfg: Config) -> None:
                 f"[audio].{name} must be 0.5..1.0 (observed playback-speed "
                 f"fraction; 1.0 = off), got {value}"
             )
+
+
+DITHER_CHOICES: tuple[str, ...] = ("auto", *DITHER_METHODS)
+
+# Scene types whose source is effectively static once composed (a slideshow
+# holds one image for its whole dwell time), so the expensive floyd-steinberg/
+# atkinson per-pixel loop is a one-time cost, not a per-frame one. Everything
+# else `resolve_dither_method` sees is a motion scene.
+_STATIC_DITHER_SCENE_TYPES = frozenset({"slideshow"})
+
+
+def resolve_dither_method(dither_setting: str, scene_type: str) -> str:
+    """Resolve [color].dither's `"auto"` to a concrete dither.DITHER_METHODS
+    value for a given scene type; an explicit non-auto value passes through
+    unchanged (a user may force floyd-steinberg/atkinson on a motion scene
+    and accept the framerate/shimmer caveat — see docs/caveats.md).
+
+    `"auto"` picks the best method that's actually USEFUL for the scene, not
+    merely a safe default: static scenes (slideshow) get floyd-steinberg,
+    the highest-quality method, since it's composed once and cost is a
+    non-issue; everything else (video/webcam/generative — anything that
+    recomposes every frame) gets ordered, the best method that stays
+    realtime (vectorized) and temporally stable (Bayer's fixed tiling means
+    the same pixel position always dithers the same way, so it doesn't add
+    frame-to-frame shimmer the way independently-diffused frames would)."""
+    if dither_setting != "auto":
+        return dither_setting
+    return "floyd-steinberg" if scene_type in _STATIC_DITHER_SCENE_TYPES else "ordered"
+
+
+def validate_dither_cfg(cfg: Config) -> None:
+    """Guard [color].dither/dither_strength: reject an unknown method name or
+    an out-of-range strength."""
+    if cfg.color.dither not in DITHER_CHOICES:
+        raise ConfigError(
+            f"[color].dither must be one of {', '.join(DITHER_CHOICES)}, got {cfg.color.dither!r}"
+        )
+    if not 0.0 <= cfg.color.dither_strength <= 2.0:
+        raise ConfigError(
+            f"[color].dither_strength must be 0..2.0, got {cfg.color.dither_strength}"
+        )
 
 
 def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
