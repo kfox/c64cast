@@ -1687,6 +1687,20 @@ class CharDisplayMode(DisplayMode):
         return out
 
 
+def _clear_char_screen(api: C64Backend, screen_code: int = 0x20) -> None:
+    """Zero screen RAM ($0400) to `screen_code` + color RAM ($D800) to black.
+
+    The char-mode sibling of ``engage_bitmap_mode``'s clear step: called
+    BEFORE a char mode's ``$D011``/``$D020``/``$D021`` bring-up pokes so a
+    scene switch (especially away from a bitmap scene, whose screen RAM holds
+    packed nibble colors rather than glyph codes) never reveals stale
+    ``$0400``/``$D800`` content as garbled characters. ``screen_code`` defaults
+    to PETSCII space (invisible regardless of color); MCM passes 0x00, whose
+    2-bit sub-cell code selects bg slot 0 for every pixel."""
+    api.write_memory_file(f"{SCREEN.RAM:04X}", bytes([screen_code]) * SCREEN.N_CELLS)
+    api.write_memory_file(f"{SCREEN.COLOR_RAM:04X}", bytes(SCREEN.N_CELLS))
+
+
 def engage_bitmap_mode(
     api: C64Backend,
     *,
@@ -1732,9 +1746,11 @@ def engage_bitmap_mode(
       default bank 0 — the display modes never relocate).
     * ``border`` / ``bg0`` — ``$D020`` / ``$D021``; written as separate pokes
       (callers that read back ``$D021`` independently rely on the standalone
-      register). ``None`` leaves that register untouched (hires sets neither in
-      setup — it manages the border per-frame; the REU mhires path leaves
-      ``$D021`` to its swap-tracker IRQ).
+      register). ``None`` leaves that register untouched. Hires and MultiHires
+      both pass ``0x00`` for both on every path (including REU-staged) so the
+      engage is unconditionally black — per-frame code (``push()`` for hires,
+      the swap-tracker IRQ for REU-staged mhires) takes over from the first
+      real frame onward; this call only covers the window before that.
     * ``clear`` — do the ``$2000`` + ``$0400`` zeroing. ``True`` for every
       single-buffer path (the engage clean-field). The REU / host-DMA
       double-buffer paths pass ``False`` because they zero both VIC *banks*
@@ -1912,13 +1928,19 @@ class PETSCIIDisplayMode(CharDisplayMode):
 
     def setup(self, api):
         super().setup(api)
+        # Clear-then-reveal (mirrors engage_bitmap_mode): blank $0400/$D800
+        # BEFORE the register pokes, and flip $D011 LAST, so a scene switch
+        # never shows the previous scene's stale glyphs/colors — especially
+        # coming from a bitmap scene, whose screen RAM holds nibble-packed
+        # colors that would otherwise render as garbled characters here.
+        _clear_char_screen(api)
         api.write_memory("d018", "14")
         api.write_memory("d016", "08")
-        api.write_memory("d011", "1b")
         # Each style declares its own border + background; push them now
         # so we don't carry the previous scene's choices into the first
         # frame. Bordr + bg are contiguous at $D020-$D021.
         api.write_regs("d020", self._style.border, self._style.background)
+        api.write_memory("d011", "1b")
 
     def set_style(self, api, name: str) -> str:
         """Switch to PETSCII style `name` in place. Shared by the SHIFT cycle
@@ -1985,10 +2007,13 @@ class BlankDisplayMode(CharDisplayMode):
 
     def setup(self, api):
         super().setup(api)
+        # Clear-then-reveal (see PETSCIIDisplayMode.setup / engage_bitmap_mode):
+        # blank the screen before the register pokes, flip $D011 last.
+        _clear_char_screen(api)
         api.write_memory("d018", "14")
         api.write_memory("d016", "08")
-        api.write_memory("d011", "1b")
         api.write_regs("d020", self.border, self.background)
+        api.write_memory("d011", "1b")
 
     def compose(self, frame=None) -> ComposeBuffers:
         # frame ignored — blank mode has no video input. Pass through so
@@ -2124,8 +2149,16 @@ class MCMDisplayMode(CharDisplayMode):
             charset[i * 8 : i * 8 + 4] = [row_top] * 4
             charset[i * 8 + 4 : i * 8 + 8] = [row_bot] * 4
         api.write_memory_file("3000", bytes(charset))
+        # Clear-then-reveal (see PETSCIIDisplayMode.setup / engage_bitmap_mode):
+        # screen code 0x00 selects bg slot 0 for every sub-pixel, so pinning
+        # $D020-$D023 to black too guarantees that slot is actually black —
+        # otherwise the reveal would show a clean-but-colored field under
+        # whatever bg0-2/border the previous scene left behind. $D011 flips
+        # last, once the clean black field is fully in place.
+        _clear_char_screen(api, screen_code=0x00)
         api.write_memory("d018", "1c")
         api.write_memory("d016", "18")
+        api.write_regs("d020", 0, 0, 0, 0)
         api.write_memory("d011", "1b")
         self._last_bg = None  # force re-push of bg on first frame after setup
 
@@ -2326,10 +2359,22 @@ class HiresDisplayMode(BitmapDisplayMode):
         # Single-buffer bring-up clears $2000+$0400 before the $D011 flip
         # (engage clean-field — see engage_bitmap_mode); the REU / host-DMA
         # double-buffer paths zero both VIC banks themselves below, so they pass
-        # clear=False and only take the register pokes. Hires manages the border
-        # per-frame, so no border/bg0 here.
+        # clear=False and only take the register pokes. border=0x00 here closes
+        # the window between this setup() and the first push() (which re-asserts
+        # the real per-frame border on every subsequent frame) — without it the
+        # engage would reveal a clean black bitmap under whatever border color
+        # the previous scene left behind. bg0=0x00 is belt-and-braces (hires
+        # ignores $D021 — background is the screen-RAM nibble, already zeroed
+        # by the clear above) but matches voice_scope's hires bring-up so the
+        # register isn't left holding a stale value from the prior scene.
         single_buffer = not self.use_reu_staged and not self.double_buffer
-        engage_bitmap_mode(api, d011="3b", d018="18", d016="08", clear=single_buffer)
+        engage_bitmap_mode(
+            api, d011="3b", d018="18", d016="08", border=0x00, bg0=0x00, clear=single_buffer
+        )
+        # None (not 0) so the first push() unconditionally re-asserts the
+        # border/bg0 pair even when the first frame's bg happens to be black —
+        # push() also touches $D021 (unused in hires, but other code/tests
+        # treat the pair as atomic), which the setup-time write above doesn't.
         self._last_bg = None
         if self.double_buffer:
             # Host-DMA double-buffer: zero both banks + install the minimal
@@ -2691,9 +2736,14 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # Single-buffer bring-up clears $2000+$0400 before the $D011 flip (engage
         # clean-field — see engage_bitmap_mode); the REU / host-DMA double-buffer
         # paths zero both VIC banks themselves below (clear=False). border ($D020)
-        # = black on every path. bg0 ($D021) = black on the non-REU paths so the
-        # pre-first-frame screen is solid black (a zeroed mhires bitmap is all-%00
-        # → bg0); the REU path leaves $D021 to its swap-tracker IRQ.
+        # AND bg0 ($D021) = black on EVERY path so the pre-first-frame screen is
+        # solid black (a zeroed mhires bitmap is all-%00 → bg0). On the REU path
+        # this is a deliberate belt-and-braces write: the swap-tracker IRQ only
+        # writes $D021 on the first REAL swap (frame tracker's ready flag starts
+        # zeroed — see _install_bank_swap_irq), so without this the screen would
+        # show whatever the previous scene left in $D021 (e.g. a stale blue) for
+        # every frame between this setup() and that first swap. The IRQ still
+        # owns $D021 from the first real swap onward; this just closes the gap.
         single_buffer = not self.use_reu_staged and not self.double_buffer
         engage_bitmap_mode(
             api,
@@ -2701,7 +2751,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             d018="18",
             d016="18",
             border=0x00,
-            bg0=(None if self.use_reu_staged else 0x00),
+            bg0=0x00,
             clear=single_buffer,
         )
         self._smoothed_cell_counts = None
