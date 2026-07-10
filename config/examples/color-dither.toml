@@ -13,9 +13,10 @@
 # This demo forces floyd-steinberg explicitly. Left on the default "auto",
 # slideshow scenes already get floyd-steinberg (best quality; composed once
 # per image so the per-pixel cost is a non-issue) while video/webcam/
-# generative scenes get "ordered" instead (vectorized + temporally stable —
-# floyd-steinberg/atkinson are a Python-level per-pixel loop that can shimmer
-# frame-to-frame if forced onto motion; see docs/caveats.md).
+# generative scenes get "blue_noise" instead (vectorized + temporally stable,
+# no Bayer-grid structure — floyd-steinberg/atkinson are a Python-level
+# per-pixel loop that can shimmer frame-to-frame if forced onto motion; see
+# docs/caveats.md).
 #
 # Run:
 #   python -m c64cast --config config/examples/color-dither.toml
@@ -24,7 +25,7 @@
 url = "http://ultimate-64-ii.lan"
 
 [color]
-dither = "floyd-steinberg"    # the showcase: "ordered" and "atkinson" also selectable
+dither = "floyd-steinberg"    # the showcase: "ordered"/"blue_noise"/"atkinson" also selectable
 dither_strength = 0.5         # 0..~2.0; how much error gets diffused per pixel
 
 [playlist]

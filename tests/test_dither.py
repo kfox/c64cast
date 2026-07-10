@@ -1,8 +1,9 @@
 """Unit tests for c64cast/dither.py's spatial-dither primitives.
 
-bayer_offset (ordered dither) and error_diffuse / error_diffuse_cells
-(Floyd-Steinberg / Atkinson) are pure numpy — no C64Backend / hardware
-involved — so they're tested directly against synthetic pixel arrays.
+bayer_offset / blue_noise_offset (ordered dither) and error_diffuse /
+error_diffuse_cells (Floyd-Steinberg / Atkinson) are pure numpy — no
+C64Backend / hardware involved — so they're tested directly against
+synthetic pixel arrays.
 """
 
 from __future__ import annotations
@@ -48,6 +49,78 @@ class BayerOffsetTest(unittest.TestCase):
         # h/w need not be multiples of 8 (a downscaled cell grid rarely is).
         off = dither.bayer_offset(13, 5, 0.5)
         self.assertEqual(off.shape, (13, 5))
+
+
+class BlueNoiseOffsetTest(unittest.TestCase):
+    def test_shape_and_dtype(self):
+        off = dither.blue_noise_offset(200, 160, 0.5)
+        self.assertEqual(off.shape, (200, 160))
+        self.assertEqual(off.dtype, np.float32)
+
+    def test_tiling_repeats_every_tile_size_pixels(self):
+        size = dither._BLUE_NOISE_SIZE
+        off = dither.blue_noise_offset(size * 2, size * 2, 1.0)
+        np.testing.assert_array_equal(off[0:size, 0:size], off[size : size * 2, 0:size])
+        np.testing.assert_array_equal(off[0:size, 0:size], off[0:size, size : size * 2])
+
+    def test_strength_scales_linearly(self):
+        off1 = dither.blue_noise_offset(16, 16, 1.0)
+        off2 = dither.blue_noise_offset(16, 16, 2.0)
+        np.testing.assert_allclose(off2, off1 * 2.0)
+
+    def test_zero_strength_is_all_zero(self):
+        off = dither.blue_noise_offset(16, 16, 0.0)
+        np.testing.assert_array_equal(off, np.zeros((16, 16), dtype=np.float32))
+
+    def test_deterministic_across_calls(self):
+        off1 = dither.blue_noise_offset(37, 29, 0.5)
+        off2 = dither.blue_noise_offset(37, 29, 0.5)
+        np.testing.assert_array_equal(off1, off2)
+
+    def test_zero_mean_over_a_full_tile(self):
+        # Every rank 0..N-1 appears exactly once in the tile, so a full tile's
+        # mean must equal the same fixed small offset bayer_offset's does
+        # (the shared (mean_rank/N - 0.5) * strength*64 formula).
+        size = dither._BLUE_NOISE_SIZE
+        off = dither.blue_noise_offset(size, size, 1.0)
+        n = size * size
+        expected = ((n - 1) / 2.0 / n - 0.5) * 64.0
+        self.assertAlmostEqual(float(off.mean()), expected, places=3)
+
+    def test_odd_dimensions_dont_crash(self):
+        off = dither.blue_noise_offset(13, 5, 0.5)
+        self.assertEqual(off.shape, (13, 5))
+
+    def test_is_a_full_rank_permutation(self):
+        # The baked tile must cover every rank 0..N-1 exactly once — a
+        # corrupted/truncated bake would silently produce a degenerate
+        # (non-blue-noise) threshold set.
+        size = dither._BLUE_NOISE_SIZE
+        ranks = sorted(dither._BLUE_NOISE.astype(np.int64).ravel().tolist())
+        self.assertEqual(ranks, list(range(size * size)))
+
+    def test_spectrum_is_not_dominated_by_a_single_harmonic_unlike_bayer(self):
+        # The whole point of blue noise over Bayer: no visible grid/cross-
+        # hatch. Threshold each offset at its median to get a binary pattern
+        # (the same construction ordered dither performs at render time) and
+        # compare each one's power-spectrum peak concentration. Bayer's
+        # regular 8x8 tiling is a near-perfect comb — almost all non-DC
+        # energy sits in a single harmonic bin, which is exactly the
+        # concentrated periodicity the eye reads as a grid. Blue noise
+        # spreads its energy across many bins with no dominant peak.
+        size = dither._BLUE_NOISE_SIZE
+
+        def peak_energy_fraction(offset: np.ndarray) -> float:
+            mask = (offset > np.median(offset)).astype(np.float64)
+            f = np.abs(np.fft.fft2(mask - mask.mean())) ** 2
+            f_flat = f.ravel()
+            f_flat[0] = 0.0  # exclude DC
+            return float(f_flat.max() / f_flat.sum())
+
+        bayer = dither.bayer_offset(size, size, 1.0)
+        blue = dither.blue_noise_offset(size, size, 1.0)
+        self.assertLess(peak_energy_fraction(blue), 0.1)
+        self.assertLess(peak_energy_fraction(blue), peak_energy_fraction(bayer))
 
 
 class ErrorDiffuseTest(unittest.TestCase):
