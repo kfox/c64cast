@@ -732,7 +732,7 @@ _PAL_LAB_NORMSQ = (_PALETTE_LAB**2).sum(axis=1)  # (16,)
 
 # ---------------------------------------------------------------------------
 # Perceptual (CIE-Lab) nearest-palette matching — the [color].color_match
-# "perceptual" path (the port of Disco Volante's Lab color_match).
+# "perceptual" path.
 # ---------------------------------------------------------------------------
 # The default quantizer (quantize_distances above) measures nearest-color in a
 # weighted BGR space (DISTANCE_WEIGHTS [2, 4, 3]) that is brightness-dominated:
