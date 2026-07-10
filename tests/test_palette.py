@@ -36,7 +36,10 @@ from c64cast.palette import (
     parse_hue_corrections,
     pick_diverse_top_n,
     quantize_distances,
+    quantize_distances_for,
+    quantize_distances_lab,
     quantize_flat,
+    quantize_flat_for,
     resolve_color,
 )
 
@@ -119,6 +122,49 @@ class QuantizeTest(unittest.TestCase):
         self.assertEqual(d.shape, (16, 16))
         # Diagonal is zero — distance from each palette entry to itself.
         np.testing.assert_allclose(np.diag(d), 0.0, atol=1e-3)
+
+
+class QuantizeLabTest(unittest.TestCase):
+    """The perceptual (CIE-Lab) nearest-palette path."""
+
+    def test_palette_entry_self_maps_in_lab(self):
+        # Every palette color is its own nearest neighbor in Lab too.
+        for i, bgr in enumerate(C64_PALETTE_BGR):
+            idx = quantize_flat_for(bgr.reshape(1, 3).astype(np.float32), perceptual=True)[0]
+            self.assertEqual(int(idx), i, f"palette entry {i} did not self-map in Lab")
+
+    def test_lab_distances_shape_and_self_zero(self):
+        d = quantize_distances_lab(C64_PALETTE_BGR)
+        self.assertEqual(d.shape, (16, 16))
+        np.testing.assert_allclose(np.diag(d), 0.0, atol=1e-3)
+
+    def test_dispatcher_selects_metric(self):
+        px = np.array([[90.0, 110.0, 130.0]], dtype=np.float32)
+        np.testing.assert_array_equal(
+            quantize_distances_for(px, perceptual=False), quantize_distances(px)
+        )
+        np.testing.assert_array_equal(
+            quantize_distances_for(px, perceptual=True), quantize_distances_lab(px)
+        )
+
+    def test_metrics_diverge_on_some_pixels(self):
+        # The two metrics genuinely disagree on a meaningful fraction of colors
+        # (otherwise perceptual matching would be pointless). A purple-leaning
+        # mid-tone is the classic case: weighted-BGR sends it to gray, Lab to
+        # purple.
+        rng = np.random.default_rng(1)
+        px = rng.integers(0, 256, (5000, 3)).astype(np.float32)
+        rgb = quantize_flat_for(px, perceptual=False)
+        lab = quantize_flat_for(px, perceptual=True)
+        self.assertGreater(int((rgb != lab).sum()), 0)
+
+    def test_clips_out_of_range_pixels(self):
+        # Float pixels outside 0..255 are clipped before the uint8 Lab convert;
+        # must not raise or wrap.
+        px = np.array([[300.0, -20.0, 128.0]], dtype=np.float32)
+        d = quantize_distances_lab(px)
+        self.assertEqual(d.shape, (1, 16))
+        self.assertTrue(np.all(np.isfinite(d)))
 
 
 class GrayPenaltyTest(unittest.TestCase):
@@ -548,6 +594,58 @@ class DisplayModePaletteTest(unittest.TestCase):
         self.assertGreater(
             len(set(color)), 1, "percell should write varied color RAM, not constant"
         )
+
+    def test_perceptual_flag_threads_into_modes(self):
+        # perceptual=True sets the mode's flag, scales the percell hysteresis
+        # bonuses to the Lab metric's magnitude, and builds a perceptual
+        # pal_pairwise. Both quantizing bitmap modes accept it.
+        from c64cast.modes import (
+            PERCELL_QUANT_HYSTERESIS_BONUS,
+            MCMDisplayMode,
+            MultiHiresDisplayMode,
+        )
+        from c64cast.palette import PERCEPTUAL_DIST_SCALE
+
+        m = MultiHiresDisplayMode(palette_mode="percell", perceptual=True)
+        self.assertTrue(m._perceptual)
+        self.assertAlmostEqual(
+            m._quant_hysteresis, PERCELL_QUANT_HYSTERESIS_BONUS * PERCEPTUAL_DIST_SCALE
+        )
+        # RGB mode leaves the bonus unscaled.
+        m_rgb = MultiHiresDisplayMode(palette_mode="percell", perceptual=False)
+        self.assertEqual(m_rgb._quant_hysteresis, PERCELL_QUANT_HYSTERESIS_BONUS)
+        self.assertFalse(MCMDisplayMode(perceptual=False)._perceptual)
+        self.assertTrue(MCMDisplayMode(perceptual=True)._perceptual)
+
+    def test_perceptual_compose_produces_valid_output(self):
+        # A perceptual-mode render must produce well-formed 1000-byte screen +
+        # color RAM and an 8000-byte bitmap, and differ from the RGB render on
+        # a chromatic frame (the metric + dropped channel_boost/gray_penalty
+        # change the picks).
+        from _fakes import FakeAPI
+
+        from c64cast.modes import MultiHiresDisplayMode
+
+        # A smooth BGR gradient spans the ambiguous mid-tones (warm grays,
+        # violets) where the two metrics disagree — solid primaries would
+        # quantize identically under both and hide the difference.
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        yy = np.linspace(0, 255, 240, dtype=np.uint8)[:, None]
+        xx = np.linspace(0, 255, 320, dtype=np.uint8)[None, :]
+        frame[..., 0] = xx
+        frame[..., 1] = yy
+        frame[..., 2] = 255 - xx
+        outs = {}
+        for perceptual in (False, True):
+            api = FakeAPI()
+            m = MultiHiresDisplayMode(palette_mode="percell", perceptual=perceptual)
+            m.setup(api)
+            m.render(api, frame)
+            self.assertEqual(len(api.regions[0x0400]), 1000)
+            self.assertEqual(len(api.regions[0xD800]), 1000)
+            self.assertEqual(len(api.regions[0x2000]), 8000)
+            outs[perceptual] = bytes(api.regions[0x2000])
+        self.assertNotEqual(outs[False], outs[True], "perceptual should change the bitmap")
 
     def test_mhires_percell_is_stable_on_identical_frames(self):
         # Per-cell EMA on the top-3 picks means rendering the same frame

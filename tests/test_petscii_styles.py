@@ -58,16 +58,19 @@ class StyleComposeShapeTest(unittest.TestCase):
     def test_every_style_returns_correctly_shaped_buffers(self):
         img = _frame()
         for name in ps.STYLE_NAMES:
-            style = ps.make_style(name)
-            screen, color = style.compose(img, _BOOST, _HUE)
-            self.assertEqual(screen.shape, (1000,), name)
-            self.assertEqual(color.shape, (1000,), name)
-            self.assertEqual(screen.dtype, np.uint8, name)
-            self.assertEqual(color.dtype, np.uint8, name)
-            # Color RAM holds palette indices 0..15 (low nibble matters).
-            self.assertTrue(
-                (color & 0x0F == color).all(), f"{name}: color RAM has high-nibble bits set"
-            )
+            for perceptual in (False, True):
+                style = ps.make_style(name)
+                screen, color = style.compose(img, _BOOST, _HUE, perceptual)
+                label = f"{name}/perceptual={perceptual}"
+                self.assertEqual(screen.shape, (1000,), label)
+                self.assertEqual(color.shape, (1000,), label)
+                self.assertEqual(screen.dtype, np.uint8, label)
+                self.assertEqual(color.dtype, np.uint8, label)
+                # Color RAM holds palette indices 0..15 (low nibble matters).
+                self.assertTrue(
+                    (color & 0x0F == color).all(),
+                    f"{label}: color RAM has high-nibble bits set",
+                )
 
 
 class IndividualStyleBehaviorTest(unittest.TestCase):

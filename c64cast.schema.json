@@ -595,6 +595,16 @@
           "type": "number",
           "description": "Dither strength, roughly 0..2.0. For 'ordered' it scales the Bayer threshold spread; for floyd-steinberg/atkinson it scales how much of each pixel's quantization error is diffused to its neighbors (1.0 = the textbook kernel weights).",
           "default": 0.5
+        },
+        "color_match": {
+          "type": "string",
+          "description": "Color space for the nearest-palette match on the quantizing modes (mcm/mhires/hires/petscii). 'perceptual' measures nearest-color in CIE-Lab (perceptually uniform \u2014 picks the color the eye calls closest, e.g. a warm gray \u2192 orange/brown, not muddy gray). 'rgb' is the classic brightness-weighted BGR metric. Both keep the channel_boost + gray-penalty shaping; only the distance space differs. 'auto' (default) picks perceptual on every quantizing mode (a no-op on hires edges / blank, which pick no colors).",
+          "enum": [
+            "auto",
+            "rgb",
+            "perceptual"
+          ],
+          "default": "auto"
         }
       }
     },

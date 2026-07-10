@@ -1272,6 +1272,45 @@ class ValidateDitherCfgTest(unittest.TestCase):
             cfgmod.validate_dither_cfg(cfg)
 
 
+class ColorMatchResolutionTest(unittest.TestCase):
+    """resolve_color_match's "auto" resolves to perceptual on the quantizing
+    modes (mcm/mhires/hires/petscii) and rgb on the non-color-picking ones
+    (blank/hires_edges). Explicit rgb/perceptual pass through on any mode."""
+
+    def test_auto_resolves_quantizing_modes_to_perceptual(self):
+        for mode in ("mcm", "mhires", "hires", "petscii"):
+            with self.subTest(mode=mode):
+                self.assertTrue(cfgmod.resolve_color_match("auto", mode))
+
+    def test_auto_resolves_non_color_modes_to_rgb(self):
+        for mode in ("blank", "hires_edges"):
+            with self.subTest(mode=mode):
+                self.assertFalse(cfgmod.resolve_color_match("auto", mode))
+
+    def test_explicit_value_passes_through_on_any_mode(self):
+        for mode in ("mcm", "mhires", "hires", "petscii", "blank", "hires_edges"):
+            with self.subTest(mode=mode):
+                self.assertTrue(cfgmod.resolve_color_match("perceptual", mode))
+                self.assertFalse(cfgmod.resolve_color_match("rgb", mode))
+
+
+class ValidateColorMatchCfgTest(unittest.TestCase):
+    def test_default_config_is_valid(self):
+        cfgmod.validate_color_match_cfg(cfgmod.Config())
+
+    def test_explicit_values_valid(self):
+        for v in ("rgb", "perceptual"):
+            cfg = cfgmod.Config()
+            cfg.color.color_match = v
+            cfgmod.validate_color_match_cfg(cfg)
+
+    def test_unknown_value_raises(self):
+        cfg = cfgmod.Config()
+        cfg.color.color_match = "lab"  # not a valid choice name
+        with self.assertRaisesRegex(cfgmod.ConfigError, "color_match"):
+            cfgmod.validate_color_match_cfg(cfg)
+
+
 class BuildSceneTempoScaleTest(unittest.TestCase):
     """build_scene resolves VideoScene._tempo_scale: the observed bitmap+DAC
     speed fraction on the host-DMA DAC path over a bitmap mode, else 1.0 (off)
