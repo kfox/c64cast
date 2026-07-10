@@ -1167,6 +1167,7 @@ def main(argv=None) -> int:
             cfgmod.validate_sid_model_cfg(cfg)
             cfgmod.validate_dither_cfg(cfg)
             cfgmod.validate_color_match_cfg(cfg)
+            cfgmod.validate_cell_strategy_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5

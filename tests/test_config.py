@@ -1311,6 +1311,45 @@ class ValidateColorMatchCfgTest(unittest.TestCase):
             cfgmod.validate_color_match_cfg(cfg)
 
 
+class CellStrategyResolutionTest(unittest.TestCase):
+    """resolve_cell_strategy's "auto" picks error-min for static slideshow
+    scenes (composed once, so the per-cell trio search cost is paid once) and
+    frequency for motion scenes (recomposed every frame, where frequency's
+    temporal stability avoids per-frame slot churn). Explicit values pass
+    through unchanged regardless of scene type."""
+
+    def test_auto_resolves_static_scene_to_error_min(self):
+        self.assertEqual(cfgmod.resolve_cell_strategy("auto", "slideshow"), "error-min")
+
+    def test_auto_resolves_motion_scenes_to_frequency(self):
+        for scene_type in ("video", "webcam", "generative"):
+            with self.subTest(scene_type=scene_type):
+                self.assertEqual(cfgmod.resolve_cell_strategy("auto", scene_type), "frequency")
+
+    def test_explicit_value_passes_through_on_any_scene_type(self):
+        for scene_type in ("slideshow", "video", "webcam", "generative"):
+            for strat in ("frequency", "luminance", "contrast", "error-min"):
+                with self.subTest(scene_type=scene_type, strat=strat):
+                    self.assertEqual(cfgmod.resolve_cell_strategy(strat, scene_type), strat)
+
+
+class ValidateCellStrategyCfgTest(unittest.TestCase):
+    def test_default_config_is_valid(self):
+        cfgmod.validate_cell_strategy_cfg(cfgmod.Config())
+
+    def test_explicit_values_valid(self):
+        for v in ("frequency", "luminance", "contrast", "error-min"):
+            cfg = cfgmod.Config()
+            cfg.color.cell_strategy = v
+            cfgmod.validate_cell_strategy_cfg(cfg)
+
+    def test_unknown_value_raises(self):
+        cfg = cfgmod.Config()
+        cfg.color.cell_strategy = "median"  # not a valid choice name
+        with self.assertRaisesRegex(cfgmod.ConfigError, "cell_strategy"):
+            cfgmod.validate_cell_strategy_cfg(cfg)
+
+
 class BuildSceneTempoScaleTest(unittest.TestCase):
     """build_scene resolves VideoScene._tempo_scale: the observed bitmap+DAC
     speed fraction on the host-DMA DAC path over a bitmap mode, else 1.0 (off)

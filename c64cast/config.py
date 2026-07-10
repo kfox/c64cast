@@ -28,7 +28,7 @@ from .c64 import nmi_rate_safety
 from .dac_curves import DAC_CURVE_CHOICES
 from .dither import DITHER_METHODS
 from .dsp import DSPParams
-from .palette import COLOR_MATCH_MODES, resolve_color
+from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
 
@@ -1502,6 +1502,22 @@ class ColorCfg:
             "choices": ("auto",) + COLOR_MATCH_MODES,
         },
     )
+    cell_strategy: str = field(
+        default="auto",
+        metadata={
+            "help": "How mhires percell mode fills each 4×8 cell's 3 per-cell "
+            "color slots from the colors present in that cell. 'frequency' = the "
+            "3 most-common (temporally stable). 'luminance' = darkest/median/"
+            "brightest (preserves a cell's full tonal span). 'contrast' = the two "
+            "luma extremes plus the color farthest from both. 'error-min' = the "
+            "trio minimizing the cell's reconstruction error (best quality, "
+            "costlier). 'auto' (default) uses error-min for static scenes "
+            "(slideshow — composed once) and frequency for motion scenes "
+            "(video/webcam/generative, where frequency's stability avoids "
+            "per-frame slot churn). Only affects mhires with palette_mode=percell.",
+            "choices": ("auto",) + CELL_STRATEGIES,
+        },
+    )
 
 
 @dataclass
@@ -2531,6 +2547,7 @@ def _build_display_mode(
     color: ColorCfg | None = None,
     text_double_height: bool = False,
     dither_method: str = "none",
+    cell_strategy: str = "frequency",
 ) -> DisplayMode:
     # border/background may be a C64 color name or an index; resolve to a plain
     # index here — the single point every scene's border/background flows
@@ -2610,6 +2627,7 @@ def _build_display_mode(
             dither_method=dither_method,
             dither_strength=dither_strength,
             perceptual=perceptual,
+            cell_strategy=cell_strategy,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
@@ -2825,6 +2843,7 @@ def _display_mode_for_scene(
         color=cfg.color,
         text_double_height=s.text_double_height,
         dither_method=resolve_dither_method(cfg.color.dither, s.type),
+        cell_strategy=resolve_cell_strategy(cfg.color.cell_strategy, s.type),
     )
 
 
@@ -3274,6 +3293,38 @@ def validate_color_match_cfg(cfg: Config) -> None:
         raise ConfigError(
             f"[color].color_match must be one of {', '.join(COLOR_MATCH_CHOICES)}, "
             f"got {cfg.color.color_match!r}"
+        )
+
+
+CELL_STRATEGY_CHOICES: tuple[str, ...] = ("auto", *CELL_STRATEGIES)
+
+# Scene types whose composed frame is effectively static (a slideshow holds one
+# image for its whole dwell), so the costlier error-min cell strategy is a
+# one-time cost and worth its better reconstruction. Everything else recomposes
+# every frame, where frequency's temporal stability (it ranks the EMA-smoothed
+# histogram) avoids per-frame slot churn. Mirrors _STATIC_DITHER_SCENE_TYPES.
+_STATIC_CELL_STRATEGY_SCENE_TYPES = frozenset({"slideshow"})
+
+
+def resolve_cell_strategy(cell_strategy_setting: str, scene_type: str) -> str:
+    """Resolve [color].cell_strategy's `"auto"` to a concrete CELL_STRATEGIES
+    value for a scene type; an explicit value passes through unchanged.
+
+    `"auto"` picks error-min for static scenes (slideshow — composed once, so the
+    C(K,3)-per-cell search cost is paid once for the best reconstruction) and
+    frequency for motion scenes (video/webcam/generative), whose per-frame
+    recompose makes frequency's temporal stability the right default."""
+    if cell_strategy_setting != "auto":
+        return cell_strategy_setting
+    return "error-min" if scene_type in _STATIC_CELL_STRATEGY_SCENE_TYPES else "frequency"
+
+
+def validate_cell_strategy_cfg(cfg: Config) -> None:
+    """Guard [color].cell_strategy: reject an unknown value."""
+    if cfg.color.cell_strategy not in CELL_STRATEGY_CHOICES:
+        raise ConfigError(
+            f"[color].cell_strategy must be one of {', '.join(CELL_STRATEGY_CHOICES)}, "
+            f"got {cfg.color.cell_strategy!r}"
         )
 
 

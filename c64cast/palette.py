@@ -191,6 +191,15 @@ C64_PALETTE_BGR = np.array(
 )
 
 C64_SPECTRUM_INDICES = np.array([2, 8, 7, 5, 13, 3, 14, 6, 4, 10])
+
+# Rec.601 luma of each palette entry (0..255), computed from the BGR palette
+# (0.114·B + 0.587·G + 0.299·R). Used by the mhires per-cell luminance/contrast
+# color-selection strategies (modes._pick_cell_colors) to order a cell's present
+# colors dark→light.
+PALETTE_LUMA = (C64_PALETTE_BGR @ np.array([0.114, 0.587, 0.299], dtype=np.float32)).astype(
+    np.float32
+)
+
 DISTANCE_WEIGHTS = np.array([2.0, 4.0, 3.0], dtype=np.float32)
 # Pre-quantization per-channel gain (BGR), the built-in default for the global
 # [color].channel_boost shaping stage. The blue/green lift biases the palette
@@ -756,6 +765,12 @@ _PAL_LAB_NORMSQ = (_PALETTE_LAB**2).sum(axis=1)  # (16,)
 PERCEPTUAL_DIST_SCALE = 1.0 / 3.0  # approx d²_lab / d²_weighted_bgr for equal gaps
 
 COLOR_MATCH_MODES: tuple[str, ...] = ("rgb", "perceptual")
+
+# Per-cell 3-color selection strategies for the mhires percell path (the
+# [color].cell_strategy knob). The canonical list lives here (a lightweight,
+# already-color-adjacent module) so config.py can validate against it without
+# importing the heavy modes module; modes._pick_cell_colors implements them.
+CELL_STRATEGIES: tuple[str, ...] = ("frequency", "luminance", "contrast", "error-min")
 
 
 def _bgr_to_lab(flat_pixels: np.ndarray) -> np.ndarray:
