@@ -8,6 +8,7 @@ delta-upload cache can skip unchanged bytes.
 
 from __future__ import annotations
 
+import itertools
 import logging
 from typing import TypedDict
 
@@ -31,8 +32,10 @@ from .c64 import (
 from .dither import bayer_offset, error_diffuse_cells
 from .palette import (
     C64_PALETTE_BGR,
+    CELL_STRATEGIES,
     DEFAULT_HUE_CORRECTIONS,
     GRAYSCALE_CHROMATIC_PENALTY,
+    PALETTE_LUMA,
     PERCEPTUAL_DIST_SCALE,
     ColorFit,
     ColorMap,
@@ -212,6 +215,129 @@ PERCELL_QUANT_HYSTERESIS_BONUS = 5000.0
 # frame its smoothed count → ~0 and any challenger trivially clears the margin,
 # so bg0 can never get stuck on an absent colour.
 BG0_HYSTERESIS_MARGIN = 0.25
+
+# Per-cell color-selection strategies for the mhires percell path. Each 4×8 cell
+# gets bg0 (global) plus 3 per-cell colors (c1/c2/c3); the strategy decides WHICH
+# 3 of the cell's present colors fill those slots. See _pick_cell_colors.
+#   frequency — the 3 most-populated non-bg0 colors (default; temporally stable
+#               via the existing EMA, since the histogram it ranks is smoothed).
+#   luminance — the darkest, median, and brightest present color, so a cell's
+#               full tonal span survives even when one tone dominates the count.
+#   contrast  — darkest + brightest, then the present color farthest (in luma)
+#               from both, maximizing tonal spread across the 3 slots.
+#   error-min — the trio minimizing summed per-pixel quantization error against
+#               {bg0, c1, c2, c3}. Best reconstruction, but evaluates C(K,3)
+#               trios over the cell's top-K present colors (see
+#               ERROR_MIN_POOL_SIZE) — costlier than the others.
+# The strategy name list itself is CELL_STRATEGIES (imported from palette, the
+# single source of truth config.py validates against).
+
+# error-min considers only each cell's top-K present colors (by smoothed count),
+# bounding the trio search to C(K,3) candidates evaluated across all 1000 cells
+# at once. A 4×8 cell rarely holds more than this many meaningfully-populated
+# colors after quantization, so top-6 is near-optimal while keeping the search
+# vectorized and realtime-capable. C(6,3) = 20 trios.
+ERROR_MIN_POOL_SIZE = 6
+
+
+def _validate_cell_strategy(strategy: str) -> None:
+    if strategy not in CELL_STRATEGIES:
+        raise ValueError(f"cell_strategy must be one of {CELL_STRATEGIES}, got {strategy!r}")
+
+
+def _pick_cell_colors(
+    cell_counts: np.ndarray,
+    d_cell: np.ndarray,
+    bg0: int,
+    strategy: str,
+) -> np.ndarray:
+    """Choose each cell's 3 non-bg0 color slots (c1/c2/c3) by `strategy`.
+
+    `cell_counts` is the (1000, 16) smoothed per-cell palette histogram with the
+    bg0 entry already masked to -1 (so bg0 is never picked). `d_cell` is the
+    (1000, 32, 16) per-cell-pixel distance to all 16 palette entries (only the
+    error-min strategy uses it). Returns a (1000, 3) int64 array of palette
+    indices; any slot the cell can't fill from a genuinely-present color is set
+    to `bg0` — the same poison-filler guard the frequency path has always used
+    (a duplicate bg0 is harmless: the %00 code already reaches bg0, and it keeps
+    the absent slots deterministic so present colors don't churn screen/color
+    RAM frame-to-frame). The caller sorts the result by palette index for
+    delta-cache stability.
+    """
+    if strategy == "frequency":
+        top3 = np.argpartition(cell_counts, -3, axis=1)[:, -3:]
+        absent = np.take_along_axis(cell_counts, top3, axis=1) <= 0.0
+        return np.where(absent, bg0, top3)
+
+    if strategy == "error-min":
+        return _pick_cell_colors_error_min(cell_counts, d_cell, bg0)
+
+    # luminance / contrast both order the cell's present colors dark→light and
+    # pick the extremes; they differ only in the 3rd slot.
+    rows = np.arange(cell_counts.shape[0])
+    present = cell_counts > 0.0  # (1000, 16) bool; bg0 masked out via -1
+    n = present.sum(axis=1)  # (1000,) present color count per cell
+    # Sort present colors by luma; absent entries → +inf so they sort last and
+    # never get gathered for a valid slot.
+    luma_masked = np.where(present, PALETTE_LUMA[None, :], np.inf)
+    order = np.argsort(luma_masked, axis=1)  # (1000, 16) ascending by luma
+    darkest = order[:, 0]
+    brightest = order[rows, np.clip(n - 1, 0, 15)]
+    pick0 = np.where(n >= 1, darkest, bg0)
+    pick1 = np.where(n >= 2, brightest, bg0)
+
+    if strategy == "luminance":
+        median = order[rows, np.clip(n // 2, 0, 15)]  # middle of the sorted span
+        pick2 = np.where(n >= 3, median, bg0)
+    else:  # contrast: farthest present color (in luma) from both extremes
+        d_dark = np.abs(PALETTE_LUMA[None, :] - PALETTE_LUMA[darkest][:, None])
+        d_bright = np.abs(PALETTE_LUMA[None, :] - PALETTE_LUMA[brightest][:, None])
+        spread = np.minimum(d_dark, d_bright)  # (1000, 16)
+        eligible = present.copy()
+        eligible[rows, darkest] = False
+        eligible[rows, brightest] = False
+        spread = np.where(eligible, spread, -1.0)
+        pick2 = np.where(n >= 3, spread.argmax(axis=1), bg0)
+
+    return np.column_stack([pick0, pick1, pick2]).astype(np.int64)
+
+
+def _pick_cell_colors_error_min(
+    cell_counts: np.ndarray, d_cell: np.ndarray, bg0: int
+) -> np.ndarray:
+    """error-min strategy: for each cell pick the trio of present colors that
+    minimizes the summed per-pixel quantization error against {bg0, c1, c2, c3}.
+
+    Bounds the search to each cell's top-`ERROR_MIN_POOL_SIZE` present colors and
+    evaluates every C(K, 3) trio across all cells at once (vectorized), so it
+    stays realtime-capable while being near-optimal (optimal when a cell holds ≤K
+    meaningfully-populated colors). Pool slots a cell can't fill are set to bg0,
+    so a trio drawing on them simply re-uses bg0 (a no-op against the fixed bg0
+    candidate) — which naturally handles cells with fewer than 3 present colors.
+    """
+    n_cells = cell_counts.shape[0]
+    k = ERROR_MIN_POOL_SIZE
+    # Top-K present colors per cell (poison-guarded to bg0), like frequency but K.
+    poolk = np.argpartition(cell_counts, -k, axis=1)[:, -k:]  # (n, K)
+    absent = np.take_along_axis(cell_counts, poolk, axis=1) <= 0.0
+    poolk = np.where(absent, bg0, poolk)  # (n, K)
+    # Per-cell-pixel distance to each pool color and to bg0.
+    d_pool = np.take_along_axis(d_cell, poolk[:, None, :], axis=2)  # (n, 32, K)
+    d_bg0 = d_cell[:, :, bg0]  # (n, 32)
+    # Enumerate all C(K,3) position-trios once; evaluate each across every cell.
+    trios = list(itertools.combinations(range(k), 3))  # T trios of pool positions
+    best_err = np.full(n_cells, np.inf, dtype=np.float32)
+    best_trio = np.zeros((n_cells, 3), dtype=np.intp)
+    for i, j, m in trios:
+        # Per-pixel min over {bg0, pool[i], pool[j], pool[m]}, summed over pixels.
+        cand_min = np.minimum(
+            d_bg0, np.minimum(d_pool[:, :, i], np.minimum(d_pool[:, :, j], d_pool[:, :, m]))
+        )
+        err = cand_min.sum(axis=1)  # (n,)
+        better = err < best_err
+        best_err = np.where(better, err, best_err)
+        best_trio[better] = (i, j, m)
+    return np.take_along_axis(poolk, best_trio, axis=1).astype(np.int64)  # (n, 3)
 
 
 def _ema_counts(mode, per_pixel: np.ndarray) -> np.ndarray:
@@ -2429,8 +2555,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         dither_method: str = "none",
         dither_strength: float = 0.5,
         perceptual: bool = False,
+        cell_strategy: str = "frequency",
     ):
         _validate_palette_mode(palette_mode)
+        _validate_cell_strategy(cell_strategy)
         # Text overlays render double-wide ("chunky") by default — an 8×8 glyph
         # spans 2 of the mode's 4px cells (20-col text grid). text_double_height
         # also stretches it to 16 px tall (12-row grid) for across-the-room
@@ -2459,6 +2587,11 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._code_hysteresis = PERCELL_CODE_HYSTERESIS_BONUS * self._penalty_scale
         self._dither_method = dither_method
         self._dither_strength = dither_strength
+        # Per-cell 3-color selection strategy for the percell path (see
+        # CELL_STRATEGIES / _pick_cell_colors). Orthogonal to palette_mode
+        # (which only decides percell-vs-global) and to dither (which decides
+        # the per-pixel fill after the 3 colors are chosen).
+        self._cell_strategy = cell_strategy
         # Per-palette pairwise distances (no penalty — this is for the
         # "snap unused indices to their nearest of the 4 winners" remap,
         # which is a pure color-space neighbour query, not a chromatic-
@@ -2858,9 +2991,11 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # bg0, so present colors stop churning slots. bg0 in a filler slot is a
         # harmless duplicate: the %00 code already reaches bg0, and the
         # per-pixel argmin breaks ties to the real bg0 at slot 0.
-        top3 = np.argpartition(cell_counts, -3, axis=1)[:, -3:]
-        absent = np.take_along_axis(cell_counts, top3, axis=1) <= 0.0
-        top3 = np.where(absent, bg0, top3)
+        #
+        # _cell_strategy decides WHICH 3 present colors fill c1/c2/c3 (frequency
+        # / luminance / contrast / error-min — see _pick_cell_colors). All keep
+        # the absent→bg0 poison-filler guard above.
+        top3 = _pick_cell_colors(cell_counts, d_cell, bg0, self._cell_strategy)
         # Sort by palette index for delta-cache stability (otherwise the slot
         # order would flip even when the chosen SET is identical).
         top3 = np.sort(top3, axis=1)

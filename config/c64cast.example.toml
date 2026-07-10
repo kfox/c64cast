@@ -523,6 +523,17 @@ dither_strength = 0.5
 # on hires edges / blank, which pick no colors). The gain is most visible on mcm.
 color_match = "auto"
 #
+# cell_strategy: how mhires percell mode fills each 4×8 cell's 3 per-cell color
+# slots from the colors present in that cell (mhires + palette_mode=percell
+# only). "frequency" = the 3 most-common (temporally stable). "luminance" =
+# darkest/median/brightest (keeps a cell's full tonal span). "contrast" = the
+# two luma extremes plus the color farthest from both. "error-min" = the trio
+# minimizing the cell's reconstruction error (best quality, costlier — evaluates
+# candidate trios over the cell's top colors). "auto" (default) uses error-min
+# for static scenes (slideshow — composed once) and frequency for motion scenes
+# (video/webcam/generative, where frequency's stability avoids per-frame churn).
+cell_strategy = "auto"
+#
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video
 # and slideshow scenes only (webcam can't pre-scan), c64cast pre-scans the

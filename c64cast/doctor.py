@@ -25,8 +25,10 @@ from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .config import (
     ConfigError,
     LoadResult,
+    resolve_cell_strategy,
     resolve_color_match,
     resolve_dither_method,
+    validate_cell_strategy_cfg,
     validate_color_match_cfg,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
@@ -103,6 +105,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_sid_model(loaded))
     out.extend(_validate_dither(loaded))
     out.extend(_validate_color_match(loaded))
+    out.extend(_validate_cell_strategy(loaded))
     out.extend(_validate_midi_control(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
@@ -453,6 +456,44 @@ def _validate_color_match(loaded: LoadResult) -> list[Diagnostic]:
                     category="color",
                     subject=f"{name}/{s.name or s.type}/color_match",
                     message=f"'auto' resolves to {resolved!r} for this {s.display} scene.",
+                )
+            )
+    return out
+
+
+def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unknown [color].cell_strategy value, and report how "auto"
+    resolves per scene (see config.resolve_cell_strategy). The knob only affects
+    mhires with palette_mode=percell, so the resolution report is scoped to
+    those scenes. Offline — delegates to config.validate_cell_strategy_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_cell_strategy_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="color",
+                    subject=f"{name}/cell_strategy",
+                    message=str(e),
+                    hint="See [color].cell_strategy in the config reference / "
+                    "--describe section:color.",
+                )
+            )
+            continue
+        if cfg.color.cell_strategy != "auto":
+            continue
+        for s in cfg.scenes:
+            if s.display != "mhires" or s.palette_mode != "percell":
+                continue  # cell_strategy only affects mhires percell
+            resolved = resolve_cell_strategy(cfg.color.cell_strategy, s.type)
+            out.append(
+                Diagnostic(
+                    level="ok",
+                    category="color",
+                    subject=f"{name}/{s.name or s.type}/cell_strategy",
+                    message=f"'auto' resolves to {resolved!r} for this {s.type} scene.",
                 )
             )
     return out

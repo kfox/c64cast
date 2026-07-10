@@ -605,6 +605,18 @@
             "perceptual"
           ],
           "default": "auto"
+        },
+        "cell_strategy": {
+          "type": "string",
+          "description": "How mhires percell mode fills each 4\u00d78 cell's 3 per-cell color slots from the colors present in that cell. 'frequency' = the 3 most-common (temporally stable). 'luminance' = darkest/median/brightest (preserves a cell's full tonal span). 'contrast' = the two luma extremes plus the color farthest from both. 'error-min' = the trio minimizing the cell's reconstruction error (best quality, costlier). 'auto' (default) uses error-min for static scenes (slideshow \u2014 composed once) and frequency for motion scenes (video/webcam/generative, where frequency's stability avoids per-frame slot churn). Only affects mhires with palette_mode=percell.",
+          "enum": [
+            "auto",
+            "frequency",
+            "luminance",
+            "contrast",
+            "error-min"
+          ],
+          "default": "auto"
         }
       }
     },

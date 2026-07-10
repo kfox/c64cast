@@ -68,7 +68,18 @@ class RenderBackend(BufferedWriteBackend):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source", default="plasma", help="generative source name")
+    ap.add_argument(
+        "--image",
+        default=None,
+        help="render a still image file through the mode instead of a generative "
+        "source (BGR loaded via cv2; --source/--effect/--modulation ignored)",
+    )
     ap.add_argument("--display", default="mhires", help="display mode")
+    ap.add_argument(
+        "--cell-strategy",
+        default="frequency",
+        help="mhires percell color strategy (frequency|luminance|contrast|error-min)",
+    )
     ap.add_argument("--effect", default=None, help="pixel effect name (e.g. trails)")
     ap.add_argument("--frames", type=int, default=1, help="frames to advance before saving")
     ap.add_argument("--t-step", type=float, default=0.1, help="scene-seconds per frame")
@@ -113,10 +124,13 @@ def main() -> None:
     fb = Framebuffer()
     api.add_write_listener(fb.on_write)
 
-    mode = _build_display_mode(args.display)
+    mode = _build_display_mode(args.display, cell_strategy=args.cell_strategy)
     mode.setup(api)
-    src = build_generator(args.source)
-    effect = build_effect(args.effect) if args.effect else None
+    still = cv2.imread(args.image) if args.image else None
+    if args.image and still is None:
+        raise SystemExit(f"could not read image: {args.image}")
+    src = None if still is not None else build_generator(args.source)
+    effect = build_effect(args.effect) if args.effect and still is None else None
 
     overlays = []
     if args.overlay:
@@ -156,14 +170,16 @@ def main() -> None:
     saved_path = None
     for i in range(args.frames):
         t = i * args.t_step
-        frame = src.read(t, modulation)
+        frame = still if still is not None else src.read(t, modulation)
         _render_with_overlays(mode, api, frame, overlays, t, scene, modulation)
         if menu is not None:
             menu.process_frame(api, scene, t)
         if i == save_at:
             img = fb.render()
+            base = os.path.splitext(os.path.basename(args.image))[0] if args.image else args.source
             tag = (
-                f"{args.source}_{args.display}"
+                f"{base}_{args.display}"
+                + (f"_{args.cell_strategy}" if args.display == "mhires" else "")
                 + (f"_{args.effect}" if args.effect else "")
                 + (f"_{args.overlay}" if args.overlay else "")
                 + ("_menu" if args.menu else "")
