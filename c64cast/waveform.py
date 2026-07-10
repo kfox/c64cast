@@ -54,6 +54,7 @@ from .backend import C64Backend
 from .c64 import CIA2, CPU, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
 from .palette import C64_COLORS
 from .scenes import Scene
+from .sid_autoconfig import plan_model_config_for_header
 
 # SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
 # _play_bank_for_footprints moved to sid_host_emu.py (so SidFileAudioSource can
@@ -71,6 +72,7 @@ from .sid_host_emu import (
     ram_write_footprint,
 )
 from .sid_hw_config import (
+    apply_config,
     apply_sid_map,
     detect_sockets,
     restore_sid_config,
@@ -321,6 +323,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         scroll_columns: int | list[int] = 0,
         reg_poll_hz: float | None = None,
         songlengths_db: LengthsDB | None = None,
+        sid_model: str = "auto",
     ):
         """Initialize the scene.
 
@@ -352,6 +355,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._song_arg = song
         self.songlengths_db = songlengths_db
         self._explicit_duration_s = duration_s
+        # [ultimate64].sid_model, already resolved to a plain string by the
+        # caller (sid_autoconfig.resolve_sid_model_cfg) — see
+        # _apply_sid_hw_config. "auto"/"6581"/"8580"/"off".
+        self._sid_model = sid_model
 
         # Initial resolution: __init__ raises on bad specs (mirrors
         # validate_scene_cfg). Also raises if every candidate fails the
@@ -871,46 +878,97 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._poll.start()
 
     def _apply_sid_hw_config(self) -> None:
-        """Map the U64's SID chips to a multi-SID tune's own $Dxxx addresses so
-        every chip is audible on the real hardware. Snapshots the prior config
-        for teardown. No-op for single-SID tunes (the $D400 chip already plays)
-        and on backends without a SID config API (TeensyROM) — the scope still
-        shows every chip; only $D400 sounds there. Best-effort; a REST failure
-        never aborts the scene."""
-        if self._n_sids < 2:
-            return
-        if not getattr(self.api.profile, "supports_config", False):
-            log.info(
-                "waveform: %d-SID tune but backend has no SID config API — "
-                "showing every chip's scope; only $D400 will be audible",
-                self._n_sids,
-            )
-            return
-        from .asid_sidmap import plan_sid_map, plan_sid_map_for_addresses
+        """Map the U64's SID chips to a multi-SID tune's own $Dxxx addresses
+        (address routing) AND, independently, match each chip's socketed/
+        UltiSID model to what the tune's header requests (model autoconfig —
+        [ultimate64].sid_model). Both share ONE snapshot taken before either
+        change is applied — restoring an intermediate state (e.g. a snapshot
+        taken after address routing but before model autoconfig) would leave
+        the address-routing change stuck at teardown instead of reverting it.
 
-        socket1, socket2 = detect_sockets(self.api)
-        sid_map = plan_sid_map_for_addresses(
-            self._sid_addresses, socket1_present=socket1, socket2_present=socket2
-        )
-        if sid_map is None:
-            # The tune's exact addresses aren't realizable on 2 sockets + 2
-            # cores; fall back to the canonical layout so at least the
-            # consecutive-address chips sound (the scope stays correct
-            # regardless — it's driven by the host emu, not the hardware map).
-            log.warning(
-                "waveform: SID addresses %s not exactly realizable on this U64 "
-                "— using canonical %d-SID layout (some chips may be silent)",
-                ", ".join(f"${a:04X}" for a in self._sid_addresses),
-                self._n_sids,
+        Address routing is a no-op for single-SID tunes (the $D400 chip
+        already plays there); model autoconfig is NOT — a single-SID tune
+        requesting 8580 on a 6581-socketed $D400 still needs remapping, so it
+        runs regardless of _n_sids (unless [ultimate64].sid_model = "off").
+        The model plan is computed once, up front — HW-verified: computing it
+        eagerly (rather than deferring until after any address routing is
+        applied) matters only for multi-SID tunes, where address routing can
+        move a chip onto a different socket/core the model plan needs to
+        know about; single-SID tunes (the common case, sid_map always None)
+        never hit that reordering, so paying for a second live read there
+        would be pure waste — this is why an already-matching single-SID
+        tune with mode="auto" must produce NO REST traffic at all, not a
+        snapshot-then-restore-to-the-same-values round trip.
+
+        Both are no-ops on a backend without a SID config API (TeensyROM) —
+        the scope still shows every chip; only $D400 sounds there. Best-
+        effort throughout; a REST failure never aborts the scene."""
+        if not getattr(self.api.profile, "supports_config", False):
+            if self._n_sids >= 2:
+                log.info(
+                    "waveform: %d-SID tune but backend has no SID config API — "
+                    "showing every chip's scope; only $D400 will be audible",
+                    self._n_sids,
+                )
+            if self._sid_model != "off":
+                log.info(
+                    "sid autoconfig: mode=%s but backend has no SID config API "
+                    "— cannot verify or correct chip model",
+                    self._sid_model,
+                )
+            return
+
+        model_plan = None
+        if self._sid_model != "off":
+            model_plan = plan_model_config_for_header(self.api, self.header, self._sid_model)
+
+        sid_map = None
+        if self._n_sids >= 2:
+            from .asid_sidmap import plan_sid_map, plan_sid_map_for_addresses
+
+            socket1, socket2 = detect_sockets(self.api)
+            sid_map = plan_sid_map_for_addresses(
+                self._sid_addresses, socket1_present=socket1, socket2_present=socket2
             )
-            sid_map = plan_sid_map(self._n_sids, socket1_present=socket1, socket2_present=socket2)
-        self._saved_sid_config = snapshot_sid_config(self.api)
-        apply_sid_map(self.api, sid_map)
-        log.info(
-            "waveform: mapped %d SID chip(s) → %s",
-            self._n_sids,
-            ", ".join(f"${a:04X}" for a in sid_map.addresses),
-        )
+            if sid_map is None:
+                # The tune's exact addresses aren't realizable on 2 sockets +
+                # 2 cores; fall back to the canonical layout so at least the
+                # consecutive-address chips sound (the scope stays correct
+                # regardless — it's driven by the host emu, not the hardware
+                # map).
+                log.warning(
+                    "waveform: SID addresses %s not exactly realizable on this "
+                    "U64 — using canonical %d-SID layout (some chips may be "
+                    "silent)",
+                    ", ".join(f"${a:04X}" for a in self._sid_addresses),
+                    self._n_sids,
+                )
+                sid_map = plan_sid_map(
+                    self._n_sids, socket1_present=socket1, socket2_present=socket2
+                )
+
+        if sid_map is not None or model_plan:
+            self._saved_sid_config = snapshot_sid_config(self.api)
+
+        if sid_map is not None:
+            apply_sid_map(self.api, sid_map)
+            log.info(
+                "waveform: mapped %d SID chip(s) → %s",
+                self._n_sids,
+                ", ".join(f"${a:04X}" for a in sid_map.addresses),
+            )
+            if self._sid_model != "off":
+                # Addressing just moved — re-derive the model plan against
+                # the NOW-current addressing (a chip may have landed on a
+                # different socket/core than the pre-routing read saw).
+                # Only multi-SID tunes reach this branch (sid_map is None
+                # otherwise); the resulting duplicate INFO logging from the
+                # first (now-stale) plan_model_config_for_header call is an
+                # accepted tradeoff for that rare case.
+                model_plan = plan_model_config_for_header(self.api, self.header, self._sid_model)
+
+        if model_plan:
+            apply_config(self.api, model_plan)
 
     def _restore_sid_hw_config(self) -> None:
         """Restore the SID address config snapshotted by _apply_sid_hw_config."""

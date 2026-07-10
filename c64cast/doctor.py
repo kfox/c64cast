@@ -29,6 +29,7 @@ from .config import (
     validate_dac_curve_cfg,
     validate_midi_control_cfg,
     validate_scene_cfg,
+    validate_sid_model_cfg,
 )
 from .orchestrator import OrchestratorError
 
@@ -95,6 +96,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve(loaded))
     out.extend(_validate_dac_bitmap_tempo(loaded))
+    out.extend(_validate_sid_model(loaded))
     out.extend(_validate_midi_control(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
@@ -351,6 +353,27 @@ def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+def _validate_sid_model(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unknown [ultimate64].sid_model value per system. Offline —
+    delegates to config.validate_sid_model_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_sid_model_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="audio",
+                    subject=f"{name}/sid_model",
+                    message=str(e),
+                    hint="See [ultimate64].sid_model in the config reference / "
+                    "--describe section:ultimate64.",
+                )
+            )
+    return out
+
+
 def _validate_midi_control(loaded: LoadResult) -> list[Diagnostic]:
     """Flag a malformed [midi_control] section. Process-wide (like
     [control]), so this validates loaded.master_midi_control once rather
@@ -580,6 +603,10 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
                 # socket is currently mapped to $D400, so it's approximate;
                 # this one is precise.
                 out.extend(_probe_dac_calibration_status(name, cfg, api))
+                # Probe SID model autoconfig status live — offline validation
+                # can only check [ultimate64].sid_model is a known value; this
+                # reports what's actually socketed right now.
+                out.extend(_probe_sid_autoconfig_status(name, cfg, api))
         finally:
             api.close()
     return out
@@ -1395,6 +1422,63 @@ def _probe_dac_calibration_status(name: str, cfg: object, api: object) -> list[D
     else:
         message = f"no calibration applies right now (key {key!r}); resolves to {label!r}."
     return [Diagnostic(level="ok", category="connectivity", subject=subject, message=message)]
+
+
+def _wants_sid_autoconfig_check(cfg: object) -> bool:
+    """The run wants a SID model autoconfig check when [ultimate64].sid_model
+    isn't 'off' and a scene will actually drive the SID player — a waveform
+    scene, or a generative scene with audio_source = 'sid'
+    (SidFileAudioSource; see sid_autoconfig.py's two call sites)."""
+    ultimate64 = getattr(cfg, "ultimate64", None)
+    if ultimate64 is None or getattr(ultimate64, "sid_model", "off") == "off":
+        return False
+    scenes = getattr(cfg, "scenes", None) or []
+    for s in scenes:
+        if getattr(s, "type", None) == "waveform":
+            return True
+        if getattr(s, "type", None) == "generative" and getattr(s, "audio_source", None) == "sid":
+            return True
+    return False
+
+
+def _probe_sid_autoconfig_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+    """If [ultimate64].sid_model isn't 'off' and the config drives the SID
+    player, report the resolved mode + what's currently socketed. Since
+    doctor has no tune loaded, this can only report live socket/model
+    detection — not a per-chip plan, which needs a header (see
+    sid_autoconfig.apply_sid_autoconfig, run once a tune is actually
+    playing). Emits:
+      * ok   — mode + detected socket models
+      * warn — REST query failed"""
+    if not _wants_sid_autoconfig_check(cfg):
+        return []
+    from . import sid_hw_config
+
+    subject = f"{name} (SID model autoconfig)"
+    sid_model = getattr(getattr(cfg, "ultimate64", None), "sid_model", "auto")
+    try:
+        socket1, socket2 = sid_hw_config.detect_socket_models(api)  # type: ignore[arg-type]
+    except Exception as e:  # noqa: BLE001 — best-effort, matches sid_hw_config's own philosophy
+        return [
+            Diagnostic(
+                level="warn",
+                category="connectivity",
+                subject=subject,
+                message=f"REST query for socket model detection failed: {e}",
+                hint=f"[ultimate64].sid_model = {sid_model!r}; cannot confirm what's socketed.",
+            )
+        ]
+    detected = ", ".join(
+        f"socket {n}={model or 'none'}" for n, model in ((1, socket1), (2, socket2))
+    )
+    return [
+        Diagnostic(
+            level="ok",
+            category="connectivity",
+            subject=subject,
+            message=f"[ultimate64].sid_model = {sid_model!r}; detected {detected}.",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------

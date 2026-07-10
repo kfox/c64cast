@@ -105,6 +105,17 @@
           "type": "boolean",
           "description": "Auto-enable + size the U64 REU (live, volatile, restored at teardown) for runs that hard-require it ([audio].use_reu_pump or explicit [video].use_reu_staged = true). Removes the manual F2 enable step. false = manage the REU yourself. No effect on no-REU backends or under --skip-probe.",
           "default": true
+        },
+        "sid_model": {
+          "type": "string",
+          "description": "Auto-configure the SID chip model (6581/8580) to match what a .sid file's PSID header requests, remapping to a matching physical socket or an UltiSID core if needed. 'off' disables. An explicit '6581'/'8580' forces that model for every chip, ignoring the header.",
+          "enum": [
+            "auto",
+            "6581",
+            "8580",
+            "off"
+          ],
+          "default": "auto"
         }
       }
     },

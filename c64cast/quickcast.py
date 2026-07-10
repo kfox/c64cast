@@ -343,6 +343,8 @@ def build_config(args: argparse.Namespace) -> Config:
         apply_to_config(cfg, parse_connection_uri(target))
     if args.system:
         cfg.ultimate64.system = args.system
+    if args.sid_model:
+        cfg.ultimate64.sid_model = args.sid_model
     if args.device is not None:
         cfg.video.device = args.device
     # Audio is on by default in quick playback; --no-audio (args.audio == False)

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from .modes import DisplayMode
     from .modulation import MusicModulation
     from .music_features import SidFeatureStream
+    from .sid_host_emu import SidHeader
 
 log = logging.getLogger(__name__)
 
@@ -176,12 +177,17 @@ class SidFileAudioSource:
         display_mode: DisplayMode,
         system: str = "NTSC",
         reactive: bool = True,
+        sid_model: str = "auto",
     ):
         self._api = api
         self.file_spec = file
         self._song_arg = song
         self.system = system
         self._reactive = reactive
+        # [ultimate64].sid_model, already resolved to a plain string by the
+        # caller (sid_autoconfig.resolve_sid_model_cfg). "auto"/"6581"/
+        # "8580"/"off". See setup()/teardown().
+        self._sid_model = sid_model
         # The display is fixed at VIC bank 0; only the bitmap flag matters for
         # the payload-clearance check (bitmap modes reserve $2000 as well as
         # $0400). Read once at construction — the mode never changes per scene.
@@ -191,20 +197,25 @@ class SidFileAudioSource:
         self._sid_file: str = ""
         self.sid_bytes: bytes = b""
         self.song: int = 0
+        self.header: SidHeader | None = None
         # Host-side music-feature stream (built per setup() once the tune is
         # picked + playing); None when not reactive or before setup.
         self._features: SidFeatureStream | None = None
+        # SID hardware config (model autoconfig) snapshotted by setup() so
+        # teardown can restore it. None means "nothing applied, nothing to
+        # restore" — see sid_autoconfig.apply_sid_autoconfig.
+        self._saved_sid_config: dict[tuple[str, str], str] | None = None
         # Validate the spec + first candidate now so a misconfigured single
         # scene raises at build time (parity with WaveformScene.__init__).
         self._pick_and_load()
 
     # ---- SID selection / validation ----------------------------------------
 
-    def _validate_candidate(self, path: str) -> tuple[bytes, int]:
+    def _validate_candidate(self, path: str) -> tuple[bytes, int, SidHeader]:
         """Load + header-parse + bank-0 payload-clearance + PLAY pre-flight for
         one .sid. Raises ValueError on any rejection; returns (sid_bytes,
-        resolved_song) on success. Shared by __init__'s early check and
-        setup()'s authoritative pick."""
+        resolved_song, header) on success. Shared by __init__'s early check
+        and setup()'s authoritative pick."""
         from .sid_host_emu import (
             _sid_payload_extent,
             parse_sid_header,
@@ -242,12 +253,12 @@ class SidFileAudioSource:
                 f"the player environment doesn't provide; it would hang the "
                 f"C64-side player (silent + unresponsive). Refused."
             )
-        return sid_bytes, song
+        return sid_bytes, song, header
 
     def _pick_and_load(self) -> None:
         """Re-resolve the spec, shuffle, and load the first candidate that
-        validates. Sets self._sid_file/sid_bytes/song. Raises if every attempt
-        fails (mirrors WaveformScene._pick_and_load_sid)."""
+        validates. Sets self._sid_file/sid_bytes/song/header. Raises if every
+        attempt fails (mirrors WaveformScene._pick_and_load_sid)."""
         from .config import SID_EXTS, resolve_file_spec
 
         candidates = resolve_file_spec(self.file_spec, SID_EXTS, label="sid audio")
@@ -256,7 +267,7 @@ class SidFileAudioSource:
         last_error: Exception | None = None
         for path in pool[: self._MAX_PICK_ATTEMPTS]:
             try:
-                sid_bytes, song = self._validate_candidate(path)
+                sid_bytes, song, header = self._validate_candidate(path)
             except ValueError as e:
                 log.warning("sid audio: skipping %s: %s", os.path.basename(path), e)
                 last_error = e
@@ -264,6 +275,7 @@ class SidFileAudioSource:
             self._sid_file = path
             self.sid_bytes = sid_bytes
             self.song = song
+            self.header = header
             if len(candidates) > 1:
                 log.info(
                     "sid audio: picked %s from %d candidates",
@@ -318,6 +330,14 @@ class SidFileAudioSource:
             "bitmap" if self._is_bitmapped else "char",
             f"${play_bank:02X}" if play_bank is not None else "auto",
         )
+        # Match the tune's requested chip model (PSID header) to the U64's
+        # actual SID hardware BEFORE the player's INIT runs, so INIT's first
+        # writes land on the matched chip. No-op on "off"/TeensyROM/already-
+        # matching. Snapshot restored in teardown.
+        assert self.header is not None  # set by _pick_and_load, called above
+        from .sid_autoconfig import apply_sid_autoconfig
+
+        self._saved_sid_config = apply_sid_autoconfig(self._api, self.header, self._sid_model)
         # May raise (RSID / load<$0820 / under KERNAL) — propagate to
         # SourceScene.setup, which aborts the scene cleanly.
         self._api.run_sid_player(self.sid_bytes, song=self.song, avoid=avoid, play_bank=play_bank)
@@ -362,6 +382,11 @@ class SidFileAudioSource:
             self._api.flush()
         except Exception:
             log.exception("sid audio: teardown silence/restore failed")
+        if self._saved_sid_config:
+            from .sid_hw_config import restore_sid_config
+
+            restore_sid_config(self._api, self._saved_sid_config)
+            self._saved_sid_config = None
 
     def position_seconds(self) -> float | None:
         return None

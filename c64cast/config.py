@@ -29,6 +29,7 @@ from .dac_curves import DAC_CURVE_CHOICES
 from .dsp import DSPParams
 from .palette import resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
+from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
 
 if TYPE_CHECKING:
     from .audio import AudioStreamer
@@ -269,6 +270,16 @@ class Ultimate64Cfg:
             "explicit [video].use_reu_staged = true). Removes the manual F2 "
             "enable step. false = manage the REU yourself. No effect on no-REU "
             "backends or under --skip-probe."
+        },
+    )
+    sid_model: str = field(
+        default="auto",
+        metadata={
+            "help": "Auto-configure the SID chip model (6581/8580) to match what "
+            "a .sid file's PSID header requests, remapping to a matching physical "
+            "socket or an UltiSID core if needed. 'off' disables. An explicit "
+            "'6581'/'8580' forces that model for every chip, ignoring the header.",
+            "choices": SID_MODEL_CHOICES,
         },
     )
 
@@ -2303,6 +2314,7 @@ def _warn_audio_only_ensemble(cfgs: list[Config], names: list[str]) -> None:
 # backend + transport in one string instead of a fan of flags.
 CLI_TO_CFG = {
     "system": ("ultimate64", "system"),
+    "sid_model": ("ultimate64", "sid_model"),
     "device": ("video", "device"),
     "audio": ("audio", "enabled"),
     "audio_device": ("audio", "device"),
@@ -3109,6 +3121,15 @@ def validate_dac_curve_cfg(cfg: Config) -> None:
         )
 
 
+def validate_sid_model_cfg(cfg: Config) -> None:
+    """Guard [ultimate64].sid_model: reject an unknown value."""
+    if cfg.ultimate64.sid_model not in SID_MODEL_CHOICES:
+        raise ConfigError(
+            f"[ultimate64].sid_model must be one of {', '.join(SID_MODEL_CHOICES)}, "
+            f"got {cfg.ultimate64.sid_model!r}"
+        )
+
+
 def validate_dac_bitmap_tempo_cfg(cfg: Config) -> None:
     """Guard the bitmap+DAC tempo-compensation fractions ([audio].
     dac_bitmap_tempo_hires / _mhires): each must be 0.5..1.0. The lower bound is
@@ -3537,6 +3558,7 @@ def build_scene(
             persistence=s.persistence,
             scroll_columns=s.scroll_columns,
             songlengths_db=db,
+            sid_model=resolve_sid_model_cfg(cfg),
         )
         if s.name:
             scene.name = s.name
@@ -3602,6 +3624,7 @@ def build_scene(
                 display_mode=mode,
                 system=cfg.ultimate64.system,
                 reactive=s.reactive,
+                sid_model=resolve_sid_model_cfg(cfg),
             )
             scene = SourceScene(api, None, mode, gen, audio_src, name)
             # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at

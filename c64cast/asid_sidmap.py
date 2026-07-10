@@ -49,6 +49,17 @@ ITEM_SOCKET2_EN = "SID Socket 2"
 ITEM_SOCKET1_TYPE = "SID Detected Socket 1"
 ITEM_SOCKET2_TYPE = "SID Detected Socket 2"
 
+# UltiSID filter-curve config — a separate category from CAT_ADDRESSING/
+# CAT_SOCKETS (confirmed live against a U64: GET /v1/configs/UltiSID%20Configuration).
+CAT_ULTISID = "UltiSID Configuration"
+ITEM_ULTISID1_FILTER = "UltiSID 1 Filter Curve"
+ITEM_ULTISID2_FILTER = "UltiSID 2 Filter Curve"
+# Fixed representative curve per requested model (the full enum also has
+# "8580 Hi", "6581 Alt", "U2 Low/Mid/High" — not exposed as a config knob in
+# this pass). Confirmed live values via GET .../UltiSID%201%20Filter%20Curve.
+FILTER_CURVE_6581 = "6581"
+FILTER_CURVE_8580 = "8580 Lo"
+
 # Address enum value for a disabled slot (u64_sid_base[0]).
 ADDR_UNMAPPED = "Unmapped"
 

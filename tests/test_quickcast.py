@@ -173,11 +173,26 @@ class BuildConfigTest(unittest.TestCase):
 
     def test_overrides(self):
         cfg = quickcast.build_config(
-            _parse(["-u", "http://192.168.2.64", "-s", "PAL", "--skip-probe", "a.mp4"])
+            _parse(
+                [
+                    "-u",
+                    "http://192.168.2.64",
+                    "-s",
+                    "PAL",
+                    "--sid-model",
+                    "8580",
+                    "--skip-probe",
+                    "a.mp4",
+                ]
+            )
         )
         self.assertEqual(cfg.ultimate64.url, "http://192.168.2.64")
         self.assertEqual(cfg.ultimate64.system, "PAL")
+        self.assertEqual(cfg.ultimate64.sid_model, "8580")
         self.assertTrue(cfg.debug.skip_probe)
+
+    def test_sid_model_default_kept_when_unset(self):
+        self.assertEqual(quickcast.build_config(_parse(["a.mp4"])).ultimate64.sid_model, "auto")
 
     def test_url_default_kept_when_unset(self):
         # No -u and no $C64CAST_URL -> keep the built-in Config default.

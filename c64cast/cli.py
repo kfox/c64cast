@@ -114,6 +114,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Target system timing (default: {u64_def.system})",
     )
+    conn.add_argument(
+        "--sid-model",
+        choices=list(cfgmod.SID_MODEL_CHOICES),
+        default=None,
+        help="Auto-configure the SID chip model per .sid PSID header, "
+        "remapping to a matching physical socket or an UltiSID core if "
+        f"needed ('off' disables) (default: {u64_def.sid_model})",
+    )
 
     quick = p.add_argument_group("quick playback (with MEDIA args)")
     quick.add_argument(
@@ -1156,6 +1164,7 @@ def main(argv=None) -> int:
             cfgmod.validate_sampler_cfg(cfg)
             cfgmod.validate_dac_curve_cfg(cfg)
             cfgmod.validate_dac_bitmap_tempo_cfg(cfg)
+            cfgmod.validate_sid_model_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5
