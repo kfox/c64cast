@@ -513,6 +513,16 @@ dither = "auto"
 # diffuse to neighbors (1.0 = textbook kernel weights).
 dither_strength = 0.5
 #
+# color_match: color space for the nearest-palette match on the quantizing
+# modes (mcm/mhires/hires/petscii). "perceptual" measures nearest-color in
+# CIE-Lab — perceptually uniform, so it picks the color the eye calls closest
+# (e.g. a warm gray → orange/brown, not the muddy gray the brightness-weighted
+# metric picks). "rgb" is the classic brightness-weighted BGR metric. Both keep
+# the channel_boost + gray-penalty shaping above; only the distance space
+# differs. "auto" (default) picks perceptual on every quantizing mode (a no-op
+# on hires edges / blank, which pick no colors). The gain is most visible on mcm.
+color_match = "auto"
+#
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video
 # and slideshow scenes only (webcam can't pre-scan), c64cast pre-scans the

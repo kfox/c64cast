@@ -724,6 +724,72 @@ def _palette_lab() -> np.ndarray:
 
 _PALETTE_LAB = _palette_lab()
 
+# Expansion-trick precompute for the Lab nearest-palette distance, mirroring
+# the weighted-BGR path (_WPAL / _PAL_NORMSQ). d²(x, p) = |x|² - 2·x·p + |p|²
+# lets a single (N, 3) @ (3, 16) matmul replace the (N, 16, 3) broadcast tensor.
+_PAL_LAB_T = _PALETTE_LAB.T.copy()  # (3, 16)
+_PAL_LAB_NORMSQ = (_PALETTE_LAB**2).sum(axis=1)  # (16,)
+
+# ---------------------------------------------------------------------------
+# Perceptual (CIE-Lab) nearest-palette matching — the [color].color_match
+# "perceptual" path.
+# ---------------------------------------------------------------------------
+# The default quantizer (quantize_distances above) measures nearest-color in a
+# weighted BGR space (DISTANCE_WEIGHTS [2, 4, 3]) that is brightness-dominated:
+# a warm mid-gray skin pixel lands closer to a gray-axis entry than to orange/
+# brown. CIE-Lab is perceptually near-uniform, so the nearest-Lab match picks
+# the color the eye would actually call closest — the accuracy win of the
+# perceptual path is a better hue decision among the candidate colors.
+#
+# The perceptual path swaps ONLY the distance space: the channel_boost + gray
+# penalty shaping still applies. Those two aren't just weighted-BGR crutches —
+# the gray penalty keeps a flat desaturated region (a pale sky) from fragmenting
+# into gray under the accurate-but-drab Lab match, and channel_boost holds the
+# C64-friendly hues; dropping them (an earlier revision) measurably regressed
+# flat regions on real hardware. See modes.py.
+#
+# Distances are in OpenCV 8-bit Lab units (L, a, b each on a 0..255 scale), so a
+# perceptual d² is ~1/3 the magnitude of a weighted-BGR d² for the same physical
+# color gap (unweighted 3-channel vs weight-sum-9). Callers that add d²-space
+# biases/thresholds under the Lab metric (modes.py's gray penalty + percell
+# hysteresis) scale them by this factor to preserve their tuned strength.
+PERCEPTUAL_DIST_SCALE = 1.0 / 3.0  # approx d²_lab / d²_weighted_bgr for equal gaps
+
+COLOR_MATCH_MODES: tuple[str, ...] = ("rgb", "perceptual")
+
+
+def _bgr_to_lab(flat_pixels: np.ndarray) -> np.ndarray:
+    """Convert (N, 3) float32 BGR pixels (0..255) to (N, 3) float32 Lab.
+
+    OpenCV's 8-bit Lab conversion needs uint8 input, so the float pixels are
+    clipped + rounded first — sub-integer precision is irrelevant to a
+    nearest-of-16 decision (the source pixels are uint8-derived anyway)."""
+    u8 = np.clip(flat_pixels, 0, 255).astype(np.uint8).reshape(-1, 1, 3)
+    return cv2.cvtColor(u8, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
+
+
+def quantize_distances_lab(flat_pixels: np.ndarray) -> np.ndarray:
+    """Return per-pixel squared CIE-Lab distance to each of the 16 palette colors.
+
+    flat_pixels: (N, 3) float32 BGR (0..255). Returns (N, 16) float32. The
+    perceptual sibling of quantize_distances; downstream compose logic (argmin,
+    bg/fg picks, dither candidate resolution) is metric-agnostic and works on
+    this matrix unchanged."""
+    lab = _bgr_to_lab(flat_pixels)
+    px_normsq = (lab**2).sum(axis=1)  # (N,)
+    cross = lab @ _PAL_LAB_T  # (N, 16)
+    return px_normsq[:, None] - 2.0 * cross + _PAL_LAB_NORMSQ[None, :]
+
+
+def quantize_distances_for(flat_pixels: np.ndarray, *, perceptual: bool) -> np.ndarray:
+    """Dispatch to the Lab or weighted-BGR (N, 16) distance matrix by metric."""
+    return quantize_distances_lab(flat_pixels) if perceptual else quantize_distances(flat_pixels)
+
+
+def quantize_flat_for(flat_pixels: np.ndarray, *, perceptual: bool) -> np.ndarray:
+    """Nearest-palette index per pixel in the selected metric. (N, 3) → (N,)."""
+    return np.argmin(quantize_distances_for(flat_pixels, perceptual=perceptual), axis=1)
+
 
 @dataclass(frozen=True)
 class ColorMap:

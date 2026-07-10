@@ -28,7 +28,7 @@ from .c64 import nmi_rate_safety
 from .dac_curves import DAC_CURVE_CHOICES
 from .dither import DITHER_METHODS
 from .dsp import DSPParams
-from .palette import resolve_color
+from .palette import COLOR_MATCH_MODES, resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
 
@@ -1488,6 +1488,20 @@ class ColorCfg:
             "neighbors (1.0 = the textbook kernel weights)."
         },
     )
+    color_match: str = field(
+        default="auto",
+        metadata={
+            "help": "Color space for the nearest-palette match on the quantizing "
+            "modes (mcm/mhires/hires/petscii). 'perceptual' measures nearest-color "
+            "in CIE-Lab (perceptually uniform — picks the color the eye calls "
+            "closest, e.g. a warm gray → orange/brown, not muddy gray). 'rgb' is "
+            "the classic brightness-weighted BGR metric. Both keep the "
+            "channel_boost + gray-penalty shaping; only the distance space "
+            "differs. 'auto' (default) picks perceptual on every quantizing mode "
+            "(a no-op on hires edges / blank, which pick no colors).",
+            "choices": ("auto",) + COLOR_MATCH_MODES,
+        },
+    )
 
 
 @dataclass
@@ -2542,6 +2556,9 @@ def _build_display_mode(
     hue_corrections_replace = color.hue_corrections_replace_defaults
     force_palette = color.force_palette
     dither_strength = color.dither_strength
+    # Resolve [color].color_match's "auto" against the concrete display mode —
+    # the single point every mode's perceptual flag flows through.
+    perceptual = resolve_color_match(color.color_match, name)
     if name == "hires_edges":
         return HiresDisplayMode(
             style="edges",
@@ -2557,6 +2574,7 @@ def _build_display_mode(
             audio_reu_pump_active=audio_reu_pump_active,
             dither_method=dither_method,
             dither_strength=dither_strength,
+            perceptual=perceptual,
         )
     if name == "petscii":
         return PETSCIIDisplayMode(
@@ -2565,6 +2583,7 @@ def _build_display_mode(
             channel_boost=channel_boost,
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
+            perceptual=perceptual,
         )
     if name == "mcm":
         return MCMDisplayMode(
@@ -2575,6 +2594,7 @@ def _build_display_mode(
             force_palette=force_palette,
             dither_method=dither_method,
             dither_strength=dither_strength,
+            perceptual=perceptual,
         )
     if name == "mhires":
         return MultiHiresDisplayMode(
@@ -2589,6 +2609,7 @@ def _build_display_mode(
             text_double_height=text_double_height,
             dither_method=dither_method,
             dither_strength=dither_strength,
+            perceptual=perceptual,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
@@ -3221,6 +3242,38 @@ def validate_dither_cfg(cfg: Config) -> None:
     if not 0.0 <= cfg.color.dither_strength <= 2.0:
         raise ConfigError(
             f"[color].dither_strength must be 0..2.0, got {cfg.color.dither_strength}"
+        )
+
+
+COLOR_MATCH_CHOICES: tuple[str, ...] = ("auto", *COLOR_MATCH_MODES)
+
+# Display modes whose "auto" color_match resolves to perceptual (CIE-Lab). These
+# are the modes that make a genuine nearest-of-16 color decision; the perceptual
+# metric picks the color the eye calls closest and needs no channel_boost /
+# gray-penalty bias (see palette.quantize_distances_for). Modes not listed
+# ("blank", "hires_edges") pick no colors, so the setting is a no-op there and
+# auto resolves to rgb (harmless).
+_COLOR_MATCH_AUTO_PERCEPTUAL: frozenset[str] = frozenset({"mcm", "mhires", "hires", "petscii"})
+
+
+def resolve_color_match(color_match_setting: str, display_mode_name: str) -> bool:
+    """Resolve [color].color_match to a perceptual bool for a display mode.
+
+    An explicit 'perceptual'/'rgb' passes through; 'auto' picks perceptual for
+    the quantizing modes (see _COLOR_MATCH_AUTO_PERCEPTUAL) and rgb otherwise."""
+    if color_match_setting == "perceptual":
+        return True
+    if color_match_setting == "rgb":
+        return False
+    return display_mode_name in _COLOR_MATCH_AUTO_PERCEPTUAL
+
+
+def validate_color_match_cfg(cfg: Config) -> None:
+    """Guard [color].color_match: reject an unknown value."""
+    if cfg.color.color_match not in COLOR_MATCH_CHOICES:
+        raise ConfigError(
+            f"[color].color_match must be one of {', '.join(COLOR_MATCH_CHOICES)}, "
+            f"got {cfg.color.color_match!r}"
         )
 
 

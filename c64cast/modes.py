@@ -33,6 +33,7 @@ from .palette import (
     C64_PALETTE_BGR,
     DEFAULT_HUE_CORRECTIONS,
     GRAYSCALE_CHROMATIC_PENALTY,
+    PERCEPTUAL_DIST_SCALE,
     ColorFit,
     ColorMap,
     HueCorrection,
@@ -45,7 +46,8 @@ from .palette import (
     parse_hue_corrections,
     pick_diverse_top_n,
     quantize_distances,
-    quantize_flat,
+    quantize_distances_for,
+    quantize_flat_for,
 )
 from .petscii_styles import (
     RANDOM_STYLE,
@@ -1754,8 +1756,13 @@ class PETSCIIDisplayMode(CharDisplayMode):
         hue_corrections: list[dict] | None = None,
         hue_corrections_replace: bool = False,
         channel_boost: list[float] | None = None,
+        perceptual: bool = False,
     ):
         validate_style(style)
+        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
+        # Threaded into each style's per-cell color pick; styles decide their
+        # own glyph/luma independently of the color metric.
+        self._perceptual = bool(perceptual)
         self._configured_style = style  # may be "random" sentinel
         # Resolve "random" lazily at setup() so each scene instance
         # (including single-scene loops via teardown+setup) picks fresh.
@@ -1808,7 +1815,9 @@ class PETSCIIDisplayMode(CharDisplayMode):
         img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
         if self._color_fit is not None:
             img = apply_color_fit(img, self._color_fit)
-        screen, color = self._style.compose(img, self._channel_boost, self._hue_corrections)
+        screen, color = self._style.compose(
+            img, self._channel_boost, self._hue_corrections, self._perceptual
+        )
         return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 
     def push(self, api: C64Backend, buffers: ComposeBuffers) -> None:
@@ -1904,6 +1913,7 @@ class MCMDisplayMode(CharDisplayMode):
         force_palette: bool = False,
         dither_method: str = "none",
         dither_strength: float = 0.5,
+        perceptual: bool = False,
     ):
         _validate_palette_mode(palette_mode)
         # The forced-palette preset pairs with percell (see cycle_style); when
@@ -1917,6 +1927,15 @@ class MCMDisplayMode(CharDisplayMode):
         self._channel_boost, self._hue_corrections = _resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
+        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
+        # When on, compose() measures nearest-color in Lab (perceptually uniform)
+        # instead of the brightness-weighted BGR metric. The channel_boost + gray
+        # penalty shaping still applies (they keep flat desaturated regions from
+        # fragmenting to gray and hold C64-friendly hues); only the distance
+        # space changes. The penalty is in d² units, so it's scaled to the Lab
+        # metric's smaller magnitude. See palette.quantize_distances_for.
+        self._perceptual = bool(perceptual)
+        self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         self._last_bg: np.ndarray | None = None
@@ -1998,13 +2017,13 @@ class MCMDisplayMode(CharDisplayMode):
                 w, h = self.frame_target_size
                 offset = bayer_offset(h, w, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            # Single distance matrix (with gray penalty) shared across all
-            # downstream decisions — per-pixel argmin, the bg picker, and the
-            # per-cell fg search all need to agree on which palette entry "wins"
-            # for a given pixel, so apply the bias once at the top. In-place
-            # add avoids a second ~256 KB allocation each frame.
-            all_d = quantize_distances(flat)  # (4000, 16)
-            all_d += self._gray_penalty
+            # Single distance matrix (with gray penalty, scaled to the active
+            # metric) shared across all downstream decisions — per-pixel argmin,
+            # the bg picker, and the per-cell fg search all need to agree on which
+            # palette entry "wins" for a given pixel, so apply the bias once at
+            # the top. In-place add avoids a second ~256 KB allocation each frame.
+            all_d = quantize_distances_for(flat, perceptual=self._perceptual)  # (4000, 16)
+            all_d += self._gray_penalty * self._penalty_scale
         per_pixel = np.argmin(all_d, axis=1)
         if self._fixed_bg is not None:
             bg = self._fixed_bg
@@ -2141,9 +2160,14 @@ class HiresDisplayMode(BitmapDisplayMode):
         audio_reu_pump_active: bool = False,
         dither_method: str = "none",
         dither_strength: float = 0.5,
+        perceptual: bool = False,
     ):
         _validate_hires_style(style)
         self.style = style
+        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
+        # Only the "normal" style quantizes color (bg + per-cell fg samples); the
+        # edges styles are fixed 2-color, so this is a no-op there.
+        self._perceptual = bool(perceptual)
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         self._last_bg: int | None = None
@@ -2238,7 +2262,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             if self._dither_method == "ordered":
                 offset = bayer_offset(200, 320, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            quantized = quantize_flat(flat).reshape(200, 320)
+            quantized = quantize_flat_for(flat, perceptual=self._perceptual).reshape(200, 320)
             counts = np.bincount(quantized.ravel(), minlength=16)
             bg = int(counts.argmax())
             sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
@@ -2404,6 +2428,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         text_double_height: bool = False,
         dither_method: str = "none",
         dither_strength: float = 0.5,
+        perceptual: bool = False,
     ):
         _validate_palette_mode(palette_mode)
         # Text overlays render double-wide ("chunky") by default — an 8×8 glyph
@@ -2421,13 +2446,27 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._channel_boost, self._hue_corrections = _resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
+        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
+        # When on, compose() measures nearest-color in Lab (perceptually uniform)
+        # instead of the brightness-weighted BGR metric; the channel_boost + gray
+        # penalty shaping still applies (only the distance space changes). The
+        # gray penalty and the percell code/quant hysteresis all live in d² space,
+        # so scale them to the Lab metric's smaller magnitude to preserve the same
+        # bias/flicker-suppression strength. See palette.quantize_distances_for.
+        self._perceptual = bool(perceptual)
+        self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
+        self._quant_hysteresis = PERCELL_QUANT_HYSTERESIS_BONUS * self._penalty_scale
+        self._code_hysteresis = PERCELL_CODE_HYSTERESIS_BONUS * self._penalty_scale
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         # Per-palette pairwise distances (no penalty — this is for the
         # "snap unused indices to their nearest of the 4 winners" remap,
         # which is a pure color-space neighbour query, not a chromatic-
-        # preference question.
-        self._pal_pairwise = quantize_distances(C64_PALETTE_BGR)  # (16, 16)
+        # preference question. Match the active metric so the remap agrees
+        # with the per-pixel picks.
+        self._pal_pairwise = quantize_distances_for(
+            C64_PALETTE_BGR, perceptual=self._perceptual
+        )  # (16, 16)
         self._last_bg: int | None = None
         self._fixed_slots: tuple[int, ...] | None = None
         self._fixed_lut: np.ndarray | None = None
@@ -2604,9 +2643,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 w, h = self.frame_target_size
                 offset = bayer_offset(h, w, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            # In-place gray-penalty add avoids a second (N,16) float32 alloc.
-            d = quantize_distances(flat)
-            d += self._gray_penalty
+            # In-place gray-penalty add (scaled to the active metric) avoids a
+            # second (N,16) float32 alloc.
+            d = quantize_distances_for(flat, perceptual=self._perceptual)
+            d += self._gray_penalty * self._penalty_scale
 
         if self.palette_mode == "percell":
             bitmap_ram, screen_ram, color_ram, bg0 = self._compose_percell(d, flat)
@@ -2736,7 +2776,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             idx = np.arange(quantized.size)
             d_last = d[idx, self._last_quantized]
             d_min = d[idx, quantized]
-            keep = (d_last - d_min) <= PERCELL_QUANT_HYSTERESIS_BONUS
+            keep = (d_last - d_min) <= self._quant_hysteresis
             quantized = np.where(keep, self._last_quantized, quantized)
         self._last_quantized = quantized
 
@@ -2868,9 +2908,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                     d_min = np.take_along_axis(d_cand, codes[..., None].astype(np.intp), axis=2)[
                         ..., 0
                     ]
-                    keep = ((d_last - d_min) <= PERCELL_CODE_HYSTERESIS_BONUS) & cell_unchanged[
-                        :, None
-                    ]
+                    keep = ((d_last - d_min) <= self._code_hysteresis) & cell_unchanged[:, None]
                     codes = np.where(keep, last, codes).astype(np.uint8)
             self._last_codes = codes
             self._last_cand = cand
