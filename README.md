@@ -78,7 +78,7 @@ Audio FPGA PCM sampler.
 ticker, PETSCII spectrum analyzer, clock, weather, callsign, countdown,
 network info, multi-line logo, demo-scene big text, OBS Studio status.
 
-**Ensemble mode** — one process drives **N Ultimate 64s at once** as a
+**Ensemble mode** — one process drives **N systems at once** as a
 video wall, with cross-system orchestration (e.g. a `big_text` message
 scrolling across every screen as a single canvas).
 
