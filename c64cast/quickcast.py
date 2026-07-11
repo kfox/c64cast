@@ -355,6 +355,7 @@ def build_config(args: argparse.Namespace) -> Config:
     cfg.audio.enabled = True if args.audio is None else args.audio
     cfg.debug.skip_probe = bool(args.skip_probe)
     cfg.debug.verbose = args.verbose or 0
+    cfg.debug.log_file = args.log_file
 
     scenes: list[SceneCfg] = []
     for arg in args.inputs:
