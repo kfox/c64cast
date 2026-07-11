@@ -1075,6 +1075,35 @@
         }
       }
     },
+    "wled": {
+      "type": "object",
+      "description": "Broadcast WLED Audio Sync UDP from the playing SID so LAN LED matrices react to the music (WLED bridge Mode 3).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Broadcast WLED Audio Sync packets from the playing SID.",
+          "default": false
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Target host/IP. Unset = WLED's default multicast group 239.0.0.1 (every WLED on the segment with 'Receive' enabled reacts). Set a unicast address to target one device."
+        },
+        "port": {
+          "type": "integer",
+          "description": "UDP port (WLED's Audio Sync default is 11988).",
+          "default": 11988
+        },
+        "rate_hz": {
+          "type": "number",
+          "description": "Broadcast rate in Hz. WLED expects roughly frame-rate updates; ~40-60 is typical.",
+          "default": 50.0
+        }
+      }
+    },
     "scenes": {
       "type": "array",
       "description": "Playlist scenes ([[scenes]] blocks).",

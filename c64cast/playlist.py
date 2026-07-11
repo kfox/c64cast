@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .config import SceneCfg
     from .ensemble import Ensemble
     from .modes import DisplayMode
+    from .modulation import MusicModulation
 
 InterstitialFactory = Callable[[str], Scene]
 FollowerSceneFactory = Callable[["SceneCfg"], Scene]
@@ -145,6 +146,20 @@ class Playlist:
         self.menu_cfg = menu_cfg
         self.config = config
         self.config_path = config_path
+        # WLED audio-sync broadcaster (bridge Mode 3): a process-wide UDP sender
+        # that pulls the active scene's music features and multicasts them as
+        # WLED Audio Sync packets so LAN LED matrices react to the SID. Built
+        # only when [wled].enabled; started/stopped around the run loop.
+        self._wled: Any = None
+        if config is not None and config.wled.enabled:
+            from .wled_sync import WledAudioSyncBroadcaster
+
+            self._wled = WledAudioSyncBroadcaster(
+                self._active_features,
+                host=config.wled.host,
+                port=config.wled.port,
+                rate_hz=config.wled.rate_hz,
+            )
         self._menu_overlay: Any = None
         # While the menu is open the background is frozen (not re-rendered every
         # frame) so the post-render panel can't flicker against a per-frame
@@ -894,6 +909,14 @@ class Playlist:
         # case some future code path mutates it mid-flight.
         self.index = saved_idx
 
+    def _active_features(self) -> MusicModulation | None:
+        """The currently-playing scene's live music features (None when there's
+        no scene, or the scene has no music source). The WLED broadcaster polls
+        this from its own thread — Scene.features() reads are self-synchronized
+        (SID scenes take their own lock), so no extra locking is needed here."""
+        scene = self.current
+        return scene.features() if scene is not None else None
+
     def run(self) -> None:
         self._last_heartbeat = 0.0
         self.log.info(
@@ -920,6 +943,8 @@ class Playlist:
         # one frame_time. If real wall clock has fallen far behind the
         # deadline, jump it forward (effectively dropping the missed frames)
         # so animations stay tied to wall-clock time instead of compounding lag.
+        if self._wled is not None:
+            self._wled.start()
         next_deadline = time.time()
         try:
             while not self.stop_event.is_set():
@@ -962,6 +987,8 @@ class Playlist:
         except KeyboardInterrupt:
             self.log.info("interrupted")
         finally:
+            if self._wled is not None:
+                self._wled.stop()
             for controller in (self.key_poller, self.vision_controller):
                 if controller is not None:
                     controller.stop()

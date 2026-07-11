@@ -258,6 +258,13 @@ class Scene:
         AudioStreamer, so they don't override this."""
         return self.WANTS_AUDIO_LOCK
 
+    def features(self) -> MusicModulation | None:
+        """A live music-feature snapshot for this scene, or None when the scene
+        has no music source. Consumed by process-wide reactive sinks that run
+        outside the render loop (e.g. the WLED audio-sync broadcaster). Default:
+        no music. SID-driven scenes override to expose their emulator state."""
+        return None
+
     def prepare_next(self) -> None:
         """Called by the Playlist right before the interstitial that
         precedes this scene is built. Randomized scenes override this to
@@ -514,6 +521,11 @@ class SourceScene(Scene):
         # The audio building block decides: a mic/silent source doesn't claim
         # the ensemble SID spotlight; a future SID-playback source would.
         return self.audio_source.wants_audio_lock
+
+    def features(self) -> MusicModulation | None:
+        # Expose the audio source's live music features (a SID source returns a
+        # real MusicModulation; mic/null return None) for reactive sinks.
+        return self.audio_source.features()
 
     def setup(self) -> None:
         super().setup()

@@ -1837,6 +1837,40 @@ class MenuCfg:
 
 
 @dataclass
+class WledCfg:
+    """Broadcast WLED "Audio Sync" UDP packets synthesized from the SID (WLED
+    bridge Mode 3). When enabled, whichever SID-driven scene is on screen
+    (waveform, or a generative scene with audio_source = "sid") is turned into a
+    WLED Audio Sync V2 stream and multicast on the LAN, so real WLED LED
+    matrices/strips react to the music with no microphone on the WLED side. Set
+    Sound Sync = "Receive" on the target WLED. Pure UDP; no extra dependency."""
+
+    enabled: bool = field(
+        default=False,
+        metadata={"help": "Broadcast WLED Audio Sync packets from the playing SID."},
+    )
+    host: str | None = field(
+        default=None,
+        metadata={
+            "help": "Target host/IP. Unset = WLED's default multicast group "
+            "239.0.0.1 (every WLED on the segment with 'Receive' enabled reacts). "
+            "Set a unicast address to target one device."
+        },
+    )
+    port: int = field(
+        default=11988,
+        metadata={"help": "UDP port (WLED's Audio Sync default is 11988)."},
+    )
+    rate_hz: float = field(
+        default=50.0,
+        metadata={
+            "help": "Broadcast rate in Hz. WLED expects roughly frame-rate updates; "
+            "~40-60 is typical."
+        },
+    )
+
+
+@dataclass
 class SystemEntryCfg:
     """One system in an ensemble — name plus the path to its per-system
     standalone TOML. The path is resolved relative to the master TOML's
@@ -1878,6 +1912,7 @@ class Config:
     control: ControlPlaneCfg = field(default_factory=ControlPlaneCfg)
     midi_control: MidiControlCfg = field(default_factory=MidiControlCfg)
     menu: MenuCfg = field(default_factory=MenuCfg)
+    wled: WledCfg = field(default_factory=WledCfg)
     # Set only on the master Config produced by load_master(). Per-system
     # Configs in the returned list always have ensemble = None.
     ensemble: EnsembleCfg | None = None
@@ -2052,6 +2087,7 @@ def load(path: str | None) -> Config:
         ("control", cfg.control),
         ("midi_control", cfg.midi_control),
         ("menu", cfg.menu),
+        ("wled", cfg.wled),
     ):
         if section in data:
             _apply_section(dc, data[section], section)
@@ -3437,6 +3473,34 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                     "of the form 'effect.<name>' or 'source.<name>', got "
                     f"{target!r}"
                 )
+
+
+def _has_sid_scene(cfg: Config) -> bool:
+    """True if the playlist has any SID-driven scene the WLED audio-sync
+    broadcaster could source features from: a waveform scene, or a generative
+    scene whose audio_source is a SID file."""
+    return any(
+        s.type == "waveform" or (s.type == "generative" and s.audio_source == "sid")
+        for s in cfg.scenes
+    )
+
+
+def validate_wled_cfg(cfg: Config) -> None:
+    """Guard [wled] (WLED Audio Sync broadcast, Mode 3): bound the port and
+    rate, and warn (don't fail) when enabled with no SID-driven scene to source
+    features from — nothing would be broadcast. No-op when disabled."""
+    w = cfg.wled
+    if not w.enabled:
+        return
+    if not 1 <= w.port <= 65535:
+        raise ConfigError(f"[wled].port must be 1..65535, got {w.port}")
+    if not 1.0 <= w.rate_hz <= 120.0:
+        raise ConfigError(f"[wled].rate_hz must be 1..120, got {w.rate_hz}")
+    if not _has_sid_scene(cfg):
+        log.warning(
+            "[wled] enabled but no SID-driven scene (waveform, or generative with "
+            "audio_source = 'sid') in the playlist — nothing will be broadcast."
+        )
 
 
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:

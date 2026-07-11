@@ -140,6 +140,12 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
         "cycling, transport, live effect params (extra).",
     ),
     ("menu", cfgmod.MenuCfg, "On-C64 SPACE-key menu for live scene tweaks."),
+    (
+        "wled",
+        cfgmod.WledCfg,
+        "Broadcast WLED Audio Sync UDP from the playing SID so LAN LED matrices "
+        "react to the music (WLED bridge Mode 3).",
+    ),
 )
 
 # Display modes. `runtime_name` is DisplayMode.name (hires_edges and hires both
