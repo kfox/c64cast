@@ -7,12 +7,13 @@ import os
 import tempfile
 import textwrap
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from _fakes import FakeAPI
 
 from c64cast import config as cfgmod
-from c64cast import doctor
+from c64cast import dac_calibration, doctor
 from c64cast.backend import HardwareProfile
 
 
@@ -1029,6 +1030,78 @@ class EnvironmentProbeTest(unittest.TestCase):
         with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
             diags = doctor.validate_load_result(_load(""), probe_u64=False)
         self.assertTrue(any(d.category == "environment" for d in diags))
+
+
+class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
+    """_validate_dac_curve (offline — no live device identity) must not claim
+    a confident 'no calibration applies' when a live run's key (unique_id /
+    USB serial) could differ from the offline fallback key it's stuck with."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig_dir = dac_calibration.CALIBRATION_DIR
+        dac_calibration.CALIBRATION_DIR = Path(self._tmp.name) / "dac"
+
+    def tearDown(self):
+        dac_calibration.CALIBRATION_DIR = self._orig_dir
+        self._tmp.cleanup()
+
+    def _write_calibration(self, filename: str, backend: str = "ultimate") -> None:
+        dac_calibration.CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
+        _write(
+            str(dac_calibration.CALIBRATION_DIR / filename),
+            f"""
+            {{"schema": 2, "backend": "{backend}", "sids": {{"default": {{"sidtable": {[0] * 256}}}}}}}
+            """,
+        )
+
+    def _loaded(self, dac_curve: str, extra: str = "") -> cfgmod.LoadResult:
+        return _load(f"""
+            [ultimate64]
+            url = "http://192.168.2.64"
+            [audio]
+            enabled = true
+            dac_curve = "{dac_curve}"
+            {extra}
+            [[scenes]]
+            type = "webcam"
+            display = "petscii"
+        """)
+
+    def test_auto_no_files_anywhere_is_plain_ok(self):
+        diags = doctor._validate_dac_curve(self._loaded("auto"))
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("resolves to 'mahoney_ultisid' on this system", diags[0].message)
+        self.assertNotIn("cannot confirm", diags[0].message)
+
+    def test_auto_unmatched_files_on_disk_flags_uncertainty(self):
+        self._write_calibration("ultimate-SOMEOTHERUNIT.json")
+        diags = doctor._validate_dac_curve(self._loaded("auto"))
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("1 calibration file(s) on disk", diags[0].message)
+        self.assertIn("--skip-probe", diags[0].hint or "")
+
+    def test_calibrated_no_files_anywhere_is_still_a_hard_error(self):
+        diags = doctor._validate_dac_curve(self._loaded("calibrated"))
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
+
+    def test_calibrated_unmatched_files_on_disk_downgrades_to_warn(self):
+        self._write_calibration("ultimate-SOMEOTHERUNIT.json")
+        diags = doctor._validate_dac_curve(self._loaded("calibrated"))
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "warn")
+        self.assertIn("cannot confirm", diags[0].message)
+
+    def test_profile_override_stays_authoritative_despite_stray_files(self):
+        self._write_calibration("ultimate-SOMEOTHERUNIT.json")
+        diags = doctor._validate_dac_curve(
+            self._loaded("calibrated", extra='dac_calibration_profile = "my-rig"')
+        )
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
 
 
 class DacCalibrationStatusProbeTest(unittest.TestCase):

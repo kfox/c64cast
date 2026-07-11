@@ -184,6 +184,43 @@ def calibration_path(cfg: Config, be: C64Backend | None = None) -> Path:
     return CALIBRATION_DIR / f"{resolve_calibration_key(cfg, be)}.json"
 
 
+def offline_key_is_authoritative(cfg: Config) -> bool:
+    """True when ``resolve_calibration_key(cfg)`` (no live backend) already
+    returns the same key a live run would use, so an offline check (e.g.
+    ``--doctor --skip-probe``) can trust a hit *or* a miss against that key.
+
+    False for the Ultimate and a TeensyROM serial link with no
+    ``dac_calibration_profile`` override: both derive their real key from a
+    live device identity (``unique_id`` / USB serial number) that's only
+    reachable with a connected backend, so the offline fallback key (host /
+    serial-device-path) may not match the file a live run would pick — a
+    miss against it doesn't mean no calibration applies."""
+    if cfg.audio.dac_calibration_profile:
+        return True
+    return cfg.hardware.backend == "teensyrom" and cfg.teensyrom.transport == "tcp"
+
+
+def list_calibration_files(backend: str | None = None) -> list[Path]:
+    """Calibration files on disk, optionally filtered to those recorded
+    (at save time) as belonging to the given ``[hardware].backend``. Used by
+    offline diagnostics to note "a calibration exists somewhere, but this
+    pass can't confirm it's the one that applies" without needing hardware."""
+    if not CALIBRATION_DIR.is_dir():
+        return []
+    files = sorted(CALIBRATION_DIR.glob("*.json"))
+    if backend is None:
+        return files
+    out = []
+    for path in files:
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("backend") == backend:
+            out.append(path)
+    return out
+
+
 def _select_sid_entry(cfg: Config, be: C64Backend | None, sids: dict[str, Any]) -> str | None:
     """Which entry in a loaded calibration's ``sids`` map applies right now."""
     has_socket_entries = "1" in sids or "2" in sids
