@@ -30,6 +30,8 @@ scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/...'   # needs the `y
 **Audio is on by default** (`AudioCfg.enabled` defaults True); `--no-audio` mutes. On the U64, video audio defaults to the high-fidelity **Ultimate Audio FPGA PCM sampler** (`[audio].backend = "auto"` → sampler when available; see [sampler.py](c64cast/sampler.py)); `backend = "dac"` forces the lo-fi 4-bit `$D418` DAC (the only path on TeensyROM, and the path for mic/webcam audio everywhere). The U64 FPGA clocks the sampler ~1.44% **slow** vs the firmware-nominal 6.25 MHz, so at nominal the audio drifts against the (host-clock-paced) video over minutes. This is a firmware/FPGA-derivation property (identical across U64 units on the same firmware, not chip-to-chip), so `[audio].sampler_clock_hz` **ships defaulted to the measured effective clock, 6160000 Hz** (`SAMPLER_REF_CLOCK_DEFAULT`) — no per-unit calibration needed. It was measured rigorously with [scripts/diags/sampler_av_align_calib.py](scripts/diags/sampler_av_align_calib.py), which emits a SID reference tone (accurate system clock) and a sampler tone at each interval into one captured stream and fits their inter-marker drift — a differential that cancels the capture-side time compression (avfoundation drops samples under heavy host DMA load, a load-dependent factor — not the sampler; unlike the older pitch-based [sampler_clock_calib.py](scripts/diags/sampler_clock_calib.py)). A confirmation run driven at 6160000 showed residual drift of only -1.3 ms per 5 s. Re-measure and update the constant after any firmware release that changes sampler timing; hardware/firmware that clocks it correctly can set 6250000. Flag groups (`-h` shows them grouped): `connection`, `quick playback`, `video input`, `audio`, `vision input`, `playlist`, `introspection`, `debug`.
 Notable: `--config`, `-v` / `-vv` (info / debug logging), `--log-file PATH` (mirror logs to disk for headless runs). Terminal logging uses `rich.logging.RichHandler` (colored + timestamped) when the `logging` extra is installed; falls back to plain stdlib `StreamHandler` otherwise.
 
+**Scene recording metadata.** Every scene activation logs one `SCENE_CONFIG_JSON` line (via [recording_metadata.py](c64cast/recording_metadata.py), called from `Playlist._safe_setup`) — a snapshot of that scene's coalesced settings (defaults→config→CLI, same precedence as everywhere else) plus scene-specific source metadata: display mode, `[color]`/`[audio]` knobs, hardware backend + NTSC/PAL + `sid_model`, and a `source` block (a video scene's original URL when it was one, or local filename; a waveform/generative-sid scene's real PSID header name/author/released). Deliberately excludes `[ultimate64].url`/`dma_password`/`[teensyrom]` host+port — this is meant to end up in a public video description, so no connection info leaks. Video `copyright` is a placeholder today (no yt-dlp uploader/license capture yet); SID tunes get their real header fields. [scripts/scene_config_to_description.py](scripts/scene_config_to_description.py) parses a `--log-file` run and renders the last (or `--all`/`--index N`) entry as a pasteable text blob for a video description.
+
 The DMA password (if the U64 has one set) is supplied via `C64CAST_DMA_PASSWORD` env var or `[ultimate64] dma_password` in the config — **no CLI flag**, so secrets don't leak into shell history or `ps` output. The env var takes precedence when both are set.
 
 **Prerequisite:** the Ultimate DMA Service must be enabled on the U64 before `c64cast` will start: F2 → Network Settings → Ultimate DMA Service → Enabled, then save. The CLI prints an actionable error pointing at this if it can't connect.
@@ -178,6 +180,10 @@ c64cast/
 │                     prompts driven by the introspect model + compat filter
 ├── keyboard.py       Polls $028D for Commodore key → pause/resume events
 ├── playlist.py       Scene state machine + overlay orchestration + pause loop
+├── recording_metadata.py  Per-scene SCENE_CONFIG_JSON log line (coalesced
+│                     settings + source/copyright metadata) for
+│                     scripts/scene_config_to_description.py; called from
+│                     Playlist._safe_setup
 ├── overlays/
 │   ├── __init__.py     Overlay base, registry, slot constants, screen-code helpers
 │   ├── corner_text.py  Base class for corner-positioned text overlays
@@ -226,7 +232,10 @@ docs/                Markdown user/developer documentation.
 scripts/             Dev helpers ([scripts/coverage.sh](scripts/coverage.sh),
                      [scripts/pre-commit.sh](scripts/pre-commit.sh)) +
                      [scripts/c64cast.sh](scripts/c64cast.sh), the uv-aware
-                     launcher (forwards args to `python -m c64cast`).
+                     launcher (forwards args to `python -m c64cast`) +
+                     [scripts/scene_config_to_description.py](scripts/scene_config_to_description.py),
+                     log → pasteable YouTube-description blob (see
+                     recording_metadata.py above).
 tests/               unittest suite. `python -m unittest discover tests`.
 .github/workflows/   CI (lint + tests on push/PR).
 .pre-commit-config.yaml  Git pre-commit hooks (ruff + tests).

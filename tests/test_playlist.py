@@ -1162,5 +1162,35 @@ class FrameDropDisturbanceTest(unittest.TestCase):
         pl._run_one_frame(pl.scenes[0], time.time() - 1.0)  # must not raise
 
 
+class SceneRecordingMetadataTest(unittest.TestCase):
+    """_safe_setup logs one SCENE_CONFIG_JSON line per activation when a
+    Config is attached, and stays silent without one."""
+
+    def _playlist(self, config):
+        return Playlist(
+            [FakeScene("A", frames_until_done=3)],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            config=config,
+        )
+
+    def test_logs_once_per_setup_with_config(self):
+        from c64cast.config import Config
+        from c64cast.recording_metadata import SCENE_CONFIG_MARKER
+
+        pl = self._playlist(Config())
+        with self.assertLogs("c64cast.recording", level="INFO") as cap:
+            pl._safe_setup(pl.scenes[0])
+        self.assertEqual(len(cap.output), 1)
+        self.assertIn(SCENE_CONFIG_MARKER, cap.output[0])
+
+    def test_no_config_logs_nothing(self):
+        pl = self._playlist(None)
+        with self.assertNoLogs("c64cast.recording", level="INFO"):
+            pl._safe_setup(pl.scenes[0])
+
+
 if __name__ == "__main__":
     unittest.main()
