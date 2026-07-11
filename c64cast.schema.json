@@ -409,7 +409,7 @@
         "interleave_videos": {
           "type": "boolean",
           "description": "Insert a video from videos_dir after each scene (multi-scene playlists only; ignored in single-scene mode).",
-          "default": true
+          "default": false
         },
         "songlengths_file": {
           "type": [
@@ -1099,8 +1099,11 @@
             "default": "webcam"
           },
           "display": {
-            "type": "string",
-            "description": "VIC-II display mode. waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random').",
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random').",
             "enum": [
               "hires_edges",
               "hires",
@@ -1109,8 +1112,7 @@
               "mhires",
               "blank",
               "random"
-            ],
-            "default": "hires_edges"
+            ]
           },
           "name": {
             "type": [
@@ -2234,9 +2236,9 @@
               "properties": {
                 "display": {
                   "enum": [
+                    "mhires",
                     "hires_edges",
                     "hires",
-                    "mhires",
                     "mcm",
                     "petscii",
                     "blank"

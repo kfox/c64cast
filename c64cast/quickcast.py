@@ -66,8 +66,11 @@ _GLOB_CHARS = re.compile(r"[*?\[]")
 _TIMESTR_HMS_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", re.IGNORECASE)
 
 # Display mode for video/slideshow scenes. mhires is the richest bitmap mode
-# and suits arbitrary film/photo content; SceneCfg's default (hires_edges) is
-# tuned for live-webcam Canny edges, not playback.
+# and suits arbitrary film/photo content (matches SceneCfg's own unset-display
+# resolution for video, see config.resolve_scene_display); kept as an
+# explicit constant here since quickcast also applies it to slideshow (whose
+# SceneCfg default resolution differs — see config._resolve_slideshow_display)
+# and needs a concrete value to fall back on when `-d/--display` isn't passed.
 _DEFAULT_VIDEO_DISPLAY = "mhires"
 
 # Scene types that accept a `duration_s` override from `-t/--duration`.

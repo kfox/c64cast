@@ -785,7 +785,7 @@ class PlaylistCfg:
         metadata={"help": "Directory of videos to interleave between scenes."},
     )
     interleave_videos: bool = field(
-        default=True,
+        default=False,
         metadata={
             "help": "Insert a video from videos_dir after each scene (multi-scene playlists "
             "only; ignored in single-scene mode)."
@@ -823,12 +823,15 @@ class PlaylistCfg:
 @dataclass
 class SceneCfg:
     type: str = field(default="webcam", metadata={"help": "Scene kind.", "choices": SCENE_TYPES})
-    display: str = field(
-        default="hires_edges",
+    display: str | None = field(
+        default=None,
         metadata={
-            "help": "VIC-II display mode. waveform and midi are bitmap-only (both "
-            "ignore this); slideshow also accepts 'random'. generative renders a "
-            "frame so any quantizing mode works (not 'blank'/'random').",
+            "help": "VIC-II display mode. Unset resolves per scene type: 'mhires' "
+            "for video (richest bitmap mode, suits arbitrary film/photo content) "
+            "and 'hires_edges' for webcam/blank/slideshow/generative (tuned for "
+            "live Canny-edge stylization). waveform and midi are bitmap-only "
+            "(both ignore this); slideshow also accepts 'random'. generative "
+            "renders a frame so any quantizing mode works (not 'blank'/'random').",
             "choices": _DISPLAY_CHOICES,
             "applies_to": ("webcam", "blank", "video", "slideshow", "generative"),
         },
@@ -2786,8 +2789,24 @@ def _resolve_file_spec_or_explain(
         raise
 
 
+def resolve_scene_display(display: str | None, scene_type: str) -> str:
+    """Resolve a SceneCfg `display` value's per-scene-type default.
+
+    Unset (`None`) resolves to `"mhires"` for video scenes (the richest
+    bitmap mode, suited to arbitrary film/photo content — matches quick
+    playback's default, see quickcast._DEFAULT_VIDEO_DISPLAY) and
+    `"hires_edges"` everywhere else (tuned for live webcam Canny-edge
+    stylization, the historical global default). Any explicit value passes
+    through unchanged. Slideshow has its own `_resolve_slideshow_display`
+    (also handles `"random"`); this helper is for webcam/video/generative
+    and doctor's uniform per-scene reporting."""
+    if display is not None:
+        return display
+    return "mhires" if scene_type == "video" else "hires_edges"
+
+
 def _display_mode_for_scene(
-    display: str,
+    display: str | None,
     s: SceneCfg,
     cfg: Config,
     *,
@@ -2799,7 +2818,8 @@ def _display_mode_for_scene(
     palette/border/background/style/REU/color kwarg cluster shared by the
     webcam, video, and slideshow paths (both the validate and build
     passes). `display` is passed explicitly because slideshow resolves
-    "random" to a concrete mode first.
+    "random" to a concrete mode first; an unset (`None`) `display` is
+    resolved here via `resolve_scene_display`.
 
     `reu_available` resolves the [video].use_reu_staged tri-state (see
     resolve_use_reu_staged). The validate passes leave it False — auto then
@@ -2824,6 +2844,7 @@ def _display_mode_for_scene(
     at the same vector."""
     from .overlays import paints_into_buffers
 
+    display = resolve_scene_display(display, s.type)
     has_buffer_overlays = any(
         paints_into_buffers(ov.get("type", "")) for ov in s.overlays if isinstance(ov, dict)
     )
@@ -2869,7 +2890,11 @@ def _display_mode_for_scene(
 
 
 def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
-    if s.display not in ("blank", "hires_edges"):
+    # "hires_edges" is accepted alongside the real default (None) as a
+    # historical quirk: it was SceneCfg's literal global default before
+    # display became per-type-resolved, and blank ignores the value anyway
+    # (always builds BlankDisplayMode below).
+    if s.display not in (None, "blank", "hires_edges"):
         raise ValueError(f"blank scene must use display = 'blank', got {s.display!r}")
     return _build_display_mode(
         "blank",
@@ -3083,14 +3108,15 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
         _resolve_file_spec_or_explain(
             s, DEFAULT_WAVEFORM_DIR, SID_EXTS, label="generative sid audio", drop_hint="a .sid"
         )
-        mode = _display_mode_for_scene(s.display, s, cfg, force_host_dma=True)
-        _check_first_sid_clears_display(s, mode)
+        display = resolve_scene_display(s.display, s.type)
+        mode = _display_mode_for_scene(display, s, cfg, force_host_dma=True)
+        _check_first_sid_clears_display(s, mode, display)
         return mode
     # mic / none: standard frame-source display (REU staging allowed).
     return _display_mode_for_scene(s.display, s, cfg)
 
 
-def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode) -> None:
+def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode, display: str) -> None:
     """Load-time guard: confirm the first resolvable .sid candidate's payload
     clears the (fixed bank-0) display regions. Best-effort fast-fail — a
     multi-entry pool may have other candidates, so this only raises when the
@@ -3116,7 +3142,7 @@ def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode) -> None:
         region = "hires bitmap" if lo == 0x2000 else "screen RAM"
         raise ValueError(
             f"generative sid audio: {os.path.basename(path)}'s payload overlaps the "
-            f"{s.display} display's {region} (${lo:04X}-${hi:04X}); a SID source "
+            f"{display} display's {region} (${lo:04X}-${hi:04X}); a SID source "
             f"can't relocate the bank-0 display. Use a char display (petscii/mcm — "
             f"they reserve only $0400) or a SID that loads above ${hi:04X}."
         )
@@ -3139,9 +3165,9 @@ def _validate_launcher(s: SceneCfg) -> None:
         raise ValueError(f"launcher: max_duration_s must be > 0, got {s.max_duration_s!r}")
     if s.min_duration_s < 0:
         raise ValueError(f"launcher: min_duration_s must be >= 0, got {s.min_duration_s!r}")
-    # `display` defaults to "hires_edges" on SceneCfg; reject any value
+    # `display` is unset by default on SceneCfg; reject any explicit value
     # since the program — not c64cast — drives the VIC.
-    if s.display != "hires_edges":
+    if s.display is not None:
         raise ValueError(
             "launcher scene does not use `display` — the launched "
             "program owns the VIC. Remove the field from the scene."
@@ -3593,14 +3619,15 @@ def build_scene(
                 "webcam scene declared but no WebcamSource was provided — "
                 "this should have been caught at cli.py startup"
             )
+        display = resolve_scene_display(s.display, s.type)
         mode = _display_mode_for_scene(
-            s.display,
+            display,
             s,
             cfg,
             reu_available=reu_available,
             backend_supports_reu=backend_supports_reu,
         )
-        name = s.name or f"Webcam {s.display}"
+        name = s.name or f"Webcam {display}"
         # Default: follow global [audio].enabled. When `audio` is None here,
         # the streamer wasn't constructed (global is off) so the scene runs
         # silent; when it's a real streamer, the scene picks it up. Set
@@ -4134,18 +4161,18 @@ DEFAULT_PROGRAM_DIR = "assets/programs"
 SLIDESHOW_RANDOM_DISPLAYS = ("mhires", "hires", "hires_edges", "mcm", "petscii")
 
 
-def _resolve_slideshow_display(spec: str) -> str:
+def _resolve_slideshow_display(spec: str | None) -> str:
     """Resolve a slideshow scene's `display` config value:
 
-    * `"hires_edges"` (the SceneCfg global default, tuned for live webcam
-      Canny-edge stylization) is substituted with `"mhires"` — stills
-      benefit most from per-cell color picking. Users wanting bitmap
-      output can set `display = "hires"` explicitly.
+    * Unset (`None`) or the explicit value `"hires_edges"` (tuned for live
+      webcam Canny-edge stylization, not stills) resolves to `"mhires"` —
+      stills benefit most from per-cell color picking. Users wanting plain
+      bitmap output can set `display = "hires"` explicitly.
     * `"random"` picks one of `SLIDESHOW_RANDOM_DISPLAYS` at random; this
       runs at every setup() so single-scene loops get fresh variety.
     * Any other value passes through unchanged.
     """
-    if spec == "hires_edges":
+    if spec is None or spec == "hires_edges":
         return "mhires"
     if spec == "random":
         return random.choice(SLIDESHOW_RANDOM_DISPLAYS)

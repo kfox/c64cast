@@ -421,7 +421,7 @@ background = "random"               # starfield|petscii_bars|raster_bars|checker
 ```toml
 [playlist]
 videos_dir = "assets/videos"
-interleave_videos = true
+interleave_videos = false           # true = auto-insert videos between scenes
 loop = true                                              # false = exit after one pass
 songlengths_file = "assets/sids/C64Music/DOCUMENTS/Songlengths.md5"  # optional, for waveform scenes;
                                                                       # auto-detected under assets/sids/ if unset
@@ -717,7 +717,12 @@ SHIFT cycle.
 [[scenes]]
 type = "video"
 file = "assets/videos/cool-video.mp4"  # see "file spec" below
-display = "hires_edges"             # any display mode
+display = "mhires"                  # any display mode; unset also
+                                    # defaults to mhires (richest bitmap
+                                    # mode, best for arbitrary film/photo
+                                    # content) — unlike webcam/blank/
+                                    # slideshow/generative, whose unset
+                                    # default is hires_edges
 ```
 
 Requires the `video` extra. Audio is fed through the SID DAC; video

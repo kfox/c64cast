@@ -29,6 +29,7 @@ from .config import (
     resolve_cell_strategy,
     resolve_color_match,
     resolve_dither_method,
+    resolve_scene_display,
     validate_cell_strategy_cfg,
     validate_color_match_cfg,
     validate_dac_bitmap_tempo_cfg,
@@ -234,12 +235,13 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
                     )
                     if mode == "auto":
                         extra += " when REU present"
+                display = resolve_scene_display(s.display, s.type)
                 out.append(
                     Diagnostic(
                         level="ok",
                         category="scene",
                         subject=subject,
-                        message=f"{s.type}/{s.display}, {len(s.overlays)} overlay(s){role}{extra}",
+                        message=f"{s.type}/{display}, {len(s.overlays)} overlay(s){role}{extra}",
                     )
                 )
     return out
@@ -448,17 +450,18 @@ def _validate_color_match(loaded: LoadResult) -> list[Diagnostic]:
         if cfg.color.color_match != "auto":
             continue
         for s in cfg.scenes:
-            if s.display in ("blank", "hires_edges"):
+            display = resolve_scene_display(s.display, s.type)
+            if display in ("blank", "hires_edges"):
                 continue  # these pick no colors — color_match is a no-op
             resolved = (
-                "perceptual" if resolve_color_match(cfg.color.color_match, s.display) else "rgb"
+                "perceptual" if resolve_color_match(cfg.color.color_match, display) else "rgb"
             )
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
                     subject=f"{name}/{s.name or s.type}/color_match",
-                    message=f"'auto' resolves to {resolved!r} for this {s.display} scene.",
+                    message=f"'auto' resolves to {resolved!r} for this {display} scene.",
                 )
             )
     return out
@@ -488,7 +491,8 @@ def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
         if cfg.color.cell_strategy != "auto":
             continue
         for s in cfg.scenes:
-            if s.display != "mhires" or s.palette_mode != "percell":
+            display = resolve_scene_display(s.display, s.type)
+            if display != "mhires" or s.palette_mode != "percell":
                 continue  # cell_strategy only affects mhires percell
             resolved = resolve_cell_strategy(cfg.color.cell_strategy, s.type)
             out.append(
@@ -525,7 +529,8 @@ def _validate_motion_smoothing(loaded: LoadResult) -> list[Diagnostic]:
         if cfg.color.motion_smoothing == ColorCfg().motion_smoothing:
             continue  # shipped default — nothing noteworthy
         for s in cfg.scenes:
-            if s.display != "mhires" or s.palette_mode != "percell":
+            display = resolve_scene_display(s.display, s.type)
+            if display != "mhires" or s.palette_mode != "percell":
                 continue  # motion_smoothing only affects mhires percell
             out.append(
                 Diagnostic(
