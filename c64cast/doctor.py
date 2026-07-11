@@ -103,7 +103,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_probe_environment())
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
-    out.extend(_validate_dac_curve(loaded))
+    out.extend(_validate_dac_curve_cfg(loaded))
     out.extend(_validate_dac_bitmap_tempo(loaded))
     out.extend(_validate_sid_model(loaded))
     out.extend(_validate_dither(loaded))
@@ -114,8 +114,25 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
     out.extend(_probe_extras())
+
+    # dac_curve resolution ("auto"/"calibrated" -> an actual table) is
+    # hardware-identity-dependent (see _validate_dac_curve_resolution), so a
+    # live per-system answer from _probe_connectivity (precise — reads the
+    # live device identity) always wins over the offline guess. Only systems
+    # that didn't get a live answer (skip-probe entirely, or that one
+    # system's connectivity probe failed) fall back to the offline,
+    # hedged report.
+    connectivity: list[Diagnostic] = []
+    live_dac_names: frozenset[str] = frozenset()
     if probe_u64:
-        out.extend(_probe_connectivity(loaded))
+        connectivity = _probe_connectivity(loaded)
+        live_dac_names = frozenset(
+            d.subject[: -len(" (DAC calibration)")]
+            for d in connectivity
+            if d.subject.endswith(" (DAC calibration)")
+        )
+    out.extend(_validate_dac_curve_resolution(loaded, skip_names=live_dac_names))
+    out.extend(connectivity)
 
     return out
 
@@ -298,13 +315,12 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
-def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
+def _validate_dac_curve_cfg(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [audio].dac_curve name or the dac_curve + digi_boost
-    conflict per system, and report how a system-aware curve ("auto"/
-    "calibrated") resolves for the configured backend. Offline — delegates to
-    config.validate_dac_curve_cfg + dac_calibration."""
-    from . import dac_calibration
-
+    conflict per system. Pure config validation — no hardware/calibration
+    involved — so it always runs, live or offline. Delegates to
+    config.validate_dac_curve_cfg. See _validate_dac_curve_resolution for
+    the (hardware-identity-dependent) "resolves to X" reporting."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         try:
@@ -319,13 +335,61 @@ def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
                     hint="See [audio].dac_curve in the config reference / --describe section:audio.",
                 )
             )
+    return out
+
+
+def _validate_dac_curve_resolution(
+    loaded: LoadResult, *, skip_names: frozenset[str] = frozenset()
+) -> list[Diagnostic]:
+    """Report how a system-aware [audio].dac_curve ("auto"/"calibrated")
+    resolves, for every system NOT in `skip_names` (those already got a
+    precise LIVE answer from _probe_dac_calibration_status — see
+    validate_load_result — so re-reporting an offline guess for them would
+    just be redundant and potentially contradictory).
+
+    This is inherently best-effort: it resolves with no live backend
+    (be=None), so on the Ultimate / a serial TeensyROM (no
+    dac_calibration_profile override) it can only use the offline fallback
+    key, not the live device identity (unique_id / USB serial) a real run
+    would use — see dac_calibration.offline_key_is_authoritative. A miss
+    against that fallback key doesn't prove no calibration applies, so when
+    calibration files exist on disk for this backend that the fallback key
+    can't confirm or rule out, the message/error is hedged rather than
+    asserting a possibly-wrong resolution."""
+    from . import dac_calibration
+
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        if name in skip_names:
             continue
+        try:
+            validate_dac_curve_cfg(cfg)
+        except ConfigError:
+            continue  # already reported by _validate_dac_curve_cfg
         if not cfg.audio.enabled or cfg.audio.dac_curve not in ("auto", "calibrated"):
             continue
-        # Report resolution of the system-aware curves (and flag an explicit
-        # 'calibrated' with no table on disk — a runtime error otherwise).
+        authoritative = dac_calibration.offline_key_is_authoritative(cfg)
         try:
             label, _ = dac_calibration.resolve_dac_curve_for_backend(cfg)
+            if not authoritative and not label.startswith("calibrated:"):
+                on_disk = dac_calibration.list_calibration_files(cfg.hardware.backend)
+                if on_disk:
+                    out.append(
+                        Diagnostic(
+                            level="ok",
+                            category="audio",
+                            subject=f"{name}/dac_curve",
+                            message=(
+                                f"{cfg.audio.dac_curve!r} resolves to {label!r} offline "
+                                f"(no calibration for this pass's fallback identity key); "
+                                f"{len(on_disk)} calibration file(s) on disk for this "
+                                "backend, so a live connection may resolve differently."
+                            ),
+                            hint="Run `--doctor` without `--skip-probe` (or a normal "
+                            "run) to check the live device identity.",
+                        )
+                    )
+                    continue
             out.append(
                 Diagnostic(
                     level="ok",
@@ -335,6 +399,25 @@ def _validate_dac_curve(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
         except ValueError as e:
+            if not authoritative:
+                on_disk = dac_calibration.list_calibration_files(cfg.hardware.backend)
+                if on_disk:
+                    out.append(
+                        Diagnostic(
+                            level="warn",
+                            category="audio",
+                            subject=f"{name}/dac_curve",
+                            message=(
+                                f"no calibration for this pass's offline fallback "
+                                f"identity key, but {len(on_disk)} calibration file(s) "
+                                "exist on disk for this backend — cannot confirm "
+                                "offline whether one applies to this device."
+                            ),
+                            hint="Run `--doctor` without `--skip-probe` (or a normal "
+                            "run) to check the live device identity.",
+                        )
+                    )
+                    continue
             out.append(
                 Diagnostic(
                     level="error",
