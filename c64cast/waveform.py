@@ -52,6 +52,7 @@ from ._pollthread import PollThread
 from .audio import RING_BUFFER_ADDR, RING_BUFFER_END, AudioStreamer
 from .backend import C64Backend
 from .c64 import CIA2, CPU, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
+from .modulation import MusicModulation
 from .palette import C64_COLORS
 from .scenes import Scene
 from .sid_autoconfig import plan_model_config_for_header
@@ -78,7 +79,7 @@ from .sid_hw_config import (
     restore_sid_config,
     snapshot_sid_config,
 )
-from .sidemu import SIDEmulator, primary_waveform
+from .sidemu import ACCUMULATOR_RANGE, SIDEmulator, primary_waveform
 
 # The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
 # helpers, VIC hires bring-up, and the per-voice render paths) lives in
@@ -1417,6 +1418,36 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._alloc_scope_buffers()
 
     # ---- per-frame render --------------------------------------------------
+
+    def features(self) -> MusicModulation | None:
+        """Live music features from the primary SID emulator, for process-wide
+        reactive sinks (the WLED audio-sync broadcaster). Mirrors
+        SidFeatureStream.features()'s math but reads the scope's own emulator —
+        no second host emulation. `onset`/`beat_phase`/`bpm` are 0: the WLED
+        broadcaster derives peak flashes from voice-gate edges itself, so the
+        scope doesn't need to track them. Returns None before setup builds the
+        emulator."""
+        emu = getattr(self, "emulator", None)
+        if emu is None:
+            return None
+        clk = emu.clock
+        with self._reg_lock:
+            voices = emu.voices
+            freqs = (
+                voices[0].freq * clk / ACCUMULATOR_RANGE,
+                voices[1].freq * clk / ACCUMULATOR_RANGE,
+                voices[2].freq * clk / ACCUMULATOR_RANGE,
+            )
+            gates = (voices[0].gated(), voices[1].gated(), voices[2].gated())
+            level = min(1.0, sum(v.envelope_level for v in voices) / len(voices))
+        return MusicModulation(
+            level=level,
+            onset=0.0,
+            beat_phase=0.0,
+            bpm=0.0,
+            voice_freqs=freqs,
+            voice_gates=gates,
+        )
 
     def process_frame(self, current_time: float) -> bool:
         if self.is_done:

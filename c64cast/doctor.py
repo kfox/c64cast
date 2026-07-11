@@ -39,6 +39,7 @@ from .config import (
     validate_motion_smoothing_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
+    validate_wled_cfg,
 )
 from .orchestrator import OrchestratorError
 
@@ -111,6 +112,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_cell_strategy(loaded))
     out.extend(_validate_motion_smoothing(loaded))
     out.extend(_validate_midi_control(loaded))
+    out.extend(_validate_wled(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
     out.extend(_probe_extras())
@@ -656,6 +658,52 @@ def _validate_midi_control(loaded: LoadResult) -> list[Diagnostic]:
             )
         ]
     return []
+
+
+def _validate_wled(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag a malformed [wled] section and report the resolved broadcast target
+    when enabled (WLED audio-sync, bridge Mode 3). Per-system, offline —
+    delegates bounds/warnings to config.validate_wled_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_wled_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="wled",
+                    subject=f"{name}/wled",
+                    message=str(e),
+                    hint="See [wled] in the config reference / --describe section:wled.",
+                )
+            )
+            continue
+        if not cfg.wled.enabled:
+            continue
+        w = cfg.wled
+        if w.host is None or w.host == "239.0.0.1":
+            target = f"multicast 239.0.0.1:{w.port}"
+        else:
+            target = f"unicast {w.host}:{w.port}"
+        has_sid = any(
+            s.type == "waveform" or (s.type == "generative" and s.audio_source == "sid")
+            for s in cfg.scenes
+        )
+        out.append(
+            Diagnostic(
+                level="ok" if has_sid else "warn",
+                category="wled",
+                subject=f"{name}/wled",
+                message=(
+                    f"broadcasting Audio Sync to {target} at {w.rate_hz:.0f} Hz"
+                    if has_sid
+                    else f"enabled ({target}) but no SID-driven scene to broadcast — "
+                    "nothing will be sent"
+                ),
+            )
+        )
+    return out
 
 
 def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]:
@@ -1760,6 +1808,7 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         "audio",
         "color",
         "midi_control",
+        "wled",
         "orchestrator",
         "extras",
         "connectivity",

@@ -694,6 +694,20 @@ enabled = false
 prompt_to_save = true               # offer to write changes back to this file on
                                     # exit; false = apply to the running scene only
 
+[wled]
+# WLED bridge Mode 3 — broadcast WLED "Audio Sync" UDP packets synthesized from
+# the playing SID, so real WLED LED matrices/strips on the LAN react to the
+# music with no microphone on the WLED side. Sources features from whichever
+# SID-driven scene is on screen (a `waveform` scene, or a `generative` scene
+# with audio_source = "sid"). Set Sound Sync = "Receive" on the target WLED.
+# Pure UDP; no extra dependency.
+enabled = false
+# host = "192.168.1.50"             # unicast target; unset = WLED's default
+                                    # multicast group 239.0.0.1 (every WLED with
+                                    # Receive enabled reacts)
+port = 11988                        # WLED Audio Sync default port
+rate_hz = 50.0                      # broadcast rate (WLED expects ~frame-rate)
+
 [debug]
 verbose = 0                         # 0 info (default), 1+ debug (-v)
 heartbeat = 10.0                    # seconds between health log lines
