@@ -603,6 +603,18 @@ class Playlist:
                 # the offending overlay from the run list for this scene.
                 self.log.exception("overlay %r setup failed on %r — disabling", ov.name, scene.name)
                 ov._disabled = True  # checked in process_frame loop
+        self._log_scene_recording_metadata(scene)
+
+    def _log_scene_recording_metadata(self, scene: Scene) -> None:
+        """Log a SCENE_CONFIG_JSON snapshot of this scene's coalesced
+        settings, once per activation — the source for
+        scripts/scene_config_to_description.py. No-op without a Config
+        (self.config is only unset in tests that build a Playlist directly)."""
+        if self.config is None:
+            return
+        from .recording_metadata import log_scene_recording_metadata
+
+        log_scene_recording_metadata(scene, self.config, self.name)
 
     def _safe_teardown(self, scene: Scene) -> None:
         for ov in getattr(scene, "overlays", ()):
