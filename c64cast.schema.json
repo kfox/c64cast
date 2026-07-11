@@ -618,6 +618,11 @@
             "error-min"
           ],
           "default": "auto"
+        },
+        "motion_smoothing": {
+          "type": "number",
+          "description": "Temporal smoothing for mhires percell mode, 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. The default 0.25 was picked by hardware A/B as the best ghost/flicker balance. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes.",
+          "default": 0.25
         }
       }
     },

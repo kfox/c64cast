@@ -2608,6 +2608,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         dither_strength: float = 0.5,
         perceptual: bool = False,
         cell_strategy: str = "frequency",
+        motion_smoothing: float = 1.0,
     ):
         _validate_palette_mode(palette_mode)
         _validate_cell_strategy(cell_strategy)
@@ -2635,8 +2636,23 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # bias/flicker-suppression strength. See palette.quantize_distances_for.
         self._perceptual = bool(perceptual)
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
-        self._quant_hysteresis = PERCELL_QUANT_HYSTERESIS_BONUS * self._penalty_scale
-        self._code_hysteresis = PERCELL_CODE_HYSTERESIS_BONUS * self._penalty_scale
+        # Temporal-smoothing knob ([color].motion_smoothing, 0..1). The percell
+        # path carries two flicker-suppression buffers that trade motion-tracking
+        # for frame-to-frame stability: the per-cell colour-count EMA and the
+        # per-pixel/per-cell decision hysteresis. Both cause an after-image on
+        # hard cuts (an outline from the previous shot lingering as the buffers
+        # decay). `motion_smoothing` scales BOTH together — 1.0 = full (legacy)
+        # smoothing (most stable, most ghost); 0.0 = none (tracks the source
+        # exactly, but flickers on noisy content). HW A/B established that the
+        # hysteresis is the dominant ghost source, the EMA the secondary one, so
+        # a single dial over both is the right control. See docs/architecture.md.
+        s = min(1.0, max(0.0, float(motion_smoothing)))
+        self._motion_smoothing = s
+        # EMA weight: s=1 → PERCELL_PICK_EMA_ALPHA (max smoothing); s=0 → 1.0
+        # (new frame fully replaces history = no smoothing). Read in compose().
+        self._ema_alpha = 1.0 - s * (1.0 - PERCELL_PICK_EMA_ALPHA)
+        self._quant_hysteresis = PERCELL_QUANT_HYSTERESIS_BONUS * s * self._penalty_scale
+        self._code_hysteresis = PERCELL_CODE_HYSTERESIS_BONUS * s * self._penalty_scale
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         # Per-cell 3-color selection strategy for the percell path (see
@@ -3010,7 +3026,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if self._smoothed_cell_counts is None:
             self._smoothed_cell_counts = cell_counts_raw
         else:
-            a = PERCELL_PICK_EMA_ALPHA
+            a = self._ema_alpha  # scaled by [color].motion_smoothing (see __init__)
             self._smoothed_cell_counts = (
                 self._smoothed_cell_counts * (1.0 - a) + cell_counts_raw * a
             )

@@ -537,6 +537,18 @@ color_match = "auto"
 # (video/webcam/generative, where frequency's stability avoids per-frame churn).
 cell_strategy = "auto"
 #
+# motion_smoothing: temporal smoothing for mhires percell mode, 0..1 (mhires +
+# palette_mode=percell only). The percell path smooths its per-cell color
+# choices over time — an EMA over per-cell color counts plus per-pixel/per-cell
+# decision hysteresis — to suppress frame-to-frame flicker on noisy video. That
+# smoothing trades motion-tracking for stability, so on a hard shot cut an
+# outline from the previous shot lingers as an after-image for a moment. 1.0 =
+# full smoothing (most stable, ghostiest); 0.0 = track the source exactly (no
+# after-image, but can flicker on grainy content). The default 0.25 was picked
+# by hardware A/B as the best ghost/flicker balance. Lower it if after-images
+# still bother you; raise it if motion shimmers.
+motion_smoothing = 0.25
+#
 # auto_fit: per-source ADAPTIVE color fit (the channel_boost/hue_corrections
 # above are the same for every video; this adapts to each one). For video
 # and slideshow scenes only (webcam can't pre-scan), c64cast pre-scans the

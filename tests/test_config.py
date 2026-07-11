@@ -1352,6 +1352,67 @@ class ValidateCellStrategyCfgTest(unittest.TestCase):
             cfgmod.validate_cell_strategy_cfg(cfg)
 
 
+class ValidateMotionSmoothingCfgTest(unittest.TestCase):
+    def test_default_config_is_valid(self):
+        cfgmod.validate_motion_smoothing_cfg(cfgmod.Config())
+
+    def test_range_bounds_valid(self):
+        for v in (0.0, 0.5, 1.0):
+            cfg = cfgmod.Config()
+            cfg.color.motion_smoothing = v
+            cfgmod.validate_motion_smoothing_cfg(cfg)
+
+    def test_out_of_range_raises(self):
+        for v in (-0.1, 1.5):
+            cfg = cfgmod.Config()
+            cfg.color.motion_smoothing = v
+            with self.assertRaisesRegex(cfgmod.ConfigError, "motion_smoothing"):
+                cfgmod.validate_motion_smoothing_cfg(cfg)
+
+
+class MotionSmoothingWiringTest(unittest.TestCase):
+    """[color].motion_smoothing scales BOTH temporal buffers in the mhires
+    percell path: 1.0 = the legacy EMA alpha + hysteresis; 0.0 = no smoothing
+    (EMA passthrough, zero hysteresis) so the render tracks the source exactly."""
+
+    def _mode(self, s):
+        from c64cast.modes import MultiHiresDisplayMode
+
+        return MultiHiresDisplayMode(motion_smoothing=s, perceptual=True)
+
+    def test_full_smoothing_matches_legacy(self):
+        from c64cast import modes
+
+        m = self._mode(1.0)
+        self.assertAlmostEqual(m._ema_alpha, modes.PERCELL_PICK_EMA_ALPHA)
+        # hysteresis == base * perceptual penalty scale (mhires auto → perceptual)
+        self.assertAlmostEqual(
+            m._quant_hysteresis, modes.PERCELL_QUANT_HYSTERESIS_BONUS * m._penalty_scale
+        )
+
+    def test_zero_smoothing_disables_both_buffers(self):
+        m = self._mode(0.0)
+        self.assertAlmostEqual(m._ema_alpha, 1.0)  # new frame fully replaces history
+        self.assertEqual(m._quant_hysteresis, 0.0)
+        self.assertEqual(m._code_hysteresis, 0.0)
+
+    def test_monotonic_between(self):
+        lo, mid, hi = self._mode(0.0), self._mode(0.5), self._mode(1.0)
+        # more smoothing → smaller EMA alpha (longer memory) and larger hysteresis
+        self.assertGreater(lo._ema_alpha, mid._ema_alpha)
+        self.assertGreater(mid._ema_alpha, hi._ema_alpha)
+        self.assertLess(lo._quant_hysteresis, mid._quant_hysteresis)
+        self.assertLess(mid._quant_hysteresis, hi._quant_hysteresis)
+
+    def test_config_path_forwards_value(self):
+        from typing import cast
+
+        from c64cast.modes import MultiHiresDisplayMode
+
+        mode = cfgmod._build_display_mode("mhires", color=cfgmod.ColorCfg(motion_smoothing=0.0))
+        self.assertAlmostEqual(cast(MultiHiresDisplayMode, mode)._ema_alpha, 1.0)
+
+
 class BuildSceneTempoScaleTest(unittest.TestCase):
     """build_scene resolves VideoScene._tempo_scale: the observed bitmap+DAC
     speed fraction on the host-DMA DAC path over a bitmap mode, else 1.0 (off)
