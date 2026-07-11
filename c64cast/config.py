@@ -1522,6 +1522,22 @@ class ColorCfg:
             "choices": ("auto",) + CELL_STRATEGIES,
         },
     )
+    motion_smoothing: float = field(
+        default=0.25,
+        metadata={
+            "help": "Temporal smoothing for mhires percell mode, 0..1. The percell "
+            "path smooths its per-cell color choices over time (an EMA over color "
+            "counts plus per-pixel/per-cell decision hysteresis) to suppress "
+            "frame-to-frame flicker on noisy video. That smoothing trades "
+            "motion-tracking for stability, so on a hard shot cut an outline from "
+            "the previous shot lingers as an after-image for a moment. 1.0 (full "
+            "smoothing) is the most stable but ghostiest; 0.0 tracks the source "
+            "exactly (no after-image) but can flicker on grainy content. The "
+            "default 0.25 was picked by hardware A/B as the best ghost/flicker "
+            "balance. Lower it if after-images still bother you, raise it if "
+            "motion shimmers. No effect on other modes or palette_modes.",
+        },
+    )
 
 
 @dataclass
@@ -2632,6 +2648,7 @@ def _build_display_mode(
             dither_strength=dither_strength,
             perceptual=perceptual,
             cell_strategy=cell_strategy,
+            motion_smoothing=color.motion_smoothing,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
@@ -3269,6 +3286,14 @@ def validate_dither_cfg(cfg: Config) -> None:
     if not 0.0 <= cfg.color.dither_strength <= 2.0:
         raise ConfigError(
             f"[color].dither_strength must be 0..2.0, got {cfg.color.dither_strength}"
+        )
+
+
+def validate_motion_smoothing_cfg(cfg: Config) -> None:
+    """Guard [color].motion_smoothing: reject an out-of-range value (0..1)."""
+    if not 0.0 <= cfg.color.motion_smoothing <= 1.0:
+        raise ConfigError(
+            f"[color].motion_smoothing must be 0..1.0, got {cfg.color.motion_smoothing}"
         )
 
 

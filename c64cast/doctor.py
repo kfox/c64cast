@@ -23,6 +23,7 @@ from typing import IO, Literal
 
 from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .config import (
+    ColorCfg,
     ConfigError,
     LoadResult,
     resolve_cell_strategy,
@@ -34,6 +35,7 @@ from .config import (
     validate_dac_curve_cfg,
     validate_dither_cfg,
     validate_midi_control_cfg,
+    validate_motion_smoothing_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
 )
@@ -106,6 +108,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_dither(loaded))
     out.extend(_validate_color_match(loaded))
     out.extend(_validate_cell_strategy(loaded))
+    out.extend(_validate_motion_smoothing(loaded))
     out.extend(_validate_midi_control(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
@@ -494,6 +497,45 @@ def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
                     category="color",
                     subject=f"{name}/{s.name or s.type}/cell_strategy",
                     message=f"'auto' resolves to {resolved!r} for this {s.type} scene.",
+                )
+            )
+    return out
+
+
+def _validate_motion_smoothing(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an out-of-range [color].motion_smoothing, and note it on the mhires
+    percell scenes it affects. Offline — delegates to
+    config.validate_motion_smoothing_cfg."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_motion_smoothing_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="color",
+                    subject=f"{name}/motion_smoothing",
+                    message=str(e),
+                    hint="See [color].motion_smoothing in the config reference / "
+                    "--describe section:color.",
+                )
+            )
+            continue
+        if cfg.color.motion_smoothing == ColorCfg().motion_smoothing:
+            continue  # shipped default — nothing noteworthy
+        for s in cfg.scenes:
+            if s.display != "mhires" or s.palette_mode != "percell":
+                continue  # motion_smoothing only affects mhires percell
+            out.append(
+                Diagnostic(
+                    level="ok",
+                    category="color",
+                    subject=f"{name}/{s.name or s.type}/motion_smoothing",
+                    message=(
+                        f"{cfg.color.motion_smoothing} (higher = less flicker / more "
+                        "after-image, lower = crisper motion) for this mhires percell scene."
+                    ),
                 )
             )
     return out
