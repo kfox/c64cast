@@ -1033,9 +1033,10 @@ class EnvironmentProbeTest(unittest.TestCase):
 
 
 class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
-    """_validate_dac_curve (offline — no live device identity) must not claim
-    a confident 'no calibration applies' when a live run's key (unique_id /
-    USB serial) could differ from the offline fallback key it's stuck with."""
+    """_validate_dac_curve_resolution (offline — no live device identity)
+    must not claim a confident 'no calibration applies' when a live run's
+    key (unique_id / USB serial) could differ from the offline fallback key
+    it's stuck with."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1069,7 +1070,7 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
         """)
 
     def test_auto_no_files_anywhere_is_plain_ok(self):
-        diags = doctor._validate_dac_curve(self._loaded("auto"))
+        diags = doctor._validate_dac_curve_resolution(self._loaded("auto"))
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "ok")
         self.assertIn("resolves to 'mahoney_ultisid' on this system", diags[0].message)
@@ -1077,38 +1078,72 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
 
     def test_auto_unmatched_files_on_disk_flags_uncertainty(self):
         self._write_calibration("ultimate-SOMEOTHERUNIT.json")
-        diags = doctor._validate_dac_curve(self._loaded("auto"))
+        diags = doctor._validate_dac_curve_resolution(self._loaded("auto"))
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "ok")
         self.assertIn("1 calibration file(s) on disk", diags[0].message)
         self.assertIn("--skip-probe", diags[0].hint or "")
 
     def test_calibrated_no_files_anywhere_is_still_a_hard_error(self):
-        diags = doctor._validate_dac_curve(self._loaded("calibrated"))
+        diags = doctor._validate_dac_curve_resolution(self._loaded("calibrated"))
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "error")
 
     def test_calibrated_unmatched_files_on_disk_downgrades_to_warn(self):
         self._write_calibration("ultimate-SOMEOTHERUNIT.json")
-        diags = doctor._validate_dac_curve(self._loaded("calibrated"))
+        diags = doctor._validate_dac_curve_resolution(self._loaded("calibrated"))
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "warn")
         self.assertIn("cannot confirm", diags[0].message)
 
     def test_profile_override_stays_authoritative_despite_stray_files(self):
         self._write_calibration("ultimate-SOMEOTHERUNIT.json")
-        diags = doctor._validate_dac_curve(
+        diags = doctor._validate_dac_curve_resolution(
             self._loaded("calibrated", extra='dac_calibration_profile = "my-rig"')
         )
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "error")
 
+    def test_live_connectivity_suppresses_the_duplicate_offline_line(self):
+        """A live doctor run (probe_u64=True, connectivity reachable) must
+        report dac_curve resolution ONCE — the precise live answer from
+        _probe_dac_calibration_status — not also the offline guess from
+        _validate_dac_curve_resolution, which end-to-end reproduces the bug
+        report: `--doctor` without --skip-probe still showed the offline
+        'resolves to mahoney_ultisid' AUDIO-section line even though the
+        CONNECTIVITY section already had the precise live answer."""
+        from c64cast.api import Ultimate64API
+
+        loaded = self._loaded("auto")
+
+        fake_response = mock.MagicMock()
+        fake_response.json.return_value = {"errors": []}
+        fake_response.raise_for_status = mock.MagicMock()
+        with mock.patch.object(Ultimate64API, "__init__", return_value=None):
+            api_instance = Ultimate64API.__new__(Ultimate64API)
+            api_instance.base_url = "http://192.168.2.64"
+            api_instance.session = mock.MagicMock()
+            api_instance.session.get.return_value = fake_response
+            api_instance.probe = mock.MagicMock(return_value="HTTP 200")
+            api_instance.close = mock.MagicMock()
+            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+                diags = doctor.validate_load_result(loaded, probe_u64=True)
+
+        offline_audio_line = [
+            d for d in diags if d.category == "audio" and d.subject == "system/dac_curve"
+        ]
+        live_line = [d for d in diags if d.subject == "system (DAC calibration)"]
+        self.assertEqual(offline_audio_line, [])
+        self.assertEqual(len(live_line), 1)
+
 
 class DacCalibrationStatusProbeTest(unittest.TestCase):
     """_probe_dac_calibration_status is the LIVE counterpart to the offline
-    _validate_dac_curve check: it can read which SID socket is actually
-    mapped to $D400 right now, so it's precise where the offline check is
-    only approximate."""
+    _validate_dac_curve_resolution check: it can read which SID socket is
+    actually mapped to $D400 right now, so it's precise where the offline
+    check is only approximate — and, per validate_load_result, it wins over
+    the offline check whenever both would otherwise report on the same
+    system."""
 
     def _cfg(self, dac_curve: str = "auto") -> cfgmod.Config:
         loaded = _load(f"""
