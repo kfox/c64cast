@@ -182,6 +182,8 @@ class BuildConfigTest(unittest.TestCase):
                     "--sid-model",
                     "8580",
                     "--skip-probe",
+                    "--log-file",
+                    "/tmp/c64cast.log",
                     "a.mp4",
                 ]
             )
@@ -190,6 +192,10 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.system, "PAL")
         self.assertEqual(cfg.ultimate64.sid_model, "8580")
         self.assertTrue(cfg.debug.skip_probe)
+        self.assertEqual(cfg.debug.log_file, "/tmp/c64cast.log")
+
+    def test_log_file_default_kept_when_unset(self):
+        self.assertIsNone(quickcast.build_config(_parse(["a.mp4"])).debug.log_file)
 
     def test_sid_model_default_kept_when_unset(self):
         self.assertEqual(quickcast.build_config(_parse(["a.mp4"])).ultimate64.sid_model, "auto")
