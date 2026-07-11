@@ -661,7 +661,7 @@ class SlideshowScene(Scene):
         file: str,
         *,
         image_duration_s: float = 5.0,
-        display_spec: str = "mhires",
+        display_spec: str | None = "mhires",
         palette_mode: str = "percell",
         border: int | str = 0,
         background: int | str = 0,

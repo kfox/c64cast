@@ -459,6 +459,7 @@ background = "random"               # starfield | petscii_bars | raster_bars
 [playlist]
 videos_dir = "assets/videos"
 interleave_videos = true               # auto-insert videos between scenes
+                                    # (default false — shown here turned on)
 loop = true                         # restart from scene 1 after the last
                                     # scene finishes. false = exit the
                                     # streamer cleanly after one pass
@@ -1095,7 +1096,7 @@ palette_mode = "grayscale"
 # # `c64cast MEDIA…` quick-playback shortcut.
 # #   file = "https://youtu.be/<id>?t=18m18s"
 # file = "assets/videos/your-video.mp4"
-# display = "hires_edges"
+# display = "mhires"                    # unset also defaults to mhires
 # # start_s — seconds into the file to begin playback (video-only; omit or 0
 # # = from the start). Seeks to the keyframe at/just-before this time. A media
 # # URL's own t=/start=/#t= timestamp fills start_s automatically (in configs

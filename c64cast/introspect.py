@@ -193,7 +193,7 @@ _SCENE_TYPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "video",
         "Play a video file with synced audio until it ends.",
-        ("hires_edges", "hires", "mhires", "mcm", "petscii", "blank"),
+        ("mhires", "hires_edges", "hires", "mcm", "petscii", "blank"),
     ),
     ("waveform", "3-voice SID oscilloscope playing a .sid file (bitmap-only).", ()),
     ("midi", "Live MIDI input → SID synth + 3-voice oscilloscope (bitmap-only).", ()),
