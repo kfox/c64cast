@@ -577,6 +577,10 @@ force_palette = false
 # "mgry" all resolve) or raw indices 0..15; a list's length sets the color count.
 force_palette_colors = 16
 # force_palette_colors = ["black", "red", "purple", "light blue"]  # explicit set
+# Not sure which colors suit a given source? Ask:
+#   c64cast --suggest-palette path/to/image_or_video
+# prints the C64 colors that best (faithfully) represent it, ranked, so you can
+# paste a prefix here.
 #
 # hue_corrections: the C64's single purple (index 4) is a bright magenta, so
 # dark real-world violets quantize to gray/blue and never to purple. The

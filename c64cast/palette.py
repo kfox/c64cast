@@ -851,6 +851,15 @@ class ColorMapAccumulator:
         self._samples: list[np.ndarray] = []
         self._total = 0
 
+    def lab_samples(self) -> np.ndarray:
+        """The accumulated Lab pixel reservoir as one (N, 3) float32 array (empty
+        when nothing was added). Exposed for `suggest_palette` (the "best
+        faithful subset" discovery command), which wants the raw samples rather
+        than the k-means/assignment result `result()` derives from them."""
+        if not self._samples:
+            return np.zeros((0, 3), dtype=np.float32)
+        return np.concatenate(self._samples)
+
     def add(self, img_bgr: np.ndarray) -> None:
         """Fold one frame/image's pixels into the running Lab sample reservoir."""
         if self._total >= _FORCE_PALETTE_SAMPLE_CAP:
@@ -952,6 +961,57 @@ def build_fixed_color_map(indices: Sequence[int]) -> ColorMap | None:
     assigned = np.array(seen, dtype=np.uint8)
     lut = ColorMapAccumulator._bake_lut(centers_lab, assigned)
     return ColorMap(lut=lut, shift=_FORCE_PALETTE_SHIFT, indices=tuple(sorted(seen)))
+
+
+def suggest_palette(samples_lab: np.ndarray, max_k: int = 16) -> list[tuple[int, float]]:
+    """Rank the 16 C64 colors by how well a *faithful* subset represents a
+    source's colors (greedy facility-location / k-medoids over the fixed
+    palette).
+
+    Unlike ``ColorMapAccumulator`` — which k-means-clusters the source and
+    spreads the clusters onto DISTINCT colors (a deliberate false-color remap) —
+    this answers "which C64 colors would the source's pixels map *nearest* to,
+    in order of value" WITHOUT remapping. Each greedy step adds the one unchosen
+    C64 color that most reduces the total nearest-color Lab error over all
+    samples, so the selection *order* is a value ranking: the top-k is the best
+    k-color faithful subset, and its `(1 − 1/e)` approximation guarantee holds
+    for the monotone-submodular coverage objective.
+
+    ``samples_lab`` is an (N, 3) float32 array of CIE-Lab pixels (e.g.
+    ``ColorMapAccumulator.lab_samples()``). Returns a list of
+    ``(c64_index, mean_lab_error)`` in selection order, length ≤ ``max_k``; the
+    mean error is the average per-sample distance to the nearest chosen color
+    *after* adding that color (monotonically decreasing — its knee shows where
+    extra colors stop helping). Empty input → empty list. Cost is O(16·k·N)
+    (~16M flops at the 60k sample cap), a sub-100 ms one-shot analysis."""
+    if samples_lab.size == 0:
+        return []
+    lab = samples_lab.astype(np.float32, copy=False).reshape(-1, 3)
+    # (N, 16) Lab distance from every sample to every palette color (expansion
+    # trick, same as quantize_distances_lab but the samples are already Lab).
+    px_normsq = (lab**2).sum(axis=1)  # (N,)
+    cross = lab @ _PAL_LAB_T  # (N, 16)
+    dist = np.sqrt(np.maximum(px_normsq[:, None] - 2.0 * cross + _PAL_LAB_NORMSQ[None, :], 0.0))
+    n = lab.shape[0]
+    k = int(min(max_k, 16))
+    nearest = np.full(n, np.inf, dtype=np.float32)  # current min dist per sample
+    chosen: list[tuple[int, float]] = []
+    remaining = list(range(16))
+    for _ in range(k):
+        best_idx = -1
+        best_cost = np.inf
+        best_nearest: np.ndarray | None = None
+        for c in remaining:
+            cand_nearest = np.minimum(nearest, dist[:, c])
+            cost = float(cand_nearest.mean())
+            if cost < best_cost:
+                best_cost, best_idx, best_nearest = cost, c, cand_nearest
+        if best_idx < 0 or best_nearest is None:
+            break
+        chosen.append((best_idx, best_cost))
+        nearest = best_nearest
+        remaining.remove(best_idx)
+    return chosen
 
 
 def nearest_palette_index(rgb: Sequence[int]) -> int:
