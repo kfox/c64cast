@@ -249,20 +249,121 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     return np.concatenate(chunks)
 
 
+def _frame_to_scan_bgr(frame: Any, decode_size: tuple[int, int] | None) -> np.ndarray:
+    """Convert one decoded frame to a BGR ndarray for the accumulators,
+    downscaling DURING the yuv→bgr swscale pass when a decode size is planned."""
+    if decode_size is not None:
+        return frame.reformat(
+            width=decode_size[0], height=decode_size[1], format="bgr24"
+        ).to_ndarray()
+    return frame.to_ndarray(format="bgr24")
+
+
+def _source_duration_s(container: Any, v_stream: Any) -> float | None:
+    """Playback duration of ``v_stream`` in seconds, or None when unknown.
+
+    Prefers the stream's own duration (stream time_base units); falls back to
+    the container duration (AV_TIME_BASE microseconds). None on a live/unbounded
+    stream where neither is set — the caller then decodes sequentially."""
+    if v_stream.duration is not None and v_stream.time_base is not None:
+        return float(v_stream.duration * v_stream.time_base)
+    if container.duration is not None:
+        return float(container.duration) / float(av.time_base)
+    return None
+
+
+def _seek_sample_frames(
+    container: Any,
+    v_stream: Any,
+    accumulators: list[Any],
+    max_samples: int,
+    duration_s: float,
+    decode_target_size: tuple[int, int] | None,
+) -> int:
+    """Seek to ``max_samples`` evenly spaced timestamps across ``duration_s``,
+    decode one frame at each, feed the accumulators. Returns the number of
+    frames actually sampled (0 = seeking produced nothing → caller falls back).
+
+    Seeks land on the keyframe at/before each target (``backward``), which is
+    exactly right for color statistics — they're distribution-based, so a
+    keyframe near each timestamp represents that region as well as an exact
+    frame would, and keyframe-only seeking is the point: it makes the scan
+    roughly constant-time regardless of file length or codec (a full-decode
+    scan of a long/4K source is decode-bound and scales with the whole file)."""
+    time_base = v_stream.time_base
+    start_time = v_stream.start_time or 0
+    decode_size: tuple[int, int] | None = None
+    planned = False
+    taken = 0
+    for n in range(max_samples):
+        # Sample interval midpoints so the last target isn't at/after EOF (which
+        # can decode to nothing); spread across the open interval [0, duration).
+        target_s = (n + 0.5) / max_samples * duration_s
+        ts = start_time + int(target_s / time_base)
+        container.seek(ts, stream=v_stream)  # backward=True (default) → keyframe ≤ ts
+        frame = next(container.decode(v_stream), None)
+        if frame is None:
+            continue
+        if not planned:
+            planned = True
+            if decode_target_size is not None:
+                decode_size = _plan_decode_size(frame.width, frame.height, *decode_target_size)
+        img = _frame_to_scan_bgr(frame, decode_size)
+        for acc in accumulators:
+            acc.add(img)
+        taken += 1
+    return taken
+
+
+def _decode_sample_frames(
+    container: Any,
+    v_stream: Any,
+    accumulators: list[Any],
+    max_samples: int,
+    decode_target_size: tuple[int, int] | None,
+) -> None:
+    """Sequential-decode fallback: stride through decoded frames and feed up to
+    ``max_samples`` into the accumulators. Used when the source can't seek or
+    has no known duration (live streams). Decode-bound, but the only option for
+    a non-seekable source. Stride comes from the frame count when known."""
+    total = v_stream.frames or 0
+    stride = max(1, total // max_samples) if total else 5
+    taken = 0
+    decode_size: tuple[int, int] | None = None
+    planned = False
+    for i, frame in enumerate(container.decode(v_stream)):
+        if i % stride:
+            continue
+        if not planned:
+            planned = True
+            if decode_target_size is not None:
+                decode_size = _plan_decode_size(frame.width, frame.height, *decode_target_size)
+        img = _frame_to_scan_bgr(frame, decode_size)
+        for acc in accumulators:
+            acc.add(img)
+        taken += 1
+        if taken >= max_samples:
+            break
+
+
 def _scan_video_samples(
     path: str,
     accumulators: list[Any],
     max_samples: int = 120,
     decode_target_size: tuple[int, int] | None = None,
 ) -> bool:
-    """Decode up to ``max_samples`` frames spread across ``path`` and feed each
+    """Sample up to ``max_samples`` frames spread across ``path`` and feed each
     into every accumulator's ``.add(img_bgr)``.
 
-    Stride comes from the stream's frame count when known, else a fixed decode
-    stride. Blocking — call at scene setup, before playback. Returns True on a
-    clean scan, False when PyAV is unavailable or decode failed (callers then
-    treat each accumulator's result as None). Shared by the auto_fit and
-    force_palette pre-scans so a source is decoded ONCE for both.
+    Prefers **seek-sampled** collection (`_seek_sample_frames`): jump to evenly
+    spaced timestamps and decode one keyframe each, so the scan is roughly
+    constant-time regardless of length/codec. Falls back to a sequential decode
+    (`_decode_sample_frames`) when the source has no known duration (a live
+    stream) or seeking yields nothing (non-seekable). Blocking — call at scene
+    setup, before playback. Returns True on a clean scan, False when PyAV is
+    unavailable or decode failed (callers then treat each accumulator's result
+    as None). Shared by the auto_fit and force_palette pre-scans so a source is
+    decoded ONCE for both.
 
     ``decode_target_size`` (the display mode's frame_target_size) downscales
     each sampled frame DURING the yuv→bgr swscale pass (same win as playback —
@@ -277,31 +378,38 @@ def _scan_video_samples(
         try:
             v_stream = container.streams.video[0]
             v_stream.thread_type = "AUTO"
-            total = v_stream.frames or 0
-            stride = max(1, total // max_samples) if total else 5
-            taken = 0
-            decode_size: tuple[int, int] | None = None
-            planned = False
-            for i, frame in enumerate(container.decode(v_stream)):
-                if i % stride:
-                    continue
-                if not planned:
-                    planned = True
-                    if decode_target_size is not None:
-                        decode_size = _plan_decode_size(
-                            frame.width, frame.height, *decode_target_size
+            duration_s = _source_duration_s(container, v_stream)
+            seeked = False
+            if duration_s is not None and duration_s > 0:
+                try:
+                    seeked = (
+                        _seek_sample_frames(
+                            container,
+                            v_stream,
+                            accumulators,
+                            max_samples,
+                            duration_s,
+                            decode_target_size,
                         )
-                if decode_size is not None:
-                    img = frame.reformat(
-                        width=decode_size[0], height=decode_size[1], format="bgr24"
-                    ).to_ndarray()
-                else:
-                    img = frame.to_ndarray(format="bgr24")
-                for acc in accumulators:
-                    acc.add(img)
-                taken += 1
-                if taken >= max_samples:
-                    break
+                        > 0
+                    )
+                except Exception as e:
+                    # Non-seekable source (some network streams / odd codecs):
+                    # log and fall through to a sequential decode below.
+                    log.debug(
+                        "seek-sampled pre-scan of %s failed (%s); using sequential decode",
+                        path,
+                        e,
+                    )
+            if not seeked:
+                # Re-open to reset any partial seek state, then decode in order.
+                container.close()
+                container = _av_open(path)
+                v_stream = container.streams.video[0]
+                v_stream.thread_type = "AUTO"
+                _decode_sample_frames(
+                    container, v_stream, accumulators, max_samples, decode_target_size
+                )
         finally:
             container.close()
     except Exception as e:
