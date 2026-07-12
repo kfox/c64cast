@@ -142,12 +142,13 @@ SCENE_TYPES = (
     "slideshow",
     "launcher",
     "generative",
+    "wled",
 )
 
 # Scene types that render a numpy frame (and so support a per-scene `effect`).
 # Excludes blank (no frame), waveform/midi (self-rendered bitmap, bypass the
 # frame→display helper), and launcher (the program owns the VIC).
-_EFFECT_SCENE_TYPES = frozenset({"webcam", "video", "slideshow", "generative"})
+_EFFECT_SCENE_TYPES = frozenset({"webcam", "video", "slideshow", "generative", "wled"})
 
 
 # ---------------------------------------------------------------------------
@@ -833,7 +834,7 @@ class SceneCfg:
             "(both ignore this); slideshow also accepts 'random'. generative "
             "renders a frame so any quantizing mode works (not 'blank'/'random').",
             "choices": _DISPLAY_CHOICES,
-            "applies_to": ("webcam", "blank", "video", "slideshow", "generative"),
+            "applies_to": ("webcam", "blank", "video", "slideshow", "generative", "wled"),
         },
     )
     name: str | None = field(
@@ -862,6 +863,7 @@ class SceneCfg:
                 "slideshow",
                 "launcher",
                 "generative",
+                "wled",
             ),
             "apply": "live",
         },
@@ -966,6 +968,28 @@ class SceneCfg:
             "applies_to": ("generative",),
         },
     )
+    # WLED pixel-sink scene: the virtual LED-matrix dimensions a sender streams
+    # to. The display mode downscales this to the C64 grid, so it only sets how
+    # many pixels the sink expects — it MUST match the sender's configured
+    # matrix (a WLED-ecosystem sender is set up for a specific pixel count).
+    sink_width: int = field(
+        default=320,
+        metadata={
+            "help": "WLED sink: virtual LED-matrix width in pixels a sender "
+            "streams to (wled scenes only). Must match the sender's configured "
+            "matrix; the display mode downscales it to the C64. Default 320.",
+            "applies_to": ("wled",),
+        },
+    )
+    sink_height: int = field(
+        default=200,
+        metadata={
+            "help": "WLED sink: virtual LED-matrix height in pixels a sender "
+            "streams to (wled scenes only). Must match the sender's configured "
+            "matrix; the display mode downscales it to the C64. Default 200.",
+            "applies_to": ("wled",),
+        },
+    )
     # Per-scene pixel effect applied to the source frame before quantization.
     effect: str | None = field(
         default=None,
@@ -977,7 +1001,7 @@ class SceneCfg:
             "visibly react on a music-reactive scene (generative + audio_source "
             "= 'sid'); elsewhere they're inert (no feature stream to react to).",
             "choices": _EFFECT_CHOICES,
-            "applies_to": ("webcam", "video", "slideshow", "generative"),
+            "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
         },
     )
     # None = use global [dsp].pre_emphasis (which itself may be source-aware
@@ -1210,7 +1234,7 @@ class SceneCfg:
             "Color shaping (channel boost + hue corrections, e.g. the purple "
             "rescue) is the global [color] section, applied to every mode.",
             "choices": _PALETTE_MODE_CHOICES,
-            "applies_to": ("webcam", "video", "slideshow", "generative"),
+            "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
             "apply": "live",
         },
     )
@@ -1222,7 +1246,7 @@ class SceneCfg:
             "Text is always double-WIDE on mhires (8x8 glyph spans 2 of the "
             "4px cells); this toggle adds the vertical stretch. Ignored on "
             "other display modes.",
-            "applies_to": ("webcam", "video", "slideshow", "generative"),
+            "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
         },
     )
     style: str = field(
@@ -1231,7 +1255,7 @@ class SceneCfg:
             "help": "PETSCII glyph/color style (only when display = 'petscii'); "
             "'random' picks one at setup.",
             "choices": _STYLE_CHOICES,
-            "applies_to": ("webcam", "video", "slideshow", "generative"),
+            "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
             "apply": "live",
         },
     )
@@ -2850,17 +2874,17 @@ def _resolve_file_spec_or_explain(
 def resolve_scene_display(display: str | None, scene_type: str) -> str:
     """Resolve a SceneCfg `display` value's per-scene-type default.
 
-    Unset (`None`) resolves to `"mhires"` for video scenes (the richest
-    bitmap mode, suited to arbitrary film/photo content — matches quick
-    playback's default, see quickcast._DEFAULT_VIDEO_DISPLAY) and
-    `"hires_edges"` everywhere else (tuned for live webcam Canny-edge
+    Unset (`None`) resolves to `"mhires"` for video and wled scenes (the
+    richest bitmap mode, suited to arbitrary film/photo/streamed-pixel content
+    — matches quick playback's default, see quickcast._DEFAULT_VIDEO_DISPLAY)
+    and `"hires_edges"` everywhere else (tuned for live webcam Canny-edge
     stylization, the historical global default). Any explicit value passes
     through unchanged. Slideshow has its own `_resolve_slideshow_display`
-    (also handles `"random"`); this helper is for webcam/video/generative
+    (also handles `"random"`); this helper is for webcam/video/generative/wled
     and doctor's uniform per-scene reporting."""
     if display is not None:
         return display
-    return "mhires" if scene_type == "video" else "hires_edges"
+    return "mhires" if scene_type in ("video", "wled") else "hires_edges"
 
 
 def _display_mode_for_scene(
@@ -3204,6 +3228,29 @@ def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode, display: str
             f"can't relocate the bank-0 display. Use a char display (petscii/mcm — "
             f"they reserve only $0400) or a SID that loads above ${hi:04X}."
         )
+
+
+def _validate_wled(s: SceneCfg, cfg: Config) -> DisplayMode:
+    """WLED pixel-sink scene: a virtual LED matrix streamed to over the LAN.
+
+    Needs a quantizing display (there's a real BGR frame to render), so reject
+    blank/random exactly like generative. Bounds the matrix dimensions — a sink
+    presents `sink_width`×`sink_height` pixels the sender must match; absurd
+    sizes are a config error, not a runtime surprise."""
+    if s.display == "blank":
+        raise ValueError(
+            "wled scene cannot use display = 'blank' (there'd be nothing to "
+            "quantize the streamed frame). Pick mhires/hires/hires_edges/mcm/petscii."
+        )
+    if s.display == "random":
+        raise ValueError(
+            "wled scene does not support display = 'random' (only slideshow does). "
+            "Pick a concrete mode."
+        )
+    for label, value in (("sink_width", s.sink_width), ("sink_height", s.sink_height)):
+        if not 1 <= value <= 1024:
+            raise ValueError(f"wled scene {label} must be 1..1024, got {value!r}")
+    return _display_mode_for_scene(s.display, s, cfg)
 
 
 def _validate_launcher(s: SceneCfg) -> None:
@@ -3650,6 +3697,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         mode = _validate_slideshow(s, cfg)
     elif s.type == "generative":
         mode = _validate_generative(s, cfg)
+    elif s.type == "wled":
+        mode = _validate_wled(s, cfg)
     elif s.type == "launcher":
         _validate_launcher(s)
         return
@@ -3657,8 +3706,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         raise ValueError(
             f"unknown scene type {s.type!r} "
             "(known: webcam, blank, video, waveform, midi, asid, "
-            "slideshow, launcher, generative). Note: scrolling_text is now an "
-            "overlay — attach it via [[scenes.overlays]]."
+            "slideshow, launcher, generative, wled). Note: scrolling_text is now "
+            "an overlay — attach it via [[scenes.overlays]]."
         )
 
     audio_proxy = _AUDIO_SENTINEL if audio_enabled else None
@@ -4056,6 +4105,28 @@ def build_scene(
                 fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
                 if fps is not None:
                     scene.target_fps = fps
+    elif s.type == "wled":
+        from .audio_source import NullAudioSource
+        from .wled_sink import WLEDSource
+
+        # A network pixel sink: the frame arrives over UDP, no audio, no SID.
+        # It's just another FrameSource behind the SourceScene seam — the
+        # display mode quantizes the received BGR frame to the C64 unchanged.
+        mode = _display_mode_for_scene(
+            s.display,
+            s,
+            cfg,
+            reu_available=reu_available,
+            backend_supports_reu=backend_supports_reu,
+        )
+        wled_source = WLEDSource(s.sink_width, s.sink_height)
+        name = s.name or "WLED sink"
+        scene = SourceScene(api, None, mode, wled_source, NullAudioSource(), name)
+        # Bitmap displays push a full ~9-10 KB frame per update; default to
+        # half rate like the other frame scenes (an explicit target_fps, applied
+        # at the end of build_scene, still wins).
+        if s.target_fps is None and mode.is_bitmapped:
+            scene.target_fps = 25.0 if cfg.ultimate64.system.upper() == "PAL" else 30.0
     elif s.type == "launcher":
         from .scenes import LauncherScene
 

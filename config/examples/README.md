@@ -67,6 +67,7 @@ Exit with `Ctrl+C`.
 | `scene-midi.toml`                 | MIDI → SID synth. Requires `midi` extra + MIDI source.     |
 | `scene-asid.toml`                 | ASID stream (DeepSID/SF2/…) → real SID. Requires `midi` extra + ASID host. |
 | `scene-launcher.toml`             | Launch a native `.prg`/`.crt` and hand over the machine.   |
+| `scene-wled.toml`                 | C64 as a virtual WLED LED matrix — LedFx/xLights stream pixels to it (Mode 2). |
 | `scene-generative-plasma.toml`    | Procedural plasma rendered as a multicolor bitmap.         |
 | `scene-generative-petscii.toml`   | The same plasma source rendered as PETSCII glyphs.         |
 | `scene-generative-sid.toml`       | Plasma × SID playback — music-reactive composable scene.   |

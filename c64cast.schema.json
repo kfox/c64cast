@@ -1125,7 +1125,8 @@
               "asid",
               "slideshow",
               "launcher",
-              "generative"
+              "generative",
+              "wled"
             ],
             "default": "webcam"
           },
@@ -2201,6 +2202,16 @@
             "type": "boolean",
             "description": "Generative scene: let the music drive the visuals \u2014 BPM cycles the colors, transients pulse them. Only takes effect with audio_source = 'sid' (a host-side SID emulator supplies the features, adding no U64 traffic); inert for mic/none. Set false to keep the pure time-driven look.",
             "default": true
+          },
+          "sink_width": {
+            "type": "integer",
+            "description": "WLED sink: virtual LED-matrix width in pixels a sender streams to (wled scenes only). Must match the sender's configured matrix; the display mode downscales it to the C64. Default 320.",
+            "default": 320
+          },
+          "sink_height": {
+            "type": "integer",
+            "description": "WLED sink: virtual LED-matrix height in pixels a sender streams to (wled scenes only). Must match the sender's configured matrix; the display mode downscales it to the C64. Default 200.",
+            "default": 200
           }
         },
         "allOf": [
@@ -2309,6 +2320,31 @@
               "properties": {
                 "type": {
                   "const": "generative"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "display": {
+                  "enum": [
+                    "mhires",
+                    "hires",
+                    "hires_edges",
+                    "mcm",
+                    "petscii"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "wled"
                 }
               },
               "required": [

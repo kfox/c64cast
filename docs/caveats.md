@@ -664,6 +664,32 @@ active). Consequences worth knowing:
   > robust pre-upload drain. Needs a soak harness (hundreds of launch cycles) to
   > verify, since it can't be reproduced on demand.
 
+## WLED pixel sink (`wled` scene) needs an external sender
+
+The `wled` scene (WLED bridge Mode 2) turns the C64 into a virtual LED matrix
+that receives a realtime pixel stream. c64cast is the **receiver** — it does not
+generate the pixels. A sender must push frames to it: **LedFx**, **xLights**,
+**Jinx!**, **Glediator**, or another WLED device configured to sync. The WLED
+mobile app is a *controller* (it drives WLED devices) and **cannot emit a pixel
+stream**, so it can't feed this scene — use it for Mode 1 (the control surface),
+not Mode 2. With no sender running, the sink shows nothing until the first
+packet, then holds the last frame received.
+
+* **The matrix size is a real config knob.** `sink_width`/`sink_height` (default
+  320×200) must match the pixel layout the sender is configured for — a WLED
+  sender streams a fixed pixel count, and the sink assembles exactly that. A
+  mismatch renders garbage or a partial frame (the assembler clips rather than
+  erroring). The display mode then downscales whatever size you pick to the C64
+  grid, so a small matrix (e.g. 64×48) is perfectly fine and much lighter on the
+  wire — 320×200 RGB is 192 KB/frame, which is a lot of UDP for 20 fps.
+* **Both standard ports are bound at once** (DDP 4048 + WLED realtime 21324). If
+  another process already holds one, the scene logs the bind error and
+  self-aborts so the playlist advances — it does not crash the run.
+* **E1.31/sACN is deliberately not implemented** (a documented follow-up).
+  Multi-universe reassembly (170 px/universe) is a lot of protocol surface for a
+  format LedFx and xLights can both emit as DDP instead, so DDP + WLED-realtime
+  cover the ecosystem for far less code.
+
 ## `backgrounds.py` constants are screen codes, not PETSCII
 
 PETSCII and the VIC screen-code encoding diverge above 0x40 — e.g. the

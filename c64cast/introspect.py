@@ -224,6 +224,12 @@ _SCENE_TYPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "Procedural video (plasma/tunnel/…) rendered to any display mode.",
         ("mhires", "hires", "hires_edges", "mcm", "petscii"),
     ),
+    (
+        "wled",
+        "Virtual WLED LED matrix — receive a realtime pixel stream (DDP / WLED "
+        "UDP from LedFx/xLights) and render it to any display mode.",
+        ("mhires", "hires", "hires_edges", "mcm", "petscii"),
+    ),
 )
 
 
