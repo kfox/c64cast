@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import cv2
@@ -929,6 +930,39 @@ class ColorMapAccumulator:
         d = (diff * diff).sum(axis=2)  # (bins³, k)
         nearest = d.argmin(axis=1)  # (bins³,)
         return assigned[nearest].reshape(bins, bins, bins)
+
+
+def build_fixed_color_map(indices: Sequence[int]) -> ColorMap | None:
+    """Build a forced-palette ``ColorMap`` from an explicit set of C64 indices.
+
+    Unlike ``ColorMapAccumulator`` (which derives the color set by clustering a
+    source pre-scan), this maps every BGR bin to the *nearest of the given
+    indices* in Lab — no samples needed. Used by the WLED control surface (Mode
+    1), where the color picker chooses the forced color set directly. Returns
+    None for an empty index set. Duplicate/out-of-range indices are deduped and
+    masked to 0..15 (preserving first-seen order for a stable `indices` tuple)."""
+    seen: list[int] = []
+    for i in indices:
+        v = int(i) & 0x0F
+        if v not in seen:
+            seen.append(v)
+    if not seen:
+        return None
+    centers_lab = _PALETTE_LAB[seen]  # (k, 3), each chosen index maps to itself
+    assigned = np.array(seen, dtype=np.uint8)
+    lut = ColorMapAccumulator._bake_lut(centers_lab, assigned)
+    return ColorMap(lut=lut, shift=_FORCE_PALETTE_SHIFT, indices=tuple(sorted(seen)))
+
+
+def nearest_palette_index(rgb: Sequence[int]) -> int:
+    """Snap an ``[R, G, B]`` triple (0..255, e.g. a WLED color slot) to the
+    perceptually nearest C64 palette index (CIE-Lab). Extra channels (a WLED
+    ``W`` slot) are ignored; short/empty input falls back to black."""
+    if rgb is None or len(rgb) < 3:
+        return 0
+    r, g, b = (int(rgb[0]) & 0xFF, int(rgb[1]) & 0xFF, int(rgb[2]) & 0xFF)
+    bgr = np.array([[b, g, r]], dtype=np.float32)  # palette is BGR order
+    return int(quantize_flat_for(bgr, perceptual=True)[0])
 
 
 def _compute_palette_hues() -> np.ndarray:
