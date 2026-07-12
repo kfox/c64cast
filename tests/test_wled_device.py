@@ -242,6 +242,21 @@ class WledApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/json/pal").json(), ["Default"])
         self.assertEqual(set(self.client.get("/json/si").json()), {"state", "info"})
 
+    def test_get_index_serves_control_page(self):
+        r = self.client.get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("text/html", r.headers["content-type"])
+        self.assertIn("c64cast", r.text)
+        self.assertIn("/json/state", r.text)
+
+    def test_get_description_xml(self):
+        r = self.client.get("/description.xml")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("xml", r.headers["content-type"])
+        self.assertIn("<friendlyName>c64cast</friendlyName>", r.text)
+        self.assertIn(f"<UDN>uuid:{self.bridge.device_uuid()}</UDN>", r.text)
+        self.assertIn(f"<serialNumber>{self.bridge.mac()}</serialNumber>", r.text)
+
     def test_post_state_pauses(self):
         r = self.client.post("/json/state", json={"on": False})
         self.assertEqual(r.status_code, 200)

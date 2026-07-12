@@ -1,0 +1,65 @@
+#:schema ../../c64cast.schema.json
+# Control c64cast FROM the WLED app (WLED bridge Mode 1 — "listen").
+#
+# [wled].listen turns c64cast INTO a virtual WLED device: it advertises itself
+# over mDNS (_wled._tcp) and serves a subset of the WLED JSON HTTP/WS API, so
+# the official WLED mobile/web app (or python-wled, or Home Assistant's WLED
+# integration) discovers it like any real WLED controller and can:
+#   - turn it on/off, set "brightness"                 -> pause/resume, bri echo
+#   - pick an "effect" from the dropdown                -> jumps to that scene
+#   - move the sx/ix sliders                            -> sweeps the current
+#                                                          scene's live params
+#
+# This is the OTHER direction from scene-wled.toml (Mode 2, where the C64
+# becomes a pixel *sink* for a realtime video stream). Mode 1 sends no pixels
+# anywhere — it's a control surface. The WLED app itself can't stream pixels,
+# so it's the natural fit for this mode, not Mode 2.
+#
+# Effect switching only does something useful with more than one scene (a
+# single-scene config has nowhere to jump to), so this demo runs a small
+# hardware-free playlist: the WLED effect list will show "Hello" / "Plasma" /
+# "Fire". Requires the `wled` extra (zeroconf + fastapi + uvicorn).
+#
+# Run:
+#   python -m c64cast --config config/examples/wled-control.toml
+# Then open the WLED app, let it discover "c64cast" on the LAN (or add it
+# manually by IP), and drive it from there.
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[wled]
+listen = "enabled"   # binds the WLED JSON API on 0.0.0.0:8080; needs the `wled` extra
+name = "c64cast"     # friendly/mDNS name shown in the WLED app's device list
+
+[playlist]
+interleave_videos = false
+loop = true
+
+[[scenes]]
+type = "blank"
+name = "Hello"
+border = 0
+background = 6
+duration_s = 30.0
+
+  [[scenes.overlays]]
+  type = "big_text"
+  row = "middle"
+  speed_cells_per_s = 12.0
+  messages = [{ text = "WLED APP CONTROLLED", color = "rainbow" }]
+
+[[scenes]]
+type = "generative"
+name = "Plasma"
+source = "plasma"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Fire"
+source = "fire"
+display = "mhires"
+audio_source = "none"
+duration_s = 30.0
