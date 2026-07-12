@@ -38,20 +38,57 @@ class _FakeSource:
         self.speed = 1.0
 
 
+class _FakeMode:
+    """A display mode that supports the live palette/force-palette seams (like
+    MCM/MultiHires). Records the calls so tests can assert on them."""
+
+    def __init__(self, name: str = "mhires") -> None:
+        self.name = name
+        self.palette_mode = "percell"
+        self.color_map = "UNSET"  # sentinel: distinguishes "never set" from None
+        self.palette_calls: list[tuple[str, bool | None]] = []
+
+    def set_color_map(self, cmap: object) -> None:
+        self.color_map = cmap
+
+    def set_palette_mode(self, api: object, mode: str, *, force_palette: bool | None = None) -> str:
+        self.palette_mode = mode
+        self.palette_calls.append((mode, force_palette))
+        return mode
+
+
 class _FakeScene:
-    def __init__(self, name: str, source: _FakeSource | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        source: _FakeSource | None = None,
+        display_mode: object | None = None,
+    ) -> None:
         self.name = name
         self.source = source
+        self.display_mode = display_mode
+        self.api = object() if display_mode is not None else None
 
 
 class _FakePlaylist:
     """Minimal Playlist surface the bridge touches."""
 
-    def __init__(self, name: str, scene_names: list[str], *, source: _FakeSource | None = None):
+    def __init__(
+        self,
+        name: str,
+        scene_names: list[str],
+        *,
+        source: _FakeSource | None = None,
+        display_mode: object | None = None,
+    ):
         self.name = name
         self.scenes = [_FakeScene(n) for n in scene_names]
-        if source is not None and self.scenes:
-            self.scenes[0].source = source
+        if self.scenes:
+            if source is not None:
+                self.scenes[0].source = source
+            if display_mode is not None:
+                self.scenes[0].display_mode = display_mode
+                self.scenes[0].api = object()
         self.index = 0
         self.current = self.scenes[0] if self.scenes else None
         self.single_scene = len(self.scenes) <= 1
@@ -66,8 +103,12 @@ class _FakePlaylist:
         self.jumps.append(index)
 
 
-def _bridge(*, source: _FakeSource | None = None) -> tuple[WledBridge, _FakePlaylist]:
-    pl = _FakePlaylist("main", ["Waveform", "Plasma", "Tunnel"], source=source)
+def _bridge(
+    *, source: _FakeSource | None = None, display_mode: object | None = None
+) -> tuple[WledBridge, _FakePlaylist]:
+    pl = _FakePlaylist(
+        "main", ["Waveform", "Plasma", "Tunnel"], source=source, display_mode=display_mode
+    )
     systems = cast("list[tuple[str, Playlist]]", [("main", pl)])
     return WledBridge(systems, "c64cast"), pl
 
@@ -219,6 +260,97 @@ class BridgeApplyTests(unittest.TestCase):
         self.assertEqual(seg["pal"], 3)
 
 
+# --- palette / color live controls ------------------------------------------
+
+
+class BridgePaletteColorTests(unittest.TestCase):
+    def test_palettes_are_palette_modes(self):
+        bridge, _ = _bridge()
+        self.assertEqual(bridge.palettes(), ["Percell", "Cheap", "Vivid", "Grayscale"])
+
+    def test_pal_swaps_palette_mode(self):
+        mode = _FakeMode()
+        bridge, _ = _bridge(display_mode=mode)
+        bridge.apply({"seg": [{"id": 0, "pal": 2}]})  # index 2 -> "vivid"
+        self.assertEqual(mode.palette_mode, "vivid")
+        # Selecting a palette clears any force + turns the force toggle off.
+        self.assertIsNone(mode.color_map)
+        self.assertEqual(mode.palette_calls[-1], ("vivid", False))
+        self.assertEqual(bridge.state_dict()["seg"][0]["pal"], 2)
+
+    def test_pal_out_of_range_is_noop(self):
+        mode = _FakeMode()
+        bridge, _ = _bridge(display_mode=mode)
+        bridge.apply({"seg": [{"id": 0, "pal": 99}]})
+        self.assertEqual(mode.palette_calls, [])  # nothing applied
+        self.assertEqual(bridge.state_dict()["seg"][0]["pal"], 99)  # still echoed
+
+    def test_col_forces_palette_to_picked_colors(self):
+        from c64cast import palette as pal
+
+        mode = _FakeMode()
+        mode.palette_mode = "grayscale"  # a non-percell mode
+        bridge, _ = _bridge(display_mode=mode)
+        # orange + cyan -> two distinct C64 indices, force toggle on.
+        bridge.apply({"seg": [{"id": 0, "col": [[255, 160, 0], [0, 255, 255]]}]})
+        assert isinstance(mode.color_map, pal.ColorMap)
+        self.assertEqual(len(mode.color_map.indices), 2)
+        # Forcing colors snaps to percell (the mode force_palette pairs with) so
+        # grayscale's chromatic penalty can't wash the picked colors to gray.
+        self.assertEqual(mode.palette_calls[-1], ("percell", True))
+        self.assertEqual(bridge.state_dict()["seg"][0]["col"], [[255, 160, 0], [0, 255, 255]])
+
+    def test_single_col_gets_a_contrast_partner(self):
+        from c64cast import palette as pal
+
+        mode = _FakeMode()
+        bridge, _ = _bridge(display_mode=mode)
+        bridge.apply({"seg": [{"id": 0, "col": [[255, 160, 0]]}]})  # one color
+        assert isinstance(mode.color_map, pal.ColorMap)
+        self.assertEqual(len(mode.color_map.indices), 2)  # partner added
+        self.assertIn(0, mode.color_map.indices)  # black contrast partner
+
+    def test_unchanged_col_does_not_clobber_palette_pick(self):
+        # The WLED app re-POSTs the full segment (pal AND col) on every change.
+        # A palette pick carrying the *same* col we already echoed must not let
+        # that col re-apply its force and undo the palette. (Regression: HW.)
+        mode = _FakeMode()
+        bridge, _ = _bridge(display_mode=mode)
+        # Establish a color force first.
+        bridge.apply({"seg": [{"id": 0, "col": [[255, 160, 0], [0, 255, 255]]}]})
+        forced_calls = len(mode.palette_calls)
+        # Now the app changes only the palette, but echoes the unchanged col.
+        bridge.apply({"seg": [{"id": 0, "pal": 2, "col": [[255, 160, 0], [0, 255, 255]]}]})
+        # The palette change applied (vivid, force cleared)...
+        self.assertEqual(mode.palette_mode, "vivid")
+        # ...and the unchanged col did NOT re-trigger a force call after it.
+        self.assertEqual(mode.palette_calls[forced_calls:], [("vivid", False)])
+
+    def test_unchanged_pal_does_not_reapply(self):
+        mode = _FakeMode()
+        bridge, _ = _bridge(display_mode=mode)
+        bridge.apply({"seg": [{"id": 0, "pal": 2}]})  # vivid
+        n = len(mode.palette_calls)
+        bridge.apply({"seg": [{"id": 0, "pal": 2}]})  # same again -> no-op
+        self.assertEqual(len(mode.palette_calls), n)
+
+    def test_segment_name_single_system_uses_device_name(self):
+        bridge, _ = _bridge()
+        self.assertEqual(bridge.state_dict()["seg"][0]["n"], "c64cast")
+
+    def test_pal_and_col_noop_on_mode_without_setters(self):
+        # A mode with no set_palette_mode/set_color_map (hires/petscii/blank):
+        # both must be silent no-ops that still echo.
+        class _BareMode:
+            name = "hires"
+
+        bridge, _ = _bridge(display_mode=_BareMode())
+        bridge.apply({"seg": [{"id": 0, "pal": 1, "col": [[10, 20, 30]]}]})  # must not raise
+        seg = bridge.state_dict()["seg"][0]
+        self.assertEqual(seg["pal"], 1)
+        self.assertEqual(seg["col"], [[10, 20, 30]])
+
+
 # --- HTTP + WS API ----------------------------------------------------------
 
 
@@ -239,7 +371,9 @@ class WledApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/json/state").json()["seg"][0]["id"], 0)
         self.assertEqual(self.client.get("/json/info").json()["product"], "c64cast")
         self.assertEqual(self.client.get("/json/eff").json(), ["Waveform", "Plasma", "Tunnel"])
-        self.assertEqual(self.client.get("/json/pal").json(), ["Default"])
+        self.assertEqual(
+            self.client.get("/json/pal").json(), ["Percell", "Cheap", "Vivid", "Grayscale"]
+        )
         self.assertEqual(set(self.client.get("/json/si").json()), {"state", "info"})
 
     def test_get_index_serves_control_page(self):
@@ -248,6 +382,11 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("text/html", r.headers["content-type"])
         self.assertIn("c64cast", r.text)
         self.assertIn("/json/state", r.text)
+        # The misleading brightness slider was removed (Power toggle covers it);
+        # palette + color controls were added (built client-side by the script).
+        self.assertNotIn("Brightness", r.text)
+        self.assertIn("Palette", r.text)
+        self.assertIn("'color'", r.text)  # picker.type = 'color'
 
     def test_get_description_xml(self):
         r = self.client.get("/description.xml")
