@@ -815,7 +815,7 @@
         },
         "cc_map": {
           "type": "array",
-          "description": "MIDI-message -> action mappings ([[midi_control.cc_map]] tables); see --describe section:midi_control. Set to [] to disable the shipped defaults, or override/extend individual entries. Each entry: type ('cc'|'note'|'pc'), number (0-127), action ('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'); 'jump' also needs an int scene; 'param' also needs a string target ('effect.<name>' or 'source.<name>', matching a LIVE_PARAMS entry on the current scene's effect/generator).",
+          "description": "MIDI-message -> action mappings ([[midi_control.cc_map]] tables); see --describe section:midi_control. Set to [] to disable the shipped defaults, or override/extend individual entries. Each entry: type ('cc'|'note'|'pc'), number (0-127), action ('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'); 'jump' also needs an int scene; 'param' also needs a string target ('effect.<name>', 'source.<name>', or 'scene.<name>' for scope scenes, matching a LIVE_PARAMS entry on the current scene's effect/generator/renderer).",
           "default": [
             {
               "type": "note",

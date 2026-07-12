@@ -1831,8 +1831,9 @@ class MidiControlCfg:
             "entry: type ('cc'|'note'|'pc'), number (0-127), action "
             "('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|"
             "'param'); 'jump' also needs an int scene; 'param' also needs a "
-            "string target ('effect.<name>' or 'source.<name>', matching a "
-            "LIVE_PARAMS entry on the current scene's effect/generator)."
+            "string target ('effect.<name>', 'source.<name>', or 'scene.<name>' "
+            "for scope scenes, matching a LIVE_PARAMS entry on the current "
+            "scene's effect/generator/renderer)."
         },
     )
 
@@ -3535,11 +3536,11 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
             if (
                 not isinstance(target, str)
                 or "." not in target
-                or target.split(".", 1)[0] not in ("effect", "source")
+                or target.split(".", 1)[0] not in ("effect", "source", "scene")
             ):
                 raise ConfigError(
                     f"[midi_control].cc_map[{i}] action 'param' needs a string 'target' "
-                    "of the form 'effect.<name>' or 'source.<name>', got "
+                    "of the form 'effect.<name>', 'source.<name>', or 'scene.<name>', got "
                     f"{target!r}"
                 )
 

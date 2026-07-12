@@ -173,11 +173,22 @@ class TunnelSource(GenerativeSource):
     """Infinite-zoom tunnel: hue is driven by per-pixel depth (1/radius) and
     angle, scrolled over time. Depth + angle fields are precomputed once."""
 
-    LIVE_PARAMS = {"speed": (0.0, 2.0)}
+    # `scale` multiplies the 0.05 depth coefficient (the ix live knob): higher
+    # packs more concentric rings toward the mouth of the tunnel. 1.0 == the
+    # historical fixed depth.
+    LIVE_PARAMS = {"speed": (0.0, 2.0), "scale": (0.25, 4.0)}
 
-    def __init__(self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, speed: float = 0.5):
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 0.5,
+        scale: float = 1.0,
+    ):
         super().__init__(width=width, height=height)
         self.speed = float(speed)
+        self.scale = float(scale)
         ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
         dx = xs - width / 2.0
         dy = ys - height / 2.0
@@ -186,13 +197,14 @@ class TunnelSource(GenerativeSource):
         self._angle = np.arctan2(dy, dx) / (2.0 * np.pi)  # -0.5..0.5
 
     def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        depth_coeff = 0.05 * self.scale
         if modulation is None:
-            hue = self._depth * 0.05 + self._angle + t * self.speed
+            hue = self._depth * depth_coeff + self._angle + t * self.speed
             return self._hsv_to_bgr(hue)
         # Reactive: same generic treatment as plasma (tempo cycles the colors,
         # onsets pulse). The depth-driven tunnel shape itself stays time-locked.
         offset = t * self.speed + self._reactive_hue_offset(modulation)
-        hue = self._depth * 0.05 + self._angle + offset
+        hue = self._depth * depth_coeff + self._angle + offset
         return self._hsv_to_bgr(hue, val=self._reactive_value(modulation))
 
 
@@ -237,13 +249,21 @@ class FireSource(GenerativeSource):
     _LEVEL_HEIGHT = 0.85  # extra heat gain at full level (taller, hotter flames)
     _ONSET_FLARE = 0.80  # extra heat gain on a full-strength transient
 
-    LIVE_PARAMS = {"scroll_speed": (0.0, 4.0)}
+    # `intensity` scales the overall heat/flame height (the ix live knob),
+    # applied on top of the reactive gain. 1.0 == the historical baseline.
+    LIVE_PARAMS = {"scroll_speed": (0.0, 4.0), "intensity": (0.2, 2.0)}
 
     def __init__(
-        self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, scroll_speed: float = 1.1
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        scroll_speed: float = 1.1,
+        intensity: float = 1.0,
     ):
         super().__init__(width=width, height=height)
         self.scroll_speed = float(scroll_speed)
+        self.intensity = float(intensity)
         rng = np.random.default_rng(0xF12E)
         self._turb = _periodic_value_noise(
             rng,
@@ -264,7 +284,7 @@ class FireSource(GenerativeSource):
         if modulation is not None:
             gain = 1.0 + self._LEVEL_HEIGHT * modulation.level
             flare = self._ONSET_FLARE * modulation.onset
-        heat = np.clip(turb * self._grad * gain * (1.0 + flare), 0.0, 1.0)
+        heat = np.clip(turb * self._grad * gain * (1.0 + flare) * self.intensity, 0.0, 1.0)
         u8 = (heat * 255.0).astype(np.uint8)
         return cv2.applyColorMap(u8, cv2.COLORMAP_HOT)
 

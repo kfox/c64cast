@@ -15,7 +15,7 @@ from c64cast.audio import AudioStreamer
 from c64cast.audio_source import MicAudioSource, NullAudioSource
 from c64cast.backend import C64Backend, HardwareProfile
 from c64cast.config import AudioCfg, Config, SceneCfg, build_scene, validate_scene_cfg
-from c64cast.effects import FrameEffect, TrailsEffect, build_effect
+from c64cast.effects import FrameEffect, PulseEffect, RgbShiftEffect, TrailsEffect, build_effect
 from c64cast.frame_source import BaseFrameSource, FrameSource
 from c64cast.generators import build_generator, generator_names
 from c64cast.modes import DisplayMode
@@ -41,8 +41,8 @@ class GeneratorTest(unittest.TestCase):
         # a live-performance param sweep, so pin the shape here.
         expected = {
             "plasma": {"speed", "scale"},
-            "tunnel": {"speed"},
-            "fire": {"scroll_speed"},
+            "tunnel": {"speed", "scale"},
+            "fire": {"scroll_speed", "intensity"},
             "mandelbrot": {"zoom_speed", "cycle_speed"},
             "moire2": {"ring_freq", "drift_speed"},
             "halo": {"drift_speed", "pulse_speed"},
@@ -107,6 +107,25 @@ class GeneratorTest(unittest.TestCase):
         rest = g.render(0.5)  # pure path
         flare = MusicModulation(0.9, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         self.assertGreater(int(g.render(0.5, flare).sum()), int(rest.sum()))
+
+    def test_fire_intensity_raises_heat(self):
+        # The ix live knob: a higher intensity scales the whole heat field up,
+        # so more of the frame reaches the white-hot end (brighter overall);
+        # a lower one dims it. Default 1.0 is the baseline.
+        base = generators.FireSource().render(0.5)
+        hot = generators.FireSource(intensity=2.0).render(0.5)
+        cool = generators.FireSource(intensity=0.3).render(0.5)
+        self.assertGreater(int(hot.sum()), int(base.sum()))
+        self.assertLess(int(cool.sum()), int(base.sum()))
+
+    def test_tunnel_scale_changes_ring_density(self):
+        # The ix live knob: `scale` multiplies the depth coefficient, changing
+        # the concentric-ring density, so the rendered frame differs from the
+        # baseline. Default 1.0 reproduces the historical output.
+        base = generators.TunnelSource().render(0.5)
+        dense = generators.TunnelSource(scale=4.0).render(0.5)
+        self.assertEqual(base.shape, dense.shape)
+        self.assertFalse(np.array_equal(base, dense))
 
     def test_modulation_changes_output(self):
         from c64cast.modulation import MusicModulation
@@ -269,9 +288,13 @@ class EffectTest(unittest.TestCase):
     def test_live_params_declared_with_valid_ranges(self):
         # midi_control.py scales a CC into each declared (min, max) range and
         # setattr()s it directly — pin the shape for every registered
-        # effect, including pulse/rgb_shift (which inherit the empty base
-        # default: no persistent knob worth exposing, a mapped CC no-ops).
-        expected = {"trails": {"decay"}, "pulse": set(), "rgb_shift": set()}
+        # effect. pulse/rgb_shift expose `intensity` (the sx/ix reaction-depth
+        # knob; a visible no-op only because they're inert without modulation).
+        expected = {
+            "trails": {"decay"},
+            "pulse": {"intensity"},
+            "rgb_shift": {"intensity"},
+        }
         for name in expected:
             eff = build_effect(name)
             live_params = eff.LIVE_PARAMS
@@ -357,6 +380,36 @@ class EffectTest(unittest.TestCase):
         silent = MusicModulation(0.0, 0.0, 0.0, 0.0, (0.0, 0.0, 0.0), (False, False, False))
         np.testing.assert_array_equal(eff.apply(f, 0.0, silent), f)
 
+    def test_pulse_intensity_zero_is_identity_under_modulation(self):
+        # intensity=0 scales the whole reaction away ⇒ scale collapses to 1.0
+        # ⇒ identity even with a full transient present.
+        from c64cast.modulation import MusicModulation
+
+        eff = PulseEffect(intensity=0.0)
+        f = np.random.default_rng(6).integers(0, 256, (8, 8, 3)).astype(np.uint8)
+        hit = MusicModulation(0.9, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        np.testing.assert_array_equal(eff.apply(f, 0.0, hit), f)
+
+    def test_pulse_intensity_scales_reaction(self):
+        # A higher intensity zooms harder for the same transient — the frame
+        # diverges further from the source than at the baseline intensity.
+        from c64cast.modulation import MusicModulation
+
+        f = np.zeros((16, 16, 3), np.uint8)
+        f[6:10, 6:10] = 255
+        hit = MusicModulation(0.0, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        base = PulseEffect()  # intensity 1.0
+        hot = PulseEffect(intensity=2.5)
+        base_diff = int(np.abs(base.apply(f, 0.0, hit).astype(int) - f).sum())
+        hot_diff = int(np.abs(hot.apply(f, 0.0, hit).astype(int) - f).sum())
+        self.assertGreater(hot_diff, base_diff)
+
+    def test_effect_intensity_default_is_baseline(self):
+        # The default intensity=1.0 is what build_effect ships — the multiply is
+        # bit-exact identity against the pre-knob response.
+        self.assertEqual(PulseEffect().intensity, 1.0)
+        self.assertEqual(RgbShiftEffect().intensity, 1.0)
+
     def test_rgb_shift_identity_without_modulation(self):
         eff = build_effect("rgb_shift")
         f = np.random.default_rng(2).integers(0, 256, (8, 8, 3)).astype(np.uint8)
@@ -370,6 +423,15 @@ class EffectTest(unittest.TestCase):
         f = np.random.default_rng(5).integers(0, 256, (8, 8, 3)).astype(np.uint8)
         silent = MusicModulation(0.0, 0.0, 0.0, 0.0, (0.0, 0.0, 0.0), (False, False, False))
         np.testing.assert_array_equal(eff.apply(f, 0.0, silent), f)
+
+    def test_rgb_shift_intensity_zero_is_identity_under_modulation(self):
+        # intensity=0 zeros the separation ⇒ identity even with a full transient.
+        from c64cast.modulation import MusicModulation
+
+        eff = RgbShiftEffect(intensity=0.0)
+        f = np.random.default_rng(7).integers(0, 256, (8, 16, 3)).astype(np.uint8)
+        hit = MusicModulation(0.9, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        np.testing.assert_array_equal(eff.apply(f, 0.0, hit), f)
 
     def test_rgb_shift_separates_channels_on_onset(self):
         # A transient slews blue + red apart horizontally; green stays put.

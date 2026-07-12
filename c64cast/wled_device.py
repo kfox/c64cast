@@ -237,7 +237,11 @@ setInterval(refresh, 4000);
 </body>
 </html>
 """
-_IX_TARGETS = ("source.scale", "source.intensity")
+# Source-first preserves the existing generator behavior; `scene.gain` reaches
+# the scope scenes (WaveformScene/MidiScene/AsidScene), which *are* the
+# renderer and so have no source/effect holder — see the `scene.` case in
+# _set_live_param.
+_IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")
 
 
 def _local_ip() -> str:
@@ -264,7 +268,9 @@ def _set_live_param(pl: Playlist, targets: tuple[str, ...], value_0_255: int) ->
     norm = max(0.0, min(1.0, value_0_255 / _SLIDER_MAX))
     for target in targets:
         holder_attr, _, name = target.partition(".")
-        holder = getattr(scene, holder_attr, None)
+        # `scene.<name>` targets the scene itself (scope scenes mix in the
+        # renderer, so the param lives on the scene, not a source/effect holder).
+        holder = scene if holder_attr == "scene" else getattr(scene, holder_attr, None)
         if holder is None:
             continue
         live_params = getattr(type(holder), "LIVE_PARAMS", {})

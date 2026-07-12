@@ -256,6 +256,14 @@ class VoiceScopeRenderer:
     delta cache absorbs unchanged columns.
     """
 
+    # Live-tunable params: name -> (min, max) for a CC-style [0, 1] sweep
+    # (the sx/ix WLED sliders + the identical midi-CC seam). `gain` scales the
+    # scope trace amplitude; 1.0 == the historical fixed amplitude. Resolved
+    # via the `scene.` target prefix — a scope scene *is* the renderer, so it
+    # has no source/effect holder for the live-param resolvers to reach.
+    LIVE_PARAMS: dict[str, tuple[float, float]] = {"gain": (0.25, 3.0)}
+    gain: float
+
     # ---- attribute contract (host scene supplies these; declared here so
     # the type checker sees them on the mixin) ------------------------------
     api: C64Backend
@@ -326,6 +334,9 @@ class VoiceScopeRenderer:
             )
 
         self._frame_time_s = frame_time_s
+        # Live trace-amplitude knob (sx/ix); overridable at runtime via the
+        # `scene.gain` live-param target.
+        self.gain = 1.0
         self.color_mode = color_mode
         self.voice_color_names = list(voice_colors or DEFAULT_VOICE_COLORS)
         if len(self.voice_color_names) < 3:
@@ -633,7 +644,9 @@ class VoiceScopeRenderer:
         with self._reg_lock:
             time_window_s = self._voice_time_window_s(v_idx, n_new, emulator=emu)
             samples = emu.voice_samples(v_idx, n_new, time_window_s)
-        ys = (mid - samples * half_h).astype(np.int32)
+        # `gain` (the sx/ix live knob) scales trace amplitude; the clip below
+        # keeps an overdriven trace inside the strip.
+        ys = (mid - samples * half_h * self.gain).astype(np.int32)
         np.clip(ys, top, bot - 1, out=ys)
         return ys
 
