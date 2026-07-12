@@ -4423,6 +4423,9 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
         `extensions` is included (non-recursive; mirrors `_gather_videos`).
       * a glob pattern (containing `*`, `?`, or `[`) — expanded via
         `glob.glob`; matches whose extension is in `extensions` are kept.
+        A `**` segment recurses into subdirectories (e.g.
+        `assets/sids/**/*.sid` finds a whole HVSC tree), matching zero or
+        more directory levels.
 
     Whitespace around commas is stripped. Empty entries (e.g. a trailing
     comma) are ignored. Raises ValueError when the spec resolves to zero
@@ -4457,8 +4460,12 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
                 )
             matches.add(entry)
         elif _GLOB_CHARS.search(entry):
+            # recursive=True only changes behavior for `**` segments; ordinary
+            # `*`/`?`/`[...]` patterns are unaffected (backward-compatible).
             hits = [
-                p for p in glob.glob(entry) if os.path.isfile(p) and p.lower().endswith(extensions)
+                p
+                for p in glob.glob(entry, recursive=True)
+                if os.path.isfile(p) and p.lower().endswith(extensions)
             ]
             if not hits:
                 # A glob with zero hits is almost always a typo — louder

@@ -800,10 +800,14 @@ warn log; bounded retries before the scene aborts. Examples:
 
 ```toml
 file = "assets/sids/MyFavorite.sid"             # one fixed tune
-file = "assets/sids"                            # whole directory
+file = "assets/sids"                            # whole directory (one level)
+file = "assets/sids/**/*.sid"                   # recurse an HVSC tree (** = any depth)
 file = "assets/sids/C64Music/MUSICIANS/G/Galway_Martin/*"
 file = "assets/sids/Tune1.sid, assets/sids/Tune2.sid"
 ```
+
+A bare directory is scanned one level deep (non-recursive); use a `**`
+glob to walk an unpacked HVSC tree at any depth.
 
 Single-file pools keep `cycle_style` (SHIFT) mutations across loop
 iterations. Multi-file pools reset to the SID's `start_song` on each

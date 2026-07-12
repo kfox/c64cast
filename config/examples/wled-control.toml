@@ -20,13 +20,20 @@
 #
 # Effect switching only does something useful with more than one scene (a
 # single-scene config has nowhere to jump to), so this demo runs a small
-# hardware-free playlist: the WLED effect list will show "Hello" / "Plasma" /
-# "Fire". Requires the `wled` extra (zeroconf + fastapi + uvicorn).
+# playlist: the WLED effect list will show "Hello" / "Plasma" / "Fire" /
+# "Waveform". Requires the `wled` extra (zeroconf + fastapi + uvicorn).
+#
+# The "Waveform" scene plays a SID and needs a .sid file — drop one into
+# assets/sids/ first (HVSC: https://hvsc.c64.org). Without one, the scene
+# fails to build at startup; delete its [[scenes]] block below if you just
+# want the three hardware-free scenes.
 #
 # Run:
 #   python -m c64cast --config config/examples/wled-control.toml
 # Then open the WLED app, let it discover "c64cast" on the LAN (or add it
-# manually by IP), and drive it from there.
+# manually by IP), and drive it from there. If the effect dropdown looks stale
+# after you change this playlist, c64cast bumps its reported WLED `vid` when the
+# scene list changes so the app re-fetches — no manual cache clear needed.
 
 [ultimate64]
 url = "http://ultimate-64-ii.lan"
@@ -45,6 +52,7 @@ name = "Hello"
 border = 0
 background = 6
 duration_s = 30.0
+audio = false   # title card — no mic/DAC audio (the sx/ix sliders no-op here)
 
   [[scenes.overlays]]
   type = "big_text"
@@ -66,3 +74,15 @@ source = "fire"
 display = "mhires"
 audio_source = "none"
 duration_s = 30.0
+
+[[scenes]]
+# SID oscilloscope — needs a .sid in assets/sids/ (see the header note). On this
+# scene the ix slider drives `scene.gain`, scaling the scope trace amplitude
+# (sx is a no-op — a scope has no speed-ish live knob). Delete this block to
+# keep the demo hardware-/asset-free.
+type = "waveform"
+name = "Waveform"
+file = "assets/sids/**/*.sid"   # recurses an unpacked HVSC tree; picks one at random
+duration_s = 60.0
+color_mode = "per_voice"
+voice_colors = ["cyan", "yellow", "light green"]

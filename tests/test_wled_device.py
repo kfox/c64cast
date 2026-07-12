@@ -218,6 +218,27 @@ class BridgeReadTests(unittest.TestCase):
         full = bridge.full()
         self.assertEqual(set(full), {"state", "info", "effects", "palettes"})
 
+    def test_vid_is_content_derived_stable_and_gate_safe(self):
+        from c64cast.wled_device import _WLED_VID_BASE, _WLED_VID_SPREAD
+
+        bridge, _ = _bridge()
+        vid = bridge.info_dict()["vid"]
+        # Within [base, base+spread): stays date-int-shaped so WLED clients'
+        # minimum-version/feature gates (which compare vid to a floor) pass.
+        self.assertGreaterEqual(vid, _WLED_VID_BASE)
+        self.assertLess(vid, _WLED_VID_BASE + _WLED_VID_SPREAD)
+        # Deterministic per content — a given config always reports the same vid.
+        self.assertEqual(vid, bridge.info_dict()["vid"])
+
+    def test_vid_changes_when_effect_list_changes(self):
+        # The WLED app caches the effect/palette lists keyed on (vid, palcount);
+        # a different scene playlist must report a different vid so the app drops
+        # the cache and re-fetches (the "stale scene dropdown" fix).
+        b1, _ = _bridge()  # scenes: Waveform / Plasma / Tunnel
+        pl2 = _FakePlaylist("main", ["Waveform", "Plasma", "Tunnel", "Fire"])
+        b2 = WledBridge(cast("list[tuple[str, Playlist]]", [("main", pl2)]), "c64cast")
+        self.assertNotEqual(b1.info_dict()["vid"], b2.info_dict()["vid"])
+
 
 # --- bridge writes (apply) --------------------------------------------------
 

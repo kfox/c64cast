@@ -920,6 +920,31 @@ class ResolveFileSpecTest(unittest.TestCase):
                     os.path.join(tmp, "nope-*.sid"), self.EXTS, label="waveform"
                 )
 
+    def test_recursive_glob_walks_subdirectories(self):
+        # `**` recurses into subdirs (an unpacked HVSC tree lives under nested
+        # dirs) and matches zero-or-more levels, so a top-level file is found too.
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "a", "b"))
+            self._make_files(tmp, ["top.sid"])
+            self._make_files(os.path.join(tmp, "a"), ["mid.sid"])
+            self._make_files(os.path.join(tmp, "a", "b"), ["deep.sid", "skip.txt"])
+            got = cfgmod.resolve_file_spec(
+                os.path.join(tmp, "**", "*.sid"), self.EXTS, label="waveform"
+            )
+            self.assertEqual(
+                sorted(os.path.basename(p) for p in got), ["deep.sid", "mid.sid", "top.sid"]
+            )
+
+    def test_nonrecursive_glob_unaffected(self):
+        # A plain `*` glob still matches only its own level (no `**`) — the
+        # recursive=True flag is backward-compatible.
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "sub"))
+            self._make_files(tmp, ["top.sid"])
+            self._make_files(os.path.join(tmp, "sub"), ["deep.sid"])
+            got = cfgmod.resolve_file_spec(os.path.join(tmp, "*.sid"), self.EXTS, label="waveform")
+            self.assertEqual([os.path.basename(p) for p in got], ["top.sid"])
+
     def test_comma_combination_unions_and_dedupes(self):
         # Mix of literal + directory + glob; overlapping picks dedupe.
         with tempfile.TemporaryDirectory() as tmp:
