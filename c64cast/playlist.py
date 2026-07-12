@@ -149,17 +149,21 @@ class Playlist:
         # WLED audio-sync broadcaster (bridge Mode 3): a process-wide UDP sender
         # that pulls the active scene's music features and multicasts them as
         # WLED Audio Sync packets so LAN LED matrices react to the SID. Built
-        # only when [wled].enabled; started/stopped around the run loop.
+        # only when [wled].broadcast is on; started/stopped around the run loop.
         self._wled: Any = None
-        if config is not None and config.wled.enabled:
-            from .wled_sync import WledAudioSyncBroadcaster
+        if config is not None:
+            from .config import resolve_wled_broadcast
 
-            self._wled = WledAudioSyncBroadcaster(
-                self._active_features,
-                host=config.wled.host,
-                port=config.wled.port,
-                rate_hz=config.wled.rate_hz,
-            )
+            broadcast_on, broadcast_host, broadcast_port = resolve_wled_broadcast(config)
+            if broadcast_on:
+                from .wled_sync import WledAudioSyncBroadcaster
+
+                self._wled = WledAudioSyncBroadcaster(
+                    self._active_features,
+                    host=broadcast_host,
+                    port=broadcast_port,
+                    rate_hz=config.wled.rate_hz,
+                )
         self._menu_overlay: Any = None
         # While the menu is open the background is frozen (not re-rendered every
         # frame) so the post-render panel can't flicker against a per-frame

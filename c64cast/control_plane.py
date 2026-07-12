@@ -38,7 +38,7 @@ InterstitialFactory = Callable[[], Callable[[str], Scene]]
 class ControlServer:
     """Starts a uvicorn server bound to (host, port) on a background thread."""
 
-    def __init__(self, host: str, port: int, app):
+    def __init__(self, host: str, port: int, app, *, label: str = "control plane"):
         try:
             import uvicorn
         except ImportError as e:
@@ -47,6 +47,7 @@ class ControlServer:
             ) from e
         self.host = host
         self.port = port
+        self.label = label
         self._cfg = uvicorn.Config(
             app,
             host=host,
@@ -60,7 +61,7 @@ class ControlServer:
     def start(self):
         self._thread = threading.Thread(target=self._server.run, daemon=True, name="control-plane")
         self._thread.start()
-        log.info("control plane: listening on http://%s:%d", self.host, self.port)
+        log.info("%s: listening on http://%s:%d", self.label, self.host, self.port)
 
     def stop(self):
         self._server.should_exit = True

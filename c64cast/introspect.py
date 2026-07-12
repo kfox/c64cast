@@ -143,8 +143,8 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
     (
         "wled",
         cfgmod.WledCfg,
-        "Broadcast WLED Audio Sync UDP from the playing SID so LAN LED matrices "
-        "react to the music (WLED bridge Mode 3).",
+        "Two-directional WLED bridge: broadcast SID audio-sync out (Mode 3) and/or "
+        "act as a virtual WLED device the app can control (Mode 1).",
     ),
 )
 

@@ -30,6 +30,8 @@ from .config import (
     resolve_color_match,
     resolve_dither_method,
     resolve_scene_display,
+    resolve_wled_broadcast,
+    resolve_wled_listen,
     validate_cell_strategy_cfg,
     validate_color_match_cfg,
     validate_dac_bitmap_tempo_cfg,
@@ -661,13 +663,16 @@ def _validate_midi_control(loaded: LoadResult) -> list[Diagnostic]:
 
 
 def _validate_wled(loaded: LoadResult) -> list[Diagnostic]:
-    """Flag a malformed [wled] section and report the resolved broadcast target
-    when enabled (WLED audio-sync, bridge Mode 3). Per-system, offline —
+    """Flag a malformed [wled] section and report each resolved endpoint when
+    enabled: the Mode 3 broadcast target (audio-sync out) and the Mode 1 listen
+    bind (virtual WLED device / control surface in). Per-system, offline —
     delegates bounds/warnings to config.validate_wled_cfg."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         try:
             validate_wled_cfg(cfg)
+            broadcast_on, b_host, b_port = resolve_wled_broadcast(cfg)
+            listen_on, l_host, l_port = resolve_wled_listen(cfg)
         except ConfigError as e:
             out.append(
                 Diagnostic(
@@ -679,30 +684,38 @@ def _validate_wled(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
             continue
-        if not cfg.wled.enabled:
-            continue
-        w = cfg.wled
-        if w.host is None or w.host == "239.0.0.1":
-            target = f"multicast 239.0.0.1:{w.port}"
-        else:
-            target = f"unicast {w.host}:{w.port}"
-        has_sid = any(
-            s.type == "waveform" or (s.type == "generative" and s.audio_source == "sid")
-            for s in cfg.scenes
-        )
-        out.append(
-            Diagnostic(
-                level="ok" if has_sid else "warn",
-                category="wled",
-                subject=f"{name}/wled",
-                message=(
-                    f"broadcasting Audio Sync to {target} at {w.rate_hz:.0f} Hz"
-                    if has_sid
-                    else f"enabled ({target}) but no SID-driven scene to broadcast — "
-                    "nothing will be sent"
-                ),
+        if broadcast_on:
+            kind = "multicast" if b_host == "239.0.0.1" else "unicast"
+            target = f"{kind} {b_host}:{b_port}"
+            has_sid = any(
+                s.type == "waveform" or (s.type == "generative" and s.audio_source == "sid")
+                for s in cfg.scenes
             )
-        )
+            out.append(
+                Diagnostic(
+                    level="ok" if has_sid else "warn",
+                    category="wled",
+                    subject=f"{name}/wled broadcast",
+                    message=(
+                        f"broadcasting Audio Sync to {target} at {cfg.wled.rate_hz:.0f} Hz"
+                        if has_sid
+                        else f"enabled ({target}) but no SID-driven scene to broadcast — "
+                        "nothing will be sent"
+                    ),
+                )
+            )
+        if listen_on:
+            out.append(
+                Diagnostic(
+                    level="ok",
+                    category="wled",
+                    subject=f"{name}/wled listen",
+                    message=(
+                        f"virtual WLED device '{cfg.wled.name}' serving the WLED JSON "
+                        f"API on {l_host}:{l_port} (needs the 'wled' extra)"
+                    ),
+                )
+            )
     return out
 
 

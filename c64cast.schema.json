@@ -1077,30 +1077,32 @@
     },
     "wled": {
       "type": "object",
-      "description": "Broadcast WLED Audio Sync UDP from the playing SID so LAN LED matrices react to the music (WLED bridge Mode 3).",
+      "description": "Two-directional WLED bridge: broadcast SID audio-sync out (Mode 3) and/or act as a virtual WLED device the app can control (Mode 1).",
       "additionalProperties": false,
       "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Broadcast WLED Audio Sync packets from the playing SID.",
-          "default": false
-        },
-        "host": {
+        "broadcast": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Target host/IP. Unset = WLED's default multicast group 239.0.0.1 (every WLED on the segment with 'Receive' enabled reacts). Set a unicast address to target one device."
-        },
-        "port": {
-          "type": "integer",
-          "description": "UDP port (WLED's Audio Sync default is 11988).",
-          "default": 11988
+          "description": "Mode 3 (audio-sync out). 'disabled' (default) | 'enabled' | '[host][:port]'. 'enabled' multicasts to WLED's default group 239.0.0.1:11988 (every WLED with 'Receive' enabled reacts); give a unicast '[host][:port]' to target one device."
         },
         "rate_hz": {
           "type": "number",
-          "description": "Broadcast rate in Hz. WLED expects roughly frame-rate updates; ~40-60 is typical.",
+          "description": "Broadcast rate in Hz (Mode 3). WLED expects roughly frame-rate updates; ~40-60 is typical.",
           "default": 50.0
+        },
+        "listen": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Mode 1 (control surface in). 'disabled' (default) | 'enabled' | '[host][:port]'. 'enabled' binds the WLED JSON API on 0.0.0.0:8080; override the bind with '[host][:port]'. Needs the 'wled' extra."
+        },
+        "name": {
+          "type": "string",
+          "description": "Friendly/mDNS device name advertised in Mode 1 (what the WLED app shows for this virtual device).",
+          "default": "c64cast"
         }
       }
     },
