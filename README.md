@@ -66,6 +66,9 @@ for a set duration, with an "UP NEXT" interstitial between them:
   music-reactive and with pixel effects (trails, pulse, RGB shift).
 * **Launcher** — hand the machine over to a native `.prg`/`.crt` game or
   demo, then reclaim it.
+* **WLED matrix** — turn the C64 into a virtual LED matrix and stream live
+  pixels to it from LedFx / xLights (DDP or WLED realtime UDP); part of the
+  WLED bridge below.
 * **Blank** — a solid PETSCII canvas for title cards + overlays.
 
 **Display + audio** — six VIC-II display modes (`hires`, `hires_edges`,
@@ -87,6 +90,12 @@ SHIFT cycles the style), an on-C64 SPACE menu for live scene tweaks, webcam
 hand gestures (`vision` extra), a FastAPI control plane (`/pause`,
 `/resume`, `/skip`, `/reload`), MIDI CC control, and `SIGHUP` to reload the
 config.
+
+**WLED bridge** — interoperate with the [WLED](https://kno.wled.ge/) LED
+ecosystem in both directions: drive real LED matrices *from* the C64's SID
+with no microphone (audio-sync broadcast), present c64cast *as* a virtual WLED
+device the WLED app / Home Assistant can discover and control, and turn the
+C64 *into* a virtual LED matrix that LedFx / xLights stream live pixels to.
 
 **Quick playback** — skip the config file entirely and pass media straight
 on the command line: `c64cast clip.mp4 tune.sid pics/` plays each in turn.

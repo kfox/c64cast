@@ -1,0 +1,32 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: the C64 as a virtual WLED LED matrix (WLED bridge Mode 2).
+#
+# A `wled` scene turns the C64 into a network pixel sink: any WLED-ecosystem
+# realtime pixel sender on the LAN (LedFx / xLights / another WLED syncing)
+# streams frames to this host over UDP, and the display mode quantizes each
+# received frame to the C64 — it's just another video source behind the same
+# seam a webcam/video/generator uses. Two protocols are accepted, auto-detected,
+# on their standard ports: DDP (4048) and WLED realtime UDP (21324). No sender
+# on hand? Drive it with scripts/diags/wled_pixel_sender.py.
+#
+# `sink_width`/`sink_height` are the virtual matrix the sender targets — set
+# them to match the sender's configured pixel layout. No audio, no SID.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-wled.toml
+# Then point a sender at this host, e.g.:
+#   scripts/diags/wled_pixel_sender.py --host <this-host> --protocol ddp
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "wled"
+name = "WLED sink (mhires)"
+display = "mhires"
+sink_width = 320
+sink_height = 200
+duration_s = 0.0     # run forever (the sink has no natural end)
