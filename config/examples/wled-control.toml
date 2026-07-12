@@ -7,8 +7,8 @@
 # integration) discovers it like any real WLED controller and can:
 #   - turn it on/off                                    -> pause/resume
 #   - set "brightness"                                  -> real dim of the C64
-#     screen (bri 0 = pause; any nonzero value darkens the picture live, and
-#     the dim survives scene changes until you raise it again)
+#     screen (independent of power: 0 = fully black, higher = brighter; the dim
+#     survives scene changes until you raise it again, and it never pauses)
 #   - pick an "effect" from the dropdown                -> jumps to that scene
 #   - move the sx/ix sliders                            -> sweeps the current
 #                                                          scene's live params
@@ -37,6 +37,12 @@
 # manually by IP), and drive it from there. If the effect dropdown looks stale
 # after you change this playlist, c64cast bumps its reported WLED `vid` when the
 # scene list changes so the app re-fetches — no manual cache clear needed.
+#
+# Tip: pointing a plain browser at http://<c64>:8080/ opens c64cast's own
+# control page. Unlike the WLED app (which renders a fixed control set), that
+# page grays out controls that can't act on the current scene — e.g. the palette
+# and color pickers are disabled on "Hello" (a char/blank scene), and the
+# speed/intensity sliders are disabled on scenes with no matching live param.
 
 [ultimate64]
 url = "http://ultimate-64-ii.lan"

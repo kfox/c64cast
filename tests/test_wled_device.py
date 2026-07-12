@@ -251,10 +251,15 @@ class BridgeApplyTests(unittest.TestCase):
         bridge.apply({"on": False})
         self.assertTrue(pl.pause_event.is_set())
 
-    def test_bri_zero_pauses(self):
+    def test_bri_zero_dims_to_black_without_pausing(self):
+        # Brightness is decoupled from transport: bri=0 dims fully to black
+        # (user_dim=0) but must NOT pause — pausing is the Power (`on`) toggle's
+        # job. (Regression: bri=0 used to pause, resetting the machine to BASIC
+        # mid-drag — the "flashing cursor" HW bug.)
         bridge, pl = _bridge()
         bridge.apply({"bri": 0})
-        self.assertTrue(pl.pause_event.is_set())
+        self.assertFalse(pl.pause_event.is_set())
+        self.assertEqual(pl.user_dim, 0.0)
 
     def test_master_on_resumes_when_paused(self):
         bridge, pl = _bridge()
@@ -346,17 +351,28 @@ class BridgeBrightnessDimTests(unittest.TestCase):
         self.assertAlmostEqual(pl.user_dim, 128 / 255, places=3)
         self.assertAlmostEqual(mode.user_dim, 128 / 255, places=3)
 
-    def test_bri_zero_pauses_without_zeroing_dim(self):
+    def test_bri_zero_dims_black_and_does_not_pause(self):
+        # bri=0 is a full dim to black (user_dim=0), decoupled from transport —
+        # it must not pause. Power (`on`) is the only pause/resume control.
         mode = _FakeMode()
         bridge, pl = _bridge(display_mode=mode)
         bridge.apply({"bri": 200})  # establish a dim
+        self.assertGreater(pl.user_dim, 0.0)
+        bridge.apply({"bri": 0})  # slider to the bottom
+        self.assertFalse(pl.pause_event.is_set())
+        self.assertEqual(pl.user_dim, 0.0)
+        self.assertEqual(mode.user_dim, 0.0)
+
+    def test_power_off_pauses_without_touching_dim(self):
+        # Transport is the Power toggle: `on=false` pauses and leaves user_dim
+        # alone, so power-on resumes at the current brightness.
+        mode = _FakeMode()
+        bridge, pl = _bridge(display_mode=mode)
+        bridge.apply({"bri": 200})
         prior = pl.user_dim
-        self.assertGreater(prior, 0.0)
-        bridge.apply({"bri": 0})  # power off
+        bridge.apply({"on": False})
         self.assertTrue(pl.pause_event.is_set())
-        # Dim untouched at 0 so a later power-on restores the prior brightness.
         self.assertEqual(pl.user_dim, prior)
-        self.assertEqual(mode.user_dim, prior)
 
     def test_top_level_bri_scales_every_system(self):
         # A master bri must re-dim every system, including one whose own seg bri
@@ -461,6 +477,74 @@ class BridgePaletteColorTests(unittest.TestCase):
         self.assertEqual(seg["col"], [[10, 20, 30]])
 
 
+# --- per-control capability hints (seg `c64` vendor key) --------------------
+
+
+class SegCapsTests(unittest.TestCase):
+    """`_seg_caps` mirrors the write-path applicability guards so the `/` page
+    can gray out controls the current scene can't use. Rides each seg dict as a
+    `c64` vendor key on both the /json poll and the WS push."""
+
+    def test_no_scene_all_false(self):
+        bridge, pl = _bridge()
+        pl.current = None
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertEqual(caps, {"pal": False, "col": False, "sx": False, "ix": False})
+
+    def test_both_setters_make_pal_and_col_true(self):
+        # A full mode (set_palette_mode + set_color_map, like MCM/MultiHires).
+        mode = _FakeMode()
+        bridge, _ = _bridge(display_mode=mode)
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["pal"])
+        self.assertTrue(caps["col"])
+
+    def test_bare_mode_pal_and_col_false(self):
+        # hires/petscii/blank: a mode with neither setter.
+        class _BareMode:
+            name = "hires"
+
+        bridge, _ = _bridge(display_mode=_BareMode())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertFalse(caps["pal"])
+        self.assertFalse(caps["col"])
+
+    def test_palette_only_mode_col_false(self):
+        # set_palette_mode but no set_color_map: pal applies, col doesn't.
+        class _PalOnlyMode:
+            name = "mcm"
+
+            def set_palette_mode(self, api, mode, *, force_palette=None):
+                return mode
+
+        bridge, _ = _bridge(display_mode=_PalOnlyMode())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["pal"])
+        self.assertFalse(caps["col"])
+
+    def test_source_with_speed_sx_true_ix_false(self):
+        # _FakeSource declares source.speed (an _SX_TARGET) and no ix target.
+        bridge, _ = _bridge(source=_FakeSource())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["sx"])
+        self.assertFalse(caps["ix"])
+
+    def test_scope_scene_gain_ix_true_sx_false(self):
+        # scene.gain is an _IX_TARGET; a scope scene has no sx-side knob.
+        bridge, pl = _bridge()
+        pl.current = cast("_FakeScene", _FakeScopeScene())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["ix"])
+        self.assertFalse(caps["sx"])
+
+    def test_caps_ride_full_and_present_per_segment(self):
+        # The vendor key is on every seg of /json (full()) too, not just state.
+        bridge, _ = _bridge(display_mode=_FakeMode())
+        seg = bridge.full()["state"]["seg"][0]
+        self.assertIn("c64", seg)
+        self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
+
+
 # --- HTTP + WS API ----------------------------------------------------------
 
 
@@ -476,6 +560,10 @@ class WledApiTests(unittest.TestCase):
         r = self.client.get("/json")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(set(r.json()), {"state", "info", "effects", "palettes"})
+        # The `c64` capability-hint vendor key rides each seg (load-bearing: real
+        # WLED clients ignore unknown seg keys, but the payload must still parse).
+        seg = r.json()["state"]["seg"][0]
+        self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
 
     def test_get_state_info_eff_pal_si(self):
         self.assertEqual(self.client.get("/json/state").json()["seg"][0]["id"], 0)
@@ -492,11 +580,23 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("text/html", r.headers["content-type"])
         self.assertIn("c64cast", r.text)
         self.assertIn("/json/state", r.text)
-        # The brightness slider is back — it's now a real screen dim, not a dead
-        # power-duplicate — alongside the palette + color controls.
+        # A single master Brightness slider (id=bri) drives top-level `bri` —
+        # the same field the WLED app's own brightness slider uses, so they sync;
+        # it's a real screen dim, not the old per-segment power-duplicate.
         self.assertIn("Brightness", r.text)
+        self.assertIn('id="bri"', r.text)
+        self.assertIn("post({bri:", r.text)
         self.assertIn("Palette", r.text)
         self.assertIn("'color'", r.text)  # picker.type = 'color'
+        # Capability-hint disable logic: the page reads the seg `c64` key and
+        # grays out controls the current scene can't use.
+        self.assertIn("seg.c64", r.text)
+        self.assertIn("cap-off", r.text)
+        self.assertIn("markOff", r.text)
+        # A scene pick blurs the <select> and schedules a refresh burst so the
+        # hints don't freeze until a manual reload (the focused-select stall).
+        self.assertIn("sel.blur()", r.text)
+        self.assertIn("scheduleRefresh", r.text)
 
     def test_get_description_xml(self):
         r = self.client.get("/description.xml")
@@ -521,6 +621,9 @@ class WledApiTests(unittest.TestCase):
             hello = ws.receive_json()
             self.assertIn("state", hello)
             self.assertIn("info", hello)
+            # The proactive WS push carries the caps key too (refreshes on
+            # auto-advance for free).
+            self.assertIn("c64", hello["state"]["seg"][0])
             ws.send_json({"seg": [{"id": 0, "fx": 2}]})
             update = ws.receive_json()
             self.assertIn("state", update)
