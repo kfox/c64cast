@@ -248,6 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
         "(point your editor's `#:schema` at it for autocomplete)",
     )
     intro.add_argument(
+        "--suggest-palette",
+        metavar="FILE",
+        default=None,
+        help="Analyze an image or video and print the C64 colors that best "
+        "represent it (ranked, faithful subset) for [color].force_palette_colors, "
+        "then exit. No hardware.",
+    )
+    intro.add_argument(
         "--init",
         nargs="?",
         const="",
@@ -948,11 +956,83 @@ def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> No
                 log.error("[%s] did not exit within 5s; abandoning", t.name)
 
 
+def _collect_lab_samples(path: str):
+    """Decode ``path`` (image or video/URL) into the CIE-Lab sample reservoir
+    `suggest_palette` ranks over. Returns the (N, 3) float32 array, or None when
+    the file can't be read. Images load via cv2; videos/URLs reuse the shared
+    color pre-scan (`video._scan_video_samples`), so the same sampling that
+    feeds force_palette/auto_fit feeds the suggestion."""
+    import cv2
+
+    from .config import VIDEO_EXTS
+    from .palette import ColorMapAccumulator
+    from .video import _scan_video_samples
+
+    acc = ColorMapAccumulator()  # accumulate only; we want its raw lab_samples()
+    ext = os.path.splitext(path)[1].lower()
+    is_url = path.lower().startswith(("http://", "https://"))
+    if not is_url and ext not in VIDEO_EXTS:
+        # Treat anything non-video (and non-URL) as an image.
+        img = cv2.imread(path, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        acc.add(img)
+    elif not _scan_video_samples(path, [acc]):
+        return None
+    samples = acc.lab_samples()
+    return samples if samples.size else None
+
+
+def _format_suggest_palette(path: str, ranked: list[tuple[int, float]]) -> str:
+    """Render the `suggest_palette` ranking as a table plus a paste-ready
+    `force_palette_colors` line (top-8, a reasonable default the user can trim)."""
+    from .palette import C64_COLOR_NAMES
+
+    lines = [
+        f"Best-fit C64 palette for {os.path.basename(path)} (faithful subset, ranked by value):",
+        "",
+        "  rank  idx  color          mean Lab err",
+        "  ----  ---  -------------  ------------",
+    ]
+    for rank, (idx, err) in enumerate(ranked, start=1):
+        lines.append(f"  {rank:>4}  {idx:>3}  {C64_COLOR_NAMES[idx]:<13}  {err:>10.1f}")
+    top = [idx for idx, _ in ranked[:8]]
+    lines += [
+        "",
+        "Mean Lab error falls as colors are added; its knee shows where extra colors stop helping.",
+        "Pick a prefix for [color].force_palette_colors, e.g. top 8:",
+        "",
+        f"    force_palette_colors = {top}",
+    ]
+    return "\n".join(lines)
+
+
+def run_suggest_palette(path: str) -> int:
+    """`--suggest-palette FILE`: rank the C64 colors that best (faithfully)
+    represent an image/video and print them for `force_palette_colors`. No
+    config, no hardware."""
+    from .palette import suggest_palette
+
+    if not path.lower().startswith(("http://", "https://")) and not os.path.exists(path):
+        print(f"suggest-palette: file not found: {path}", file=sys.stderr)
+        return 2
+    samples = _collect_lab_samples(path)
+    if samples is None:
+        print(
+            f"suggest-palette: could not read color samples from {path} "
+            "(unsupported/corrupt file, or the 'video' extra is missing for video input)",
+            file=sys.stderr,
+        )
+        return 2
+    print(_format_suggest_palette(path, suggest_palette(samples)))
+    return 0
+
+
 def run_introspection(args: argparse.Namespace) -> int | None:
     """Handle the config-introspection commands (--list-*, --describe,
-    --compat, --print-schema). Returns an exit code when one fired, else None
-    so main() continues to the normal run path. These need no config file or
-    hardware."""
+    --compat, --print-schema, --suggest-palette). Returns an exit code when one
+    fired, else None so main() continues to the normal run path. These need no
+    config file or hardware."""
     from . import introspect
 
     if args.list_scenes:
@@ -977,6 +1057,8 @@ def run_introspection(args: argparse.Namespace) -> int | None:
 
         print(json.dumps(schema.build_schema(), indent=2))
         return 0
+    if args.suggest_palette is not None:
+        return run_suggest_palette(args.suggest_palette)
     if args.init is not None:
         from . import wizard
 

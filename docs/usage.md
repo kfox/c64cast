@@ -249,6 +249,11 @@ python -m c64cast --describe mode:mhires
 
 # Which overlay works on which display mode (✓ / ·):
 python -m c64cast --compat
+
+# Which C64 colors best (faithfully) represent an image/video, ranked, for
+# [color].force_palette_colors:
+python -m c64cast --suggest-palette assets/pictures/skyline.jpg
+python -m c64cast --suggest-palette assets/videos/Batman.mkv
 ```
 
 ### Editor autocomplete (JSON schema)

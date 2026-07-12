@@ -12,6 +12,7 @@ import numpy as np
 
 from c64cast.palette import (
     _PALETTE_HUES_DEG,
+    _PALETTE_LAB,
     C64_COLOR_NAMES,
     C64_COLORS,
     C64_PALETTE_BGR,
@@ -41,6 +42,7 @@ from c64cast.palette import (
     quantize_flat,
     quantize_flat_for,
     resolve_color,
+    suggest_palette,
 )
 
 
@@ -436,6 +438,46 @@ class HungarianTest(unittest.TestCase):
         cost = rng.random((6, 6)).astype(np.float32)
         col = _hungarian(cost)
         self.assertEqual(sorted(col.tolist()), list(range(6)))
+
+
+class SuggestPaletteTest(unittest.TestCase):
+    """Greedy facility-location ranking of the faithful C64 subset."""
+
+    def test_empty_returns_empty(self):
+        self.assertEqual(suggest_palette(np.zeros((0, 3), dtype=np.float32)), [])
+
+    def test_two_clusters_pick_their_colors_first(self):
+        # Samples sitting exactly on palette black (0) and white (1): the first
+        # two greedy picks must be those two colors, and error must drop to ~0.
+        samples = np.repeat(_PALETTE_LAB[[0, 1]], 500, axis=0)
+        ranked = suggest_palette(samples)
+        self.assertEqual({ranked[0][0], ranked[1][0]}, {0, 1})
+        self.assertLess(ranked[1][1], 1.0)  # both clusters covered → ~0 mean error
+
+    def test_error_is_monotonically_non_increasing(self):
+        rng = np.random.default_rng(0)
+        # Random Lab-ish samples spanning the gamut.
+        samples = rng.uniform([0, 80, 80], [255, 180, 180], size=(2000, 3)).astype(np.float32)
+        ranked = suggest_palette(samples)
+        errs = [e for _, e in ranked]
+        for a, b in zip(errs, errs[1:], strict=False):
+            self.assertLessEqual(b, a + 1e-4)
+
+    def test_indices_distinct_and_bounded(self):
+        rng = np.random.default_rng(1)
+        samples = rng.uniform([0, 80, 80], [255, 180, 180], size=(1000, 3)).astype(np.float32)
+        ranked = suggest_palette(samples, max_k=8)
+        idxs = [i for i, _ in ranked]
+        self.assertEqual(len(idxs), 8)
+        self.assertEqual(len(set(idxs)), 8)  # no repeats
+        self.assertTrue(all(0 <= i < 16 for i in idxs))
+
+    def test_single_color_source_ranks_it_first(self):
+        # A pure-red source → palette Red (2) should lead with near-zero error.
+        samples = np.repeat(_PALETTE_LAB[[2]], 300, axis=0)
+        ranked = suggest_palette(samples, max_k=3)
+        self.assertEqual(ranked[0][0], 2)
+        self.assertLess(ranked[0][1], 1.0)
 
 
 class ColorMapTest(unittest.TestCase):
