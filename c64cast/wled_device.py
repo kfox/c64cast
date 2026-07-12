@@ -10,13 +10,15 @@ The mapping (WLED's control model → c64cast):
 
 * **effects list ↔ scenes** — the WLED "effect" dropdown lists the playlist's
   scene names; selecting one (``seg[].fx``) jumps that system's playlist to it.
-* **on / brightness ↔ transport + real dim** — ``on=false`` or ``bri=0`` pauses;
-  ``on=true`` with ``bri>0`` resumes. A nonzero ``bri`` is also a *real* output
-  dim: the effective brightness (master ``bri`` × the segment's ``bri``, each
-  0..255) is pushed onto the playlist + live display mode as ``user_dim``, which
-  folds into the fade LUT so the C64 screen visibly darkens. ``bri=0`` leaves
-  ``user_dim`` untouched (it's a pause), so a later power-on restores at the
-  prior brightness.
+* **on ↔ transport, brightness ↔ real dim (independent axes)** — ``on=false``
+  pauses, ``on=true`` resumes; that is the *only* transport control. ``bri`` is a
+  *real* output dim, fully decoupled from transport: the effective brightness
+  (master ``bri`` × the segment's ``bri``, each 0..255) is pushed onto the
+  playlist + live display mode as ``user_dim``, which folds into the fade LUT so
+  the C64 screen visibly darkens; ``bri=0`` dims all the way to black but does
+  **not** pause. (Earlier ``bri=0`` paused — which reset the machine to BASIC
+  mid-drag; brightness now never touches transport, and power/brightness are
+  independent so power-on always resumes at the current brightness.)
 * **speed / intensity sliders ↔ live params** — ``sx``/``ix`` drive the current
   scene's declared ``LIVE_PARAMS`` (the same seam `midi_control` sweeps), so a
   generator's speed/scale respond to the app's sliders. No-op when the current
@@ -161,6 +163,10 @@ _INDEX_HTML = """<!doctype html>
   <label for="on">Power</label>
   <input type="checkbox" id="on">
 </div>
+<div class="row">
+  <label for="bri">Brightness</label>
+  <input type="range" id="bri" min="0" max="255">
+</div>
 <div id="segments"></div>
 <script>
 async function post(body) {
@@ -228,9 +234,10 @@ function segmentEl(i, seg, effects, palettes) {
   wrap.appendChild(selectRow('Palette', palettes, seg.pal,
     (v) => post({seg: [{id: i, pal: v}]}), !caps.pal));
 
-  // Brightness is a real screen dim on every scene (never gated); Speed/Intensity
-  // gray out when the current scene declares no matching live param.
-  [['Brightness', 'bri', seg.bri, true], ['Speed', 'sx', seg.sx, caps.sx],
+  // Brightness is a single master slider up top (synced with the WLED app's own
+  // brightness), not per-segment. Here: Speed/Intensity, grayed out when the
+  // current scene declares no matching live param.
+  [['Speed', 'sx', seg.sx, caps.sx],
    ['Intensity', 'ix', seg.ix, caps.ix]].forEach(([label, key, val, enabled]) => {
     const row = document.createElement('div');
     row.className = 'row';
@@ -278,6 +285,7 @@ async function refresh() {
   const r = await fetch('/json');
   const d = await r.json();
   document.getElementById('on').checked = d.state.on;
+  document.getElementById('bri').value = d.state.bri;
   const segsEl = document.getElementById('segments');
   segsEl.innerHTML = '';
   d.state.seg.forEach((seg, i) => segsEl.appendChild(segmentEl(i, seg, d.effects, d.palettes)));
@@ -292,6 +300,10 @@ function scheduleRefresh() {
 }
 
 document.getElementById('on').onchange = (e) => post({on: e.target.checked});
+// Master brightness → top-level `bri`, the same field the WLED app's own
+// brightness slider drives, so the two stay in sync (each reflects the other on
+// the next poll). A real screen dim; 0 = black, never a pause.
+document.getElementById('bri').oninput = (e) => post({bri: parseInt(e.target.value, 10)});
 
 refresh();
 setInterval(refresh, 4000);
@@ -657,13 +669,13 @@ class WledBridge:
         output dim (`user_dim`), so the app's brightness wheel visibly darkens
         the screen rather than only echoing.
 
-        Left untouched when either brightness is 0: that's the transport/pause
-        path (see `_set_playing`), and keeping the prior `user_dim` means a
-        later power-on restores at the brightness it had before, not full."""
+        Brightness is **decoupled from transport**: `bri=0` dims the screen fully
+        to black (`user_dim=0`), it does not pause — pausing/resuming is the
+        Power (`on`) toggle's job alone. This is why dragging the brightness
+        slider can never reset the machine to BASIC (the old `bri==0 → pause`
+        behavior did exactly that, jarringly, mid-transition)."""
         _name, pl = self._systems[i]
         seg_bri = self._seg_echo[i]["bri"]
-        if self._global_bri <= 0 or seg_bri <= 0:
-            return
         dim = (self._global_bri / _SLIDER_MAX) * (seg_bri / _SLIDER_MAX)
         pl.user_dim = dim
         scene = pl.current
@@ -674,15 +686,15 @@ class WledBridge:
     def _apply_to_system(self, i: int, seg: Mapping[str, Any], master_playing: bool) -> None:
         name, pl = self._systems[i]
         echo = self._seg_echo[i]
-        # Transport: a segment is playing when master on && its own on && bri>0.
+        # Transport is the Power toggle only: a segment plays when master-on and
+        # its own `on`. Brightness never gates transport (see _apply_dim), so a
+        # `bri` change alone leaves play/pause untouched — it just dims.
         seg_on = bool(seg.get("on", True))
         if "bri" in seg:
             echo["bri"] = max(0, min(255, int(seg["bri"])))
-        playing = master_playing and seg_on and echo["bri"] > 0
-        if "on" in seg or "bri" in seg:
-            self._set_playing(pl, playing)
-        # A per-segment brightness change is a real output dim (bri==0 stays a
-        # pause, handled above — _apply_dim leaves user_dim intact there).
+        if "on" in seg:
+            self._set_playing(pl, master_playing and seg_on)
+        # A per-segment brightness change is a real output dim (bri=0 → black).
         if "bri" in seg:
             self._apply_dim(i)
         # Effect selection → scene jump (clamped to this system's scenes).
@@ -734,7 +746,9 @@ class WledBridge:
                 self._global_bri = max(0, min(255, int(partial["bri"])))
             if "on" in partial:
                 master_on = bool(partial["on"])
-            master_playing = master_on and self._global_bri > 0
+            # Transport is driven by Power (`on`) alone — brightness only dims
+            # (bri=0 = black, not pause), so a `bri`-only POST never pauses.
+            master_playing = master_on
 
             segs = partial.get("seg")
             if isinstance(segs, list) and segs:
@@ -744,8 +758,8 @@ class WledBridge:
                     idx = int(seg.get("id", pos))
                     if 0 <= idx < len(self._systems):
                         self._apply_to_system(idx, seg, master_playing)
-            elif "on" in partial or "bri" in partial:
-                # Master on/bri with no per-segment detail → all systems.
+            elif "on" in partial:
+                # Master power with no per-segment detail → all systems.
                 for i in range(len(self._systems)):
                     self._set_playing(self._systems[i][1], master_playing)
             # The master brightness scales every segment's effective dim, so a

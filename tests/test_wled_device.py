@@ -251,10 +251,15 @@ class BridgeApplyTests(unittest.TestCase):
         bridge.apply({"on": False})
         self.assertTrue(pl.pause_event.is_set())
 
-    def test_bri_zero_pauses(self):
+    def test_bri_zero_dims_to_black_without_pausing(self):
+        # Brightness is decoupled from transport: bri=0 dims fully to black
+        # (user_dim=0) but must NOT pause — pausing is the Power (`on`) toggle's
+        # job. (Regression: bri=0 used to pause, resetting the machine to BASIC
+        # mid-drag — the "flashing cursor" HW bug.)
         bridge, pl = _bridge()
         bridge.apply({"bri": 0})
-        self.assertTrue(pl.pause_event.is_set())
+        self.assertFalse(pl.pause_event.is_set())
+        self.assertEqual(pl.user_dim, 0.0)
 
     def test_master_on_resumes_when_paused(self):
         bridge, pl = _bridge()
@@ -346,17 +351,28 @@ class BridgeBrightnessDimTests(unittest.TestCase):
         self.assertAlmostEqual(pl.user_dim, 128 / 255, places=3)
         self.assertAlmostEqual(mode.user_dim, 128 / 255, places=3)
 
-    def test_bri_zero_pauses_without_zeroing_dim(self):
+    def test_bri_zero_dims_black_and_does_not_pause(self):
+        # bri=0 is a full dim to black (user_dim=0), decoupled from transport —
+        # it must not pause. Power (`on`) is the only pause/resume control.
         mode = _FakeMode()
         bridge, pl = _bridge(display_mode=mode)
         bridge.apply({"bri": 200})  # establish a dim
+        self.assertGreater(pl.user_dim, 0.0)
+        bridge.apply({"bri": 0})  # slider to the bottom
+        self.assertFalse(pl.pause_event.is_set())
+        self.assertEqual(pl.user_dim, 0.0)
+        self.assertEqual(mode.user_dim, 0.0)
+
+    def test_power_off_pauses_without_touching_dim(self):
+        # Transport is the Power toggle: `on=false` pauses and leaves user_dim
+        # alone, so power-on resumes at the current brightness.
+        mode = _FakeMode()
+        bridge, pl = _bridge(display_mode=mode)
+        bridge.apply({"bri": 200})
         prior = pl.user_dim
-        self.assertGreater(prior, 0.0)
-        bridge.apply({"bri": 0})  # power off
+        bridge.apply({"on": False})
         self.assertTrue(pl.pause_event.is_set())
-        # Dim untouched at 0 so a later power-on restores the prior brightness.
         self.assertEqual(pl.user_dim, prior)
-        self.assertEqual(mode.user_dim, prior)
 
     def test_top_level_bri_scales_every_system(self):
         # A master bri must re-dim every system, including one whose own seg bri
@@ -564,9 +580,12 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("text/html", r.headers["content-type"])
         self.assertIn("c64cast", r.text)
         self.assertIn("/json/state", r.text)
-        # The brightness slider is back — it's now a real screen dim, not a dead
-        # power-duplicate — alongside the palette + color controls.
+        # A single master Brightness slider (id=bri) drives top-level `bri` —
+        # the same field the WLED app's own brightness slider uses, so they sync;
+        # it's a real screen dim, not the old per-segment power-duplicate.
         self.assertIn("Brightness", r.text)
+        self.assertIn('id="bri"', r.text)
+        self.assertIn("post({bri:", r.text)
         self.assertIn("Palette", r.text)
         self.assertIn("'color'", r.text)  # picker.type = 'color'
         # Capability-hint disable logic: the page reads the seg `c64` key and

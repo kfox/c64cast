@@ -7,8 +7,8 @@
 # integration) discovers it like any real WLED controller and can:
 #   - turn it on/off                                    -> pause/resume
 #   - set "brightness"                                  -> real dim of the C64
-#     screen (bri 0 = pause; any nonzero value darkens the picture live, and
-#     the dim survives scene changes until you raise it again)
+#     screen (independent of power: 0 = fully black, higher = brighter; the dim
+#     survives scene changes until you raise it again, and it never pauses)
 #   - pick an "effect" from the dropdown                -> jumps to that scene
 #   - move the sx/ix sliders                            -> sweeps the current
 #                                                          scene's live params
