@@ -87,8 +87,10 @@ _WLED_PALETTES = [m.title() for m in PALETTE_MODES]
 # WLED info payload cosmetics — enough for real clients (app / python-wled /
 # Home Assistant) to parse us as a WLED device. We pin a plausible firmware
 # version and identify the product as c64cast.
-_WLED_VERSION = "0.14.0"
-_WLED_VID = 2405120  # a WLED build-date "version id"; clients only compare it
+_WLED_VERSION = "16.0.1"
+_WLED_VID = 2606010  # a WLED build-date "version id"; clients only compare it
+# against their own minimum, so keep this in step with _WLED_VERSION to avoid
+# the app's "please upgrade" nag — bump both together, no feature-parity claim.
 
 # Which of the current scene's LIVE_PARAMS the WLED speed / intensity sliders
 # drive, in priority order — the first one the scene declares wins. Kept small
