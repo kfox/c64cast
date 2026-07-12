@@ -193,7 +193,13 @@ function selectRow(labelText, options, selectedIdx, onpick, disabled) {
     if (idx === selectedIdx) opt.selected = true;
     sel.appendChild(opt);
   });
-  sel.onchange = () => onpick(parseInt(sel.value, 10));
+  sel.onchange = () => {
+    onpick(parseInt(sel.value, 10));
+    // Drop focus after a pick: refresh() skips while any control is focused (so
+    // it won't yank a slider mid-drag), and a scene <select> stays focused after
+    // selection — which would freeze the capability hints until a manual reload.
+    sel.blur();
+  };
   row.appendChild(l);
   row.appendChild(sel);
   if (disabled) markOff(row, sel);
@@ -218,7 +224,7 @@ function segmentEl(i, seg, effects, palettes) {
 
   // Scene is always live; Palette grays out when the mode can't swap it.
   wrap.appendChild(selectRow('Scene', effects, seg.fx,
-    (v) => post({seg: [{id: i, fx: v}]})));
+    (v) => { post({seg: [{id: i, fx: v}]}); scheduleRefresh(); }));
   wrap.appendChild(selectRow('Palette', palettes, seg.pal,
     (v) => post({seg: [{id: i, pal: v}]}), !caps.pal));
 
@@ -275,6 +281,14 @@ async function refresh() {
   const segsEl = document.getElementById('segments');
   segsEl.innerHTML = '';
   d.state.seg.forEach((seg, i) => segsEl.appendChild(segmentEl(i, seg, d.effects, d.palettes)));
+}
+
+function scheduleRefresh() {
+  // A scene jump isn't instant (the target scene tears down + sets up), so an
+  // immediate refresh would still read the outgoing scene's capability hints.
+  // Poll a few times to pick up the new scene once it's live, ahead of the
+  // steady 4s tick; refresh() is a no-op rebuild if nothing changed yet.
+  [600, 1500, 3000].forEach((ms) => setTimeout(refresh, ms));
 }
 
 document.getElementById('on').onchange = (e) => post({on: e.target.checked});

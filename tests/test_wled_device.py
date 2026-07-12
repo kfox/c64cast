@@ -574,6 +574,10 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("seg.c64", r.text)
         self.assertIn("cap-off", r.text)
         self.assertIn("markOff", r.text)
+        # A scene pick blurs the <select> and schedules a refresh burst so the
+        # hints don't freeze until a manual reload (the focused-select stall).
+        self.assertIn("sel.blur()", r.text)
+        self.assertIn("scheduleRefresh", r.text)
 
     def test_get_description_xml(self):
         r = self.client.get("/description.xml")
