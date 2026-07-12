@@ -285,7 +285,10 @@ class MidiControlListener:
         if target is None or pl.current is None:
             return
         holder_attr, _, name = target.partition(".")
-        holder = getattr(pl.current, holder_attr, None)
+        # `scene.<name>` targets the scene itself (scope scenes mix in the
+        # renderer, so the param lives on the scene, not a source/effect holder).
+        # Kept verbatim-mirrored with wled_device._set_live_param.
+        holder = pl.current if holder_attr == "scene" else getattr(pl.current, holder_attr, None)
         if holder is None:
             return
         live_params = getattr(type(holder), "LIVE_PARAMS", {})

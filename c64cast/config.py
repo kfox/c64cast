@@ -1831,8 +1831,9 @@ class MidiControlCfg:
             "entry: type ('cc'|'note'|'pc'), number (0-127), action "
             "('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|"
             "'param'); 'jump' also needs an int scene; 'param' also needs a "
-            "string target ('effect.<name>' or 'source.<name>', matching a "
-            "LIVE_PARAMS entry on the current scene's effect/generator)."
+            "string target ('effect.<name>', 'source.<name>', or 'scene.<name>' "
+            "for scope scenes, matching a LIVE_PARAMS entry on the current "
+            "scene's effect/generator/renderer)."
         },
     )
 
@@ -3535,11 +3536,11 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
             if (
                 not isinstance(target, str)
                 or "." not in target
-                or target.split(".", 1)[0] not in ("effect", "source")
+                or target.split(".", 1)[0] not in ("effect", "source", "scene")
             ):
                 raise ConfigError(
                     f"[midi_control].cc_map[{i}] action 'param' needs a string 'target' "
-                    "of the form 'effect.<name>' or 'source.<name>', got "
+                    "of the form 'effect.<name>', 'source.<name>', or 'scene.<name>', got "
                     f"{target!r}"
                 )
 
@@ -4422,6 +4423,9 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
         `extensions` is included (non-recursive; mirrors `_gather_videos`).
       * a glob pattern (containing `*`, `?`, or `[`) — expanded via
         `glob.glob`; matches whose extension is in `extensions` are kept.
+        A `**` segment recurses into subdirectories (e.g.
+        `assets/sids/**/*.sid` finds a whole HVSC tree), matching zero or
+        more directory levels.
 
     Whitespace around commas is stripped. Empty entries (e.g. a trailing
     comma) are ignored. Raises ValueError when the spec resolves to zero
@@ -4456,8 +4460,12 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
                 )
             matches.add(entry)
         elif _GLOB_CHARS.search(entry):
+            # recursive=True only changes behavior for `**` segments; ordinary
+            # `*`/`?`/`[...]` patterns are unaffected (backward-compatible).
             hits = [
-                p for p in glob.glob(entry) if os.path.isfile(p) and p.lower().endswith(extensions)
+                p
+                for p in glob.glob(entry, recursive=True)
+                if os.path.isfile(p) and p.lower().endswith(extensions)
             ]
             if not hits:
                 # A glob with zero hits is almost always a typo — louder

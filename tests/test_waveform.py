@@ -2107,5 +2107,67 @@ class WaveformPlayPreflightTest(unittest.TestCase):
         self.assertIsNotNone(s._host_emu)
 
 
+class ScopeGainTest(unittest.TestCase):
+    """The `scene.gain` live-param (the sx/ix WLED slider on scope scenes):
+    VoiceScopeRenderer._compute_ys scales trace amplitude by self.gain."""
+
+    class _FixedEmu:
+        """Minimal SIDEmulator stand-in: voice_samples returns a fixed trace."""
+
+        def __init__(self, samples):
+            self._samples = np.asarray(samples, dtype=np.float32)
+
+        def voice_samples(self, v_idx, n_new, time_window_s):
+            return self._samples
+
+    def _renderer(self, samples, gain):
+        import threading
+
+        from c64cast.voice_scope import VoiceScopeRenderer
+
+        class _R(VoiceScopeRenderer):
+            def __init__(self):
+                self.emulator = ScopeGainTest._FixedEmu(samples)
+                self._reg_lock = threading.Lock()
+                self.gain = gain
+                self.time_base = "wallclock"
+                self._frame_time_s = 1.0 / 30.0
+
+            def _voice_time_window_s(self, v_idx, n_cols, *, emulator=None):
+                return 0.02
+
+        return _R()
+
+    def test_gain_default_is_one(self):
+        # The renderer contract declares gain; _init_scope_knobs stamps 1.0.
+        from c64cast.voice_scope import VoiceScopeRenderer
+
+        self.assertEqual(VoiceScopeRenderer.LIVE_PARAMS, {"gain": (0.25, 3.0)})
+
+    def test_gain_scales_trace_amplitude(self):
+        # A trace at half-deflection: doubling gain roughly doubles the pixel
+        # deflection away from the strip midline (stays inside the strip, so no
+        # clip). top=0, bot=40 → mid=20, half_h=19.
+        top, bot = 0, 40
+        mid = (top + bot) // 2
+        samples = np.array([0.25, -0.25], dtype=np.float32)
+        ys1 = self._renderer(samples, 1.0)._compute_ys(0, top, bot, 2)
+        ys2 = self._renderer(samples, 2.0)._compute_ys(0, top, bot, 2)
+        d1 = abs(int(ys1[0]) - mid)
+        d2 = abs(int(ys2[0]) - mid)
+        self.assertGreater(d2, d1)
+        self.assertAlmostEqual(d2, 2 * d1, delta=1)  # ~doubled (integer rounding)
+
+    def test_gain_extremes_stay_in_strip_and_dont_raise(self):
+        # Overdriving with a full-scale trace + max gain must clip cleanly into
+        # [top, bot-1] rather than escaping the strip or raising.
+        top, bot = 0, 40
+        samples = np.array([1.0, -1.0, 0.9, -0.9], dtype=np.float32)
+        for gain in (0.25, 3.0, 10.0):
+            ys = self._renderer(samples, gain)._compute_ys(0, top, bot, 4)
+            self.assertTrue(np.all(ys >= top))
+            self.assertTrue(np.all(ys <= bot - 1))
+
+
 if __name__ == "__main__":
     unittest.main()

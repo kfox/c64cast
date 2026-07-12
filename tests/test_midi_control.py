@@ -264,6 +264,21 @@ class ParamActionTests(_MidiControlTestCase):
         )
         listener._dispatch(mido.Message("control_change", control=13, value=64))
 
+    def test_scene_prefix_targets_the_scene_itself(self):
+        # `scene.<name>` resolves the holder to the scene, not a source/effect
+        # attribute — the scope-scene seam (VoiceScopeRenderer.gain). Mirrors
+        # wled_device._set_live_param's `scene.` case verbatim.
+        pl = _fake_playlist("system")
+        scene = mock.MagicMock()
+        type(scene).LIVE_PARAMS = {"gain": (0.25, 3.0)}
+        pl.current = scene
+        listener = MidiControlListener(
+            {"system": pl},
+            [{"type": "cc", "number": 13, "action": "param", "target": "scene.gain"}],
+        )
+        listener._dispatch(mido.Message("control_change", control=13, value=127))
+        self.assertAlmostEqual(scene.gain, 3.0, places=4)
+
 
 class ChannelTargetingTests(_MidiControlTestCase):
     def test_single_system_ignores_channel(self):

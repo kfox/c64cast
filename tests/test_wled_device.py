@@ -38,6 +38,21 @@ class _FakeSource:
         self.speed = 1.0
 
 
+class _FakeScopeScene:
+    """A scope-style scene (WaveformScene/MidiScene/AsidScene): it *is* the
+    renderer, so `gain` lives on the scene and is reached via the `scene.`
+    live-param prefix — there is no source/effect holder."""
+
+    LIVE_PARAMS = {"gain": (0.25, 3.0)}
+
+    def __init__(self) -> None:
+        self.name = "Waveform"
+        self.gain = 1.0
+        self.source = None
+        self.display_mode = None
+        self.api = None
+
+
 class _FakeMode:
     """A display mode that supports the live palette/force-palette seams (like
     MCM/MultiHires). Records the calls so tests can assert on them."""
@@ -203,6 +218,27 @@ class BridgeReadTests(unittest.TestCase):
         full = bridge.full()
         self.assertEqual(set(full), {"state", "info", "effects", "palettes"})
 
+    def test_vid_is_content_derived_stable_and_gate_safe(self):
+        from c64cast.wled_device import _WLED_VID_BASE, _WLED_VID_SPREAD
+
+        bridge, _ = _bridge()
+        vid = bridge.info_dict()["vid"]
+        # Within [base, base+spread): stays date-int-shaped so WLED clients'
+        # minimum-version/feature gates (which compare vid to a floor) pass.
+        self.assertGreaterEqual(vid, _WLED_VID_BASE)
+        self.assertLess(vid, _WLED_VID_BASE + _WLED_VID_SPREAD)
+        # Deterministic per content — a given config always reports the same vid.
+        self.assertEqual(vid, bridge.info_dict()["vid"])
+
+    def test_vid_changes_when_effect_list_changes(self):
+        # The WLED app caches the effect/palette lists keyed on (vid, palcount);
+        # a different scene playlist must report a different vid so the app drops
+        # the cache and re-fetches (the "stale scene dropdown" fix).
+        b1, _ = _bridge()  # scenes: Waveform / Plasma / Tunnel
+        pl2 = _FakePlaylist("main", ["Waveform", "Plasma", "Tunnel", "Fire"])
+        b2 = WledBridge(cast("list[tuple[str, Playlist]]", [("main", pl2)]), "c64cast")
+        self.assertNotEqual(b1.info_dict()["vid"], b2.info_dict()["vid"])
+
 
 # --- bridge writes (apply) --------------------------------------------------
 
@@ -251,6 +287,29 @@ class BridgeApplyTests(unittest.TestCase):
         bridge, _pl = _bridge()  # no source declaring LIVE_PARAMS
         bridge.apply({"seg": [{"id": 0, "ix": 200}]})  # must not raise
         self.assertEqual(bridge.state_dict()["seg"][0]["ix"], 200)  # still echoed
+
+    def test_ix_slider_drives_scope_gain_via_scene_prefix(self):
+        # A scope scene has no source/effect holder, so the ix slider must fall
+        # through _IX_TARGETS to `scene.gain` and drive the scene itself.
+        bridge, pl = _bridge()
+        scene = _FakeScopeScene()
+        pl.current = cast("_FakeScene", scene)
+        bridge.apply({"seg": [{"id": 0, "ix": 255}]})  # full slider -> hi (3.0)
+        self.assertAlmostEqual(scene.gain, 3.0)
+        bridge.apply({"seg": [{"id": 0, "ix": 0}]})  # zero -> lo (0.25)
+        self.assertAlmostEqual(scene.gain, 0.25)
+
+    def test_scene_prefix_resolves_via_set_live_param(self):
+        # Direct check of the resolver's `scene.` case, mirroring
+        # midi_control._apply_param's verbatim twin.
+        from c64cast.wled_device import _set_live_param
+
+        pl = _FakePlaylist("main", ["Waveform"])
+        scene = _FakeScopeScene()
+        pl.current = cast("_FakeScene", scene)
+        _set_live_param(cast("Playlist", pl), ("source.scale", "scene.gain"), 128)
+        # 128/255 of (0.25..3.0): 0.25 + (128/255)*2.75 ≈ 1.63
+        self.assertAlmostEqual(scene.gain, 0.25 + (128 / 255.0) * 2.75, places=4)
 
     def test_echo_roundtrips_bri_and_pal(self):
         bridge, _ = _bridge()

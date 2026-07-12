@@ -136,17 +136,29 @@ class PulseEffect(FrameEffect):
 
     With no modulation (or a scale that rounds to 1.0) it's the identity
     transform, so a non-reactive scene that selects `pulse` sees its frame
-    unchanged — nothing to react to, nothing happens."""
+    unchanged — nothing to react to, nothing happens.
+
+    `intensity` scales the whole reaction (the sx/ix live knob); 1.0 is the
+    baseline. Since the effect is inert without modulation, this slider is a
+    visible no-op on a non-reactive scene (nothing to scale)."""
 
     _ONSET_ZOOM = 0.18  # +18% scale at a full transient (the on-beat punch)
     _LEVEL_ZOOM = 0.06  # steady zoom from loudness
+
+    # Live-tunable reaction depth; 1.0 == the historical fixed response.
+    LIVE_PARAMS = {"intensity": (0.0, 2.5)}
+
+    def __init__(self, intensity: float = 1.0):
+        self.intensity = float(intensity)
 
     def apply(
         self, frame: np.ndarray, t: float, modulation: MusicModulation | None = None
     ) -> np.ndarray:
         if modulation is None:
             return frame
-        scale = 1.0 + self._ONSET_ZOOM * modulation.onset + self._LEVEL_ZOOM * modulation.level
+        scale = 1.0 + self.intensity * (
+            self._ONSET_ZOOM * modulation.onset + self._LEVEL_ZOOM * modulation.level
+        )
         if scale <= 1.0:
             return frame
         h, w = frame.shape[:2]
@@ -167,10 +179,20 @@ class RgbShiftEffect(FrameEffect):
     """Chromatic split: a transient slews the red and blue channels apart
     horizontally (opposite directions), an RGB-shift glitch shudder that snaps
     on the beat and relaxes as `onset` decays; loudness adds a steady split.
-    Stateless. No modulation ⇒ identity (zero separation)."""
+    Stateless. No modulation ⇒ identity (zero separation).
+
+    `intensity` scales the whole reaction (the sx/ix live knob); 1.0 is the
+    baseline. Inert without modulation, so this slider is a visible no-op on a
+    non-reactive scene."""
 
     _ONSET_SHIFT = 6.0  # px of R/B separation at a full transient
     _LEVEL_SHIFT = 2.0  # steady separation from loudness
+
+    # Live-tunable reaction depth; 1.0 == the historical fixed response.
+    LIVE_PARAMS = {"intensity": (0.0, 2.5)}
+
+    def __init__(self, intensity: float = 1.0):
+        self.intensity = float(intensity)
 
     def apply(
         self, frame: np.ndarray, t: float, modulation: MusicModulation | None = None
@@ -178,7 +200,10 @@ class RgbShiftEffect(FrameEffect):
         if modulation is None:
             return frame
         shift = int(
-            round(self._ONSET_SHIFT * modulation.onset + self._LEVEL_SHIFT * modulation.level)
+            round(
+                self.intensity
+                * (self._ONSET_SHIFT * modulation.onset + self._LEVEL_SHIFT * modulation.level)
+            )
         )
         if shift <= 0:
             return frame

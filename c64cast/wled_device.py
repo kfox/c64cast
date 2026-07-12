@@ -88,9 +88,20 @@ _WLED_PALETTES = [m.title() for m in PALETTE_MODES]
 # Home Assistant) to parse us as a WLED device. We pin a plausible firmware
 # version and identify the product as c64cast.
 _WLED_VERSION = "16.0.1"
-_WLED_VID = 2606010  # a WLED build-date "version id"; clients only compare it
-# against their own minimum, so keep this in step with _WLED_VERSION to avoid
-# the app's "please upgrade" nag — bump both together, no feature-parity claim.
+# `vid` is a WLED build-date "version id". Two distinct client uses: feature/
+# minimum-version gates compare it against a floor, and — the one that bites us —
+# the WLED app/UI caches the effect + palette lists keyed on (vid, palcount) and
+# only re-fetches when one changes (verified in WLED's index.js: the `wledPalx`
+# cache check is `d.vid == lastinfo.vid && d.pcount == lastinfo.palcount`). Our
+# effect list is the scene playlist, which changes between configs, so a *fixed*
+# vid leaves the app showing a stale scene dropdown. We therefore report
+# `_WLED_VID_BASE + hash(effect+palette names)` (see `WledBridge._content_vid`):
+# a new scene/palette set yields a new vid → the app drops its cache and
+# re-fetches, no manual clear. Kept >= the base and 7-digit/date-shaped so the
+# minimum-version gates still pass, and this does NOT touch `ver` (the string the
+# app's upgrade nag compares), so no spurious "please upgrade".
+_WLED_VID_BASE = 2606010
+_WLED_VID_SPREAD = 100000  # content-hash offset range added on top of the base
 
 # Which of the current scene's LIVE_PARAMS the WLED speed / intensity sliders
 # drive, in priority order — the first one the scene declares wins. Kept small
@@ -237,7 +248,11 @@ setInterval(refresh, 4000);
 </body>
 </html>
 """
-_IX_TARGETS = ("source.scale", "source.intensity")
+# Source-first preserves the existing generator behavior; `scene.gain` reaches
+# the scope scenes (WaveformScene/MidiScene/AsidScene), which *are* the
+# renderer and so have no source/effect holder — see the `scene.` case in
+# _set_live_param.
+_IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")
 
 
 def _local_ip() -> str:
@@ -264,7 +279,9 @@ def _set_live_param(pl: Playlist, targets: tuple[str, ...], value_0_255: int) ->
     norm = max(0.0, min(1.0, value_0_255 / _SLIDER_MAX))
     for target in targets:
         holder_attr, _, name = target.partition(".")
-        holder = getattr(scene, holder_attr, None)
+        # `scene.<name>` targets the scene itself (scope scenes mix in the
+        # renderer, so the param lives on the scene, not a source/effect holder).
+        holder = scene if holder_attr == "scene" else getattr(scene, holder_attr, None)
         if holder is None:
             continue
         live_params = getattr(type(holder), "LIVE_PARAMS", {})
@@ -399,6 +416,19 @@ class WledBridge:
         # Selecting one live-swaps the current scene's mode (see _apply_palette).
         return _WLED_PALETTES
 
+    def _content_vid(self) -> int:
+        """The `vid` reported in `/json/info`, derived from the discoverable
+        effect + palette names so it changes whenever the scene playlist (or
+        palette set) does — forcing the WLED app to drop its cached lists and
+        re-fetch (see the `_WLED_VID_BASE` note). Deterministic per content, so a
+        given config always reports the same vid across runs (no spurious churn).
+        Always `>= _WLED_VID_BASE` and date-int-shaped so minimum-version gates
+        still pass."""
+        payload = "\n".join(self._effects()) + "\x00" + "\n".join(self.palettes())
+        digest = hashlib.sha1(payload.encode("utf-8")).digest()
+        offset = int.from_bytes(digest[:4], "big") % _WLED_VID_SPREAD
+        return _WLED_VID_BASE + offset
+
     def mac(self) -> str:
         return self._mac
 
@@ -466,7 +496,7 @@ class WledBridge:
         effects = self._effects()
         return {
             "ver": _WLED_VERSION,
-            "vid": _WLED_VID,
+            "vid": self._content_vid(),
             "leds": {
                 "count": nseg,
                 "pwr": 0,
