@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import unittest
 
@@ -16,6 +17,7 @@ from c64cast.video import (
     _ensure_pyav,
     _is_remote_url,
     _plan_decode_size,
+    _scan_video_samples,
 )
 
 
@@ -405,6 +407,98 @@ class AtempoTempoCompensationTest(unittest.TestCase):
         arr = np.full(4096, 1000, np.int16)
         src._emit_audio(arr)
         self.assertTrue(all((a == 2000).all() for a in sink))
+
+
+class _RecordingAcc:
+    """Minimal accumulator: records the mean BGR of every frame fed to it, so a
+    test can see which parts of a source's timeline the scan actually sampled."""
+
+    def __init__(self) -> None:
+        self.means: list[tuple[float, float, float]] = []
+
+    def add(self, img_bgr: np.ndarray) -> None:
+        b, g, r = (float(img_bgr[..., c].mean()) for c in range(3))
+        self.means.append((b, g, r))
+
+
+def _write_synthetic_video(path: str, *, seconds: int = 3, fps: int = 30) -> None:
+    """Encode a 3-segment video (red → green → blue thirds) so a scan's sampled
+    frames reveal which timeline regions it visited. Small GOP so the seek path
+    has several keyframes to land on."""
+    import av
+
+    container = av.open(path, "w")
+    try:
+        stream = container.add_stream("mpeg4", rate=fps)
+        stream.width, stream.height = 64, 64
+        stream.pix_fmt = "yuv420p"
+        stream.gop_size = 6
+        total = seconds * fps
+        colors_rgb = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]  # red, green, blue thirds
+        for i in range(total):
+            rgb = colors_rgb[min(2, i * 3 // total)]
+            img = np.empty((64, 64, 3), dtype=np.uint8)
+            img[..., 0], img[..., 1], img[..., 2] = rgb
+            frame = av.VideoFrame.from_ndarray(img, "rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():  # flush the encoder
+            container.mux(packet)
+    finally:
+        container.close()
+
+
+@unittest.skipUnless(_ensure_pyav(), "PyAV not installed")
+class ScanVideoSamplesTest(unittest.TestCase):
+    """`_scan_video_samples` seek-samples across a source's whole timeline."""
+
+    def _make(self) -> str:
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        _write_synthetic_video(path)
+        return path
+
+    @staticmethod
+    def _dominant(mean: tuple[float, float, float]) -> str:
+        b, g, r = mean
+        return "rgb"[int(np.argmax([r, g, b]))]
+
+    def test_samples_span_whole_timeline(self):
+        # Seek sampling should visit every third of the file (red/green/blue),
+        # not just the head — the whole point of even-spaced timestamps.
+        path = self._make()
+        acc = _RecordingAcc()
+        self.assertTrue(_scan_video_samples(path, [acc], max_samples=30))
+        self.assertGreater(len(acc.means), 0)
+        seen = {self._dominant(m) for m in acc.means}
+        self.assertEqual(seen, {"r", "g", "b"})
+
+    def test_missing_file_returns_false(self):
+        acc = _RecordingAcc()
+        with self.assertLogs("c64cast.video", level="WARNING"):
+            self.assertFalse(_scan_video_samples("/no/such/file.mp4", [acc]))
+        self.assertEqual(acc.means, [])
+
+    def test_empty_accumulators_short_circuit(self):
+        self.assertFalse(_scan_video_samples(self._make(), []))
+
+    def test_falls_back_to_sequential_when_seek_fails(self):
+        # A non-seekable source (seek raises) must still get sampled via the
+        # sequential-decode fallback — and still span the whole timeline.
+        import unittest.mock as mock
+
+        from c64cast import video
+
+        path = self._make()
+        acc = _RecordingAcc()
+        with mock.patch.object(video, "_seek_sample_frames", side_effect=OSError("not seekable")):
+            self.assertTrue(_scan_video_samples(path, [acc], max_samples=30))
+        self.assertGreater(len(acc.means), 0)
+        seen = {self._dominant(m) for m in acc.means}
+        self.assertEqual(seen, {"r", "g", "b"})
 
 
 if __name__ == "__main__":
