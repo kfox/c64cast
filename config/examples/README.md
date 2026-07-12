@@ -94,6 +94,7 @@ Alternate ways to drive the playlist beyond the C= / CTRL / SHIFT keys.
 | `menu.toml`                       | On-C64 SPACE menu — live-edit a scene's knobs (`[menu]`).  |
 | `vision-gesture.toml`             | Webcam hand gestures → pause/skip/cycle (`[vision]`).      |
 | `vision-modes.toml`               | Swipe cycles the video mode; hold-open cycles the style.   |
+| `wled-control.toml`               | Control c64cast from the WLED app (`[wled].listen`, Mode 1). |
 
 ### Ensemble demo
 

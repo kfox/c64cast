@@ -70,9 +70,13 @@ wizard = ["questionary>=2.0"]
 yt = ["yt-dlp>=2024.1"]
 # WLED bridge Mode 1 (virtual WLED device / control surface): mDNS discovery
 # (zeroconf) + the WLED JSON HTTP/WS API (fastapi + uvicorn, shared with the
-# control plane). Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
+# control plane). `websockets` is required here (not in `control`) because the
+# WLED API's `/ws` endpoint is the primary "is it alive" channel WLED clients
+# use — bare uvicorn has no ASGI websocket implementation, so `/ws` upgrades
+# fail and clients report the device offline even though the JSON REST API
+# works fine. Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
 # this.
-wled = ["zeroconf>=0.130", "fastapi>=0.100", "uvicorn>=0.23"]
+wled = ["zeroconf>=0.130", "fastapi>=0.100", "uvicorn>=0.23", "websockets>=12"]
 # Everything optional, for users who want the full experience.
 all = [
     "sounddevice>=0.4",
@@ -80,6 +84,7 @@ all = [
     "pygame>=2.5",
     "fastapi>=0.100",
     "uvicorn>=0.23",
+    "websockets>=12",
     "obsws-python>=1.6",
     "mido>=1.3",
     "python-rtmidi>=1.5",

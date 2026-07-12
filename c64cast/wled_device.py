@@ -31,10 +31,12 @@ and registers an mDNS service via ``zeroconf``. Needs the ``wled`` extra
 piece, mirroring the control-plane pattern.
 """
 
+import hashlib
 import logging
 import socket
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -65,6 +67,121 @@ _WLED_VID = 2405120  # a WLED build-date "version id"; clients only compare it
 # and predictable (the common generative knobs); extend as more scenes expose
 # params. A slider with no matching param on the current scene is a silent no-op.
 _SX_TARGETS = ("source.speed", "source.scroll_speed", "effect.decay")
+
+# Real WLED serves its own control UI at "/" (a full SPA). Several third-party
+# WLED companion apps (macOS/iOS "shell" apps in particular) don't reimplement
+# controls natively — they open a WebView pointed at the device's own "/" and
+# render whatever comes back. With no route there, FastAPI's default 404 body
+# renders as literal on-screen text and every control (power aside) is
+# invisible in that app, even though fx/sx/ix are functionally wired via
+# /json/state. This is a small hand-rolled page (fetch-driven against our own
+# /json endpoints) covering exactly what the backend currently acts on —
+# transport, effect select, speed/intensity — so it and any browser pointed at
+# the device have something usable. No inline JS libs / CDN deps.
+_INDEX_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>c64cast</title>
+<style>
+  body { background: #111; color: #eee; font: 15px -apple-system, sans-serif;
+         max-width: 480px; margin: 2em auto; padding: 0 1em; }
+  h1 { font-size: 1.3em; }
+  h2 { font-size: 1em; color: #aaa; margin-top: 2em; }
+  .row { display: flex; align-items: center; gap: 0.75em; margin: 0.6em 0; }
+  .row label { width: 90px; flex-shrink: 0; color: #ccc; }
+  input[type=range] { flex: 1; }
+  select { flex: 1; background: #222; color: #eee; border: 1px solid #444;
+           padding: 0.3em; }
+  .segment { border-top: 1px solid #333; padding-top: 0.5em; }
+</style>
+</head>
+<body>
+<h1>c64cast <small style="color:#777">(WLED control surface)</small></h1>
+<div class="row">
+  <label for="on">Power</label>
+  <input type="checkbox" id="on">
+</div>
+<div class="row">
+  <label for="bri">Brightness</label>
+  <input type="range" id="bri" min="0" max="255">
+</div>
+<div id="segments"></div>
+<script>
+async function post(body) {
+  await fetch('/json/state', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+}
+
+function segmentEl(i, seg, effects) {
+  const wrap = document.createElement('div');
+  wrap.className = 'segment';
+  wrap.innerHTML = '<h2>System ' + (i + 1) + '</h2>';
+
+  const fxRow = document.createElement('div');
+  fxRow.className = 'row';
+  const fxLabel = document.createElement('label');
+  fxLabel.textContent = 'Scene';
+  const fxSel = document.createElement('select');
+  effects.forEach((name, idx) => {
+    const opt = document.createElement('option');
+    opt.value = idx;
+    opt.textContent = name;
+    if (idx === seg.fx) opt.selected = true;
+    fxSel.appendChild(opt);
+  });
+  fxSel.onchange = () => post({seg: [{id: i, fx: parseInt(fxSel.value, 10)}]});
+  fxRow.appendChild(fxLabel);
+  fxRow.appendChild(fxSel);
+  wrap.appendChild(fxRow);
+
+  [['Speed', 'sx', seg.sx], ['Intensity', 'ix', seg.ix]].forEach(([label, key, val]) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const l = document.createElement('label');
+    l.textContent = label;
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = 0;
+    slider.max = 255;
+    slider.value = val;
+    slider.oninput = () => {
+      const body = {seg: [{id: i}]};
+      body.seg[0][key] = parseInt(slider.value, 10);
+      post(body);
+    };
+    row.appendChild(l);
+    row.appendChild(slider);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+async function refresh() {
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) return;
+  const r = await fetch('/json');
+  const d = await r.json();
+  document.getElementById('on').checked = d.state.on;
+  document.getElementById('bri').value = d.state.bri;
+  const segsEl = document.getElementById('segments');
+  segsEl.innerHTML = '';
+  d.state.seg.forEach((seg, i) => segsEl.appendChild(segmentEl(i, seg, d.effects)));
+}
+
+document.getElementById('on').onchange = (e) => post({on: e.target.checked});
+document.getElementById('bri').oninput = (e) => post({bri: parseInt(e.target.value, 10)});
+
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>
+"""
 _IX_TARGETS = ("source.scale", "source.intensity")
 
 
@@ -118,6 +235,11 @@ class WledBridge:
             raise ValueError("WledBridge needs at least one system")
         self._systems = systems
         self._name = name
+        # Real WLED "mac" is 12 hex digits; some clients validate/parse it as
+        # such. Derive a stable pseudo-MAC from the name rather than embedding
+        # non-hex characters.
+        self._mac = hashlib.md5(name.encode()).hexdigest()[:12]
+        self._uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"c64cast-{name}"))
         self._lock = threading.Lock()
         self._global_bri = 128
         self._transition = 7
@@ -150,6 +272,12 @@ class WledBridge:
         # c64cast has a fixed C64 palette (no WLED-style gradient palettes yet);
         # expose a single entry so the app's palette control is well-formed.
         return ["Default"]
+
+    def mac(self) -> str:
+        return self._mac
+
+    def device_uuid(self) -> str:
+        return self._uuid
 
     def _seg_dict(self, i: int) -> dict[str, Any]:
         _name, pl = self._systems[i]
@@ -238,7 +366,7 @@ class WledBridge:
             "opt": 0,
             "brand": "WLED",
             "product": "c64cast",
-            "mac": "c64cast00000",
+            "mac": self._mac,
             "ip": _local_ip(),
         }
 
@@ -324,17 +452,53 @@ class WledBridge:
                     self._set_playing(self._systems[i][1], master_playing)
 
 
-def build_wled_app(bridge: WledBridge):
+def build_wled_app(bridge: WledBridge, port: int = 80):
     """Build the FastAPI app serving the WLED JSON HTTP + WS API subset.
+
+    `port` is echoed into /description.xml's URLBase/LOCATION (the UPnP device
+    description real WLED serves for SSDP discovery) — some WLED clients fetch
+    it to validate/enrich a device found via mDNS, or one added by IP, and
+    silently drop/flag-offline a device that 404s on it.
 
     Raises RuntimeError if FastAPI isn't installed (the `wled`/`control` extra)."""
     try:
-        from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
     except ImportError as e:
         raise RuntimeError("WLED device requires fastapi: pip install c64cast[wled]") from e
 
     app = FastAPI(title="c64cast (WLED)", version=_WLED_VERSION)
     ws_clients: set[Any] = set()
+
+    @app.get("/")
+    def index() -> Response:
+        return Response(content=_INDEX_HTML, media_type="text/html")
+
+    @app.get("/description.xml")
+    def description_xml() -> Response:
+        ip = _local_ip()
+        name = bridge.info_dict()["name"]
+        xml = f"""<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+ <specVersion>
+  <major>1</major>
+  <minor>0</minor>
+ </specVersion>
+ <URLBase>http://{ip}:{port}/</URLBase>
+ <device>
+  <deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>
+  <friendlyName>{name}</friendlyName>
+  <manufacturer>WLED</manufacturer>
+  <manufacturerURL>https://github.com/wled/WLED</manufacturerURL>
+  <modelDescription>WLED addressable LED controller</modelDescription>
+  <modelName>WLED</modelName>
+  <modelNumber>{_WLED_VERSION}</modelNumber>
+  <modelURL>https://github.com/wled/WLED</modelURL>
+  <serialNumber>{bridge.mac()}</serialNumber>
+  <UDN>uuid:{bridge.device_uuid()}</UDN>
+ </device>
+</root>
+"""
+        return Response(content=xml, media_type="text/xml")
 
     @app.get("/json")
     def json_full() -> dict[str, Any]:
@@ -412,7 +576,7 @@ class WledDeviceServer:
         self._port = port
         self._name = name
         self._bridge = bridge
-        self._app = build_wled_app(bridge)  # RuntimeError if fastapi missing
+        self._app = build_wled_app(bridge, port=port)  # RuntimeError if fastapi missing
         from .control_plane import ControlServer
 
         self._server = ControlServer(host, port, self._app, label=f"WLED device '{name}'")

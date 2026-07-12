@@ -12,6 +12,11 @@
 # `sink_width`/`sink_height` are the virtual matrix the sender targets — set
 # them to match the sender's configured pixel layout. No audio, no SID.
 #
+# This is the OTHER direction from wled-control.toml (Mode 1, where c64cast
+# presents itself as a virtual WLED device the WLED app can discover and
+# control). The WLED app is a *controller* and can't stream pixels, so it
+# can't drive this scene — see wled-control.toml for that use case instead.
+#
 # Run:
 #   python -m c64cast --config config/examples/scene-wled.toml
 # Then point a sender at this host, e.g.:
