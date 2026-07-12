@@ -62,6 +62,7 @@ class _FakeMode:
         self.palette_mode = "percell"
         self.color_map = "UNSET"  # sentinel: distinguishes "never set" from None
         self.palette_calls: list[tuple[str, bool | None]] = []
+        self.user_dim = 1.0  # mirrors DisplayMode.user_dim (the WLED bri dim)
 
     def set_color_map(self, cmap: object) -> None:
         self.color_map = cmap
@@ -107,6 +108,7 @@ class _FakePlaylist:
         self.index = 0
         self.current = self.scenes[0] if self.scenes else None
         self.single_scene = len(self.scenes) <= 1
+        self.user_dim = 1.0  # mirrors Playlist.user_dim (persistent WLED bri dim)
         self.pause_event = threading.Event()
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
@@ -319,6 +321,55 @@ class BridgeApplyTests(unittest.TestCase):
         self.assertEqual(seg["pal"], 3)
 
 
+# --- brightness -> real output dim ------------------------------------------
+
+
+class BridgeBrightnessDimTests(unittest.TestCase):
+    """A nonzero `bri` is a real dim: it lands on Playlist.user_dim + the live
+    display mode's user_dim as (master/255)*(seg/255). bri==0 stays a pause and
+    leaves user_dim intact so a later power-on restores at the prior brightness."""
+
+    def test_master_bri_dims_playlist_and_mode(self):
+        # Segment bri defaults to 255, so the master factor is isolated:
+        # bri=128 -> 128/255 ≈ 0.502.
+        mode = _FakeMode()
+        bridge, pl = _bridge(display_mode=mode)
+        bridge.apply({"bri": 128})
+        self.assertAlmostEqual(pl.user_dim, 128 / 255, places=3)
+        self.assertAlmostEqual(mode.user_dim, 128 / 255, places=3)
+
+    def test_seg_bri_folds_with_master(self):
+        mode = _FakeMode()
+        bridge, pl = _bridge(display_mode=mode)
+        bridge.apply({"bri": 255})  # master full first, isolates the seg factor
+        bridge.apply({"seg": [{"id": 0, "bri": 128}]})
+        self.assertAlmostEqual(pl.user_dim, 128 / 255, places=3)
+        self.assertAlmostEqual(mode.user_dim, 128 / 255, places=3)
+
+    def test_bri_zero_pauses_without_zeroing_dim(self):
+        mode = _FakeMode()
+        bridge, pl = _bridge(display_mode=mode)
+        bridge.apply({"bri": 200})  # establish a dim
+        prior = pl.user_dim
+        self.assertGreater(prior, 0.0)
+        bridge.apply({"bri": 0})  # power off
+        self.assertTrue(pl.pause_event.is_set())
+        # Dim untouched at 0 so a later power-on restores the prior brightness.
+        self.assertEqual(pl.user_dim, prior)
+        self.assertEqual(mode.user_dim, prior)
+
+    def test_top_level_bri_scales_every_system(self):
+        # A master bri must re-dim every system, including one whose own seg bri
+        # wasn't in this POST (it reads the echoed seg bri, default 255).
+        plA = _FakePlaylist("A", ["s1", "s2"])
+        plB = _FakePlaylist("B", ["s1", "s2"])
+        systems = cast("list[tuple[str, Playlist]]", [("A", plA), ("B", plB)])
+        bridge = WledBridge(systems, "cluster")
+        bridge.apply({"bri": 64})
+        self.assertAlmostEqual(plA.user_dim, 64 / 255, places=3)
+        self.assertAlmostEqual(plB.user_dim, 64 / 255, places=3)
+
+
 # --- palette / color live controls ------------------------------------------
 
 
@@ -441,9 +492,9 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("text/html", r.headers["content-type"])
         self.assertIn("c64cast", r.text)
         self.assertIn("/json/state", r.text)
-        # The misleading brightness slider was removed (Power toggle covers it);
-        # palette + color controls were added (built client-side by the script).
-        self.assertNotIn("Brightness", r.text)
+        # The brightness slider is back — it's now a real screen dim, not a dead
+        # power-duplicate — alongside the palette + color controls.
+        self.assertIn("Brightness", r.text)
         self.assertIn("Palette", r.text)
         self.assertIn("'color'", r.text)  # picker.type = 'color'
 

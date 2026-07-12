@@ -165,6 +165,67 @@ class RepushFadedTest(unittest.TestCase):
         self.assertEqual(api.regions, {})
 
 
+class UserDimTest(unittest.TestCase):
+    """user_dim (the WLED `bri` slider as a real dim) dims exactly like a fade,
+    folds multiplicatively with fade_alpha, and is identity at 1.0."""
+
+    def test_user_dim_alone_dims_like_equivalent_fade(self):
+        # user_dim=0.5 at full fade_alpha must dim identically to fade_alpha=0.5
+        # with user_dim=1.0 — they both land as build_fade_lut(0.5).
+        for cls, style in ((PETSCIIDisplayMode, "default"), (MultiHiresDisplayMode, "percell")):
+            with self.subTest(mode=cls.__name__):
+                a, b = cls(style), cls(style)
+                api = FakeAPI()
+                a.setup(api)
+                b.setup(api)
+                frame = _frame()
+                a.user_dim = 0.5
+                b.fade_alpha = 0.5
+                out_dim = a.apply_fade(a.compose(frame))
+                out_fade = b.apply_fade(b.compose(frame))
+                self.assertTrue(np.array_equal(out_dim["color"], out_fade["color"]))
+                # And a genuine dim did happen (not a no-op that trivially matches).
+                self.assertFalse(np.array_equal(out_dim["color"], a.compose(frame)["color"]))
+
+    def test_product_equals_single_combined_alpha(self):
+        # fade_alpha=0.5 × user_dim=0.5 must equal one fade at 0.25.
+        mode = PETSCIIDisplayMode("default")
+        api = FakeAPI()
+        mode.setup(api)
+        buffers = mode.compose(_frame())
+        mode.fade_alpha = 0.5
+        mode.user_dim = 0.5
+        self.assertAlmostEqual(mode._fade_lut_alpha, 0.25)
+        out = mode.apply_fade(buffers)
+        expected = build_fade_lut(0.25)[buffers["color"]]
+        self.assertTrue(np.array_equal(out["color"], expected))
+
+    def test_user_dim_identity_at_one(self):
+        mode = HiresDisplayMode("normal")
+        api = FakeAPI()
+        mode.setup(api)
+        buffers = mode.compose(_frame())
+        mode.user_dim = 1.0  # (already the default)
+        out = mode.apply_fade(buffers)
+        self.assertTrue(np.array_equal(out["screen"], buffers["screen"]))
+
+    def test_repush_folds_user_dim_and_preserves_it(self):
+        # A fade-out replay at alpha=0.6 while user_dim=0.5 pushes the frame
+        # dimmed to the product 0.3; user_dim survives, fade_alpha is restored.
+        mode = HiresDisplayMode("normal")
+        api = FakeAPI()
+        mode.setup(api)
+        cached = mode.compose(_frame())
+        mode._last_buffers = cached
+        mode.user_dim = 0.5
+        expected_screen = _fade_nibbles(cached["screen"], build_fade_lut(0.6 * 0.5)).tobytes()
+        api.regions.clear()
+        mode.repush_faded(api, 0.6)
+        self.assertEqual(api.regions[0x0400], expected_screen)
+        self.assertEqual(mode.user_dim, 0.5)
+        self.assertEqual(mode.fade_alpha, 1.0)
+
+
 # ---------------------------------------------------------------------------
 # Playlist timeline + CTRL-skip abort
 # ---------------------------------------------------------------------------

@@ -1192,5 +1192,48 @@ class SceneRecordingMetadataTest(unittest.TestCase):
             pl._safe_setup(pl.scenes[0])
 
 
+class PlaylistUserDimTest(unittest.TestCase):
+    """The persistent WLED brightness dim lives on the Playlist and is
+    re-stamped onto each fresh scene's display mode at setup, so a dim set via
+    the app survives scene auto-advance (mode instances are per-scene)."""
+
+    class _Mode:
+        def __init__(self, user_dim: float = 1.0):
+            self.user_dim = user_dim
+
+    def _playlist(self, scenes):
+        return Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            fade_duration_s=0.0,
+        )
+
+    def test_default_user_dim_is_full_brightness(self):
+        self.assertEqual(self._playlist([FakeScene("A")]).user_dim, 1.0)
+
+    def test_safe_setup_stamps_dim_onto_each_fresh_mode(self):
+        a, b = FakeScene("A"), FakeScene("B")
+        a.display_mode = self._Mode()
+        b.display_mode = self._Mode()
+        pl = self._playlist([a, b])
+        pl.user_dim = 0.4
+        pl._safe_setup(a)
+        pl._safe_setup(b)  # a later auto-advance re-applies the same dim
+        self.assertEqual(a.display_mode.user_dim, 0.4)
+        self.assertEqual(b.display_mode.user_dim, 0.4)
+
+    def test_full_brightness_leaves_mode_untouched(self):
+        # At the 1.0 default the stamp is skipped, so a mode dimmed for any
+        # other reason isn't clobbered — only a real dim is pushed.
+        a = FakeScene("A")
+        a.display_mode = self._Mode(user_dim=0.7)
+        pl = self._playlist([a])  # user_dim stays 1.0
+        pl._safe_setup(a)
+        self.assertEqual(a.display_mode.user_dim, 0.7)
+
+
 if __name__ == "__main__":
     unittest.main()

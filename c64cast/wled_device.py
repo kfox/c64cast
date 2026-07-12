@@ -10,9 +10,13 @@ The mapping (WLED's control model → c64cast):
 
 * **effects list ↔ scenes** — the WLED "effect" dropdown lists the playlist's
   scene names; selecting one (``seg[].fx``) jumps that system's playlist to it.
-* **on / brightness ↔ transport** — ``on=false`` or ``bri=0`` pauses; ``on=true``
-  with ``bri>0`` resumes. The brightness value is stored and echoed so the app UI
-  round-trips (live pixel-dimming of the C64 output is a follow-up).
+* **on / brightness ↔ transport + real dim** — ``on=false`` or ``bri=0`` pauses;
+  ``on=true`` with ``bri>0`` resumes. A nonzero ``bri`` is also a *real* output
+  dim: the effective brightness (master ``bri`` × the segment's ``bri``, each
+  0..255) is pushed onto the playlist + live display mode as ``user_dim``, which
+  folds into the fade LUT so the C64 screen visibly darkens. ``bri=0`` leaves
+  ``user_dim`` untouched (it's a pause), so a later power-on restores at the
+  prior brightness.
 * **speed / intensity sliders ↔ live params** — ``sx``/``ix`` drive the current
   scene's declared ``LIVE_PARAMS`` (the same seam `midi_control` sweeps), so a
   generator's speed/scale respond to the app's sliders. No-op when the current
@@ -190,7 +194,8 @@ function segmentEl(i, seg, effects, palettes) {
   wrap.appendChild(selectRow('Palette', palettes, seg.pal,
     (v) => post({seg: [{id: i, pal: v}]})));
 
-  [['Speed', 'sx', seg.sx], ['Intensity', 'ix', seg.ix]].forEach(([label, key, val]) => {
+  [['Brightness', 'bri', seg.bri], ['Speed', 'sx', seg.sx],
+   ['Intensity', 'ix', seg.ix]].forEach(([label, key, val]) => {
     const row = document.createElement('div');
     row.className = 'row';
     const l = document.createElement('label');
@@ -556,6 +561,26 @@ class WledBridge:
         else:
             pl.pause_event.set()
 
+    def _apply_dim(self, i: int) -> None:
+        """Push system *i*'s effective brightness — global master × this
+        segment's `bri` — onto its playlist + live display mode as a real C64
+        output dim (`user_dim`), so the app's brightness wheel visibly darkens
+        the screen rather than only echoing.
+
+        Left untouched when either brightness is 0: that's the transport/pause
+        path (see `_set_playing`), and keeping the prior `user_dim` means a
+        later power-on restores at the brightness it had before, not full."""
+        _name, pl = self._systems[i]
+        seg_bri = self._seg_echo[i]["bri"]
+        if self._global_bri <= 0 or seg_bri <= 0:
+            return
+        dim = (self._global_bri / _SLIDER_MAX) * (seg_bri / _SLIDER_MAX)
+        pl.user_dim = dim
+        scene = pl.current
+        mode = getattr(scene, "display_mode", None) if scene is not None else None
+        if mode is not None:
+            mode.user_dim = dim
+
     def _apply_to_system(self, i: int, seg: Mapping[str, Any], master_playing: bool) -> None:
         name, pl = self._systems[i]
         echo = self._seg_echo[i]
@@ -566,6 +591,10 @@ class WledBridge:
         playing = master_playing and seg_on and echo["bri"] > 0
         if "on" in seg or "bri" in seg:
             self._set_playing(pl, playing)
+        # A per-segment brightness change is a real output dim (bri==0 stays a
+        # pause, handled above — _apply_dim leaves user_dim intact there).
+        if "bri" in seg:
+            self._apply_dim(i)
         # Effect selection → scene jump (clamped to this system's scenes).
         if "fx" in seg:
             fx = int(seg["fx"])
@@ -608,9 +637,10 @@ class WledBridge:
         lock-guarded."""
         with self._lock:
             master_on = True
+            master_bri_changed = "bri" in partial
             if "transition" in partial:
                 self._transition = int(partial["transition"])
-            if "bri" in partial:
+            if master_bri_changed:
                 self._global_bri = max(0, min(255, int(partial["bri"])))
             if "on" in partial:
                 master_on = bool(partial["on"])
@@ -628,6 +658,12 @@ class WledBridge:
                 # Master on/bri with no per-segment detail → all systems.
                 for i in range(len(self._systems)):
                     self._set_playing(self._systems[i][1], master_playing)
+            # The master brightness scales every segment's effective dim, so a
+            # top-level `bri` change re-dims all systems — including any whose
+            # own `bri` wasn't in this POST (_apply_dim reads the echoed seg bri).
+            if master_bri_changed:
+                for i in range(len(self._systems)):
+                    self._apply_dim(i)
 
 
 def build_wled_app(bridge: WledBridge, port: int = 80):

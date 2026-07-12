@@ -1572,10 +1572,26 @@ class DisplayMode:
     fade_alpha: float = 1.0
     _last_buffers: ComposeBuffers | None = None
 
+    # Persistent user brightness (WLED bridge Mode 1 `bri` slider). 1.0 = full
+    # brightness; < 1.0 dims the composed frame the same way a fade does, but it
+    # persists across frames (and is re-stamped onto each fresh scene's mode by
+    # the Playlist) rather than ramping. It folds *multiplicatively* with the
+    # transient `fade_alpha`, so a fade-out from a dimmed scene ramps down from
+    # the dimmed level. See `_fade_lut_alpha`.
+    user_dim: float = 1.0
+
+    @property
+    def _fade_lut_alpha(self) -> float:
+        """Effective dimming alpha folded into the fade LUT: the transient scene
+        fade (`fade_alpha`) times the persistent user brightness (`user_dim`).
+        1.0 × 1.0 = identity (no dimming); either below 1.0 dims the frame."""
+        return self.fade_alpha * self.user_dim
+
     def apply_fade(self, buffers: ComposeBuffers) -> ComposeBuffers:
         """Return `buffers` with color-bearing fields dimmed toward black at
-        ``self.fade_alpha``. Never mutates the input (so the cached pristine
-        buffers survive a multi-frame fade-out). Base: identity."""
+        ``self._fade_lut_alpha`` (fade × user brightness). Never mutates the
+        input (so the cached pristine buffers survive a multi-frame fade-out).
+        Base: identity."""
         return buffers
 
     def repush_faded(self, api: C64Backend, alpha: float) -> None:
@@ -1682,7 +1698,7 @@ class CharDisplayMode(DisplayMode):
         the foreground; black cells (color 0) stay black. MCM overrides to also
         dim its shared bg registers and constrain the multicolor foreground."""
         out: ComposeBuffers = dict(buffers)  # type: ignore[assignment]
-        lut = build_fade_lut(self.fade_alpha)
+        lut = build_fade_lut(self._fade_lut_alpha)
         out["color"] = lut[buffers["color"]]
         return out
 
@@ -1873,7 +1889,7 @@ class BitmapDisplayMode(DisplayMode):
         per-pixel fg/bg selector, so it's left untouched. Dim both nibbles and
         the bg. MultiHires overrides to also dim its per-cell color RAM (c3)."""
         out: BitmapComposeBuffers = dict(buffers)  # type: ignore[assignment]
-        lut = build_fade_lut(self.fade_alpha)
+        lut = build_fade_lut(self._fade_lut_alpha)
         out["screen"] = _fade_nibbles(buffers["screen"], lut)
         out["bg"] = int(lut[buffers["bg"]])
         return out
@@ -2272,7 +2288,7 @@ class MCMDisplayMode(CharDisplayMode):
         buffer is 2-bit selectors among them, so it's left untouched. The
         foreground uses a 0..7-constrained LUT so the dimmed value stays a legal
         multicolor color (and the bit-3 flag is preserved)."""
-        alpha = self.fade_alpha
+        alpha = self._fade_lut_alpha
         lut = build_fade_lut(alpha)
         fg_lut = build_fade_lut(alpha, allowed=tuple(range(8)))
         out: MCMComposeBuffers = dict(buffers)  # type: ignore[assignment]
@@ -2906,7 +2922,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         those four (via the parent's screen+bg fade plus c3 here) fades the
         whole frame; the bitmap is untouched."""
         out: MHiresComposeBuffers = super().apply_fade(buffers)  # type: ignore[assignment]
-        lut = build_fade_lut(self.fade_alpha)
+        lut = build_fade_lut(self._fade_lut_alpha)
         out["color"] = lut[buffers["color"]]
         return out
 

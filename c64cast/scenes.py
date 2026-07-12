@@ -479,7 +479,9 @@ def _render_with_overlays(
     # dims from the pristine frame. The fade folds over overlays too — they're
     # part of the composed frame at this point.
     display_mode._last_buffers = buffers
-    if display_mode.fade_alpha < 1.0:
+    # Dim when a transient scene fade OR a persistent user brightness (WLED
+    # bridge `bri`) is active; apply_fade folds both (fade_alpha × user_dim).
+    if display_mode.fade_alpha < 1.0 or display_mode.user_dim < 1.0:
         buffers = display_mode.apply_fade(buffers)
     with prof.stage("push"):
         display_mode.push(api, buffers)
