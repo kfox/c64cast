@@ -461,6 +461,74 @@ class BridgePaletteColorTests(unittest.TestCase):
         self.assertEqual(seg["col"], [[10, 20, 30]])
 
 
+# --- per-control capability hints (seg `c64` vendor key) --------------------
+
+
+class SegCapsTests(unittest.TestCase):
+    """`_seg_caps` mirrors the write-path applicability guards so the `/` page
+    can gray out controls the current scene can't use. Rides each seg dict as a
+    `c64` vendor key on both the /json poll and the WS push."""
+
+    def test_no_scene_all_false(self):
+        bridge, pl = _bridge()
+        pl.current = None
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertEqual(caps, {"pal": False, "col": False, "sx": False, "ix": False})
+
+    def test_both_setters_make_pal_and_col_true(self):
+        # A full mode (set_palette_mode + set_color_map, like MCM/MultiHires).
+        mode = _FakeMode()
+        bridge, _ = _bridge(display_mode=mode)
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["pal"])
+        self.assertTrue(caps["col"])
+
+    def test_bare_mode_pal_and_col_false(self):
+        # hires/petscii/blank: a mode with neither setter.
+        class _BareMode:
+            name = "hires"
+
+        bridge, _ = _bridge(display_mode=_BareMode())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertFalse(caps["pal"])
+        self.assertFalse(caps["col"])
+
+    def test_palette_only_mode_col_false(self):
+        # set_palette_mode but no set_color_map: pal applies, col doesn't.
+        class _PalOnlyMode:
+            name = "mcm"
+
+            def set_palette_mode(self, api, mode, *, force_palette=None):
+                return mode
+
+        bridge, _ = _bridge(display_mode=_PalOnlyMode())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["pal"])
+        self.assertFalse(caps["col"])
+
+    def test_source_with_speed_sx_true_ix_false(self):
+        # _FakeSource declares source.speed (an _SX_TARGET) and no ix target.
+        bridge, _ = _bridge(source=_FakeSource())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["sx"])
+        self.assertFalse(caps["ix"])
+
+    def test_scope_scene_gain_ix_true_sx_false(self):
+        # scene.gain is an _IX_TARGET; a scope scene has no sx-side knob.
+        bridge, pl = _bridge()
+        pl.current = cast("_FakeScene", _FakeScopeScene())
+        caps = bridge.state_dict()["seg"][0]["c64"]
+        self.assertTrue(caps["ix"])
+        self.assertFalse(caps["sx"])
+
+    def test_caps_ride_full_and_present_per_segment(self):
+        # The vendor key is on every seg of /json (full()) too, not just state.
+        bridge, _ = _bridge(display_mode=_FakeMode())
+        seg = bridge.full()["state"]["seg"][0]
+        self.assertIn("c64", seg)
+        self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
+
+
 # --- HTTP + WS API ----------------------------------------------------------
 
 
@@ -476,6 +544,10 @@ class WledApiTests(unittest.TestCase):
         r = self.client.get("/json")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(set(r.json()), {"state", "info", "effects", "palettes"})
+        # The `c64` capability-hint vendor key rides each seg (load-bearing: real
+        # WLED clients ignore unknown seg keys, but the payload must still parse).
+        seg = r.json()["state"]["seg"][0]
+        self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
 
     def test_get_state_info_eff_pal_si(self):
         self.assertEqual(self.client.get("/json/state").json()["seg"][0]["id"], 0)
@@ -497,6 +569,11 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("Brightness", r.text)
         self.assertIn("Palette", r.text)
         self.assertIn("'color'", r.text)  # picker.type = 'color'
+        # Capability-hint disable logic: the page reads the seg `c64` key and
+        # grays out controls the current scene can't use.
+        self.assertIn("seg.c64", r.text)
+        self.assertIn("cap-off", r.text)
+        self.assertIn("markOff", r.text)
 
     def test_get_description_xml(self):
         r = self.client.get("/description.xml")
@@ -521,6 +598,9 @@ class WledApiTests(unittest.TestCase):
             hello = ws.receive_json()
             self.assertIn("state", hello)
             self.assertIn("info", hello)
+            # The proactive WS push carries the caps key too (refreshes on
+            # auto-advance for free).
+            self.assertIn("c64", hello["state"]["seg"][0])
             ws.send_json({"seg": [{"id": 0, "fx": 2}]})
             update = ws.receive_json()
             self.assertIn("state", update)

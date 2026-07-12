@@ -37,6 +37,15 @@ it changed from the last-echoed value. The WS ``/ws`` handler also pushes state
 proactively on a timeout (real WLED does), so an autonomous scene change reaches
 connected apps rather than leaving the Scene field stale.
 
+Not every control acts on every scene (palette/color are no-ops on hires/blank;
+sx/ix only move a scene's declared ``LIVE_PARAMS``). We can't disable controls in
+the third-party WLED app — it renders a fixed set — but our own ``/`` page can:
+each segment carries a ``c64`` vendor key (``_seg_caps``) of per-control booleans
+and the page grays out the dead palette/color/slider controls. Scene, power and
+brightness always apply, so they're never gated. The hints ride the ``/json``
+poll + the WS push, so they refresh on auto-advance for free; WLED clients ignore
+the unknown seg key.
+
 **Ensemble = one WLED segment per system.** Segment *i* maps to the *i*-th
 system (ensemble order); a single-system run is one segment. Top-level ``on`` /
 ``bri`` apply to every system at once (WLED's master switch); per-segment fields
@@ -140,6 +149,10 @@ _INDEX_HTML = """<!doctype html>
   select { flex: 1; background: #222; color: #eee; border: 1px solid #444;
            padding: 0.3em; }
   .segment { border-top: 1px solid #333; padding-top: 0.5em; }
+  /* A control the current scene can't act on: dimmed + non-interactive, with a
+     tooltip explaining why (the input itself is also set .disabled). */
+  .cap-off { opacity: 0.4; }
+  .cap-off label { color: #666; }
 </style>
 </head>
 <body>
@@ -158,7 +171,16 @@ async function post(body) {
   });
 }
 
-function selectRow(labelText, options, selectedIdx, onpick) {
+// Gray out a row + disable its input, with a tooltip, when the current scene
+// can't use that control. Scene/Power/Brightness never pass disabled=true.
+const CAP_OFF_TITLE = 'Not applicable to the current scene';
+function markOff(row, input) {
+  row.classList.add('cap-off');
+  row.title = CAP_OFF_TITLE;
+  if (input) input.disabled = true;
+}
+
+function selectRow(labelText, options, selectedIdx, onpick, disabled) {
   const row = document.createElement('div');
   row.className = 'row';
   const l = document.createElement('label');
@@ -174,6 +196,7 @@ function selectRow(labelText, options, selectedIdx, onpick) {
   sel.onchange = () => onpick(parseInt(sel.value, 10));
   row.appendChild(l);
   row.appendChild(sel);
+  if (disabled) markOff(row, sel);
   return row;
 }
 
@@ -189,13 +212,20 @@ function segmentEl(i, seg, effects, palettes) {
   title.textContent = seg.n || ('System ' + (i + 1));
   wrap.appendChild(title);
 
+  // Per-control applicability hints (vendor `c64` key). Absent (older payload)
+  // => assume everything works, so we never over-disable.
+  const caps = seg.c64 || {pal: true, col: true, sx: true, ix: true};
+
+  // Scene is always live; Palette grays out when the mode can't swap it.
   wrap.appendChild(selectRow('Scene', effects, seg.fx,
     (v) => post({seg: [{id: i, fx: v}]})));
   wrap.appendChild(selectRow('Palette', palettes, seg.pal,
-    (v) => post({seg: [{id: i, pal: v}]})));
+    (v) => post({seg: [{id: i, pal: v}]}), !caps.pal));
 
-  [['Brightness', 'bri', seg.bri], ['Speed', 'sx', seg.sx],
-   ['Intensity', 'ix', seg.ix]].forEach(([label, key, val]) => {
+  // Brightness is a real screen dim on every scene (never gated); Speed/Intensity
+  // gray out when the current scene declares no matching live param.
+  [['Brightness', 'bri', seg.bri, true], ['Speed', 'sx', seg.sx, caps.sx],
+   ['Intensity', 'ix', seg.ix, caps.ix]].forEach(([label, key, val, enabled]) => {
     const row = document.createElement('div');
     row.className = 'row';
     const l = document.createElement('label');
@@ -212,6 +242,7 @@ function segmentEl(i, seg, effects, palettes) {
     };
     row.appendChild(l);
     row.appendChild(slider);
+    if (!enabled) markOff(row, slider);
     wrap.appendChild(row);
   });
 
@@ -230,6 +261,7 @@ function segmentEl(i, seg, effects, palettes) {
   };
   colRow.appendChild(colLabel);
   colRow.appendChild(picker);
+  if (!caps.col) markOff(colRow, picker);
   wrap.appendChild(colRow);
   return wrap;
 }
@@ -274,27 +306,66 @@ def _local_ip() -> str:
         s.close()
 
 
-def _set_live_param(pl: Playlist, targets: tuple[str, ...], value_0_255: int) -> None:
-    """Drive the current scene's first-declared LIVE_PARAM among `targets` from a
-    0..255 WLED slider value. Mirrors midi_control._apply_param's holder/LIVE_PARAMS
-    lookup; a silent no-op when no scene / no matching param (documented)."""
-    scene = pl.current
+def _resolve_live_target(scene: Any, targets: tuple[str, ...]) -> tuple[Any, str] | None:
+    """The first `(holder, name)` among `targets` whose holder declares that
+    `name` in its `LIVE_PARAMS`, or None if none does (no scene, or no scene
+    object exposes any of the targets).
+
+    `scene.<name>` targets the scene itself (scope scenes mix in the renderer, so
+    the param lives on the scene, not a source/effect holder); `source.<name>` /
+    `effect.<name>` target that attribute. Shared by `_set_live_param` (which
+    performs the write) and `_seg_caps` (which only needs to know whether a write
+    *would* land, to gray out a dead slider on the `/` page)."""
     if scene is None:
-        return
-    norm = max(0.0, min(1.0, value_0_255 / _SLIDER_MAX))
+        return None
     for target in targets:
         holder_attr, _, name = target.partition(".")
-        # `scene.<name>` targets the scene itself (scope scenes mix in the
-        # renderer, so the param lives on the scene, not a source/effect holder).
         holder = scene if holder_attr == "scene" else getattr(scene, holder_attr, None)
         if holder is None:
             continue
         live_params = getattr(type(holder), "LIVE_PARAMS", {})
-        if name not in live_params:
-            continue
-        lo, hi = live_params[name]
-        setattr(holder, name, lo + norm * (hi - lo))
+        if name in live_params:
+            return holder, name
+    return None
+
+
+def _set_live_param(pl: Playlist, targets: tuple[str, ...], value_0_255: int) -> None:
+    """Drive the current scene's first-declared LIVE_PARAM among `targets` from a
+    0..255 WLED slider value. Mirrors midi_control._apply_param's holder/LIVE_PARAMS
+    lookup; a silent no-op when no scene / no matching param (documented)."""
+    resolved = _resolve_live_target(pl.current, targets)
+    if resolved is None:
         return
+    holder, name = resolved
+    norm = max(0.0, min(1.0, value_0_255 / _SLIDER_MAX))
+    lo, hi = getattr(type(holder), "LIVE_PARAMS", {})[name]
+    setattr(holder, name, lo + norm * (hi - lo))
+
+
+def _seg_caps(pl: Playlist) -> dict[str, bool]:
+    """Which of the WLED palette / color / speed / intensity controls actually
+    *do* something on the current scene — ridden on each seg dict as a `c64`
+    vendor key so our own `/` control page can gray out the dead ones.
+
+    Mirrors the applicability guards the write paths already enforce: `pal` ⇐ the
+    mode exposes `set_palette_mode` (as `_apply_palette` requires), `col` ⇐ it
+    *also* exposes `set_color_map` (as `_apply_force_colors` requires), and
+    `sx`/`ix` ⇐ `_resolve_live_target` finds a matching LIVE_PARAM. No scene ⇒
+    everything False. WLED clients ignore the unknown seg key; only the `/` page
+    reads it."""
+    scene = pl.current
+    if scene is None:
+        return {"pal": False, "col": False, "sx": False, "ix": False}
+    mode, api = _current_mode_api(pl)
+    live = mode is not None and api is not None
+    pal = live and hasattr(mode, "set_palette_mode")
+    col = pal and hasattr(mode, "set_color_map")
+    return {
+        "pal": bool(pal),
+        "col": bool(col),
+        "sx": _resolve_live_target(scene, _SX_TARGETS) is not None,
+        "ix": _resolve_live_target(scene, _IX_TARGETS) is not None,
+    }
 
 
 def _current_mode_api(pl: Playlist) -> tuple[Any, Any]:
@@ -478,6 +549,11 @@ class WledBridge:
             "o1": False,
             "o2": False,
             "o3": False,
+            # Vendor extension: per-control applicability hints for our own `/`
+            # page (grays out palette/color/sliders that can't act on the current
+            # scene). WLED clients ignore unknown seg keys — verified they still
+            # parse the payload; the load-bearing check lives in the HW test.
+            "c64": _seg_caps(pl),
         }
 
     def state_dict(self) -> dict[str, Any]:
