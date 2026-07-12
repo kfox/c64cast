@@ -1244,6 +1244,7 @@ def main(argv=None) -> int:
 
     control_server = None
     midi_control_listener = None
+    wled_device_server = None
 
     # SIGTERM → graceful shutdown. SIGINT continues to raise KeyboardInterrupt
     # via the default handler so the user can still Ctrl+C interactively.
@@ -1348,6 +1349,24 @@ def main(argv=None) -> int:
             except (cfgmod.ConfigError, RuntimeError, ValueError) as e:
                 log.error("MIDI control disabled: %s", e)
 
+        # Optional WLED bridge Mode 1: present c64cast as a virtual WLED device
+        # (mDNS + WLED JSON API) so the WLED app / python-wled / HA can control
+        # it. One server spans every system (one WLED segment per system); the
+        # first system's [wled].listen governs it (like [control]).
+        listen_on, wled_host, wled_port = cfgmod.resolve_wled_listen(cfgs[0])
+        if listen_on:
+            try:
+                from .wled_device import start_wled_device
+
+                wled_device_server = start_wled_device(
+                    wled_host,
+                    wled_port,
+                    cfgs[0].wled.name,
+                    systems=[(st.name, st.playlist) for st in stacks],
+                )
+            except RuntimeError as e:
+                log.error("WLED device disabled: %s", e)
+
         _run_playlists(stacks, stop_event)
     finally:
         # Stop input surfaces before tearing down what they act on — same
@@ -1357,6 +1376,11 @@ def main(argv=None) -> int:
                 midi_control_listener.stop()
             except Exception:
                 log.exception("MIDI control shutdown failed")
+        if wled_device_server is not None:
+            try:
+                wled_device_server.stop()
+            except Exception:
+                log.exception("WLED device shutdown failed")
         if control_server is not None:
             try:
                 control_server.stop()

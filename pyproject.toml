@@ -68,6 +68,11 @@ wizard = ["questionary>=2.0"]
 # YouTube and other streaming sites to a directly-playable stream URL;
 # direct media URLs play without it (PyAV opens http(s) natively).
 yt = ["yt-dlp>=2024.1"]
+# WLED bridge Mode 1 (virtual WLED device / control surface): mDNS discovery
+# (zeroconf) + the WLED JSON HTTP/WS API (fastapi + uvicorn, shared with the
+# control plane). Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
+# this.
+wled = ["zeroconf>=0.130", "fastapi>=0.100", "uvicorn>=0.23"]
 # Everything optional, for users who want the full experience.
 all = [
     "sounddevice>=0.4",
@@ -83,6 +88,7 @@ all = [
     "mediapipe>=0.10",
     "questionary>=2.0",
     "yt-dlp>=2024.1",
+    "zeroconf>=0.130",
 ]
 [dependency-groups]
 # Dev tools — not published to PyPI. Installed by default via

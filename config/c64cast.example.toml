@@ -695,18 +695,32 @@ prompt_to_save = true               # offer to write changes back to this file o
                                     # exit; false = apply to the running scene only
 
 [wled]
-# WLED bridge Mode 3 — broadcast WLED "Audio Sync" UDP packets synthesized from
-# the playing SID, so real WLED LED matrices/strips on the LAN react to the
-# music with no microphone on the WLED side. Sources features from whichever
-# SID-driven scene is on screen (a `waveform` scene, or a `generative` scene
-# with audio_source = "sid"). Set Sound Sync = "Receive" on the target WLED.
-# Pure UDP; no extra dependency.
-enabled = false
-# host = "192.168.1.50"             # unicast target; unset = WLED's default
-                                    # multicast group 239.0.0.1 (every WLED with
-                                    # Receive enabled reacts)
-port = 11988                        # WLED Audio Sync default port
+# Two-directional bridge to the WLED LED-controller ecosystem. Each of the two
+# fields below combines on/off AND endpoint in one value:
+#   "disabled" (or unset)  = off
+#   "enabled"              = on, with that mode's default host+port
+#   "[host][:port]"        = on, overriding host and/or port (bare "HOST" sets
+#                            only the host; leading ":PORT" sets only the port)
+#
+# Mode 3 — broadcast (audio-sync OUT): synthesize WLED "Audio Sync" UDP packets
+# from the playing SID so real WLED matrices/strips react to the music with no
+# microphone on the WLED side (set Sound Sync = "Receive" on the target WLED).
+# Sources features from whichever SID-driven scene is on screen (a `waveform`
+# scene, or a `generative` scene with audio_source = "sid"). Pure UDP, no extra.
+broadcast = "disabled"              # "enabled" -> multicast 239.0.0.1:11988
+                                    # (every WLED with Receive on reacts); or a
+                                    # unicast "192.168.1.50[:11988]"
 rate_hz = 50.0                      # broadcast rate (WLED expects ~frame-rate)
+#
+# Mode 1 — listen (control surface IN): advertise c64cast as a virtual WLED
+# device (mDNS _wled._tcp) and serve a subset of the WLED JSON API, so the WLED
+# app / python-wled / Home Assistant can discover and control it — WLED effects
+# <-> scenes, on/off + brightness <-> transport, speed/intensity sliders <->
+# live scene params. One WLED segment per system (ensemble). Needs the `wled`
+# extra (zeroconf + fastapi + uvicorn).
+listen = "disabled"                 # "enabled" -> WLED JSON API on 0.0.0.0:8080;
+                                    # or override the bind with "[host][:port]"
+name = "c64cast"                    # friendly/mDNS name shown in the WLED app
 
 [debug]
 verbose = 0                         # 0 info (default), 1+ debug (-v)

@@ -1838,34 +1838,56 @@ class MenuCfg:
 
 @dataclass
 class WledCfg:
-    """Broadcast WLED "Audio Sync" UDP packets synthesized from the SID (WLED
-    bridge Mode 3). When enabled, whichever SID-driven scene is on screen
-    (waveform, or a generative scene with audio_source = "sid") is turned into a
-    WLED Audio Sync V2 stream and multicast on the LAN, so real WLED LED
-    matrices/strips react to the music with no microphone on the WLED side. Set
-    Sound Sync = "Receive" on the target WLED. Pure UDP; no extra dependency."""
+    """Two-directional bridge to the WLED LED-controller ecosystem.
 
-    enabled: bool = field(
-        default=False,
-        metadata={"help": "Broadcast WLED Audio Sync packets from the playing SID."},
-    )
-    host: str | None = field(
+    **Mode 3 — broadcast** (`broadcast`): whichever SID-driven scene is on
+    screen (waveform, or a generative scene with audio_source = "sid") is turned
+    into a WLED Audio Sync V2 stream and multicast on the LAN, so real WLED LED
+    matrices/strips react to the music with no microphone on the WLED side (set
+    Sound Sync = "Receive" on the target WLED). Pure UDP; no extra dependency.
+
+    **Mode 1 — listen** (`listen`): c64cast advertises itself as a virtual WLED
+    device (mDNS `_wled._tcp`) and serves a subset of the WLED JSON API, so the
+    WLED mobile app / python-wled / Home Assistant can discover and control it —
+    WLED effects ↔ scenes, on/off + brightness ↔ transport, sliders ↔ live scene
+    params. Requires the `wled` extra (zeroconf + fastapi + uvicorn).
+
+    `broadcast` and `listen` each combine on/off **and** endpoint in one value:
+    `"disabled"` (or unset) = off; `"enabled"` = on with that mode's default
+    host+port; `"[host][:port]"` = on with overrides (a bare `"HOST"` sets the
+    host, a leading `":PORT"` sets only the port). Broadcast defaults to the WLED
+    multicast group 239.0.0.1:11988; listen defaults to 0.0.0.0:8080."""
+
+    broadcast: str | None = field(
         default=None,
         metadata={
-            "help": "Target host/IP. Unset = WLED's default multicast group "
-            "239.0.0.1 (every WLED on the segment with 'Receive' enabled reacts). "
-            "Set a unicast address to target one device."
+            "help": "Mode 3 (audio-sync out). 'disabled' (default) | 'enabled' | "
+            "'[host][:port]'. 'enabled' multicasts to WLED's default group "
+            "239.0.0.1:11988 (every WLED with 'Receive' enabled reacts); give a "
+            "unicast '[host][:port]' to target one device."
         },
-    )
-    port: int = field(
-        default=11988,
-        metadata={"help": "UDP port (WLED's Audio Sync default is 11988)."},
     )
     rate_hz: float = field(
         default=50.0,
         metadata={
-            "help": "Broadcast rate in Hz. WLED expects roughly frame-rate updates; "
-            "~40-60 is typical."
+            "help": "Broadcast rate in Hz (Mode 3). WLED expects roughly "
+            "frame-rate updates; ~40-60 is typical."
+        },
+    )
+    listen: str | None = field(
+        default=None,
+        metadata={
+            "help": "Mode 1 (control surface in). 'disabled' (default) | 'enabled' "
+            "| '[host][:port]'. 'enabled' binds the WLED JSON API on "
+            "0.0.0.0:8080; override the bind with '[host][:port]'. Needs the "
+            "'wled' extra."
+        },
+    )
+    name: str = field(
+        default="c64cast",
+        metadata={
+            "help": "Friendly/mDNS device name advertised in Mode 1 (what the WLED "
+            "app shows for this virtual device)."
         },
     )
 
@@ -3485,21 +3507,86 @@ def _has_sid_scene(cfg: Config) -> bool:
     )
 
 
+# [wled] endpoint defaults, per direction. Broadcast targets WLED's Audio Sync
+# multicast group; listen binds the Mode-1 JSON API on all interfaces so the LAN
+# can reach it (the mDNS SRV record carries the real port for app discovery).
+WLED_BROADCAST_DEFAULT_HOST = "239.0.0.1"
+WLED_BROADCAST_DEFAULT_PORT = 11988
+WLED_LISTEN_DEFAULT_HOST = "0.0.0.0"
+WLED_LISTEN_DEFAULT_PORT = 8080
+
+_WLED_DISABLED_TOKENS = frozenset({"", "disabled"})
+_WLED_ENABLED_TOKEN = "enabled"
+
+
+def parse_wled_endpoint(
+    value: str | None, default_host: str, default_port: int, *, field_name: str
+) -> tuple[bool, str, int]:
+    """Decode a combined `[wled]` on/off+endpoint value into (enabled, host, port).
+
+    Grammar (see WledCfg): None / "disabled" → off; "enabled" → on with the
+    passed defaults; otherwise "[host][:port]" → on, where a bare "HOST" (no
+    colon) sets only the host and a leading ":PORT" sets only the port. Missing
+    parts fall back to the defaults. Raises ConfigError on a non-integer or
+    out-of-range port. Pure — safe to call from resolvers and doctor."""
+    if value is None:
+        return (False, default_host, default_port)
+    token = value.strip()
+    low = token.lower()
+    if low in _WLED_DISABLED_TOKENS:
+        return (False, default_host, default_port)
+    if low == _WLED_ENABLED_TOKEN:
+        return (True, default_host, default_port)
+    host, sep, port_str = token.rpartition(":")
+    if not sep:
+        # No colon: the whole value is a host override.
+        return (True, token, default_port)
+    host = host or default_host
+    if not port_str:
+        return (True, host, default_port)
+    try:
+        port = int(port_str)
+    except ValueError as e:
+        raise ConfigError(f"{field_name}: bad port {port_str!r} in {value!r}") from e
+    if not 1 <= port <= 65535:
+        raise ConfigError(f"{field_name}: port must be 1..65535, got {port}")
+    return (True, host, port)
+
+
+def resolve_wled_broadcast(cfg: Config) -> tuple[bool, str, int]:
+    """(enabled, host, port) for the Mode 3 audio-sync broadcast target."""
+    return parse_wled_endpoint(
+        cfg.wled.broadcast,
+        WLED_BROADCAST_DEFAULT_HOST,
+        WLED_BROADCAST_DEFAULT_PORT,
+        field_name="[wled].broadcast",
+    )
+
+
+def resolve_wled_listen(cfg: Config) -> tuple[bool, str, int]:
+    """(enabled, host, port) for the Mode 1 virtual-WLED-device JSON API bind."""
+    return parse_wled_endpoint(
+        cfg.wled.listen,
+        WLED_LISTEN_DEFAULT_HOST,
+        WLED_LISTEN_DEFAULT_PORT,
+        field_name="[wled].listen",
+    )
+
+
 def validate_wled_cfg(cfg: Config) -> None:
-    """Guard [wled] (WLED Audio Sync broadcast, Mode 3): bound the port and
-    rate, and warn (don't fail) when enabled with no SID-driven scene to source
-    features from — nothing would be broadcast. No-op when disabled."""
-    w = cfg.wled
-    if not w.enabled:
-        return
-    if not 1 <= w.port <= 65535:
-        raise ConfigError(f"[wled].port must be 1..65535, got {w.port}")
-    if not 1.0 <= w.rate_hz <= 120.0:
-        raise ConfigError(f"[wled].rate_hz must be 1..120, got {w.rate_hz}")
-    if not _has_sid_scene(cfg):
+    """Guard [wled] (both directions). Parse each endpoint (raising on a bad
+    host:port), bound the broadcast rate, and warn — don't fail — when broadcast
+    is enabled with no SID-driven scene to source features from (nothing would
+    go out). Mode 1 (listen) needs no SID scene. No-op when both are off."""
+    broadcast_on, _, _ = resolve_wled_broadcast(cfg)
+    resolve_wled_listen(cfg)  # parse for validation side effect (raises on bad)
+    if not 1.0 <= cfg.wled.rate_hz <= 120.0:
+        raise ConfigError(f"[wled].rate_hz must be 1..120, got {cfg.wled.rate_hz}")
+    if broadcast_on and not _has_sid_scene(cfg):
         log.warning(
-            "[wled] enabled but no SID-driven scene (waveform, or generative with "
-            "audio_source = 'sid') in the playlist — nothing will be broadcast."
+            "[wled] broadcast enabled but no SID-driven scene (waveform, or "
+            "generative with audio_source = 'sid') in the playlist — nothing "
+            "will be broadcast."
         )
 
 
