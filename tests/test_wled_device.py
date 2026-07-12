@@ -16,6 +16,17 @@ from c64cast import config as cfgmod
 from c64cast.playlist import Playlist
 from c64cast.wled_device import WledBridge, build_wled_app
 
+try:
+    # The WLED JSON API tests drive the real FastAPI app via TestClient, which
+    # also needs httpx (fastapi declares it optional). CI runs without the
+    # `wled`/`control` extra, so guard the API class like test_control_plane
+    # does; the bridge + parser tests below need none of this.
+    from fastapi.testclient import TestClient  # noqa: F401
+
+    HAVE_TESTCLIENT = True
+except (ImportError, RuntimeError):
+    HAVE_TESTCLIENT = False
+
 # --- fakes ------------------------------------------------------------------
 
 
@@ -211,6 +222,7 @@ class BridgeApplyTests(unittest.TestCase):
 # --- HTTP + WS API ----------------------------------------------------------
 
 
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class WledApiTests(unittest.TestCase):
     def setUp(self) -> None:
         from fastapi.testclient import TestClient
