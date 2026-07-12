@@ -174,6 +174,13 @@ class Playlist:
 
         self.index = 0
         self.current: Scene | None = None
+        # Persistent user brightness dim (WLED bridge Mode 1 `bri` slider),
+        # 0 < user_dim <= 1.0. Owned here — not on the display mode — so it
+        # survives scene auto-advance: `_safe_setup` re-stamps it onto each
+        # fresh scene's display mode (the mode instance is per-scene). The
+        # bridge sets both this and the current mode's `user_dim` for an
+        # instant effect that also outlasts the current scene.
+        self.user_dim: float = 1.0
         self.transitioning = False
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
@@ -598,6 +605,13 @@ class Playlist:
     def _safe_setup(self, scene: Scene) -> None:
         self._maybe_install_conductor(scene)
         scene.setup()
+        # Re-stamp the persistent user brightness onto this fresh scene's display
+        # mode (mode instances are per-scene, so a dim set on a previous scene's
+        # mode wouldn't otherwise carry). No-op at the 1.0 default.
+        if self.user_dim < 1.0:
+            dm = getattr(scene, "display_mode", None)
+            if dm is not None:
+                dm.user_dim = self.user_dim
         # Arm the fade-in: the display mode starts black and ramps up over the
         # opening live frames (driven by _advance_fade_in in _run_one_frame).
         self._begin_fade_in(scene)
