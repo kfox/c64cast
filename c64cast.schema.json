@@ -2188,7 +2188,12 @@
               "rorschach",
               "hiphotic",
               "metaballs",
-              "rotozoomer"
+              "rotozoomer",
+              "lissajous",
+              "dna",
+              "drift",
+              "colored_bursts",
+              "dotswarm"
             ],
             "default": "plasma"
           },

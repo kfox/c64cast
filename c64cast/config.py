@@ -112,6 +112,11 @@ _GENERATIVE_SOURCE_CHOICES = (
     "hiphotic",
     "metaballs",
     "rotozoomer",
+    "lissajous",
+    "dna",
+    "drift",
+    "colored_bursts",
+    "dotswarm",
 )
 _EFFECT_CHOICES = ("trails", "pulse", "rgb_shift", "blur")
 # How a slideshow image is fit to the C64 aspect before the display mode

@@ -1,0 +1,30 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "DNA" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2Ddna`). Two sine
+# strands sweeping the full frame width, phase-shifted by half a cycle so
+# they wind around a shared center line like a double helix.
+#
+# Live knobs: `speed` (sx) sets the scroll rate; `scale` (ix) sets how many
+# sine cycles fit across the width (the helix's "tightness").
+#
+# `effect = "blur"` (see effect-trails.toml for the general pattern) pairs
+# nicely to soften the single-pixel-wide strands into WLED's own soft-edged
+# look, but blur ships defaulting to `intensity = 0.0` (no-op) and this
+# generator's own `scale` live param shadows the ix slider blur would
+# otherwise use — push `effect.intensity` directly via MIDI CC to see it.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-dna.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "DNA"
+source = "dna"
+display = "mhires"
+duration_s = 30.0

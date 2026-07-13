@@ -28,10 +28,12 @@
 # Effect switching only does something useful with more than one scene (a
 # single-scene config has nowhere to jump to), so this demo runs a small
 # playlist: the WLED effect list will show "Hello" / "Plasma" / "Fire" /
-# "Hiphotic" / "Metaballs" / "Rotozoomer" / "Waveform" — the last three are a
-# first batch of ported WLED effects (see docs/architecture.md's generators.py
-# section), so their names match what a real WLED device would show for the
-# same effect. Requires the `wled` extra (zeroconf + fastapi + uvicorn).
+# "Hiphotic" / "Metaballs" / "Rotozoomer" / "Lissajous" / "DNA" / "Drift" /
+# "Colored Bursts" / "Black Hole" / "Waveform" — everything from Hiphotic
+# through Black Hole is a ported WLED effect (see docs/architecture.md's
+# generators.py section), so their names match what a real WLED device would
+# show for the same effect. Requires the `wled` extra (zeroconf + fastapi +
+# uvicorn).
 #
 # The "Waveform" scene plays a SID and needs a .sid file — drop one into
 # assets/sids/ first (HVSC: https://hvsc.c64.org). Without one, the scene
@@ -117,6 +119,45 @@ duration_s = 30.0
 type = "generative"
 name = "Rotozoomer"
 source = "rotozoomer"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Lissajous"
+source = "lissajous"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "DNA"
+source = "dna"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Drift"
+source = "drift"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Colored Bursts"
+source = "colored_bursts"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+# The shared "beatsin dot swarm" primitive behind WLED's Black Hole,
+# Frizzles, Sindots, Squared Swirl, and Drift Rose (see generators.py's
+# DotSwarmSource docstring) — named "Black Hole" here to match one real WLED
+# effect name in the app's dropdown, per this file's naming convention.
+type = "generative"
+name = "Black Hole"
+source = "dotswarm"
 display = "mhires"
 duration_s = 30.0
 

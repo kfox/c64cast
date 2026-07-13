@@ -1,0 +1,26 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Colored Bursts" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2DColoredBursts`).
+# Several lines burst from one common, slowly-orbiting point out to per-line
+# endpoints that trace their own faster orbits — a fan of coloured rays that
+# swings and reshapes. A short trailing-echo stack stands in for WLED's own
+# fade-based persistence.
+#
+# Live knobs: `speed` (sx) sets the orbit rate; `scale` (ix) sets how far the
+# burst reaches.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-colored-bursts.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Colored Bursts"
+source = "colored_bursts"
+display = "mhires"
+duration_s = 30.0

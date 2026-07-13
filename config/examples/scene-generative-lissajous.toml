@@ -1,0 +1,27 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Lissajous" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2DLissajous`). A
+# classic XY Lissajous curve, 256 points sampled fresh from a closed-form
+# parametrization every frame — an oscilloscope-style figure that reshapes
+# as the X:Y frequency ratio drifts.
+#
+# Live knobs: `speed` (the sx slider over the WLED bridge / MIDI) sets the
+# rotation rate; `scale` (ix) sets the X-axis frequency (the curve's shape —
+# try values near 1, 2, 3 for classic Lissajous ratios against the fixed
+# Y-frequency of 2).
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-lissajous.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Lissajous"
+source = "lissajous"
+display = "mhires"
+duration_s = 30.0
