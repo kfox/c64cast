@@ -1,0 +1,32 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Soap" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2Dsoap`) of a
+# persistent colour buffer smeared/advected each tick by a slowly-rotating
+# noise-driven flow field — the classic swirling soap-film look. WLED derives
+# its flow from Perlin noise; this port reuses the tileable value-noise
+# helper already built for the `fire` generator instead (a documented
+# substitution — see generators.py's SoapSource docstring).
+#
+# Unlike most generators here this one carries real incremental state (the
+# buffer can't be cheaply replayed from an arbitrary time), so it doesn't
+# reproduce a given moment byte-identically the way plasma/tunnel/etc. do —
+# see the class docstring for the tradeoff.
+#
+# Live knobs: `speed` (sx) sets the advection rate; `scale` (ix) sets the
+# flow displacement (bigger = larger swirls).
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-soap.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Soap"
+source = "soap"
+display = "mhires"
+duration_s = 30.0

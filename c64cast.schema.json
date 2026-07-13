@@ -2193,7 +2193,10 @@
               "dna",
               "drift",
               "colored_bursts",
-              "dotswarm"
+              "dotswarm",
+              "game_of_life",
+              "soap",
+              "fireworks"
             ],
             "default": "plasma"
           },

@@ -29,11 +29,11 @@
 # single-scene config has nowhere to jump to), so this demo runs a small
 # playlist: the WLED effect list will show "Hello" / "Plasma" / "Fire" /
 # "Hiphotic" / "Metaballs" / "Rotozoomer" / "Lissajous" / "DNA" / "Drift" /
-# "Colored Bursts" / "Black Hole" / "Waveform" — everything from Hiphotic
-# through Black Hole is a ported WLED effect (see docs/architecture.md's
-# generators.py section), so their names match what a real WLED device would
-# show for the same effect. Requires the `wled` extra (zeroconf + fastapi +
-# uvicorn).
+# "Colored Bursts" / "Black Hole" / "Game Of Life" / "Soap" / "Fireworks" /
+# "Waveform" — everything from Hiphotic through Fireworks is a ported WLED
+# effect (see docs/architecture.md's generators.py section), so their names
+# match what a real WLED device would show for the same effect. Requires the
+# `wled` extra (zeroconf + fastapi + uvicorn).
 #
 # The "Waveform" scene plays a SID and needs a .sid file — drop one into
 # assets/sids/ first (HVSC: https://hvsc.c64.org). Without one, the scene
@@ -159,6 +159,30 @@ type = "generative"
 name = "Black Hole"
 source = "dotswarm"
 display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Game Of Life"
+source = "game_of_life"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Soap"
+source = "soap"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+# `effect = "trails"` gives Fireworks its classic streak/comet look — see
+# scene-generative-fireworks.toml's header comment for why.
+type = "generative"
+name = "Fireworks"
+source = "fireworks"
+display = "mhires"
+effect = "trails"
 duration_s = 30.0
 
 [[scenes]]

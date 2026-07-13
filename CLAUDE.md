@@ -108,8 +108,12 @@ c64cast/
 ├── generators.py     GenerativeSource registry (plasma, tunnel, fire,
 │                     mandelbrot, moire2, halo, epicycle, hopalong,
 │                     rorschach, hiphotic, metaballs, rotozoomer, lissajous,
-│                     dna, drift, colored_bursts, dotswarm); pure-numpy,
-│                     deterministic-in-t; reactive when fed a MusicModulation
+│                     dna, drift, colored_bursts, dotswarm, game_of_life,
+│                     soap, fireworks); pure-numpy, deterministic-in-t for
+│                     all but the last two (soap/fireworks carry real
+│                     incremental state — too costly to replay from scratch —
+│                     documented in their class docstrings); reactive when
+│                     fed a MusicModulation
 ├── effects.py        FrameEffect registry (trails, pulse, rgb_shift, blur) —
 │                     pre-quantization frame xform; reactive when fed a MusicModulation
 ├── audio_source.py   AudioSource registry (Null/Mic/SidFile) for SourceScene
