@@ -8,13 +8,16 @@ socket binding is exercised — those are the untestable-without-a-LAN parts.
 
 from __future__ import annotations
 
+import tempfile
 import threading
+import time
 import unittest
+from pathlib import Path
 from typing import cast
 
 from c64cast import config as cfgmod
 from c64cast.playlist import Playlist
-from c64cast.wled_device import WledBridge, build_wled_app
+from c64cast.wled_device import PresetStore, WledBridge, build_wled_app
 
 try:
     # The WLED JSON API tests drive the real FastAPI app via TestClient, which
@@ -275,6 +278,13 @@ class BridgeApplyTests(unittest.TestCase):
     def test_seg_fx_out_of_range_ignored(self):
         bridge, pl = _bridge()
         bridge.apply({"seg": [{"id": 0, "fx": 99}]})
+        self.assertEqual(pl.jumps, [])
+
+    def test_seg_fx_to_current_scene_no_jump(self):
+        # Selecting the already-current scene must not re-jump (it would restart
+        # it) — matters for redundant re-selects and same-scene preset recall.
+        bridge, pl = _bridge()  # index 0
+        bridge.apply({"seg": [{"id": 0, "fx": 0}]})
         self.assertEqual(pl.jumps, [])
 
     def test_seg_off_pauses_that_system(self):
@@ -545,6 +555,154 @@ class SegCapsTests(unittest.TestCase):
         self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
 
 
+# --- preset storage ---------------------------------------------------------
+
+
+class PresetStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        # A not-yet-created subdir: the store must mkdir on first write.
+        self.store = PresetStore(Path(self._tmp.name) / "sub" / "wled-x.json")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_missing_file_reads_empty(self):
+        self.assertEqual(self.store.all(), {})
+        self.assertEqual(self.store.mtime_ns(), 0)
+
+    def test_save_load_round_trip_persists_to_disk(self):
+        self.store.save(1, {"n": "A", "seg": [{"id": 0, "fx": 2}]})
+        self.assertEqual(self.store.all()["1"]["n"], "A")
+        # A fresh instance reads the same file back (survives "restart").
+        again = PresetStore(self.store.path)
+        self.assertEqual(again.all()["1"]["seg"][0]["fx"], 2)
+
+    def test_delete(self):
+        self.store.save(1, {"n": "A"})
+        self.store.save(2, {"n": "B"})
+        self.store.delete(1)
+        self.assertEqual(set(self.store.all()), {"2"})
+
+    def test_id_zero_and_out_of_range_ignored(self):
+        self.store.save(0, {"n": "reserved"})
+        self.store.save(999, {"n": "too big"})
+        self.assertEqual(self.store.all(), {})
+
+    def test_next_free_id_fills_gaps(self):
+        self.assertEqual(self.store.next_free_id(), 1)
+        self.store.save(1, {})
+        self.store.save(2, {})
+        self.assertEqual(self.store.next_free_id(), 3)
+        self.store.delete(1)
+        self.assertEqual(self.store.next_free_id(), 1)
+
+    def test_mtime_positive_and_nondecreasing(self):
+        self.store.save(1, {"n": "A"})
+        m1 = self.store.mtime_ns()
+        self.assertGreater(m1, 0)
+        time.sleep(0.01)
+        self.store.save(2, {"n": "B"})
+        self.assertGreaterEqual(self.store.mtime_ns(), m1)
+
+    def test_atomic_write_leaves_no_temp_files(self):
+        self.store.save(1, {"n": "A"})
+        self.assertEqual(list(self.store.path.parent.glob("*.tmp")), [])
+
+    def test_corrupt_file_reads_empty(self):
+        self.store.path.parent.mkdir(parents=True, exist_ok=True)
+        self.store.path.write_text("{not json", encoding="utf-8")
+        self.assertEqual(self.store.all(), {})
+
+
+# --- bridge presets (save / recall / delete) --------------------------------
+
+
+class BridgePresetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.bridge, self.pl = _bridge()
+        # Redirect the store into a tempdir so tests never touch the repo's
+        # gitignored presets/ dir.
+        self.bridge._presets = PresetStore(Path(self._tmp.name) / "wled-test.json")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_presets_json_reserves_id_zero(self):
+        self.assertEqual(self.bridge.presets_json(), {"0": {}})
+
+    def test_psave_snapshots_current_state(self):
+        self.pl.index = 2
+        self.bridge.apply({"seg": [{"id": 0, "sx": 200, "ix": 50}]})
+        self.bridge.apply({"psave": 1, "n": "Cool"})
+        pj = self.bridge.presets_json()
+        self.assertEqual(pj["1"]["n"], "Cool")
+        seg = pj["1"]["seg"][0]
+        self.assertEqual(seg["fx"], 2)
+        self.assertEqual(seg["sx"], 200)
+        self.assertEqual(seg["ix"], 50)
+        # state.ps reflects the just-saved preset.
+        self.assertEqual(self.bridge.state_dict()["ps"], 1)
+
+    def test_psave_auto_picks_id_when_zero(self):
+        self.bridge.apply({"psave": 0, "n": "Auto"})
+        self.assertIn("1", self.bridge.presets_json())
+
+    def test_ps_recall_forces_unchanged_palette(self):
+        # A preset storing pal=2 (no col). Recall must apply it EVEN WHEN the echo
+        # already equals 2 — the only-when-changed guard is bypassed for recalls.
+        mode = _FakeMode()
+        scene = cast("_FakeScene", self.pl.current)
+        scene.display_mode = mode
+        scene.api = object()
+        self.bridge._seg_echo[0]["pal"] = 2  # echo already matches → guard skips
+        self.bridge._presets.save(
+            1,
+            {
+                "n": "P",
+                "on": True,
+                "bri": 128,
+                "seg": [{"id": 0, "fx": 0, "sx": 128, "ix": 128, "pal": 2}],
+            },
+        )
+        mode.palette_calls.clear()
+        self.bridge.apply({"ps": 1})
+        # Forced apply happened despite the unchanged echo (vivid = PALETTE_MODES[2]).
+        self.assertIn("vivid", [c[0] for c in mode.palette_calls])
+        self.assertEqual(self.bridge.state_dict()["ps"], 1)
+
+    def test_ps_resets_on_subsequent_manual_change(self):
+        self.bridge._presets.save(
+            1, {"n": "P", "on": True, "bri": 128, "seg": [{"id": 0, "fx": 0}]}
+        )
+        self.bridge.apply({"ps": 1})
+        self.assertEqual(self.bridge.state_dict()["ps"], 1)
+        self.bridge.apply({"bri": 200})  # manual change
+        self.assertEqual(self.bridge.state_dict()["ps"], -1)
+
+    def test_recall_missing_preset_is_noop(self):
+        self.bridge.apply({"ps": 42})
+        self.assertEqual(self.bridge.state_dict()["ps"], -1)
+        self.assertEqual(self.pl.jumps, [])
+
+    def test_ps_below_min_falls_through_as_manual(self):
+        self.bridge._active_preset = 5
+        self.bridge.apply({"ps": 0, "bri": 100})  # ps<=0 = "no preset"
+        self.assertEqual(self.bridge.state_dict()["ps"], -1)
+        self.assertEqual(self.bridge._global_bri, 100)
+
+    def test_pdel_removes_and_clears_active(self):
+        self.bridge._presets.save(
+            3, {"n": "P", "on": True, "bri": 128, "seg": [{"id": 0, "fx": 0}]}
+        )
+        self.bridge.apply({"ps": 3})
+        self.assertEqual(self.bridge.state_dict()["ps"], 3)
+        self.bridge.apply({"pdel": 3})
+        self.assertNotIn("3", self.bridge.presets_json())
+        self.assertEqual(self.bridge.state_dict()["ps"], -1)
+
+
 # --- HTTP + WS API ----------------------------------------------------------
 
 
@@ -553,8 +711,14 @@ class WledApiTests(unittest.TestCase):
     def setUp(self) -> None:
         from fastapi.testclient import TestClient
 
+        self._tmp = tempfile.TemporaryDirectory()
         self.bridge, self.pl = _bridge()
+        # Keep preset writes out of the repo's gitignored presets/ dir.
+        self.bridge._presets = PresetStore(Path(self._tmp.name) / "wled-api.json")
         self.client = TestClient(build_wled_app(self.bridge))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
 
     def test_get_json(self):
         r = self.client.get("/json")
@@ -593,10 +757,18 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("seg.c64", r.text)
         self.assertIn("cap-off", r.text)
         self.assertIn("markOff", r.text)
-        # A scene pick blurs the <select> and schedules a refresh burst so the
-        # hints don't freeze until a manual reload (the focused-select stall).
+        # A scene pick blurs the <select> so the hints don't freeze behind the
+        # focused-select render guard.
         self.assertIn("sel.blur()", r.text)
-        self.assertIn("scheduleRefresh", r.text)
+        # Live state now arrives over WebSocket (/ws), with a poll fallback.
+        self.assertIn("new WebSocket(", r.text)
+        self.assertIn("/ws", r.text)
+        # Presets section: select + Apply / Save / Delete, wired to ps/psave/pdel.
+        self.assertIn("Presets", r.text)
+        self.assertIn('id="presetSel"', r.text)
+        self.assertIn("applyPreset", r.text)
+        self.assertIn("psave", r.text)
+        self.assertIn("pdel", r.text)
 
     def test_get_description_xml(self):
         r = self.client.get("/description.xml")
@@ -615,6 +787,24 @@ class WledApiTests(unittest.TestCase):
     def test_post_json_jumps(self):
         self.client.post("/json", json={"seg": [{"id": 0, "fx": 1}]})
         self.assertEqual(self.pl.jumps, [1])
+
+    def test_presets_json_empty_reserves_id_zero(self):
+        self.assertEqual(self.client.get("/presets.json").json(), {"0": {}})
+
+    def test_psave_then_get_reflects_and_pmt_bumps(self):
+        pmt0 = self.client.get("/json/info").json()["fs"]["pmt"]
+        self.client.post("/json/state", json={"psave": 1, "n": "Fire look"})
+        pj = self.client.get("/presets.json").json()
+        self.assertEqual(pj["1"]["n"], "Fire look")
+        pmt1 = self.client.get("/json/info").json()["fs"]["pmt"]
+        self.assertGreater(pmt1, pmt0)
+
+    def test_ps_recall_jumps_back_via_post(self):
+        self.client.post("/json/state", json={"psave": 1, "n": "Home"})  # fx=0
+        self.pl.index = 2
+        self.client.post("/json/state", json={"ps": 1})
+        self.assertEqual(self.pl.jumps, [0])
+        self.assertEqual(self.client.get("/json/state").json()["ps"], 1)
 
     def test_ws_sends_state_on_connect_and_applies(self):
         with self.client.websocket_connect("/ws") as ws:

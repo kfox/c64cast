@@ -15,6 +15,10 @@
 #     (e.g. on "Fire" below, ix raises/lowers the flame height; on a plasma,
 #      sx cycles the color faster; on a SID waveform scope, ix scales the
 #      trace amplitude — sx/ix are silent no-ops on scenes with no live knob)
+#   - save/apply "presets"                              -> capture the current
+#     scene + sliders + palette/colors + power/brightness and recall it in one
+#     tap (from the WLED app or c64cast's own control page at http://<host>:8080/;
+#     presets persist under a gitignored presets/ dir and survive restarts)
 #
 # This is the OTHER direction from scene-wled.toml (Mode 2, where the C64
 # becomes a pixel *sink* for a realtime video stream). Mode 1 sends no pixels
