@@ -1,0 +1,27 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Dot Swarm" — a WLED-effect port covering the shared
+# shape of several kin effects (see https://github.com/wled-dev/WLED
+# wled00/FX.cpp `mode_2DBlackHole`, `mode_2DFrizzles`, `mode_2DSindots`,
+# `mode_2Dsquaredswirl`, `mode_2Ddriftrose`): a handful of points, each
+# independently orbiting via a bounded sine at its own frequency, colour-
+# cycled and blended, plus a fixed white center dot (Black Hole's
+# signature). Rather than port each near-identical effect separately, this
+# ports the shared "beatsin dot swarm" primitive once.
+#
+# Live knobs: `speed` (sx) sets orbit rate; `scale` (ix) sets orbit reach.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-dotswarm.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Dot Swarm"
+source = "dotswarm"
+display = "mhires"
+duration_s = 30.0

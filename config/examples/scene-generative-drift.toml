@@ -1,0 +1,25 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Drift" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2DDrift`). A rotating
+# spiral trail: points stepping outward from center trace a full spiral arm
+# every frame, colour-cycling along its length. Always draws WLED's optional
+# "Twin" mirror point too, for a fuller, more symmetric rose by default.
+#
+# Live knobs: `speed` (sx) sets rotation rate; `scale` (ix) sets how far the
+# spiral arms reach.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-drift.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Drift"
+source = "drift"
+display = "mhires"
+duration_s = 30.0

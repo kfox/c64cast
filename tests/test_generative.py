@@ -44,6 +44,11 @@ class GeneratorTest(unittest.TestCase):
         self.assertIn("hiphotic", names)
         self.assertIn("metaballs", names)
         self.assertIn("rotozoomer", names)
+        self.assertIn("lissajous", names)
+        self.assertIn("dna", names)
+        self.assertIn("drift", names)
+        self.assertIn("colored_bursts", names)
+        self.assertIn("dotswarm", names)
 
     def test_live_params_declared_with_valid_ranges(self):
         # midi_control.py scales a CC into each declared (min, max) range and
@@ -62,6 +67,11 @@ class GeneratorTest(unittest.TestCase):
             "hiphotic": {"speed", "scale"},
             "metaballs": {"speed"},
             "rotozoomer": {"speed", "scale"},
+            "lissajous": {"speed", "scale"},
+            "dna": {"speed", "scale"},
+            "drift": {"speed", "scale"},
+            "colored_bursts": {"speed", "scale"},
+            "dotswarm": {"speed", "scale"},
         }
         for name in generator_names():
             g = build_generator(name)
@@ -347,6 +357,116 @@ class GeneratorTest(unittest.TestCase):
         from c64cast.modulation import MusicModulation
 
         g = build_generator("rotozoomer")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_lissajous_frame_shape_and_determinism(self):
+        g = build_generator("lissajous")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_lissajous_scale_changes_shape(self):
+        base = generators.LissajousSource().render(0.5)
+        reshaped = generators.LissajousSource(scale=3.0).render(0.5)
+        self.assertEqual(base.shape, reshaped.shape)
+        self.assertFalse(np.array_equal(base, reshaped))
+
+    def test_lissajous_reacts_to_beat_phase(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("lissajous")
+        m0 = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        m1 = MusicModulation(0.3, 0.0, 2.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertFalse(np.array_equal(g.render(1.0, m0), g.render(1.0, m1)))
+
+    def test_dna_frame_shape_and_determinism(self):
+        g = build_generator("dna")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_dna_scale_changes_frame(self):
+        base = generators.DnaSource().render(0.5)
+        reshaped = generators.DnaSource(scale=3.0).render(0.5)
+        self.assertEqual(base.shape, reshaped.shape)
+        self.assertFalse(np.array_equal(base, reshaped))
+
+    def test_dna_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("dna")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_drift_frame_shape_and_determinism(self):
+        g = build_generator("drift")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_drift_scale_changes_frame(self):
+        base = generators.DriftSource().render(0.5)
+        reshaped = generators.DriftSource(scale=2.0).render(0.5)
+        self.assertEqual(base.shape, reshaped.shape)
+        self.assertFalse(np.array_equal(base, reshaped))
+
+    def test_drift_level_grows_radius(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("drift")
+        rest = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        loud = MusicModulation(1.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertFalse(np.array_equal(g.render(1.0, rest), g.render(1.0, loud)))
+
+    def test_colored_bursts_frame_shape_and_determinism(self):
+        g = build_generator("colored_bursts")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_colored_bursts_scale_changes_frame(self):
+        base = generators.ColoredBurstsSource().render(0.5)
+        reshaped = generators.ColoredBurstsSource(scale=3.0).render(0.5)
+        self.assertEqual(base.shape, reshaped.shape)
+        self.assertFalse(np.array_equal(base, reshaped))
+
+    def test_colored_bursts_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("colored_bursts")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_dotswarm_frame_shape_and_determinism(self):
+        g = build_generator("dotswarm")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_dotswarm_scale_changes_frame(self):
+        base = generators.DotSwarmSource().render(0.5)
+        reshaped = generators.DotSwarmSource(scale=2.0).render(0.5)
+        self.assertEqual(base.shape, reshaped.shape)
+        self.assertFalse(np.array_equal(base, reshaped))
+
+    def test_dotswarm_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("dotswarm")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
@@ -981,6 +1101,36 @@ class ConfigGenerativeTest(unittest.TestCase):
         scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
         assert isinstance(scene, SourceScene)
         self.assertIsInstance(scene.source, generators.RotozoomerSource)
+
+    def test_build_generative_lissajous(self):
+        s = SceneCfg(type="generative", source="lissajous", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.LissajousSource)
+
+    def test_build_generative_dna(self):
+        s = SceneCfg(type="generative", source="dna", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.DnaSource)
+
+    def test_build_generative_drift(self):
+        s = SceneCfg(type="generative", source="drift", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.DriftSource)
+
+    def test_build_generative_colored_bursts(self):
+        s = SceneCfg(type="generative", source="colored_bursts", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.ColoredBurstsSource)
+
+    def test_build_generative_dotswarm(self):
+        s = SceneCfg(type="generative", source="dotswarm", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.DotSwarmSource)
 
     def test_build_generative_with_blur_effect(self):
         s = SceneCfg(type="generative", source="plasma", display="mhires", effect="blur")

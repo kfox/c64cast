@@ -957,3 +957,357 @@ class RotozoomerSource(GenerativeSource):
             return frame
         gain = self._reactive_value(modulation)
         return np.clip(frame.astype(np.float32) * gain, 0.0, 255.0).astype(np.uint8)
+
+
+@register("lissajous")
+class LissajousSource(GenerativeSource):
+    """WLED "Lissajous" port: a classic XY curve (`x = sin(theta*freq_x +
+    phase)`, `y = cos(theta*2 + phase)`) sampled at a fixed number of points
+    along its parametrization. WLED's own version already redraws all 256
+    points from scratch on every render call (a `fadeToBlackBy` trail is
+    layered on top for a soft cometary look, but the curve itself is fully
+    drawn each time, not accumulated) — so, unlike the halo/epicycle family,
+    this needs no synthetic time-lag echo to look continuous: `render(t,
+    None)` samples the whole curve fresh from a closed form every frame.
+    WLED's independent X-frequency and rotation-speed sliders map to `scale`
+    (curve shape) and `speed` (rotation rate)."""
+
+    LIVE_PARAMS = {"speed": (0.0, 4.0), "scale": (0.2, 6.0)}
+
+    _N_POINTS = 256
+    _Y_FREQ = 2.0  # fixed y-axis frequency (WLED hardcodes `i*2` for the cos term)
+    _HUE_CYCLES = 1.0  # hue cycles once per full curve sweep
+    _LEVEL_GAIN = 0.25
+    _BEAT_PHASE_GAIN = 0.3
+
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 0.6,
+        scale: float = 1.0,
+    ):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        self.scale = float(scale)
+        self._theta = np.linspace(
+            0.0, 2.0 * math.pi, self._N_POINTS, endpoint=False, dtype=np.float64
+        )
+        self._i_frac = np.linspace(0.0, 1.0, self._N_POINTS, endpoint=False, dtype=np.float32)
+        self._cx = width / 2.0
+        self._cy = height / 2.0
+        self._amp_x = (width / 2.0) * 0.92
+        self._amp_y = (height / 2.0) * 0.92
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        phase = t * self.speed
+        level_gain = 0.0
+        hue_off = 0.0
+        val = 1.0
+        if modulation is not None:
+            phase += modulation.beat_phase * self._BEAT_PHASE_GAIN
+            level_gain = self._LEVEL_GAIN * modulation.level
+            hue_off = self._reactive_hue_offset(modulation)
+            val = self._reactive_value(modulation)
+        xs = self._cx + self._amp_x * (1.0 + level_gain) * np.sin(self._theta * self.scale + phase)
+        ys = self._cy + self._amp_y * (1.0 + level_gain) * np.cos(
+            self._theta * self._Y_FREQ + phase
+        )
+        px = np.clip(xs, 0, self.width - 1).astype(np.int32)
+        py = np.clip(ys, 0, self.height - 1).astype(np.int32)
+        hue = self._i_frac * self._HUE_CYCLES + t * 0.05 + hue_off
+        colors = self._hsv_to_bgr(hue[None, :], val=val)[0]
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        frame[py, px] = colors
+        return cv2.dilate(frame, np.ones((2, 2), np.uint8))
+
+
+@register("dna")
+class DnaSource(GenerativeSource):
+    """WLED "DNA" port: two sine strands sweeping the full frame width,
+    phase-shifted by half a cycle (`pi`, matching WLED's `i*4` vs `i*4+128`
+    offset) so they wind around a shared center line like a double helix;
+    color cycles per column + time. WLED redraws every column on each render
+    call — its softening comes entirely from `SEGMENT.blur`, not from state
+    carried between frames — so this ports directly as a pure function of
+    `t`: each column's y-position is a closed-form `sin`, sampled fresh every
+    frame. Pair with the `blur` effect (see effect-trails.toml for the
+    pattern) for WLED's own soft-edged look; unblurred it reads as a crisp
+    oscilloscope-style double trace."""
+
+    LIVE_PARAMS = {"speed": (0.0, 3.0), "scale": (0.3, 4.0)}
+
+    _PERIOD_CYCLES = 3.0  # full sine cycles across the frame width at scale=1.0
+    _AMP_FRAC = 0.38  # strand amplitude, as a fraction of height
+    _LEVEL_AMP_GAIN = 0.3
+    _BEAT_PHASE_GAIN = 0.6
+
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 0.5,
+        scale: float = 1.0,
+    ):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        self.scale = float(scale)
+        self._xs = np.arange(width, dtype=np.int32)
+        self._xfrac = self._xs.astype(np.float32) / width
+        self._cy = height / 2.0
+        self._amp = height * self._AMP_FRAC
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        phase = t * self.speed * 2.0 * math.pi
+        w = self._xfrac * self._PERIOD_CYCLES * self.scale * 2.0 * math.pi
+        amp = self._amp
+        hue_off = 0.0
+        val = 1.0
+        if modulation is not None:
+            phase += modulation.beat_phase * self._BEAT_PHASE_GAIN
+            amp *= 1.0 + self._LEVEL_AMP_GAIN * modulation.level
+            hue_off = self._reactive_hue_offset(modulation)
+            val = self._reactive_value(modulation)
+        y1 = self._cy + amp * np.sin(w + phase)
+        y2 = self._cy + amp * np.sin(w + phase + math.pi)
+        y1i = np.clip(y1, 0, self.height - 1).astype(np.int32)
+        y2i = np.clip(y2, 0, self.height - 1).astype(np.int32)
+        hue1 = self._xfrac * 0.6 + t * 0.05 + hue_off
+        hue2 = self._xfrac * 0.6 + 0.5 + t * 0.05 + hue_off
+        colors1 = self._hsv_to_bgr(hue1[None, :], val=val)[0]
+        colors2 = self._hsv_to_bgr(hue2[None, :], val=val)[0]
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        frame[y1i, self._xs] = colors1
+        frame[y2i, self._xs] = colors2
+        return cv2.dilate(frame, np.ones((3, 3), np.uint8))
+
+
+@register("drift")
+class DriftSource(GenerativeSource):
+    """WLED "Drift" port: a rotating spiral trail — for radii `i` stepping
+    outward from center, a point at angle `t*(maxDim-i)` traces a full
+    spiral arm every frame. Like `lissajous`, WLED already redraws the whole
+    arm (`i` from 1 to maxDim) on every render call, so this ports as a pure
+    function of `t` with no synthetic echo needed. Always draws both the
+    `(sin,cos)` point AND its `(cos,sin)` mirror — WLED gates the mirror
+    behind a "Twin" checkbox this codebase has no per-scene boolean toggle
+    for, so it's always-on here, a deliberate simplification that gives a
+    fuller, more symmetric rose by default."""
+
+    LIVE_PARAMS = {"speed": (0.0, 3.0), "scale": (0.3, 2.0)}
+
+    _STEP = 0.25
+    _HUE_SCALE = 0.08
+    _HUE_DRIFT = 0.05
+    _LEVEL_GAIN = 0.3
+
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 0.5,
+        scale: float = 1.0,
+    ):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        self.scale = float(scale)
+        self._cx = width / 2.0
+        self._cy = height / 2.0
+        self._max_dim = min(width, height) / 2.0
+        self._i = np.arange(1.0, self._max_dim, self._STEP, dtype=np.float64)
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        radius_scale = self.scale
+        hue_off = 0.0
+        val = 1.0
+        if modulation is not None:
+            radius_scale *= 1.0 + self._LEVEL_GAIN * modulation.level
+            hue_off = self._reactive_hue_offset(modulation)
+            val = self._reactive_value(modulation)
+        i = self._i
+        angle = t * self.speed * (self._max_dim - i)
+        r = i * radius_scale
+        s = np.sin(angle)
+        c = np.cos(angle)
+        x1 = np.clip(self._cx + r * s, 0, self.width - 1).astype(np.int32)
+        y1 = np.clip(self._cy + r * c, 0, self.height - 1).astype(np.int32)
+        x2 = np.clip(self._cx + r * c, 0, self.width - 1).astype(np.int32)
+        y2 = np.clip(self._cy + r * s, 0, self.height - 1).astype(np.int32)
+        hue = np.mod(i * self._HUE_SCALE + t * self._HUE_DRIFT + hue_off, 1.0).astype(np.float32)
+        colors = self._hsv_to_bgr(hue[None, :], val=val)[0]
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        frame[y1, x1] = colors
+        frame[y2, x2] = colors
+        return cv2.dilate(frame, np.ones((2, 2), np.uint8))
+
+
+@register("colored_bursts")
+class ColoredBurstsSource(GenerativeSource):
+    """WLED "Colored Bursts" port: several lines burst from one common,
+    slowly-orbiting point out to per-line endpoints that trace their own
+    faster orbits — WLED's shared start point has no per-line phase offset,
+    while the per-line `i*24`/`i*48+64` phase spread on the *other* endpoint
+    is what fans the lines out into a burst. A short trailing-echo stack
+    (the same pattern `halo`/`epicycle` use) stands in for WLED's own
+    `fadeToBlackBy` accumulation, since this must stay a pure function of
+    `t`; echoes are drawn oldest-first so the brightest (most recent)
+    position always paints on top."""
+
+    LIVE_PARAMS = {"speed": (0.0, 3.0), "scale": (0.3, 3.0)}
+
+    _N_LINES = 6
+    _N_ECHOES = 3
+    _ECHO_LAG = 0.05
+    _ECHO_DECAY = 0.45
+    _ONSET_FLASH_GAIN = 90.0
+    _LEVEL_GAIN = 0.4
+    _BEAT_PHASE_GAIN = 0.4
+
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 0.6,
+        scale: float = 1.0,
+    ):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        self.scale = float(scale)
+        self._cx = width / 2.0
+        self._cy = height / 2.0
+        self._amp = min(width, height) * 0.4
+        n = self._N_LINES
+        self._end_phase_x = np.arange(n, dtype=np.float64) * (2.0 * math.pi / 12.0)
+        self._end_phase_y = np.arange(n, dtype=np.float64) * (2.0 * math.pi / 7.0) + 1.1
+        self._colors = [
+            self._hsv_to_bgr(np.full((1, 1), i / n, np.float32))[0, 0].tolist() for i in range(n)
+        ]
+
+    def _endpoints(
+        self, tt: float, amp: float
+    ) -> tuple[tuple[float, float], np.ndarray, np.ndarray]:
+        ax = self._cx + amp * math.sin(tt * 0.9)
+        ay = self._cy + amp * math.sin(tt * 0.7)
+        bx = self._cx + amp * np.sin(tt * 1.6 + self._end_phase_x)
+        by = self._cy + amp * np.sin(tt * 1.3 + self._end_phase_y)
+        return (ax, ay), bx, by
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        tt = t * self.speed
+        amp = self._amp * self.scale
+        onset = 0.0
+        if modulation is not None:
+            tt += modulation.beat_phase * self._BEAT_PHASE_GAIN
+            amp *= 1.0 + self._LEVEL_GAIN * modulation.level
+            onset = modulation.onset
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        for e in reversed(range(self._N_ECHOES)):
+            te = tt - e * self._ECHO_LAG
+            fade = self._ECHO_DECAY**e
+            (ax, ay), bx, by = self._endpoints(te, amp)
+            p0 = (int(round(ax)), int(round(ay)))
+            for j in range(self._N_LINES):
+                p1 = (int(round(bx[j])), int(round(by[j])))
+                color = tuple(int(c * fade) for c in self._colors[j])
+                cv2.line(frame, p0, p1, color, 1, cv2.LINE_AA)
+        if onset > 0.0:
+            flash = int(self._ONSET_FLASH_GAIN * onset)
+            frame = cv2.add(frame, np.full_like(frame, flash))
+        return frame
+
+
+@register("dotswarm")
+class DotSwarmSource(GenerativeSource):
+    """A WLED "beatsin dot swarm" port covering the shared shape of several
+    kin effects — Black Hole, Frizzles, Sindots, Squared Swirl, Drift Rose —
+    which all boil down to the same primitive: a handful of points, each
+    independently orbiting via a bounded sine (`beatsin8` in WLED) at its own
+    frequency, color-cycled and blended. Rather than port each as its own
+    near-identical generator, this ports the shared primitive ONCE with a
+    fixed, varied per-dot frequency assortment (echoing the spread across all
+    of them) plus a fixed white center dot (Black Hole's signature). A short
+    trailing-echo stack fakes WLED's `fadeToBlackBy` persistence, the same
+    pattern `halo`/`epicycle` use; echoes are drawn oldest-first so the
+    brightest (most recent) position always paints on top."""
+
+    LIVE_PARAMS = {"speed": (0.0, 3.0), "scale": (0.2, 2.0)}
+
+    _N_DOTS = 12
+    _N_ECHOES = 4
+    _ECHO_LAG = 0.045
+    _ECHO_DECAY = 0.5
+    _ORBIT_FRAC = 0.42  # max orbit reach, as a fraction of min(width,height)
+    _DOT_RADIUS = 2
+    _LEVEL_GAIN = 0.25
+    _BEAT_PHASE_GAIN = 0.3
+    _ONSET_FLASH_GAIN = 60.0
+
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 0.7,
+        scale: float = 1.0,
+    ):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        self.scale = float(scale)
+        self._cx = width / 2.0
+        self._cy = height / 2.0
+        self._orbit = min(width, height) * self._ORBIT_FRAC
+        rng = np.random.default_rng(0xD07A)
+        n = self._N_DOTS
+        # Varied, deliberately non-harmonic per-dot frequencies (mirrors the
+        # spread of distinct beatsin8 rates each WLED kin effect hand-picks).
+        self._fx = rng.uniform(0.4, 2.6, n)
+        self._fy = rng.uniform(0.4, 2.6, n)
+        self._px = rng.uniform(0.0, 2.0 * math.pi, n)
+        self._py = rng.uniform(0.0, 2.0 * math.pi, n)
+        self._reach = rng.uniform(0.35, 1.0, n)
+        hues = (np.arange(n) / n).astype(np.float32)
+        self._colors = [
+            self._hsv_to_bgr(np.full((1, 1), h, np.float32))[0, 0].tolist() for h in hues
+        ]
+
+    def _positions(self, tt: float, orbit: float) -> tuple[np.ndarray, np.ndarray]:
+        x = self._cx + orbit * self._reach * np.sin(tt * self._fx + self._px)
+        y = self._cy + orbit * self._reach * np.sin(tt * self._fy + self._py)
+        return x, y
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        tt = t * self.speed
+        orbit = self._orbit * self.scale
+        gain = 1.0
+        onset = 0.0
+        if modulation is not None:
+            tt += modulation.beat_phase * self._BEAT_PHASE_GAIN
+            orbit *= 1.0 + self._LEVEL_GAIN * modulation.level
+            gain = self._reactive_value(modulation) * 1.3
+            onset = modulation.onset
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        for e in reversed(range(self._N_ECHOES)):
+            te = tt - e * self._ECHO_LAG
+            fade = self._ECHO_DECAY**e
+            xs, ys = self._positions(te, orbit)
+            for j in range(self._N_DOTS):
+                color = tuple(int(c * fade) for c in self._colors[j])
+                cv2.circle(
+                    frame,
+                    (int(round(xs[j])), int(round(ys[j]))),
+                    self._DOT_RADIUS,
+                    color,
+                    -1,
+                    cv2.LINE_AA,
+                )
+        cx, cy = int(round(self._cx)), int(round(self._cy))
+        cv2.circle(frame, (cx, cy), self._DOT_RADIUS, (255, 255, 255), -1, cv2.LINE_AA)
+        if gain != 1.0:
+            frame = np.clip(frame.astype(np.float32) * gain, 0.0, 255.0).astype(np.uint8)
+        if onset > 0.0:
+            frame = cv2.add(frame, np.full_like(frame, int(self._ONSET_FLASH_GAIN * onset)))
+        return frame
