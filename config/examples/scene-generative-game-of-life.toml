@@ -1,0 +1,25 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Game Of Life" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2Dgameoflife`) of
+# Conway's Game of Life on a coarse grid, with WLED's signature "parent color
+# inheritance": a newly-born cell's colour is the blend of its live parents'.
+# The board periodically reseeds a fresh random soup (standing in for WLED's
+# adaptive stagnation detection) so it never settles into a static picture.
+#
+# Live knob: `speed` (sx) sets the generation rate.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-game-of-life.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Game Of Life"
+source = "game_of_life"
+display = "mhires"
+duration_s = 30.0

@@ -117,6 +117,9 @@ _GENERATIVE_SOURCE_CHOICES = (
     "drift",
     "colored_bursts",
     "dotswarm",
+    "game_of_life",
+    "soap",
+    "fireworks",
 )
 _EFFECT_CHOICES = ("trails", "pulse", "rgb_shift", "blur")
 # How a slideshow image is fit to the C64 aspect before the display mode

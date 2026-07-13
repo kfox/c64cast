@@ -49,6 +49,9 @@ class GeneratorTest(unittest.TestCase):
         self.assertIn("drift", names)
         self.assertIn("colored_bursts", names)
         self.assertIn("dotswarm", names)
+        self.assertIn("game_of_life", names)
+        self.assertIn("soap", names)
+        self.assertIn("fireworks", names)
 
     def test_live_params_declared_with_valid_ranges(self):
         # midi_control.py scales a CC into each declared (min, max) range and
@@ -72,6 +75,9 @@ class GeneratorTest(unittest.TestCase):
             "drift": {"speed", "scale"},
             "colored_bursts": {"speed", "scale"},
             "dotswarm": {"speed", "scale"},
+            "game_of_life": {"speed"},
+            "soap": {"speed", "scale"},
+            "fireworks": {"speed", "scale"},
         }
         for name in generator_names():
             g = build_generator(name)
@@ -470,6 +476,126 @@ class GeneratorTest(unittest.TestCase):
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_game_of_life_frame_shape_and_determinism(self):
+        g = build_generator("game_of_life")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_game_of_life_direct_jump_matches_gradual_replay(self):
+        # The purity guarantee: a fresh instance rendering t=5.0 directly must
+        # equal an instance that got there via several smaller render() calls
+        # first — verifies the (epoch, generation) cache never changes the
+        # answer, only how cheaply it's reached.
+        direct = build_generator("game_of_life").render(5.0)
+        gradual = build_generator("game_of_life")
+        for t in (0.5, 1.3, 2.7, 4.0, 5.0):
+            out = gradual.render(t)
+        np.testing.assert_array_equal(direct, out)
+
+    def test_game_of_life_epoch_reseeds(self):
+        # Past one full epoch, the board reseeds from a fresh random soup —
+        # different epochs must not look identical.
+        g = generators.GameOfLifeSource()
+        epoch_s = g._epoch_s  # noqa: SLF001 — reading the instance's own constant
+        f0 = g.render(0.5)
+        f1 = g.render(epoch_s + 0.5)
+        self.assertFalse(np.array_equal(f0, f1))
+
+    def test_game_of_life_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("game_of_life")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_soap_frame_shape_and_stable_at_fixed_t(self):
+        g = build_generator("soap")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        # Repeated/non-advancing t must not re-step the simulation.
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_soap_scale_changes_frame(self):
+        base = generators.SoapSource().render(1.0)
+        wide = generators.SoapSource(scale=3.0).render(1.0)
+        self.assertEqual(base.shape, wide.shape)
+        self.assertFalse(np.array_equal(base, wide))
+
+    def test_soap_reset_clears_state(self):
+        g = generators.SoapSource()
+        g.render(2.0)
+        g.reset()
+        # Immediately after reset the buffer is back to the seed pattern —
+        # rendering at the same t it started at reproduces the first frame.
+        fresh = generators.SoapSource().render(0.0)
+        np.testing.assert_array_equal(g.render(0.0), fresh)
+
+    def test_soap_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("soap")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_fireworks_frame_shape_and_stable_at_fixed_t(self):
+        g = build_generator("fireworks")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+
+    def test_fireworks_evolves_over_time(self):
+        g = build_generator("fireworks")
+        frames = [g.render(t) for t in (0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0)]
+        # Over enough sim time a shell must launch/explode/fade — some frame
+        # differs from the (likely-empty) first frame.
+        self.assertTrue(any(not np.array_equal(frames[0], f) for f in frames[1:]))
+
+    def test_fireworks_reset_clears_particles(self):
+        g = generators.FireworksSource()
+        for t in (0.5, 3.0, 6.0):
+            g.render(t)
+        g.reset()
+        self.assertFalse(g._p_alive.any())  # noqa: SLF001
+        self.assertFalse(g._shell_alive.any())  # noqa: SLF001
+
+    def test_fireworks_onset_triggers_immediate_burst(self):
+        from c64cast.modulation import MusicModulation
+
+        g = generators.FireworksSource()
+        g.render(0.1)  # let the accumulator/RNG advance past the first tick
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        out = g.render(0.2, hit)
+        self.assertTrue(g._p_alive.any())  # noqa: SLF001
+        self.assertGreater(int(out.sum()), 0)
+
+    def test_fireworks_scale_changes_burst_spread(self):
+        # `scale` multiplies burst particle speed — force an explosion at t=0
+        # via a strong onset on both instances, then let a few ticks of
+        # physics move the particles along their (scale-dependent) velocities
+        # before comparing spread (right at the burst instant every particle
+        # still sits exactly at the burst center, so spread would be zero
+        # regardless of scale).
+        from c64cast.modulation import MusicModulation
+
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        tight = generators.FireworksSource(scale=0.3)
+        wide = generators.FireworksSource(scale=3.0)
+        tight.render(0.0, hit)
+        tight.render(0.2)
+        wide.render(0.0, hit)
+        wide.render(0.2)
+        tight_spread = float(np.std(tight._p_x[tight._p_alive]))  # noqa: SLF001
+        wide_spread = float(np.std(wide._p_x[wide._p_alive]))  # noqa: SLF001
+        self.assertGreater(wide_spread, tight_spread)
 
 
 class EffectTest(unittest.TestCase):

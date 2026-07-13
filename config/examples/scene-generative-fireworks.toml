@@ -1,0 +1,32 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Fireworks" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_particlefireworks`) of
+# WLED's shared particle-system engine's flagship preset: shells launch, arc
+# under gravity, and explode into a fading burst of particles. The same
+# small particle engine also drives WLED's Volcano/Ballpit/Waterfall/Impact/
+# Attractor/Galaxy presets — only Fireworks is ported this batch (see
+# c64cast/generators.py's FireworksSource docstring for the deferred rest).
+#
+# `effect = "trails"` gives the classic streak/comet look for free — this
+# generator draws no synthetic per-particle trail of its own (see the class
+# docstring), leaning on the existing effect instead.
+#
+# Live knobs: `speed` (sx) scales launch rate / time; `scale` (ix) scales
+# burst spread.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-fireworks.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Fireworks"
+source = "fireworks"
+display = "mhires"
+effect = "trails"
+duration_s = 30.0

@@ -216,7 +216,13 @@ function selectRow(labelText, options, selectedIdx, onpick, disabled) {
   const l = document.createElement('label');
   l.textContent = labelText;
   const sel = document.createElement('select');
-  options.forEach((name, idx) => {
+  // Display alphabetically, but each <option>'s value stays the real index
+  // into `options` (fx = playlist scene index, pal = PALETTE_MODES index —
+  // other code depends on that index directly), so sorting here only changes
+  // display order, never what gets posted back.
+  const order = options.map((name, idx) => ({name, idx}))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  order.forEach(({name, idx}) => {
     const opt = document.createElement('option');
     opt.value = idx;
     opt.textContent = name;
@@ -337,8 +343,9 @@ function renderPresets() {
   const sel = document.getElementById('presetSel');
   const prev = sel.value;
   sel.innerHTML = '';
+  const presetLabel = (id) => presets[id].n || ('Preset ' + id);
   const ids = Object.keys(presets).filter((k) => k !== '0')
-    .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    .sort((a, b) => presetLabel(a).localeCompare(presetLabel(b)));
   if (!ids.length) {
     const opt = document.createElement('option');
     opt.value = ''; opt.textContent = '(no presets)';
@@ -347,7 +354,7 @@ function renderPresets() {
   ids.forEach((id) => {
     const opt = document.createElement('option');
     opt.value = id;
-    opt.textContent = presets[id].n || ('Preset ' + id);
+    opt.textContent = presetLabel(id);
     sel.appendChild(opt);
   });
   if (prev) sel.value = prev;
