@@ -570,7 +570,7 @@ Each `[[scenes]]` block is a scene; they run in declaration order and
 each plays for `duration_s` seconds, then advances. Common fields:
 
 * `type` — `"webcam"`, `"video"`, `"slideshow"`, `"waveform"`,
-  `"midi"`, `"asid"`, `"blank"`, `"launcher"`, or `"generative"`
+  `"midi"`, `"asid"`, `"blank"`, `"launcher"`, `"generative"`, or `"wled"`
 * `duration_s` — seconds before advancing. Rejected on `video`
   scenes — they run until the video file ends.
 * `name` — display name (shown in the interstitial). Optional.
@@ -1076,6 +1076,36 @@ numpy and deterministic in time:
 `song`, `palette_mode`, `style` (petscii), and the `target_fps` bitmap
 caps above all apply.
 
+### `type = "wled"`
+
+```toml
+[[scenes]]
+type = "wled"
+display = "mhires"                  # any quantizing mode except blank/random
+sink_width = 320                    # must match the sender's configured matrix
+sink_height = 200
+duration_s = 0.0                    # the sink has no natural end
+```
+
+Turns the C64 into a virtual WLED LED matrix — one direction of the
+**WLED bridge** (see [below](#wled-bridge)). A realtime pixel sender on
+the LAN (LedFx, xLights, or another WLED device with sync enabled)
+streams frames to this host over UDP; the scene assembles them into a
+BGR frame and hands it to the ordinary display pipeline, so it
+quantizes exactly like a webcam/video/generative source (palette,
+dither, color_match, `effect` all apply). No audio, no SID.
+
+* `sink_width` / `sink_height` (default 320×200) — the virtual matrix
+  pixel dimensions the sender targets. **Must match** the sender's
+  configured layout; the display mode downscales it to the C64 grid.
+* Two protocols are accepted, auto-detected, both bound at once: DDP
+  (port 4048) and WLED realtime UDP (port 21324).
+* No sender on hand? Drive it with
+  [`scripts/diags/wled_pixel_sender.py`](../scripts/diags/wled_pixel_sender.py).
+
+See [`scene-wled.toml`](../config/examples/scene-wled.toml) for a
+runnable demo.
+
 ## Overlays
 
 Overlays are stackable decorations that attach to a scene via
@@ -1379,3 +1409,103 @@ played in lockstep across systems — useful for synchronized
 video playback, SID playback, or a webcam input only one
 system is wired to). The contract is in
 [`c64cast/orchestrator.py`](../c64cast/orchestrator.py).
+
+## WLED bridge
+
+c64cast interoperates with the [WLED](https://kno.wled.ge/) LED-controller
+ecosystem in three independent directions, all under one `[wled]` config
+section. Each direction is a single combined string field —
+`"disabled"` (default) | `"enabled"` | `"[host][:port]"` — that carries
+both on/off and an endpoint override in one value (a bare `"HOST"`
+overrides just the host, a leading `":PORT"` overrides just the port).
+
+```toml
+[wled]
+broadcast = "disabled"   # Mode 3: audio-sync OUT to real WLED devices
+listen = "disabled"      # Mode 1: c64cast presents itself AS a WLED device
+name = "c64cast"         # friendly/mDNS name used by Mode 1
+rate_hz = 50.0           # Mode 3 broadcast rate
+```
+
+Mode 2 (pixel sink) has no `[wled]` field — it's a scene, `type = "wled"`
+(see [above](#type--wled)).
+
+### Mode 3 — `broadcast` (audio-sync out)
+
+Drives real WLED LED matrices/strips **from the C64's SID**, with no
+microphone on the WLED side. Whichever SID-driven scene is on screen
+(`waveform`, or a `generative` scene with `audio_source = "sid"`) has
+its `MusicModulation` (level, per-voice note/gate, onsets) turned into
+WLED "Audio Sync" V2 packets and multicast on the LAN — every WLED
+device with **Sound Sync = "Receive"** enabled reacts to the music.
+
+```toml
+[wled]
+broadcast = "enabled"    # multicasts to WLED's default group 239.0.0.1:11988
+# broadcast = "192.168.1.50"        # or target one device by unicast instead
+rate_hz = 50.0
+```
+
+Pure stdlib UDP — no extra dependency. Every other scene type sends
+nothing (there's no music feature stream to synthesize from).
+
+### Mode 1 — `listen` (control surface in)
+
+Presents c64cast **as** a virtual WLED device: it advertises itself over
+mDNS (`_wled._tcp`, via `zeroconf`) and serves a subset of the WLED JSON
+HTTP/WS API, so the official WLED mobile/web app, `python-wled`, or Home
+Assistant's WLED integration can discover and drive it like any real WLED
+controller. Requires the `wled` extra (`zeroconf` + `fastapi` + `uvicorn`).
+
+```toml
+[wled]
+listen = "enabled"       # binds the WLED JSON API on 0.0.0.0:8080
+name = "c64cast"         # shown in the WLED app's device list
+```
+
+What each WLED control maps to:
+
+| WLED app control       | c64cast effect                                                                 |
+|-------------------------|--------------------------------------------------------------------------------|
+| Power on/off            | Pause / resume the playlist                                                    |
+| Brightness               | Real dim of the C64 picture (independent of power — `0` is fully black but does **not** pause) |
+| Effect dropdown          | Jump to the matching scene (by `name`)                                         |
+| Palette dropdown         | The current scene's `[color].palette_mode`                                     |
+| Color picker (up to 3)   | Forced-palette remap to the nearest C64 colors (mcm/mhires only)                |
+| Speed (`sx`) / Intensity (`ix`) sliders | Sweep the current scene's live params (generator scale/speed, effect intensity, scope trace gain — whichever the scene exposes) |
+| Presets                  | Capture/recall scene + sliders + palette/colors + power/brightness in one tap   |
+
+Scenes/overlays that can't act on a given control (e.g. a `blank` title
+card has no palette to pick) simply no-op on it. c64cast's own control
+page at `http://<host>:8080/` (opened in a plain browser, no app needed)
+mirrors the same controls but **grays out** the ones that don't apply to
+the current scene, and streams live state over the same `/ws` WebSocket
+real WLED clients use. In ensemble mode, one WLED segment is exposed per
+system (segment *i* ↔ the *i*-th system).
+
+See [`wled-control.toml`](../config/examples/wled-control.toml) for a
+runnable multi-scene demo covering every control.
+
+### Mode 2 — pixel sink (`wled` scene)
+
+The C64 **as** a virtual WLED LED matrix — pixels flow in rather than
+control commands, so this is the odd one out of the three (a scene, not
+a `[wled]` field). See [`type = "wled"`](#type--wled) above; it's just a
+`[[scenes]]` block with `type = "wled"`.
+The WLED mobile app is a *controller* and can't emit a pixel stream, so
+drive this with a real realtime sender: LedFx, xLights, **Jinx!**,
+**Glediator**, another WLED device with sync enabled, or
+[`scripts/diags/wled_pixel_sender.py`](../scripts/diags/wled_pixel_sender.py)
+if you just want to see it work.
+
+### Caveats
+
+* A device or app dropdown/state can lag by a poll interval; see
+  ["WLED presets: cross-scene recall from the third-party app is
+  best-effort"](caveats.md#wled-presets-cross-scene-recall-from-the-third-party-app-is-best-effort)
+  and ["WLED pixel sink (`wled` scene) needs an external
+  sender"](caveats.md#wled-pixel-sink-wled-scene-needs-an-external-sender)
+  in [caveats.md](caveats.md) for the details.
+* Modes 1 and 3 can run at the same time as any scene (they're control-
+  plane/broadcast concerns); Mode 2 is itself a scene type and occupies
+  a playlist slot like any other source.

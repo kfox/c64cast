@@ -41,6 +41,8 @@ scenes and overlays.
 | Run a native `.prg`/`.crt` game or demo | [`scene-launcher.toml`](config/examples/scene-launcher.toml)           | [Scenes](docs/usage.md#scenes) |
 | An info board (clock/weather/RSS)   | [`overlay-clock.toml`](config/examples/overlay-clock.toml)                 | [Overlays](docs/usage.md#overlays) |
 | Drive multiple C64s as one video wall | [`ensemble/master.toml`](config/examples/ensemble/master.toml)          | [Ensemble mode](docs/usage.md#ensemble-mode-multi-system) |
+| Make the C64 a WLED LED matrix       | [`scene-wled.toml`](config/examples/scene-wled.toml)                       | [WLED bridge](docs/usage.md#wled-bridge) |
+| Control c64cast from the WLED app    | [`wled-control.toml`](config/examples/wled-control.toml)                   | [WLED bridge](docs/usage.md#wled-bridge) |
 
 See [`config/examples/README.md`](config/examples/README.md) for the
 full demo index (one TOML per scene type and per overlay).
@@ -92,10 +94,13 @@ hand gestures (`vision` extra), a FastAPI control plane (`/pause`,
 config.
 
 **WLED bridge** — interoperate with the [WLED](https://kno.wled.ge/) LED
-ecosystem in both directions: drive real LED matrices *from* the C64's SID
-with no microphone (audio-sync broadcast), present c64cast *as* a virtual WLED
-device the WLED app / Home Assistant can discover and control, and turn the
-C64 *into* a virtual LED matrix that LedFx / xLights stream live pixels to.
+ecosystem in three directions, all under one `[wled]` config section: drive
+real LED matrices *from* the C64's SID with no microphone (audio-sync
+broadcast), present c64cast *as* a virtual WLED device the WLED app / Home
+Assistant can discover and control (effects ↔ scenes, sliders ↔ live params,
+presets), and turn the C64 *into* a virtual LED matrix that LedFx / xLights
+stream live pixels to. See [WLED bridge](docs/usage.md#wled-bridge) for the
+full reference.
 
 **Quick playback** — skip the config file entirely and pass media straight
 on the command line: `c64cast clip.mp4 tune.sid pics/` plays each in turn.
@@ -302,6 +307,10 @@ Depending on how you use it, you'll also want some of these things:
 * An HDMI capture device if you want to capture output directly from a
   U64 or C64 equipped with a Kawari Large. Example capture devices include
   the Elgato Cam Link 4K or the Genki ShadowCast.
+* A [WLED](https://kno.wled.ge/) device (or a WLED-ecosystem sender like
+  LedFx/xLights) on the same LAN if you want to use the WLED bridge in
+  any direction — none of this is required for the core streaming
+  experience.
 
 There is no software emulator path for the *streaming* side — c64cast
 writes directly to U64 memory/registers over the Ultimate DMA Service
