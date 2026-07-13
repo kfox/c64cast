@@ -1474,12 +1474,13 @@ class ColorCfg:
     force_palette: bool = field(
         default=False,
         metadata={
-            "help": "EXTREME forced-palette remap for video + slideshow "
-            "scenes (mcm/mhires): pre-scan the source, k-means it into N "
-            "clusters, and map each cluster to a DISTINCT C64 color so all "
-            "N colors are used. Deliberate false-color (NOT faithful) — "
-            "off by default; also reachable via the SHIFT cycle's "
-            "'percell+forced' stop once enabled."
+            "help": "EXTREME forced-palette remap (mcm/mhires): k-means the "
+            "source into N clusters and map each to a DISTINCT C64 color so "
+            "all N colors are used. Pre-scanned for video + slideshow; adapts "
+            "live (rolling, warm-start + hysteresis) for webcam/wled/generative. "
+            "Deliberate false-color (NOT faithful) — off by default; also "
+            "reachable via the SHIFT cycle's 'percell+forced' stop once enabled. "
+            "Tip: `--suggest-palette FILE` ranks a good force_palette_colors set."
         },
     )
     force_palette_colors: int | list[int | str] = field(
@@ -3843,7 +3844,7 @@ def build_scene(
                     name,
                 )
             scene_audio = None
-        scene = WebcamScene(api, scene_audio, mode, source, cfg.audio, name)
+        scene = WebcamScene(api, scene_audio, mode, source, cfg.audio, name, color=cfg.color)
         if s.target_fps is None:
             fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
             if fps is not None:
@@ -4065,7 +4066,7 @@ def build_scene(
                 reactive=s.reactive,
                 sid_model=resolve_sid_model_cfg(cfg),
             )
-            scene = SourceScene(api, None, mode, gen, audio_src, name)
+            scene = SourceScene(api, None, mode, gen, audio_src, name, color=cfg.color)
             # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at
             # full system rate that competes with the SID player's per-frame
             # PLAY IRQ for the bus. Default such scenes to half-rate (like
@@ -4097,7 +4098,7 @@ def build_scene(
             else:
                 # "none", or "mic" with audio disabled → silence.
                 audio_src = NullAudioSource()
-            scene = SourceScene(api, scene_audio, mode, gen, audio_src, name)
+            scene = SourceScene(api, scene_audio, mode, gen, audio_src, name, color=cfg.color)
             # A mic-source generative scene is digitized-audio-capable like
             # webcam/video, so it gets the same bitmap frame-push caps (20 fps
             # while the DAC streams, half rate otherwise). The "none" source
@@ -4122,7 +4123,7 @@ def build_scene(
         )
         wled_source = WLEDSource(s.sink_width, s.sink_height)
         name = s.name or "WLED sink"
-        scene = SourceScene(api, None, mode, wled_source, NullAudioSource(), name)
+        scene = SourceScene(api, None, mode, wled_source, NullAudioSource(), name, color=cfg.color)
         # Bitmap displays push a full ~9-10 KB frame per update; default to
         # half rate like the other frame scenes (an explicit target_fps, applied
         # at the end of build_scene, still wins).

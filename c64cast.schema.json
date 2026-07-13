@@ -568,7 +568,7 @@
         },
         "force_palette": {
           "type": "boolean",
-          "description": "EXTREME forced-palette remap for video + slideshow scenes (mcm/mhires): pre-scan the source, k-means it into N clusters, and map each cluster to a DISTINCT C64 color so all N colors are used. Deliberate false-color (NOT faithful) \u2014 off by default; also reachable via the SHIFT cycle's 'percell+forced' stop once enabled.",
+          "description": "EXTREME forced-palette remap (mcm/mhires): k-means the source into N clusters and map each to a DISTINCT C64 color so all N colors are used. Pre-scanned for video + slideshow; adapts live (rolling, warm-start + hysteresis) for webcam/wled/generative. Deliberate false-color (NOT faithful) \u2014 off by default; also reachable via the SHIFT cycle's 'percell+forced' stop once enabled. Tip: `--suggest-palette FILE` ranks a good force_palette_colors set.",
           "default": false
         },
         "force_palette_colors": {

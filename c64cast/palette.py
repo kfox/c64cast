@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -939,6 +940,154 @@ class ColorMapAccumulator:
         d = (diff * diff).sum(axis=2)  # (bins³, k)
         nearest = d.argmin(axis=1)  # (bins³,)
         return assigned[nearest].reshape(bins, bins, bins)
+
+
+# Rolling (live-source) force_palette tuning. The window holds ~this many
+# per-frame Lab blocks; at the worker's ~1 Hz sampling that's a ~30 s memory,
+# and 30 × _FORCE_PALETTE_PER_FRAME ≈ the one-shot 60k cap. ROLLING_HYSTERESIS
+# is the fractional Lab-error improvement the OPTIMAL cluster→C64-index bijection
+# must beat the previous one by before the palette re-assigns (stability bias,
+# same idea as the mhires percell hysteresis).
+_ROLLING_WINDOW_BLOCKS = 30
+ROLLING_HYSTERESIS = 0.1
+
+
+class RollingColorMapAccumulator:
+    """Sliding-window sibling of `ColorMapAccumulator` for LIVE sources (webcam,
+    wled sink, generative) that can't pre-scan a whole file up front.
+
+    Keeps a bounded deque of recent per-frame Lab sample blocks and re-derives a
+    `ColorMap` on demand, with two stability treatments so the forced palette
+    adapts to changing content WITHOUT popping — the real problem with a live
+    force_palette (CPU is a non-issue at ~1 Hz re-bakes on a worker thread):
+
+      * **warm-start k-means** — seed each bake from the previous centers
+        (`cv2.KMEANS_USE_INITIAL_LABELS`, initial labels = nearest previous
+        center per sample) so cluster identity stays stable frame-to-frame
+        instead of being re-randomized by `++` seeding;
+      * **assignment hysteresis** — keep the previous cluster→C64-index bijection
+        unless the optimal one improves total Lab error by more than
+        `ROLLING_HYSTERESIS`, so a tiny center drift doesn't reshuffle which C64
+        colors the source maps onto (mirrors the percell hysteresis philosophy).
+
+    `add(img)` folds one frame (the deque evicts the oldest past the window, so
+    the map tracks the last ~window frames). `clear()` drops the window + warm-
+    start state — call on a detected shot cut so the new shot's palette is
+    derived fresh (and the swap is hidden by the cut). `result()` bakes the
+    current `ColorMap` (None until there's something to cluster). Not
+    thread-safe: `RollingForcePalette` owns one on a single worker thread."""
+
+    def __init__(
+        self,
+        n_colors: int = 16,
+        indices: list[int] | None = None,
+        window_blocks: int = _ROLLING_WINDOW_BLOCKS,
+    ):
+        if indices:
+            self._candidates = [int(i) & 0x0F for i in indices]
+            self._k = len(self._candidates)
+        else:
+            self._candidates = list(range(16))
+            self._k = int(np.clip(n_colors, 2, 16))
+        self._blocks: deque[np.ndarray] = deque(maxlen=max(1, window_blocks))
+        self._prev_centers: np.ndarray | None = None  # (k, 3) warm-start seed
+        self._prev_col: np.ndarray | None = None  # (k,) previous cluster→candidate-pos map
+
+    def add(self, img_bgr: np.ndarray) -> None:
+        """Fold one frame's pixels into the rolling Lab window (downscale → Lab →
+        subsample to ≤ _FORCE_PALETTE_PER_FRAME points; the deque bounds total)."""
+        h, w = img_bgr.shape[:2]
+        if w > _FORCE_PALETTE_SCAN_WIDTH:
+            new_h = max(1, h * _FORCE_PALETTE_SCAN_WIDTH // w)
+            small = cv2.resize(
+                img_bgr, (_FORCE_PALETTE_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA
+            )
+        else:
+            small = img_bgr
+        lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).reshape(-1, 3)
+        n = lab.shape[0]
+        if n > _FORCE_PALETTE_PER_FRAME:
+            stride = max(1, n // _FORCE_PALETTE_PER_FRAME)
+            lab = lab[::stride]
+        self._blocks.append(lab.astype(np.float32))
+
+    def clear(self) -> None:
+        """Drop the sample window + warm-start/hysteresis state (shot-cut reset)."""
+        self._blocks.clear()
+        self._prev_centers = None
+        self._prev_col = None
+
+    def _kmeans(self, samples: np.ndarray, k: int) -> np.ndarray:
+        """k-means centers (k, 3) Lab — warm-started from the previous bake's
+        centers when the cluster count matches, else `++`-seeded."""
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+        prev = self._prev_centers
+        if prev is not None and prev.shape[0] == k:
+            # Initial labels = nearest previous center per sample (expansion-trick
+            # distance, no (N, k, 3) tensor). Warm-start keeps cluster i ≈ the
+            # previous cluster i, which is what makes the bijection hysteresis
+            # below meaningful across bakes.
+            px_normsq = (samples**2).sum(axis=1)
+            cross = samples @ prev.T  # (N, k)
+            prev_normsq = (prev**2).sum(axis=1)
+            d = px_normsq[:, None] - 2.0 * cross + prev_normsq[None, :]
+            labels0 = d.argmin(axis=1).astype(np.int32).reshape(-1, 1)
+            _c, _l, centers = cv2.kmeans(
+                samples, k, labels0, criteria, 1, cv2.KMEANS_USE_INITIAL_LABELS
+            )
+        else:
+            _c, _l, centers = cv2.kmeans(
+                samples,
+                k,
+                None,  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+                criteria,
+                3,
+                cv2.KMEANS_PP_CENTERS,
+            )
+        return centers.astype(np.float32)
+
+    def _bijection(self, centers: np.ndarray) -> np.ndarray:
+        """Cluster→candidate-position assignment (k,), min-Lab-error Hungarian,
+        but sticky: keep the previous bijection unless the optimal one beats it
+        by more than ROLLING_HYSTERESIS in total Lab error."""
+        cand_lab = _PALETTE_LAB[self._candidates]  # (C, 3)
+        diff = centers[:, None, :] - cand_lab[None, :, :]  # (k, C, 3)
+        cost = (diff * diff).sum(axis=2)  # (k, C)
+        k, c = centers.shape[0], len(self._candidates)
+        if k < c:  # pad to square
+            square = np.zeros((c, c), dtype=np.float32)
+            square[:k] = cost
+            optimal = _hungarian(square)[:k]
+        else:
+            optimal = _hungarian(cost)
+        prev = self._prev_col
+        if prev is not None and prev.shape[0] == k:
+            rows = np.arange(k)
+            reuse_cost = float(cost[rows, prev].sum())
+            opt_cost = float(cost[rows, optimal].sum())
+            # Switch only if the optimal bijection improves by more than the
+            # margin; otherwise the previous C64-color mapping stays (no pop).
+            if opt_cost >= reuse_cost * (1.0 - ROLLING_HYSTERESIS):
+                return prev
+        return optimal
+
+    def result(self) -> ColorMap | None:
+        """Bake the current rolling `ColorMap` (None until there's a sample)."""
+        if not self._blocks:
+            return None
+        samples = np.concatenate(self._blocks)
+        uniq = np.unique(samples, axis=0)
+        k = int(min(self._k, uniq.shape[0]))
+        if k < 1:
+            return None
+        centers = self._kmeans(samples, k)
+        assign_col = self._bijection(centers)
+        self._prev_centers = centers
+        self._prev_col = assign_col
+        assigned = np.array([self._candidates[j] for j in assign_col], dtype=np.uint8)
+        lut = ColorMapAccumulator._bake_lut(centers, assigned)
+        used = tuple(int(x) for x in np.unique(assigned))
+        return ColorMap(lut=lut, shift=_FORCE_PALETTE_SHIFT, indices=used)
 
 
 def build_fixed_color_map(indices: Sequence[int]) -> ColorMap | None:

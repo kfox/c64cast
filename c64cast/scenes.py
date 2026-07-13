@@ -46,6 +46,7 @@ from .c64 import CIA1, SCREEN
 from .modes import BitmapDisplayMode, DisplayMode
 from .palette import ColorFitAccumulator, ColorMapAccumulator
 from .profiler import get_profiler
+from .rolling_palette import RollingForcePalette
 from .sampler import UltimateAudioSampler
 from .video import (
     AVFileSource,
@@ -333,6 +334,39 @@ class Scene:
                 log.exception("display_mode.teardown failed; continuing")
 
 
+def _maybe_start_rolling_palette(
+    scene: Scene, color: ColorCfg | None, display_mode: DisplayMode | None
+) -> RollingForcePalette | None:
+    """Start a live rolling force_palette for a scene that can't pre-scan (webcam,
+    wled sink, generative), when `[color].force_palette` is on AND the mode
+    actually applies it (`_force_palette`, i.e. mcm/mhires). Returns the started
+    driver, or None when it doesn't apply (a no-op on char/blank/hires modes)."""
+    if color is None or not getattr(display_mode, "_force_palette", False):
+        return None
+    from .config import resolved_force_palette
+
+    n_colors, indices = resolved_force_palette(color)
+    fp = RollingForcePalette(n_colors=n_colors, indices=indices)
+    fp.start()
+    log.info("%s: live rolling force_palette (adapts to the source over ~30s)", scene.name)
+    return fp
+
+
+def _apply_rolling_palette(
+    fp: RollingForcePalette | None, display_mode: DisplayMode | None, frame: np.ndarray
+) -> None:
+    """Feed the clean frame to the rolling driver and install any newly baked
+    map. Called each frame before quantization; cheap (the k-means runs on the
+    driver's worker thread, not here)."""
+    if fp is None or display_mode is None:
+        return
+    fp.submit_frame(frame)
+    cmap = fp.poll_colormap()
+    if cmap is not None:
+        display_mode.set_color_map(cmap)
+        log.debug("rolling force_palette → %d colors %s", len(cmap.indices), list(cmap.indices))
+
+
 class WebcamScene(Scene):
     """Live webcam scene optimized for low latency.
 
@@ -355,16 +389,24 @@ class WebcamScene(Scene):
         source: WebcamSource,
         audio_cfg: AudioCfg,
         name: str,
+        color: ColorCfg | None = None,
     ):
         super().__init__(api, audio, display_mode, name)
         self.source = source
         self.audio_cfg = audio_cfg
         self.start_time = 0.0
         self._frame_count = 0
+        # [color] drives the display-mode shaping at construction; here it also
+        # enables the LIVE rolling force_palette (a webcam can't pre-scan). None
+        # unless [color].force_palette is on AND the mode applies it — see
+        # _maybe_start_rolling_palette.
+        self._color = color
+        self._rolling_fp: RollingForcePalette | None = None
 
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
+        self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
         # The webcam mic path is always the 4-bit DAC streamer (the sampler is a
         # video-only backend), so narrow to AudioStreamer for start_mic.
         if isinstance(self.audio, AudioStreamer):
@@ -393,6 +435,10 @@ class WebcamScene(Scene):
             return False
         img = self._read_frame()
         if img is not None:
+            # Feed the clean (pre-annotation) frame to the rolling force_palette
+            # before quantization so it stats the shown picture, not the debug
+            # digits; installs any freshly baked map onto the display mode.
+            _apply_rolling_palette(self._rolling_fp, self.display_mode, img)
             if self.show_frame_numbers:
                 self._frame_count += 1
                 label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
@@ -405,6 +451,9 @@ class WebcamScene(Scene):
 
     def teardown(self) -> None:
         super().teardown()
+        if self._rolling_fp is not None:
+            self._rolling_fp.stop()
+            self._rolling_fp = None
         if self.audio:
             self.audio.stop()
 
@@ -512,12 +561,18 @@ class SourceScene(Scene):
         source: FrameSource,
         audio_source: AudioSource,
         name: str,
+        color: ColorCfg | None = None,
     ):
         super().__init__(api, audio, display_mode, name)
         self.source = source
         self.audio_source = audio_source
         self.start_time = 0.0
         self._frame_count = 0
+        # [color]: enables the LIVE rolling force_palette for this composable
+        # scene (webcam/wled sink/generative — none can pre-scan). None unless
+        # [color].force_palette is on AND the mode applies it.
+        self._color = color
+        self._rolling_fp: RollingForcePalette | None = None
 
     def competes_for_audio_lock(self) -> bool:
         # The audio building block decides: a mic/silent source doesn't claim
@@ -561,6 +616,10 @@ class SourceScene(Scene):
         ):
             self.api.invalidate_cache()
             self.display_mode.setup(self.api)
+        # Live rolling force_palette (after any display re-assert above so it
+        # installs onto the settled mode). No-op unless the mode applies it.
+        if not self.is_done:
+            self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
 
     def process_frame(self, current_time: float) -> bool:
         # setup() flips is_done when the audio source failed to start (e.g. a
@@ -581,6 +640,8 @@ class SourceScene(Scene):
         modulation = self.audio_source.features()
         frame = self.source.read(current_time - self.start_time, modulation)
         if frame is not None:
+            # Feed the clean frame to the rolling force_palette before quantization.
+            _apply_rolling_palette(self._rolling_fp, self.display_mode, frame)
             if self.show_frame_numbers:
                 self._frame_count += 1
                 label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
@@ -596,6 +657,9 @@ class SourceScene(Scene):
         # mirrors WebcamScene so audio.stop() latency doesn't pile on a still-
         # firing IRQ.
         super().teardown()
+        if self._rolling_fp is not None:
+            self._rolling_fp.stop()
+            self._rolling_fp = None
         try:
             self.audio_source.teardown()
         finally:

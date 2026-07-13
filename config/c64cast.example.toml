@@ -565,11 +565,13 @@ auto_fit_strength = 1.0
 # Everything above is faithful — pixels still map to their nearest C64 color, so
 # a source clustered in one gamut region (e.g. TRON = black + dark blue) leaves
 # most of the 16 colors unused and looks monochromatic. force_palette instead
-# pre-scans the source, k-means it into N clusters, and assigns each cluster to a
-# DISTINCT C64 color (optimal min-error bijection) so all N colors get used and
-# the assignment is consistent across the whole source (no flicker). Video +
-# slideshow only (needs a pre-scan), mcm/mhires only. Also reachable at runtime
-# via the SHIFT cycle's "percell+forced" stop once enabled.
+# k-means it into N clusters, and assigns each cluster to a DISTINCT C64 color
+# (optimal min-error bijection) so all N colors get used and the assignment is
+# consistent (no flicker). Pre-scanned for video + slideshow; for LIVE sources
+# that can't pre-scan (webcam, wled sink, generative) it adapts on a rolling
+# ~30 s window (warm-start + hysteresis so it re-composes only when the color set
+# really changes — no popping). mcm/mhires only. Also reachable at runtime via
+# the SHIFT cycle's "percell+forced" stop once enabled.
 force_palette = false
 # force_palette_colors: either an int count of distinct C64 colors to spread the
 # source across (2..16), OR an explicit list of colors to whitelist. List entries
