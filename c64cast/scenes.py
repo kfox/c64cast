@@ -266,6 +266,18 @@ class Scene:
         no music. SID-driven scenes override to expose their emulator state."""
         return None
 
+    @property
+    def wled_label(self) -> str:
+        """Stable, human label for the WLED effect list + preset-name defaults.
+        Defaults to the scene name. Scenes whose `name` tracks a *randomized*
+        asset (e.g. a waveform scene picking a random SID from a pool, whose
+        `name` becomes the currently-loaded tune) override this to a stable
+        pool-level label — so the WLED effect dropdown doesn't churn as the asset
+        rotates, and a saved preset doesn't falsely promise the one asset that
+        happened to be loaded when it was saved (recall re-picks a different
+        one)."""
+        return self.name
+
     def prepare_next(self) -> None:
         """Called by the Playlist right before the interstitial that
         precedes this scene is built. Randomized scenes override this to

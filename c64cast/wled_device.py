@@ -411,7 +411,11 @@ function nextFreeId() { let id = 1; while (presets[id]) id++; return id; }
 async function savePreset() {
   const nameEl = document.getElementById('presetName');
   const id = nextFreeId();
-  await post({psave: id, n: nameEl.value || ('Preset ' + id)});
+  // Omit `n` when blank so the server names it from the current scene's stable
+  // WLED label (a random-asset scene gets a pool name, not the loaded tune).
+  const body = {psave: id};
+  if (nameEl.value) body.n = nameEl.value;
+  await post(body);
   nameEl.value = '';
   setTimeout(async () => { await fetchPresets(); render(); }, 300);
 }
@@ -753,7 +757,9 @@ class WledBridge:
         """Shared WLED effect list = the first system's scene names (WLED has one
         global effect array). Never empty (WLED effect 0 must exist)."""
         scenes = self._systems[0][1].scenes
-        names = [s.name for s in scenes]
+        # `wled_label` is a stable, randomization-aware name (a random SID pool
+        # names itself as a pool, not the rotating current tune) — see Scene.
+        names = [getattr(s, "wled_label", None) or s.name for s in scenes]
         return names or ["Solid"]
 
     def effects(self) -> list[str]:
@@ -1082,11 +1088,24 @@ class WledBridge:
         any_playing = any(not pl.pause_event.is_set() for _, pl in self._systems)
         return {"n": name, "on": any_playing, "bri": self._global_bri, "seg": seg}
 
+    def _default_preset_name(self, pid: int) -> str:
+        """Name for a preset saved with no explicit `n` — the first system's
+        current-scene WLED label (randomization-aware, so a random-SID scene
+        yields a stable pool name, not the one tune loaded at save time), falling
+        back to a bare "Preset N"."""
+        pl = self._systems[0][1]
+        scene = pl.current
+        if scene is not None:
+            label = getattr(scene, "wled_label", None) or getattr(scene, "name", None)
+            if label:
+                return str(label)
+        return f"Preset {pid}"
+
     def _save_preset_locked(self, partial: Mapping[str, Any]) -> None:
         pid = int(partial.get("psave", 0))
         if pid < _PRESET_ID_MIN:
             pid = self._presets.next_free_id()
-        name = str(partial.get("n") or f"Preset {pid}")
+        name = str(partial.get("n") or self._default_preset_name(pid))
         self._presets.save(pid, self._snapshot_preset(name))
         self._active_preset = pid
 

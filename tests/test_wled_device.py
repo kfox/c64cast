@@ -188,6 +188,13 @@ class BridgeReadTests(unittest.TestCase):
         bridge, _ = _bridge()
         self.assertEqual(bridge.effects(), ["Waveform", "Plasma", "Tunnel"])
 
+    def test_effects_prefer_wled_label_when_present(self):
+        # A scene with a stable randomization-aware `wled_label` (e.g. a random
+        # SID pool) shows that in the effect list rather than its rotating name.
+        bridge, pl = _bridge()
+        pl.scenes[0].wled_label = "SID: random pool"  # type: ignore[attr-defined]
+        self.assertEqual(bridge.effects(), ["SID: random pool", "Plasma", "Tunnel"])
+
     def test_state_shape_one_segment_per_system(self):
         bridge, _ = _bridge()
         state = bridge.state_dict()
@@ -648,6 +655,18 @@ class BridgePresetTests(unittest.TestCase):
     def test_psave_auto_picks_id_when_zero(self):
         self.bridge.apply({"psave": 0, "n": "Auto"})
         self.assertIn("1", self.bridge.presets_json())
+
+    def test_psave_default_name_falls_back_to_scene_name(self):
+        # No explicit `n` → the current scene's name (fake scene[0] = "Waveform").
+        self.bridge.apply({"psave": 1})
+        self.assertEqual(self.bridge.presets_json()["1"]["n"], "Waveform")
+
+    def test_psave_default_name_uses_wled_label_for_random_pool(self):
+        # No explicit `n` on a randomized-asset scene → the stable pool label, so
+        # the preset doesn't promise the one tune that was loaded at save time.
+        cast("_FakeScene", self.pl.current).wled_label = "SID: random pool"  # type: ignore[attr-defined]
+        self.bridge.apply({"psave": 1})
+        self.assertEqual(self.bridge.presets_json()["1"]["n"], "SID: random pool")
 
     def test_ps_recall_forces_unchanged_palette(self):
         # A preset storing pal=2 (no col). Recall must apply it EVEN WHEN the echo
