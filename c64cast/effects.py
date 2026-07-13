@@ -214,3 +214,39 @@ class RgbShiftEffect(FrameEffect):
         out[..., 0] = np.roll(frame[..., 0], shift, axis=1)
         out[..., 2] = np.roll(frame[..., 2], -shift, axis=1)
         return out
+
+
+@register("blur")
+class BlurEffect(FrameEffect):
+    """Gaussian blur (`cv2.GaussianBlur`) — the first blur primitive in the
+    codebase, added as an enabler for future dot/trail-family generator ports
+    (WLED leans on `SEGMENT.blur` throughout its 2D effects).
+
+    Unlike `pulse`/`rgb_shift`, this is NOT reactive-only: the default
+    `intensity` is 0.0, so it's a no-op on any scene that doesn't explicitly
+    set a nonzero value — the "identity without modulation" guarantee comes
+    from the base value, not from `modulation is None`. A reactive scene adds
+    an onset kick on top of the configured base, the same "base + kick" shape
+    `trails` uses. Stateless (no `reset()` override needed).
+
+    `intensity` is used directly as `cv2.GaussianBlur`'s `sigmaX` (kernel size
+    is auto-derived by cv2 from sigma) — named `intensity` rather than a
+    blur-specific name like `radius` so it lands on the existing WLED/MIDI
+    `effect.intensity` live-param convention with no bridge code changes."""
+
+    _ONSET_KICK = 3.0  # extra sigma at a full transient, on top of the base
+
+    LIVE_PARAMS = {"intensity": (0.0, 8.0)}
+
+    def __init__(self, intensity: float = 0.0):
+        self.intensity = float(intensity)
+
+    def apply(
+        self, frame: np.ndarray, t: float, modulation: MusicModulation | None = None
+    ) -> np.ndarray:
+        sigma = self.intensity
+        if modulation is not None:
+            sigma += self._ONSET_KICK * modulation.onset
+        if sigma <= 0.05:
+            return frame
+        return cv2.GaussianBlur(frame, (0, 0), sigmaX=sigma)

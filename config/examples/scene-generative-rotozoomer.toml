@@ -1,0 +1,33 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Rotozoomer" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2Dplasmarotozoom`). A
+# static XOR bit-pattern texture, endlessly rotated and zoomed through an
+# affine transform. WLED's rotation angle is a running accumulator tied to
+# its own frame cadence; this port redefines it as a closed form linear in
+# the scene clock (`angle(t) = -speed * t`) so it stays a pure, deterministic
+# function of time like every other generator here.
+#
+# Live knobs: `speed` (sx) sets rotation rate, `scale` (ix) sets zoom.
+#
+# `effect = "blur"` (the new Gaussian-blur effect, see effect-trails.toml for
+# the general pattern) pairs nicely to soften the texture's hard edges, but
+# blur ships defaulting to `intensity = 0.0` (no-op) and this generator's own
+# `scale` live param shadows the ix slider blur would otherwise use — see
+# wled-control.toml's "Metaballs" scene (which has no `scale`/`intensity` of
+# its own) for a config where the ix slider actually reaches blur live.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-rotozoomer.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Rotozoomer"
+source = "rotozoomer"
+display = "mhires"
+duration_s = 30.0

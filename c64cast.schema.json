@@ -1183,7 +1183,8 @@
             "enum": [
               "trails",
               "pulse",
-              "rgb_shift"
+              "rgb_shift",
+              "blur"
             ]
           },
           "pre_emphasis": {
@@ -2184,7 +2185,10 @@
               "halo",
               "epicycle",
               "hopalong",
-              "rorschach"
+              "rorschach",
+              "hiphotic",
+              "metaballs",
+              "rotozoomer"
             ],
             "default": "plasma"
           },

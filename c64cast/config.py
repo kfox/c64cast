@@ -109,8 +109,11 @@ _GENERATIVE_SOURCE_CHOICES = (
     "epicycle",
     "hopalong",
     "rorschach",
+    "hiphotic",
+    "metaballs",
+    "rotozoomer",
 )
-_EFFECT_CHOICES = ("trails", "pulse", "rgb_shift")
+_EFFECT_CHOICES = ("trails", "pulse", "rgb_shift", "blur")
 # How a slideshow image is fit to the C64 aspect before the display mode
 # downscales it. See scenes._apply_aspect.
 _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")

@@ -1,0 +1,28 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Metaballs" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2Dmetaballs`). Three
+# moving "ball" centers blend into a classic inverse-distance field — organic
+# blobs that merge and split as they drift. All 3 ball paths are closed-form
+# functions of the scene clock (one is a true Lissajous sine pair, matching
+# WLED's own `beatsin8`; the other two substitute a pure-trig "wander" for
+# WLED's Perlin-noise point samples — a documented simplification, this
+# codebase has no noise primitive).
+#
+# Live knob: `speed` (the sx slider over the WLED bridge / MIDI) scales the
+# time rate all three balls move at.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-metaballs.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Metaballs"
+source = "metaballs"
+display = "mhires"
+duration_s = 30.0

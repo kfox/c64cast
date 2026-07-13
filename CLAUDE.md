@@ -107,10 +107,10 @@ c64cast/
 ├── frame_source.py   FrameSource protocol + BaseFrameSource (read(t, mod))
 ├── generators.py     GenerativeSource registry (plasma, tunnel, fire,
 │                     mandelbrot, moire2, halo, epicycle, hopalong,
-│                     rorschach); pure-numpy, deterministic-in-t; reactive
-│                     when fed a MusicModulation
-├── effects.py        FrameEffect registry (trails, pulse, rgb_shift) — pre-
-│                     quantization frame xform; reactive when fed a MusicModulation
+│                     rorschach, hiphotic, metaballs, rotozoomer); pure-numpy,
+│                     deterministic-in-t; reactive when fed a MusicModulation
+├── effects.py        FrameEffect registry (trails, pulse, rgb_shift, blur) —
+│                     pre-quantization frame xform; reactive when fed a MusicModulation
 ├── audio_source.py   AudioSource registry (Null/Mic/SidFile) for SourceScene
 ├── modulation.py     MusicModulation: frozen music-feature struct (level/onset/
 │                     beat_phase/bpm/per-voice freq+gate) driving reactive visuals
