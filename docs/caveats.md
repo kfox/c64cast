@@ -690,6 +690,26 @@ packet, then holds the last frame received.
   format LedFx and xLights can both emit as DDP instead, so DDP + WLED-realtime
   cover the ecosystem for far less code.
 
+## WLED presets: cross-scene recall from the third-party app is best-effort
+
+WLED "presets" (bridge Mode 1) capture the current look and recall it in one tap.
+Recall is exact for a **same-scene** preset (the scene already live, params apply
+immediately). For a preset that targets a **different** scene, there's a timing
+gap: the scene jump isn't instant (the target scene tears down + sets up), so the
+stored sliders/palette/colors applied at recall time land on the *outgoing* scene
+and are lost when the new one comes up.
+
+c64cast's own `/` control page handles this correctly — it re-fires the preset
+over its WebSocket once the target scene is live, so the params land on the new
+scene (this is why the `/` page uses `/ws` rather than polling). But the
+**third-party WLED app** just POSTs `{ps:N}` and can't orchestrate that wait, so
+a cross-scene recall from the app is **best-effort**: the scene jumps and power/
+brightness restore, but the sliders/palette/colors may not stick. There is
+deliberately **no server-side polling/daemon thread** to paper over this (it was
+considered and dropped as the plan's flagged risk) — recall the preset from the
+`/` page for a perfect cross-scene restore, or drive same-scene presets from the
+app.
+
 ## `backgrounds.py` constants are screen codes, not PETSCII
 
 PETSCII and the VIC screen-code encoding diverge above 0x40 — e.g. the

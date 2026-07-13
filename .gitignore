@@ -45,6 +45,10 @@ scripts/diags/out/
 # --calibrate-dac; machine-specific, not source). Only the README is tracked.
 calibration/*
 !calibration/README.md
+# WLED presets captured from the WLED app / the `/` control page (Mode 1);
+# machine/taste-specific, not source. Only the README is tracked.
+presets/*
+!presets/README.md
 # legacy: local stream recordings outside assets/
 recordings/
 *.mp4

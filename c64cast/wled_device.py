@@ -62,13 +62,19 @@ piece, mirroring the control-plane pattern.
 """
 
 import asyncio
+import contextlib
 import hashlib
+import json
 import logging
+import os
+import re
 import socket
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from .modes import PALETTE_MODES
@@ -150,7 +156,13 @@ _INDEX_HTML = """<!doctype html>
   input[type=range] { flex: 1; }
   select { flex: 1; background: #222; color: #eee; border: 1px solid #444;
            padding: 0.3em; }
+  input[type=text] { flex: 1; background: #222; color: #eee;
+                     border: 1px solid #444; padding: 0.3em; }
+  button { background: #333; color: #eee; border: 1px solid #555;
+           padding: 0.35em 0.8em; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #444; }
   .segment { border-top: 1px solid #333; padding-top: 0.5em; }
+  #presets { border-top: 1px solid #333; margin-top: 1.5em; padding-top: 0.5em; }
   /* A control the current scene can't act on: dimmed + non-interactive, with a
      tooltip explaining why (the input itself is also set .disabled). */
   .cap-off { opacity: 0.4; }
@@ -168,6 +180,18 @@ _INDEX_HTML = """<!doctype html>
   <input type="range" id="bri" min="0" max="255">
 </div>
 <div id="segments"></div>
+<div id="presets">
+  <h2>Presets</h2>
+  <div class="row">
+    <select id="presetSel"></select>
+    <button id="presetApply">Apply</button>
+    <button id="presetDelete">Delete</button>
+  </div>
+  <div class="row">
+    <input type="text" id="presetName" placeholder="New preset name">
+    <button id="presetSave">Save</button>
+  </div>
+</div>
 <script>
 async function post(body) {
   await fetch('/json/state', {
@@ -228,9 +252,11 @@ function segmentEl(i, seg, effects, palettes) {
   // => assume everything works, so we never over-disable.
   const caps = seg.c64 || {pal: true, col: true, sx: true, ix: true};
 
-  // Scene is always live; Palette grays out when the mode can't swap it.
+  // Scene is always live; Palette grays out when the mode can't swap it. The
+  // WS push delivers the new scene's state (incl. capability hints) once the
+  // jump lands, so no manual refresh burst is needed.
   wrap.appendChild(selectRow('Scene', effects, seg.fx,
-    (v) => { post({seg: [{id: i, fx: v}]}); scheduleRefresh(); }));
+    (v) => post({seg: [{id: i, fx: v}]})));
   wrap.appendChild(selectRow('Palette', palettes, seg.pal,
     (v) => post({seg: [{id: i, pal: v}]}), !caps.pal));
 
@@ -279,34 +305,157 @@ function segmentEl(i, seg, effects, palettes) {
   return wrap;
 }
 
-async function refresh() {
+// Live state arrives over WebSocket (/ws) — the same channel real WLED clients
+// use — so scene changes, capability hints, and brightness reflect promptly with
+// no polling. effects/palettes/presets aren't in the WS frame; they come from a
+// one-shot /json + /presets.json fetch on (re)connect and are cached for render.
+let effects = [];
+let palettes = [];
+let presets = {};        // {"1": {...}, ...} from /presets.json
+let lastState = null;
+let ws = null;
+let pollTimer = null;    // fallback poll while WS is unavailable
+// A preset recall that needs to re-fire once the target scene is live (so its
+// sliders/palette/color land on the new scene, not the outgoing one).
+let pendingRecall = null;
+
+function render() {
+  // Don't rebuild while the user is interacting with a control (would yank a
+  // slider mid-drag or clobber a mid-selection <select>).
   const active = document.activeElement;
   if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) return;
-  const r = await fetch('/json');
-  const d = await r.json();
-  document.getElementById('on').checked = d.state.on;
-  document.getElementById('bri').value = d.state.bri;
+  if (!lastState) return;
+  document.getElementById('on').checked = lastState.on;
+  document.getElementById('bri').value = lastState.bri;
   const segsEl = document.getElementById('segments');
   segsEl.innerHTML = '';
-  d.state.seg.forEach((seg, i) => segsEl.appendChild(segmentEl(i, seg, d.effects, d.palettes)));
+  lastState.seg.forEach((seg, i) => segsEl.appendChild(segmentEl(i, seg, effects, palettes)));
+  renderPresets();
 }
 
-function scheduleRefresh() {
-  // A scene jump isn't instant (the target scene tears down + sets up), so an
-  // immediate refresh would still read the outgoing scene's capability hints.
-  // Poll a few times to pick up the new scene once it's live, ahead of the
-  // steady 4s tick; refresh() is a no-op rebuild if nothing changed yet.
-  [600, 1500, 3000].forEach((ms) => setTimeout(refresh, ms));
+function renderPresets() {
+  const sel = document.getElementById('presetSel');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  const ids = Object.keys(presets).filter((k) => k !== '0')
+    .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+  if (!ids.length) {
+    const opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '(no presets)';
+    sel.appendChild(opt);
+  }
+  ids.forEach((id) => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = presets[id].n || ('Preset ' + id);
+    sel.appendChild(opt);
+  });
+  if (prev) sel.value = prev;
 }
+
+function applyState(state) {
+  lastState = state;
+  maybeReplayRecall(state);
+  render();
+}
+
+function maybeReplayRecall(state) {
+  if (!pendingRecall) return;
+  if (Date.now() > pendingRecall.expires) { pendingRecall = null; return; }
+  // Ready once every targeted segment's fx equals the preset's fx — i.e. the
+  // target scene(s) are live. Then re-fire the preset: fx now matches (no
+  // re-jump), so this simply re-applies sliders + forces palette/color onto the
+  // now-live scene, which is what makes a cross-scene recall land perfectly.
+  const ready = Object.keys(pendingRecall.targetFx).every((id) => {
+    const seg = state.seg[parseInt(id, 10)];
+    return seg && seg.fx === pendingRecall.targetFx[id];
+  });
+  if (ready) {
+    const pid = pendingRecall.pid;
+    pendingRecall = null;
+    post({ps: pid});
+  }
+}
+
+async function fetchMeta() {
+  try {
+    const r = await fetch('/json');
+    const d = await r.json();
+    effects = d.effects || [];
+    palettes = d.palettes || [];
+    if (d.state) lastState = d.state;
+  } catch (e) { /* offline; keep last */ }
+  await fetchPresets();
+  render();
+}
+
+async function fetchPresets() {
+  try { const r = await fetch('/presets.json'); presets = await r.json(); }
+  catch (e) { presets = {}; }
+}
+
+function applyPreset() {
+  const sel = document.getElementById('presetSel');
+  const pid = parseInt(sel.value, 10);
+  if (!pid || !presets[pid]) return;
+  post({ps: pid});
+  // Arm the cross-scene replay: remember which fx each targeted segment should
+  // reach, so we can re-fire once the scene is live (see maybeReplayRecall).
+  const targetFx = {};
+  (presets[pid].seg || []).forEach((s) => { targetFx[s.id != null ? s.id : 0] = s.fx; });
+  pendingRecall = {pid: pid, targetFx: targetFx, expires: Date.now() + 8000};
+}
+
+function nextFreeId() { let id = 1; while (presets[id]) id++; return id; }
+
+async function savePreset() {
+  const nameEl = document.getElementById('presetName');
+  const id = nextFreeId();
+  // Omit `n` when blank so the server names it from the current scene's stable
+  // WLED label (a random-asset scene gets a pool name, not the loaded tune).
+  const body = {psave: id};
+  if (nameEl.value) body.n = nameEl.value;
+  await post(body);
+  nameEl.value = '';
+  setTimeout(async () => { await fetchPresets(); render(); }, 300);
+}
+
+async function deletePreset() {
+  const pid = parseInt(document.getElementById('presetSel').value, 10);
+  if (!pid) return;
+  await post({pdel: pid});
+  setTimeout(async () => { await fetchPresets(); render(); }, 300);
+}
+
+function startWS() {
+  try {
+    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    ws = new WebSocket(scheme + location.host + '/ws');
+  } catch (e) { scheduleFallback(); return; }
+  ws.onopen = () => { stopFallback(); fetchMeta(); };
+  ws.onmessage = (ev) => {
+    let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+    if (d && d.state) applyState(d.state);
+  };
+  ws.onclose = () => { scheduleFallback(); setTimeout(startWS, 3000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+
+// While WS is down, poll /json so the page still works without websockets.
+function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(fetchMeta, 4000); }
+function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 document.getElementById('on').onchange = (e) => post({on: e.target.checked});
 // Master brightness → top-level `bri`, the same field the WLED app's own
-// brightness slider drives, so the two stay in sync (each reflects the other on
-// the next poll). A real screen dim; 0 = black, never a pause.
+// brightness slider drives, so the two stay in sync. A real screen dim; 0 =
+// black, never a pause.
 document.getElementById('bri').oninput = (e) => post({bri: parseInt(e.target.value, 10)});
+document.getElementById('presetApply').onclick = applyPreset;
+document.getElementById('presetSave').onclick = savePreset;
+document.getElementById('presetDelete').onclick = deletePreset;
 
-refresh();
-setInterval(refresh, 4000);
+fetchMeta();  // initial paint even before WS connects
+startWS();
 </script>
 </body>
 </html>
@@ -464,6 +613,104 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
     mode.set_palette_mode(api, "percell", force_palette=True)
 
 
+# Where WLED presets are persisted — one JSON file per device name. Repo-root
+# anchored like calibration/, gitignored (only presets/README.md is tracked).
+PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
+
+# WLED preset ids are 1..250; id 0 is the reserved empty slot and is never stored.
+_PRESET_ID_MIN = 1
+_PRESET_ID_MAX = 250
+
+
+def _sanitize_name(name: str) -> str:
+    """Filesystem-safe slug for a device name (the gitignored preset filename)."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-")
+    return slug or "c64cast"
+
+
+class PresetStore:
+    """Persist WLED presets to a JSON file (one map per device).
+
+    The file holds the WLED presets map ``{"1": {...}, ...}`` (ids 1..250; id 0
+    is WLED's reserved empty slot, never stored). Loads are tolerant — a missing
+    or corrupt file reads as an empty map; writes are atomic (a temp file in the
+    same directory + ``os.replace``) so a crash mid-write can't leave a
+    half-written map. The path is injectable so tests point it at a tempdir.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for k, v in data.items():
+            # Keep only well-formed numeric-id → dict entries (skip id 0 / junk).
+            if isinstance(v, dict) and str(k).isdigit() and int(k) != 0:
+                out[str(int(k))] = v
+        return out
+
+    def all(self) -> dict[str, dict[str, Any]]:
+        return self.load()
+
+    def next_free_id(self) -> int:
+        used = {int(k) for k in self.load()}
+        for pid in range(_PRESET_ID_MIN, _PRESET_ID_MAX + 1):
+            if pid not in used:
+                return pid
+        return _PRESET_ID_MAX
+
+    def save(self, pid: int, preset: Mapping[str, Any]) -> None:
+        if not _PRESET_ID_MIN <= pid <= _PRESET_ID_MAX:
+            return
+        data = self.load()
+        data[str(pid)] = dict(preset)
+        self._write(data)
+
+    def delete(self, pid: int) -> None:
+        if pid == 0:
+            return
+        data = self.load()
+        if data.pop(str(pid), None) is not None:
+            self._write(data)
+
+    def mtime_ns(self) -> int:
+        try:
+            return self._path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    def _write(self, data: Mapping[str, Any]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(data, indent=2, sort_keys=True)
+        # Atomic replace: write to a temp file in the same dir, fsync, then swap
+        # it onto the target with os.replace (rename is atomic within a fs).
+        fd, tmp = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+
 class WledBridge:
     """Translates between WLED JSON state and the c64cast playlists.
 
@@ -488,6 +735,10 @@ class WledBridge:
         self._global_bri = 128
         self._transition = 7
         self._started = time.monotonic()
+        # Persisted WLED presets (one file per device name) + the currently
+        # active preset id (state.ps; -1 = none / a manual change since recall).
+        self._presets = PresetStore(PRESETS_DIR / f"wled-{_sanitize_name(name)}.json")
+        self._active_preset = -1
         # Per-segment echo state, one dict per system (indexed like _systems).
         self._seg_echo: list[dict[str, Any]] = [
             {
@@ -506,7 +757,9 @@ class WledBridge:
         """Shared WLED effect list = the first system's scene names (WLED has one
         global effect array). Never empty (WLED effect 0 must exist)."""
         scenes = self._systems[0][1].scenes
-        names = [s.name for s in scenes]
+        # `wled_label` is a stable, randomization-aware name (a random SID pool
+        # names itself as a pool, not the rotating current tune) — see Scene.
+        names = [getattr(s, "wled_label", None) or s.name for s in scenes]
         return names or ["Solid"]
 
     def effects(self) -> list[str]:
@@ -589,7 +842,7 @@ class WledBridge:
                 "on": any_playing,
                 "bri": self._global_bri,
                 "transition": self._transition,
-                "ps": -1,
+                "ps": self._active_preset,
                 "pl": -1,
                 "nl": {"on": False, "dur": 60, "mode": 1, "tbri": 0, "rem": -1},
                 "udpn": {"send": False, "recv": True, "sgrp": 1, "rgrp": 1},
@@ -629,7 +882,9 @@ class WledBridge:
             "cpalcount": 0,
             "maps": [{"id": 0}],
             "wifi": {"bssid": "", "rssi": -50, "signal": 100, "channel": 1},
-            "fs": {"u": 0, "t": 0, "pmt": 0},
+            # `pmt` = presets-file modification time; WLED clients cache
+            # /presets.json against it and re-fetch when it bumps (on save/delete).
+            "fs": {"u": 0, "t": 0, "pmt": self._presets.mtime_ns() // 1_000_000},
             "ndc": nseg,
             "arch": "esp32",
             "core": "c64cast",
@@ -683,7 +938,14 @@ class WledBridge:
         if mode is not None:
             mode.user_dim = dim
 
-    def _apply_to_system(self, i: int, seg: Mapping[str, Any], master_playing: bool) -> None:
+    def _apply_to_system(
+        self,
+        i: int,
+        seg: Mapping[str, Any],
+        master_playing: bool,
+        *,
+        force_palcol: bool = False,
+    ) -> None:
         name, pl = self._systems[i]
         echo = self._seg_echo[i]
         # Transport is the Power toggle only: a segment plays when master-on and
@@ -697,10 +959,12 @@ class WledBridge:
         # A per-segment brightness change is a real output dim (bri=0 → black).
         if "bri" in seg:
             self._apply_dim(i)
-        # Effect selection → scene jump (clamped to this system's scenes).
+        # Effect selection → scene jump (clamped to this system's scenes). Skip a
+        # jump to the already-current scene: it would needlessly restart it (a
+        # redundant re-select, or a preset recall capturing the current scene).
         if "fx" in seg:
             fx = int(seg["fx"])
-            if 0 <= fx < len(pl.scenes) and not pl.single_scene:
+            if 0 <= fx < len(pl.scenes) and fx != pl.index and not pl.single_scene:
                 try:
                     pl.request_jump(fx, skip_interstitial=True)
                 except ValueError:
@@ -718,16 +982,19 @@ class WledBridge:
         # full segment (pal AND col) on every change. Acting on an unchanged field
         # would let the echoed `col` clobber a palette pick (and vice versa), so
         # only apply the field that actually *changed* from what we last echoed.
+        # `force_palcol` (preset recall) bypasses that guard — a recall is a
+        # deliberate apply, not the app's incidental full-segment re-POST, so it
+        # must restore the stored palette/color even when the echo already matches.
         if "pal" in seg:
             new_pal = int(seg["pal"])
             changed = new_pal != echo["pal"]
             echo["pal"] = new_pal
-            if changed:
+            if changed or force_palcol:
                 _apply_palette(pl, new_pal)
         if "col" in seg and isinstance(seg["col"], list):
             changed = seg["col"] != echo["col"]
             echo["col"] = seg["col"]
-            if changed:
+            if changed or force_palcol:
                 _apply_force_colors(pl, seg["col"])
 
     def apply(self, partial: Mapping[str, Any]) -> None:
@@ -735,39 +1002,127 @@ class WledBridge:
 
         Top-level `on`/`bri`/`transition` apply to every system (WLED's master
         controls); a `seg` list targets individual systems by position/id.
-        Thread-safe: playlist transport is event-based and the echo state is
-        lock-guarded."""
+        Preset ops (`psave`/`pdel`/`ps`) are exclusive top-level intents (WLED
+        POSTs one at a time). Thread-safe: playlist transport is event-based and
+        the echo/preset state is lock-guarded."""
         with self._lock:
-            master_on = True
-            master_bri_changed = "bri" in partial
-            if "transition" in partial:
-                self._transition = int(partial["transition"])
-            if master_bri_changed:
-                self._global_bri = max(0, min(255, int(partial["bri"])))
-            if "on" in partial:
-                master_on = bool(partial["on"])
-            # Transport is driven by Power (`on`) alone — brightness only dims
-            # (bri=0 = black, not pause), so a `bri`-only POST never pauses.
-            master_playing = master_on
+            if "psave" in partial:
+                self._save_preset_locked(partial)
+                return
+            if "pdel" in partial:
+                self._delete_preset_locked(int(partial["pdel"]))
+                return
+            if "ps" in partial:
+                pid = int(partial["ps"])
+                if pid >= _PRESET_ID_MIN:
+                    self._recall_preset_locked(pid)
+                    return
+                # ps <= 0 → "no preset"; fall through as a manual change.
+            # Any genuine manual change clears the active-preset marker — WLED
+            # resets state.ps to -1 once you touch a control after a recall.
+            self._active_preset = -1
+            self._apply_locked(partial)
 
-            segs = partial.get("seg")
-            if isinstance(segs, list) and segs:
-                for pos, seg in enumerate(segs):
-                    if not isinstance(seg, Mapping):
-                        continue
-                    idx = int(seg.get("id", pos))
-                    if 0 <= idx < len(self._systems):
-                        self._apply_to_system(idx, seg, master_playing)
-            elif "on" in partial:
-                # Master power with no per-segment detail → all systems.
-                for i in range(len(self._systems)):
-                    self._set_playing(self._systems[i][1], master_playing)
-            # The master brightness scales every segment's effective dim, so a
-            # top-level `bri` change re-dims all systems — including any whose
-            # own `bri` wasn't in this POST (_apply_dim reads the echoed seg bri).
-            if master_bri_changed:
-                for i in range(len(self._systems)):
-                    self._apply_dim(i)
+    def _apply_locked(self, partial: Mapping[str, Any], *, force_palcol: bool = False) -> None:
+        """Apply a state object with `self._lock` already held. `force_palcol`
+        (preset recall) makes pal/col bypass the only-when-changed echo guard."""
+        master_on = True
+        master_bri_changed = "bri" in partial
+        if "transition" in partial:
+            self._transition = int(partial["transition"])
+        if master_bri_changed:
+            self._global_bri = max(0, min(255, int(partial["bri"])))
+        if "on" in partial:
+            master_on = bool(partial["on"])
+        # Transport is driven by Power (`on`) alone — brightness only dims
+        # (bri=0 = black, not pause), so a `bri`-only POST never pauses.
+        master_playing = master_on
+
+        segs = partial.get("seg")
+        if isinstance(segs, list) and segs:
+            for pos, seg in enumerate(segs):
+                if not isinstance(seg, Mapping):
+                    continue
+                idx = int(seg.get("id", pos))
+                if 0 <= idx < len(self._systems):
+                    self._apply_to_system(idx, seg, master_playing, force_palcol=force_palcol)
+        elif "on" in partial:
+            # Master power with no per-segment detail → all systems.
+            for i in range(len(self._systems)):
+                self._set_playing(self._systems[i][1], master_playing)
+        # The master brightness scales every segment's effective dim, so a
+        # top-level `bri` change re-dims all systems — including any whose
+        # own `bri` wasn't in this POST (_apply_dim reads the echoed seg bri).
+        if master_bri_changed:
+            for i in range(len(self._systems)):
+                self._apply_dim(i)
+
+    # -- presets -------------------------------------------------------------
+
+    def presets_json(self) -> dict[str, Any]:
+        """The `/presets.json` payload: WLED's preset map with id 0 reserved."""
+        with self._lock:
+            out: dict[str, Any] = {"0": {}}
+            out.update(self._presets.all())
+            return out
+
+    def _snapshot_preset(self, name: str) -> dict[str, Any]:
+        """Snapshot the current look (transport + per-segment settings) as a
+        WLED preset object. Called with the lock held."""
+        seg: list[dict[str, Any]] = []
+        for i, (_n, pl) in enumerate(self._systems):
+            echo = self._seg_echo[i]
+            fx = pl.index if 0 <= pl.index < len(pl.scenes) else 0
+            seg.append(
+                {
+                    "id": i,
+                    "on": not pl.pause_event.is_set(),
+                    "bri": echo["bri"],
+                    "fx": fx,
+                    "sx": echo["sx"],
+                    "ix": echo["ix"],
+                    "pal": echo["pal"],
+                    "col": echo["col"],
+                }
+            )
+        any_playing = any(not pl.pause_event.is_set() for _, pl in self._systems)
+        return {"n": name, "on": any_playing, "bri": self._global_bri, "seg": seg}
+
+    def _default_preset_name(self, pid: int) -> str:
+        """Name for a preset saved with no explicit `n` — the first system's
+        current-scene WLED label (randomization-aware, so a random-SID scene
+        yields a stable pool name, not the one tune loaded at save time), falling
+        back to a bare "Preset N"."""
+        pl = self._systems[0][1]
+        scene = pl.current
+        if scene is not None:
+            label = getattr(scene, "wled_label", None) or getattr(scene, "name", None)
+            if label:
+                return str(label)
+        return f"Preset {pid}"
+
+    def _save_preset_locked(self, partial: Mapping[str, Any]) -> None:
+        pid = int(partial.get("psave", 0))
+        if pid < _PRESET_ID_MIN:
+            pid = self._presets.next_free_id()
+        name = str(partial.get("n") or self._default_preset_name(pid))
+        self._presets.save(pid, self._snapshot_preset(name))
+        self._active_preset = pid
+
+    def _delete_preset_locked(self, pid: int) -> None:
+        self._presets.delete(pid)
+        if self._active_preset == pid:
+            self._active_preset = -1
+
+    def _recall_preset_locked(self, pid: int) -> None:
+        preset = self._presets.all().get(str(pid))
+        if not preset:
+            return
+        # Best-effort immediate apply (perfect for a same-scene preset; the `/`
+        # page replays cross-scene sliders/pal/col over WS once the target scene
+        # is live). force_palcol so a stored palette/color restores past the guard.
+        self._apply_locked(preset, force_palcol=True)
+        self._active_preset = pid
 
 
 def build_wled_app(bridge: WledBridge, port: int = 80):
@@ -842,6 +1197,11 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
     @app.get("/json/pal")
     def json_pal() -> list[str]:
         return bridge.palettes()
+
+    @app.get("/presets.json")
+    def presets_json() -> dict[str, Any]:
+        # WLED serves its saved presets here; clients cache it against info.fs.pmt.
+        return bridge.presets_json()
 
     async def _apply_body(body: Any) -> dict[str, Any]:
         if isinstance(body, Mapping):

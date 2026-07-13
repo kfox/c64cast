@@ -2169,5 +2169,27 @@ class ScopeGainTest(unittest.TestCase):
             self.assertTrue(np.all(ys <= bot - 1))
 
 
+class WledLabelTest(unittest.TestCase):
+    """WaveformScene.wled_label: a stable, randomization-aware label for the WLED
+    effect list + preset names (a multi-entry SID pool re-picks each setup, so
+    self.name is a moving target)."""
+
+    def _scene(self, candidates, name):
+        from c64cast.waveform import WaveformScene
+
+        s = WaveformScene.__new__(WaveformScene)
+        s._candidates = candidates
+        s.name = name
+        return s
+
+    def test_random_pool_uses_stable_pool_label(self):
+        s = self._scene(["a.sid", "b.sid"], "SID: Commando #1")
+        self.assertEqual(s.wled_label, "SID: random pool")
+
+    def test_single_tune_keeps_its_title(self):
+        s = self._scene(["a.sid"], "SID: Commando #1")
+        self.assertEqual(s.wled_label, "SID: Commando #1")
+
+
 if __name__ == "__main__":
     unittest.main()

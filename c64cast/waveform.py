@@ -646,6 +646,18 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             )
         return self.FALLBACK_DURATION_S
 
+    @property
+    def wled_label(self) -> str:
+        # A multi-entry pool re-picks a different SID each setup(), so self.name
+        # (the currently-loaded tune) is a moving target. Present the WLED effect
+        # list + preset defaults with a stable pool label instead, so the
+        # dropdown doesn't churn and a preset named from it doesn't promise the
+        # one tune that was loaded at save time. A single fixed tune keeps its
+        # real title.
+        if len(self._candidates) > 1:
+            return "SID: random pool"
+        return self.name
+
     # ---- bring-up / bring-down ---------------------------------------------
 
     def _repick_sid(self) -> bool:
