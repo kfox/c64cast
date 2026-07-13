@@ -1043,12 +1043,14 @@ palette_mode = "grayscale"
 # # `file` accepts a single .sid path, a directory, a glob, or any
 # # comma-separated combination of those. Each scene setup() picks a
 # # random match from the resolved pool. Omit the field entirely to
-# # fall back to scanning assets/sids/.
+# # fall back to scanning assets/sids/ — that default directory (and
+# # only that one) is scanned recursively, so an unpacked HVSC tree
+# # works out of the box.
 # #   file = "assets/sids/your-tune.sid"
-# #   file = "assets/sids"  # whole directory
+# #   file = "assets/sids"  # whole tree, recursive
 # #   file = "assets/sids/C64Music/MUSICIANS/G/Galway_Martin/*"
 # #   file = "assets/sids/Tune1.sid, assets/sids/Tune2.sid"
-# file = "assets/sids/your-tune.sid"
+# file = "assets/sids"
 # song = 0                              # 0 = SID's default; 1+ = subtune
 # duration_s = 180.0                    # omit if a songlengths DB is set or auto-detected
 # color_mode = "per_voice"              # per_voice | per_waveform
