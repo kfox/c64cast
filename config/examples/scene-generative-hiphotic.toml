@@ -1,0 +1,27 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: "Hiphotic" — a WLED-effect port (see
+# https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2DHiphotic`). Nested
+# trig interference (`sin(cos(x...) + sin(y...) + t)`) reimplemented in
+# continuous float instead of WLED's 8-bit sin8/cos8 lookup tables — a
+# denser, more organic cousin of the `plasma` generator.
+#
+# Live knobs: `speed` (the sx slider over the WLED bridge / MIDI) sets the
+# overall time rate; `scale` (ix) sets the interference band density. WLED
+# exposes independent X-scale/Y-scale sliders — this port collapses them
+# into one `scale` knob.
+#
+# Run:
+#   python -m c64cast --config config/examples/scene-generative-hiphotic.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Hiphotic"
+source = "hiphotic"
+display = "mhires"
+duration_s = 30.0

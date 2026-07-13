@@ -28,7 +28,10 @@
 # Effect switching only does something useful with more than one scene (a
 # single-scene config has nowhere to jump to), so this demo runs a small
 # playlist: the WLED effect list will show "Hello" / "Plasma" / "Fire" /
-# "Waveform". Requires the `wled` extra (zeroconf + fastapi + uvicorn).
+# "Hiphotic" / "Metaballs" / "Rotozoomer" / "Waveform" — the last three are a
+# first batch of ported WLED effects (see docs/architecture.md's generators.py
+# section), so their names match what a real WLED device would show for the
+# same effect. Requires the `wled` extra (zeroconf + fastapi + uvicorn).
 #
 # The "Waveform" scene plays a SID and needs a .sid file — drop one into
 # assets/sids/ first (HVSC: https://hvsc.c64.org). Without one, the scene
@@ -86,6 +89,35 @@ name = "Fire"
 source = "fire"
 display = "mhires"
 audio_source = "none"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Hiphotic"
+source = "hiphotic"
+display = "mhires"
+duration_s = 30.0
+
+[[scenes]]
+# `effect = "blur"` ships defaulting to intensity 0.0 (no-op). The ix slider
+# targets the first LIVE_PARAM match in priority order (source.scale >
+# source.intensity > effect.intensity), and Metaballs' only live param is
+# `speed` — so unlike Hiphotic/Rotozoomer (which both declare `scale` and
+# would shadow it), ix falls through to `effect.intensity` here. Drag it (on
+# the WLED app, or c64cast's own /page) to raise blur live and soften the
+# metaball edges.
+type = "generative"
+name = "Metaballs"
+source = "metaballs"
+display = "mhires"
+effect = "blur"
+duration_s = 30.0
+
+[[scenes]]
+type = "generative"
+name = "Rotozoomer"
+source = "rotozoomer"
+display = "mhires"
 duration_s = 30.0
 
 [[scenes]]

@@ -15,7 +15,14 @@ from c64cast.audio import AudioStreamer
 from c64cast.audio_source import MicAudioSource, NullAudioSource
 from c64cast.backend import C64Backend, HardwareProfile
 from c64cast.config import AudioCfg, Config, SceneCfg, build_scene, validate_scene_cfg
-from c64cast.effects import FrameEffect, PulseEffect, RgbShiftEffect, TrailsEffect, build_effect
+from c64cast.effects import (
+    BlurEffect,
+    FrameEffect,
+    PulseEffect,
+    RgbShiftEffect,
+    TrailsEffect,
+    build_effect,
+)
 from c64cast.frame_source import BaseFrameSource, FrameSource
 from c64cast.generators import build_generator, generator_names
 from c64cast.modes import DisplayMode
@@ -34,6 +41,9 @@ class GeneratorTest(unittest.TestCase):
         self.assertIn("epicycle", names)
         self.assertIn("hopalong", names)
         self.assertIn("rorschach", names)
+        self.assertIn("hiphotic", names)
+        self.assertIn("metaballs", names)
+        self.assertIn("rotozoomer", names)
 
     def test_live_params_declared_with_valid_ranges(self):
         # midi_control.py scales a CC into each declared (min, max) range and
@@ -49,6 +59,9 @@ class GeneratorTest(unittest.TestCase):
             "epicycle": {"speed"},
             "hopalong": {"a", "drift_speed"},
             "rorschach": {"grow_speed"},
+            "hiphotic": {"speed", "scale"},
+            "metaballs": {"speed"},
+            "rotozoomer": {"speed", "scale"},
         }
         for name in generator_names():
             g = build_generator(name)
@@ -283,6 +296,61 @@ class GeneratorTest(unittest.TestCase):
         hit = MusicModulation(0.0, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         self.assertGreater(int(g.render(0.0, hit).sum()), int(g.render(0.0, rest).sum()))
 
+    def test_hiphotic_frame_shape_and_determinism(self):
+        g = build_generator("hiphotic")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_hiphotic_reacts_to_beat_phase(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("hiphotic")
+        m0 = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        m1 = MusicModulation(0.3, 0.0, 2.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertFalse(np.array_equal(g.render(1.0, m0), g.render(1.0, m1)))
+
+    def test_metaballs_frame_shape_and_determinism(self):
+        g = build_generator("metaballs")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_metaballs_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("metaballs")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
+    def test_rotozoomer_frame_shape_and_determinism(self):
+        g = build_generator("rotozoomer")
+        f0 = g.render(0.5)
+        self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
+        self.assertEqual(f0.dtype, np.uint8)
+        np.testing.assert_array_equal(f0, g.render(0.5))
+        self.assertFalse(np.array_equal(f0, g.render(3.0)))
+
+    def test_rotozoomer_scale_changes_frame(self):
+        # The ix live knob: `scale` feeds the affine zoom factor directly.
+        base = generators.RotozoomerSource().render(0.5)
+        zoomed = generators.RotozoomerSource(scale=3.0).render(0.5)
+        self.assertEqual(base.shape, zoomed.shape)
+        self.assertFalse(np.array_equal(base, zoomed))
+
+    def test_rotozoomer_onset_flashes_brightness(self):
+        from c64cast.modulation import MusicModulation
+
+        g = build_generator("rotozoomer")
+        rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
+
 
 class EffectTest(unittest.TestCase):
     def test_live_params_declared_with_valid_ranges(self):
@@ -294,6 +362,7 @@ class EffectTest(unittest.TestCase):
             "trails": {"decay"},
             "pulse": {"intensity"},
             "rgb_shift": {"intensity"},
+            "blur": {"intensity"},
         }
         for name in expected:
             eff = build_effect(name)
@@ -444,6 +513,39 @@ class EffectTest(unittest.TestCase):
         np.testing.assert_array_equal(out[..., 1], f[..., 1])  # green untouched
         np.testing.assert_array_equal(out[..., 0], np.roll(f[..., 0], 6, axis=1))  # blue +6
         np.testing.assert_array_equal(out[..., 2], np.roll(f[..., 2], -6, axis=1))  # red -6
+
+    def test_blur_default_instance_is_noop(self):
+        # Unlike pulse/rgb_shift, blur's identity guarantee comes from the
+        # default `intensity=0.0`, not from `modulation is None` — verify both.
+        eff = build_effect("blur")
+        f = np.random.default_rng(8).integers(0, 256, (8, 8, 3)).astype(np.uint8)
+        np.testing.assert_array_equal(eff.apply(f, 0.0), f)
+        np.testing.assert_array_equal(eff.apply(f, 0.0, None), f)
+
+    def test_blur_applies_gaussian_blur_when_intensity_set(self):
+        eff = BlurEffect(intensity=2.0)
+        f = np.zeros((16, 16, 3), np.uint8)
+        f[7:9, 7:9] = 255  # a sharp point to blur out
+        out = eff.apply(f, 0.0)
+        self.assertEqual(out.shape, f.shape)
+        self.assertEqual(out.dtype, f.dtype)
+        self.assertFalse(np.array_equal(out, f))
+
+    def test_blur_reactive_kick_increases_with_onset(self):
+        # Same base intensity, more onset ⇒ more blur (base + reactive kick,
+        # same shape as trails' reactive decay boost).
+        from c64cast.modulation import MusicModulation
+
+        f = np.zeros((16, 16, 3), np.uint8)
+        f[7:9, 7:9] = 255
+        rest = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        hit = MusicModulation(0.0, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
+        eff = BlurEffect(intensity=0.5)
+        rest_out = eff.apply(f, 0.0, rest)
+        hit_out = eff.apply(f, 0.0, hit)
+        # More blur spreads the bright point's energy over more pixels, so the
+        # peak value drops further under the stronger (onset-kicked) blur.
+        self.assertLess(int(hit_out.max()), int(rest_out.max()))
 
     def test_render_with_overlays_threads_modulation_to_effect(self):
         # The render path must hand the per-frame modulation snapshot to the
@@ -861,6 +963,30 @@ class ConfigGenerativeTest(unittest.TestCase):
         scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
         self.assertEqual(type(scene.display_mode).__name__, "PETSCIIDisplayMode")
         self.assertIsNone(scene.effect)
+
+    def test_build_generative_hiphotic(self):
+        s = SceneCfg(type="generative", source="hiphotic", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.HiphoticSource)
+
+    def test_build_generative_metaballs(self):
+        s = SceneCfg(type="generative", source="metaballs", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.MetaballsSource)
+
+    def test_build_generative_rotozoomer(self):
+        s = SceneCfg(type="generative", source="rotozoomer", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.source, generators.RotozoomerSource)
+
+    def test_build_generative_with_blur_effect(self):
+        s = SceneCfg(type="generative", source="plasma", display="mhires", effect="blur")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.effect, BlurEffect)
 
     def test_unknown_source_rejected(self):
         s = SceneCfg(type="generative", source="bogus", display="mhires")

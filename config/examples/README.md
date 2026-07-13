@@ -72,6 +72,9 @@ Exit with `Ctrl+C`.
 | `scene-generative-petscii.toml`   | The same plasma source rendered as PETSCII glyphs.         |
 | `scene-generative-sid.toml`       | Plasma × SID playback — music-reactive composable scene.   |
 | `scene-generative-fire.toml`      | Fire generator × SID playback (the loudest reactive look). |
+| `scene-generative-hiphotic.toml`  | Hiphotic — WLED-effect port, nested trig interference.     |
+| `scene-generative-metaballs.toml` | Metaballs — WLED-effect port, inverse-distance blob field. |
+| `scene-generative-rotozoomer.toml`| Rotozoomer — WLED-effect port, rotating/zooming texture.   |
 | `color-force-palette.toml`        | EXTREME `[color].force_palette` remap. Needs PyAV.         |
 | `color-dither.toml`                | Spatial dither (`[color].dither`) on a slideshow.           |
 | `teensyrom-blank.toml`            | TeensyROM+ backend → blank canvas + scrolling text.        |

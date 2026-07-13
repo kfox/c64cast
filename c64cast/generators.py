@@ -787,3 +787,173 @@ class RorschachSource(GenerativeSource):
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         frame[py[valid], px[valid]] = color
         return cv2.dilate(frame, np.ones((3, 3), np.uint8))
+
+
+@register("hiphotic")
+class HiphoticSource(GenerativeSource):
+    """WLED "Hiphotic" port: nested trig interference
+    (`sin(cos(x...) + sin(y...) + a)`), reimplemented in continuous float
+    instead of WLED's 8-bit sin8/cos8 lookup tables. Unlike Plasma, the
+    `t`-driven phase sits *inside* the inner cos/sin terms rather than being
+    added on at the end, so the combined field can't be precomputed once and
+    modulo'd per frame the way Plasma's can — only the raw `xs`/`ys` pixel
+    grids are cached; the rest is recomputed every `render()` call. WLED
+    exposes independent X-scale/Y-scale sliders; those collapse here into one
+    `scale` LIVE_PARAM (a deliberate simplification)."""
+
+    LIVE_PARAMS = {"speed": (0.1, 8.0), "scale": (0.1, 4.0)}
+
+    # Tuned by eye at 320x200; scale=1.0 ~= WLED's default band density.
+    _BASE_FREQ = 0.02
+
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 1.5,
+        scale: float = 1.0,
+    ):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        self.scale = float(scale)
+        ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
+        self._xs = xs
+        self._ys = ys
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        k = self.scale * self._BASE_FREQ
+        a = t * self.speed
+        inner_x = np.cos(self._xs * k + a / 3.0)
+        inner_y = np.sin(self._ys * k + a / 4.0)
+        hue = (np.sin(inner_x + inner_y + a) + 1.0) * 0.5
+        if modulation is None:
+            return self._hsv_to_bgr(hue)
+        hue = hue + self._reactive_hue_offset(modulation)
+        return self._hsv_to_bgr(hue, val=self._reactive_value(modulation))
+
+
+@register("metaballs")
+class MetaballsSource(GenerativeSource):
+    """WLED "Metaballs" port: 3 moving "ball" centers blended into a classic
+    inverse-distance metaball field. All 3 ball paths are closed-form
+    functions of `t` in WLED's own source too — `beatsin8` is phase-linear in
+    wall-clock time (no running accumulator), so ball 1 ports directly as a
+    Lissajous sine pair; balls 2 & 3 use `perlin8` point samples, which this
+    codebase has no primitive for, so they're replaced with a 2-term
+    incommensurate-frequency sine "wander" (the same pure-trig
+    organic-motion trick `hopalong`/`epicycle` already use elsewhere) — a
+    documented simplification, not a literal noise port. Per frame: 3 scalar
+    ball positions (a handful of scalar `sin()` calls) plus one vectorized
+    distance field over the precomputed pixel grid."""
+
+    LIVE_PARAMS = {"speed": (0.05, 5.0)}
+
+    _W1X = 0.9
+    _W1Y = 1.1
+    _BALL2 = {"fx": (0.11, 0.178), "fy": (0.13, 0.210), "px": (0.0, 1.7), "py": (0.9, 2.4)}
+    _BALL3 = {"fx": (0.17, 0.275), "fy": (0.19, 0.307), "px": (2.1, 0.4), "py": (1.2, 3.0)}
+    _THRESHOLD = 60.0
+    # WLED's raw `color/threshold` value maps cleanly to brightness on the
+    # small (16-64px) matrices it targets, but decays too fast to read as
+    # anything but a dim smudge at this generator's much larger 320x200 native
+    # resolution — this gamma lifts the mid/low range for legibility after C64
+    # quantization (background pixels, already ~0, stay ~0; it's a display
+    # tone curve, not a change to the underlying distance-field math).
+    _VALUE_GAMMA = 0.6
+
+    def __init__(self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, speed: float = 1.0):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
+        self._xs = xs
+        self._ys = ys
+        self._cx = width / 2.0
+        self._cy = height / 2.0
+        self._amp = min(width, height) * 0.35
+
+    def _wander(self, tt: float, spec: dict[str, tuple[float, float]]) -> tuple[float, float]:
+        fx0, fx1 = spec["fx"]
+        fy0, fy1 = spec["fy"]
+        px0, px1 = spec["px"]
+        py0, py1 = spec["py"]
+        dx = 0.6 * math.sin(tt * fx0 + px0) + 0.4 * math.sin(tt * fx1 + px1)
+        dy = 0.6 * math.sin(tt * fy0 + py0) + 0.4 * math.sin(tt * fy1 + py1)
+        return self._cx + self._amp * dx, self._cy + self._amp * dy
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        tt = t * self.speed
+        x1 = self._cx + self._amp * math.sin(tt * self._W1X)
+        y1 = self._cy + self._amp * math.sin(tt * self._W1Y)
+        x2, y2 = self._wander(tt, self._BALL2)
+        x3, y3 = self._wander(tt, self._BALL3)
+        d1 = np.hypot(self._xs - x1, self._ys - y1)
+        d2 = np.hypot(self._xs - x2, self._ys - y2)
+        d3 = np.hypot(self._xs - x3, self._ys - y3)
+        dist = 2.0 * d1 + d2 + d3
+        color = 1000.0 / np.maximum(dist, 1.0)
+        in_range = color < self._THRESHOLD
+        val = np.clip(color / self._THRESHOLD, 0.0, 1.0) ** self._VALUE_GAMMA
+        hue = 0.55 - val * 0.55
+        if modulation is not None:
+            hue = np.mod(hue + self._reactive_hue_offset(modulation), 1.0)
+            val = val * self._reactive_value(modulation)
+        val = np.where(in_range, val, 0.0)
+        # Per-pixel `val` (not the scalar `_hsv_to_bgr` accepts) needs the
+        # manual HSV build Mandelbrot/Hopalong already use for the same reason.
+        h, w = val.shape
+        hsv = np.empty((h, w, 3), dtype=np.uint8)
+        hsv[..., 0] = (np.mod(hue, 1.0) * 180.0).astype(np.uint8)
+        hsv[..., 1] = 255
+        hsv[..., 2] = np.clip(val * 255.0, 0.0, 255.0).astype(np.uint8)
+        return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+@register("rotozoomer")
+class RotozoomerSource(GenerativeSource):
+    """WLED "Rotozoomer" port: a static XOR bit-pattern texture (`(x*4) ^
+    (y*4)`, precomputed + colorized once) sampled through a rotating/zooming
+    affine transform. WLED integrates its rotation angle once per render call
+    (`angle -= 0.03 + (speed-128)*0.0002`), tied to WLED's own frame cadence
+    rather than wall-clock time — incompatible with this codebase's
+    pure-function-of-`t` contract, so the angle is redefined here as a closed
+    form, `angle(t) = -speed * t`, exactly the same "phase advances linearly
+    with `t`" pattern Plasma/Tunnel already use for their hue rotation. Also
+    the first use of `cv2.warpAffine` in this codebase: `BORDER_WRAP` mirrors
+    WLED's modulo-wrapped texture lookup. WLED's alternate Perlin-noise
+    texture mode ("Alt") is not ported — a documented scope-narrowing, not an
+    oversight."""
+
+    LIVE_PARAMS = {"speed": (0.0, 4.0), "scale": (0.2, 4.0)}
+
+    def __init__(
+        self,
+        *,
+        width: int = GEN_WIDTH,
+        height: int = GEN_HEIGHT,
+        speed: float = 0.5,
+        scale: float = 1.0,
+    ):
+        super().__init__(width=width, height=height)
+        self.speed = float(speed)
+        self.scale = float(scale)
+        ys, xs = np.mgrid[0:height, 0:width].astype(np.uint16)
+        pattern = ((xs * 4) ^ (ys * 4)) & 0xFF
+        hue = pattern.astype(np.float32) / 255.0
+        self._texture = self._hsv_to_bgr(hue)
+        self._center = (width / 2.0, height / 2.0)
+
+    def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
+        angle_deg = math.degrees(-self.speed * t)
+        matrix = cv2.getRotationMatrix2D(self._center, angle_deg, self.scale)
+        frame = cv2.warpAffine(
+            self._texture,
+            matrix,
+            (self.width, self.height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_WRAP,
+        )
+        if modulation is None:
+            return frame
+        gain = self._reactive_value(modulation)
+        return np.clip(frame.astype(np.float32) * gain, 0.0, 255.0).astype(np.uint8)
