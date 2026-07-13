@@ -2202,13 +2202,13 @@
           },
           "audio_source": {
             "type": "string",
-            "description": "Audio for a generative scene: 'none' = silent; 'mic' = live mic (only when [audio].enabled); 'sid' = play the `file` .sid on the real chip. Default 'mic' matches pre-field behavior. A SID source forces a host-DMA display and needs a char display (petscii/mcm) for most tunes (see `file`).",
+            "description": "Audio for a generative scene: 'none' = silent (default \u2014 a live mic never makes the visuals react, so it's opt-in passthrough only); 'mic' = live mic (only when [audio].enabled); 'sid' = play the `file` .sid on the real chip. A SID source forces a host-DMA display and needs a char display (petscii/mcm) for most tunes (see `file`).",
             "enum": [
               "none",
               "mic",
               "sid"
             ],
-            "default": "mic"
+            "default": "none"
           },
           "reactive": {
             "type": "boolean",

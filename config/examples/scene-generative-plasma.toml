@@ -9,7 +9,9 @@
 # PETSCII glyphs in scene-generative-petscii.toml — only `display` differs.
 #
 # Other sources: `source = "tunnel"` (see effect-trails.toml). Pure host-side
-# numpy, no audio by default (set `audio = true` to layer the live mic).
+# numpy, no audio by default (set `audio_source = "mic"` to layer the live
+# mic — it won't make the visuals react, just passes the mic through; see
+# `reactive`/`audio_source = "sid"` for that).
 #
 # Run:
 #   python -m c64cast --config config/examples/scene-generative-plasma.toml

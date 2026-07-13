@@ -1043,7 +1043,7 @@ type = "generative"
 display = "mhires"                  # any quantizing mode (not blank/random)
 duration_s = 60.0
 source = "plasma"                   # plasma | tunnel | fire
-audio_source = "mic"               # none | mic | sid
+audio_source = "none"               # none (default) | mic | sid
 reactive = true                     # music drives the visuals (sid only)
 effect = "trails"                  # optional: trails | pulse | rgb_shift
 # file = "assets/sids/Tune.sid"     # required when audio_source = "sid"
@@ -1055,12 +1055,13 @@ rendered through any quantizing display mode. The generators are pure
 numpy and deterministic in time:
 
 * `source` — `plasma`, `tunnel`, or `fire`.
-* `audio_source` — `none` (silent), `mic` (live mic through the SID DAC;
-  needs `[audio] enabled = true` + the `mic` extra), or `sid` (play the
-  `file` `.sid` on the real chip). A `sid` source forces a host-DMA
-  display and pairs most robustly with a **char** display (`mcm` /
-  `petscii`); a bitmap display works only with a tune that loads high
-  enough to clear `$2000`.
+* `audio_source` — `none` (silent, the default — a live mic never makes
+  the visuals react, so it's opt-in passthrough only), `mic` (live mic
+  through the SID DAC; needs `[audio] enabled = true` + the `mic`
+  extra), or `sid` (play the `file` `.sid` on the real chip). A `sid`
+  source forces a host-DMA display and pairs most robustly with a
+  **char** display (`mcm` / `petscii`); a bitmap display works only
+  with a tune that loads high enough to clear `$2000`.
 * `reactive` (default `true`) — when `audio_source = "sid"`, a host-side
   SID emulator extracts BPM / onsets / per-voice features (no extra U64
   traffic) and the generator reacts: BPM cycles the colors, transients

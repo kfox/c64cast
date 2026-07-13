@@ -129,8 +129,11 @@ _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
 # Per-scene audio source for composable (generative) scenes — the AudioSource
 # building block in audio_source.py. "none" = silence; "mic" = live mic via the
 # shared AudioStreamer (gated by [audio].enabled); "sid" = play a .sid on the
-# real chip (needs `file`). Default "mic" reproduces the pre-field behavior
-# (mic when audio is enabled, else silence). A drift test pins this list.
+# real chip (needs `file`). Default "none": a live mic has no SID host-emulator
+# to read features from, so a generative scene left on "mic" just passes audio
+# through without ever making the visuals react to it — opt in explicitly if
+# that passthrough (not reactivity) is what you want. A drift test pins this
+# list.
 _AUDIO_SOURCE_CHOICES = ("none", "mic", "sid")
 
 # Video-audio backend selector ([audio].backend). "dac" = the 4-bit $D418 NMI
@@ -954,13 +957,14 @@ class SceneCfg:
     )
     # Generative scene: the audio building block paired with the video source.
     audio_source: str = field(
-        default="mic",
+        default="none",
         metadata={
-            "help": "Audio for a generative scene: 'none' = silent; 'mic' = live "
-            "mic (only when [audio].enabled); 'sid' = play the `file` .sid on "
-            "the real chip. Default 'mic' matches pre-field behavior. A SID "
-            "source forces a host-DMA display and needs a char display "
-            "(petscii/mcm) for most tunes (see `file`).",
+            "help": "Audio for a generative scene: 'none' = silent (default — a "
+            "live mic never makes the visuals react, so it's opt-in passthrough "
+            "only); 'mic' = live mic (only when [audio].enabled); 'sid' = play "
+            "the `file` .sid on the real chip. A SID source forces a host-DMA "
+            "display and needs a char display (petscii/mcm) for most tunes "
+            "(see `file`).",
             "choices": _AUDIO_SOURCE_CHOICES,
             "applies_to": ("generative",),
         },

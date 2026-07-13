@@ -1164,7 +1164,7 @@ class ConfigGenerativeTest(unittest.TestCase):
         scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
         assert isinstance(scene, SourceScene)
         self.assertIsInstance(scene.effect, TrailsEffect)
-        # Default audio_source = "mic", but no streamer (audio disabled) → null.
+        # Default audio_source = "none" → null.
         self.assertIsInstance(scene.audio_source, NullAudioSource)
 
     def test_audio_source_none_is_null(self):
