@@ -27,6 +27,7 @@ from c64cast.palette import (
     ColorFitAccumulator,
     ColorMapAccumulator,
     HueCorrection,
+    RollingColorMapAccumulator,
     _hungarian,
     apply_color_fit,
     apply_hue_corrections,
@@ -529,6 +530,66 @@ class ColorMapTest(unittest.TestCase):
 
     def test_no_samples_returns_none(self):
         self.assertIsNone(ColorMapAccumulator(n_colors=8).result())
+
+
+class RollingColorMapAccumulatorTest(unittest.TestCase):
+    """Sliding-window live force_palette: window bounds, warm-start, hysteresis."""
+
+    @staticmethod
+    def _two_color(a: int, b: int) -> np.ndarray:
+        """A 64×64 image, top half palette color `a`, bottom half `b` (exact BGR)."""
+        img = np.empty((64, 64, 3), dtype=np.uint8)
+        img[:32] = C64_PALETTE_BGR[a].astype(np.uint8)
+        img[32:] = C64_PALETTE_BGR[b].astype(np.uint8)
+        return img
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(RollingColorMapAccumulator(n_colors=4).result())
+
+    def test_two_color_source_maps_to_those_colors(self):
+        acc = RollingColorMapAccumulator(n_colors=2)
+        acc.add(self._two_color(2, 6))  # red / blue
+        cmap = acc.result()
+        assert cmap is not None
+        self.assertEqual(set(cmap.indices), {2, 6})
+
+    def test_window_evicts_old_blocks(self):
+        acc = RollingColorMapAccumulator(n_colors=2, window_blocks=3)
+        for _ in range(10):
+            acc.add(self._two_color(2, 6))
+        # deque(maxlen=3) → never retains more than the window.
+        self.assertLessEqual(len(acc._blocks), 3)
+
+    def test_clear_resets_window_and_warmstart(self):
+        acc = RollingColorMapAccumulator(n_colors=2)
+        acc.add(self._two_color(2, 6))
+        self.assertIsNotNone(acc.result())
+        acc.clear()
+        self.assertIsNone(acc.result())
+        self.assertIsNone(acc._prev_centers)
+        self.assertIsNone(acc._prev_col)
+
+    def test_warm_start_keeps_palette_stable(self):
+        # Feeding the same content twice must yield the same C64 color set — the
+        # warm-start + hysteresis must not reshuffle it between bakes.
+        acc = RollingColorMapAccumulator(n_colors=3)
+        img = np.empty((64, 66, 3), dtype=np.uint8)
+        img[:, :22] = C64_PALETTE_BGR[2].astype(np.uint8)  # red
+        img[:, 22:44] = C64_PALETTE_BGR[6].astype(np.uint8)  # blue
+        img[:, 44:] = C64_PALETTE_BGR[7].astype(np.uint8)  # yellow
+        acc.add(img)
+        first = acc.result()
+        acc.add(img)
+        second = acc.result()
+        assert first is not None and second is not None
+        self.assertEqual(set(first.indices), set(second.indices))
+
+    def test_explicit_indices_constrain_palette(self):
+        acc = RollingColorMapAccumulator(indices=[0, 2, 6])
+        acc.add(self._two_color(2, 6))
+        cmap = acc.result()
+        assert cmap is not None
+        self.assertTrue(set(cmap.indices).issubset({0, 2, 6}))
 
 
 class DisplayModePaletteTest(unittest.TestCase):
