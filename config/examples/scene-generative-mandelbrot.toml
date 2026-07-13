@@ -13,7 +13,9 @@
 #
 # Other sources: `source = "plasma"` / `"tunnel"` / `"fire"` (see the sibling
 # scene-generative-*.toml examples). Pure host-side numpy, no audio by
-# default (set `audio = true` to layer the live mic).
+# default (set `audio_source = "mic"` to layer the live mic — it won't make
+# the visuals react, just passes the mic through; see `reactive`/`audio_source
+# = "sid"` for that).
 #
 # Run:
 #   python -m c64cast --config config/examples/scene-generative-mandelbrot.toml
