@@ -907,6 +907,62 @@ class ResolveFileSpecTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "contains no files with extension"):
                 cfgmod.resolve_file_spec(tmp, self.EXTS, label="waveform")
 
+    def test_default_waveform_dir_recurses(self):
+        # The waveform scene's default directory (assets/sids) is the one
+        # exception to the shallow-directory-listing rule: it's walked
+        # recursively so an unpacked HVSC tree works with no `file =` set.
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            sids_dir = os.path.join(tmp, cfgmod.DEFAULT_WAVEFORM_DIR)
+            os.makedirs(os.path.join(sids_dir, "MUSICIANS", "H", "Hubbard_Rob"))
+            self._make_files(sids_dir, ["top.sid"])
+            self._make_files(
+                os.path.join(sids_dir, "MUSICIANS", "H", "Hubbard_Rob"),
+                ["Monty_on_the_Run.sid", "skip.txt"],
+            )
+            os.chdir(tmp)
+            try:
+                got = cfgmod.resolve_file_spec(
+                    cfgmod.DEFAULT_WAVEFORM_DIR, self.EXTS, label="waveform"
+                )
+                self.assertEqual(
+                    sorted(os.path.basename(p) for p in got),
+                    ["Monty_on_the_Run.sid", "top.sid"],
+                )
+            finally:
+                os.chdir(cwd)
+
+    def test_other_directories_stay_shallow_even_for_waveform(self):
+        # Only the exact default dir gets the recursive treatment — any
+        # other directory (e.g. a subdir of it, or an unrelated one) keeps
+        # the ordinary shallow listing.
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = os.path.join(tmp, "sub")
+            os.makedirs(sub)
+            self._make_files(tmp, ["top.sid"])
+            self._make_files(sub, ["deep.sid"])
+            got = cfgmod.resolve_file_spec(tmp, self.EXTS, label="waveform")
+            self.assertEqual([os.path.basename(p) for p in got], ["top.sid"])
+
+    def test_default_waveform_dir_not_recursive_for_other_labels(self):
+        # The recursion exception is keyed to label="waveform" specifically
+        # (the scene this default directory belongs to) — a directory
+        # spelled "assets/sids" under any other label stays shallow.
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            sids_dir = os.path.join(tmp, cfgmod.DEFAULT_WAVEFORM_DIR)
+            os.makedirs(os.path.join(sids_dir, "nested"))
+            self._make_files(sids_dir, ["top.sid"])
+            self._make_files(os.path.join(sids_dir, "nested"), ["deep.sid"])
+            os.chdir(tmp)
+            try:
+                got = cfgmod.resolve_file_spec(
+                    cfgmod.DEFAULT_WAVEFORM_DIR, self.EXTS, label="generative sid audio"
+                )
+                self.assertEqual([os.path.basename(p) for p in got], ["top.sid"])
+            finally:
+                os.chdir(cwd)
+
     def test_glob_expansion(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._make_files(tmp, ["alpha.sid", "beta.sid", "skip.txt"])

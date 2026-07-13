@@ -4422,6 +4422,13 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
       * a literal file path — included as-is (extension-checked).
       * a directory path — every file inside whose extension is in
         `extensions` is included (non-recursive; mirrors `_gather_videos`).
+        Exception: for the waveform scene (`label="waveform"`), the default
+        SID directory (`DEFAULT_WAVEFORM_DIR`, `assets/sids`) is walked
+        recursively instead — an unpacked HVSC archive is a deep tree, and
+        this is the directory the waveform scene falls back to when `file`
+        is unset, so it should work out of the box. Any other directory
+        (or a non-default entry mixed into the same spec) stays shallow;
+        write `**/*.sid` explicitly for recursion elsewhere.
       * a glob pattern (containing `*`, `?`, or `[`) — expanded via
         `glob.glob`; matches whose extension is in `extensions` are kept.
         A `**` segment recurses into subdirectories (e.g.
@@ -4476,11 +4483,21 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
                 )
             matches.update(hits)
         elif os.path.isdir(entry):
-            hits = [
-                os.path.join(entry, f)
-                for f in os.listdir(entry)
-                if os.path.isfile(os.path.join(entry, f)) and f.lower().endswith(extensions)
-            ]
+            if label == "waveform" and os.path.normpath(entry) == os.path.normpath(
+                DEFAULT_WAVEFORM_DIR
+            ):
+                hits = [
+                    os.path.join(dirpath, f)
+                    for dirpath, _dirnames, filenames in os.walk(entry)
+                    for f in filenames
+                    if f.lower().endswith(extensions)
+                ]
+            else:
+                hits = [
+                    os.path.join(entry, f)
+                    for f in os.listdir(entry)
+                    if os.path.isfile(os.path.join(entry, f)) and f.lower().endswith(extensions)
+                ]
             if not hits:
                 raise ValueError(
                     f"{label}: directory {entry!r} contains no files with extension {extensions}"

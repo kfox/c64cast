@@ -5,8 +5,10 @@
 # voices as oscilloscope traces. Requires you to supply your own .sid
 # file — HVSC (https://hvsc.c64.org) is the canonical archive.
 #
-# Drop a tune into assets/sids/ and either set `file =` below or omit
-# it to fall back to scanning assets/sids/.
+# Drop a tune (or an unpacked HVSC tree) into assets/sids/ and either set
+# `file =` below or omit it to fall back to scanning assets/sids/ — that
+# default directory is scanned recursively, so a nested HVSC tree works
+# out of the box.
 #
 # Run:
 #   python -m c64cast --config config/examples/scene-waveform.toml
@@ -26,11 +28,12 @@ type = "waveform"
 # `file =` accepts: a single .sid, a directory, a glob, or any
 # comma-separated combination. Each setup picks a random match.
 #   file = "assets/sids/your-tune.sid"
-#   file = "assets/sids"                            # whole directory
+#   file = "assets/sids"                            # whole tree, recursive
 #   file = "assets/sids/C64Music/MUSICIANS/G/Galway_Martin/*"
 #   file = "assets/sids/Tune1.sid, assets/sids/Tune2.sid"
-# Omit the field entirely to fall back to scanning assets/sids/.
-file = "assets/sids/your-tune.sid"
+# Omit the field entirely to fall back to scanning assets/sids/ (also
+# recursive) — works out of the box once you've dropped SIDs in there.
+file = "assets/sids"
 song = 0                 # 0 = SID's default; 1+ selects a subtune
 duration_s = 180.0       # explicit value wins; comment out to use songlengths_file instead
 color_mode = "per_voice" # per_voice | per_waveform
