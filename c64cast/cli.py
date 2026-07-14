@@ -745,15 +745,26 @@ def build_stack(
 
     reu_available = _resolve_reu_available(cfg, api)
     sampler_available = _resolve_sampler_available(cfg, api)
-    playlist_scenes = cfgmod.scenes_from_config(
-        cfg,
-        api,
-        audio,
-        source,
-        is_ensemble=is_ensemble,
-        reu_available=reu_available,
-        sampler_available=sampler_available,
-    )
+    try:
+        playlist_scenes = cfgmod.scenes_from_config(
+            cfg,
+            api,
+            audio,
+            source,
+            is_ensemble=is_ensemble,
+            reu_available=reu_available,
+            sampler_available=sampler_available,
+        )
+    except (ValueError, RuntimeError) as e:
+        log.error("%s", e)
+        if audio is not None:
+            audio.close()
+        _doctor.restore_sampler(api, sampler_restore)
+        _doctor.restore_reu(api, reu_restore)
+        api.close()
+        if source is not None:
+            source.release()
+        raise StackBuildError(3) from e
 
     # The system video rate (60 NTSC / 50 PAL) is resolved into the
     # backend's profile by make_backend; a per-variant `max_fps` cap (None
