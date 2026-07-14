@@ -9,7 +9,16 @@
 # Runs via uv when present so the project .venv is always used (matches the
 # mise + direnv + uv workflow); falls back to a bare `python` otherwise.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# Redirect cd's stdout: if the caller's shell has CDPATH set, a relative cd
+# echoes the resolved directory, which would otherwise leak into our output.
+cd "$(dirname "$0")/.." > /dev/null
+
+# With no args, argparse falls through to the built-in default config and
+# tries (and fails) to connect to it. Show --help instead.
+if [ "$#" -eq 0 ]; then
+  set -- --help
+fi
+
 if command -v uv >/dev/null 2>&1; then
   exec uv run python -m c64cast "$@"
 else
