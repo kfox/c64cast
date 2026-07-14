@@ -1426,7 +1426,11 @@ class VideoScene(Scene):
             self.display_mode.set_color_fit(self._online_fit.result())
         if self.show_frame_numbers:
             fps = self.source.video_fps or 30.0
-            label = f"{_timecode(clock_s)} f{int(round(clock_s * fps))}"
+            # clock_s is rebased to 0 at start_s (AVFileSource seeks + rebases
+            # PTS on setup), so add it back to report the true offset from the
+            # beginning of the file.
+            file_s = clock_s + self.start_s
+            label = f"{_timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
         assert self.display_mode is not None
         _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
