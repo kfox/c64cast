@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import os
 import re
 import urllib.parse
@@ -42,6 +43,30 @@ from .config import (
     Config,
     SceneCfg,
 )
+
+log = logging.getLogger(__name__)
+
+
+class _YtDlpLog:
+    """Absorb yt-dlp's own console output at debug level.
+
+    ``YoutubeDL.trouble()`` writes error/warning text straight to stderr
+    unconditionally (ignoring the ``quiet``/``no_warnings`` options) unless a
+    ``logger`` is supplied. Extraction failures are re-raised as a clean
+    ``ValueError`` by :func:`resolve_media_url`, so that raw text would
+    otherwise print — undithered, possibly ANSI-colored — ahead of (and
+    duplicating) our own message.
+    """
+
+    def debug(self, msg: str) -> None:
+        log.debug("yt-dlp: %s", msg)
+
+    def warning(self, msg: str) -> None:
+        log.debug("yt-dlp: %s", msg)
+
+    def error(self, msg: str) -> None:
+        log.debug("yt-dlp: %s", msg)
+
 
 # Audio-only formats. Recognized so the user gets a clear "deferred" message
 # instead of "unknown file type" — audio-over-test-pattern is a planned
@@ -235,7 +260,10 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
     PyAV can't merge separate DASH streams without downloading — and 360/720p is
     ample for a 320x200 downscale.
 
-    Raises RuntimeError if a non-direct URL needs yt-dlp but it isn't installed.
+    Raises RuntimeError if a non-direct URL needs yt-dlp but it isn't installed,
+    or ValueError if yt-dlp can't extract the media (unavailable/private/removed
+    video, unsupported site, network failure, …) — both are plain "bad input"
+    outcomes the caller reports as a clean message, not a stack trace.
     """
     path = urllib.parse.urlsplit(url).path.lower()
     if path.endswith(VIDEO_EXTS):
@@ -245,6 +273,7 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
 
     try:
         import yt_dlp  # type: ignore[import-untyped]  # noqa: PLC0415  (lazy; optional extra)
+        import yt_dlp.utils  # type: ignore[import-untyped]  # noqa: PLC0415  (lazy; optional extra)
     except ImportError as e:
         raise RuntimeError(
             f"playing {url!r} needs yt-dlp. Install with "
@@ -255,10 +284,17 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
         "quiet": True,
         "no_warnings": True,
         "format": "best[vcodec!=none][acodec!=none]/best",
+        "logger": _YtDlpLog(),
     }
-    # yt_dlp is an optional, untyped dependency — the call is dynamically typed.
-    with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
-        info = ydl.extract_info(url, download=False)
+    try:
+        # yt_dlp is an optional, untyped dependency — the call is dynamically typed.
+        with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
+            info = ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        # yt-dlp's own message is already prefixed "ERROR: " (see
+        # YoutubeDL.report_error) — drop it so it doesn't double up with ours.
+        reason = str(e).removeprefix("ERROR: ")
+        raise ValueError(f"could not resolve {url!r}: {reason}") from e
     if info is None:
         raise ValueError(f"could not resolve media URL: {url}")
     # A playlist/page URL yields entries; take the first playable one.
