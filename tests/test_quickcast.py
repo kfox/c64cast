@@ -286,6 +286,46 @@ class ResolveMediaUrlTest(unittest.TestCase):
             quickcast.resolve_media_url("https://youtu.be/abc")
         self.assertIn("yt-dlp", str(cm.exception))
 
+    def test_ytdlp_extraction_failure_raises_clean_value_error(self):
+        # An unavailable/private/removed video (or any other extraction
+        # failure) must surface as a clean ValueError, not the raw
+        # yt_dlp.DownloadError — that's the one cli.build_stack's existing
+        # scene-build error handler catches without dumping a traceback.
+        class FakeDownloadError(Exception):
+            pass
+
+        class FakeYDL:
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download):  # noqa: ARG002
+                # Mirrors real yt-dlp's report_error(), which wraps "ERROR:"
+                # in ANSI color codes whenever it thinks its stderr is a tty
+                # — regardless of quiet/logger — unless `no_color` is set.
+                raise FakeDownloadError(
+                    "\x1b[0;31mERROR:\x1b[0m [youtube] abc: This video is not available"
+                )
+
+        mod = types.ModuleType("yt_dlp")
+        mod.YoutubeDL = FakeYDL  # type: ignore[attr-defined]
+        mod.DownloadError = FakeDownloadError  # type: ignore[attr-defined]
+        sys.modules["yt_dlp"] = mod
+
+        with self.assertRaises(ValueError) as cm:
+            quickcast.resolve_media_url("https://youtu.be/abc")
+        message = str(cm.exception)
+        self.assertEqual(
+            message,
+            "could not resolve 'https://youtu.be/abc': [youtube] abc: This video is not available",
+        )
+        self.assertNotIn("\x1b", message)
+
 
 class ParseTimestrTest(unittest.TestCase):
     def test_bare_seconds(self):

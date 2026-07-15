@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import os
 import re
 import urllib.parse
@@ -42,6 +43,30 @@ from .config import (
     Config,
     SceneCfg,
 )
+
+log = logging.getLogger(__name__)
+
+
+class _YtDlpLog:
+    """Absorb yt-dlp's own console output at debug level.
+
+    ``YoutubeDL.trouble()`` writes error/warning text straight to stderr
+    unconditionally (ignoring the ``quiet``/``no_warnings`` options) unless a
+    ``logger`` is supplied. Extraction failures are re-raised as a clean
+    ``ValueError`` by :func:`resolve_media_url`, so that raw text would
+    otherwise print — undithered, possibly ANSI-colored — ahead of (and
+    duplicating) our own message.
+    """
+
+    def debug(self, msg: str) -> None:
+        log.debug("yt-dlp: %s", msg)
+
+    def warning(self, msg: str) -> None:
+        log.debug("yt-dlp: %s", msg)
+
+    def error(self, msg: str) -> None:
+        log.debug("yt-dlp: %s", msg)
+
 
 # Audio-only formats. Recognized so the user gets a clear "deferred" message
 # instead of "unknown file type" — audio-over-test-pattern is a planned
@@ -59,6 +84,7 @@ _GROUP_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
 
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _GLOB_CHARS = re.compile(r"[*?\[]")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # Timestamp grammar for URL start offsets: bare seconds ("90", "90.5") or the
 # YouTube [Nh][Nm][Ns] form ("90s", "1m30s", "1h2m3s", "1h"). At least one of
@@ -235,7 +261,10 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
     PyAV can't merge separate DASH streams without downloading — and 360/720p is
     ample for a 320x200 downscale.
 
-    Raises RuntimeError if a non-direct URL needs yt-dlp but it isn't installed.
+    Raises RuntimeError if a non-direct URL needs yt-dlp but it isn't installed,
+    or ValueError if yt-dlp can't extract the media (unavailable/private/removed
+    video, unsupported site, network failure, …) — both are plain "bad input"
+    outcomes the caller reports as a clean message, not a stack trace.
     """
     path = urllib.parse.urlsplit(url).path.lower()
     if path.endswith(VIDEO_EXTS):
@@ -255,10 +284,27 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
         "quiet": True,
         "no_warnings": True,
         "format": "best[vcodec!=none][acodec!=none]/best",
+        "logger": _YtDlpLog(),
+        # Without this, YoutubeDL._format_err wraps "ERROR: " (and other
+        # colored text) in raw ANSI escapes whenever it thinks its stderr is
+        # a tty — which lands in the DownloadError message below regardless
+        # of quiet/logger, and would otherwise leak into our own log output.
+        "no_color": True,
     }
-    # yt_dlp is an optional, untyped dependency — the call is dynamically typed.
-    with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
-        info = ydl.extract_info(url, download=False)
+    try:
+        # yt_dlp is an optional, untyped dependency — the call is dynamically typed.
+        with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
+            info = ydl.extract_info(url, download=False)
+    # yt_dlp.DownloadError, not yt_dlp.utils.DownloadError (its defining
+    # module) — a plain `import yt_dlp` doesn't pull in the `utils`
+    # submodule, and yt_dlp's __init__ re-exports the exception itself.
+    except yt_dlp.DownloadError as e:  # pyright: ignore[reportAttributeAccessIssue]
+        # yt-dlp's own message is already prefixed "ERROR: " (see
+        # YoutubeDL.report_error) — drop it so it doesn't double up with
+        # ours. Also strip any ANSI escapes as a belt-and-braces guard,
+        # since `no_color` should already prevent them above.
+        reason = _ANSI_RE.sub("", str(e)).removeprefix("ERROR: ")
+        raise ValueError(f"could not resolve {url!r}: {reason}") from e
     if info is None:
         raise ValueError(f"could not resolve media URL: {url}")
     # A playlist/page URL yields entries; take the first playable one.
