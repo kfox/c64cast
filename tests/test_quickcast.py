@@ -305,7 +305,12 @@ class ResolveMediaUrlTest(unittest.TestCase):
                 return False
 
             def extract_info(self, url, download):  # noqa: ARG002
-                raise FakeDownloadError("ERROR: [youtube] abc: This video is not available")
+                # Mirrors real yt-dlp's report_error(), which wraps "ERROR:"
+                # in ANSI color codes whenever it thinks its stderr is a tty
+                # — regardless of quiet/logger — unless `no_color` is set.
+                raise FakeDownloadError(
+                    "\x1b[0;31mERROR:\x1b[0m [youtube] abc: This video is not available"
+                )
 
         mod = types.ModuleType("yt_dlp")
         mod.YoutubeDL = FakeYDL  # type: ignore[attr-defined]
@@ -314,9 +319,12 @@ class ResolveMediaUrlTest(unittest.TestCase):
 
         with self.assertRaises(ValueError) as cm:
             quickcast.resolve_media_url("https://youtu.be/abc")
-        # The redundant yt-dlp "ERROR: " prefix is stripped.
-        self.assertIn("This video is not available", str(cm.exception))
-        self.assertNotIn("ERROR: ERROR:", str(cm.exception))
+        message = str(cm.exception)
+        self.assertEqual(
+            message,
+            "could not resolve 'https://youtu.be/abc': [youtube] abc: This video is not available",
+        )
+        self.assertNotIn("\x1b", message)
 
 
 class ParseTimestrTest(unittest.TestCase):

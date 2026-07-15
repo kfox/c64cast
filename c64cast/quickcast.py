@@ -84,6 +84,7 @@ _GROUP_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
 
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _GLOB_CHARS = re.compile(r"[*?\[]")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # Timestamp grammar for URL start offsets: bare seconds ("90", "90.5") or the
 # YouTube [Nh][Nm][Ns] form ("90s", "1m30s", "1h2m3s", "1h"). At least one of
@@ -284,6 +285,11 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
         "no_warnings": True,
         "format": "best[vcodec!=none][acodec!=none]/best",
         "logger": _YtDlpLog(),
+        # Without this, YoutubeDL._format_err wraps "ERROR: " (and other
+        # colored text) in raw ANSI escapes whenever it thinks its stderr is
+        # a tty — which lands in the DownloadError message below regardless
+        # of quiet/logger, and would otherwise leak into our own log output.
+        "no_color": True,
     }
     try:
         # yt_dlp is an optional, untyped dependency — the call is dynamically typed.
@@ -294,8 +300,10 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
     # submodule, and yt_dlp's __init__ re-exports the exception itself.
     except yt_dlp.DownloadError as e:  # pyright: ignore[reportAttributeAccessIssue]
         # yt-dlp's own message is already prefixed "ERROR: " (see
-        # YoutubeDL.report_error) — drop it so it doesn't double up with ours.
-        reason = str(e).removeprefix("ERROR: ")
+        # YoutubeDL.report_error) — drop it so it doesn't double up with
+        # ours. Also strip any ANSI escapes as a belt-and-braces guard,
+        # since `no_color` should already prevent them above.
+        reason = _ANSI_RE.sub("", str(e)).removeprefix("ERROR: ")
         raise ValueError(f"could not resolve {url!r}: {reason}") from e
     if info is None:
         raise ValueError(f"could not resolve media URL: {url}")
