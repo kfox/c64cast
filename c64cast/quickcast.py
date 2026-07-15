@@ -273,7 +273,6 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
 
     try:
         import yt_dlp  # type: ignore[import-untyped]  # noqa: PLC0415  (lazy; optional extra)
-        import yt_dlp.utils  # type: ignore[import-untyped]  # noqa: PLC0415  (lazy; optional extra)
     except ImportError as e:
         raise RuntimeError(
             f"playing {url!r} needs yt-dlp. Install with "
@@ -290,7 +289,10 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
         # yt_dlp is an optional, untyped dependency — the call is dynamically typed.
         with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
             info = ydl.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError as e:
+    # yt_dlp.DownloadError, not yt_dlp.utils.DownloadError (its defining
+    # module) — a plain `import yt_dlp` doesn't pull in the `utils`
+    # submodule, and yt_dlp's __init__ re-exports the exception itself.
+    except yt_dlp.DownloadError as e:  # pyright: ignore[reportAttributeAccessIssue]
         # yt-dlp's own message is already prefixed "ERROR: " (see
         # YoutubeDL.report_error) — drop it so it doesn't double up with ours.
         reason = str(e).removeprefix("ERROR: ")
