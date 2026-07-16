@@ -1,4 +1,10 @@
-# WLED presets
+# presets/
+
+Two unrelated kinds of captured, taste/machine-specific data live under this
+directory — both gitignored (only this README is tracked), like
+`calibration/` and `assets/`.
+
+## WLED presets
 
 WLED "presets" captured through the virtual WLED device (bridge Mode 1) live
 here, one JSON file per device name:
@@ -24,5 +30,21 @@ Presets survive restarts (like real WLED, which persists them on the ESP32's
 filesystem). See [`c64cast/wled_device.py`](../c64cast/wled_device.py)
 (`PresetStore`) and the WLED section of [`CLAUDE.md`](../CLAUDE.md).
 
-These `.json` files are **taste/machine-specific captured data and are
-gitignored** (only this README is tracked) — like `calibration/` and `assets/`.
+## MIDI live-tune loop presets
+
+A performer's saved A/B loop points from the MIDI live-tune DJ transport's
+Record/Stop + pad workflow (`[midi_control].cc_map`'s `loop_slot` action —
+see [`CLAUDE.md`](../CLAUDE.md)'s "MIDI live-tune record workflow" note)
+live under `presets/loops/`, one JSON file per video:
+
+```
+presets/loops/<slug>.<hash12>.json
+```
+
+The hash is derived from the video's basename+size (or the URL itself for a
+URL-backed scene) — see `c64cast/transport.py`'s `loop_preset_key`/
+`loop_preset_path` — so moving the file to a different directory keeps its
+saved loops; editing its content (which changes its size) does not. Each
+file holds up to a handful of numbered slots (pad numbers), each an A/B
+point pair (`b: null` means "loop to end of file"). Safe to delete this
+subdirectory at any time to reset every saved loop.

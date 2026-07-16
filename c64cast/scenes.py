@@ -48,6 +48,7 @@ from .palette import ColorFitAccumulator, ColorMapAccumulator
 from .profiler import get_profiler
 from .rolling_palette import RollingForcePalette
 from .sampler import UltimateAudioSampler
+from .transport import LoopPresetStore, make_loop_preset_store
 from .video import (
     AVFileSource,
     WebcamSource,
@@ -87,6 +88,11 @@ ONLINE_FIT_WARMUP_FRAMES = 48
 # video plays under -vv. The per-scene summary is logged once at teardown
 # (info, visible at -v). See VideoScene._log_av_lag.
 AV_LAG_LOG_INTERVAL_S = 2.0
+
+# Border color while a MIDI live-tune loop is armed (Record pressed / first
+# loop_toggle press, awaiting Stop/second press to close it) — C64 palette
+# index 2 = red. See VideoScene._set_record_border.
+_RECORD_BORDER_COLOR = 2
 
 
 def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.ndarray:
@@ -1205,6 +1211,12 @@ class VideoScene(Scene):
         self._loop_a: float | None = None
         self._loop_b: float | None = None
         self._loop_state: Literal["none", "armed", "active"] = "none"
+        # Record workflow (MIDI live-tune Phase 3): the red border while a
+        # loop is armed, and the per-video loop preset store (rebuilt every
+        # setup() since a directory/glob-backed scene picks a new file each
+        # loop iteration). See _set_record_border / transport_loop_slot.
+        self._record_border_active = False
+        self._loop_store: LoopPresetStore | None = None
 
     def _resolve_candidates(self) -> list[str]:
         from .config import VIDEO_EXTS, resolve_file_spec
@@ -1261,6 +1273,8 @@ class VideoScene(Scene):
         self._loop_a = None
         self._loop_b = None
         self._loop_state = "none"
+        self._record_border_active = False
+        self._loop_store = make_loop_preset_store(self.filepath)
         if not _ensure_pyav():
             log.warning(
                 "PyAV unavailable; video scene cannot play %s "
@@ -1562,18 +1576,23 @@ class VideoScene(Scene):
         self.osd.post(f"SEEK {_timecode(target_s)}")
 
     def transport_loop_toggle(self) -> None:
-        """3-state cycle: mark A -> mark B + start looping -> clear. No red
-        border/slots/persistence this phase — see design decision 3."""
+        """3-state cycle: mark A -> mark B + start looping -> clear. Drives
+        the same _loop_a/_loop_b/_loop_state machine as the Record/Stop pair
+        (transport_record/transport_stop) — the red border/pad-slot
+        persistence added there (MIDI live-tune Phase 3) apply here too, so
+        the single-button and Record/Stop workflows give identical feedback."""
         self._touch_transport()
         pos = self.transport_position()
         if self._loop_state == "none":
             self._loop_a = pos
             self._loop_b = None
             self._loop_state = "armed"
+            self._set_record_border(True)
             self.osd.post(f"LOOP A {_timecode(pos)}")
         elif self._loop_state == "armed":
             self._loop_b = pos
             self._loop_state = "active"
+            self._set_record_border(False)
             assert self._loop_a is not None
             self.osd.post(f"LOOP {_timecode(self._loop_a)}-{_timecode(pos)}")
         else:
@@ -1581,6 +1600,91 @@ class VideoScene(Scene):
             self._loop_b = None
             self._loop_state = "none"
             self.osd.post("LOOP OFF")
+
+    def _set_record_border(self, active: bool) -> None:
+        """Red border while a loop is armed (MIDI live-tune Phase 3). The
+        bitmap/char display modes VideoScene uses engage with a hardcoded
+        black ($00) border and never rewrite $D020 per frame afterward (see
+        modes.engage_bitmap_mode's docstring), so 0 is always the correct
+        value to restore to — no per-mode border state to preserve."""
+        if active == self._record_border_active:
+            return
+        self._record_border_active = active
+        self.api.write_regs("d020", _RECORD_BORDER_COLOR if active else 0)
+
+    def transport_record(self) -> None:
+        """Record button: arm a loop at the current position (first step of
+        the Record -> Stop workflow; see transport_stop). A no-op beyond the
+        usual transport touch if a loop is already armed or active — Stop
+        governs every subsequent transition."""
+        self._touch_transport()
+        if self._loop_state != "none":
+            return
+        pos = self.transport_position()
+        self._loop_a = pos
+        self._loop_b = None
+        self._loop_state = "armed"
+        self._set_record_border(True)
+        self.osd.post(f"REC ● {_timecode(pos)}")
+
+    def transport_stop(self) -> bool:
+        """Stop button: context-sensitive 3-way action.
+
+        - Recording (loop armed): close B, start looping.
+        - Playing (not paused, looping or not): pause in place.
+        - Already paused: request a full app exit — returns True, and the
+          caller (TransportSession._dispatch) sets Playlist.stop_event.
+
+        Held simultaneously with a loop_slot pad press, this SAVES the
+        current loop into that slot (see transport_loop_slot) — the plain
+        press here still fires its own action first; a performer holds Stop
+        a beat longer to reach the pad."""
+        self._touch_transport()
+        if self._loop_state == "armed":
+            assert self._loop_a is not None
+            pos = self.transport_position()
+            self._loop_b = pos
+            self._loop_state = "active"
+            self._set_record_border(False)
+            self.osd.post(f"LOOP {_timecode(self._loop_a)}-{_timecode(pos)}")
+            return False
+        if not self._paused:
+            self.transport_pause()
+            return False
+        return True
+
+    def transport_loop_slot(self, slot: int, *, save: bool, clear: bool) -> None:
+        """Pad press. `save`/`clear` are the Stop-held/Record-held chord
+        flags TransportSession resolves before calling this — mutually
+        exclusive, both False on a plain press (recall)."""
+        if clear:
+            if self._loop_store is not None:
+                self._loop_store.delete(slot)
+            self.osd.post(f"{slot} CLEARED")
+            return
+        if save:
+            if self._loop_a is None:
+                self.osd.post("NO LOOP")
+                return
+            if self._loop_store is not None:
+                self._loop_store.save(slot, self._loop_a, self._loop_b)
+            self.osd.post(f"SAVED {slot}")
+            return
+        entry = self._loop_store.load().get(str(slot)) if self._loop_store is not None else None
+        if entry is not None:
+            a = entry["a"]
+            assert a is not None, "a stored loop entry always has a non-null 'a'"
+            b = entry["b"]
+        else:
+            a, b = 0.0, None
+        self._loop_a = a
+        self._loop_b = b
+        self._loop_state = "active"
+        self._set_record_border(False)
+        if self._paused:
+            self.transport_resume()
+        self.transport_seek(a)
+        self.osd.post(f"LOOP {slot}")
 
     def transport_position(self) -> float:
         return self._clock_s()
@@ -1715,6 +1819,10 @@ class VideoScene(Scene):
 
     def teardown(self) -> None:
         super().teardown()
+        # Idempotent no-op if a loop was never armed — restores the border
+        # if the scene ends (or is interrupted) mid-record so a red border
+        # never lingers into the next scene. See _set_record_border.
+        self._set_record_border(False)
         if self._av_lag_count:
             wall = time.time() - self._start_time
             clock_wall = self._clock_s() / wall if wall > 0 else 0.0

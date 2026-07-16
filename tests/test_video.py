@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
 
 from c64cast import scenes
 from c64cast.scenes import VideoScene, _timecode
+from c64cast.transport import LoopPresetStore
 from c64cast.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
@@ -379,6 +382,9 @@ class _StubSource:
     def set_muted(self, muted: bool) -> None:
         self.muted_calls.append(muted)
 
+    def close(self) -> None:
+        pass
+
     def current_frame(self, clock_s: float) -> np.ndarray | None:
         return self._frame
 
@@ -420,6 +426,8 @@ def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> Vide
     scene._loop_a = None
     scene._loop_b = None
     scene._loop_state = "none"
+    scene._record_border_active = False
+    scene._loop_store = None
     return scene
 
 
@@ -525,8 +533,9 @@ class VideoSceneClockTest(unittest.TestCase):
 
 class VideoSceneLoopToggleTest(unittest.TestCase):
     """transport_loop_toggle's 3-state cycle (mark A -> mark B + active ->
-    clear). No red border/slots/persistence this phase — see design
-    decision 3 of the transport plan."""
+    clear), and the red-border feedback it shares with the Record/Stop pair
+    (MIDI live-tune Phase 3) since both drive the same _loop_a/_loop_b/
+    _loop_state machine."""
 
     def _scene(self) -> VideoScene:
         return _make_video_scene_stub(_StubSource(duration=100.0))
@@ -550,6 +559,148 @@ class VideoSceneLoopToggleTest(unittest.TestCase):
         self.assertEqual(scene._loop_state, "none")
         self.assertIsNone(scene._loop_a)
         self.assertIsNone(scene._loop_b)
+
+    def test_first_press_reddens_border_second_clears_it(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=5.0):
+            scene.transport_loop_toggle()
+        self.assertTrue(scene._record_border_active)
+        scene.api.write_regs.assert_called_with("d020", 2)  # type: ignore[attr-defined]
+
+        with mock.patch.object(scenes.time, "time", return_value=8.0):
+            scene.transport_loop_toggle()
+        self.assertFalse(scene._record_border_active)
+        scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
+
+
+class VideoSceneRecordStopTest(unittest.TestCase):
+    """transport_record (arm) / transport_stop (close loop / pause / quit-
+    signal) — the Record/Stop entry point into the same state machine
+    transport_loop_toggle drives (MIDI live-tune Phase 3)."""
+
+    def _scene(self) -> VideoScene:
+        return _make_video_scene_stub(_StubSource(duration=100.0))
+
+    def test_record_arms_and_reddens_border(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=3.0):
+            scene.transport_record()
+        self.assertEqual(scene._loop_state, "armed")
+        self.assertEqual(scene._loop_a, 3.0)
+        self.assertTrue(scene._record_border_active)
+        scene.api.write_regs.assert_called_with("d020", 2)  # type: ignore[attr-defined]
+
+    def test_record_is_noop_when_already_armed(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=3.0):
+            scene.transport_record()
+        with mock.patch.object(scenes.time, "time", return_value=9.0):
+            scene.transport_record()
+        self.assertEqual(scene._loop_a, 3.0)  # unchanged by the second call
+
+    def test_stop_while_armed_closes_loop_and_clears_border(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=3.0):
+            scene.transport_record()
+        with mock.patch.object(scenes.time, "time", return_value=7.0):
+            quit_requested = scene.transport_stop()
+        self.assertFalse(quit_requested)
+        self.assertEqual(scene._loop_state, "active")
+        self.assertEqual(scene._loop_b, 7.0)
+        self.assertFalse(scene._record_border_active)
+        scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
+
+    def test_stop_while_playing_pauses(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=1.0):
+            quit_requested = scene.transport_stop()
+        self.assertFalse(quit_requested)
+        self.assertTrue(scene._paused)
+
+    def test_stop_while_already_paused_requests_quit(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=1.0):
+            scene.transport_stop()  # first press: pauses
+        with mock.patch.object(scenes.time, "time", return_value=2.0):
+            quit_requested = scene.transport_stop()  # second press: quit
+        self.assertTrue(quit_requested)
+
+
+class VideoSceneLoopSlotTest(unittest.TestCase):
+    """transport_loop_slot: plain press recalls (or whole-file default),
+    Stop-held saves, Record-held clears (MIDI live-tune Phase 3)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _scene(self) -> tuple[VideoScene, LoopPresetStore]:
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        store = LoopPresetStore(Path(self._tmp.name) / "loop.json", video_ref="clip.mp4", size=123)
+        scene._loop_store = store
+        return scene, store
+
+    def test_save_persists_current_loop(self):
+        scene, store = self._scene()
+        scene._loop_a = 10.0
+        scene._loop_b = 20.0
+        scene.transport_loop_slot(1, save=True, clear=False)
+        self.assertEqual(store.load(), {"1": {"a": 10.0, "b": 20.0}})
+
+    def test_save_with_no_current_loop_is_noop(self):
+        scene, store = self._scene()
+        scene.transport_loop_slot(1, save=True, clear=False)
+        self.assertEqual(store.load(), {})
+
+    def test_clear_deletes_slot(self):
+        scene, store = self._scene()
+        store.save(2, 1.0, 2.0)
+        scene.transport_loop_slot(2, save=False, clear=True)
+        self.assertEqual(store.load(), {})
+
+    def test_plain_press_recalls_stored_slot_and_seeks(self):
+        scene, store = self._scene()
+        store.save(3, 12.0, 34.0)
+        scene.transport_loop_slot(3, save=False, clear=False)
+        self.assertEqual(scene._loop_a, 12.0)
+        self.assertEqual(scene._loop_b, 34.0)
+        self.assertEqual(scene._loop_state, "active")
+        self.assertEqual(scene.source.seeks, [12.0])  # type: ignore[union-attr]
+
+    def test_plain_press_on_empty_slot_loops_whole_file(self):
+        scene, _store = self._scene()
+        scene.transport_loop_slot(9, save=False, clear=False)
+        self.assertEqual(scene._loop_a, 0.0)
+        self.assertIsNone(scene._loop_b)
+        self.assertEqual(scene._loop_state, "active")
+
+    def test_recall_resumes_if_paused(self):
+        scene, store = self._scene()
+        store.save(1, 5.0, None)
+        scene._paused = True
+        scene._transport_touched = True
+        scene.transport_loop_slot(1, save=False, clear=False)
+        self.assertFalse(scene._paused)
+
+
+class VideoSceneRecordBorderTeardownTest(unittest.TestCase):
+    def test_teardown_restores_border_when_left_armed(self):
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        scene.audio = None
+        scene._av_lag_count = 0
+        with mock.patch.object(scenes.time, "time", return_value=1.0):
+            scene.transport_record()
+        self.assertTrue(scene._record_border_active)
+        scene.teardown()
+        self.assertFalse(scene._record_border_active)
+        scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
+
+    def test_teardown_is_noop_when_never_armed(self):
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        scene.audio = None
+        scene._av_lag_count = 0
+        scene.teardown()
+        scene.api.write_regs.assert_not_called()  # type: ignore[attr-defined]
 
 
 class VideoSceneProcessFrameLoopTest(unittest.TestCase):
