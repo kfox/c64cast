@@ -1838,6 +1838,17 @@ class MidiControlCfg:
             "choices": ("cut", "interstitial"),
         },
     )
+    osd: str = field(
+        default="bottom",
+        metadata={
+            "help": "On-screen display for live-tune feedback: a brief 'param "
+            "value' message appears when you sweep a knob or change a mode via "
+            "MIDI/WLED, then fades. 'top' or 'bottom' picks the corner; 'off' "
+            "disables it. Rendered pre-quantization so it shows on every display "
+            "mode (like --frame-numbers).",
+            "choices": ("bottom", "top", "off"),
+        },
+    )
     cc_map: list[dict[str, Any]] = field(
         default_factory=lambda: [dict(d) for d in _DEFAULT_MIDI_CC_MAP],
         metadata={
@@ -1847,9 +1858,11 @@ class MidiControlCfg:
             "entry: type ('cc'|'note'|'pc'), number (0-127), action "
             "('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|"
             "'param'); 'jump' also needs an int scene; 'param' also needs a "
-            "string target ('effect.<name>', 'source.<name>', or 'scene.<name>' "
-            "for scope scenes, matching a LIVE_PARAMS entry on the current "
-            "scene's effect/generator/renderer)."
+            "string target ('effect.<name>', 'source.<name>', 'scene.<name>' for "
+            "scope scenes, or 'mode.<name>' for the display mode's live color "
+            "knobs — dither_strength/method, motion_smoothing, auto_fit_strength, "
+            "cell_strategy, color_match, palette_mode). A knob (cc) sweeps a "
+            "scalar or bucket-selects a choice; a note/pad cycles a choice."
         },
     )
 
@@ -2695,6 +2708,11 @@ def _build_display_mode(
     hue_corrections_replace = color.hue_corrections_replace_defaults
     force_palette = color.force_palette
     dither_strength = color.dither_strength
+    # auto_fit_strength is applied mode-side now (the scenes install a
+    # FULL-strength ColorFit and the mode lerps it by this factor at apply time)
+    # so it's a live-tunable knob rather than frozen into the pre-scanned fit.
+    # See DisplayMode._fit_for_apply + ColorFit.lerped.
+    auto_fit_strength = color.auto_fit_strength
     # Resolve [color].color_match's "auto" against the concrete display mode —
     # the single point every mode's perceptual flag flows through.
     perceptual = resolve_color_match(color.color_match, name)
@@ -2723,6 +2741,7 @@ def _build_display_mode(
             hue_corrections=hue_corrections,
             hue_corrections_replace=hue_corrections_replace,
             perceptual=perceptual,
+            auto_fit_strength=auto_fit_strength,
         )
     if name == "mcm":
         return MCMDisplayMode(
@@ -2734,6 +2753,7 @@ def _build_display_mode(
             dither_method=dither_method,
             dither_strength=dither_strength,
             perceptual=perceptual,
+            auto_fit_strength=auto_fit_strength,
         )
     if name == "mhires":
         return MultiHiresDisplayMode(
@@ -2751,6 +2771,7 @@ def _build_display_mode(
             perceptual=perceptual,
             cell_strategy=cell_strategy,
             motion_smoothing=color.motion_smoothing,
+            auto_fit_strength=auto_fit_strength,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)
@@ -3523,6 +3544,10 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
             "[midi_control].jump_transition must be 'cut' or 'interstitial', "
             f"got {midi_cfg.jump_transition!r}"
         )
+    if midi_cfg.osd not in ("bottom", "top", "off"):
+        raise ConfigError(
+            f"[midi_control].osd must be 'bottom', 'top', or 'off', got {midi_cfg.osd!r}"
+        )
     if not 1 <= midi_cfg.broadcast_channel <= 16:
         raise ConfigError(
             f"[midi_control].broadcast_channel must be 1..16, got {midi_cfg.broadcast_channel}"
@@ -3552,12 +3577,12 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
             if (
                 not isinstance(target, str)
                 or "." not in target
-                or target.split(".", 1)[0] not in ("effect", "source", "scene")
+                or target.split(".", 1)[0] not in ("effect", "source", "scene", "mode")
             ):
                 raise ConfigError(
                     f"[midi_control].cc_map[{i}] action 'param' needs a string 'target' "
-                    "of the form 'effect.<name>', 'source.<name>', or 'scene.<name>', got "
-                    f"{target!r}"
+                    "of the form 'effect.<name>', 'source.<name>', 'scene.<name>', or "
+                    f"'mode.<name>', got {target!r}"
                 )
 
 
@@ -4245,6 +4270,14 @@ def build_scene(
     # number into each frame (pre-quantization). Harmless no-op on scenes
     # without a video frame (waveform/launcher/midi ignore the flag).
     scene.show_frame_numbers = cfg.debug.frame_numbers
+    # Live-tune OSD placement ([midi_control].osd): "top"/"bottom" position, or
+    # "off" to disable. Stamped here (like show_frame_numbers) so every built
+    # scene honors the setting; the OsdState stays invisible until a live-tune
+    # control posts to it.
+    scene.osd.enabled = cfg.midi_control.osd != "off"
+    scene.osd.position = (
+        cfg.midi_control.osd if cfg.midi_control.osd in ("top", "bottom") else "bottom"
+    )
     # Per-scene pre-emphasis cascade: explicit scene value wins; otherwise fall
     # back to the global [dsp].pre_emphasis (which may itself be None = source-
     # aware auto). The audio-bearing scenes apply this to the shared streamer at

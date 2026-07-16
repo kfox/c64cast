@@ -29,10 +29,11 @@ from .c64 import (
     VIC_BANK_2,
     RegionID,
 )
-from .dither import bayer_offset, blue_noise_offset, error_diffuse_cells
+from .dither import DITHER_METHODS, bayer_offset, blue_noise_offset, error_diffuse_cells
 from .palette import (
     C64_PALETTE_BGR,
     CELL_STRATEGIES,
+    COLOR_MATCH_MODES,
     DEFAULT_HUE_CORRECTIONS,
     GRAYSCALE_CHROMATIC_PENALTY,
     PALETTE_LUMA,
@@ -1619,6 +1620,69 @@ class DisplayMode:
         from a previous file. No-op effect on modes that don't apply it."""
         self._color_map = cmap
 
+    # --- Live performance: runtime-tunable parameters --------------------
+    # Continuous scalars a MIDI knob / WLED slider can sweep, name -> (lo, hi);
+    # and discrete choices, name -> allowed values (a CC/slider bucket-selects,
+    # a note/pad cycles). midi_control / wled_device drive both through the
+    # `mode.<name>` holder, the same seam they use for effect/source LIVE_PARAMS.
+    # Empty on the base; the quantizing modes populate them. The choice tuples
+    # are pinned to [color]'s metadata choices by tests/test_live_tune.py so they
+    # can't drift from the config surface.
+    LIVE_PARAMS: dict[str, tuple[float, float]] = {}
+    LIVE_CHOICES: dict[str, tuple[str, ...]] = {}
+
+    # [color].auto_fit_strength as a live knob. The pre-scanned ColorFit is
+    # installed at FULL strength (the scenes' accumulators use strength=1.0) and
+    # the mode lerps it toward identity by this factor at apply() time, so the
+    # strength is tunable at runtime (and persistable) instead of frozen into the
+    # fit. 1.0 = the full fit; 0.0 = identity (auto_fit off). Only the
+    # color_fit-applying modes (mcm/mhires/petscii) read it via _fit_for_apply;
+    # others leave it at the default and it does nothing.
+    _auto_fit_strength: float = 1.0
+
+    @property
+    def auto_fit_strength(self) -> float:
+        return self._auto_fit_strength
+
+    @auto_fit_strength.setter
+    def auto_fit_strength(self, value: float) -> None:
+        self._auto_fit_strength = float(min(1.0, max(0.0, value)))
+
+    def _fit_for_apply(self) -> ColorFit | None:
+        """The installed ColorFit lerped by the live auto_fit_strength, or None
+        when no fit is installed — the single seam the color_fit-applying modes
+        call in compose() in place of reading `_color_fit` directly."""
+        if self._color_fit is None:
+            return None
+        return self._color_fit.lerped(self._auto_fit_strength)
+
+    def set_live_choice(self, api: C64Backend, name: str, value: str) -> str:
+        """Apply a discrete LIVE_CHOICES value to the running mode; return a short
+        OSD label. palette_mode needs the backend handle so it's special-cased;
+        every other choice dispatches to its ``set_<name>`` setter. Empty label
+        (a no-op) when the mode has no such setter."""
+        if name == "palette_mode":
+            setter = getattr(self, "set_palette_mode", None)
+            return setter(api, value) if setter is not None else ""
+        setter = getattr(self, "set_" + name, None)
+        if setter is None:
+            return ""
+        label = setter(value)
+        return label if isinstance(label, str) else f"{name}={value}"
+
+    def get_live_choice(self, name: str) -> str | None:
+        """The current value of a LIVE_CHOICES field (so a note/pad can cycle
+        from it). None when this mode doesn't carry that field."""
+        if name == "color_match":
+            return "perceptual" if getattr(self, "_perceptual", False) else "rgb"
+        if name == "palette_mode":
+            return getattr(self, "palette_mode", None)
+        if name == "dither_method":
+            return getattr(self, "_dither_method", None)
+        if name == "cell_strategy":
+            return getattr(self, "_cell_strategy", None)
+        return None
+
     def setup(self, api: C64Backend):
         # Anything that changes the meaning of the VIC memory map should
         # drop the dirty cache so we don't suppress a needed write.
@@ -1910,6 +1974,11 @@ class PETSCIIDisplayMode(CharDisplayMode):
     name = "petscii"
     is_petscii_compatible = True
     frame_target_size = (40, 25)
+    # Live-tune surface: petscii applies the adaptive color fit and picks
+    # nearest-palette per cell, so auto_fit_strength + color_match are live; it
+    # has no dither / per-cell / palette_mode axis.
+    LIVE_PARAMS = {"auto_fit_strength": (0.0, 1.0)}
+    LIVE_CHOICES = {"color_match": COLOR_MATCH_MODES}
 
     def __init__(
         self,
@@ -1920,8 +1989,10 @@ class PETSCIIDisplayMode(CharDisplayMode):
         hue_corrections_replace: bool = False,
         channel_boost: list[float] | None = None,
         perceptual: bool = False,
+        auto_fit_strength: float = 1.0,
     ):
         validate_style(style)
+        self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
         # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
         # Threaded into each style's per-cell color pick; styles decide their
         # own glyph/luma independently of the color metric.
@@ -1979,11 +2050,18 @@ class PETSCIIDisplayMode(CharDisplayMode):
         """Currently-active concrete style name (never the 'random' sentinel)."""
         return self._style_name
 
+    def set_color_match(self, value: str) -> str:
+        """Live-swap the nearest-palette metric ([color].color_match). petscii's
+        styles read `_perceptual` at compose time, so no other state re-derives."""
+        self._perceptual = value == "perceptual"
+        return f"color_match={value}"
+
     def compose(self, frame) -> ComposeBuffers:
         assert self.frame_target_size is not None
         img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
-        if self._color_fit is not None:
-            img = apply_color_fit(img, self._color_fit)
+        fit = self._fit_for_apply()
+        if fit is not None:
+            img = apply_color_fit(img, fit)
         screen, color = self._style.compose(
             img, self._channel_boost, self._hue_corrections, self._perceptual
         )
@@ -2075,6 +2153,15 @@ class MCMDisplayMode(CharDisplayMode):
 
     name = "mcm"
     frame_target_size = (80, 50)
+    # Live-tune surface (see DisplayMode.LIVE_PARAMS). MCM applies the adaptive
+    # color fit, spatial dither, and nearest-palette matching, and can swap
+    # palette_mode live — but has no per-cell (percell) axis.
+    LIVE_PARAMS = {"dither_strength": (0.0, 2.0), "auto_fit_strength": (0.0, 1.0)}
+    LIVE_CHOICES = {
+        "dither_method": DITHER_METHODS,
+        "color_match": COLOR_MATCH_MODES,
+        "palette_mode": PALETTE_MODES,
+    }
 
     def __init__(
         self,
@@ -2086,8 +2173,10 @@ class MCMDisplayMode(CharDisplayMode):
         dither_method: str = "none",
         dither_strength: float = 0.5,
         perceptual: bool = False,
+        auto_fit_strength: float = 1.0,
     ):
         _validate_palette_mode(palette_mode)
+        self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
         # The forced-palette preset pairs with percell (see cycle_style); when
         # config opts in, start in that state regardless of the configured
         # palette_mode (which still seeds the non-forced cycle stops).
@@ -2147,6 +2236,26 @@ class MCMDisplayMode(CharDisplayMode):
         )
         return self.set_palette_mode(api, new_mode, force_palette=new_force)
 
+    # --- live-tune setters (see DisplayMode.LIVE_PARAMS / LIVE_CHOICES) ---
+    @property
+    def dither_strength(self) -> float:
+        return self._dither_strength
+
+    @dither_strength.setter
+    def dither_strength(self, value: float) -> None:
+        self._dither_strength = float(value)
+
+    def set_dither_method(self, value: str) -> str:
+        self._dither_method = value
+        return f"dither_method={value}"
+
+    def set_color_match(self, value: str) -> str:
+        """Live-swap the nearest-palette metric; re-derive the d²-space gray-
+        penalty scale to match (perceptual measures in the smaller Lab metric)."""
+        self._perceptual = value == "perceptual"
+        self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
+        return f"color_match={value}"
+
     def setup(self, api):
         super().setup(api)
         # Re-upload the charset on every setup(), not just the first. The
@@ -2187,8 +2296,9 @@ class MCMDisplayMode(CharDisplayMode):
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
             all_d = quantize_distances(flat)  # (4000, 16)
         else:
-            if self._color_fit is not None:
-                img = apply_color_fit(img, self._color_fit)
+            fit = self._fit_for_apply()
+            if fit is not None:
+                img = apply_color_fit(img, fit)
             img = boost_saturation(img, self._sat_factor)
             # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)
@@ -2331,6 +2441,12 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     name = "hires"
     frame_target_size = (320, 200)
+    # Live-tune surface (see DisplayMode.LIVE_PARAMS). Hires quantizes (in the
+    # "normal" style) with spatial dither + nearest-palette matching, so those
+    # are live; it does NOT apply the adaptive color fit (no auto_fit_strength)
+    # and has no palette_mode / per-cell axis.
+    LIVE_PARAMS = {"dither_strength": (0.0, 2.0)}
+    LIVE_CHOICES = {"dither_method": DITHER_METHODS, "color_match": COLOR_MATCH_MODES}
 
     def __init__(
         self,
@@ -2369,6 +2485,25 @@ class HiresDisplayMode(BitmapDisplayMode):
         # bank 0 next). Only meaningful when use_reu_staged is True;
         # reset in setup().
         self._displayed_bank = 0
+
+    # --- live-tune setters (see DisplayMode.LIVE_PARAMS / LIVE_CHOICES) ---
+    @property
+    def dither_strength(self) -> float:
+        return self._dither_strength
+
+    @dither_strength.setter
+    def dither_strength(self, value: float) -> None:
+        self._dither_strength = float(value)
+
+    def set_dither_method(self, value: str) -> str:
+        self._dither_method = value
+        return f"dither_method={value}"
+
+    def set_color_match(self, value: str) -> str:
+        """Live-swap the nearest-palette metric (no-op on the fixed 2-color
+        edges styles). Hires carries no d²-space penalty to rescale."""
+        self._perceptual = value == "perceptual"
+        return f"color_match={value}"
 
     def setup(self, api):
         super().setup(api)
@@ -2607,6 +2742,29 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
     # 320); height 200 exceeds width here, so the decode planner must honor
     # BOTH axes (see video._plan_decode_size).
     frame_target_size = (160, 200)
+    # Live-tune surface (see DisplayMode.LIVE_PARAMS). mhires is the richest:
+    # adaptive color fit, spatial dither, per-cell temporal smoothing, and the
+    # full set of discrete choices (dither method, per-cell strategy, color
+    # match, palette mode) are all live.
+    LIVE_PARAMS = {
+        "dither_strength": (0.0, 2.0),
+        "motion_smoothing": (0.0, 1.0),
+        "auto_fit_strength": (0.0, 1.0),
+    }
+    LIVE_CHOICES = {
+        "dither_method": DITHER_METHODS,
+        "cell_strategy": CELL_STRATEGIES,
+        "color_match": COLOR_MATCH_MODES,
+        "palette_mode": PALETTE_MODES,
+    }
+
+    # Derived from motion_smoothing (× _penalty_scale) by the property setter
+    # below; declared here so the setter-only writes are visible as instance
+    # attributes (compose() reads them).
+    _motion_smoothing: float
+    _ema_alpha: float
+    _quant_hysteresis: float
+    _code_hysteresis: float
 
     def __init__(
         self,
@@ -2625,9 +2783,11 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         perceptual: bool = False,
         cell_strategy: str = "frequency",
         motion_smoothing: float = 1.0,
+        auto_fit_strength: float = 1.0,
     ):
         _validate_palette_mode(palette_mode)
         _validate_cell_strategy(cell_strategy)
+        self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
         # Text overlays render double-wide ("chunky") by default — an 8×8 glyph
         # spans 2 of the mode's 4px cells (20-col text grid). text_double_height
         # also stretches it to 16 px tall (12-row grid) for across-the-room
@@ -2662,13 +2822,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # exactly, but flickers on noisy content). HW A/B established that the
         # hysteresis is the dominant ghost source, the EMA the secondary one, so
         # a single dial over both is the right control. See docs/architecture.md.
-        s = min(1.0, max(0.0, float(motion_smoothing)))
-        self._motion_smoothing = s
-        # EMA weight: s=1 → PERCELL_PICK_EMA_ALPHA (max smoothing); s=0 → 1.0
-        # (new frame fully replaces history = no smoothing). Read in compose().
-        self._ema_alpha = 1.0 - s * (1.0 - PERCELL_PICK_EMA_ALPHA)
-        self._quant_hysteresis = PERCELL_QUANT_HYSTERESIS_BONUS * s * self._penalty_scale
-        self._code_hysteresis = PERCELL_CODE_HYSTERESIS_BONUS * s * self._penalty_scale
+        # Derives _ema_alpha + the two hysteresis bonuses from _penalty_scale
+        # (set just above) — the `motion_smoothing` property setter, reused so the
+        # live knob re-derives them identically. See its definition below.
+        self.motion_smoothing = motion_smoothing
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         # Per-cell 3-color selection strategy for the percell path (see
@@ -2763,6 +2920,53 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         )
         return self.set_palette_mode(api, new_mode, force_palette=new_force)
 
+    # --- live-tune setters (see DisplayMode.LIVE_PARAMS / LIVE_CHOICES) ---
+    @property
+    def dither_strength(self) -> float:
+        return self._dither_strength
+
+    @dither_strength.setter
+    def dither_strength(self, value: float) -> None:
+        self._dither_strength = float(value)
+
+    @property
+    def motion_smoothing(self) -> float:
+        return self._motion_smoothing
+
+    @motion_smoothing.setter
+    def motion_smoothing(self, value: float) -> None:
+        # Re-derive the two temporal flicker-suppression buffers from the dial:
+        # the per-cell colour-count EMA weight and the per-pixel/per-cell decision
+        # hysteresis (the latter in d² space, so × _penalty_scale). 1.0 = full
+        # (legacy) smoothing; 0.0 = none. Identical math to __init__ (which calls
+        # this) so the live knob and the config path stay in lockstep.
+        s = min(1.0, max(0.0, float(value)))
+        self._motion_smoothing = s
+        self._ema_alpha = 1.0 - s * (1.0 - PERCELL_PICK_EMA_ALPHA)
+        self._quant_hysteresis = PERCELL_QUANT_HYSTERESIS_BONUS * s * self._penalty_scale
+        self._code_hysteresis = PERCELL_CODE_HYSTERESIS_BONUS * s * self._penalty_scale
+
+    def set_dither_method(self, value: str) -> str:
+        self._dither_method = value
+        return f"dither_method={value}"
+
+    def set_cell_strategy(self, value: str) -> str:
+        _validate_cell_strategy(value)
+        self._cell_strategy = value
+        return f"cell_strategy={value}"
+
+    def set_color_match(self, value: str) -> str:
+        """Live-swap the nearest-palette metric. Re-derives everything that lives
+        in d² space and depends on it: the gray-penalty scale, the two percell
+        hysteresis bonuses (via the motion_smoothing setter), and the per-palette
+        pairwise-distance table used by the unused-index remap."""
+        self._perceptual = value == "perceptual"
+        self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
+        # Re-derive the hysteresis at the new penalty scale (keeps motion_smoothing).
+        self.motion_smoothing = self._motion_smoothing
+        self._pal_pairwise = quantize_distances_for(C64_PALETTE_BGR, perceptual=self._perceptual)
+        return f"color_match={value}"
+
     def setup(self, api):
         super().setup(api)
         # Single-buffer bring-up clears $2000+$0400 before the $D011 flip (engage
@@ -2855,8 +3059,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
             d = quantize_distances(flat)
         else:
-            if self._color_fit is not None:
-                img = apply_color_fit(img, self._color_fit)
+            fit = self._fit_for_apply()
+            if fit is not None:
+                img = apply_color_fit(img, fit)
             img = boost_saturation(img, self._sat_factor)
             # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)

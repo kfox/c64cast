@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from .backend import C64Backend
 from .profiler import FrameProfiler, NullProfiler
 from .scenes import Scene
+from .transport import LiveTuneTracker
 
 if TYPE_CHECKING:
     from .config import SceneCfg
@@ -181,6 +182,11 @@ class Playlist:
         # bridge sets both this and the current mode's `user_dim` for an
         # instant effect that also outlasts the current scene.
         self.user_dim: float = 1.0
+        # Live-tune change log for the exit save-back flow (--overwrite / prompt).
+        # The MIDI/WLED live-tune controls record each applied param change here;
+        # cli.main reads it after teardown. Always present (cheap), so callers
+        # needn't guard. See transport.LiveTuneTracker.
+        self.live_tracker = LiveTuneTracker()
         self.transitioning = False
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
@@ -215,6 +221,15 @@ class Playlist:
             self._pending_scenes = list(new_scenes)
             self._pending_interstitial = new_interstitial
             self.reload_event.set()
+
+    def post_osd(self, text: str, duration_s: float = 2.5) -> None:
+        """Show a brief on-screen message on the current scene (live-tune
+        feedback). Routed to the scene's OsdState, which the render loop reads;
+        a no-op when no scene is live or the scene's OSD is disabled. Called from
+        the MIDI reader / WLED server threads — OsdState.post is thread-safe."""
+        scene = self.current
+        if scene is not None:
+            scene.osd.post(text, duration_s)
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         """Cut to scenes[index] at the next clean frame boundary (reuses

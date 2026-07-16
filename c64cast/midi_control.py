@@ -279,23 +279,67 @@ class MidiControlListener:
             if mapping.scene is not None and 0 <= mapping.scene < len(pl.scenes):
                 pl.request_jump(mapping.scene, skip_interstitial=self.jump_transition == "cut")
         elif action == "param":
-            self._apply_param(pl, mapping.target, value)
+            self._apply_param(pl, mapping.target, value, mapping.kind)
 
-    def _apply_param(self, pl: Playlist, target: str | None, value_0_127: int) -> None:
+    def _apply_param(
+        self, pl: Playlist, target: str | None, value_0_127: int, kind: str = "cc"
+    ) -> None:
         if target is None or pl.current is None:
             return
         holder_attr, _, name = target.partition(".")
         # `scene.<name>` targets the scene itself (scope scenes mix in the
-        # renderer, so the param lives on the scene, not a source/effect holder).
-        # Kept verbatim-mirrored with wled_device._set_live_param.
-        holder = pl.current if holder_attr == "scene" else getattr(pl.current, holder_attr, None)
+        # renderer, so the param lives on the scene, not a source/effect holder);
+        # `mode.<name>` targets the scene's display mode (the live color-pipeline
+        # knobs — dither, motion smoothing, auto-fit, and the discrete choices).
+        # Kept mirrored with wled_device._resolve_live_target / _set_live_param.
+        if holder_attr == "scene":
+            holder = pl.current
+        elif holder_attr == "mode":
+            holder = getattr(pl.current, "display_mode", None)
+        else:
+            holder = getattr(pl.current, holder_attr, None)
         if holder is None:
             return
         live_params = getattr(type(holder), "LIVE_PARAMS", {})
-        if name not in live_params:
-            return  # target has no such LIVE_PARAM — a documented, silent no-op
-        lo, hi = live_params[name]
-        setattr(holder, name, lo + (value_0_127 / 127.0) * (hi - lo))
+        live_choices = getattr(type(holder), "LIVE_CHOICES", {})
+        if name in live_params:
+            lo, hi = live_params[name]
+            old = getattr(holder, name, None)
+            new = lo + (value_0_127 / 127.0) * (hi - lo)
+            setattr(holder, name, new)
+            pl.post_osd(f"{name} {new:.2f}")
+            self._record_live_change(pl, holder_attr, name, old, new)
+        elif name in live_choices:
+            # A CC (a knob) bucket-selects across the choice list; a note/pad/PC
+            # (a momentary trigger) cycles to the next choice from the current one.
+            # Only display modes declare LIVE_CHOICES + the set/get helpers, but
+            # resolve via getattr so a Scene holder can't trip an attribute error.
+            set_choice = getattr(holder, "set_live_choice", None)
+            get_choice = getattr(holder, "get_live_choice", None)
+            if set_choice is None:
+                return
+            choices = live_choices[name]
+            cur = get_choice(name) if get_choice is not None else None
+            if kind == "cc":
+                idx = min(len(choices) - 1, value_0_127 * len(choices) // 128)
+            else:
+                cur_idx = choices.index(cur) if cur in choices else -1
+                idx = (cur_idx + 1) % len(choices)
+            chosen = choices[idx]
+            api = getattr(pl.current, "api", None)
+            label = set_choice(api, name, chosen)
+            pl.post_osd(label or f"{name} {chosen}")
+            self._record_live_change(pl, holder_attr, name, cur, chosen)
+        # else: the target declares no such LIVE_PARAM/LIVE_CHOICE — silent no-op.
+
+    @staticmethod
+    def _record_live_change(pl: Playlist, holder_attr: str, name: str, old: Any, new: Any) -> None:
+        """Log a `mode.<name>` change into the playlist's live-tune tracker for
+        the exit save-back. Only mode params map to config ([color]) fields;
+        effect/source/scene LIVE_PARAMS are transient runtime state, not config,
+        so they're not tracked."""
+        if holder_attr == "mode":
+            pl.live_tracker.record(f"mode.{name}", old, new)
 
 
 def build_midi_control_listener(

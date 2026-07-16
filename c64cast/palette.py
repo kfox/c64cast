@@ -564,6 +564,20 @@ class ColorFit:
         scene can skip installing it (and `result()` can return None)."""
         return self.black <= 1.0 and self.white >= 254.0 and self.sat_mult <= 1.01
 
+    def lerped(self, strength: float) -> ColorFit:
+        """This fit lerped toward identity by `strength` (0..1): 1 = unchanged,
+        0 = identity. Same math ColorFitAccumulator.result() bakes in via its
+        `strength` — pulling it out here lets the display mode apply the strength
+        live (the `[color].auto_fit_strength` knob) instead of freezing it into
+        the pre-scanned fit, so the value is tunable at runtime and persistable.
+        """
+        st = float(np.clip(strength, 0.0, 1.0))
+        return ColorFit(
+            black=self.black * st,
+            white=255.0 - (255.0 - self.white) * st,
+            sat_mult=1.0 + (self.sat_mult - 1.0) * st,
+        )
+
 
 _CONTRAST_LUT_CACHE: dict[tuple[int, int], np.ndarray] = {}
 
