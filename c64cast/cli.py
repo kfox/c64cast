@@ -405,6 +405,13 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
             )
             root.addHandler(fh)
 
+    # Third-party loggers that spam at DEBUG and drown our own output under -vv.
+    # urllib3 logs every REST request/connection to the U64 (probe, config
+    # reads, run_prg) — pin it to WARNING so -vv stays about c64cast, not the
+    # HTTP transport. (Requests reuse the connection pool, so this is pure noise.)
+    for noisy in ("urllib3.connectionpool", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
 def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) -> None:
     """Emit a multi-line, user-actionable error covering both the
