@@ -1760,7 +1760,7 @@ class ControlPlaneCfg:
     )
 
 
-_MIDI_CC_TYPE_CHOICES = ("cc", "note", "pc")
+_MIDI_CC_TYPE_CHOICES = ("cc", "note", "pc", "mmc")
 _MIDI_ACTION_CHOICES = (
     "pause",
     "resume",
@@ -1769,7 +1769,21 @@ _MIDI_ACTION_CHOICES = (
     "cycle_style",
     "jump",
     "param",
+    # DJ-style video transport (MIDI live-tune Phase 2). Mirrored in
+    # midi_control.py's own copy — tests/test_live_tune.py (or wherever the
+    # LIVE_CHOICES-style drift test lives) pins the two lists together so
+    # they can't diverge.
+    "transport.play_pause",
+    "transport.stop",
+    "transport.loop_toggle",
+    "transport.rw",
+    "transport.ff",
+    "transport.jog",
 )
+# MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
+# mirrors midi_control._MMC_COMMANDS (kept independent per the module's
+# "config stays import-light" rule; see validate_midi_control_cfg).
+_MIDI_MMC_COMMAND_CHOICES = (0x01, 0x02, 0x04, 0x05, 0x06, 0x09)
 
 # Shipped out of the box so MIDI control works with no config edits, per a
 # typical 16-pad-grid + knob-bank live controller (Launch Control XL / APC
@@ -1855,14 +1869,24 @@ class MidiControlCfg:
             "help": "MIDI-message -> action mappings ([[midi_control.cc_map]] "
             "tables); see --describe section:midi_control. Set to [] to disable "
             "the shipped defaults, or override/extend individual entries. Each "
-            "entry: type ('cc'|'note'|'pc'), number (0-127), action "
-            "('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|"
-            "'param'); 'jump' also needs an int scene; 'param' also needs a "
-            "string target ('effect.<name>', 'source.<name>', 'scene.<name>' for "
-            "scope scenes, or 'mode.<name>' for the display mode's live color "
-            "knobs — dither_strength/method, motion_smoothing, auto_fit_strength, "
-            "cell_strategy, color_match, palette_mode). A knob (cc) sweeps a "
-            "scalar or bucket-selects a choice; a note/pad cycles a choice."
+            "entry: type ('cc'|'note'|'pc'|'mmc'), number (0-127 for cc/note/pc; "
+            "an MMC command byte — 0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x09 "
+            "pause — for mmc), action ('pause'|'resume'|'toggle_pause'|'skip'|"
+            "'cycle_style'|'jump'|'param'|'transport.play_pause'|'transport.stop'|"
+            "'transport.loop_toggle'|'transport.rw'|'transport.ff'|"
+            "'transport.jog'); 'jump' also needs an int scene; 'param' also needs "
+            "a string target ('effect.<name>', 'source.<name>', 'scene.<name>' "
+            "for scope scenes, or 'mode.<name>' for the display mode's live "
+            "color knobs — dither_strength/method, motion_smoothing, "
+            "auto_fit_strength, cell_strategy, color_match, palette_mode). A "
+            "knob (cc) sweeps a scalar or bucket-selects a choice; a note/pad "
+            "cycles a choice. The transport.* actions give DJ-style control of "
+            "a playing video scene (pause-in-place, seek, RW/FF with "
+            "acceleration while a note is held, an A/B loop, and a rotary "
+            "jog — 'mode' 'abs'|'rel', default 'rel'); once touched at all, "
+            "that scene's audio mutes for the rest of its run (see "
+            "docs/architecture.md's transport note). A 'mmc' entry also "
+            "matches an MMC transport SysEx from a DAW/controller."
         },
     )
 
@@ -3564,6 +3588,11 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
         number = entry.get("number")
         if not isinstance(number, int) or not 0 <= number <= 127:
             raise ConfigError(f"[midi_control].cc_map[{i}].number must be 0..127, got {number!r}")
+        if kind == "mmc" and number not in _MIDI_MMC_COMMAND_CHOICES:
+            raise ConfigError(
+                f"[midi_control].cc_map[{i}] type 'mmc' number must be one of "
+                f"{sorted(_MIDI_MMC_COMMAND_CHOICES)} (an MMC command byte), got {number!r}"
+            )
         action = entry.get("action")
         if action not in _MIDI_ACTION_CHOICES:
             raise ConfigError(
@@ -3583,6 +3612,13 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                     f"[midi_control].cc_map[{i}] action 'param' needs a string 'target' "
                     "of the form 'effect.<name>', 'source.<name>', 'scene.<name>', or "
                     f"'mode.<name>', got {target!r}"
+                )
+        if action == "transport.jog":
+            mode = entry.get("mode")
+            if mode is not None and mode not in ("abs", "rel"):
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'transport.jog' mode must be "
+                    f"'abs' or 'rel', got {mode!r}"
                 )
 
 

@@ -1,7 +1,7 @@
 """Live-performance transport + live-tune plumbing.
 
 Phase 1 of the MIDI live-tune feature (see docs/architecture.md → "Live
-performance") ships only the pieces that don't need a transport engine yet:
+performance") shipped the pieces that don't need a transport engine:
 
 - :func:`atomic_write_text` — the crash-safe "temp file in the same dir +
   ``os.replace``" write, factored out of :class:`wled_device.PresetStore` so the
@@ -12,8 +12,23 @@ performance") ships only the pieces that don't need a transport engine yet:
   final values back into the ``[color]`` section of the run's TOML, or print a
   pasteable snippet for a quick-playback run that has no file.
 
-Later phases add the actual transport session (seek / pause-in-place / A/B loop /
-record) to this module. Kept import-light (stdlib only; Config referenced under
+Phase 2 adds the actual transport session — DJ-style control of a playing
+:class:`~c64cast.scenes.VideoScene` (pause in place, seek/scrub, RW/FF with
+acceleration, an A/B loop) driven from the same ``[midi_control]`` surface
+Phase 1 built:
+
+- :class:`TransportEvent` / :class:`TransportSession` — a thread-safe queue
+  the MIDI reader thread enqueues into (:mod:`midi_control`'s reader thread,
+  never the playlist thread) and :meth:`TransportSession.tick` drains once per
+  frame from :meth:`~c64cast.playlist.Playlist._run_one_frame`, dispatching
+  against whatever scene is current via a duck-typed ``transport_*`` surface
+  (see :class:`~c64cast.scenes.VideoScene`). Held rw/ff notes accelerate over
+  time; this keeps all scene/DMA-adjacent mutation on the playlist thread,
+  matching the module's existing rule for :class:`LiveTuneTracker`.
+
+Later phases (3-5) add the record workflow + loop preset slots, real audio
+resync across a seek, and the ``--midi-setup`` learn wizard. Kept import-light
+(stdlib only; ``Config``/``Playlist``/``Scene`` referenced under
 TYPE_CHECKING) so it can be pulled in from playlist.py without a cycle.
 """
 
@@ -22,12 +37,15 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import queue
 import tempfile
 import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .config import Config
+    from .playlist import Playlist
 
 log = logging.getLogger(__name__)
 
@@ -162,8 +180,8 @@ def _values_equal(a: Any, b: Any) -> bool:
         try:
             return abs(float(a) - float(b)) < 1e-9
         except (TypeError, ValueError):
-            return a == b
-    return a == b
+            return bool(a == b)
+    return bool(a == b)
 
 
 def _fmt(v: Any) -> str:
@@ -180,3 +198,145 @@ def _toml_value(v: Any) -> str:
     if isinstance(v, str):
         return f'"{v}"'
     return str(v)
+
+
+# Held-action ramp (rw/ff): media-seconds covered per real second at hold
+# duration `elapsed`. Starts near 1x and doubles every _RAMP_DOUBLE_S seconds,
+# capped at _MAX_HOLD_SPEED — fine control on a quick tap, fast travel on a
+# long hold. HW-tuned constants, see the transport design doc.
+_MAX_HOLD_SPEED = 30.0
+_RAMP_DOUBLE_S = 0.75
+# Relative jog: media-seconds moved per encoder tick.
+_JOG_SECONDS_PER_TICK = 1.0
+
+_HOLD_ACTIONS = ("rw", "ff")
+
+
+@dataclass(frozen=True)
+class TransportEvent:
+    """One MIDI-triggered transport action, queued by the MIDI reader thread
+    and drained on the playlist thread by :meth:`TransportSession.tick`.
+
+    ``action`` is the short form (``"play_pause"``, ``"stop"``,
+    ``"loop_toggle"``, ``"rw"``, ``"ff"``, ``"jog"`` — the cc_map action
+    string with its ``"transport."`` prefix stripped). ``pressed``
+    distinguishes a note-on from a note-off for the hold-aware rw/ff actions
+    (ignored by the others). ``value`` is the raw MIDI value/velocity
+    (0-127) — used by ``jog``. ``mode`` is jog's ``"abs"``/``"rel"``
+    (default ``"rel"``), from the cc_map entry."""
+
+    action: str
+    pressed: bool = True
+    value: int = 0
+    mode: str = "rel"
+
+
+def _decode_relative_jog(value: int) -> int:
+    """Decode a relative-encoder CC byte (the common Launch Control/APC
+    two's-complement-style convention): 1..63 -> +N ticks, 65..127 ->
+    -(128-N) ticks, 0/64 (no motion / center rest) -> 0 ticks."""
+    if 1 <= value <= 63:
+        return value
+    if 65 <= value <= 127:
+        return value - 128
+    return 0
+
+
+class TransportSession:
+    """Applies queued :class:`TransportEvent`\\s to the playlist's current
+    scene once per frame, and drives the RW/FF hold-acceleration ramp.
+
+    Construct one per :class:`~c64cast.playlist.Playlist` (mirrors
+    ``Playlist.live_tracker``). :meth:`enqueue` is called from the MIDI
+    reader thread; :meth:`tick` is called from the playlist thread only —
+    all scene mutation happens there, never on the MIDI thread (the same
+    rule ``midi_control``'s other actions already follow via
+    ``threading.Event``/direct ``LIVE_PARAMS`` writes).
+
+    Dispatch is duck-typed against ``pl.current`` — a scene that doesn't
+    declare the ``transport_*`` surface (see
+    :class:`~c64cast.scenes.VideoScene`) is a silent no-op, exactly like a
+    ``LIVE_PARAMS``/``LIVE_CHOICES`` target that doesn't exist on the
+    current holder."""
+
+    def __init__(self) -> None:
+        self._queue: queue.SimpleQueue[TransportEvent] = queue.SimpleQueue()
+        # action name -> wall-time the hold started. Mutated only in tick()
+        # (playlist thread) — enqueue() only ever pushes onto _queue.
+        self._held: dict[str, float] = {}
+        self._last_tick: float | None = None
+
+    def enqueue(self, event: TransportEvent) -> None:
+        self._queue.put(event)
+
+    def tick(self, pl: Playlist, now: float) -> None:
+        """Drain queued events, dispatch each against ``pl.current``, then
+        advance any held rw/ff ramp. Called once per frame from
+        ``Playlist._run_one_frame``, right before ``scene.process_frame``."""
+        dt = now - self._last_tick if self._last_tick is not None else 0.0
+        self._last_tick = now
+        while True:
+            try:
+                event = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._dispatch(pl, event, now)
+        if pl.transitioning or pl.current is None or dt <= 0.0:
+            return
+        scene = pl.current
+        seek = getattr(scene, "transport_seek", None)
+        position = getattr(scene, "transport_position", None)
+        if seek is None or position is None:
+            return
+        for action, start in list(self._held.items()):
+            elapsed = now - start
+            speed = min(_MAX_HOLD_SPEED, 2.0 ** (elapsed / _RAMP_DOUBLE_S))
+            delta = speed * dt * (-1.0 if action == "rw" else 1.0)
+            seek(position() + delta)
+
+    def _dispatch(self, pl: Playlist, event: TransportEvent, now: float) -> None:
+        if event.action in _HOLD_ACTIONS:
+            # Hold bookkeeping happens regardless of whether a scene is
+            # currently on screen — if one becomes current mid-hold, the
+            # ramp in tick() picks it up from wherever the hold started.
+            if event.pressed:
+                self._held.setdefault(event.action, now)
+            else:
+                self._held.pop(event.action, None)
+            return
+        if pl.transitioning or pl.current is None:
+            return
+        scene = pl.current
+        if event.action == "play_pause":
+            toggle = getattr(scene, "transport_toggle_pause", None)
+            if toggle is not None:
+                toggle()
+        elif event.action == "stop":
+            # Full stop/record/quit state machine is Phase 3 — this phase
+            # `transport.stop` is pause-only.
+            pause = getattr(scene, "transport_pause", None)
+            if pause is not None:
+                pause()
+        elif event.action == "loop_toggle":
+            loop_toggle = getattr(scene, "transport_loop_toggle", None)
+            if loop_toggle is not None:
+                loop_toggle()
+        elif event.action == "jog":
+            self._apply_jog(scene, event)
+
+    @staticmethod
+    def _apply_jog(scene: Any, event: TransportEvent) -> None:
+        seek = getattr(scene, "transport_seek", None)
+        position = getattr(scene, "transport_position", None)
+        duration = getattr(scene, "transport_duration", None)
+        if seek is None or position is None:
+            return
+        if event.mode == "abs":
+            total = duration() if duration is not None else None
+            target = (event.value / 127.0) * (total or 0.0)
+        else:
+            ticks = _decode_relative_jog(event.value)
+            if ticks == 0:
+                return
+            target = position() + ticks * _JOG_SECONDS_PER_TICK
+        seek(target)

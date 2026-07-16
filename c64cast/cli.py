@@ -643,6 +643,54 @@ def _coerce_reu_for_backend(cfg: cfgmod.Config, api: C64Backend) -> None:
         cfg.video.use_reu_staged = False
 
 
+def _coerce_reu_for_transport(cfg: cfgmod.Config, midi_cfg: cfgmod.MidiControlCfg) -> None:
+    """Disable [audio].use_reu_pump on `cfg` when `midi_cfg` has any
+    transport.* action mapped (MIDI live-tune Phase 2 — DJ-style seek/pause/
+    loop control of a playing video).
+
+    `midi_cfg` is passed explicitly rather than read off `cfg.midi_control`
+    because [midi_control] is process-wide, not per-system-cascaded (like
+    [control] — see validate_midi_control_cfg's docstring): in ensemble mode
+    the config that actually drives the listener is `loaded.master_midi_control`,
+    not any per-system `cfg.midi_control`. The caller resolves the right one
+    (mirrors the `loaded.master_midi_control if loaded.is_ensemble else
+    cfgs[0].midi_control` pattern used to build the real listener).
+
+    The REU-pump audio path pre-decodes a video's entire soundtrack up front
+    and streams it from a C64-side ring on its own clock, independent of
+    which video frame is currently displayed — it has no notion of "splice
+    to a new position." The transport escape valve (VideoScene._touch_transport
+    -> AVFileSource.set_muted) only reaches the host-DMA audio path (it drops
+    packets AVFileSource would otherwise emit), so a REU-pumped soundtrack
+    would keep playing on its own untouched timeline while the video jumps
+    around on a seek/loop/pause. Coerce it off (in place) so the host-DMA NMI
+    DAC path is used instead — same "force off + log" shape as
+    _coerce_reu_for_backend, but for an incompatible *feature combination*
+    rather than a missing capability.
+
+    Must run before the shared AudioStreamer is constructed (see
+    build_stack) — use_reu_pump is a constructor arg baked into that instance,
+    not something a later per-scene build_scene call can retroactively
+    change. [video].use_reu_staged (the REU bank-swap BITMAP push) is a
+    separate, orthogonal mechanism — it only affects how the current frame
+    reaches C64 memory, not which frame is current, so it's unaffected by
+    transport and left as configured."""
+    if not midi_cfg.enabled:
+        return
+    if not any(
+        isinstance(entry, dict) and str(entry.get("action", "")).startswith("transport.")
+        for entry in midi_cfg.cc_map
+    ):
+        return
+    if cfg.audio.use_reu_pump:
+        log.info(
+            "[audio].use_reu_pump is incompatible with [midi_control] transport.* "
+            "actions (no seek/splice support) — using the host-DMA NMI DAC "
+            "path instead"
+        )
+        cfg.audio.use_reu_pump = False
+
+
 def build_stack(
     cfg: cfgmod.Config,
     name: str,
@@ -1312,7 +1360,15 @@ def main(argv=None) -> int:
         diagnostics = validate_load_result(merged, probe_u64=not cfgs[0].debug.skip_probe)
         return print_report(diagnostics)
 
+    # [midi_control] is process-wide (see _coerce_reu_for_transport's
+    # docstring), so resolve the one MidiControlCfg that actually drives the
+    # listener once, before the per-cfg loop below applies it to each
+    # system's audio settings.
+    midi_cfg = loaded.master_midi_control if loaded.is_ensemble else cfgs[0].midi_control
     for cfg in cfgs:
+        # Must run before build_stack constructs this system's AudioStreamer
+        # (see _coerce_reu_for_transport).
+        _coerce_reu_for_transport(cfg, midi_cfg)
         if cfg.audio.enabled and not AUDIO_AVAILABLE:
             log.error(
                 "audio enabled but sounddevice is not installed. Install "

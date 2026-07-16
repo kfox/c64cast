@@ -26,8 +26,14 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
+from c64cast import config as cfgmod
 from c64cast import midi_control
-from c64cast.midi_control import MidiControlListener, _parse_cc_map
+from c64cast.midi_control import (
+    MidiControlListener,
+    _parse_cc_map,
+    _parse_mmc_sysex,
+)
+from c64cast.transport import TransportEvent
 
 
 def _fake_playlist(name: str, *, scene_count: int = 16) -> Any:
@@ -123,6 +129,80 @@ class ParseCCMapTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _parse_cc_map(["not a dict"])  # type: ignore[list-item]
 
+    def test_mmc_entry_parses(self):
+        m = _parse_cc_map([{"type": "mmc", "number": 0x02, "action": "transport.play_pause"}])
+        self.assertEqual(m[("mmc", 0x02)].action, "transport.play_pause")
+
+    def test_mmc_bad_command_byte_rejected(self):
+        # A syntactically valid 0..127 number that isn't a recognized MMC
+        # transport command (0x7F isn't stop/play/ff/rw/record/pause).
+        with self.assertRaises(ValueError):
+            _parse_cc_map([{"type": "mmc", "number": 0x7F, "action": "transport.stop"}])
+
+    def test_transport_actions_parse(self):
+        for action in (
+            "transport.play_pause",
+            "transport.stop",
+            "transport.loop_toggle",
+            "transport.rw",
+            "transport.ff",
+            "transport.jog",
+        ):
+            m = _parse_cc_map([{"type": "note", "number": 60, "action": action}])
+            self.assertEqual(m[("note", 60)].action, action)
+
+    def test_jog_mode_abs_and_rel_accepted(self):
+        for mode in ("abs", "rel"):
+            m = _parse_cc_map(
+                [{"type": "cc", "number": 20, "action": "transport.jog", "mode": mode}]
+            )
+            self.assertEqual(m[("cc", 20)].mode, mode)
+
+    def test_jog_omitted_mode_stored_as_none(self):
+        # None -> "rel" default is applied at dispatch time, not parse time.
+        m = _parse_cc_map([{"type": "cc", "number": 20, "action": "transport.jog"}])
+        self.assertIsNone(m[("cc", 20)].mode)
+
+    def test_jog_bad_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            _parse_cc_map(
+                [{"type": "cc", "number": 20, "action": "transport.jog", "mode": "sideways"}]
+            )
+
+
+class MmcSysexParseTests(unittest.TestCase):
+    def test_recognized_command_returns_byte(self):
+        self.assertEqual(_parse_mmc_sysex((0x7F, 0x7F, 0x06, 0x02)), 0x02)  # play
+
+    def test_device_byte_is_wildcarded(self):
+        # Any device byte (not just the 0x7F "all devices" broadcast) matches.
+        self.assertEqual(_parse_mmc_sysex((0x7F, 0x05, 0x06, 0x01)), 0x01)  # stop
+
+    def test_unrecognized_command_returns_none(self):
+        self.assertIsNone(_parse_mmc_sysex((0x7F, 0x7F, 0x06, 0x7E)))
+
+    def test_non_mmc_frame_returns_none(self):
+        self.assertIsNone(_parse_mmc_sysex((0x41, 0x10, 0x42)))  # some other SysEx
+
+    def test_wrong_length_returns_none(self):
+        self.assertIsNone(_parse_mmc_sysex((0x7F, 0x7F, 0x06)))
+
+
+class MidiActionChoicesDriftTest(unittest.TestCase):
+    """midi_control.py's runtime vocabulary and config.py's cc_map validation
+    vocabulary must agree (config stays import-light and keeps its own copy —
+    see both modules' docstrings), so a new action/type added to one always
+    gets added to the other."""
+
+    def test_actions_match(self):
+        self.assertEqual(set(midi_control._ACTIONS), set(cfgmod._MIDI_ACTION_CHOICES))
+
+    def test_cc_types_match(self):
+        self.assertEqual(set(midi_control._CC_TYPES), set(cfgmod._MIDI_CC_TYPE_CHOICES))
+
+    def test_mmc_commands_match(self):
+        self.assertEqual(midi_control._MMC_COMMANDS, set(cfgmod._MIDI_MMC_COMMAND_CHOICES))
+
 
 @unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
 class _MidiControlTestCase(unittest.TestCase):
@@ -201,6 +281,90 @@ class DispatchActionTests(_MidiControlTestCase):
         listener, pl = self._listener([{"type": "note", "number": 36, "action": "skip"}])
         listener._dispatch(mido.Message("note_on", note=99, velocity=100))
         self.assertFalse(pl.skip_event.is_set())
+
+
+class TransportDispatchTests(_MidiControlTestCase):
+    """transport.* actions enqueue a TransportEvent on pl.transport instead
+    of mutating scene state directly on the MIDI reader thread — see
+    transport.TransportSession."""
+
+    def _listener(self, cc_map, **kwargs) -> tuple[MidiControlListener, Any]:
+        pl = _fake_playlist("system")
+        listener = MidiControlListener({"system": pl}, cc_map, **kwargs)
+        return listener, pl
+
+    def test_note_on_enqueues_press(self):
+        listener, pl = self._listener(
+            [{"type": "note", "number": 41, "action": "transport.loop_toggle"}]
+        )
+        listener._dispatch(mido.Message("note_on", note=41, velocity=100))
+        pl.transport.enqueue.assert_called_once_with(
+            TransportEvent(action="loop_toggle", pressed=True, value=100, mode="rel")
+        )
+
+    def test_cc_enqueues_press_with_value(self):
+        listener, pl = self._listener([{"type": "cc", "number": 20, "action": "transport.jog"}])
+        listener._dispatch(mido.Message("control_change", control=20, value=65))
+        pl.transport.enqueue.assert_called_once_with(
+            TransportEvent(action="jog", pressed=True, value=65, mode="rel")
+        )
+
+    def test_jog_mode_abs_threaded_through(self):
+        listener, pl = self._listener(
+            [{"type": "cc", "number": 20, "action": "transport.jog", "mode": "abs"}]
+        )
+        listener._dispatch(mido.Message("control_change", control=20, value=64))
+        pl.transport.enqueue.assert_called_once_with(
+            TransportEvent(action="jog", pressed=True, value=64, mode="abs")
+        )
+
+    def test_rw_note_release_enqueues_pressed_false(self):
+        listener, pl = self._listener([{"type": "note", "number": 42, "action": "transport.rw"}])
+        listener._dispatch(mido.Message("note_on", note=42, velocity=100))
+        listener._dispatch(mido.Message("note_off", note=42))
+        self.assertEqual(pl.transport.enqueue.call_count, 2)
+        release = pl.transport.enqueue.call_args_list[1].args[0]
+        self.assertEqual(release, TransportEvent(action="rw", pressed=False, value=0, mode="rel"))
+
+    def test_ff_note_release_via_velocity_zero_enqueues_pressed_false(self):
+        listener, pl = self._listener([{"type": "note", "number": 43, "action": "transport.ff"}])
+        listener._dispatch(mido.Message("note_on", note=43, velocity=100))
+        listener._dispatch(mido.Message("note_on", note=43, velocity=0))
+        release = pl.transport.enqueue.call_args_list[1].args[0]
+        self.assertEqual(release, TransportEvent(action="ff", pressed=False, value=0, mode="rel"))
+
+    def test_non_hold_action_release_is_discarded(self):
+        # loop_toggle isn't hold-aware — a release for it carries no meaning
+        # and must not reach TransportSession at all.
+        listener, pl = self._listener(
+            [{"type": "note", "number": 41, "action": "transport.loop_toggle"}]
+        )
+        listener._dispatch(mido.Message("note_off", note=41))
+        pl.transport.enqueue.assert_not_called()
+
+    def test_sysex_mmc_play_dispatches(self):
+        listener, pl = self._listener(
+            [{"type": "mmc", "number": 0x02, "action": "transport.play_pause"}]
+        )
+        listener._dispatch(mido.Message("sysex", data=(0x7F, 0x7F, 0x06, 0x02)))
+        pl.transport.enqueue.assert_called_once_with(
+            TransportEvent(action="play_pause", pressed=True, value=127, mode="rel")
+        )
+
+    def test_sysex_unrecognized_command_is_noop(self):
+        listener, pl = self._listener(
+            [{"type": "mmc", "number": 0x02, "action": "transport.play_pause"}]
+        )
+        listener._dispatch(mido.Message("sysex", data=(0x7F, 0x7F, 0x06, 0x7E)))
+        pl.transport.enqueue.assert_not_called()
+
+    def test_sysex_command_with_no_mapping_is_noop(self):
+        listener, pl = self._listener(
+            [{"type": "mmc", "number": 0x02, "action": "transport.play_pause"}]
+        )
+        # 0x01 (stop) is a recognized MMC command, but isn't in the cc_map.
+        listener._dispatch(mido.Message("sysex", data=(0x7F, 0x7F, 0x06, 0x01)))
+        pl.transport.enqueue.assert_not_called()
 
 
 class ParamActionTests(_MidiControlTestCase):

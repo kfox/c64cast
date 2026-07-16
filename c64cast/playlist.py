@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from .backend import C64Backend
 from .profiler import FrameProfiler, NullProfiler
 from .scenes import Scene
-from .transport import LiveTuneTracker
+from .transport import LiveTuneTracker, TransportSession
 
 if TYPE_CHECKING:
     from .config import SceneCfg
@@ -187,6 +187,11 @@ class Playlist:
         # cli.main reads it after teardown. Always present (cheap), so callers
         # needn't guard. See transport.LiveTuneTracker.
         self.live_tracker = LiveTuneTracker()
+        # DJ-style transport control (seek/pause/loop) driven by
+        # [midi_control]'s transport.* actions — see transport.TransportSession.
+        # Always present (cheap; the queue just stays empty for a run with no
+        # transport CC mappings), so callers needn't guard.
+        self.transport = TransportSession()
         self.transitioning = False
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
@@ -766,6 +771,10 @@ class Playlist:
             # Step the fade-in ramp before the scene composes, so the opening
             # frames render progressively brighter (overlapping live playback).
             self._advance_fade_in(scene)
+            # Apply any queued MIDI transport events (seek/pause/loop/rw/ff/jog)
+            # against this scene before it renders, so a seek issued this tick
+            # is reflected in the frame we're about to compose.
+            self.transport.tick(self, t0)
 
             with self.profiler.stage("cpu_render"):
                 try:

@@ -560,7 +560,21 @@ class AVFileSource:
         self.start_s = max(0.0, start_s)
         # Captured from the first decoded video frame so every later frame's PTS
         # can be rebased to a ~0 origin. None until that first frame arrives.
+        # After a transport seek this is re-derived so the rebased PTS domain
+        # lands on the seek target instead of 0 (see request_seek).
         self._pts_offset: float | None = None
+        # Where the NEXT self._pts_offset derivation should rebase to: 0.0 for
+        # ordinary start-of-file playback, or a transport seek's target_s once
+        # one has landed (request_seek/_apply_pending_seek). See the PTS-rebase
+        # comment in _demux_loop for the arithmetic.
+        self._pts_anchor_target: float = 0.0
+        # Transport (MIDI live-tune Phase 2). Guarded by self._lock alongside
+        # _video_buf: a pending seek is a (target_s) float or None; the demux
+        # thread consumes it at the top of the packet loop and inside the
+        # backpressure wait. set_muted latches audio off permanently once a
+        # scene's transport is touched (VideoScene._touch_transport).
+        self._pending_seek: float | None = None
+        self._muted = False
 
         self.container = _av_open(path)
         self.v_stream = self.container.streams.video[0]
@@ -568,6 +582,12 @@ class AVFileSource:
 
         self.video_fps = float(self.v_stream.average_rate) if self.v_stream.average_rate else 30.0
         self.video_time_base = float(self.v_stream.time_base or 0)
+        # Transport (Phase 2): source duration in seconds, for absolute-jog
+        # mapping and seek/loop clamping. None if the container doesn't
+        # report one (some streams/formats omit it).
+        self.duration_s: float | None = (
+            self.container.duration / 1_000_000 if self.container.duration else None
+        )
 
         # Seek before any demux so there's no decoder state to flush. Whole-
         # container seek in AV_TIME_BASE units (microseconds); backward=True
@@ -699,11 +719,29 @@ class AVFileSource:
         self._demux_thread = threading.Thread(target=self._demux_loop, daemon=True, name="av-demux")
         self._demux_thread.start()
 
+    def request_seek(self, target_s: float) -> None:
+        """Ask the demux thread to seek to `target_s` (absolute seconds from
+        file start) at its next opportunity. Coalescing is natural: rapid
+        repeated calls (RW/FF ticking, jog) just overwrite the single pending
+        slot — the demux thread performs however many real seeks it has
+        cycles for. Clears the buffered (stale, pre-seek) frames immediately
+        so a caller reading `current_frame` right after doesn't get one."""
+        target_s = max(0.0, target_s)
+        with self._lock:
+            self._pending_seek = target_s
+            self._video_buf.clear()
+
+    def set_muted(self, muted: bool) -> None:
+        """Latch (or unlatch) audio output. While muted, `_emit_audio` drops
+        every packet before it reaches the consumer — nothing already queued
+        downstream (AudioStreamer / UltimateAudioSampler) is retracted."""
+        self._muted = muted
+
     def _emit_audio(self, arr: np.ndarray) -> None:
         """Apply the noise gate + normalization gain to a mono int16 sample
         array and hand it to the audio consumer. Shared by the direct path and
         the atempo-compensated path."""
-        if self._audio_push is None:
+        if self._audio_push is None or self._muted:
             return
         if self.audio_noise_gate > 0:
             # Zero source-noise-floor samples BEFORE gain so the encoder doesn't
@@ -740,6 +778,30 @@ class AVFileSource:
         except (av.error.EOFError, av.error.BlockingIOError):
             pass
 
+    def _apply_pending_seek(self) -> bool:
+        """Demux-thread-only: if a transport seek is pending, perform it —
+        re-seek the container, rebuild per-seek decoder state (resampler,
+        atempo graph), and re-anchor the PTS rebase so the next frame's PTS
+        lands on the requested target (design decision 2 of the transport
+        plan: the clock IS file position once transport is touched — no
+        separate file_offset_s bookkeeping). Returns True if a seek was
+        applied."""
+        with self._lock:
+            target = self._pending_seek
+            self._pending_seek = None
+        if target is None:
+            return False
+        self.container.seek(int(target * 1_000_000))
+        if self.a_stream is not None:
+            self._resampler = av.AudioResampler(format="s16", layout="mono", rate=self.target_sr)
+        if self._atempo_graph is not None:
+            self._atempo_graph = _build_atempo_graph(self.target_sr, self._tempo_scale)
+        self._eof = False
+        self._pts_offset = None
+        self._pts_anchor_target = target
+        log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
+        return True
+
     def _demux_loop(self):
         # Differentiate "container hit EOF" (expected, info) from "decode blew
         # up mid-stream" (unexpected, log full traceback).
@@ -747,6 +809,8 @@ class AVFileSource:
             for packet in self.container.demux():
                 if self._closed:
                     return
+                if self._apply_pending_seek():
+                    continue
                 if packet.stream.type == "video":
                     for frame in packet.decode():
                         # Plan the decode downscale once, from the first frame's
@@ -784,15 +848,19 @@ class AVFileSource:
                             if frame.pts is not None
                             else 0.0
                         )
-                        # Rebase PTS so the first decoded frame sits at ~0. With
-                        # a start_s seek the raw PTS are ~start_s; the playback
-                        # clock (audio samples / wall-clock) starts at 0, so
-                        # without this current_frame() would find no frame <= 0
-                        # for start_s seconds. Offset is captured from the first
-                        # frame (the keyframe the seek landed on), so the no-seek
-                        # path is unchanged (offset == first PTS, ~0).
+                        # Rebase PTS so the first decoded frame sits at
+                        # ~_pts_anchor_target (0.0 for ordinary start_s
+                        # playback; a transport seek's target_s once one has
+                        # landed — see _apply_pending_seek). With a start_s
+                        # seek the raw PTS are ~start_s; the playback clock
+                        # (audio samples / wall-clock) starts at 0, so without
+                        # this current_frame() would find no frame <= 0 for
+                        # start_s seconds. Offset is captured from the first
+                        # frame (the keyframe the seek landed on), so the
+                        # no-transport-seek path is unchanged (anchor 0.0,
+                        # offset == first PTS, rebased ~0).
                         if self._pts_offset is None:
-                            self._pts_offset = pts
+                            self._pts_offset = pts - self._pts_anchor_target
                         pts -= self._pts_offset
                         # Bitmap+DAC tempo compensation: compress the video
                         # timeline by tempo_scale so it stays in lock-step with
@@ -819,6 +887,13 @@ class AVFileSource:
                             if self._closed:
                                 return
                             with self._lock:
+                                if self._pending_seek is not None:
+                                    # A seek landed while we were blocked on a
+                                    # full buffer — this decoded frame predates
+                                    # it and would corrupt the post-seek buffer.
+                                    # Abandon it; the outer loop's top-of-packet
+                                    # check applies the seek on the next packet.
+                                    break
                                 if len(self._video_buf) < self.max_video_buffer:
                                     self._video_buf.append((pts, img))
                                     break
