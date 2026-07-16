@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from c64cast import scenes
+from c64cast.scenes import VideoScene, _timecode
 from c64cast.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
@@ -198,6 +202,11 @@ class _FakeContainer:
     def demux(self):
         return iter(self._packets)
 
+    def seek(self, offset_us: int) -> None:
+        # No-op by default (recording variants override this attribute
+        # per-test); real PyAV would reposition the demux read head.
+        pass
+
 
 class DemuxRebaseTest(unittest.TestCase):
     """`_demux_loop` rebases video PTS by the first decoded frame so a seeked
@@ -208,6 +217,8 @@ class DemuxRebaseTest(unittest.TestCase):
         src = AVFileSource.__new__(AVFileSource)
         src._closed = False
         src._pts_offset = None
+        src._pts_anchor_target = 0.0
+        src._pending_seek = None
         src.video_time_base = 1.0  # 1 PTS tick == 1 second
         src._video_buf = []
         src._lock = threading.Lock()
@@ -232,6 +243,405 @@ class DemuxRebaseTest(unittest.TestCase):
     def test_no_seek_unchanged(self):
         # First frame already at 0 → offset 0 → buffer unchanged.
         self.assertEqual(self._run_demux([0, 1, 2]), [0.0, 1.0, 2.0])
+
+
+class MuteLatchTest(unittest.TestCase):
+    """`set_muted` (MIDI live-tune Phase 2's transport escape valve) drops
+    every packet `_emit_audio` would otherwise pass to the consumer."""
+
+    def _stub(self, sink) -> AVFileSource:
+        src = AVFileSource.__new__(AVFileSource)
+        src._muted = False
+        src._audio_push = sink.append
+        src.audio_noise_gate = 0
+        src.audio_gain = 1.0
+        return src
+
+    def test_muted_drops_packets(self):
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src.set_muted(True)
+        src._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+        self.assertEqual(sink, [])
+
+    def test_unmuted_passes_through(self):
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+        self.assertEqual(len(sink), 1)
+
+    def test_unmute_resumes(self):
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src.set_muted(True)
+        src.set_muted(False)
+        src._emit_audio(np.array([1], dtype=np.int16))
+        self.assertEqual(len(sink), 1)
+
+
+class TransportSeekTest(unittest.TestCase):
+    """`request_seek`/`_apply_pending_seek` (MIDI live-tune Phase 2): a
+    seek clears the stale pre-seek buffer immediately and re-anchors the
+    demux thread's PTS rebase to land on the requested target_s instead of
+    0 — the transport plan's "clock IS file position once touched" design.
+    Driven with the same fake-container harness as DemuxRebaseTest — no
+    PyAV, no real file."""
+
+    def _make_src(self, frame_ptss, *, pending_seek=None, anchor=0.0) -> AVFileSource:
+        src = AVFileSource.__new__(AVFileSource)
+        src._closed = False
+        src._pts_offset = None
+        src._pts_anchor_target = anchor
+        src._pending_seek = pending_seek
+        src._muted = False
+        src.video_time_base = 1.0  # 1 PTS tick == 1 second
+        src._video_buf = []
+        src._lock = threading.Lock()
+        src.max_video_buffer = 240
+        src._resampler = None
+        src._audio_push = None
+        src._decode_target = None
+        src._decode_size = None
+        src._decode_planned = False
+        src._tempo_scale = 1.0
+        src._atempo_graph = None
+        src.last_frame_pts = 0.0
+        src.path = "fake"
+        src.target_sr = 8000
+        src.a_stream = None
+        src.container = _FakeContainer([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
+        return src
+
+    def test_request_seek_clears_buffer_and_queues_target(self):
+        src = self._make_src([0, 1, 2])
+        src._video_buf = [(0.0, np.zeros((2, 2, 3), dtype=np.uint8))]
+        src.request_seek(12.5)
+        self.assertEqual(src._pending_seek, 12.5)
+        self.assertEqual(src._video_buf, [])
+
+    def test_request_seek_clamps_negative_to_zero(self):
+        src = self._make_src([0])
+        src.request_seek(-3.0)
+        self.assertEqual(src._pending_seek, 0.0)
+
+    def test_pending_seek_rebases_pts_to_target_not_zero(self):
+        # The very first packet fetched is whatever was "in flight" when the
+        # seek was requested (stale, pre-seek) — the real demux loop always
+        # discards it and re-fetches from the container's new position (see
+        # _apply_pending_seek's docstring). Model that here with a throwaway
+        # first packet, then the real post-seek keyframes (~50s onward):
+        # their rebased PTS must land AT the seek target (30s), not at 0
+        # like an ordinary start_s seek would.
+        src = self._make_src([], pending_seek=30.0)
+        stale = _FakePacket([_FakeFrame(999)])
+        real = [_FakePacket([_FakeFrame(p)]) for p in (50, 51, 52)]
+        src.container = _FakeContainer([stale, *real])
+        src._demux_loop()
+        self.assertEqual([pts for pts, _ in src._video_buf], [30.0, 31.0, 32.0])
+        self.assertIsNone(src._pending_seek, "pending seek must be consumed")
+        self.assertEqual(src._pts_anchor_target, 30.0)
+
+    def test_container_seek_called_with_microseconds(self):
+        seeks: list[int] = []
+        src = self._make_src([10], pending_seek=7.5)
+        src.container.seek = seeks.append  # type: ignore[method-assign]
+        src._demux_loop()
+        self.assertEqual(seeks, [7_500_000])
+
+    def test_no_pending_seek_behaves_like_ordinary_start(self):
+        src = self._make_src([0, 1, 2])
+        src._demux_loop()
+        self.assertEqual([pts for pts, _ in src._video_buf], [0.0, 1.0, 2.0])
+
+    def test_apply_pending_seek_returns_false_when_none_queued(self):
+        src = self._make_src([0])
+        self.assertFalse(src._apply_pending_seek())
+
+
+class _StubSource:
+    """Duck-types the bits of AVFileSource that VideoScene's transport
+    surface and process_frame's loop-wrap logic touch, without any PyAV
+    dependency — mirrors this file's AVFileSource.__new__ stub pattern one
+    layer up."""
+
+    def __init__(self, *, duration: float | None = None, video_fps: float = 30.0):
+        self.duration_s = duration
+        self.video_fps = video_fps
+        self.finished = False
+        self.last_frame_pts = 0.0
+        self.seeks: list[float] = []
+        self.muted_calls: list[bool] = []
+        self._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+
+    def request_seek(self, target_s: float) -> None:
+        self.seeks.append(target_s)
+
+    def set_muted(self, muted: bool) -> None:
+        self.muted_calls.append(muted)
+
+    def current_frame(self, clock_s: float) -> np.ndarray | None:
+        return self._frame
+
+    @property
+    def video_buffer_depth(self) -> int:
+        return 0
+
+
+def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> VideoScene:
+    """Build a VideoScene without going through __init__/setup() (which need
+    PyAV + a real AudioStreamer) — mirrors test_ensemble_audio_lock.py's
+    `VideoScene.__new__(VideoScene)` pattern, filling in exactly the
+    attributes the transport surface + process_frame's loop-wrap/frame-number
+    paths touch."""
+    scene = VideoScene.__new__(VideoScene)
+    scene.source = source  # type: ignore[assignment]  # duck-typed stub, not a real AVFileSource
+    scene.audio = None
+    scene._start_time = 0.0
+    scene.osd = scenes.OsdState()
+    scene.start_s = start_s
+    scene.show_frame_numbers = False
+    scene._last_rendered_img = None
+    scene._last_osd_shown = None
+    scene._online_fit = None
+    scene._online_fit_frames = 0
+    scene.display_mode = mock.MagicMock()
+    scene.overlays = []
+    scene.api = mock.MagicMock()
+    scene._av_lag_min = math.inf
+    scene._av_lag_max = -math.inf
+    scene._av_lag_sum = 0.0
+    scene._av_lag_count = 0
+    scene._av_buf_min = math.inf
+    scene._av_last_log_t = 0.0
+    scene._transport_touched = False
+    scene._paused = False
+    scene._wall_anchor_clock_s = 0.0
+    scene._wall_anchor_time = 0.0
+    scene._loop_a = None
+    scene._loop_b = None
+    scene._loop_state = "none"
+    return scene
+
+
+class VideoSceneClockTest(unittest.TestCase):
+    """VideoScene._clock_s()/_touch_transport (MIDI live-tune Phase 2): before
+    transport is touched, the clock is unchanged (audio-position, or wall-
+    clock from _start_time when unmuted with no audio streamer); once
+    touched, it becomes a self-owned wall-clock anchor that freezes on pause
+    and re-anchors on seek — see design decisions 1/2 of the transport plan."""
+
+    def _scene(self, **kw) -> VideoScene:
+        return _make_video_scene_stub(_StubSource(duration=100.0), **kw)
+
+    def test_untouched_uses_wall_clock_from_start_time(self):
+        scene = self._scene()
+        scene._start_time = 3.0
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            self.assertAlmostEqual(scene._clock_s(), 7.0)
+
+    def test_touch_transport_freezes_current_reading_and_mutes(self):
+        scene = self._scene()
+        scene._start_time = 4.0  # untouched clock would read 6.0
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+        self.assertTrue(scene._transport_touched)
+        self.assertAlmostEqual(scene._wall_anchor_clock_s, 6.0)
+        self.assertEqual(scene.source.muted_calls, [True])  # type: ignore[union-attr]
+
+    def test_touch_transport_is_idempotent(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+            scene._touch_transport()
+        # latched once only
+        self.assertEqual(scene.source.muted_calls, [True])  # type: ignore[union-attr]
+
+    def test_clock_free_runs_after_touch(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()  # anchors at clock=10.0 (start_time=0)
+        with mock.patch.object(scenes.time, "time", return_value=13.5):
+            self.assertAlmostEqual(scene._clock_s(), 13.5)
+
+    def test_pause_freezes_clock(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+        with mock.patch.object(scenes.time, "time", return_value=15.0):
+            scene.transport_pause()
+            self.assertTrue(scene._paused)
+        frozen = scene._wall_anchor_clock_s
+        with mock.patch.object(scenes.time, "time", return_value=100.0):
+            self.assertAlmostEqual(scene._clock_s(), frozen)
+
+    def test_resume_continues_from_frozen_value(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+        with mock.patch.object(scenes.time, "time", return_value=15.0):
+            scene.transport_pause()
+        frozen = scene._wall_anchor_clock_s
+        with mock.patch.object(scenes.time, "time", return_value=20.0):
+            scene.transport_resume()
+        self.assertFalse(scene._paused)
+        with mock.patch.object(scenes.time, "time", return_value=22.0):
+            self.assertAlmostEqual(scene._clock_s(), frozen + 2.0)
+
+    def test_resume_without_pause_is_noop(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene.transport_resume()
+        self.assertFalse(scene._transport_touched)
+
+    def test_seek_reanchors_clock_and_calls_source(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene.transport_seek(42.0)
+        self.assertEqual(scene._wall_anchor_clock_s, 42.0)
+        self.assertEqual(scene.source.seeks, [42.0])  # type: ignore[union-attr]
+        self.assertTrue(scene._transport_touched)
+
+    def test_seek_clamps_to_duration(self):
+        scene = self._scene()  # duration=100.0
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene.transport_seek(500.0)
+        self.assertEqual(scene._wall_anchor_clock_s, 100.0)
+
+    def test_seek_clamps_negative_to_zero(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene.transport_seek(-20.0)
+        self.assertEqual(scene._wall_anchor_clock_s, 0.0)
+
+    def test_toggle_pause_first_call_touches_and_pauses(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene.transport_toggle_pause()
+        self.assertTrue(scene._paused)
+        with mock.patch.object(scenes.time, "time", return_value=11.0):
+            scene.transport_toggle_pause()
+        self.assertFalse(scene._paused)
+
+
+class VideoSceneLoopToggleTest(unittest.TestCase):
+    """transport_loop_toggle's 3-state cycle (mark A -> mark B + active ->
+    clear). No red border/slots/persistence this phase — see design
+    decision 3 of the transport plan."""
+
+    def _scene(self) -> VideoScene:
+        return _make_video_scene_stub(_StubSource(duration=100.0))
+
+    def test_three_state_cycle(self):
+        scene = self._scene()
+        with mock.patch.object(scenes.time, "time", return_value=5.0):
+            scene.transport_loop_toggle()
+        self.assertEqual(scene._loop_state, "armed")
+        self.assertEqual(scene._loop_a, 5.0)
+        self.assertIsNone(scene._loop_b)
+
+        with mock.patch.object(scenes.time, "time", return_value=8.0):
+            scene.transport_loop_toggle()
+        self.assertEqual(scene._loop_state, "active")
+        self.assertEqual(scene._loop_a, 5.0)
+        self.assertEqual(scene._loop_b, 8.0)
+
+        with mock.patch.object(scenes.time, "time", return_value=9.0):
+            scene.transport_loop_toggle()
+        self.assertEqual(scene._loop_state, "none")
+        self.assertIsNone(scene._loop_a)
+        self.assertIsNone(scene._loop_b)
+
+
+class VideoSceneProcessFrameLoopTest(unittest.TestCase):
+    """process_frame's EOF check + loop-wrap: an active A/B loop neither
+    ends the scene at EOF nor at reaching B — it seeks back to A instead."""
+
+    def test_wraps_to_a_when_clock_reaches_b(self):
+        source = _StubSource(duration=100.0)
+        scene = _make_video_scene_stub(source)
+        scene._transport_touched = True
+        scene._loop_state = "active"
+        scene._loop_a = 5.0
+        scene._loop_b = 10.0
+        scene._wall_anchor_clock_s = 10.0
+        scene._wall_anchor_time = 0.0
+        with mock.patch.object(scenes.time, "time", return_value=0.0):
+            still_active = scene.process_frame(current_time=0.0)
+        self.assertTrue(still_active)
+        self.assertEqual(source.seeks, [5.0])
+        self.assertEqual(scene._wall_anchor_clock_s, 5.0)
+
+    def test_wraps_to_a_when_source_hits_eof_before_b(self):
+        source = _StubSource(duration=100.0)
+        source.finished = True
+        scene = _make_video_scene_stub(source)
+        scene._transport_touched = True
+        scene._loop_state = "active"
+        scene._loop_a = 5.0
+        scene._loop_b = 50.0  # clock hasn't reached B yet
+        scene._wall_anchor_clock_s = 20.0
+        scene._wall_anchor_time = 0.0
+        with mock.patch.object(scenes.time, "time", return_value=0.0):
+            still_active = scene.process_frame(current_time=0.0)
+        self.assertTrue(still_active)
+        self.assertEqual(source.seeks, [5.0])
+
+    def test_finished_without_active_loop_ends_scene(self):
+        source = _StubSource(duration=100.0)
+        source.finished = True
+        scene = _make_video_scene_stub(source)
+        self.assertFalse(scene.process_frame(current_time=0.0))
+
+    def test_finished_with_armed_but_not_active_loop_ends_scene(self):
+        # "armed" (only A marked) must not suppress the EOF check — only
+        # "active" (both A and B marked) does.
+        source = _StubSource(duration=100.0)
+        source.finished = True
+        scene = _make_video_scene_stub(source)
+        scene._loop_state = "armed"
+        scene._loop_a = 5.0
+        self.assertFalse(scene.process_frame(current_time=0.0))
+
+
+class VideoSceneFrameNumberLabelTest(unittest.TestCase):
+    """show_frame_numbers' file-position label must not double-count
+    start_s once transport has re-anchored the clock to an absolute file
+    position (see design decision 2 of the transport plan)."""
+
+    def _run(self, scene: VideoScene) -> str:
+        captured: dict[str, str] = {}
+
+        def fake_annotate(img, label):
+            captured["label"] = label
+            return img
+
+        with (
+            mock.patch.object(scenes, "_annotate_frame_number", side_effect=fake_annotate),
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes.time, "time", return_value=0.0),
+        ):
+            scene.process_frame(current_time=0.0)
+        return captured["label"]
+
+    def test_untouched_adds_start_s(self):
+        source = _StubSource(duration=None)
+        scene = _make_video_scene_stub(source, start_s=50.0)
+        scene.show_frame_numbers = True
+        label = self._run(scene)
+        # clock_s reads 0.0 (untouched, no audio -> wall-from-start_time,
+        # both zero); start_s(50) is added back for the true file offset.
+        self.assertIn(_timecode(50.0), label)
+
+    def test_touched_does_not_double_count_start_s(self):
+        source = _StubSource(duration=None)
+        scene = _make_video_scene_stub(source, start_s=50.0)
+        scene.show_frame_numbers = True
+        scene._transport_touched = True
+        scene._wall_anchor_clock_s = 80.0  # already an absolute file position
+        scene._wall_anchor_time = 0.0
+        label = self._run(scene)
+        self.assertIn(_timecode(80.0), label)
+        self.assertNotIn(_timecode(130.0), label)  # the double-counted (wrong) value
 
 
 class PlanDecodeSizeTest(unittest.TestCase):
@@ -283,6 +693,8 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
         src = AVFileSource.__new__(AVFileSource)
         src._closed = False
         src._pts_offset = None
+        src._pts_anchor_target = 0.0
+        src._pending_seek = None
         src.video_time_base = 1.0
         src._video_buf = []
         src._lock = threading.Lock()
@@ -357,6 +769,7 @@ class AtempoTempoCompensationTest(unittest.TestCase):
         src = AVFileSource.__new__(AVFileSource)
         src.path = "test.mp4"
         src._closed = False
+        src._muted = False
         src.audio_gain = 1.0
         src.audio_noise_gate = 0
         src._tempo_scale = tempo_scale
@@ -499,6 +912,32 @@ class ScanVideoSamplesTest(unittest.TestCase):
         self.assertGreater(len(acc.means), 0)
         seen = {self._dominant(m) for m in acc.means}
         self.assertEqual(seen, {"r", "g", "b"})
+
+
+@unittest.skipUnless(_ensure_pyav(), "PyAV not installed")
+class DurationSTest(unittest.TestCase):
+    """`AVFileSource.duration_s` (MIDI live-tune Phase 2 — absolute-jog
+    mapping and seek/loop clamping) reads the container's real duration at
+    construction. Uses the synthetic fixture, so a real (if tiny) decode."""
+
+    def _make(self) -> str:
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        _write_synthetic_video(path, seconds=3, fps=30)
+        return path
+
+    def test_duration_matches_encoded_length(self):
+        path = self._make()
+        src = AVFileSource(path, target_sample_rate=8000, scan_audio_peak=False)
+        try:
+            self.assertIsNotNone(src.duration_s)
+            assert src.duration_s is not None
+            self.assertAlmostEqual(src.duration_s, 3.0, delta=0.5)
+        finally:
+            src.close()
 
 
 if __name__ == "__main__":

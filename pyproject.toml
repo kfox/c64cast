@@ -187,6 +187,7 @@ files = [
     "c64cast/dsp.py",
     "c64cast/quickcast.py",
     "c64cast/connect.py",
+    "c64cast/transport.py",
 ]
 strict = true
 # Untyped helpers in the rest of the package are fine as-is; don't

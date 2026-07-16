@@ -56,6 +56,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .transport import TransportEvent
+
 if TYPE_CHECKING:
     from .config import MidiControlCfg
     from .playlist import Playlist
@@ -74,8 +76,36 @@ except ImportError:
     mido = None
     MIDI_AVAILABLE = False
 
-_CC_TYPES = ("cc", "note", "pc")
-_ACTIONS = ("pause", "resume", "toggle_pause", "skip", "cycle_style", "jump", "param")
+_CC_TYPES = ("cc", "note", "pc", "mmc")
+_ACTIONS = (
+    "pause",
+    "resume",
+    "toggle_pause",
+    "skip",
+    "cycle_style",
+    "jump",
+    "param",
+    # DJ-style video transport (MIDI live-tune Phase 2 — see transport.py's
+    # TransportSession, which these all bottom out in). "record"/"loop_slot"
+    # are deliberately not added yet (Phase 3).
+    "transport.play_pause",
+    "transport.stop",
+    "transport.loop_toggle",
+    "transport.rw",
+    "transport.ff",
+    "transport.jog",
+)
+
+# Transport actions where a note release (note_off / note_on velocity==0)
+# carries meaning (stopping a held rw/ff ramp) — every other action ignores
+# releases entirely, same as before this phase.
+_HOLD_TRANSPORT_ACTIONS = ("transport.rw", "transport.ff")
+
+# MMC (MIDI Machine Control) transport command bytes this module recognizes,
+# from the SysEx frame `F0 7F <dev> 06 <cmd> F7`: 01 stop, 02 play, 04 FF,
+# 05 RW, 06 record (unmapped this phase), 09 pause. Shared between cc_map
+# validation and the runtime SysEx parser so they can't drift.
+_MMC_COMMANDS = frozenset({0x01, 0x02, 0x04, 0x05, 0x06, 0x09})
 
 # 1ms poll — mirrors MidiScene._reader's interval ("keeps note latency
 # tight"). No coalescing here (see module docstring): every message this
@@ -86,11 +116,12 @@ _POLL_INTERVAL_S = 0.001
 
 @dataclass(frozen=True)
 class _CCMapping:
-    kind: str  # "cc" | "note" | "pc"
-    number: int  # 0-127
+    kind: str  # "cc" | "note" | "pc" | "mmc"
+    number: int  # 0-127 (cc/note/pc), or an MMC command byte (mmc)
     action: str  # one of _ACTIONS
     scene: int | None = None  # for "jump"
     target: str | None = None  # for "param": "effect.<name>" | "source.<name>"
+    mode: str | None = None  # for "transport.jog": "abs" | "rel" (None -> "rel")
 
 
 def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping]:
@@ -111,6 +142,11 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
         number = entry.get("number")
         if not isinstance(number, int) or not 0 <= number <= 127:
             raise ValueError(f"cc_map[{i}].number must be 0..127, got {number!r}")
+        if kind == "mmc" and number not in _MMC_COMMANDS:
+            raise ValueError(
+                f"cc_map[{i}] type 'mmc' number must be one of "
+                f"{sorted(_MMC_COMMANDS)} (an MMC command byte), got {number!r}"
+            )
         action = entry.get("action")
         if action not in _ACTIONS:
             raise ValueError(f"cc_map[{i}].action must be one of {_ACTIONS}, got {action!r}")
@@ -123,10 +159,29 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
                 f"cc_map[{i}] action 'param' needs a string 'target' "
                 "('effect.<name>' or 'source.<name>')"
             )
+        mode = entry.get("mode")
+        if action == "transport.jog" and mode is not None and mode not in ("abs", "rel"):
+            raise ValueError(
+                f"cc_map[{i}] action 'transport.jog' mode must be 'abs' or 'rel', got {mode!r}"
+            )
         out[(kind, number)] = _CCMapping(
-            kind=kind, number=number, action=action, scene=scene, target=target
+            kind=kind, number=number, action=action, scene=scene, target=target, mode=mode
         )
     return out
+
+
+def _parse_mmc_sysex(data: tuple[int, ...]) -> int | None:
+    """Parse an MMC transport SysEx frame. mido strips the F0/F7 framing, so
+    a `F0 7F <dev> 06 <cmd> F7` message arrives as `msg.data == (0x7F, dev,
+    0x06, cmd)`. The device byte is wildcarded (any value, including the
+    0x7F "all devices" broadcast — the shipped-default assumption, since a
+    performer's DAW/controller rarely knows or cares about our device ID).
+    Returns the command byte, or None if `data` isn't a recognized MMC
+    transport frame."""
+    if len(data) != 4 or data[0] != 0x7F or data[2] != 0x06:
+        return None
+    cmd = data[3]
+    return cmd if cmd in _MMC_COMMANDS else None
 
 
 class MidiControlListener:
@@ -244,26 +299,39 @@ class MidiControlListener:
         return []
 
     def _dispatch(self, msg: Any) -> None:
-        if msg.type == "note_on" and msg.velocity > 0:
+        pressed = True
+        if msg.type == "sysex":
+            cmd = _parse_mmc_sysex(tuple(msg.data))
+            if cmd is None:
+                return
+            kind, number, value = "mmc", cmd, 127
+        elif msg.type == "note_on" and msg.velocity > 0:
             kind, number, value = "note", msg.note, msg.velocity
+        elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+            # A release only carries meaning for the hold-aware transport
+            # actions (rw/ff ramp) — every other action still discards it,
+            # unchanged from before this phase.
+            kind, number, value, pressed = "note", msg.note, 0, False
         elif msg.type == "control_change":
             kind, number, value = "cc", msg.control, msg.value
         elif msg.type == "program_change":
             kind, number, value = "pc", msg.program, msg.program
         else:
-            return  # note_off, note_on velocity==0, pitchwheel, etc. — not mapped
+            return  # pitchwheel, etc. — not mapped
         mapping = self._mapping.get((kind, number))
         if mapping is None:
             return
+        if not pressed and mapping.action not in _HOLD_TRANSPORT_ACTIONS:
+            return
         for pl in self._targets(msg):
             try:
-                self._apply(pl, mapping, value)
+                self._apply(pl, mapping, value, pressed)
             except Exception:
                 log.exception(
                     "midi_control: action %r failed on system %r", mapping.action, pl.name
                 )
 
-    def _apply(self, pl: Playlist, mapping: _CCMapping, value: int) -> None:
+    def _apply(self, pl: Playlist, mapping: _CCMapping, value: int, pressed: bool = True) -> None:
         action = mapping.action
         if action == "pause":
             pl.pause_event.set()
@@ -280,6 +348,18 @@ class MidiControlListener:
                 pl.request_jump(mapping.scene, skip_interstitial=self.jump_transition == "cut")
         elif action == "param":
             self._apply_param(pl, mapping.target, value, mapping.kind)
+        elif action.startswith("transport."):
+            # Enqueue only — scene/DMA mutation happens on the playlist
+            # thread inside TransportSession.tick, never here on the MIDI
+            # reader thread.
+            pl.transport.enqueue(
+                TransportEvent(
+                    action=action.removeprefix("transport."),
+                    pressed=pressed,
+                    value=value,
+                    mode=mapping.mode or "rel",
+                )
+            )
 
     def _apply_param(
         self, pl: Playlist, target: str | None, value_0_127: int, kind: str = "cc"

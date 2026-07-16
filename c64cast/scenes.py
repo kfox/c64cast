@@ -29,7 +29,7 @@ import os
 import random
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import cv2
 import numpy as np
@@ -1192,6 +1192,19 @@ class VideoScene(Scene):
         # truncate playback partway through long files); the config layer
         # rejects any user-supplied `duration_s` so this stays consistent.
         self.duration_s = math.inf
+        # Transport (MIDI live-tune Phase 2 — DJ-style seek/pause/loop from
+        # [midi_control]). Reset in setup() so a repeated/looped scene starts
+        # fresh. Once _transport_touched flips True (first seek/pause/loop/
+        # jog/rw/ff), _clock_s() switches from the audio-position clock to
+        # this wall-clock anchor and the source plays muted for the rest of
+        # the scene's run (see _touch_transport + _clock_s).
+        self._transport_touched = False
+        self._paused = False
+        self._wall_anchor_clock_s = 0.0
+        self._wall_anchor_time = 0.0
+        self._loop_a: float | None = None
+        self._loop_b: float | None = None
+        self._loop_state: Literal["none", "armed", "active"] = "none"
 
     def _resolve_candidates(self) -> list[str]:
         from .config import VIDEO_EXTS, resolve_file_spec
@@ -1238,6 +1251,16 @@ class VideoScene(Scene):
             self.is_done = True
             return
         super().setup()
+        # Reset transport state so a repeated/looped scene starts back on the
+        # audio-master clock, untouched, rather than inheriting a prior run's
+        # pause/seek/loop/mute.
+        self._transport_touched = False
+        self._paused = False
+        self._wall_anchor_clock_s = 0.0
+        self._wall_anchor_time = 0.0
+        self._loop_a = None
+        self._loop_b = None
+        self._loop_state = "none"
         if not _ensure_pyav():
             log.warning(
                 "PyAV unavailable; video scene cannot play %s "
@@ -1471,12 +1494,107 @@ class VideoScene(Scene):
         return encoded
 
     def _clock_s(self) -> float:
+        # Once transport is touched, the wall-clock anchor IS the playback
+        # clock — free-running from _wall_anchor_time except while paused
+        # (frozen at _wall_anchor_clock_s). See _touch_transport for how the
+        # anchor is seeded and design decision 1/2 in the transport plan for
+        # why this replaces the audio-position clock rather than layering on
+        # top of it (the audio is muted for the rest of the scene, so its
+        # position is no longer a meaningful clock source anyway).
+        if self._transport_touched:
+            if self._paused:
+                return self._wall_anchor_clock_s
+            return self._wall_anchor_clock_s + (time.time() - self._wall_anchor_time)
         if self.audio and self.audio.sample_rate:
             return self.audio.position_seconds()
         return time.time() - self._start_time
 
+    def _touch_transport(self) -> None:
+        """First call latches transport control for the rest of this scene's
+        run: freezes the current clock reading as the wall-clock anchor and
+        mutes the source permanently (the escape valve — see design decision
+        1 in the transport plan; real audio resync across a seek is Phase
+        4). No-op on subsequent calls."""
+        if self._transport_touched:
+            return
+        # Read the pre-touch clock (audio-position or wall-from-start_time)
+        # BEFORE flipping the flag — _clock_s() branches on
+        # _transport_touched, so seeding the anchor from a read taken AFTER
+        # the flip would read back the anchor's own not-yet-seeded default
+        # instead of the real pre-touch position.
+        clock_s = self._clock_s()
+        self._transport_touched = True
+        self._wall_anchor_clock_s = clock_s
+        self._wall_anchor_time = time.time()
+        if self.source is not None:
+            self.source.set_muted(True)
+
+    def transport_pause(self) -> None:
+        self._touch_transport()
+        self._wall_anchor_clock_s = self._clock_s()
+        self._paused = True
+        self.osd.post("PAUSED")
+
+    def transport_resume(self) -> None:
+        if not self._paused:
+            return
+        self._paused = False
+        self._wall_anchor_time = time.time()
+        self.osd.post("PLAY")
+
+    def transport_toggle_pause(self) -> None:
+        if not self._transport_touched:
+            self.transport_pause()
+        elif self._paused:
+            self.transport_resume()
+        else:
+            self.transport_pause()
+
+    def transport_seek(self, target_s: float) -> None:
+        self._touch_transport()
+        duration = self.transport_duration()
+        hi = duration if duration is not None else max(target_s, 0.0)
+        target_s = max(0.0, min(target_s, hi))
+        self._wall_anchor_clock_s = target_s
+        self._wall_anchor_time = time.time()
+        if self.source is not None:
+            self.source.request_seek(target_s)
+        self.osd.post(f"SEEK {_timecode(target_s)}")
+
+    def transport_loop_toggle(self) -> None:
+        """3-state cycle: mark A -> mark B + start looping -> clear. No red
+        border/slots/persistence this phase — see design decision 3."""
+        self._touch_transport()
+        pos = self.transport_position()
+        if self._loop_state == "none":
+            self._loop_a = pos
+            self._loop_b = None
+            self._loop_state = "armed"
+            self.osd.post(f"LOOP A {_timecode(pos)}")
+        elif self._loop_state == "armed":
+            self._loop_b = pos
+            self._loop_state = "active"
+            assert self._loop_a is not None
+            self.osd.post(f"LOOP {_timecode(self._loop_a)}-{_timecode(pos)}")
+        else:
+            self._loop_a = None
+            self._loop_b = None
+            self._loop_state = "none"
+            self.osd.post("LOOP OFF")
+
+    def transport_position(self) -> float:
+        return self._clock_s()
+
+    def transport_duration(self) -> float | None:
+        return self.source.duration_s if self.source is not None else None
+
+    def transport_is_paused(self) -> bool:
+        return self._paused
+
     def process_frame(self, current_time: float) -> bool:
-        if self.source is None or self.source.finished:
+        # A source at EOF while an A/B loop is active isn't "done" — it's
+        # about to wrap to A (below) — so it doesn't end the scene.
+        if self.source is None or (self.source.finished and self._loop_state != "active"):
             # Tell a sampler the source is exhausted so position_seconds()
             # clamps to the pushed total (no-op for the DAC streamer). Idempotent.
             if self.audio is not None:
@@ -1486,6 +1604,11 @@ class VideoScene(Scene):
             return False
 
         clock_s = self._clock_s()
+        if self._loop_state == "active" and self._loop_a is not None:
+            at_b = self._loop_b is not None and clock_s >= self._loop_b
+            if at_b or self.source.finished:
+                self.transport_seek(self._loop_a)
+                return True
         img = self.source.current_frame(clock_s)
         if img is None:
             return True  # still pre-rolling
@@ -1534,8 +1657,11 @@ class VideoScene(Scene):
             fps = self.source.video_fps or 30.0
             # clock_s is rebased to 0 at start_s (AVFileSource seeks + rebases
             # PTS on setup), so add it back to report the true offset from the
-            # beginning of the file.
-            file_s = clock_s + self.start_s
+            # beginning of the file — UNLESS transport has been touched, in
+            # which case clock_s is already an absolute file position (the
+            # wall-clock anchor tracks transport_seek's target_s directly;
+            # see design decision 2) and adding start_s again would double-count.
+            file_s = clock_s if self._transport_touched else clock_s + self.start_s
             label = f"{_timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
         if osd_now:
