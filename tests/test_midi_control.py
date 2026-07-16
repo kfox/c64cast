@@ -147,9 +147,27 @@ class ParseCCMapTests(unittest.TestCase):
             "transport.rw",
             "transport.ff",
             "transport.jog",
+            "transport.record",
         ):
             m = _parse_cc_map([{"type": "note", "number": 60, "action": action}])
             self.assertEqual(m[("note", 60)].action, action)
+
+    def test_loop_slot_parses_with_slot(self):
+        m = _parse_cc_map([{"type": "note", "number": 60, "action": "loop_slot", "slot": 3}])
+        self.assertEqual(m[("note", 60)].action, "loop_slot")
+        self.assertEqual(m[("note", 60)].slot, 3)
+
+    def test_loop_slot_without_slot_rejected(self):
+        with self.assertRaises(ValueError):
+            _parse_cc_map([{"type": "note", "number": 60, "action": "loop_slot"}])
+
+    def test_loop_slot_zero_rejected(self):
+        with self.assertRaises(ValueError):
+            _parse_cc_map([{"type": "note", "number": 60, "action": "loop_slot", "slot": 0}])
+
+    def test_loop_slot_negative_rejected(self):
+        with self.assertRaises(ValueError):
+            _parse_cc_map([{"type": "note", "number": 60, "action": "loop_slot", "slot": -1}])
 
     def test_jog_mode_abs_and_rel_accepted(self):
         for mode in ("abs", "rel"):
@@ -350,6 +368,55 @@ class TransportDispatchTests(_MidiControlTestCase):
         pl.transport.enqueue.assert_called_once_with(
             TransportEvent(action="play_pause", pressed=True, value=127, mode="rel")
         )
+
+    def test_record_note_release_enqueues_pressed_false(self):
+        # Phase 3: record is hold-aware too (the loop_slot pad chords need
+        # its release), same as rw/ff.
+        listener, pl = self._listener(
+            [{"type": "note", "number": 44, "action": "transport.record"}]
+        )
+        listener._dispatch(mido.Message("note_on", note=44, velocity=100))
+        listener._dispatch(mido.Message("note_off", note=44))
+        self.assertEqual(pl.transport.enqueue.call_count, 2)
+        release = pl.transport.enqueue.call_args_list[1].args[0]
+        self.assertEqual(
+            release, TransportEvent(action="record", pressed=False, value=0, mode="rel")
+        )
+
+    def test_stop_note_release_enqueues_pressed_false(self):
+        listener, pl = self._listener([{"type": "note", "number": 45, "action": "transport.stop"}])
+        listener._dispatch(mido.Message("note_on", note=45, velocity=100))
+        listener._dispatch(mido.Message("note_off", note=45))
+        self.assertEqual(pl.transport.enqueue.call_count, 2)
+        release = pl.transport.enqueue.call_args_list[1].args[0]
+        self.assertEqual(release, TransportEvent(action="stop", pressed=False, value=0, mode="rel"))
+
+    def test_sysex_mmc_record_dispatches(self):
+        listener, pl = self._listener(
+            [{"type": "mmc", "number": 0x06, "action": "transport.record"}]
+        )
+        listener._dispatch(mido.Message("sysex", data=(0x7F, 0x7F, 0x06, 0x06)))
+        pl.transport.enqueue.assert_called_once_with(
+            TransportEvent(action="record", pressed=True, value=127, mode="rel")
+        )
+
+    def test_loop_slot_enqueues_with_slot(self):
+        listener, pl = self._listener(
+            [{"type": "note", "number": 60, "action": "loop_slot", "slot": 3}]
+        )
+        listener._dispatch(mido.Message("note_on", note=60, velocity=100))
+        pl.transport.enqueue.assert_called_once_with(
+            TransportEvent(action="loop_slot", pressed=True, value=100, mode="rel", slot=3)
+        )
+
+    def test_loop_slot_release_is_discarded(self):
+        # loop_slot itself isn't hold-aware (only record/stop are) — a pad
+        # release carries no meaning.
+        listener, pl = self._listener(
+            [{"type": "note", "number": 60, "action": "loop_slot", "slot": 3}]
+        )
+        listener._dispatch(mido.Message("note_off", note=60))
+        pl.transport.enqueue.assert_not_called()
 
     def test_sysex_unrecognized_command_is_noop(self):
         listener, pl = self._listener(

@@ -710,6 +710,39 @@ considered and dropped as the plan's flagged risk) — recall the preset from th
 `/` page for a perfect cross-scene restore, or drive same-scene presets from the
 app.
 
+## MIDI live-tune DJ transport: pad chords need note mappings, not MMC
+
+The Phase 3 `loop_slot` pad workflow (recall a saved loop on a plain press,
+save the current loop while Stop is held, clear a slot while Record is held —
+see `[[project_midi_live_tune_video]]` / `docs/architecture.md`'s
+`transport.py` note) relies on `TransportSession` seeing both a press AND a
+release for whichever button (Record or Stop) is being held down. **MIDI
+Machine Control (MMC) has no release concept at all** — a SysEx transport
+frame (`F0 7F <dev> 06 <cmd> F7`) always dispatches as a single momentary
+event (`pressed=True`), so an MMC-mapped Record/Stop button fires its own
+one-shot action correctly (arm a loop / close-pause-quit) but can never
+reliably chord with a pad: `TransportSession._chord_active` auto-expires a
+held flag after 5 seconds specifically so one MMC press can't wedge every
+later pad press as a false "clear" for the rest of the session — but that's
+a safety net, not a substitute for a real hold. **Map Record and Stop as
+regular MIDI notes** (the common case on a drum-pad-style controller
+anyway) if you want the save/clear pad chords; an MMC mapping still works
+fine for plain Record-arm / Stop-close-pause-quit presses and for the loop
+toggle / play-pause / RW / FF / jog actions that don't need a chord.
+
+## Video-scene border is always restored to black (`$00`), not a configured value
+
+The Phase 3 record-armed red border (`VideoScene._set_record_border`) always
+restores to `0` rather than "whatever the border was before recording
+started." This is safe because every display mode `VideoScene` can use
+(hires, multi-hires, MCM) engages with a hardcoded `$00` border and never
+rewrites `$D020` again on its own (see `modes.engage_bitmap_mode`'s
+docstring) — and `[[scenes]].border` (the config knob that lets a *blank*
+scene pick a border color) is explicitly scoped `applies_to: ("blank",)`
+and has no effect on a video scene. If a future display mode gives
+`VideoScene` a configurable non-black border, `_set_record_border` will need
+to capture and restore that value instead of assuming `0`.
+
 ## `backgrounds.py` constants are screen codes, not PETSCII
 
 PETSCII and the VIC screen-code encoding diverge above 0x40 — e.g. the

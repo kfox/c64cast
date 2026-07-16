@@ -1779,6 +1779,9 @@ _MIDI_ACTION_CHOICES = (
     "transport.rw",
     "transport.ff",
     "transport.jog",
+    # Record workflow + loop preset pads (MIDI live-tune Phase 3).
+    "transport.record",
+    "loop_slot",
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
@@ -1870,11 +1873,12 @@ class MidiControlCfg:
             "tables); see --describe section:midi_control. Set to [] to disable "
             "the shipped defaults, or override/extend individual entries. Each "
             "entry: type ('cc'|'note'|'pc'|'mmc'), number (0-127 for cc/note/pc; "
-            "an MMC command byte — 0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x09 "
-            "pause — for mmc), action ('pause'|'resume'|'toggle_pause'|'skip'|"
-            "'cycle_style'|'jump'|'param'|'transport.play_pause'|'transport.stop'|"
-            "'transport.loop_toggle'|'transport.rw'|'transport.ff'|"
-            "'transport.jog'); 'jump' also needs an int scene; 'param' also needs "
+            "an MMC command byte — 0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x06 "
+            "record, 0x09 pause — for mmc), action ('pause'|'resume'|"
+            "'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'|"
+            "'transport.play_pause'|'transport.stop'|'transport.loop_toggle'|"
+            "'transport.rw'|'transport.ff'|'transport.jog'|'transport.record'|"
+            "'loop_slot'); 'jump' also needs an int scene; 'param' also needs "
             "a string target ('effect.<name>', 'source.<name>', 'scene.<name>' "
             "for scope scenes, or 'mode.<name>' for the display mode's live "
             "color knobs — dither_strength/method, motion_smoothing, "
@@ -1886,7 +1890,14 @@ class MidiControlCfg:
             "jog — 'mode' 'abs'|'rel', default 'rel'); once touched at all, "
             "that scene's audio mutes for the rest of its run (see "
             "docs/architecture.md's transport note). A 'mmc' entry also "
-            "matches an MMC transport SysEx from a DAW/controller."
+            "matches an MMC transport SysEx from a DAW/controller. "
+            "'transport.record' arms a loop (Record -> Stop workflow, red "
+            "border while armed); 'loop_slot' also needs an int 'slot' >= 1 "
+            "(a pad number) and recalls that per-video saved loop on a plain "
+            "press, saves the current loop into it while Stop is held, or "
+            "clears it while Record is held (note mappings only — an mmc "
+            "record/stop can't reliably hold for the chord, since MMC has no "
+            "release event)."
         },
     )
 
@@ -3619,6 +3630,13 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                 raise ConfigError(
                     f"[midi_control].cc_map[{i}] action 'transport.jog' mode must be "
                     f"'abs' or 'rel', got {mode!r}"
+                )
+        if action == "loop_slot":
+            slot = entry.get("slot")
+            if not isinstance(slot, int) or slot < 1:
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'loop_slot' needs an int 'slot' "
+                    f">= 1, got {slot!r}"
                 )
 
 

@@ -86,25 +86,35 @@ _ACTIONS = (
     "jump",
     "param",
     # DJ-style video transport (MIDI live-tune Phase 2 — see transport.py's
-    # TransportSession, which these all bottom out in). "record"/"loop_slot"
-    # are deliberately not added yet (Phase 3).
+    # TransportSession, which these all bottom out in).
     "transport.play_pause",
     "transport.stop",
     "transport.loop_toggle",
     "transport.rw",
     "transport.ff",
     "transport.jog",
+    # Record workflow + loop preset pads (MIDI live-tune Phase 3).
+    # transport.record arms a loop (same _loop_a/_loop_b/_loop_state machine
+    # transport.loop_toggle drives); loop_slot recalls/saves/clears a
+    # per-video loop preset (save/clear are the Stop-held/Record-held pad
+    # chords — see TransportSession._dispatch).
+    "transport.record",
+    "loop_slot",
 )
 
 # Transport actions where a note release (note_off / note_on velocity==0)
-# carries meaning (stopping a held rw/ff ramp) — every other action ignores
-# releases entirely, same as before this phase.
-_HOLD_TRANSPORT_ACTIONS = ("transport.rw", "transport.ff")
+# carries meaning (stopping a held rw/ff ramp, or ending a Record/Stop hold
+# for the loop_slot pad chords) — every other action ignores releases
+# entirely, same as before this phase.
+_HOLD_TRANSPORT_ACTIONS = ("transport.rw", "transport.ff", "transport.record", "transport.stop")
 
 # MMC (MIDI Machine Control) transport command bytes this module recognizes,
 # from the SysEx frame `F0 7F <dev> 06 <cmd> F7`: 01 stop, 02 play, 04 FF,
-# 05 RW, 06 record (unmapped this phase), 09 pause. Shared between cc_map
-# validation and the runtime SysEx parser so they can't drift.
+# 05 RW, 06 record, 09 pause. Shared between cc_map validation and the
+# runtime SysEx parser so they can't drift. Note: an MMC frame never carries
+# a release, so a record/stop mapped to `mmc` can't reliably drive the
+# loop_slot pad chords (Stop-held+pad / Record-held+pad) — those need a
+# `note` mapping; see TransportSession's _CHORD_HOLD_WINDOW_S auto-expiry.
 _MMC_COMMANDS = frozenset({0x01, 0x02, 0x04, 0x05, 0x06, 0x09})
 
 # 1ms poll — mirrors MidiScene._reader's interval ("keeps note latency
@@ -122,6 +132,7 @@ class _CCMapping:
     scene: int | None = None  # for "jump"
     target: str | None = None  # for "param": "effect.<name>" | "source.<name>"
     mode: str | None = None  # for "transport.jog": "abs" | "rel" (None -> "rel")
+    slot: int | None = None  # for "loop_slot": the pad/preset number (>= 1)
 
 
 def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping]:
@@ -164,8 +175,17 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
             raise ValueError(
                 f"cc_map[{i}] action 'transport.jog' mode must be 'abs' or 'rel', got {mode!r}"
             )
+        slot = entry.get("slot")
+        if action == "loop_slot" and (not isinstance(slot, int) or slot < 1):
+            raise ValueError(f"cc_map[{i}] action 'loop_slot' needs an int 'slot' >= 1")
         out[(kind, number)] = _CCMapping(
-            kind=kind, number=number, action=action, scene=scene, target=target, mode=mode
+            kind=kind,
+            number=number,
+            action=action,
+            scene=scene,
+            target=target,
+            mode=mode,
+            slot=slot,
         )
     return out
 
@@ -348,6 +368,16 @@ class MidiControlListener:
                 pl.request_jump(mapping.scene, skip_interstitial=self.jump_transition == "cut")
         elif action == "param":
             self._apply_param(pl, mapping.target, value, mapping.kind)
+        elif action == "loop_slot":
+            # Enqueue only — same rule as the transport.* branch below.
+            pl.transport.enqueue(
+                TransportEvent(
+                    action="loop_slot",
+                    pressed=pressed,
+                    value=value,
+                    slot=mapping.slot or 0,
+                )
+            )
         elif action.startswith("transport."):
             # Enqueue only — scene/DMA mutation happens on the playlist
             # thread inside TransportSession.tick, never here on the MIDI

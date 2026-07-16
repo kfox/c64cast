@@ -26,21 +26,29 @@ Phase 1 built:
   time; this keeps all scene/DMA-adjacent mutation on the playlist thread,
   matching the module's existing rule for :class:`LiveTuneTracker`.
 
-Later phases (3-5) add the record workflow + loop preset slots, real audio
-resync across a seek, and the ``--midi-setup`` learn wizard. Kept import-light
-(stdlib only; ``Config``/``Playlist``/``Scene`` referenced under
-TYPE_CHECKING) so it can be pulled in from playlist.py without a cycle.
+Phase 3 adds the record workflow + loop preset slots: a Record/Stop button
+pair driving the same ``_loop_a``/``_loop_b``/``_loop_state`` state machine
+``transport_loop_toggle`` already used, a red border while a loop is armed,
+and Stop-held+pad / Record-held+pad chords (save / clear) into a per-video
+:class:`LoopPresetStore`. Phase 4 (real audio resync) and Phase 5
+(``--midi-setup`` learn wizard) are still to come. Kept import-light (stdlib
+only; ``Config``/``Playlist``/``Scene`` referenced under TYPE_CHECKING) so it
+can be pulled in from playlist.py (and now scenes.py) without a cycle.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import logging
 import os
 import queue
+import re
 import tempfile
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -211,24 +219,36 @@ _JOG_SECONDS_PER_TICK = 1.0
 
 _HOLD_ACTIONS = ("rw", "ff")
 
+# Record/Stop are single-button hold-tracked modifiers for the loop_slot pad
+# chords (Stop-held+pad = save, Record-held+pad = clear) — distinct from
+# _HOLD_ACTIONS above, which drives the continuous rw/ff seek ramp. A held
+# flag auto-expires after this many seconds even with no release, because an
+# MMC-sourced Record/Stop press (see midi_control._dispatch) never generates
+# a release event at all — without an expiry, one MMC press would wedge
+# every later pad press as a chord for the rest of the session.
+_CHORD_HOLD_WINDOW_S = 5.0
+
 
 @dataclass(frozen=True)
 class TransportEvent:
     """One MIDI-triggered transport action, queued by the MIDI reader thread
     and drained on the playlist thread by :meth:`TransportSession.tick`.
 
-    ``action`` is the short form (``"play_pause"``, ``"stop"``,
-    ``"loop_toggle"``, ``"rw"``, ``"ff"``, ``"jog"`` — the cc_map action
-    string with its ``"transport."`` prefix stripped). ``pressed``
-    distinguishes a note-on from a note-off for the hold-aware rw/ff actions
+    ``action`` is the short form (``"play_pause"``, ``"stop"``, ``"record"``,
+    ``"loop_toggle"``, ``"rw"``, ``"ff"``, ``"jog"``, ``"loop_slot"`` — the
+    cc_map action string with any ``"transport."`` prefix stripped; plain
+    ``loop_slot`` has no prefix to strip). ``pressed`` distinguishes a
+    note-on from a note-off for the hold-aware rw/ff/record/stop actions
     (ignored by the others). ``value`` is the raw MIDI value/velocity
     (0-127) — used by ``jog``. ``mode`` is jog's ``"abs"``/``"rel"``
-    (default ``"rel"``), from the cc_map entry."""
+    (default ``"rel"``), from the cc_map entry. ``slot`` is the pad number
+    for ``loop_slot`` (unused otherwise)."""
 
     action: str
     pressed: bool = True
     value: int = 0
     mode: str = "rel"
+    slot: int = 0
 
 
 def _decode_relative_jog(value: int) -> int:
@@ -265,6 +285,11 @@ class TransportSession:
         # (playlist thread) — enqueue() only ever pushes onto _queue.
         self._held: dict[str, float] = {}
         self._last_tick: float | None = None
+        # Record/Stop hold state for the loop_slot pad chords — wall-time the
+        # button was pressed, or None when released/expired. See
+        # _CHORD_HOLD_WINDOW_S.
+        self._record_held_since: float | None = None
+        self._stop_held_since: float | None = None
 
     def enqueue(self, event: TransportEvent) -> None:
         self._queue.put(event)
@@ -304,25 +329,50 @@ class TransportSession:
             else:
                 self._held.pop(event.action, None)
             return
+        # Record/Stop chord bookkeeping — same "survives no current scene"
+        # rule as rw/ff above — but these ALSO have a one-shot press action
+        # (arm / the 3-way stop state machine), so they fall through to the
+        # dispatch below instead of returning early.
+        if event.action == "record":
+            self._record_held_since = now if event.pressed else None
+        elif event.action == "stop":
+            self._stop_held_since = now if event.pressed else None
         if pl.transitioning or pl.current is None:
             return
         scene = pl.current
         if event.action == "play_pause":
-            toggle = getattr(scene, "transport_toggle_pause", None)
-            if toggle is not None:
-                toggle()
+            if event.pressed:
+                toggle = getattr(scene, "transport_toggle_pause", None)
+                if toggle is not None:
+                    toggle()
         elif event.action == "stop":
-            # Full stop/record/quit state machine is Phase 3 — this phase
-            # `transport.stop` is pause-only.
-            pause = getattr(scene, "transport_pause", None)
-            if pause is not None:
-                pause()
+            if event.pressed:
+                stop = getattr(scene, "transport_stop", None)
+                if stop is not None and stop():
+                    pl.stop_event.set()
         elif event.action == "loop_toggle":
-            loop_toggle = getattr(scene, "transport_loop_toggle", None)
-            if loop_toggle is not None:
-                loop_toggle()
+            if event.pressed:
+                loop_toggle = getattr(scene, "transport_loop_toggle", None)
+                if loop_toggle is not None:
+                    loop_toggle()
+        elif event.action == "record":
+            if event.pressed:
+                record = getattr(scene, "transport_record", None)
+                if record is not None:
+                    record()
+        elif event.action == "loop_slot":
+            if event.pressed:
+                loop_slot = getattr(scene, "transport_loop_slot", None)
+                if loop_slot is not None:
+                    clear = self._chord_active(self._record_held_since, now)
+                    save = (not clear) and self._chord_active(self._stop_held_since, now)
+                    loop_slot(event.slot, save=save, clear=clear)
         elif event.action == "jog":
             self._apply_jog(scene, event)
+
+    @staticmethod
+    def _chord_active(held_since: float | None, now: float) -> bool:
+        return held_since is not None and (now - held_since) < _CHORD_HOLD_WINDOW_S
 
     @staticmethod
     def _apply_jog(scene: Any, event: TransportEvent) -> None:
@@ -340,3 +390,115 @@ class TransportSession:
                 return
             target = position() + ticks * _JOG_SECONDS_PER_TICK
         seek(target)
+
+
+# ---- Loop preset store (Phase 3) -------------------------------------------
+#
+# One JSON file per video under presets/loops/ (gitignored — presets/* is
+# already ignored wholesale except presets/README.md, and an ignored
+# directory's contents are ignored too, so no .gitignore change is needed).
+# Keyed by a path-move-tolerant identity: local files hash on basename+size
+# (survives a move, not a content edit — the same tradeoff
+# wled_device.PresetStore already accepts for its own presets); URL-backed
+# scenes hash on the URL itself. Slots are pad numbers (small positive ints);
+# b=None means "loop to end of file".
+
+LOOP_PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets" / "loops"
+
+
+def _video_identity(filepath: str) -> tuple[str, int | None]:
+    """(hash_basis, size). `size` is None for a URL or an unreadable path."""
+    if "://" in filepath:
+        return filepath, None
+    try:
+        size: int | None = os.path.getsize(filepath)
+    except OSError:
+        size = None
+    return f"{os.path.basename(filepath)}:{size}", size
+
+
+def loop_preset_key(filepath: str) -> str:
+    basis, _ = _video_identity(filepath)
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+
+
+def _slugify(filepath: str) -> str:
+    base = filepath if "://" in filepath else os.path.splitext(os.path.basename(filepath))[0]
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", base).strip("-").lower()
+    return slug[:40] or "video"
+
+
+def loop_preset_path(filepath: str) -> Path:
+    return LOOP_PRESETS_DIR / f"{_slugify(filepath)}.{loop_preset_key(filepath)}.json"
+
+
+class LoopPresetStore:
+    """Persists named A/B loop points for one video file (one JSON file per
+    video). Loads are tolerant (a missing or corrupt file reads as an empty
+    map); writes are atomic via :func:`atomic_write_text`, mirroring
+    :class:`~c64cast.wled_device.PresetStore`'s shape (cloned, not shared —
+    the id scheme differs: a hash-string key with no fixed range, one file
+    per video rather than one file per device holding many numbered
+    presets). The path is injectable so tests point it at a tempdir."""
+
+    SCHEMA = 1
+
+    def __init__(self, path: Path, *, video_ref: str, size: int | None) -> None:
+        self._path = Path(path)
+        self._video_ref = video_ref
+        self._size = size
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def load(self) -> dict[str, dict[str, float | None]]:
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        loops = data.get("loops")
+        if not isinstance(loops, dict):
+            return {}
+        out: dict[str, dict[str, float | None]] = {}
+        for k, v in loops.items():
+            if not (isinstance(v, dict) and str(k).isdigit()):
+                continue
+            a = v.get("a")
+            b = v.get("b")
+            if not isinstance(a, (int, float)):
+                continue
+            if b is not None and not isinstance(b, (int, float)):
+                continue
+            out[str(int(k))] = {"a": float(a), "b": float(b) if b is not None else None}
+        return out
+
+    def save(self, slot: int, a: float, b: float | None) -> None:
+        data = self.load()
+        data[str(slot)] = {"a": a, "b": b}
+        self._write(data)
+
+    def delete(self, slot: int) -> None:
+        data = self.load()
+        if data.pop(str(slot), None) is not None:
+            self._write(data)
+
+    def _write(self, loops: dict[str, dict[str, float | None]]) -> None:
+        payload = {
+            "schema": self.SCHEMA,
+            "video": self._video_ref,
+            "size": self._size,
+            "loops": loops,
+        }
+        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
+
+
+def make_loop_preset_store(filepath: str) -> LoopPresetStore:
+    _, size = _video_identity(filepath)
+    return LoopPresetStore(loop_preset_path(filepath), video_ref=filepath, size=size)
