@@ -116,6 +116,12 @@ class _FakePlaylist:
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
         self.jumps: list[int] = []
+        self.osd_posts: list[str] = []
+
+    def post_osd(self, text: str, duration_s: float = 2.5) -> None:
+        # Mirrors Playlist.post_osd (live-tune feedback); a live-param slider
+        # write routes its "name value" message here.
+        self.osd_posts.append(text)
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         if not 0 <= index < len(self.scenes):

@@ -189,6 +189,72 @@ def _timecode(seconds: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+class OsdState:
+    """A brief on-screen message for live performance (a knob sweep's new value,
+    a mode change) — the visible feedback for the MIDI/WLED live-tune controls.
+
+    Thread-safe: control threads (the MIDI reader, the WLED server) call
+    :meth:`post`; the render thread calls :meth:`current` once per frame. A post
+    supersedes any earlier one and shows for `duration_s`, then clears itself.
+    `enabled` gates it entirely (``[midi_control].osd = "off"``); `position` is
+    "top" or "bottom". Rendered pre-quantization via :func:`_annotate_osd`, so it
+    works on every display mode (the text becomes part of the quantized bitmap),
+    exactly like the ``--frame-numbers`` debug label."""
+
+    __slots__ = ("_lock", "_text", "_expires_at", "position", "enabled")
+
+    def __init__(self, position: str = "bottom", enabled: bool = True) -> None:
+        self._lock = threading.Lock()
+        self._text = ""
+        self._expires_at = 0.0
+        self.position = position
+        self.enabled = enabled
+
+    def post(self, text: str, duration_s: float = 2.5) -> None:
+        """Show `text` for `duration_s` seconds (supersedes any current message).
+        A no-op when the OSD is disabled, so callers needn't check first."""
+        if not self.enabled:
+            return
+        with self._lock:
+            self._text = text
+            self._expires_at = time.monotonic() + duration_s
+
+    def current(self) -> str | None:
+        """The message to draw this frame, or None when disabled / expired /
+        never posted. Cheap enough to call every frame."""
+        if not self.enabled:
+            return None
+        with self._lock:
+            if self._text and time.monotonic() < self._expires_at:
+                return self._text
+            return None
+
+
+def _annotate_osd(img: np.ndarray, text: str, position: str = "bottom") -> np.ndarray:
+    """Draw the OSD `text` into the top or bottom of a BGR frame, returning an
+    annotated COPY (the caller's `img` may be a view onto a shared source buffer;
+    see _annotate_frame_number). Font scale is derived from the frame width so the
+    label spans ~85% of it regardless of source resolution — that keeps the text
+    legible through the downscale to 160/320-wide C64 output, and shrinks a long
+    ``param.name value`` line to fit rather than clipping it. White text with a
+    black outline reads on any background. Pre-quantization, so it works on any
+    display mode."""
+    out = img.copy()
+    h, w = out.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), _ = cv2.getTextSize(text, font, 1.0, 1)
+    scale = (0.85 * w) / max(tw, 1)
+    thick = max(2, int(round(scale * 2)))
+    text_h = int(th * scale)
+    if position == "top":
+        org = (int(0.02 * w), int(0.06 * h) + text_h)
+    else:
+        org = (int(0.02 * w), h - int(0.06 * h))
+    cv2.putText(out, text, org, font, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
+    cv2.putText(out, text, org, font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+    return out
+
+
 class Scene:
     # Subclasses that drive audible content (video PyAV, native
     # sidplay, MIDI → SID) flip this to True so the Playlist consults
@@ -209,6 +275,12 @@ class Scene:
         self.audio = audio
         self.display_mode = display_mode
         self.name = name
+        # On-screen display for live performance: brief "param value" feedback
+        # posted by the MIDI/WLED live-tune controls. Position + enabled are
+        # stamped from [midi_control].osd at build time (config.build_scene);
+        # the default is a bottom, enabled OSD that stays invisible until
+        # something posts to it. See OsdState / _annotate_osd / Playlist.post_osd.
+        self.osd = OsdState()
         self.is_done = False
         self.duration_s: float = 30.0
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -327,6 +399,15 @@ class Scene:
             )
             img = self.prev_frame.astype(np.uint8)
         return img
+
+    def _apply_osd(self, img: np.ndarray) -> np.ndarray:
+        """Annotate `img` with the current OSD message, if any (an annotated
+        copy), else return it unchanged. The frame-bearing scenes call this right
+        before quantization, after the frame-number debug label. VideoScene
+        handles OSD inline instead (it must also bust its identity-skip on an OSD
+        change), so it doesn't use this helper."""
+        text = self.osd.current()
+        return _annotate_osd(img, text, self.osd.position) if text else img
 
     def process_frame(self, current_time: float) -> bool:
         raise NotImplementedError
@@ -455,6 +536,7 @@ class WebcamScene(Scene):
                 self._frame_count += 1
                 label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
                 img = _annotate_frame_number(img, label)
+            img = self._apply_osd(img)
             assert self.display_mode is not None
             _render_with_overlays(
                 self.display_mode, self.api, img, self.overlays, current_time, self
@@ -658,6 +740,7 @@ class SourceScene(Scene):
                 self._frame_count += 1
                 label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
                 frame = _annotate_frame_number(frame, label)
+            frame = self._apply_osd(frame)
             assert self.display_mode is not None
             _render_with_overlays(
                 self.display_mode, self.api, frame, self.overlays, current_time, self, modulation
@@ -915,7 +998,9 @@ class SlideshowScene(Scene):
                 # stale state from the previous slide.
                 c = self._color
                 if c.auto_fit:
-                    fit_acc = ColorFitAccumulator(strength=c.auto_fit_strength)
+                    # Full-strength fit; the display mode lerps it by
+                    # [color].auto_fit_strength at apply time (live-tunable).
+                    fit_acc = ColorFitAccumulator(strength=1.0)
                     fit_acc.add(self._current_img)
                     self.display_mode.set_color_fit(fit_acc.result())
                 if c.force_palette:
@@ -994,6 +1079,7 @@ class SlideshowScene(Scene):
                 f"{os.path.basename(self._current_path or '')}"
             )
             img = _annotate_frame_number(img, label)
+        img = self._apply_osd(img)
         assert self.display_mode is not None
         _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
         return True
@@ -1071,6 +1157,9 @@ class VideoScene(Scene):
         # config.build_scene (gated to the host-DMA DAC path over bitmap modes).
         self._tempo_scale = tempo_scale
         self._last_rendered_img: np.ndarray | None = None
+        # The OSD text baked into the last rendered frame (None = none). Compared
+        # each tick so an OSD post/expiry busts the identity-skip for one render.
+        self._last_osd_shown: str | None = None
         # A/V-lag telemetry (reset each setup): per-displayed-frame
         # audio_clock - displayed_frame_pts. Small + (≤ one frame interval) is
         # healthy; a growing + means the decoder is falling behind the
@@ -1224,7 +1313,9 @@ class VideoScene(Scene):
                 map_colors, map_indices = resolved_force_palette(c)
                 fit, cmap = prescan_source_color(
                     self.filepath,
-                    fit_strength=c.auto_fit_strength if c.auto_fit else None,
+                    # Full-strength fit; the mode lerps it by
+                    # [color].auto_fit_strength at apply time (live-tunable).
+                    fit_strength=1.0 if c.auto_fit else None,
                     map_colors=map_colors,
                     map_indices=map_indices,
                     decode_target_size=decode_target,
@@ -1244,7 +1335,9 @@ class VideoScene(Scene):
                 # playback (see process_frame + ONLINE_FIT_WARMUP_FRAMES).
                 self.display_mode.set_color_fit(None)
                 self.display_mode.set_color_map(None)
-                self._online_fit = ColorFitAccumulator(strength=c.auto_fit_strength)
+                # Full-strength online fit; the mode lerps it by
+                # [color].auto_fit_strength at apply time (live-tunable).
+                self._online_fit = ColorFitAccumulator(strength=1.0)
                 log.info(
                     "video: auto-fit converging online over first %d frames",
                     ONLINE_FIT_WARMUP_FRAMES,
@@ -1407,17 +1500,30 @@ class VideoScene(Scene):
         # buzz, verified via Cam Link envelope FFT 2026-05-26). Identity
         # check is exact and cheap; overlays still tick because the
         # Playlist runs overlay.process_frame separately afterwards.
-        if img is self._last_rendered_img:
+        #
+        # The OSD (live-tune feedback) busts this skip for one render on a post
+        # or an expiry: when the source frame is steady but the OSD text changed,
+        # we re-quantize so the message appears / clears. Only an actual OSD-state
+        # change forces the extra frame — a steady OSD keeps the skip intact, so
+        # the DMA-load rationale above is preserved.
+        osd_now = self.osd.current()
+        new_source = img is not self._last_rendered_img
+        if not new_source and osd_now == self._last_osd_shown:
             return True
-        self._last_rendered_img = img
-        self._record_av_lag(clock_s, current_time)
+        # A/V-lag accounting and the rolling auto_fit accumulator track REAL
+        # frames, so they only advance on a new source frame (an OSD-only
+        # re-render re-quantizes the same frame without disturbing either).
+        if new_source:
+            self._last_rendered_img = img
+            self._record_av_lag(clock_s, current_time)
         img = _crop_to_aspect(img)
         # Rolling-window auto_fit: fold the clean (pre-annotation) frame into
         # the accumulator and refresh the derived fit until the warmup window
         # closes, then freeze. Feeding before annotation keeps the debug
         # digits out of the contrast/saturation stats.
         if (
-            self._online_fit is not None
+            new_source
+            and self._online_fit is not None
             and self._online_fit_frames < ONLINE_FIT_WARMUP_FRAMES
             and self.display_mode is not None
         ):
@@ -1432,6 +1538,9 @@ class VideoScene(Scene):
             file_s = clock_s + self.start_s
             label = f"{_timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
+        if osd_now:
+            img = _annotate_osd(img, osd_now, self.osd.position)
+        self._last_osd_shown = osd_now
         assert self.display_mode is not None
         _render_with_overlays(self.display_mode, self.api, img, self.overlays, current_time, self)
         return True
@@ -1499,6 +1608,7 @@ class VideoScene(Scene):
         if self.audio:
             self.audio.stop()
         self._last_rendered_img = None
+        self._last_osd_shown = None
 
 
 class LauncherScene(Scene):

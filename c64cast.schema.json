@@ -813,9 +813,19 @@
           ],
           "default": "cut"
         },
+        "osd": {
+          "type": "string",
+          "description": "On-screen display for live-tune feedback: a brief 'param value' message appears when you sweep a knob or change a mode via MIDI/WLED, then fades. 'top' or 'bottom' picks the corner; 'off' disables it. Rendered pre-quantization so it shows on every display mode (like --frame-numbers).",
+          "enum": [
+            "bottom",
+            "top",
+            "off"
+          ],
+          "default": "bottom"
+        },
         "cc_map": {
           "type": "array",
-          "description": "MIDI-message -> action mappings ([[midi_control.cc_map]] tables); see --describe section:midi_control. Set to [] to disable the shipped defaults, or override/extend individual entries. Each entry: type ('cc'|'note'|'pc'), number (0-127), action ('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'); 'jump' also needs an int scene; 'param' also needs a string target ('effect.<name>', 'source.<name>', or 'scene.<name>' for scope scenes, matching a LIVE_PARAMS entry on the current scene's effect/generator/renderer).",
+          "description": "MIDI-message -> action mappings ([[midi_control.cc_map]] tables); see --describe section:midi_control. Set to [] to disable the shipped defaults, or override/extend individual entries. Each entry: type ('cc'|'note'|'pc'), number (0-127), action ('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'); 'jump' also needs an int scene; 'param' also needs a string target ('effect.<name>', 'source.<name>', 'scene.<name>' for scope scenes, or 'mode.<name>' for the display mode's live color knobs \u2014 dither_strength/method, motion_smoothing, auto_fit_strength, cell_strategy, color_match, palette_mode). A knob (cc) sweeps a scalar or bucket-selects a choice; a note/pad cycles a choice.",
           "default": [
             {
               "type": "note",

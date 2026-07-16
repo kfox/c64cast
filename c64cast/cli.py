@@ -339,6 +339,14 @@ def build_parser() -> argparse.ArgumentParser:
         "video frames (debug aid for locating flashing "
         f"frames) (default: {debug_def.frame_numbers})",
     )
+    debug.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="On exit, silently save any live-tune parameter changes (made via "
+        "MIDI/WLED during the run) back into the config's [color] section "
+        "(keeping a .bak), instead of prompting. No effect if nothing changed "
+        "or the run has no config file.",
+    )
     return p
 
 
@@ -396,6 +404,13 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
                 )
             )
             root.addHandler(fh)
+
+    # Third-party loggers that spam at DEBUG and drown our own output under -vv.
+    # urllib3 logs every REST request/connection to the U64 (probe, config
+    # reads, run_prg) — pin it to WARNING so -vv stays about c64cast, not the
+    # HTTP transport. (Requests reuse the connection pool, so this is pure noise.)
+    for noisy in ("urllib3.connectionpool", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) -> None:
@@ -1148,6 +1163,63 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
     return loaded, cfgs
 
 
+def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
+    """Persist live-tune parameter changes on exit (run after teardown, when the
+    terminal is free).
+
+    For each system whose playlist recorded changes (a MIDI/WLED knob sweep or a
+    mode change during the run): with `overwrite`, silently apply them to the
+    config's [color] section and save (keeping a .bak); otherwise, on an
+    interactive terminal, prompt with a plain input() (works without the wizard
+    extra). A quick-playback run (no config file) can't be written back — print a
+    pasteable [color] TOML snippet instead. Runs on a normal exit and on Ctrl+C."""
+    for st in stacks:
+        pl = st.playlist
+        tracker = getattr(pl, "live_tracker", None)
+        if tracker is None or not tracker.has_changes():
+            continue
+        tag = f"[{st.name}] " if len(stacks) > 1 else ""
+        if pl.config is not None and pl.config_path:
+            if overwrite:
+                applied = tracker.apply(pl.config)
+                if pl._save_config():
+                    log.info(
+                        "%slive-tune: saved %d change(s) → %s (backup .bak)",
+                        tag,
+                        len(applied),
+                        pl.config_path,
+                    )
+                continue
+            print(f"\n{tag}Live-tune changes this run:")
+            for line in tracker.describe():
+                print(f"  {line}")
+            if not sys.stdin.isatty():
+                # Headless/piped: can't prompt. Don't lose the info silently.
+                print(f"{tag}Not saved (no interactive terminal; re-run with --overwrite to save).")
+                continue
+            try:
+                ans = input(f"{tag}Save these to {pl.config_path}? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = ""
+            if ans in ("y", "yes"):
+                applied = tracker.apply(pl.config)
+                ok = pl._save_config()
+                print(
+                    f"{tag}Saved {len(applied)} change(s) (backup .bak)."
+                    if ok
+                    else f"{tag}Save failed (see log)."
+                )
+            else:
+                print(f"{tag}Not saved.")
+        else:
+            snippet = tracker.toml_snippet()
+            if snippet:
+                print(
+                    f"\n{tag}Live-tune changes (no config file — paste into a config's "
+                    f"[color] section to keep them):\n{snippet}"
+                )
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -1481,6 +1553,14 @@ def main(argv=None) -> int:
                 log.exception("control plane shutdown failed")
         for st in reversed(stacks):
             teardown_stack(st)
+        # Live-tune save-back: after teardown (terminal free), persist or prompt
+        # for any parameter changes made via MIDI/WLED. In the finally so it runs
+        # on a normal exit AND on Ctrl+C; guarded so a save-flow error can't mask
+        # the original shutdown.
+        try:
+            _maybe_save_live_tune(stacks, bool(getattr(args, "overwrite", False)))
+        except Exception:
+            log.exception("live-tune save flow failed")
 
     for st in stacks:
         log.info("[%s] %s stats: %s", st.name, st.api.profile.name, st.api.stats)

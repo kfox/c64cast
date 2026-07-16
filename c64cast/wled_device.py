@@ -62,14 +62,11 @@ piece, mirroring the control-plane pattern.
 """
 
 import asyncio
-import contextlib
 import hashlib
 import json
 import logging
-import os
 import re
 import socket
-import tempfile
 import threading
 import time
 import uuid
@@ -79,6 +76,7 @@ from typing import Any
 
 from .modes import PALETTE_MODES
 from .playlist import Playlist
+from .transport import atomic_write_text
 
 # NOTE: this module deliberately does NOT use `from __future__ import
 # annotations`. The FastAPI route handlers below annotate params with types
@@ -502,7 +500,14 @@ def _resolve_live_target(scene: Any, targets: tuple[str, ...]) -> tuple[Any, str
         return None
     for target in targets:
         holder_attr, _, name = target.partition(".")
-        holder = scene if holder_attr == "scene" else getattr(scene, holder_attr, None)
+        # `mode.<name>` targets the scene's display mode (the live color-pipeline
+        # knobs); kept mirrored with midi_control._apply_param's holder resolution.
+        if holder_attr == "scene":
+            holder = scene
+        elif holder_attr == "mode":
+            holder = getattr(scene, "display_mode", None)
+        else:
+            holder = getattr(scene, holder_attr, None)
         if holder is None:
             continue
         live_params = getattr(type(holder), "LIVE_PARAMS", {})
@@ -521,7 +526,10 @@ def _set_live_param(pl: Playlist, targets: tuple[str, ...], value_0_255: int) ->
     holder, name = resolved
     norm = max(0.0, min(1.0, value_0_255 / _SLIDER_MAX))
     lo, hi = getattr(type(holder), "LIVE_PARAMS", {})[name]
-    setattr(holder, name, lo + norm * (hi - lo))
+    new = lo + norm * (hi - lo)
+    setattr(holder, name, new)
+    # Same on-screen feedback the MIDI knob path posts (mirrors midi_control).
+    pl.post_osd(f"{name} {new:.2f}")
 
 
 def _seg_caps(pl: Playlist) -> dict[str, bool]:
@@ -701,21 +709,9 @@ class PresetStore:
             return 0
 
     def _write(self, data: Mapping[str, Any]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(data, indent=2, sort_keys=True)
-        # Atomic replace: write to a temp file in the same dir, fsync, then swap
-        # it onto the target with os.replace (rename is atomic within a fs).
-        fd, tmp = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self._path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        # Atomic replace (temp file in the same dir + os.replace), shared with
+        # the live-tune save-back via transport.atomic_write_text.
+        atomic_write_text(self._path, json.dumps(data, indent=2, sort_keys=True))
 
 
 class WledBridge:

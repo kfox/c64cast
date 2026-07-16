@@ -665,6 +665,9 @@ port = ""                           # substring match; "" = first available port
 broadcast_channel = 16              # this channel targets every ensemble system at once;
                                     #   other channels target the Nth system in ensemble order
 jump_transition = "cut"             # "cut" (instant, no interstitial) | "interstitial"
+osd = "bottom"                      # live-tune feedback ("param value" on a knob sweep /
+                                    #   mode change): "bottom" | "top" corner, or "off".
+                                    #   Rendered pre-quantization so it shows on any mode.
 
 # Ships with a sensible default cc_map (transport on notes 36-39, a 16-scene
 # jump bank on notes 40-55 + Program Change 0-15, a knob bank on CC13-16) if
