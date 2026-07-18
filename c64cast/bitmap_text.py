@@ -17,6 +17,8 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from .c64 import SCREEN
 
 if TYPE_CHECKING:
@@ -64,13 +66,41 @@ def ascii_to_screen_code(ch: str) -> int:
     through as ord(ch) & 0xFF (digits + most punctuation are identical between
     ASCII and screen codes). Chars the charset can't represent fall back to
     space (0x20) so unknown bytes render as a blank cell instead of a graphics
-    glyph that would look like noise."""
+    glyph that would look like noise.
+
+    Underscore is special-cased to screen code 0x6F (the low horizontal-line
+    graphics glyph) rather than the raw-mapping 0x1F (← arrow): the C64 charset
+    has no ASCII underscore, and 0x6F is the closest visual match, so identifier
+    text like ``auto_fit_strength`` reads correctly."""
+    if ch == "_":
+        return 0x6F  # low horizontal line ≈ underscore (charset has no true '_')
     c = ord(ch.upper())
     if 0x40 <= c <= 0x5F:
         return (c - 0x40) & 0x3F  # @, A-Z, [\]^_
     if 0x20 <= c <= 0x3F:
         return c  # space, digits, !"#... ?
     return 0x20  # unknown → blank
+
+
+def glyphs_to_mask(glyphs: bytes, text: str) -> np.ndarray:
+    """Rasterize `text` into an ``(8, 8*len(text))`` uint8 mask — 1 where a
+    glyph pixel is set (foreground), 0 elsewhere — using the uppercase charset.
+
+    Each C64 glyph is 8 bytes (one per scanline, bit 7 = leftmost pixel); this
+    unpacks them into a pixel grid the host-side overlays can scale + composite
+    into a BGR frame (so pre-quantization text uses the real C64 font instead of
+    a Hershey vector font). Unknown chars become blank cells (see
+    :func:`ascii_to_screen_code`). Empty text yields an ``(8, 0)`` array."""
+    n = len(text)
+    if n == 0:
+        return np.zeros((CELL_PX, 0), dtype=np.uint8)
+    rows = np.empty((n, CELL_PX), dtype=np.uint8)
+    for i, ch in enumerate(text):
+        sc = ascii_to_screen_code(ch)
+        rows[i] = np.frombuffer(glyphs[sc * CELL_PX : (sc + 1) * CELL_PX], dtype=np.uint8)
+    # (n, 8) bytes -> (n, 8 rows, 8 cols) bits -> (8 rows, n*8 cols)
+    bits = np.unpackbits(rows, axis=1).reshape(n, CELL_PX, CELL_PX)
+    return bits.transpose(1, 0, 2).reshape(CELL_PX, n * CELL_PX)
 
 
 def paint_text_row(

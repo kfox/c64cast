@@ -42,6 +42,7 @@ from .audio import (
     encode_floats_to_dac,
 )
 from .backend import C64Backend
+from .bitmap_text import glyphs_to_mask, load_glyphs
 from .c64 import CIA1, SCREEN
 from .modes import BitmapDisplayMode, DisplayMode
 from .palette import ColorFitAccumulator, ColorMapAccumulator
@@ -166,27 +167,65 @@ def _display_name(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def _blit_c64_text(
+    img: np.ndarray,
+    text: str,
+    *,
+    width_frac: float,
+    vpos: str,
+    margin_y_frac: float,
+) -> np.ndarray:
+    """Composite `text`, rendered from the real C64 character ROM, into a COPY
+    of the BGR frame `img` (the caller's `img` may be a view onto a shared source
+    buffer, so we never mutate it in place).
+
+    The glyphs come from :func:`bitmap_text.load_glyphs` (the uppercase charset
+    at ``assets/roms/characters.901225-01.bin``, with a builtin fallback), so the
+    pre-quantization overlays share the same font the on-C64 renderers use. The
+    8×8 cells are nearest-neighbor upscaled by an integer factor chosen so the
+    block spans ~`width_frac` of the frame width regardless of source resolution
+    — that keeps the text legible through the downscale to 160/320-wide C64
+    output and preserves the blocky, authentically-C64 pixel edges (no
+    anti-aliasing). White glyph pixels over a black halo read on any background.
+    `vpos` is "top" or "bottom"; the block is left-aligned at a 2% margin and
+    inset `margin_y_frac` of the height from the chosen edge."""
+    out = img.copy()
+    if not text:
+        return out
+    h, w = out.shape[:2]
+    mask = glyphs_to_mask(load_glyphs(), text)  # (8, 8*len)
+    gw = mask.shape[1]
+    scale = max(1, int(round((width_frac * w) / max(gw, 1))))
+    up = np.repeat(np.repeat(mask, scale, axis=0), scale, axis=1)
+    bh, bw = up.shape
+    # Left-aligned at a 2% margin; inset from the top or bottom edge.
+    x0 = max(0, int(0.02 * w))
+    y0 = h - bh - int(margin_y_frac * h) if vpos == "bottom" else int(margin_y_frac * h)
+    y0 = max(0, y0)
+    region = out[y0 : y0 + bh, x0 : x0 + bw]
+    rh, rw = region.shape[:2]
+    if rh == 0 or rw == 0:
+        return out
+    glyph = up[:rh, :rw]
+    # Black halo (dilated glyph, ~1 C64 pixel thick) then white glyph on top, so
+    # the text reads on any background without blacking out a full box.
+    k = scale
+    kernel = np.ones((2 * k + 1, 2 * k + 1), dtype=np.uint8)
+    halo = cv2.dilate(glyph, kernel).astype(bool)
+    region[halo] = 0
+    region[glyph.astype(bool)] = 255
+    return out
+
+
 def _annotate_frame_number(img: np.ndarray, label: str) -> np.ndarray:
     """Draw `label` (timecode + frame #) into the top-left corner of a BGR
-    frame, returning an annotated COPY (the caller's `img` may be a view onto
-    a shared source buffer — mutating it in place would corrupt the cache).
+    frame using the C64 character ROM font, returning an annotated COPY.
 
     Drawn before quantization, so it works on any display mode (the digits
-    become part of the quantized bitmap). The font scale is derived from the
-    frame width so the label spans ~55% of the width regardless of source
-    resolution — that survives the downscale to 160/320-wide C64 output
-    legibly. White text with a black outline reads on any background. This
-    is a diagnostic aid only (see [debug].frame_numbers)."""
-    out = img.copy()
-    h, w = out.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    (tw, _th), _ = cv2.getTextSize(label, font, 1.0, 1)
-    scale = (0.55 * w) / max(tw, 1)
-    thick = max(2, int(round(scale * 2)))
-    org = (int(0.02 * w), int(0.10 * h) + int(scale * 12))
-    cv2.putText(out, label, org, font, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
-    cv2.putText(out, label, org, font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-    return out
+    become part of the quantized bitmap). Spans ~55% of the frame width so it
+    survives the downscale to 160/320-wide C64 output legibly. Diagnostic aid
+    only (see [debug].frame_numbers). See :func:`_blit_c64_text`."""
+    return _blit_c64_text(img, label, width_frac=0.55, vpos="top", margin_y_frac=0.10)
 
 
 def _timecode(seconds: float) -> str:
@@ -237,28 +276,15 @@ class OsdState:
 
 
 def _annotate_osd(img: np.ndarray, text: str, position: str = "bottom") -> np.ndarray:
-    """Draw the OSD `text` into the top or bottom of a BGR frame, returning an
-    annotated COPY (the caller's `img` may be a view onto a shared source buffer;
-    see _annotate_frame_number). Font scale is derived from the frame width so the
-    label spans ~85% of it regardless of source resolution — that keeps the text
-    legible through the downscale to 160/320-wide C64 output, and shrinks a long
-    ``param.name value`` line to fit rather than clipping it. White text with a
-    black outline reads on any background. Pre-quantization, so it works on any
-    display mode."""
-    out = img.copy()
-    h, w = out.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    (tw, th), _ = cv2.getTextSize(text, font, 1.0, 1)
-    scale = (0.85 * w) / max(tw, 1)
-    thick = max(2, int(round(scale * 2)))
-    text_h = int(th * scale)
-    if position == "top":
-        org = (int(0.02 * w), int(0.06 * h) + text_h)
-    else:
-        org = (int(0.02 * w), h - int(0.06 * h))
-    cv2.putText(out, text, org, font, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
-    cv2.putText(out, text, org, font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-    return out
+    """Draw the OSD `text` into the top or bottom of a BGR frame using the C64
+    character ROM font, returning an annotated COPY (the caller's `img` may be a
+    view onto a shared source buffer; see _annotate_frame_number). Spans ~85% of
+    the frame width regardless of source resolution — legible through the
+    downscale to 160/320-wide C64 output, and shrinks a long ``param.name value``
+    line to fit rather than clipping it. Pre-quantization, so it works on any
+    display mode. See :func:`_blit_c64_text`."""
+    vpos = "top" if position == "top" else "bottom"
+    return _blit_c64_text(img, text, width_frac=0.85, vpos=vpos, margin_y_frac=0.06)
 
 
 class Scene:
