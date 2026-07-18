@@ -163,6 +163,38 @@ RING_BUFFER_END = RING_BUFFER_ADDR + RING_BUFFER_SIZE
 RING_BUFFER_HI = RING_BUFFER_ADDR >> 8
 RING_BUFFER_END_HI = RING_BUFFER_END >> 8
 
+# Pause fast-mute (MIDI live-tune Phase 4): when a transport pause asks the DAC
+# worker to silence the ring, it NEUTRAL-fills the unplayed span [R+guard, W).
+# The guard leaves a small stale tail un-stomped so the fill never races the NMI
+# read head R forward into a byte the FPGA/NMI is about to consume: the NMI
+# consumes ~8 B/ms @ 8 kHz, so 128 B ≈ 16 ms of headroom.
+STOMP_GUARD_BYTES = 128
+
+
+def _stomp_spans(
+    r_addr: int, write_addr: int, guard: int = STOMP_GUARD_BYTES
+) -> list[tuple[int, int]]:
+    """Absolute-address DMA write spans covering the unplayed ring region
+    ``(R + guard .. W)`` for the pause NEUTRAL-fill, splitting at
+    ``RING_BUFFER_END`` when the region wraps. Returns ``[]`` when the gap is
+    ``<= guard`` (nothing worth silencing past the tail we deliberately leave).
+
+    Pure (no hardware); unit-tested. ``r_addr``/``write_addr`` are absolute
+    ring addresses in ``[RING_BUFFER_ADDR, RING_BUFFER_END)``; ``write_addr`` is
+    the worker's live W head (already advanced past the last byte written)."""
+    gap = (write_addr - r_addr) % RING_BUFFER_SIZE
+    if gap <= guard:
+        return []
+    start = RING_BUFFER_ADDR + ((r_addr - RING_BUFFER_ADDR + guard) % RING_BUFFER_SIZE)
+    length = gap - guard
+    spans: list[tuple[int, int]] = []
+    first = min(length, RING_BUFFER_END - start)
+    spans.append((start, first))
+    if first < length:
+        spans.append((RING_BUFFER_ADDR, length - first))
+    return spans
+
+
 NEUTRAL_SAMPLE = 7  # mid-scale 4-bit value; keeps the speaker cone centered
 
 # CIA #2 control words for NMI bring-up / teardown.
@@ -1333,6 +1365,19 @@ class AudioStreamer:
         # below is in bytes, not items.
         self.q: queue.Queue[bytes] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
         self._queued_samples = 0
+        # Transport resync (MIDI live-tune Phase 4). flush() bumps _flush_epoch;
+        # the push side (_encode_and_enqueue) and the consumer side (_worker)
+        # each capture the epoch and discard in-hand/queued stale audio when it
+        # changes, so a seek/loop/pause splice can't leak pre-splice samples that
+        # were mid-commit in a blocked pusher or held by the worker. _count_lock
+        # pairs the _pushed_count/_queued_samples mutations so position_seconds()
+        # (= pushed - queued) stays exactly invariant across a flush drain.
+        # _stomp_requested asks the worker (which owns write_addr) to NEUTRAL-fill
+        # the unplayed ring on a pause — done worker-side so the playlist thread
+        # never issues ring DMA concurrently with the servo.
+        self._flush_epoch = 0
+        self._count_lock = threading.Lock()
+        self._stomp_requested = False
         # Cap the buffered audio at ~2 s @ 8 kHz so a stalled consumer
         # doesn't accumulate a wall of stale audio.
         self._max_queued_samples = MAX_QUEUED_SAMPLES
@@ -1621,6 +1666,11 @@ class AudioStreamer:
             next_write_time = 0.0
 
             while self.running:
+                # Transport-flush epoch (Phase 4): captured before we collect a
+                # chunk; if flush() bumps it while this iteration holds data, the
+                # data is stale (pre-splice) and is discarded before the ring
+                # write below rather than played.
+                epoch = self._flush_epoch
                 if prebuffered:
                     pace_deadline = next_write_time
                     collect_deadline = pace_deadline
@@ -1674,6 +1724,28 @@ class AudioStreamer:
                     n = self.chunk_size
                     self._partial_underruns += 1
 
+                # Phase 4 flush: a splice landed while this chunk was in hand.
+                # The from_queue + leftover bytes are pre-splice — count them as
+                # never pushed (paired subtract keeps position invariant) and
+                # skip the ring write + pace increment for this iteration.
+                if self._flush_epoch != epoch:
+                    discard = from_queue + len(leftover)
+                    if discard:
+                        with self._count_lock:
+                            self._queued_samples = max(0, self._queued_samples - discard)
+                            self._pushed_count = max(0, self._pushed_count - discard)
+                    leftover = b""
+                    continue
+
+                # Pause fast mute (Phase 4): NEUTRAL-fill the unplayed ring ahead
+                # of the read head so already-queued content goes silent quickly.
+                # Executed here (worker-side) so write_addr stays worker-local and
+                # no ring DMA races the servo. Only meaningful once the NMI is
+                # consuming (prebuffered); before that R is stale.
+                if self._stomp_requested and prebuffered:
+                    self._stomp_requested = False
+                    self._stomp_ring(write_addr)
+
                 if prebuffered:
                     sleep_s = pace_deadline - time.monotonic()
                     if sleep_s > 0:
@@ -1681,7 +1753,8 @@ class AudioStreamer:
 
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
                 if from_queue:
-                    self._queued_samples = max(0, self._queued_samples - from_queue)
+                    with self._count_lock:
+                        self._queued_samples = max(0, self._queued_samples - from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1942,6 +2015,10 @@ class AudioStreamer:
         is counted in samples (not blobs) against self._max_queued_samples."""
         if floats.size == 0:
             return 0
+        # Phase 4 flush epoch: captured at entry. If a transport flush() bumps it
+        # while this call is parked in the backpressure spin below, the samples
+        # are pre-splice and are dropped before the put (checked just before it).
+        epoch = self._flush_epoch
         floats = self._apply_dsp(floats)
         self._push_to_tap(floats.astype(np.float32, copy=False))
         vol = encode_floats_to_dac(floats, dither=self.dither_enabled, curve=self._dac_curve)
@@ -1958,6 +2035,12 @@ class AudioStreamer:
                 if time.time() >= deadline:
                     return 0
                 time.sleep(BACKPRESSURE_SPIN_S)
+        # Drop the blob if a transport splice flushed while we were encoding /
+        # waiting for capacity — otherwise this stale pre-splice chunk lands in
+        # the queue right after the drain. The residual epoch-check→put window is
+        # µs against a user-action-rate flush; accepted.
+        if self._flush_epoch != epoch:
+            return 0
         try:
             if block_on_full:
                 self.q.put(payload, timeout=QUEUE_PUT_TIMEOUT_S)
@@ -1965,8 +2048,9 @@ class AudioStreamer:
                 self.q.put_nowait(payload)
         except queue.Full:
             return 0
-        self._queued_samples += n
-        self._pushed_count += n
+        with self._count_lock:
+            self._queued_samples += n
+            self._pushed_count += n
         return n
 
     # ---- input sources -------------------------------------------------------
@@ -2626,6 +2710,59 @@ class AudioStreamer:
     def reset_position(self) -> None:
         self._pushed_count = 0
 
+    def _drain_queue_samples(self) -> int:
+        """get_nowait-drain self.q; return the total samples dropped (each blob
+        is one byte per sample, see the q comment in __init__). Shared by flush()
+        and stop()."""
+        drained = 0
+        while True:
+            try:
+                blob = self.q.get_nowait()
+            except queue.Empty:
+                break
+            drained += len(blob)
+        return drained
+
+    def flush(self, *, silence_output: bool = False) -> None:
+        """Drop all queued (not-yet-ring-written) audio WITHOUT moving
+        position_seconds(). Used by VideoScene's transport splice (seek / loop
+        wrap / resume) so stale pre-splice audio doesn't play after the demuxer
+        re-seeks. ``silence_output`` additionally asks the worker to NEUTRAL-fill
+        the unplayed ring region (pause fast mute) — the worker owns write_addr,
+        so it executes the ring stomp, not this thread.
+
+        The bump-then-drain order pairs with the epoch checks in the push and
+        worker paths: pushers blocked mid-commit and the worker holding an
+        in-hand chunk both discard against the new epoch, closing the windows a
+        bare queue drain would leave open. Counters are subtracted in pairs under
+        _count_lock so ``position = pushed - queued`` is unchanged by the drop.
+        No-op in REU-pump mode (no host queue to flush)."""
+        if self._reu_pump_armed:
+            return
+        self._flush_epoch += 1
+        drained = self._drain_queue_samples()
+        with self._count_lock:
+            self._queued_samples = max(0, self._queued_samples - drained)
+            self._pushed_count = max(0, self._pushed_count - drained)
+        if silence_output:
+            self._stomp_requested = True
+
+    def _stomp_ring(self, write_addr: int) -> None:
+        """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the
+        pause fast mute. Reads the NMI read pointer R with the same sanity
+        pattern as _next_pace_increment; on a bad read it just returns (the
+        drained queue pads the ring to silence within ~1 s regardless). Called
+        only from the worker thread, so write_addr is the live worker-local W."""
+        r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
+        if r is None or len(r) != 2:
+            return
+        r_addr = r[0] | (r[1] << 8)
+        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
+            return
+        neutral = bytes([self._neutral_byte])
+        for addr, ln in _stomp_spans(r_addr, write_addr):
+            self.api.write_memory_file(f"{addr:04X}", neutral * ln)
+
     # ---- shutdown ------------------------------------------------------------
     def stop(self) -> None:
         # Order matters for clean audio cutoff:
@@ -2668,13 +2805,10 @@ class AudioStreamer:
             self._worker_thread.join(timeout=1.0)
             self._worker_thread = None
         # Drain the queue so subsequent runs start clean.
-        while not self.q.empty():
-            try:
-                self.q.get_nowait()
-            except queue.Empty:
-                break
+        self._drain_queue_samples()
         self._pushed_count = 0
         self._queued_samples = 0
+        self._stomp_requested = False
         # Clear pitch-comp state so the next scene's bring-up re-arms from
         # nominal (a scene with no display_mode never calls set_nmi_latch_for_
         # mode, so a stale multiplier must not leak across scenes).

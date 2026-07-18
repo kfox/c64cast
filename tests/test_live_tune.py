@@ -376,6 +376,34 @@ class BuildSceneOsdStampTests(unittest.TestCase):
         self.assertFalse(scene.osd.enabled)
 
 
+class BuildSceneLoopAudioStampTests(unittest.TestCase):
+    """config.build_scene passes [midi_control].loop_audio to VideoScene's
+    ctor (Phase 4 audio-resync policy) — mirrors BuildSceneOsdStampTests."""
+
+    def _build_video(self, loop_audio: str) -> scenes.Scene:
+        import tempfile
+
+        fd, vid = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        self.addCleanup(os.unlink, vid)
+        cfg = Config()
+        cfg.midi_control = replace(cfg.midi_control, loop_audio=loop_audio)
+        s = SceneCfg(type="video", display="mhires", file=vid)
+        api = cast("cfgmod.C64Backend", FakeAPI())  # type: ignore[attr-defined]
+        # A sentinel audio streamer is enough — setup() is never called here
+        # (matches the fps/ensemble build_scene tests).
+        audio = cast("cfgmod.AudioStreamer", object())  # type: ignore[attr-defined]
+        return cfgmod.build_scene(s, cfg, api, audio, None)
+
+    def test_on_round_trips(self):
+        scene = self._build_video("on")
+        self.assertEqual(scene._loop_audio, "on")  # type: ignore[attr-defined]
+
+    def test_mute_round_trips(self):
+        scene = self._build_video("mute")
+        self.assertEqual(scene._loop_audio, "mute")  # type: ignore[attr-defined]
+
+
 class AtomicWriteTests(unittest.TestCase):
     def test_atomic_write_roundtrip(self):
         import os

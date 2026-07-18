@@ -1866,6 +1866,19 @@ class MidiControlCfg:
             "choices": ("bottom", "top", "off"),
         },
     )
+    loop_audio: str = field(
+        default="on",
+        metadata={
+            "help": "What happens to a video's audio once a transport.* action "
+            "touches the scene: 'on' (default) keeps audio playing and re-syncs "
+            "it across every seek/pause/loop splice; 'mute' restores the Phase-2 "
+            "escape valve (audio mutes for the rest of that scene's run). "
+            "Falls back to mute behavior automatically when the scene has no "
+            "audio. The REU-pump audio path is always forced off under "
+            "transport regardless.",
+            "choices": ("on", "mute"),
+        },
+    )
     cc_map: list[dict[str, Any]] = field(
         default_factory=lambda: [dict(d) for d in _DEFAULT_MIDI_CC_MAP],
         metadata={
@@ -1887,9 +1900,10 @@ class MidiControlCfg:
             "cycles a choice. The transport.* actions give DJ-style control of "
             "a playing video scene (pause-in-place, seek, RW/FF with "
             "acceleration while a note is held, an A/B loop, and a rotary "
-            "jog — 'mode' 'abs'|'rel', default 'rel'); once touched at all, "
-            "that scene's audio mutes for the rest of its run (see "
-            "docs/architecture.md's transport note). A 'mmc' entry also "
+            "jog — 'mode' 'abs'|'rel', default 'rel'); once touched, that "
+            "scene's audio follows every seek/pause/loop by default (see "
+            "loop_audio, and docs/architecture.md's transport note). A 'mmc' "
+            "entry also "
             "matches an MMC transport SysEx from a DAW/controller. "
             "'transport.record' arms a loop (Record -> Stop workflow, red "
             "border while armed); 'loop_slot' also needs an int 'slot' >= 1 "
@@ -3583,6 +3597,10 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
         raise ConfigError(
             f"[midi_control].osd must be 'bottom', 'top', or 'off', got {midi_cfg.osd!r}"
         )
+    if midi_cfg.loop_audio not in ("on", "mute"):
+        raise ConfigError(
+            f"[midi_control].loop_audio must be 'on' or 'mute', got {midi_cfg.loop_audio!r}"
+        )
     if not 1 <= midi_cfg.broadcast_channel <= 16:
         raise ConfigError(
             f"[midi_control].broadcast_channel must be 1..16, got {midi_cfg.broadcast_channel}"
@@ -4049,6 +4067,7 @@ def build_scene(
             color=cfg.color,
             start_s=start_s or 0.0,
             tempo_scale=tempo_scale,
+            loop_audio=cfg.midi_control.loop_audio,
         )
         if video_name:
             scene.name = video_name

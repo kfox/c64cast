@@ -255,6 +255,7 @@ class MuteLatchTest(unittest.TestCase):
     def _stub(self, sink) -> AVFileSource:
         src = AVFileSource.__new__(AVFileSource)
         src._muted = False
+        src._pending_seek = None
         src._audio_push = sink.append
         src.audio_noise_gate = 0
         src.audio_gain = 1.0
@@ -367,20 +368,40 @@ class _StubSource:
     dependency — mirrors this file's AVFileSource.__new__ stub pattern one
     layer up."""
 
-    def __init__(self, *, duration: float | None = None, video_fps: float = 30.0):
+    def __init__(
+        self,
+        *,
+        duration: float | None = None,
+        video_fps: float = 30.0,
+        a_stream: object | None = None,
+        events: list[tuple[str, object]] | None = None,
+    ):
         self.duration_s = duration
         self.video_fps = video_fps
         self.finished = False
         self.last_frame_pts = 0.0
         self.seeks: list[float] = []
         self.muted_calls: list[bool] = []
+        # Phase 4 resync surface: a non-None a_stream marks the source as
+        # audio-bearing (VideoScene._touch_transport requires it to resolve the
+        # resync path); seek_pending mirrors AVFileSource.seek_pending. `events`
+        # (when supplied) records the ordered request_seek/set_muted calls so a
+        # test can pin the resume splice-then-unmute ordering.
+        self.a_stream = a_stream
+        self.seek_pending = False
+        self._events = events
         self._frame = np.zeros((200, 320, 3), dtype=np.uint8)
 
     def request_seek(self, target_s: float) -> None:
         self.seeks.append(target_s)
+        self.seek_pending = True
+        if self._events is not None:
+            self._events.append(("seek", target_s))
 
     def set_muted(self, muted: bool) -> None:
         self.muted_calls.append(muted)
+        if self._events is not None:
+            self._events.append(("muted", muted))
 
     def close(self) -> None:
         pass
@@ -423,6 +444,13 @@ def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> Vide
     scene._paused = False
     scene._wall_anchor_clock_s = 0.0
     scene._wall_anchor_time = 0.0
+    # Phase 4 resync state (defaults keep the mute/wall path for audio=None
+    # stubs, so the existing Phase-2 clock tests are unchanged).
+    scene._tempo_scale = 1.0
+    scene._loop_audio = "on"
+    scene._transport_resync = False
+    scene._audio_anchor_clock_s = 0.0
+    scene._audio_anchor_pos = 0.0
     scene._loop_a = None
     scene._loop_b = None
     scene._loop_state = "none"
@@ -529,6 +557,249 @@ class VideoSceneClockTest(unittest.TestCase):
         with mock.patch.object(scenes.time, "time", return_value=11.0):
             scene.transport_toggle_pause()
         self.assertFalse(scene._paused)
+
+
+class _FakeSceneAudio:
+    """Duck-types the AudioStreamer/UltimateAudioSampler slice VideoScene's
+    resync path calls: a scriptable position_seconds() and a flush() that
+    records its silence_output argument (and ordering when given an events
+    list)."""
+
+    def __init__(self, position: float = 0.0, events: list[tuple[str, object]] | None = None):
+        self.sample_rate = 8000
+        self._position = position
+        self.use_reu_pump = False
+        self.flush_calls: list[bool] = []
+        self._events = events
+
+    def position_seconds(self) -> float:
+        return self._position
+
+    def flush(self, *, silence_output: bool = False) -> None:
+        self.flush_calls.append(silence_output)
+        if self._events is not None:
+            self._events.append(("flush", silence_output))
+
+
+class EmitAudioSeekGuardTest(unittest.TestCase):
+    """AVFileSource._emit_audio drops audio while a seek is pending (so stale
+    pre-seek samples don't reach the consumer past the splice flush)."""
+
+    def _stub(self, sink) -> AVFileSource:
+        src = AVFileSource.__new__(AVFileSource)
+        src._muted = False
+        src._pending_seek = None
+        src._lock = threading.Lock()
+        src._audio_push = sink.append
+        src.audio_noise_gate = 0
+        src.audio_gain = 1.0
+        return src
+
+    def test_drops_while_seek_pending(self):
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src._pending_seek = 12.0
+        src._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+        self.assertEqual(sink, [])
+
+    def test_passes_after_seek_cleared(self):
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src._pending_seek = None
+        src._emit_audio(np.array([1, 2, 3], dtype=np.int16))
+        self.assertEqual(len(sink), 1)
+
+    def test_mute_still_wins_over_pending(self):
+        sink: list[np.ndarray] = []
+        src = self._stub(sink)
+        src._muted = True
+        src._pending_seek = None
+        src._emit_audio(np.array([1], dtype=np.int16))
+        self.assertEqual(sink, [])
+
+
+class SeekPendingPropertyTest(unittest.TestCase):
+    def _src(self) -> AVFileSource:
+        src = AVFileSource.__new__(AVFileSource)
+        src._lock = threading.Lock()
+        src._pending_seek = None
+        return src
+
+    def test_false_when_none(self):
+        self.assertFalse(self._src().seek_pending)
+
+    def test_true_when_set(self):
+        src = self._src()
+        src._pending_seek = 5.0
+        self.assertTrue(src.seek_pending)
+
+
+class VideoSceneSpliceTest(unittest.TestCase):
+    """VideoScene's Phase 4 audio-resync transport path (loop_audio="on"):
+    audio-anchored clock, the _splice primitive, and the tempo_scale domain
+    seam. Mirrors VideoSceneClockTest's stub harness with a real audio object
+    and an audio-bearing source (a_stream set)."""
+
+    def _resync_scene(
+        self, *, position: float = 0.0, tempo_scale: float = 1.0, events=None
+    ) -> tuple[VideoScene, _StubSource, _FakeSceneAudio]:
+        source = _StubSource(duration=100.0, a_stream=object(), events=events)
+        audio = _FakeSceneAudio(position=position, events=events)
+        scene = _make_video_scene_stub(source)
+        scene.audio = audio  # type: ignore[assignment]
+        scene._tempo_scale = tempo_scale
+        scene._loop_audio = "on"
+        return scene, source, audio
+
+    def test_touch_resolves_resync_and_does_not_mute(self):
+        scene, source, _ = self._resync_scene(position=7.0)
+        scene._touch_transport()
+        self.assertTrue(scene._transport_resync)
+        self.assertEqual(source.muted_calls, [])  # NOT muted
+        self.assertAlmostEqual(scene._audio_anchor_pos, 7.0)
+
+    def test_touch_with_mute_setting_is_verbatim_phase2(self):
+        scene, source, _ = self._resync_scene(position=7.0)
+        scene._loop_audio = "mute"
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+        self.assertFalse(scene._transport_resync)
+        self.assertEqual(source.muted_calls, [True])
+
+    def test_on_without_audio_falls_back_to_mute(self):
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))  # audio=None
+        scene._loop_audio = "on"
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+        self.assertFalse(scene._transport_resync)
+        self.assertEqual(scene.source.muted_calls, [True])  # type: ignore[union-attr]
+
+    def test_on_without_audio_stream_falls_back_to_mute(self):
+        # audio present, but the source carries no audio stream (a_stream None).
+        source = _StubSource(duration=100.0, a_stream=None)
+        scene = _make_video_scene_stub(source)
+        scene.audio = _FakeSceneAudio()  # type: ignore[assignment]
+        scene._loop_audio = "on"
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+        self.assertFalse(scene._transport_resync)
+        self.assertEqual(source.muted_calls, [True])
+
+    def test_seek_splices(self):
+        scene, source, audio = self._resync_scene(position=3.0)
+        scene.transport_seek(42.0)
+        self.assertEqual(source.seeks, [42.0])  # request_seek fired
+        self.assertEqual(audio.flush_calls, [False])  # plain flush (not silence)
+        self.assertAlmostEqual(scene._audio_anchor_clock_s, 42.0)  # tempo 1.0
+
+    def test_clock_tracks_audio_delta_not_wall(self):
+        scene, _, audio = self._resync_scene(position=0.0)
+        scene._touch_transport()  # anchor_clock=0, anchor_pos=0
+        audio._position = 5.0
+        # Wall time is irrelevant on the resync path — only the audio delta.
+        with mock.patch.object(scenes.time, "time", return_value=999.0):
+            self.assertAlmostEqual(scene._clock_s(), 5.0)
+
+    def test_pause_freezes_and_silences(self):
+        scene, source, audio = self._resync_scene(position=10.0)
+        scene._touch_transport()
+        scene.transport_pause()
+        self.assertTrue(scene._paused)
+        self.assertEqual(audio.flush_calls, [True])  # silence_output
+        self.assertIn(True, source.muted_calls)
+        # Clock frozen at the paused position regardless of further audio motion.
+        audio._position = 99.0
+        self.assertAlmostEqual(scene._clock_s(), 10.0)
+
+    def test_resume_splices_back_then_unmutes(self):
+        events: list[tuple[str, object]] = []
+        scene, _, _ = self._resync_scene(position=10.0, events=events)
+        scene._touch_transport()
+        scene.transport_pause()
+        events.clear()
+        scene.transport_resume()
+        self.assertFalse(scene._paused)
+        # Order is load-bearing: splice (request_seek then flush) BEFORE unmute.
+        self.assertEqual(
+            [e[0] for e in events],
+            ["seek", "flush", "muted"],
+        )
+        self.assertEqual(events[-1], ("muted", False))
+
+    def test_loop_wrap_splices_once_while_seek_pending(self):
+        scene, source, _ = self._resync_scene(position=0.0)
+        scene._touch_transport()
+        scene._loop_a = 0.0
+        scene._loop_b = 5.0
+        scene._loop_state = "active"
+        source.finished = True  # force the wrap path every frame
+        scene.process_frame(0.0)
+        self.assertEqual(source.seeks, [0.0])  # fired once
+        # request_seek set seek_pending; the next frame must NOT re-fire.
+        scene.process_frame(0.0)
+        self.assertEqual(source.seeks, [0.0])
+
+    def test_tempo_scale_anchor_and_wrap(self):
+        # The §3 hotspot: internal clock is scaled (s×content), the transport
+        # surface is content seconds. s=0.88.
+        scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
+        scene.transport_seek(100.0)
+        self.assertAlmostEqual(scene._audio_anchor_clock_s, 88.0)  # 100 × 0.88
+        self.assertAlmostEqual(scene.transport_position(), 100.0)  # back to content
+        # Loop B stored in content seconds (10) wraps when clock ≥ 8.8.
+        scene._loop_a = 0.0
+        scene._loop_b = 10.0
+        scene._loop_state = "active"
+        scene._audio_anchor_clock_s = 0.0
+        scene._audio_anchor_pos = 0.0
+        source.seeks.clear()
+        source.seek_pending = False  # transport_seek(100) set it; clear for wrap
+        source.finished = False
+        audio._position = 9.0  # clock 9.0 ≥ 8.8 → wrap
+        scene.process_frame(0.0)
+        self.assertEqual(source.seeks, [0.0])
+
+    def test_tempo_scale_frame_label_in_content_domain(self):
+        # Frame-number label must report CONTENT seconds, not the scaled clock
+        # (an inverted conversion would double the tempo error into the label).
+        scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
+        scene._touch_transport()
+        scene._audio_anchor_clock_s = 88.0  # content 100 at s=0.88
+        scene._audio_anchor_pos = 0.0
+        audio._position = 0.0  # clock = 88.0
+        scene.show_frame_numbers = True
+        source.video_fps = 30.0
+        labels: list[str] = []
+        with (
+            mock.patch.object(
+                scenes, "_annotate_frame_number", lambda img, lbl: labels.append(lbl) or img
+            ),
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            scene.process_frame(0.0)
+        self.assertTrue(labels, "frame-number label was not rendered")
+        self.assertTrue(labels[0].startswith(_timecode(100.0)), labels[0])
+
+    def test_mute_path_wrap_compare_unscaled(self):
+        # Guard: on the mute path tempo_scale must NOT scale the loop-B compare.
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))  # audio=None
+        scene._loop_audio = "mute"
+        scene._tempo_scale = 0.88
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            scene._touch_transport()
+        scene._loop_a = 0.0
+        scene._loop_b = 10.0
+        scene._loop_state = "active"
+        scene._wall_anchor_clock_s = 9.0  # unscaled clock 9.0
+        scene._wall_anchor_time = 10.0
+        scene.source.finished = False  # type: ignore[union-attr]
+        scene.source._frame = None  # type: ignore[union-attr]  # pre-roll → no render path
+        with mock.patch.object(scenes.time, "time", return_value=10.0):
+            # content compare: 9.0 < 10.0 → NO wrap. A wrongly scaled threshold
+            # (8.8) would wrap here.
+            scene.process_frame(0.0)
+        self.assertEqual(scene.source.seeks, [])  # type: ignore[union-attr]
 
 
 class VideoSceneLoopToggleTest(unittest.TestCase):
@@ -921,6 +1192,7 @@ class AtempoTempoCompensationTest(unittest.TestCase):
         src.path = "test.mp4"
         src._closed = False
         src._muted = False
+        src._pending_seek = None
         src.audio_gain = 1.0
         src.audio_noise_gate = 0
         src._tempo_scale = tempo_scale

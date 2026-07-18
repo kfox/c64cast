@@ -1146,6 +1146,7 @@ class VideoScene(Scene):
         color: ColorCfg | None = None,
         start_s: float = 0.0,
         tempo_scale: float = 1.0,
+        loop_audio: str = "on",
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
@@ -1234,6 +1235,20 @@ class VideoScene(Scene):
         self._paused = False
         self._wall_anchor_clock_s = 0.0
         self._wall_anchor_time = 0.0
+        # Audio resync policy once transport is touched (MIDI live-tune Phase 4):
+        # "on" keeps audio playing and re-syncs it across every seek/pause/loop
+        # splice; "mute" is the Phase-2 escape valve (mute + wall clock for the
+        # rest of the run). Resolved to _transport_resync at touch time — "on"
+        # degrades to the mute/wall path when the scene has no audio (stream).
+        self._loop_audio = loop_audio
+        self._transport_resync = False
+        # Audio-anchored post-touch clock (resync path): playback clock =
+        # _audio_anchor_clock_s + (audio.position_seconds() - _audio_anchor_pos),
+        # frozen at _audio_anchor_clock_s while paused. Re-anchored at
+        # touch/pause/resume/seek. Lives in the scaled/PTS domain (see the
+        # _clock_to_content/_content_to_clock helpers + the tempo §3 rationale).
+        self._audio_anchor_clock_s = 0.0
+        self._audio_anchor_pos = 0.0
         self._loop_a: float | None = None
         self._loop_b: float | None = None
         self._loop_state: Literal["none", "armed", "active"] = "none"
@@ -1296,6 +1311,9 @@ class VideoScene(Scene):
         self._paused = False
         self._wall_anchor_clock_s = 0.0
         self._wall_anchor_time = 0.0
+        self._transport_resync = False
+        self._audio_anchor_clock_s = 0.0
+        self._audio_anchor_pos = 0.0
         self._loop_a = None
         self._loop_b = None
         self._loop_state = "none"
@@ -1533,15 +1551,40 @@ class VideoScene(Scene):
             encoded = marker + encoded
         return encoded
 
+    def _clock_to_content(self, clk: float) -> float:
+        """Map an internal clock value (scaled/PTS domain) to content seconds.
+        Identity except on the resync path over the DAC+bitmap tempo scale (§3):
+        there the clock advances at s×content-seconds, so divide by s to recover
+        content seconds for the transport surface (seek targets, loop A/B, OSD)."""
+        if self._transport_touched and self._transport_resync and self._tempo_scale != 1.0:
+            return clk / self._tempo_scale
+        return clk
+
+    def _content_to_clock(self, s: float) -> float:
+        """Inverse of _clock_to_content: content seconds → internal clock domain."""
+        if self._transport_touched and self._transport_resync and self._tempo_scale != 1.0:
+            return s * self._tempo_scale
+        return s
+
     def _clock_s(self) -> float:
-        # Once transport is touched, the wall-clock anchor IS the playback
-        # clock — free-running from _wall_anchor_time except while paused
-        # (frozen at _wall_anchor_clock_s). See _touch_transport for how the
-        # anchor is seeded and design decision 1/2 in the transport plan for
-        # why this replaces the audio-position clock rather than layering on
-        # top of it (the audio is muted for the rest of the scene, so its
-        # position is no longer a meaningful clock source anyway).
+        # Once transport is touched, the playback clock comes from a transport
+        # anchor rather than the free-running audio-position clock.
+        #  - Resync path (loop_audio="on" with audio): audio-anchored — the
+        #    anchor plus the audio consumer's position delta, frozen while
+        #    paused. This inherits the shipped pre-touch clock's drift behavior
+        #    on every backend (crucially the ~0.88x drain rate on DAC+bitmap,
+        #    where a wall clock would desync ~7 s/min). Lives in the scaled/PTS
+        #    domain — see the conversion helpers + §3.
+        #  - Mute path (loop_audio="mute", or no audio): the Phase-2 wall-clock
+        #    anchor, verbatim (audio is muted, so its position is meaningless).
         if self._transport_touched:
+            if self._transport_resync:
+                assert self.audio is not None
+                if self._paused:
+                    return self._audio_anchor_clock_s
+                return self._audio_anchor_clock_s + (
+                    self.audio.position_seconds() - self._audio_anchor_pos
+                )
             if self._paused:
                 return self._wall_anchor_clock_s
             return self._wall_anchor_clock_s + (time.time() - self._wall_anchor_time)
@@ -1550,36 +1593,85 @@ class VideoScene(Scene):
         return time.time() - self._start_time
 
     def _touch_transport(self) -> None:
-        """First call latches transport control for the rest of this scene's
-        run: freezes the current clock reading as the wall-clock anchor and
-        mutes the source permanently (the escape valve — see design decision
-        1 in the transport plan; real audio resync across a seek is Phase
-        4). No-op on subsequent calls."""
+        """First call latches transport control for the rest of this scene's run
+        and resolves the audio policy (loop_audio):
+          - "on" with a live audio stream → resync path: keep audio playing,
+            switch the clock to the audio-anchored delta, do NOT mute.
+          - "mute" (or no audio / no audio stream) → the Phase-2 escape valve:
+            freeze the wall-clock anchor and mute the source permanently.
+        No-op on subsequent calls."""
         if self._transport_touched:
             return
-        # Read the pre-touch clock (audio-position or wall-from-start_time)
-        # BEFORE flipping the flag — _clock_s() branches on
-        # _transport_touched, so seeding the anchor from a read taken AFTER
-        # the flip would read back the anchor's own not-yet-seeded default
-        # instead of the real pre-touch position.
+        # Read the pre-touch clock BEFORE flipping the flag — _clock_s() branches
+        # on _transport_touched, so a read taken after the flip would return the
+        # anchor's own not-yet-seeded default instead of the real position.
         clock_s = self._clock_s()
         self._transport_touched = True
-        self._wall_anchor_clock_s = clock_s
-        self._wall_anchor_time = time.time()
-        if self.source is not None:
-            self.source.set_muted(True)
+        self._transport_resync = (
+            self._loop_audio == "on"
+            and self.audio is not None
+            and self.source is not None
+            and self.source.a_stream is not None
+            and not getattr(self.audio, "use_reu_pump", False)
+        )
+        if self._transport_resync:
+            assert self.audio is not None
+            # Pre-touch clock == audio position in the scaled domain, so the
+            # anchor delta starts at zero and playback continues seamlessly.
+            self._audio_anchor_clock_s = clock_s
+            self._audio_anchor_pos = self.audio.position_seconds()
+        else:
+            self._wall_anchor_clock_s = clock_s
+            self._wall_anchor_time = time.time()
+            if self.source is not None:
+                self.source.set_muted(True)
+
+    def _splice(self, target_s: float) -> None:
+        """Resync-path splice primitive (target_s in content seconds): re-anchor
+        the audio clock to the target, arm the demuxer's stale-audio guard, then
+        drop everything already queued. Order is load-bearing — request_seek sets
+        the _emit_audio pending-seek guard live FIRST, then flush() drains; the
+        flush epoch handles any pusher already blocked inside push_samples."""
+        assert self.audio is not None and self.source is not None
+        self._audio_anchor_clock_s = self._content_to_clock(target_s)
+        self._audio_anchor_pos = self.audio.position_seconds()
+        self.source.request_seek(target_s)
+        self.audio.flush()
 
     def transport_pause(self) -> None:
         self._touch_transport()
-        self._wall_anchor_clock_s = self._clock_s()
-        self._paused = True
+        if self._transport_resync:
+            # Freeze the audio-anchored clock at the current reading (BEFORE
+            # setting _paused, which changes _clock_s's branch), mute output, and
+            # ask the consumer to silence the ring fast (sampler: $DF21 volume 0;
+            # DAC: worker ring stomp). flush() drops queued audio so resume
+            # starts clean.
+            assert self.audio is not None and self.source is not None
+            self._audio_anchor_clock_s = self._clock_s()
+            self._paused = True
+            self.source.set_muted(True)
+            self.audio.flush(silence_output=True)
+        else:
+            self._wall_anchor_clock_s = self._clock_s()
+            self._paused = True
         self.osd.post("PAUSED")
 
     def transport_resume(self) -> None:
         if not self._paused:
             return
-        self._paused = False
-        self._wall_anchor_time = time.time()
+        if self._transport_resync:
+            # Splice back to the paused position first (re-anchors + flushes +
+            # restores the sampler's volume via the plain flush()), THEN unmute —
+            # this ordering closes the resume audio-leak window. During pause the
+            # sampler's wall position kept advancing; the fresh _audio_anchor_pos
+            # in _splice absorbs it (the DAC's position froze on its own).
+            assert self.source is not None
+            self._paused = False
+            self._splice(self._clock_to_content(self._audio_anchor_clock_s))
+            self.source.set_muted(False)
+        else:
+            self._paused = False
+            self._wall_anchor_time = time.time()
         self.osd.post("PLAY")
 
     def transport_toggle_pause(self) -> None:
@@ -1592,13 +1684,18 @@ class VideoScene(Scene):
 
     def transport_seek(self, target_s: float) -> None:
         self._touch_transport()
+        # Clamp against the duration in CONTENT seconds (transport_duration is
+        # the file duration, unscaled) — target_s is a content-seconds position.
         duration = self.transport_duration()
         hi = duration if duration is not None else max(target_s, 0.0)
         target_s = max(0.0, min(target_s, hi))
-        self._wall_anchor_clock_s = target_s
-        self._wall_anchor_time = time.time()
-        if self.source is not None:
-            self.source.request_seek(target_s)
+        if self._transport_resync:
+            self._splice(target_s)
+        else:
+            self._wall_anchor_clock_s = target_s
+            self._wall_anchor_time = time.time()
+            if self.source is not None:
+                self.source.request_seek(target_s)
         self.osd.post(f"SEEK {_timecode(target_s)}")
 
     def transport_loop_toggle(self) -> None:
@@ -1713,7 +1810,9 @@ class VideoScene(Scene):
         self.osd.post(f"LOOP {slot}")
 
     def transport_position(self) -> float:
-        return self._clock_s()
+        # The transport surface speaks content seconds; the internal clock is in
+        # the scaled/PTS domain on the resync tempo path (identity elsewhere).
+        return self._clock_to_content(self._clock_s())
 
     def transport_duration(self) -> float | None:
         return self.source.duration_s if self.source is not None else None
@@ -1735,9 +1834,16 @@ class VideoScene(Scene):
 
         clock_s = self._clock_s()
         if self._loop_state == "active" and self._loop_a is not None:
-            at_b = self._loop_b is not None and clock_s >= self._loop_b
+            # _loop_b is stored in content seconds; the clock is in the scaled
+            # domain on the resync tempo path, so compare against the scaled B.
+            at_b = self._loop_b is not None and clock_s >= self._content_to_clock(self._loop_b)
             if at_b or self.source.finished:
-                self.transport_seek(self._loop_a)
+                # On the resync path the source.finished wrap re-fires every
+                # frame until the demuxer clears _eof; guard so we flush + seek A
+                # only once (each re-fire would drop the first fresh post-A
+                # audio). The mute path keeps today's re-fire behavior verbatim.
+                if not (self._transport_resync and self.source.seek_pending):
+                    self.transport_seek(self._loop_a)
                 return True
         img = self.source.current_frame(clock_s)
         if img is None:
@@ -1791,7 +1897,11 @@ class VideoScene(Scene):
             # which case clock_s is already an absolute file position (the
             # wall-clock anchor tracks transport_seek's target_s directly;
             # see design decision 2) and adding start_s again would double-count.
-            file_s = clock_s if self._transport_touched else clock_s + self.start_s
+            file_s = (
+                self._clock_to_content(clock_s)
+                if self._transport_touched
+                else clock_s + self.start_s
+            )
             label = f"{_timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
         if osd_now:

@@ -4,6 +4,7 @@ for the U64, and the doctor REST queries are mocked."""
 
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 from typing import Any, cast
@@ -243,6 +244,125 @@ class StreamerTest(unittest.TestCase):
         # Scene.setup calls this on the audio object regardless of backend.
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
         smp.set_pre_emphasis(0.9)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# flush() — transport resync (MIDI live-tune Phase 4)
+# ---------------------------------------------------------------------------
+class SamplerFlushTests(unittest.TestCase):
+    def _running(self, api: _FakeBackend, *, rate: int = 2000, ring: int = 4096, consumed: int = 0):
+        smp = _make(api, sample_rate=rate, bits=8, ring_base=0x200000, ring_size=ring)
+        smp._running = True
+        smp._read_consumed_bytes = lambda: consumed  # type: ignore[method-assign]
+        return smp
+
+    def _margin(self, smp: s.UltimateAudioSampler) -> int:
+        return int(s.FLUSH_GUARD_S * smp._actual_rate) * smp.bps
+
+    def test_flush_rewrites_lead_with_neutral(self):
+        api = _FakeBackend()
+        smp = self._running(api, consumed=100)
+        margin = self._margin(smp)
+        smp._written = 100 + margin + 500  # 500 bytes of lead past the margin
+        api.reu_writes.clear()
+        smp.flush()
+        # Exactly [consumed+margin, old_written) rewritten, no wrap.
+        self.assertEqual(api.reu_writes, [(0x200000 + 100 + margin, 500)])
+        self.assertEqual(smp._written, 100 + margin)
+
+    def test_flush_wraps_ring_boundary(self):
+        api = _FakeBackend()
+        smp = self._running(api, ring=512, consumed=0)
+        margin = self._margin(smp)  # 300 at rate 2000
+        smp._written = margin + 400  # rewrite region [300, 700) wraps 512
+        api.reu_writes.clear()
+        smp.flush()
+        start = margin % 512
+        first = 512 - start
+        self.assertEqual(
+            api.reu_writes,
+            [(0x200000 + start, first), (0x200000, 400 - first)],
+        )
+
+    def test_flush_resets_written_and_clears_eof(self):
+        smp = self._running(_FakeBackend(), consumed=100)
+        smp._written = 100 + self._margin(smp) + 200
+        smp._eof = True
+        smp.flush()
+        self.assertEqual(smp._written, 100 + self._margin(smp))
+        self.assertFalse(smp._eof)
+        self.assertEqual(smp._flush_epoch, 1)
+
+    def test_flush_drains_queue(self):
+        smp = self._running(_FakeBackend())
+        smp._q.put(b"\x00" * 32)
+        smp._q.put(b"\x00" * 32)
+        smp.flush()
+        self.assertTrue(smp._q.empty())
+
+    def test_flush_noop_when_not_running(self):
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=2000, bits=8)
+        smp._running = False
+        api.reu_writes.clear()
+        smp.flush()
+        self.assertEqual(api.reu_writes, [])
+        self.assertEqual(smp._flush_epoch, 0)
+
+    def test_flush_position_unchanged(self):
+        smp = self._running(_FakeBackend(), consumed=100)
+        smp._gate_time = time.monotonic() - 3.0
+        smp._written = 100 + self._margin(smp) + 50
+        before = smp.position_seconds()
+        smp.flush()
+        self.assertAlmostEqual(smp.position_seconds(), before, delta=0.05)
+
+    def test_lead_below_margin_blanks_skip_region(self):
+        api = _FakeBackend()
+        smp = self._running(api, consumed=1000)
+        margin = self._margin(smp)
+        smp._written = 1100  # lead = 100 < margin → new_written > old_written
+        api.reu_writes.clear()
+        smp.flush()
+        # Blanks the [old_written, consumed+margin) lap-stale skip region.
+        self.assertEqual(api.reu_writes, [(0x200000 + 1100, (1000 + margin) - 1100)])
+        self.assertEqual(smp._written, 1000 + margin)
+
+    def test_push_after_flush_stale_epoch_dropped(self):
+        # A push parked in the Full-retry loop when the flush epoch advances must
+        # drop its chunk (return before the put) and NOT count it toward
+        # _pushed_samples (which clamps position_seconds after EOF). Keep the
+        # queue full so the put never succeeds — the loop re-checks the epoch on
+        # each Full timeout and bails once it changes. (flush() also drains, but
+        # that drain→put race is the accepted µs window the writer's own epoch
+        # check closes; here we isolate the push-side drop.)
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=2000, bits=8, queue_max_chunks=1)
+        smp._q.put(b"x")  # fill and keep full
+
+        def push():
+            smp.push_samples(np.zeros(50, dtype=np.int16))
+
+        t = threading.Thread(target=push)
+        t.start()
+        time.sleep(0.02)  # let it park in the Full-retry loop
+        smp._flush_epoch += 1  # a concurrent flush bumped the epoch
+        t.join(timeout=1.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(smp._pushed_samples, 0)  # dropped, not counted
+
+    def test_silence_output_writes_volume_zero_then_restores(self):
+        api = _FakeBackend()
+        smp = self._running(api, consumed=0)
+        smp._written = 0
+        # $DF21 = channel 0 base ($DF20) + REG_VOLUME (1).
+        smp.flush(silence_output=True)
+        self.assertIn(("DF21", "00"), api.mem_writes)
+        self.assertTrue(smp._output_silenced)
+        api.mem_writes.clear()
+        smp.flush()  # resume's plain flush restores the channel volume
+        self.assertIn(("DF21", f"{smp._volume & 0x3F:02X}"), api.mem_writes)
+        self.assertFalse(smp._output_silenced)
 
 
 # ---------------------------------------------------------------------------

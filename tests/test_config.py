@@ -340,6 +340,24 @@ class DoubleBufferTest(unittest.TestCase):
         self.assertIn("double_buffer", str(ctx.exception))
 
 
+class MidiControlLoopAudioTest(unittest.TestCase):
+    """validate_midi_control_cfg guards the Phase 4 loop_audio choice."""
+
+    def _cfg(self, loop_audio: str) -> cfgmod.MidiControlCfg:
+        from dataclasses import replace
+
+        return replace(cfgmod.MidiControlCfg(), enabled=True, loop_audio=loop_audio)
+
+    def test_on_and_mute_pass(self):
+        for good in ("on", "mute"):
+            cfgmod.validate_midi_control_cfg(self._cfg(good))  # must not raise
+
+    def test_bad_value_raises(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            cfgmod.validate_midi_control_cfg(self._cfg("loud"))
+        self.assertIn("loop_audio", str(ctx.exception))
+
+
 class ConfigErrorTest(unittest.TestCase):
     def test_missing_file_raises_config_error(self):
         with self.assertRaises(cfgmod.ConfigError) as ctx:
