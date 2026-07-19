@@ -64,6 +64,11 @@ vision = ["mediapipe>=0.10"]
 # Interactive config builder (`c64cast --init`). questionary pulls in
 # prompt_toolkit; both are small pure-Python deps.
 wizard = ["questionary>=2.0"]
+# Select a webcam by name / USB VID:PID instead of a fragile cv2 index, and
+# enrich `--list-devices` with camera names + VID:PID + the correct backend
+# index. opencv/numpy are already hard deps; only the enumeration helper is
+# extra. Integer indices keep working with this absent.
+camera = ["cv2-enumerate-cameras>=1.1"]
 # URL playback for quick-playback mode (positional MEDIA args). yt-dlp resolves
 # YouTube and other streaming sites to a directly-playable stream URL;
 # direct media URLs play without it (PyAV opens http(s) natively).
@@ -94,6 +99,7 @@ all = [
     "questionary>=2.0",
     "yt-dlp>=2024.1",
     "zeroconf>=0.130",
+    "cv2-enumerate-cameras>=1.1",
 ]
 [dependency-groups]
 # Dev tools — not published to PyPI. Installed by default via

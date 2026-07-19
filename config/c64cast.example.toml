@@ -103,7 +103,10 @@ sid_model = "auto"                  # auto | 6581 | 8580 | off — match a .sid
                                     # 6581/8580 forces every chip; off disables.
 
 [video]
-device = -1                         # -1 = system default camera; `--list-devices` to enumerate
+device = -1                         # int cv2 index (-1 = system default camera), or a
+                                    # string matched by camera name substring / USB
+                                    # VID:PID, e.g. "Cam Link" or "0fd9:0066" (needs the
+                                    # `camera` extra). `--list-devices` shows names + VID:PID.
 use_reu_staged = "auto"             # REU-staged video push. Tri-state:
                                     # true | false | "auto" (default).
                                     #   "auto" stages BITMAP modes

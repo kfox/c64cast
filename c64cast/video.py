@@ -472,16 +472,26 @@ class WebcamSource:
     freshest available frame and stale ones are simply overwritten.
     """
 
-    def __init__(self, device: int):
-        # -1 = system default camera. OpenCV doesn't have a portable "default"
-        # sentinel of its own (passing -1 errors with "out device of bound"),
-        # but index 0 is the platform default on every backend we target —
-        # AVFoundation, V4L2, DSHOW, MSMF. Mirror the audio convention where
-        # negative = default so the example config can use a single sentinel.
-        index = 0 if device < 0 else device
-        self.cap: cv2.VideoCapture | None = cv2.VideoCapture(index)
+    def __init__(self, device: int | str):
+        # `device` is either an int cv2 index or a string matched to a camera by
+        # name substring / USB VID:PID (see camera.resolve_camera_index). -1 =
+        # system default camera: OpenCV has no portable "default" sentinel of its
+        # own (passing -1 errors with "out device of bound"), but index 0 is the
+        # platform default on every backend we target — AVFoundation, V4L2,
+        # DSHOW, MSMF. Mirror the audio convention where negative = default.
+        #
+        # A string-resolved device also carries the backend it was enumerated
+        # against (the enumerated index is only valid for that apiPreference); an
+        # int device resolves to backend=None so we keep the historical
+        # single-arg CAP_ANY open, byte-identical for existing configs.
+        from . import camera
+
+        index, backend = camera.resolve_camera_index(device)
+        self.cap: cv2.VideoCapture | None = (
+            cv2.VideoCapture(index, backend) if backend is not None else cv2.VideoCapture(index)
+        )
         if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open video device {device}")
+            raise RuntimeError(f"Could not open video device {device!r} (cv2 index {index})")
         self._lock = threading.Lock()
         self._latest: np.ndarray | None = None
         # manual=True: the grab loop blocks in cap.read() at the device frame

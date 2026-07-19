@@ -125,8 +125,11 @@
       "additionalProperties": false,
       "properties": {
         "device": {
-          "type": "integer",
-          "description": "Webcam device index; -1 = system default camera (cv2 index 0).",
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Webcam device: an integer cv2 index (-1 = system default camera, cv2 index 0), or a string matched to a camera by name substring (e.g. \"Cam Link\") or USB VID:PID (e.g. \"0fd9:0066\"). String selection needs the 'camera' extra; run --list-devices to see names + VID:PID.",
           "default": -1
         },
         "use_reu_staged": {
