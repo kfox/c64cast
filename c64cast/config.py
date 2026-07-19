@@ -1790,6 +1790,9 @@ _MIDI_ACTION_CHOICES = (
     # Record workflow + loop preset pads (MIDI live-tune Phase 3).
     "transport.record",
     "loop_slot",
+    # Live OSD toggle (MIDI live-tune Phase 5): tap flips top/bottom, a
+    # double-tap (<400 ms) hides the OSD, a tap while hidden re-enables it.
+    "osd.position",
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
@@ -1922,6 +1925,30 @@ class MidiControlCfg:
             "release event)."
         },
     )
+    controller_profile: str = field(
+        default="auto",
+        metadata={
+            "help": "Which learned controller profile (from --midi-setup) to "
+            "layer under this config's cc_map. 'auto' (default) loads the stored "
+            "profile whose learned port name matches the opened MIDI port; a "
+            "'<name>' loads that named profile (the file stem under the "
+            "controllers data dir); 'off' ignores profiles entirely. Merge "
+            "precedence is shipped-defaults < profile < an explicit cc_map here: "
+            "with no cc_map set, a profile can reclaim the default note/CC "
+            "assignments; an explicit cc_map (including []) always wins over the "
+            "profile. Requires [midi_control] to be enabled; needs no extra."
+        },
+    )
+    # Non-persisted: True until a TOML layer (machine settings, project/per-system,
+    # or master) actually specifies a `cc_map` key. It decides the profile-merge
+    # order (see midi_control.resolve_effective_cc_map): when the user authored no
+    # cc_map (still the shipped defaults), a profile layers OVER the defaults and
+    # can reclaim them; once the user wrote an explicit cc_map, their entries win
+    # over the profile and the defaults are not re-injected. `compare=False` keeps
+    # it out of Config equality (so load(dumps(cfg)) == cfg holds), and the
+    # `internal` metadata keeps it out of --describe / the schema / serialized TOML
+    # (introspect._field_docs skips it).
+    cc_map_is_default: bool = field(default=True, compare=False, metadata={"internal": True})
 
 
 @dataclass
@@ -2224,6 +2251,15 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     for name in _TOML_SCALAR_SECTIONS:
         if name in data:
             _apply_section(getattr(cfg, name), data[name], name)
+
+    # Record whether any layer explicitly authored a cc_map. Monotonic (only ever
+    # set False, default True): once machine settings OR the project/per-system
+    # file specifies cc_map, the effective mapping is the user's own, not the
+    # shipped defaults — which flips the profile-merge order (see
+    # midi_control.resolve_effective_cc_map). Both layers route through here.
+    mc = data.get("midi_control")
+    if isinstance(mc, dict) and "cc_map" in mc:
+        cfg.midi_control.cc_map_is_default = False
 
     _validate_use_reu_staged(cfg.video)
     _validate_double_buffer(cfg.video)
@@ -2573,6 +2609,13 @@ def load_master(path: str | None) -> LoadResult:
     ):
         if section in raw:
             _apply_section(dc, raw[section], section)
+
+    # Same cc_map-authored tracking as _apply_toml_sections, for the master TOML
+    # (which applies its sections through this separate path). [midi_control] is
+    # process-wide, so the master is the authoritative layer in ensemble mode.
+    master_mc = raw.get("midi_control")
+    if isinstance(master_mc, dict) and "cc_map" in master_mc:
+        defaults.midi_control.cc_map_is_default = False
 
     _validate_use_reu_staged(defaults.video)
     _validate_double_buffer(defaults.video)
@@ -3724,6 +3767,11 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
     if not 1 <= midi_cfg.broadcast_channel <= 16:
         raise ConfigError(
             f"[midi_control].broadcast_channel must be 1..16, got {midi_cfg.broadcast_channel}"
+        )
+    if not isinstance(midi_cfg.controller_profile, str) or not midi_cfg.controller_profile:
+        raise ConfigError(
+            "[midi_control].controller_profile must be a non-empty string "
+            f"('auto', 'off', or a profile name), got {midi_cfg.controller_profile!r}"
         )
     for i, entry in enumerate(midi_cfg.cc_map):
         if not isinstance(entry, dict):

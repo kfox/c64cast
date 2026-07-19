@@ -279,7 +279,10 @@ def _probe_data_dirs() -> list[Diagnostic]:
     from . import paths
 
     root = paths.data_root()
-    out = [Diagnostic("ok", "environment", "data dir", str(root))]
+    out = [
+        Diagnostic("ok", "environment", "data dir", str(root)),
+        Diagnostic("ok", "environment", "controllers dir", str(paths.controllers_dir())),
+    ]
 
     legacy = paths.legacy_data_root()
     if legacy is None:

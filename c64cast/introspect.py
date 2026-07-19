@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, fields
+from typing import Any
 
 from . import config as cfgmod
 from . import overlays as ovmod
@@ -94,6 +95,26 @@ class SceneTypeDoc:
     help: str
     displays: tuple[str, ...]  # supported `display` values ("" = N/A / fixed)
     fields: tuple[FieldDoc, ...]
+
+
+@dataclass(frozen=True)
+class LiveTargetDoc:
+    """One live-tunable ``param`` target (a knob/pad binding for
+    ``[midi_control].cc_map`` and the ``--midi-setup`` wizard's target picker).
+
+    The single source of truth over the ``LIVE_PARAMS`` / ``LIVE_CHOICES`` class
+    attributes scattered across ``effects`` / ``generators`` / ``voice_scope`` /
+    ``modes`` — :func:`live_targets` collects them so the wizard and a drift test
+    can't fall behind the registries."""
+
+    target: str  # the cc_map "target" string, e.g. "mode.dither_strength"
+    holder: str  # "mode" | "effect" | "source" | "scene"
+    group: str  # picker section: "Color pipeline" | "Effect" | "Generator" | "Scope"
+    kind: str  # "scalar" (LIVE_PARAMS) | "choice" (LIVE_CHOICES)
+    lo: float | None = None  # scalar range low (informational; runtime uses the live holder's)
+    hi: float | None = None  # scalar range high
+    choices: tuple[str, ...] = ()  # choice values
+    owners: tuple[str, ...] = ()  # which registered classes declare it (for display)
 
 
 class _Required:
@@ -245,6 +266,10 @@ def _field_docs(dc: type) -> list[FieldDoc]:
     out: list[FieldDoc] = []
     for f in fields(dc):
         md = f.metadata
+        if md.get("internal"):
+            # Non-config tracking fields (e.g. MidiControlCfg.cc_map_is_default) —
+            # never emitted to --describe / the schema / the serialized TOML.
+            continue
         out.append(
             FieldDoc(
                 name=f.name,
@@ -268,6 +293,110 @@ def config_sections() -> list[SectionDoc]:
 
 def display_modes() -> list[ModeDoc]:
     return list(_MODES)
+
+
+# Live-tune target holders, in picker display order. Each pairs a cc_map "holder"
+# prefix (the string before the "." in a param target — see
+# midi_control._apply_param) with the picker section it lands in.
+_LIVE_TARGET_GROUPS: tuple[tuple[str, str], ...] = (
+    ("mode", "Color pipeline"),
+    ("effect", "Effect"),
+    ("source", "Generator"),
+    ("scene", "Scope"),
+)
+
+
+def _iter_live_holders() -> list[tuple[str, str, type]]:
+    """Yield ``(holder, owner_name, cls)`` for every class that declares a
+    ``LIVE_PARAMS``/``LIVE_CHOICES`` live-tune surface. Imported lazily (modes /
+    effects / generators / voice_scope pull in numpy/cv2) so this module stays
+    import-light for the schema / --describe path, which never calls it."""
+    from . import effects, generators, voice_scope
+    from . import modes as modesmod
+
+    out: list[tuple[str, str, type]] = []
+
+    # Display modes: every concrete DisplayMode subclass, by DisplayMode.name.
+    def _walk(cls: type) -> None:
+        for sub in cls.__subclasses__():
+            name = getattr(sub, "name", None)
+            if isinstance(name, str) and name:
+                out.append(("mode", name, sub))
+            _walk(sub)
+
+    _walk(modesmod.DisplayMode)
+    for reg_name, cls in effects.REGISTRY.items():
+        out.append(("effect", reg_name, cls))
+    for reg_name, cls in generators.REGISTRY.items():
+        out.append(("source", reg_name, cls))
+    # The scope scenes (WaveformScene/MidiScene) mix in VoiceScopeRenderer, whose
+    # LIVE_PARAMS live on the scene itself → the "scene." holder.
+    out.append(("scene", "voice_scope", voice_scope.VoiceScopeRenderer))
+    return out
+
+
+def live_targets() -> list[LiveTargetDoc]:
+    """Every live-tunable ``param`` target, deduped by ``holder.name`` and grouped
+    for the ``--midi-setup`` target picker. Single source of truth over the
+    ``LIVE_PARAMS`` (scalars) + ``LIVE_CHOICES`` (choices) class attributes on the
+    effect / generator / mode / scope registries — a drift test pins this to those
+    attrs (same spirit as the ``LIVE_CHOICES`` ↔ ``[color]`` metadata pin)."""
+    group_of = dict(_LIVE_TARGET_GROUPS)
+    # target -> mutable accumulator (kind/range/choices from the first declarer;
+    # owners unioned across every class that declares the same holder.name).
+    acc: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for holder, owner, cls in _iter_live_holders():
+        params: dict[str, tuple[float, float]] = getattr(cls, "LIVE_PARAMS", {}) or {}
+        choices_map: dict[str, tuple[str, ...]] = getattr(cls, "LIVE_CHOICES", {}) or {}
+        for pname, (lo, hi) in params.items():
+            target = f"{holder}.{pname}"
+            if target not in acc:
+                acc[target] = {
+                    "holder": holder,
+                    "kind": "scalar",
+                    "lo": float(lo),
+                    "hi": float(hi),
+                    "choices": (),
+                    "owners": [],
+                }
+                order.append(target)
+            acc[target]["owners"].append(owner)
+        for pname, values in choices_map.items():
+            target = f"{holder}.{pname}"
+            if target not in acc:
+                acc[target] = {
+                    "holder": holder,
+                    "kind": "choice",
+                    "lo": None,
+                    "hi": None,
+                    "choices": tuple(values),
+                    "owners": [],
+                }
+                order.append(target)
+            acc[target]["owners"].append(owner)
+
+    out: list[LiveTargetDoc] = []
+    for target in order:
+        a = acc[target]
+        holder = str(a["holder"])
+        out.append(
+            LiveTargetDoc(
+                target=target,
+                holder=holder,
+                group=group_of.get(holder, holder),
+                kind=str(a["kind"]),
+                lo=a["lo"],
+                hi=a["hi"],
+                choices=a["choices"],
+                owners=tuple(dict.fromkeys(a["owners"])),  # dedup, preserve order
+            )
+        )
+    # Stable group order for the picker (Color pipeline / Effect / Generator /
+    # Scope), then insertion order within a group.
+    group_rank = {g: i for i, (_, g) in enumerate(_LIVE_TARGET_GROUPS)}
+    out.sort(key=lambda t: group_rank.get(t.group, len(group_rank)))
+    return out
 
 
 def _scene_field_docs() -> list[FieldDoc]:

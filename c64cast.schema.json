@@ -1077,6 +1077,11 @@
               "target": "source.scroll_speed"
             }
           ]
+        },
+        "controller_profile": {
+          "type": "string",
+          "description": "Which learned controller profile (from --midi-setup) to layer under this config's cc_map. 'auto' (default) loads the stored profile whose learned port name matches the opened MIDI port; a '<name>' loads that named profile (the file stem under the controllers data dir); 'off' ignores profiles entirely. Merge precedence is shipped-defaults < profile < an explicit cc_map here: with no cc_map set, a profile can reclaim the default note/CC assignments; an explicit cc_map (including []) always wins over the profile. Requires [midi_control] to be enabled; needs no extra.",
+          "default": "auto"
         }
       }
     },

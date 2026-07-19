@@ -675,12 +675,20 @@ loop_audio = "on"                   # once a transport.* action touches a video 
                                     #   "on" keeps audio playing and re-syncs it across
                                     #   every seek/pause/loop splice; "mute" mutes for the
                                     #   rest of the run. Falls back to mute with no audio.
+controller_profile = "auto"         # which learned profile (from `c64cast --midi-setup`)
+                                    #   to layer under this cc_map: "auto" matches the
+                                    #   opened port by name, "<name>" loads that profile,
+                                    #   "off" ignores profiles. Precedence: shipped
+                                    #   defaults < profile < an explicit cc_map below.
 
 # Ships with a sensible default cc_map (transport on notes 36-39, a 16-scene
 # jump bank on notes 40-55 + Program Change 0-15, a knob bank on CC13-16) if
 # left unset — see `--describe section:midi_control` for the full default.
-# Setting cc_map here (as below) REPLACES it wholesale, not merges — copy the
-# default from --describe first if you just want to add to it.
+# Setting cc_map here (as below) REPLACES the shipped defaults wholesale (a
+# controller_profile still layers UNDER your entries — yours win). Copy the
+# default from --describe first if you just want to add to it. Easiest of all:
+# run `c64cast --midi-setup` once and leave cc_map unset + controller_profile
+# = "auto".
 [[midi_control.cc_map]]
 type = "note"
 number = 36
@@ -696,8 +704,15 @@ scene = 0
 type = "cc"
 number = 13
 action = "param"
-target = "effect.decay"             # "effect.<name>" | "source.<name>", matching a
-                                    #   LIVE_PARAMS entry on the current scene's effect/generator
+target = "effect.decay"             # "effect.<name>" | "source.<name>" | "mode.<name>" |
+                                    #   "scene.<name>", matching a LIVE_PARAMS/LIVE_CHOICES
+                                    #   entry on the current scene's effect/generator/mode
+
+[[midi_control.cc_map]]
+type = "cc"
+number = 80
+action = "osd.position"             # tap flips the OSD corner; double-tap (<400ms) hides
+                                    #   it; a tap while hidden re-enables it
 
 [menu]
 # On-C64 menu: SPACE opens an on-screen panel of context-sensitive knobs for

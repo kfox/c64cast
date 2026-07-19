@@ -236,6 +236,25 @@ class Playlist:
         if scene is not None:
             scene.osd.post(text, duration_s)
 
+    def cycle_osd(self, *, double_tap: bool) -> None:
+        """The osd.position MIDI action (Phase 5). A normal tap toggles the
+        current scene's OSD corner top/bottom (or re-enables it if it was
+        hidden); a double_tap hides it. No-op when no scene is live. Called from
+        the MIDI reader thread — OsdState attrs are simple thread-safe writes,
+        same rationale as post_osd."""
+        scene = self.current
+        if scene is None:
+            return
+        osd = scene.osd
+        if double_tap:
+            osd.enabled = False
+        elif not osd.enabled:
+            osd.enabled = True
+            osd.post(f"OSD {osd.position}")
+        else:
+            osd.position = "top" if osd.position == "bottom" else "bottom"
+            osd.post(f"OSD {osd.position}")
+
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         """Cut to scenes[index] at the next clean frame boundary (reuses
         skip_event to force the current scene done — see _advance's

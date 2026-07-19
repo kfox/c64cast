@@ -1254,13 +1254,15 @@ class DataDirsProbeTest(unittest.TestCase):
     def test_reports_data_root(self):
         data = os.path.join(self._tmp.name, "data")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            # No legacy checkout in play (patch it to None) so only the data-dir
-            # line is asserted here.
+            # No legacy checkout in play (patch it to None) so only the resolved
+            # data-dir + controllers-dir lines are asserted here.
             with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
                 diags = doctor._probe_data_dirs()
-        self.assertEqual(len(diags), 1)
-        self.assertEqual(diags[0].level, "ok")
-        self.assertIn(data, diags[0].message)
+        self.assertEqual(len(diags), 2)
+        self.assertTrue(all(d.level == "ok" for d in diags))
+        subjects = {d.subject for d in diags}
+        self.assertEqual(subjects, {"data dir", "controllers dir"})
+        self.assertTrue(all(data in d.message for d in diags))
 
     def test_legacy_files_warn_with_mv(self):
         legacy = os.path.join(self._tmp.name, "repo")

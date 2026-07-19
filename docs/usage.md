@@ -1449,6 +1449,106 @@ video playback, SID playback, or a webcam input only one
 system is wired to). The contract is in
 [`c64cast/orchestrator.py`](../c64cast/orchestrator.py).
 
+## Live performance (MIDI control)
+
+A MIDI controller can drive a playing playlist in real time — scene jumps,
+style cycling, DJ-style video transport (pause-in-place, seek/scrub, RW/FF,
+A/B loops, drum-pad loop presets), and live tuning of the color pipeline
+(dither, palette, motion smoothing, …) and any effect/generator parameter.
+Enable it with the `midi` extra and `[midi_control]`:
+
+```toml
+[midi_control]
+enabled = true
+port = ""                    # substring match, case-insensitive; "" = first port
+controller_profile = "auto"  # pick up a --midi-setup profile matching this port
+osd = "bottom"               # brief "name value" feedback on a knob sweep; top|off
+loop_audio = "on"            # keep video audio playing + resynced across seeks/loops
+```
+
+### The easy path: `c64cast --midi-setup`
+
+Rather than hand-writing the `[[midi_control.cc_map]]` tables (which requires
+knowing your controller's CC/note numbers *and* c64cast's internal target
+names), run the learn wizard once:
+
+```bash
+c64cast --midi-setup          # needs the 'midi' + 'wizard' extras
+```
+
+It walks you through pressing/twisting each control:
+
+1. **Port** — pick your controller's MIDI input.
+2. **Transport / OSD buttons** — press each when prompted (Play/Pause, Stop,
+   Record, RW, FF, Loop, OSD toggle). A dedicated transport button that sends
+   **MMC** is recognized automatically. *Tip:* map Record/Stop to real MIDI
+   **notes** (not MMC) if you want the loop-preset pad chords, which need a held
+   button.
+3. **Knobs / faders** — sweep each; an endless **relative encoder** is detected
+   by its value pattern and offered as a jog/scrub control.
+4. **Targets** — bind each learned knob to a live target (the color pipeline,
+   an effect, a generator, or the SID scope trace gain — the same list the
+   config's `param` action uses).
+5. **Scene-jump pads** (optional) — press a pad, name the scene index.
+6. **Review & save** — the profile is written to
+   `~/.local/share/c64cast/controllers/<port>.json`.
+
+Then a plain `c64cast --config …` run with `controller_profile = "auto"` (the
+default) picks the profile up automatically — **no cc_map edits**. `--doctor`
+reports the resolved controllers directory.
+
+### Profiles vs. an explicit `cc_map`
+
+`controller_profile` layers a learned profile under your config:
+
+- `"auto"` (default) — load the stored profile whose learned port name matches
+  the opened MIDI port.
+- `"<name>"` — load the named profile (`<name>.json`).
+- `"off"` — ignore profiles entirely.
+
+Merge precedence is **shipped defaults < profile < an explicit `cc_map`**:
+
+- With **no `cc_map`** in your config, the shipped defaults apply and a profile
+  layers on top (it can *reclaim* a default note/CC number).
+- With an **explicit `cc_map`**, your entries win over the profile, and the
+  shipped defaults are not re-injected (`cc_map = []` still disables everything
+  the profile doesn't map).
+
+### Hand-authoring `cc_map`
+
+Each `[[midi_control.cc_map]]` table maps a MIDI message to an action:
+
+```toml
+[[midi_control.cc_map]]
+type = "cc"                  # cc | note | pc | mmc
+number = 13
+action = "param"            # a knob sweeps a scalar / bucket-selects a choice
+target = "mode.dither_strength"   # effect.<name> | source.<name> | scene.<name> | mode.<name>
+
+[[midi_control.cc_map]]
+type = "cc"
+number = 80
+action = "osd.position"     # tap: flip OSD corner; double-tap (<400ms): hide; tap: re-show
+```
+
+Available actions: `pause`/`resume`/`toggle_pause`/`skip`/`cycle_style`,
+`jump` (needs `scene`), `param` (needs `target`), the DJ transport set
+(`transport.play_pause`/`stop`/`loop_toggle`/`rw`/`ff`/`jog`/`record`,
+`loop_slot`), and `osd.position`. See
+`--describe section:midi_control` for the full default map and every field.
+In **ensemble mode**, the MIDI channel selects which system a message targets
+(channel *N* → the *N*th system; `broadcast_channel` hits all).
+
+### Transport, loops, and audio
+
+Once any `transport.*` action touches a video scene, `loop_audio` governs its
+audio: `"on"` (default) keeps it playing and resyncs across every seek / pause /
+loop splice; `"mute"` is the fallback that mutes for the rest of that scene's
+run. Record arms an A/B loop (red border); Stop closes it; drum pads recall
+per-video loop presets (Stop-held+pad saves, Record-held+pad clears), stored
+under `~/.local/share/c64cast/presets/loops/`. A double-press of Stop while
+paused exits cleanly.
+
 ## WLED bridge
 
 c64cast interoperates with the [WLED](https://kno.wled.ge/) LED-controller

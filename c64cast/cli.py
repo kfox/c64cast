@@ -279,6 +279,14 @@ def build_parser() -> argparse.ArgumentParser:
         "file (default ./c64cast.toml)",
     )
     intro.add_argument(
+        "--midi-setup",
+        action="store_true",
+        help="MIDI-learn wizard: press/twist your controller's buttons and "
+        "knobs, then save a reusable controller profile (needs the 'midi' + "
+        "'wizard' extras). A plain run then picks it up via "
+        "[midi_control].controller_profile = 'auto'. No hardware target needed.",
+    )
+    intro.add_argument(
         "--save-settings",
         action="store_true",
         help="Persist this invocation's machine-relevant flags (-u/--url, "
@@ -1177,6 +1185,10 @@ def run_introspection(args: argparse.Namespace) -> int | None:
         return 0
     if args.suggest_palette is not None:
         return run_suggest_palette(args.suggest_palette)
+    if getattr(args, "midi_setup", False):
+        from . import midi_setup
+
+        return midi_setup.run_setup()
     if args.init is not None:
         from . import wizard
 

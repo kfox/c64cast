@@ -54,6 +54,7 @@ import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .transport import TransportEvent
@@ -100,7 +101,15 @@ _ACTIONS = (
     # chords — see TransportSession._dispatch).
     "transport.record",
     "loop_slot",
+    # Live OSD toggle (MIDI live-tune Phase 5). Press-only: a tap flips the OSD
+    # top/bottom, a double-tap (<_OSD_DOUBLE_TAP_S) hides it, a tap while hidden
+    # re-enables it. Mirrored in config._MIDI_ACTION_CHOICES.
+    "osd.position",
 )
+
+# Double-tap window for the osd.position action (a second press within this many
+# seconds hides the OSD instead of toggling its corner).
+_OSD_DOUBLE_TAP_S = 0.4
 
 # Transport actions where a note release (note_off / note_on velocity==0)
 # carries meaning (stopping a held rw/ff ramp, or ending a Record/Stop hold
@@ -204,6 +213,102 @@ def _parse_mmc_sysex(data: tuple[int, ...]) -> int | None:
     return cmd if cmd in _MMC_COMMANDS else None
 
 
+def classify_message(msg: Any) -> tuple[str, int, int, bool] | None:
+    """Normalize a mido message to ``(kind, number, value, pressed)``, or None
+    when it isn't a mappable message (pitchwheel, clock, an unrecognized SysEx).
+
+    - ``kind`` is one of ``_CC_TYPES`` (cc/note/pc/mmc);
+    - ``number`` is the CC/note/PC number, or the MMC command byte;
+    - ``value`` is the CC value / note velocity / PC program (127 for MMC);
+    - ``pressed`` is False only for a note release (note_off or note_on vel 0).
+
+    Shared by :meth:`MidiControlListener._dispatch` and the ``--midi-setup``
+    learn loop (:mod:`c64cast.midi_setup`) so the two read a controller
+    identically — a learned mapping can't disagree with how the listener will
+    later interpret the same message."""
+    if msg.type == "sysex":
+        cmd = _parse_mmc_sysex(tuple(msg.data))
+        return ("mmc", cmd, 127, True) if cmd is not None else None
+    if msg.type == "note_on" and msg.velocity > 0:
+        return ("note", msg.note, msg.velocity, True)
+    if msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+        return ("note", msg.note, 0, False)
+    if msg.type == "control_change":
+        return ("cc", msg.control, msg.value, True)
+    if msg.type == "program_change":
+        return ("pc", msg.program, msg.program, True)
+    return None
+
+
+def _find_profile_for_port(opened_port_name: str, profiles_dir: Path) -> list[dict[str, Any]]:
+    """Scan `profiles_dir` for the controller profile whose learned port name
+    matches the currently-opened MIDI port (case-insensitive substring, either
+    direction — OS port names sometimes gain/lose an index suffix between runs).
+    The most-specific match (longest stored port name) wins; no match → ``[]``."""
+    from .transport import ControllerProfileStore
+
+    opened = opened_port_name.lower()
+    best: tuple[int, list[dict[str, Any]]] | None = None
+    try:
+        candidates = sorted(profiles_dir.glob("*.json"))
+    except OSError:
+        return []
+    for f in candidates:
+        store = ControllerProfileStore(f)
+        port = store.port()
+        if not port:
+            continue
+        pl = port.lower()
+        if (pl in opened or opened in pl) and (best is None or len(port) > best[0]):
+            best = (len(port), store.mappings())
+    return best[1] if best is not None else []
+
+
+def _load_profile_mappings(
+    controller_profile: str, opened_port_name: str | None, profiles_dir: Path | None
+) -> list[dict[str, Any]]:
+    """Resolve the cc_map-style mappings a controller profile contributes:
+    ``"off"`` → none; ``"auto"`` → the profile matching the opened port (see
+    :func:`_find_profile_for_port`); ``"<name>"`` → the ``<name>.json`` profile.
+    Any lookup problem (no port yet, missing file, corrupt JSON) yields ``[]``."""
+    if controller_profile == "off":
+        return []
+    from . import paths
+    from .transport import ControllerProfileStore
+
+    base = profiles_dir if profiles_dir is not None else paths.controllers_dir()
+    if controller_profile == "auto":
+        if not opened_port_name:
+            return []
+        return _find_profile_for_port(opened_port_name, base)
+    return ControllerProfileStore(base / f"{controller_profile}.json").mappings()
+
+
+def resolve_effective_cc_map(
+    base_cc_map: list[dict[str, Any]],
+    cc_map_is_default: bool,
+    controller_profile: str,
+    opened_port_name: str | None,
+    *,
+    profiles_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Layer a controller profile under/over the config's cc_map, in the
+    precedence order **shipped-defaults < profile < explicit cc_map**, and return
+    the concatenated list to feed :func:`_parse_cc_map` (later ``(kind, number)``
+    wins, so concatenation order *is* precedence).
+
+    - ``cc_map_is_default`` (the user authored no cc_map, so ``base_cc_map`` is
+      the shipped defaults): ``defaults + profile`` — the profile layers over the
+      defaults and can reclaim their note/CC numbers.
+    - explicit cc_map (the user wrote one, including ``[]``): ``profile + user`` —
+      the user's entries win over the profile, and the shipped defaults are *not*
+      re-injected (``[]`` still disables everything the profile doesn't map)."""
+    profile = _load_profile_mappings(controller_profile, opened_port_name, profiles_dir)
+    if cc_map_is_default:
+        return [*base_cc_map, *profile]
+    return [*profile, *base_cc_map]
+
+
 class MidiControlListener:
     """Opens its own MIDI input port and dispatches mapped messages to one
     or more :class:`~c64cast.playlist.Playlist` instances. Construct via
@@ -218,6 +323,9 @@ class MidiControlListener:
         port: str | None = None,
         broadcast_channel: int = 16,
         jump_transition: str = "cut",
+        cc_map_is_default: bool = True,
+        controller_profile: str = "off",
+        profiles_dir: Path | None = None,
     ) -> None:
         if not playlists:
             raise ValueError("midi_control needs at least one playlist")
@@ -226,11 +334,23 @@ class MidiControlListener:
         self.port_name = port
         self.broadcast_channel = broadcast_channel
         self.jump_transition = jump_transition
+        # The config's cc_map is kept raw so start() can layer the controller
+        # profile onto it *after* the port opens (the "auto" profile match needs
+        # the resolved port name). Parsed up front too, so a listener that's built
+        # but never started (or has controller_profile="off") still has a usable
+        # mapping — start() re-parses the effective list once the port is known.
+        self._base_cc_map = cc_map
+        self._cc_map_is_default = cc_map_is_default
+        self._controller_profile = controller_profile
+        self._profiles_dir = profiles_dir
         self._mapping = _parse_cc_map(cc_map)
         self._midi_port: Any = None
+        self._opened_port_name: str | None = None
         self._stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
         self._warned_channels: set[int] = set()
+        # Per-playlist last-tap time for the osd.position double-tap detection.
+        self._osd_last_tap: dict[str, float] = {}
 
     # ---- MIDI plumbing --------------------------------------------------
     def _open_port(self) -> None:
@@ -240,6 +360,7 @@ class MidiControlListener:
             if not names:
                 raise RuntimeError("midi_control: no MIDI input ports available")
             self._midi_port = mido.open_input(names[0])
+            self._opened_port_name = names[0]
             log.info("midi_control: opened MIDI port %r", names[0])
             return
         names = mido.get_input_names()
@@ -249,12 +370,41 @@ class MidiControlListener:
                 f"midi_control: no MIDI input port matches {self.port_name!r}; available: {names}"
             )
         self._midi_port = mido.open_input(match)
+        self._opened_port_name = match
         log.info("midi_control: opened MIDI port %r", match)
 
     def start(self) -> None:
         if mido is None:
             raise RuntimeError("midi_control requires mido: pip install c64cast[midi]")
         self._open_port()
+        # Now the port name is known, layer the controller profile onto the
+        # config's cc_map (shipped-defaults < profile < explicit — see
+        # resolve_effective_cc_map) and re-parse. "off" / no matching profile is
+        # a no-op that just re-parses the base mapping.
+        try:
+            effective = resolve_effective_cc_map(
+                self._base_cc_map,
+                self._cc_map_is_default,
+                self._controller_profile,
+                self._opened_port_name,
+                profiles_dir=self._profiles_dir,
+            )
+            self._mapping = _parse_cc_map(effective)
+            n_profile = len(self._mapping) - len(_parse_cc_map(self._base_cc_map))
+            if self._controller_profile != "off":
+                log.info(
+                    "midi_control: controller_profile=%r contributed %d net mapping(s)",
+                    self._controller_profile,
+                    max(0, n_profile),
+                )
+        except ValueError:
+            # A malformed profile file must never take down the listener — keep
+            # the already-parsed base mapping and warn.
+            log.warning(
+                "midi_control: controller profile %r is malformed — ignoring it",
+                self._controller_profile,
+                exc_info=True,
+            )
         self._stop.clear()
         self._reader_thread = threading.Thread(
             target=self._reader, daemon=True, name="midi-control-reader"
@@ -319,25 +469,10 @@ class MidiControlListener:
         return []
 
     def _dispatch(self, msg: Any) -> None:
-        pressed = True
-        if msg.type == "sysex":
-            cmd = _parse_mmc_sysex(tuple(msg.data))
-            if cmd is None:
-                return
-            kind, number, value = "mmc", cmd, 127
-        elif msg.type == "note_on" and msg.velocity > 0:
-            kind, number, value = "note", msg.note, msg.velocity
-        elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
-            # A release only carries meaning for the hold-aware transport
-            # actions (rw/ff ramp) — every other action still discards it,
-            # unchanged from before this phase.
-            kind, number, value, pressed = "note", msg.note, 0, False
-        elif msg.type == "control_change":
-            kind, number, value = "cc", msg.control, msg.value
-        elif msg.type == "program_change":
-            kind, number, value = "pc", msg.program, msg.program
-        else:
-            return  # pitchwheel, etc. — not mapped
+        classified = classify_message(msg)
+        if classified is None:
+            return  # pitchwheel, non-MMC sysex, clock, etc. — not mappable
+        kind, number, value, pressed = classified
         mapping = self._mapping.get((kind, number))
         if mapping is None:
             return
@@ -368,6 +503,16 @@ class MidiControlListener:
                 pl.request_jump(mapping.scene, skip_interstitial=self.jump_transition == "cut")
         elif action == "param":
             self._apply_param(pl, mapping.target, value, mapping.kind)
+        elif action == "osd.position":
+            # Press-only (releases already dropped in _dispatch). A tap toggles
+            # the OSD corner; a second tap within _OSD_DOUBLE_TAP_S hides it; a
+            # tap while hidden re-enables it. Double-tap timing is tracked per
+            # target playlist. OsdState mutation is thread-safe, so this runs
+            # directly on the reader thread (no transport queue needed).
+            now = time.monotonic()
+            last = self._osd_last_tap.get(pl.name, 0.0)
+            self._osd_last_tap[pl.name] = now
+            pl.cycle_osd(double_tap=(now - last) < _OSD_DOUBLE_TAP_S)
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(
@@ -467,4 +612,6 @@ def build_midi_control_listener(
         port=cfg.port,
         broadcast_channel=cfg.broadcast_channel,
         jump_transition=cfg.jump_transition,
+        cc_map_is_default=cfg.cc_map_is_default,
+        controller_profile=cfg.controller_profile,
     )
