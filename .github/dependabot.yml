@@ -13,7 +13,13 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: "pip"
+  # "uv" (not "pip"): this is a uv project, so Dependabot must use the native
+  # uv ecosystem to update pyproject.toml AND regenerate uv.lock in the same
+  # PR. The "pip" ecosystem leaves uv.lock stale, which fails CI's
+  # `uv sync --frozen`. With direct deps pinned to exact `==` versions,
+  # Dependabot bumps the pin and the lock together — turning each manual
+  # security-patch bump into an automated PR.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
