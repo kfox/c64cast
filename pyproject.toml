@@ -46,7 +46,7 @@ video = ["av==17.0.1"]
 # uses cv2's VideoWriter which ships in opencv-python).
 preview = ["pygame==2.6.1"]
 # FastAPI-based HTTP control plane (pause/resume/skip/reload).
-control = ["fastapi==0.136.3", "uvicorn==0.48.0"]
+control = ["fastapi==0.139.2", "uvicorn==0.51.0"]
 # OBS Studio status overlay (websocket v5).
 obs = ["obsws-python==1.8.0"]
 # MIDI → SID scene (live MIDI input controls SID voices).
@@ -76,7 +76,7 @@ camera = ["cv2-enumerate-cameras==1.3.3"]
 # break constantly, so security + functionality both depend on running a recent
 # release. Floor is raised to the current known-good version to block a
 # downgrade; the ceiling stays open so `uv lock` can pull fixes forward.
-yt = ["yt-dlp>=2026.6.9"]
+yt = ["yt-dlp>=2026.7.4"]
 # WLED bridge Mode 1 (virtual WLED device / control surface): mDNS discovery
 # (zeroconf) + the WLED JSON HTTP/WS API (fastapi + uvicorn, shared with the
 # control plane). `websockets` is required here (not in `control`) because the
@@ -85,15 +85,15 @@ yt = ["yt-dlp>=2026.6.9"]
 # fail and clients report the device offline even though the JSON REST API
 # works fine. Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
 # this.
-wled = ["zeroconf==0.150.0", "fastapi==0.136.3", "uvicorn==0.48.0", "websockets==16.1"]
+wled = ["zeroconf==0.150.0", "fastapi==0.139.2", "uvicorn==0.51.0", "websockets==16.1.1"]
 # Everything optional, for users who want the full experience.
 all = [
     "sounddevice==0.5.5",
     "av==17.0.1",
     "pygame==2.6.1",
-    "fastapi==0.136.3",
-    "uvicorn==0.48.0",
-    "websockets==16.1",
+    "fastapi==0.139.2",
+    "uvicorn==0.51.0",
+    "websockets==16.1.1",
     "obsws-python==1.8.0",
     "mido==1.3.3",
     "python-rtmidi==1.5.8",
@@ -101,7 +101,7 @@ all = [
     "pyserial==3.5",
     "mediapipe==0.10.35",
     "questionary==2.1.1",
-    "yt-dlp>=2026.6.9",  # floating on purpose — see the `yt` extra above
+    "yt-dlp>=2026.7.4",  # floating on purpose — see the `yt` extra above
     "zeroconf==0.150.0",
     "cv2-enumerate-cameras==1.3.3",
 ]
@@ -111,11 +111,11 @@ all = [
 # workflow (`uv sync --all-extras`) rather than `pip install -e .[dev]` —
 # groups are not extras and can't be requested through `.[...]` syntax.
 dev = [
-    "ruff==0.15.17",
-    "coverage==7.14.0",
-    "mypy==2.1.0",
+    "ruff==0.15.22",
+    "coverage==7.15.2",
+    "mypy==2.3.0",
     "types-requests==2.33.0.20260518",
-    "pyright==1.1.410",
+    "pyright==1.1.411",
     # Validates the generated JSON schema against the example configs in
     # tests/test_schema.py. Dev-only; the runtime never imports it.
     "jsonschema==4.26.0",
