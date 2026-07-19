@@ -41,7 +41,7 @@ dependencies = [
 # Mic capture (the 4-bit SID DAC streaming path).
 mic = ["sounddevice==0.5.5"]
 # Video playback uses PyAV for container demux + audio resampling.
-video = ["av==17.0.1"]
+video = ["av==18.0.0"]
 # Local preview window + stream recording (preview uses pygame, recording
 # uses cv2's VideoWriter which ships in opencv-python).
 preview = ["pygame==2.6.1"]
@@ -89,7 +89,7 @@ wled = ["zeroconf==0.150.0", "fastapi==0.139.2", "uvicorn==0.51.0", "websockets=
 # Everything optional, for users who want the full experience.
 all = [
     "sounddevice==0.5.5",
-    "av==17.0.1",
+    "av==18.0.0",
     "pygame==2.6.1",
     "fastapi==0.139.2",
     "uvicorn==0.51.0",
