@@ -36,7 +36,7 @@ The DMA password (if the U64 has one set) is supplied via `C64CAST_DMA_PASSWORD`
 
 **Prerequisite:** the Ultimate DMA Service must be enabled on the U64 before `c64cast` will start: F2 → Network Settings → Ultimate DMA Service → Enabled, then save. The CLI prints an actionable error pointing at this if it can't connect.
 
-Hard deps: `opencv-python`, `numpy`, `requests`, `py65` (the WaveformScene's host-side SID emulator). Optional extras grouped in [pyproject.toml](pyproject.toml): `mic` (sounddevice), `video` (PyAV), `preview` (pygame), `control` (FastAPI + uvicorn), `obs` (obsws-python), `midi` (mido + python-rtmidi), `logging` (rich), `wizard` (questionary, for `--init`), `all` (everything). Dev tools (ruff + coverage + mypy + pyright) live in a PEP 735 `[dependency-groups] dev` (not an extra) and are installed by default via `[tool.uv] default-groups`. The user manages the env via mise + direnv + uv.
+Hard deps: `opencv-python`, `numpy`, `requests`, `py65` (the WaveformScene's host-side SID emulator). Optional extras grouped in [pyproject.toml](pyproject.toml): `mic` (sounddevice), `video` (PyAV), `preview` (pygame), `control` (FastAPI + uvicorn), `obs` (obsws-python), `midi` (mido + python-rtmidi), `logging` (rich), `wizard` (questionary, for `--init`), `camera` (cv2-enumerate-cameras, for `[video].device` by name/VID:PID), `all` (everything). Dev tools (ruff + coverage + mypy + pyright) live in a PEP 735 `[dependency-groups] dev` (not an extra) and are installed by default via `[tool.uv] default-groups`. The user manages the env via mise + direnv + uv.
 
 **Setup / install is the uv project workflow — not `uv pip` and not raw `pip`:**
 
@@ -287,10 +287,15 @@ a 1080p BGR frame you can `imwrite()` and Read.
 
 Ask the user before assuming a capture is available — they vary by machine. If
 one is present, use it for verification of any visual change (overlays, display
-modes, scene transitions) instead of guessing from RAM dumps alone. Local-only
-machine specifics (which OpenCV index is the capture device on this host, what
-else is on the LAN) belong in `.claude/settings.local.json` or auto-memory, not
-in this file.
+modes, scene transitions) instead of guessing from RAM dumps alone. To find its
+OpenCV index, `c64cast --list-devices` now shows each camera's name + USB VID:PID
++ correct index when the `camera` extra (cv2-enumerate-cameras) is installed —
+so the Cam Link is identifiable by its Elgato VID rather than by trial-and-error
+index probing. `[video].device` also accepts a name substring or `VID:PID`
+string (resolved via [camera.py](c64cast/camera.py) `resolve_camera_index`), so a
+webcam scene can target the capture stick stably. Local-only machine specifics
+(which OpenCV index is the capture device on this host, what else is on the LAN)
+belong in `.claude/settings.local.json` or auto-memory, not in this file.
 
 ## Quirks worth knowing
 
