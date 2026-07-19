@@ -389,6 +389,44 @@ class ConfigErrorTest(unittest.TestCase):
         self.assertIn("^", msg)
 
 
+class VideoDeviceTest(unittest.TestCase):
+    """[video].device accepts an int index or a string (name substring / VID:PID)."""
+
+    def _load(self, toml):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(toml)
+            path = f.name
+        try:
+            return cfgmod.load(path)
+        finally:
+            os.unlink(path)
+
+    def test_int_device_loads(self):
+        cfg = self._load("[video]\ndevice = 2\n")
+        self.assertEqual(cfg.video.device, 2)
+
+    def test_name_string_device_loads(self):
+        cfg = self._load('[video]\ndevice = "Cam Link"\n')
+        self.assertEqual(cfg.video.device, "Cam Link")
+
+    def test_vidpid_string_device_loads(self):
+        cfg = self._load('[video]\ndevice = "0fd9:0066"\n')
+        self.assertEqual(cfg.video.device, "0fd9:0066")
+
+    def test_malformed_vidpid_raises_config_error(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._load('[video]\ndevice = "0fzz:0066"\n')
+        self.assertIn("[video].device", str(ctx.exception))
+
+    def test_string_device_round_trips_through_serialize(self):
+        from c64cast import config_serialize as ser
+
+        cfg = cfgmod.Config()
+        cfg.video.device = "Cam Link"
+        reloaded = self._load(ser.dumps(cfg))
+        self.assertEqual(reloaded.video.device, "Cam Link")
+
+
 class FormatTomlErrorTest(unittest.TestCase):
     """The pure TOML-error formatter — both the structured-attrs path and the
     regex-fallback path used when the parser doesn't expose lineno/colno."""

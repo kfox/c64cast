@@ -302,9 +302,16 @@ class Ultimate64Cfg:
 
 @dataclass
 class VideoCfg:
-    device: int = field(
+    device: int | str = field(
         default=-1,
-        metadata={"help": "Webcam device index; -1 = system default camera (cv2 index 0)."},
+        metadata={
+            "help": (
+                "Webcam device: an integer cv2 index (-1 = system default camera, "
+                "cv2 index 0), or a string matched to a camera by name substring (e.g. "
+                '"Cam Link") or USB VID:PID (e.g. "0fd9:0066"). String selection needs '
+                "the 'camera' extra; run --list-devices to see names + VID:PID."
+            )
+        },
     )
     # REU-staged video push. Bitmap frames (hires/mhires) are staged into
     # REU SRAM off-screen and swapped into the displayed bank by an atomic
@@ -2133,6 +2140,16 @@ def _validate_double_buffer(video: VideoCfg) -> None:
         raise ValueError(f'[video].double_buffer must be true, false, or "auto", got {v!r}')
 
 
+def _validate_video_device(video: VideoCfg) -> None:
+    """Offline syntax check for [video].device — an int index, or a string
+    matched by camera name substring / USB VID:PID. Rejects a malformed VID:PID
+    at load time; actual name/VID resolution (which enumerates hardware and
+    needs the 'camera' extra) is deferred to WebcamSource construction."""
+    from . import camera  # local: keep the optional-feature module off the hot import path
+
+    camera.parse_camera_device(video.device, field_name="[video].device")
+
+
 def _validate_force_palette(color: ColorCfg) -> None:
     """Range-check + normalize the [color].force_palette_colors knob at
     load/doctor time so a bad value surfaces before the playlist runs, not
@@ -2219,6 +2236,7 @@ def load(path: str | None) -> Config:
 
     _validate_use_reu_staged(cfg.video)
     _validate_double_buffer(cfg.video)
+    _validate_video_device(cfg.video)
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out

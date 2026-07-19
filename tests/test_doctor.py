@@ -203,6 +203,15 @@ class ExtrasProbeTest(unittest.TestCase):
         self.assertEqual(video_diags[0].level, "warn")
         self.assertEqual(video_diags[0].hint, "uv sync --all-extras")
 
+    def test_camera_extra_is_probed(self):
+        # The camera extra (cv2-enumerate-cameras) must appear in the extras
+        # report — present-or-warn, either level is fine.
+        loaded = _load("")
+        diags = doctor.validate_load_result(loaded, probe_u64=False)
+        cam_diags = [d for d in diags if d.category == "extras" and d.subject == "camera"]
+        self.assertEqual(len(cam_diags), 1)
+        self.assertIn(cam_diags[0].level, ("ok", "warn"))
+
 
 class ConnectivityProbeTest(unittest.TestCase):
     def test_socket_dma_error_becomes_diagnostic_not_exception(self):

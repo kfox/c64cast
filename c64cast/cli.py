@@ -60,6 +60,16 @@ class _CliUsageError(Exception):
     main() logs the message and returns exit code 2."""
 
 
+def _device_arg(s: str) -> int | str:
+    """argparse type for -d/--device: an int cv2 index when it parses as one,
+    else the raw string (a camera name substring or USB VID:PID). Mirrors the
+    int|str shape of [video].device; resolution happens later."""
+    try:
+        return int(s)
+    except ValueError:
+        return s
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Pull defaults from the config dataclasses so help text stays in sync
     # with the actual fallback values. CLI options use default=None at the
@@ -141,9 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument(
         "-d",
         "--device",
-        type=int,
+        type=_device_arg,
         default=None,
-        help=f"Webcam device index, -1 = system default (default: {video_def.device})",
+        metavar="INDEX|NAME|VID:PID",
+        help="Webcam device: int index (-1 = system default), or a camera name "
+        'substring / USB VID:PID (e.g. "Cam Link", "0fd9:0066"; needs the '
+        f"'camera' extra) (default: {video_def.device})",
     )
 
     a = p.add_argument_group("audio")
@@ -464,13 +477,16 @@ def list_devices() -> int:
         print("    (sounddevice not installed)")
 
     print()
-    print("Video input devices (use with -d / --device):")
+    print("Video input devices (use with -d / --device — an index, a name substring, or VID:PID):")
     import cv2
 
-    found = []
-    # Probing past the highest valid index makes OpenCV (and the AVFoundation
-    # / FFmpeg backends underneath it) print to stderr at the C level. Mute
-    # those for the duration of the probe via fd-level redirection.
+    from . import camera
+
+    # Best-effort resolution probe (indices 0-7), merged into whichever listing
+    # we print below. Probing past the highest valid index makes OpenCV (and the
+    # AVFoundation / FFmpeg backends underneath it) print to stderr at the C
+    # level, so mute that for the probe via fd-level redirection.
+    res_by_index: dict[int, tuple[int, int]] = {}
     sys.stdout.flush()
     with silence_native_stderr():
         for idx in range(8):
@@ -479,12 +495,32 @@ def list_devices() -> int:
                 if cap is not None and cap.isOpened():
                     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    found.append((idx, w, h))
+                    res_by_index[idx] = (w, h)
             finally:
                 if cap is not None:
                     cap.release()
-    if found:
-        for idx, w, h in found:
+
+    # Rich path (the `camera` extra): name + USB VID:PID + the correct backend
+    # index cross-platform. This makes system_profiler's index-guessing dance
+    # unnecessary, so we return before the macOS fallback below.
+    cams = camera.enumerate_cameras()
+    if cams:
+        for c in cams:
+            line = f"   [{c.index}] {c.name}"
+            vp = c.vidpid_str()
+            if vp:
+                line += f"  ({vp})"
+            res = res_by_index.get(c.index)
+            if res:
+                line += f"  {res[0]}x{res[1]}"
+            print(line)
+        return 0
+
+    if not camera.camera_enumeration_available():
+        print("    (install the 'camera' extra for names + VID:PID: uv sync --extra camera)")
+    if res_by_index:
+        for idx in sorted(res_by_index):
+            w, h = res_by_index[idx]
             print(f"   [{idx}] {w}x{h}")
     else:
         print("    (no webcams responded to OpenCV probe)")
