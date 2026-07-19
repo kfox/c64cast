@@ -7,16 +7,25 @@ architecture overview see [CLAUDE.md](../CLAUDE.md).
 
 ## Audio is intentionally lo-fi (the 4-bit `$D418` DAC)
 
-The SID DAC streaming path writes 4-bit samples (0-15) to the SID volume
-nibble at $D418 at ~10.5 kHz. That's an objectively bad audio format — but
-it's the format a real C64 plays back. You can raise `[audio]
-sample_rate` in config, but the C64-side NMI is sized for that rate and
-nothing in the pipeline resamples; a different rate just plays at the
-wrong pitch.
+The SID DAC streaming path writes samples to the SID volume nibble at
+$D418 at 12 kHz by default (`[audio] sample_rate`). The classic path is
+4-bit (0-15) — an objectively bad audio format, but the one a real C64
+plays back. You *can* raise `sample_rate`, but it isn't the quality lever:
+the C64-side NMI period is derived *from* it (it programs the CIA #2 Timer A
+latch), so the pitch stays correct, and there's little headroom — rates
+past the ~13.6 kHz NTSC handler ceiling are rejected at load
+(`c64.nmi_rate_safety`). The real depth knob is `[audio] dac_curve`, whose
+`"auto"` default lifts the U64's (deterministic emulated) SID to the Mahoney
+~6-7-bit `$D418` technique; `--calibrate-dac` does the same for a physical
+SID. Only an uncalibrated physical/unknown chip stays on the classic 4-bit
+linear path.
 
-There is no master volume, no SID filter, no anti-aliasing. The noise
-gate (`noise_gate`) and pre-DAC gain (`mic_sensitivity`) are the only
-shaping knobs. Hum and hiss are part of the aesthetic.
+There's no SID filter and no anti-aliasing, but shaping isn't bare: the
+`[dsp]` chain — compressor/limiter, a downward expander that replaces the
+hard noise gate, pre-emphasis, mic AGC — is **ON by default**. `[audio]
+noise_gate` and `mic_sensitivity` are the legacy shaping knobs; `noise_gate`
+only takes effect when `[dsp] enabled = false`. Hum and hiss are still part
+of the aesthetic.
 
 ## High-fidelity video audio: the Ultimate Audio FPGA sampler (U64)
 
