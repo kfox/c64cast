@@ -31,48 +31,52 @@ classifiers = [
 # hardware: writes only, reads return 0, so we run a parallel py65
 # 6502 to recover live $D4xx state). Pure Python, no C extension.
 dependencies = [
-    "numpy>=1.24",
-    "opencv-python>=4.5",
-    "py65>=1.2",
-    "requests>=2.28",
+    "numpy==2.4.6",
+    "opencv-python==4.13.0.92",
+    "py65==1.2.0",
+    "requests==2.34.2",
 ]
 
 [project.optional-dependencies]
 # Mic capture (the 4-bit SID DAC streaming path).
-mic = ["sounddevice>=0.4"]
+mic = ["sounddevice==0.5.5"]
 # Video playback uses PyAV for container demux + audio resampling.
-video = ["av>=10"]
+video = ["av==17.0.1"]
 # Local preview window + stream recording (preview uses pygame, recording
 # uses cv2's VideoWriter which ships in opencv-python).
-preview = ["pygame>=2.5"]
+preview = ["pygame==2.6.1"]
 # FastAPI-based HTTP control plane (pause/resume/skip/reload).
-control = ["fastapi>=0.100", "uvicorn>=0.23"]
+control = ["fastapi==0.136.3", "uvicorn==0.48.0"]
 # OBS Studio status overlay (websocket v5).
-obs = ["obsws-python>=1.6"]
+obs = ["obsws-python==1.8.0"]
 # MIDI → SID scene (live MIDI input controls SID voices).
-midi = ["mido>=1.3", "python-rtmidi>=1.5"]
+midi = ["mido==1.3.3", "python-rtmidi==1.5.8"]
 # Pretty terminal logging (colored levels + timestamps). Falls back to
 # plain logging.StreamHandler when not installed.
-logging = ["rich>=13"]
+logging = ["rich==15.0.0"]
 # TeensyROM+ hardware backend over USB serial (pyserial). The raw-TCP
 # transport (port 2112) needs no extra dependency.
-tr = ["pyserial>=3.5"]
+tr = ["pyserial==3.5"]
 # Camera-as-input: webcam hand-gesture control (MediaPipe HandLandmarker).
 # opencv/numpy are already hard deps; only mediapipe is extra. Needs a
 # separately-downloaded .task model (see assets/models/README.md).
-vision = ["mediapipe>=0.10"]
+vision = ["mediapipe==0.10.35"]
 # Interactive config builder (`c64cast --init`). questionary pulls in
 # prompt_toolkit; both are small pure-Python deps.
-wizard = ["questionary>=2.0"]
+wizard = ["questionary==2.1.1"]
 # Select a webcam by name / USB VID:PID instead of a fragile cv2 index, and
 # enrich `--list-devices` with camera names + VID:PID + the correct backend
 # index. opencv/numpy are already hard deps; only the enumeration helper is
 # extra. Integer indices keep working with this absent.
-camera = ["cv2-enumerate-cameras>=1.1"]
+camera = ["cv2-enumerate-cameras==1.3.3"]
 # URL playback for quick-playback mode (positional MEDIA args). yt-dlp resolves
 # YouTube and other streaming sites to a directly-playable stream URL;
 # direct media URLs play without it (PyAV opens http(s) natively).
-yt = ["yt-dlp>=2024.1"]
+# NOT hard-pinned on purpose: yt-dlp is network-facing and its site extractors
+# break constantly, so security + functionality both depend on running a recent
+# release. Floor is raised to the current known-good version to block a
+# downgrade; the ceiling stays open so `uv lock` can pull fixes forward.
+yt = ["yt-dlp>=2026.6.9"]
 # WLED bridge Mode 1 (virtual WLED device / control surface): mDNS discovery
 # (zeroconf) + the WLED JSON HTTP/WS API (fastapi + uvicorn, shared with the
 # control plane). `websockets` is required here (not in `control`) because the
@@ -81,25 +85,25 @@ yt = ["yt-dlp>=2024.1"]
 # fail and clients report the device offline even though the JSON REST API
 # works fine. Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
 # this.
-wled = ["zeroconf>=0.130", "fastapi>=0.100", "uvicorn>=0.23", "websockets>=12"]
+wled = ["zeroconf==0.150.0", "fastapi==0.136.3", "uvicorn==0.48.0", "websockets==16.1"]
 # Everything optional, for users who want the full experience.
 all = [
-    "sounddevice>=0.4",
-    "av>=10",
-    "pygame>=2.5",
-    "fastapi>=0.100",
-    "uvicorn>=0.23",
-    "websockets>=12",
-    "obsws-python>=1.6",
-    "mido>=1.3",
-    "python-rtmidi>=1.5",
-    "rich>=13",
-    "pyserial>=3.5",
-    "mediapipe>=0.10",
-    "questionary>=2.0",
-    "yt-dlp>=2024.1",
-    "zeroconf>=0.130",
-    "cv2-enumerate-cameras>=1.1",
+    "sounddevice==0.5.5",
+    "av==17.0.1",
+    "pygame==2.6.1",
+    "fastapi==0.136.3",
+    "uvicorn==0.48.0",
+    "websockets==16.1",
+    "obsws-python==1.8.0",
+    "mido==1.3.3",
+    "python-rtmidi==1.5.8",
+    "rich==15.0.0",
+    "pyserial==3.5",
+    "mediapipe==0.10.35",
+    "questionary==2.1.1",
+    "yt-dlp>=2026.6.9",  # floating on purpose — see the `yt` extra above
+    "zeroconf==0.150.0",
+    "cv2-enumerate-cameras==1.3.3",
 ]
 [dependency-groups]
 # Dev tools — not published to PyPI. Installed by default via
@@ -107,24 +111,24 @@ all = [
 # workflow (`uv sync --all-extras`) rather than `pip install -e .[dev]` —
 # groups are not extras and can't be requested through `.[...]` syntax.
 dev = [
-    "ruff>=0.1",
-    "coverage>=7",
-    "mypy>=1.8",
-    "types-requests",
-    "pyright>=1.1.400",
+    "ruff==0.15.17",
+    "coverage==7.14.0",
+    "mypy==2.1.0",
+    "types-requests==2.33.0.20260518",
+    "pyright==1.1.410",
     # Validates the generated JSON schema against the example configs in
     # tests/test_schema.py. Dev-only; the runtime never imports it.
-    "jsonschema>=4",
+    "jsonschema==4.26.0",
     # Required by fastapi.testclient (Starlette's TestClient) for the
     # control-plane end-to-end tests in tests/test_control_plane.py. FastAPI
     # declares it optional, so the `control` extra doesn't pull it; without it
     # those 13 tests skip. Dev-only; the runtime never imports it.
-    "httpx>=0.27",
+    "httpx==0.28.1",
     # JUnit XML reporter for the unittest suite (a unittest.TestRunner
     # subclass, NOT a different test framework). CI runs the suite through
     # `python -m xmlrunner discover` so Codecov Test Analytics can ingest the
     # results. Dev/CI-only; the runtime never imports it.
-    "unittest-xml-reporting>=3",
+    "unittest-xml-reporting==4.0.0",
 ]
 
 [project.scripts]
