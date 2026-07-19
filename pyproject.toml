@@ -114,7 +114,7 @@ dev = [
     "ruff==0.15.22",
     "coverage==7.15.2",
     "mypy==2.3.0",
-    "types-requests==2.33.0.20260518",
+    "types-requests==2.33.0.20260712",
     "pyright==1.1.411",
     # Validates the generated JSON schema against the example configs in
     # tests/test_schema.py. Dev-only; the runtime never imports it.
