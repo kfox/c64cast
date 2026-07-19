@@ -93,6 +93,10 @@ def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
     s._servo_gap_min = -1
     s._servo_gap_max = -1
     s._servo_gap_last = -1
+    # Phase 4 transport-flush state (read by _worker's iteration top).
+    s._flush_epoch = 0
+    s._count_lock = threading.Lock()
+    s._stomp_requested = False
     return s
 
 

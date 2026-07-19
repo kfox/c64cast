@@ -77,6 +77,10 @@ def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
     s._nmi_latch = 0
     s._pitch_multiplier = 1.0
     s._nmi_timer_started = False
+    # Phase 4 transport-flush state (read by _worker's iteration top).
+    s._flush_epoch = 0
+    s._count_lock = threading.Lock()
+    s._stomp_requested = False
     return s
 
 

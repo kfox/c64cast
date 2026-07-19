@@ -668,6 +668,10 @@ jump_transition = "cut"             # "cut" (instant, no interstitial) | "inters
 osd = "bottom"                      # live-tune feedback ("param value" on a knob sweep /
                                     #   mode change): "bottom" | "top" corner, or "off".
                                     #   Rendered pre-quantization so it shows on any mode.
+loop_audio = "on"                   # once a transport.* action touches a video scene:
+                                    #   "on" keeps audio playing and re-syncs it across
+                                    #   every seek/pause/loop splice; "mute" mutes for the
+                                    #   rest of the run. Falls back to mute with no audio.
 
 # Ships with a sensible default cc_map (transport on notes 36-39, a 16-scene
 # jump bank on notes 40-55 + Program Change 0-15, a knob bank on CC13-16) if

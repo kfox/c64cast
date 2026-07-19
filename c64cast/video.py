@@ -737,11 +737,26 @@ class AVFileSource:
         downstream (AudioStreamer / UltimateAudioSampler) is retracted."""
         self._muted = muted
 
+    @property
+    def seek_pending(self) -> bool:
+        """True while a requested transport seek has not yet been applied by the
+        demux thread. VideoScene's resync loop-wrap uses this to avoid re-firing
+        transport_seek(A) every frame (each re-fire would flush the first fresh
+        post-A audio) until the demuxer clears the pending slot."""
+        with self._lock:
+            return self._pending_seek is not None
+
     def _emit_audio(self, arr: np.ndarray) -> None:
         """Apply the noise gate + normalization gain to a mono int16 sample
         array and hand it to the audio consumer. Shared by the direct path and
         the atempo-compensated path."""
-        if self._audio_push is None or self._muted:
+        # Drop audio decoded from the stale pre-seek read position while a seek
+        # is pending — otherwise it reaches the consumer and plays after the
+        # splice's flush. The unlocked _pending_seek read is racy but benign: the
+        # AudioStreamer/sampler flush epoch closes the residual one-blob window
+        # (a chunk that slips through here right as the seek lands is discarded
+        # consumer-side by the epoch check).
+        if self._audio_push is None or self._muted or self._pending_seek is not None:
             return
         if self.audio_noise_gate > 0:
             # Zero source-noise-floor samples BEFORE gain so the encoder doesn't

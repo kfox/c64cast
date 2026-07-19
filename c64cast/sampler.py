@@ -135,6 +135,16 @@ REU_WRITE_SLICE = 32 * 1024  # cap per REUWRITE so a NEUTRAL pad can't burst hug
 SAMPLE_TAP_SIZE = 2048  # most-recent-samples tap for spectrum overlays
 _INT16_FULL_SCALE = 32768.0
 
+# Transport-flush guard (MIDI live-tune Phase 4). flush() cuts the ring over to
+# post-splice audio by NEUTRAL-rewriting the unconsumed lead, but leaves this
+# much margin between the computed read head and the first rewritten byte. It
+# covers (a) open-loop consumed-estimate jitter, (b) REUWRITE latency so the
+# FPGA never fetches a byte mid-write, and (c) the calibrated-ref residual drift
+# (~1.3 ms / 5 s). It is also the audible splice latency: pre-splice content
+# plays at most this long past the splice point before the fresh stream takes
+# over. Raise it if HW shows a splice click (risk #2 / §7 probe).
+FLUSH_GUARD_S = 0.15
+
 
 # --------------------------------------------------------------------------
 # Pure helpers (no hardware) — directly unit-testable.
@@ -386,6 +396,16 @@ class UltimateAudioSampler:
         self._written = 0  # absolute bytes written to the ring (monotone)
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
+        # Transport resync (MIDI live-tune Phase 4). flush() bumps _flush_epoch
+        # so a chunk the writer thread dequeued just before the splice is
+        # discarded instead of written past the cut-over; _io_lock serializes the
+        # {_write_wrapped, _written} read-modify-write between flush() (playlist
+        # thread) and the writer thread. _output_silenced tracks the pause fast
+        # mute ($DF21 volume 0) so the next flush() restores the channel volume.
+        self._flush_epoch = 0
+        self._io_lock = threading.Lock()
+        self._output_silenced = False
+
         # Telemetry for the teardown log / de-risk.
         self._underrun_pads = 0
         self._lead_min = -1
@@ -483,13 +503,29 @@ class UltimateAudioSampler:
         playback rate (same backpressure as the DAC's ``push_samples``)."""
         if self._stopped:
             return
+        # Phase 4 flush epoch: if a transport splice flushes while this call is
+        # blocked on a full queue, drop the (pre-splice) chunk instead of pushing
+        # it past the cut-over. The bounded put timeout lets the check re-run.
+        epoch = self._flush_epoch
         floats = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
         self._tap_push(floats)
         if self._dsp is not None and self._dsp.active:
             floats = self._dsp.process(floats)
         out_i16 = np.clip(np.rint(floats * 32767.0), -32768, 32767).astype(np.int16)
+        pack = pack_pcm(out_i16, self.bits)
+        while not self._stopped:
+            if self._flush_epoch != epoch:
+                return
+            try:
+                self._q.put(pack, timeout=0.1)
+                break
+            except queue.Full:
+                continue
+        else:
+            return
+        # Count only after a successful put — a dropped chunk must not inflate
+        # the EOF clamp (position_seconds's pushed-total ceiling).
         self._pushed_samples += int(samples_int16.shape[0])
-        self._q.put(pack_pcm(out_i16, self.bits), block=True)
 
     def mark_eof(self) -> None:
         """Source exhausted — clamp ``position_seconds`` to the pushed total so
@@ -508,8 +544,65 @@ class UltimateAudioSampler:
         elapsed = time.monotonic() - self._gate_time
         return int(elapsed * self._actual_rate) * self.bps
 
+    def _write_volume(self, value: int) -> None:
+        """Write channel volume (0..63) live, without reprogramming the channel.
+        Used by the pause fast mute ($DF21 for channel 0) and its restore."""
+        addr = channel_base(self.channel) + REG_VOLUME
+        self.api.write_memory(f"{addr:04X}", f"{value & 0x3F:02X}")
+        self.api.flush()
+
+    def flush(self, *, silence_output: bool = False) -> None:
+        """Cut the ring over to post-splice audio: drain the queue and
+        NEUTRAL-rewrite the unconsumed lead past a small guard margin, then pull
+        _written back to consumed+margin so the writer resumes from there. Used
+        by VideoScene's transport splice (seek / loop wrap / resume) so stale
+        pre-splice audio doesn't play after the demuxer re-seeks.
+        ``position_seconds()`` (wall-based) is unaffected — the read head keeps
+        advancing, we only change what it reads.
+
+        ``silence_output`` (pause) additionally writes channel volume 0 for
+        instant silence independent of ring content; the next plain ``flush()``
+        (resume's splice) restores it. Present on the DAC's ``flush()`` too for
+        signature parity — this ring cut-over already silences within
+        ``FLUSH_GUARD_S`` regardless."""
+        if not self._running:
+            return
+        self._flush_epoch += 1
+        if silence_output:
+            self._write_volume(0)
+            self._output_silenced = True
+        elif self._output_silenced:
+            self._write_volume(self._volume)
+            self._output_silenced = False
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+        with self._io_lock:
+            consumed = self._read_consumed_bytes()
+            margin = int(FLUSH_GUARD_S * self._actual_rate) * self.bps
+            new_written = consumed + margin
+            lo = min(self._written, new_written)
+            hi = max(self._written, new_written)
+            if hi > lo:
+                # One formula covers both the normal rewrite-the-lead case
+                # (new_written < old _written: blank [consumed+margin, old W))
+                # and the rare lead<margin case (new_written > old _written:
+                # blank the lap-stale region the reader is about to enter).
+                self._write_wrapped(
+                    lo % self.ring_size, self._neutral_unit * ((hi - lo) // self.bps)
+                )
+            self._written = new_written
+            self._eof = False
+
     def _writer_loop(self) -> None:
         while self._running:
+            # Phase 4 flush epoch: captured before the blocking get so a chunk
+            # dequeued just before a splice (below) is discarded rather than
+            # written past flush()'s ring cut-over. NEUTRAL pads are epoch-immune
+            # (silence is valid at any epoch), so only real queue data is checked.
+            epoch = self._flush_epoch
             lead = self._written - self._read_consumed_bytes()
             self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
             self._lead_max = max(self._lead_max, lead)
@@ -520,6 +613,8 @@ class UltimateAudioSampler:
                 continue
             try:
                 data = self._q.get(timeout=0.02)
+                if epoch != self._flush_epoch:
+                    continue
             except queue.Empty:
                 # Queue momentarily empty. NEUTRAL-padding is a *last resort* —
                 # it inserts silence into the stream, so only do it when the
@@ -533,8 +628,12 @@ class UltimateAudioSampler:
                 pad_frames = min(pad_frames, REU_WRITE_SLICE // self.bps)
                 data = self._neutral_unit * pad_frames
                 self._underrun_pads += 1
-            self._write_wrapped(self._written % self.ring_size, data)
-            self._written += len(data)
+            # Serialize the write+advance against flush()'s ring cut-over
+            # (which also reads _written and rewrites the ring). Lock hold is one
+            # chunk (tens of ms); flush() blocks at most that long.
+            with self._io_lock:
+                self._write_wrapped(self._written % self.ring_size, data)
+                self._written += len(data)
 
     def _write_wrapped(self, ring_pos: int, data: bytes) -> None:
         """REUWRITE ``data`` into the ring at ``ring_pos``, splitting at the ring

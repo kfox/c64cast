@@ -12,7 +12,16 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.api import Ultimate64API
-from c64cast.audio import NEUTRAL_SAMPLE, SAMPLE_TAP_SIZE, AudioStreamer
+from c64cast.audio import (
+    NEUTRAL_SAMPLE,
+    RING_BUFFER_ADDR,
+    RING_BUFFER_END,
+    RING_BUFFER_SIZE,
+    SAMPLE_TAP_SIZE,
+    STOMP_GUARD_BYTES,
+    AudioStreamer,
+    _stomp_spans,
+)
 from c64cast.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
 
 
@@ -51,6 +60,11 @@ def _new_streamer(monkeypatch_api=True) -> AudioStreamer:
     s._servo_gap_min = -1
     s._servo_gap_max = -1
     s._servo_gap_last = -1
+    # Phase 4 transport-flush state.
+    s._flush_epoch = 0
+    s._count_lock = threading.Lock()
+    s._stomp_requested = False
+    s._reu_pump_armed = False
     return s
 
 
@@ -282,6 +296,136 @@ class WorkerBatchingTest(unittest.TestCase):
         # Sanity: prebuffer must have fired (≥ 3 writes) so we're actually
         # exercising the paced post-prebuffer path.
         self.assertGreaterEqual(len(writes), 3)
+
+
+class AudioFlushTests(unittest.TestCase):
+    """AudioStreamer.flush() (transport resync, Phase 4)."""
+
+    def _seed(self, pushed: int, queued: int, blobs: list[int]) -> AudioStreamer:
+        s = _new_streamer()
+        s._pushed_count = pushed
+        s._queued_samples = queued
+        for n in blobs:
+            s.q.put(bytes([NEUTRAL_SAMPLE]) * n)
+        return s
+
+    def test_flush_preserves_position(self):
+        # position = (pushed - queued) / rate; the queued bytes we drop were
+        # counted in both, so position must not move.
+        s = self._seed(pushed=5000, queued=2000, blobs=[1000, 1000])
+        before = s.position_seconds()
+        s.flush()
+        self.assertTrue(s.q.empty())
+        self.assertEqual(s.position_seconds(), before)
+        # pushed and queued both dropped by the 2000 drained samples.
+        self.assertEqual(s._pushed_count, 3000)
+        self.assertEqual(s._queued_samples, 0)
+        self.assertEqual(s._flush_epoch, 1)
+
+    def test_flush_paired_subtract_floors_at_zero(self):
+        # More bytes in the queue than the counters claim (shouldn't happen, but
+        # the max(0, ...) floor must hold): both counters clamp at 0.
+        s = self._seed(pushed=500, queued=300, blobs=[1000])
+        s.flush()
+        self.assertEqual(s._pushed_count, 0)
+        self.assertEqual(s._queued_samples, 0)
+
+    def test_flush_silence_sets_stomp_flag(self):
+        s = self._seed(pushed=1000, queued=0, blobs=[])
+        self.assertFalse(s._stomp_requested)
+        s.flush(silence_output=True)
+        self.assertTrue(s._stomp_requested)
+
+    def test_plain_flush_does_not_set_stomp_flag(self):
+        s = self._seed(pushed=1000, queued=0, blobs=[])
+        s.flush()
+        self.assertFalse(s._stomp_requested)
+
+    def test_flush_noop_when_reu_pump_armed(self):
+        s = self._seed(pushed=1000, queued=500, blobs=[500])
+        s._reu_pump_armed = True
+        s.flush()
+        # No drain, no epoch bump — the REU pump owns its own timeline.
+        self.assertFalse(s.q.empty())
+        self.assertEqual(s._flush_epoch, 0)
+
+    def test_blocked_push_dropped_by_flush_epoch(self):
+        import time
+
+        s = _new_streamer()
+        s.running = True
+        s._max_queued_samples = 16384
+        s._queued_samples = 16384  # at cap → _encode_and_enqueue spins
+        for _ in range(16):
+            s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)  # 16384 samples queued
+
+        result: dict[str, int] = {}
+
+        def push():
+            result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
+
+        t = threading.Thread(target=push)
+        t.start()
+        time.sleep(0.02)  # let it park in the backpressure spin
+        s.flush()  # drains the 16384 queued samples + bumps the epoch
+        t.join(timeout=1.0)
+        self.assertEqual(result["n"], 0)  # stale push dropped
+        self.assertTrue(s.q.empty())
+
+    def test_stop_still_drains_and_zeroes(self):
+        # stop() now routes its drain through _drain_queue_samples; the queue
+        # must still empty and the counters reset (refactor regression guard).
+        s = _new_streamer()
+        s.running = False
+        s._reu_pump_armed = False
+        s._pushed_count = 4242
+        s._queued_samples = 100
+        s._stomp_requested = True
+        for _ in range(4):
+            s.q.put(bytes([NEUTRAL_SAMPLE]) * 256)
+        s.stop()
+        self.assertTrue(s.q.empty())
+        self.assertEqual(s._pushed_count, 0)
+        self.assertEqual(s._queued_samples, 0)
+        self.assertFalse(s._stomp_requested)
+
+
+class StompSpanTests(unittest.TestCase):
+    """Pure _stomp_spans() — the pause NEUTRAL-fill span math."""
+
+    def test_no_wrap_span(self):
+        r = RING_BUFFER_ADDR + 0x100
+        w = RING_BUFFER_ADDR + 0x800
+        spans = _stomp_spans(r, w, guard=STOMP_GUARD_BYTES)
+        self.assertEqual(len(spans), 1)
+        start, length = spans[0]
+        self.assertEqual(start, r + STOMP_GUARD_BYTES)
+        self.assertEqual(length, (w - r) - STOMP_GUARD_BYTES)
+        # Entirely inside the ring.
+        self.assertGreaterEqual(start, RING_BUFFER_ADDR)
+        self.assertLessEqual(start + length, RING_BUFFER_END)
+
+    def test_wrapped_span_splits_at_ring_end(self):
+        # W has wrapped below R: the unplayed region straddles RING_BUFFER_END.
+        r = RING_BUFFER_END - 0x100
+        w = RING_BUFFER_ADDR + 0x200
+        spans = _stomp_spans(r, w, guard=STOMP_GUARD_BYTES)
+        self.assertEqual(len(spans), 2)
+        (s0, l0), (s1, l1) = spans
+        self.assertEqual(s0, r + STOMP_GUARD_BYTES)
+        self.assertEqual(s0 + l0, RING_BUFFER_END)  # first piece ends at the boundary
+        self.assertEqual(s1, RING_BUFFER_ADDR)  # second piece resumes at ring base
+        gap = (w - r) % RING_BUFFER_SIZE
+        self.assertEqual(l0 + l1, gap - STOMP_GUARD_BYTES)
+        for start, length in spans:
+            self.assertGreaterEqual(start, RING_BUFFER_ADDR)
+            self.assertLessEqual(start + length, RING_BUFFER_END)
+
+    def test_gap_at_or_below_guard_is_empty(self):
+        r = RING_BUFFER_ADDR + 0x40
+        self.assertEqual(_stomp_spans(r, r + STOMP_GUARD_BYTES, guard=STOMP_GUARD_BYTES), [])
+        self.assertEqual(_stomp_spans(r, r + STOMP_GUARD_BYTES - 1, guard=STOMP_GUARD_BYTES), [])
+        self.assertEqual(_stomp_spans(r, r, guard=STOMP_GUARD_BYTES), [])
 
 
 if __name__ == "__main__":

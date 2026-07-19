@@ -730,6 +730,44 @@ anyway) if you want the save/clear pad chords; an MMC mapping still works
 fine for plain Record-arm / Stop-close-pause-quit presses and for the loop
 toggle / play-pause / RW / FF / jog actions that don't need a chord.
 
+## MIDI live-tune transport audio resync: splice latency + the mute-path tempo quirk
+
+Phase 4 makes a video's audio keep playing across every transport splice
+(`[midi_control].loop_audio = "on"`, the default). A few properties are by
+design, not bugs:
+
+- **Splice click.** There is no crossfade in v1. Both the DAC and sampler
+  splice boundaries are DC-silence (NEUTRAL), so any click at a seek/loop wrap
+  is only the *content* discontinuity (the new position's waveform not matching
+  the old), not a NEUTRAL step. An obvious v2 improvement is a ~5 ms host-side
+  fade-in on the first post-flush chunk.
+- **DAC splices cut over after the constant ring latency.** On the 4-bit
+  `$D418` DAC path (`[audio].backend = "dac"`), `flush()` does not stomp the
+  ring at a seek/loop wrap — the servo-held ~4096-byte gap (~0.3-0.5 s) is the
+  accepted constant output latency, so the not-yet-heard approach to the splice
+  point finishes playing while fresh audio lands behind it. The audio therefore
+  cuts over a *constant* ~0.3-0.5 s after the video jumps, identical every
+  splice — no silence hole, no mid-phrase chop, but not frame-tight either.
+- **Sampler splices play ≤ `FLUSH_GUARD_S` (0.15 s) past the splice point.**
+  The sampler `flush()` leaves a small guard between the computed read head and
+  the first rewritten byte (covers open-loop read-head jitter + REUWRITE
+  latency), so pre-splice content plays at most ~0.15 s past the cut. This is
+  also where the open-loop consumed-estimate drift (~0.16 s per 10 min worst
+  case) is absorbed; a very-late-scene splice could in principle show an
+  artifact if that drift ever exceeds the guard.
+- **`loop_audio = "mute"` is the permanent fallback.** It reproduces the
+  Phase-2 escape valve bit-for-bit (audio mutes for the rest of the scene's run
+  the moment transport is touched, and the clock switches to a self-owned wall
+  anchor). Use it if the resync splices ever misbehave on unusual
+  hardware/firmware.
+- **Mute-path DAC+bitmap tempo quirk (unchanged).** On the `"mute"` path over
+  the DAC+bitmap `tempo_scale` (~0.88) content, the wall-clock anchor runs at
+  1× while the video PTS timeline is scaled — so after transport is touched the
+  video plays ~1.14× (audio is muted, so only the picture is affected). This is
+  pre-existing Phase-2 behavior, out of scope for Phase 4 ("mute reproduces
+  today bit-for-bit"), and does not occur on the default `"on"` path, whose
+  audio-anchored clock stays in the scaled domain.
+
 ## Video-scene border is always restored to black (`$00`), not a configured value
 
 The Phase 3 record-armed red border (`VideoScene._set_record_border`) always

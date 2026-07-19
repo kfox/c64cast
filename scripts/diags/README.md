@@ -49,6 +49,7 @@ These are **dev tools, not part of the shipped package** — they live under
 | [`tr_read_probe.py`](tr_read_probe.py) | TeensyROM+ ReadC64Mem (0x64FD) round-trip over `--tcp`/`--serial`: ROM read, RAM write/read compare, live `$028D` watch. No Cam Link needed. |
 | [`tr_dma_cycleclean.py`](tr_dma_cycleclean.py) | Confirm the TR+ WriteC64Mem DMA is cycle-clean: hammer `$4000` while a fragile IRQ-driven BASIC border-cycler runs; the border keeps sweeping (alive) iff the running program survived. |
 | [`tr_audio_sid_probe.py`](tr_audio_sid_probe.py) | Drive the TR backend's audio paths on HW + capture Cam Link audio (`volumedetect`): `--mode tone` (host-DMA NMI DAC) or `--mode sid` (run_sid_player). `--flash` adds a 1 Hz `$D020` A/V sync marker. Silences + resets on exit. |
+| [`midi_drive.py`](midi_drive.py) | Drive c64cast's `[midi_control]` surface from a **virtual MIDI port** (no physical controller): sends notes/CCs/PC/MMC-sysex from a script (`--script`), one-shot (`--send`), or interactively (`-i`). The reusable form of the `midi_smoke.py` throwaways used to HW-verify MidiScene + MIDI live-tune (transport / audio resync). Open the port before booting c64cast (point its `[midi_control].port` at it). |
 
 ## End-of-session rule
 
