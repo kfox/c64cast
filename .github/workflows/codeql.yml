@@ -1,0 +1,43 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan catches new CodeQL query-pack rules against unchanged code
+    # (push/PR only scans diffs' relevant paths). Off-peak, low-traffic slot.
+    - cron: "24 3 * * 1"
+
+permissions:
+  contents: read
+
+# Cancel a superseded run when new commits land on the same ref, matching ci.yml.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (python)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          languages: python
+          queries: security-extended
+
+      # Python is interpretation-only (no build step needed for CodeQL);
+      # the autobuild action is for compiled languages and would no-op here.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          category: "/language:python"
