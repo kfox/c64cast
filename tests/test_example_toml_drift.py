@@ -71,6 +71,10 @@ _COVERAGE_EXEMPT = {
     ("color", "hue_corrections"),
     ("dsp", "pre_emphasis"),
     ("audio", "dac_calibration_profile"),
+    # cc_map_is_default is a non-persisted internal tracking flag (compare=False,
+    # metadata.internal) — it's set from whether a cc_map key was authored, never
+    # written to TOML. See MidiControlCfg.
+    ("midi_control", "cc_map_is_default"),
 }
 
 

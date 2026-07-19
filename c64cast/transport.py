@@ -30,8 +30,10 @@ Phase 3 adds the record workflow + loop preset slots: a Record/Stop button
 pair driving the same ``_loop_a``/``_loop_b``/``_loop_state`` state machine
 ``transport_loop_toggle`` already used, a red border while a loop is armed,
 and Stop-held+pad / Record-held+pad chords (save / clear) into a per-video
-:class:`LoopPresetStore`. Phase 4 (real audio resync) and Phase 5
-(``--midi-setup`` learn wizard) are still to come. Kept import-light (stdlib
+:class:`LoopPresetStore`. Phase 5 adds :class:`ControllerProfileStore` — the
+``--midi-setup`` learn wizard's output, one JSON file per controller under
+:func:`paths.controllers_dir`, cloned from the same tolerant-load / atomic-write
+shape. Kept import-light (stdlib
 plus the leaf :mod:`c64cast.paths` module, which itself imports nothing from
 the package; ``Config``/``Playlist``/``Scene`` referenced under TYPE_CHECKING)
 so it can be pulled in from playlist.py (and now scenes.py) without a cycle.
@@ -503,3 +505,73 @@ class LoopPresetStore:
 def make_loop_preset_store(filepath: str) -> LoopPresetStore:
     _, size = _video_identity(filepath)
     return LoopPresetStore(loop_preset_path(filepath), video_ref=filepath, size=size)
+
+
+def slugify_port(port_name: str) -> str:
+    """A filesystem-safe slug of a mido port name (the controller-profile
+    filename stem). Distinct from :func:`_slugify` (which is video-oriented:
+    it strips a file extension and special-cases URLs) — a port name is neither
+    a path nor a URL, so it just gets lower-cased alnum-run collapsing."""
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", port_name).strip("-").lower()
+    return slug[:60] or "controller"
+
+
+def controller_profile_path(port_name: str) -> Path:
+    return paths.controllers_dir() / f"{slugify_port(port_name)}.json"
+
+
+class ControllerProfileStore:
+    """Persists a learned MIDI controller profile (the ``--midi-setup`` output):
+    one JSON file per controller holding the full mido port name it was learned
+    from plus a list of cc_map-style mapping dicts. Cloned from
+    :class:`LoopPresetStore`'s tolerant-load / :func:`atomic_write_text` shape
+    (not shared — the id scheme + payload differ). The path is injectable so the
+    listener's profile resolver and the tests can point it at a tempdir.
+
+    Schema: ``{"schema": 1, "port": "<full mido port name>",
+    "mappings": [<cc_map dict>, ...]}``. A missing or corrupt file, or a
+    malformed ``mappings`` list, loads as an empty profile — a bad profile
+    can never crash a run, it just contributes no mappings."""
+
+    SCHEMA = 1
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def _load_raw(self) -> dict[str, Any]:
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def port(self) -> str:
+        """The full mido port name the profile was learned from (``""`` when the
+        file is missing/corrupt or omits it)."""
+        port = self._load_raw().get("port")
+        return port if isinstance(port, str) else ""
+
+    def mappings(self) -> list[dict[str, Any]]:
+        """The learned cc_map-style mappings (an empty list on any problem).
+        Only well-formed dict entries survive — the caller (``_parse_cc_map`` /
+        ``validate_midi_control_cfg``) still validates each entry's shape."""
+        raw = self._load_raw().get("mappings")
+        if not isinstance(raw, list):
+            return []
+        return [dict(m) for m in raw if isinstance(m, dict)]
+
+    def save(self, port: str, mappings: list[dict[str, Any]]) -> None:
+        payload = {"schema": self.SCHEMA, "port": port, "mappings": mappings}
+        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
+
+
+def make_controller_profile_store(port_name: str) -> ControllerProfileStore:
+    return ControllerProfileStore(controller_profile_path(port_name))

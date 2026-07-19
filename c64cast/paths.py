@@ -96,6 +96,12 @@ def loop_presets_dir() -> Path:
     return presets_dir() / "loops"
 
 
+def controllers_dir() -> Path:
+    """Directory holding MIDI controller profiles written by ``--midi-setup``
+    (``<data root>/controllers``; one ``<port-slug>.json`` per controller)."""
+    return data_root() / "controllers"
+
+
 def legacy_data_root() -> Path | None:
     """The old repo-checkout data anchor (the package's parent directory),
     but only when it actually looks like the source checkout (a
