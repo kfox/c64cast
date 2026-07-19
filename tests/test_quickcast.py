@@ -18,9 +18,25 @@ import types
 import unittest
 from unittest import mock
 
+from _fakes import MachineSettingsIsolation
+
 from c64cast import quickcast
 from c64cast.cli import _resolve_configs, build_parser
 from c64cast.config import resolve_file_spec
+
+# Quick playback inherits the machine-settings layer (quickcast.build_config);
+# isolate the module from any real ~/.config/c64cast/settings.toml so the
+# "keeps the built-in default when unset" tests are hermetic. Tests that set
+# their own $C64CAST_SETTINGS nest cleanly under this.
+_settings_isolation = MachineSettingsIsolation()
+
+
+def setUpModule() -> None:
+    _settings_isolation.start()
+
+
+def tearDownModule() -> None:
+    _settings_isolation.stop()
 
 
 def _parse(argv: list[str]):
@@ -219,6 +235,30 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(cfg.hardware.backend, "teensyrom")
         self.assertEqual(cfg.teensyrom.transport, "serial")
         self.assertEqual(cfg.teensyrom.serial_port, "/dev/cu.usbmodem9")
+
+    def test_machine_settings_inherited(self):
+        # Quick playback inherits the machine-settings connection + device when
+        # no -u/-d is given on the command line.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = os.path.join(tmp, "settings.toml")
+            with open(settings, "w") as f:
+                f.write('[ultimate64]\nurl = "http://machine.lan"\n[video]\ndevice = 5\n')
+            env = {k: v for k, v in os.environ.items() if k != "C64CAST_URL"}
+            env["C64CAST_SETTINGS"] = settings
+            with mock.patch.dict(os.environ, env, clear=True):
+                cfg = quickcast.build_config(_parse(["a.mp4"]))
+        self.assertEqual(cfg.ultimate64.url, "http://machine.lan")
+        self.assertEqual(cfg.video.device, 5)
+
+    def test_cli_url_wins_over_machine_settings(self):
+        # An explicit -u overrides the machine-settings connection.
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = os.path.join(tmp, "settings.toml")
+            with open(settings, "w") as f:
+                f.write('[ultimate64]\nurl = "http://machine.lan"\n')
+            with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": settings}):
+                cfg = quickcast.build_config(_parse(["-u", "u64://10.9.9.9", "a.mp4"]))
+        self.assertEqual(cfg.ultimate64.url, "http://10.9.9.9")
 
 
 class ResolveMediaUrlTest(unittest.TestCase):

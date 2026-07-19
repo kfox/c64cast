@@ -11,6 +11,7 @@ import os
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 from c64cast import config as cfgmod
 
@@ -226,6 +227,56 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
             _write(os.path.join(tmp, "only.toml"), only)
             with self.assertLogs("c64cast.config", level="INFO"):
                 result = cfgmod.load_master(master_path)
+        self.assertEqual(result.cfgs[0].interstitial.duration_s, 2.5)
+
+
+class EnsembleMachineSettingsTest(unittest.TestCase):
+    """Machine settings apply in ensemble mode with the precedence
+    machine < master < per-system (per the plan). $C64CAST_SETTINGS points at
+    a tmp file so the real ~/.config file is never read."""
+
+    def _run(self, *, settings: str, master: str, per_system: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = os.path.join(tmp, "settings.toml")
+            _write(settings_path, settings)
+            master_path = os.path.join(tmp, "master.toml")
+            _write(master_path, master)
+            _write(os.path.join(tmp, "only.toml"), per_system)
+            with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": settings_path}):
+                with self.assertLogs("c64cast.config", level="INFO"):
+                    return cfgmod.load_master(master_path)
+
+    _MASTER_ONLY = """
+        [ensemble]
+        systems = [ { name = "only", config = "only.toml" } ]
+    """
+
+    def test_machine_only_field_reaches_per_system(self):
+        # A field set only in machine settings, absent from master + per-system,
+        # survives onto the per-system Config.
+        result = self._run(
+            settings="[audio]\nsample_rate = 8000\n",
+            master=self._MASTER_ONLY,
+            per_system='[ultimate64]\nurl = "http://only.lan"\n',
+        )
+        self.assertEqual(result.cfgs[0].audio.sample_rate, 8000)
+
+    def test_master_overrides_machine(self):
+        # machine < master: the master TOML wins over a machine default.
+        result = self._run(
+            settings="[interstitial]\nduration_s = 3.0\n",
+            master=self._MASTER_ONLY + "\n[interstitial]\nduration_s = 11.0\n",
+            per_system='[ultimate64]\nurl = "http://only.lan"\n',
+        )
+        self.assertEqual(result.cfgs[0].interstitial.duration_s, 11.0)
+
+    def test_per_system_overrides_master_and_machine(self):
+        # per-system wins over both master and machine.
+        result = self._run(
+            settings="[interstitial]\nduration_s = 3.0\n",
+            master=self._MASTER_ONLY + "\n[interstitial]\nduration_s = 11.0\n",
+            per_system='[ultimate64]\nurl = "http://only.lan"\n[interstitial]\nduration_s = 2.5\n',
+        )
         self.assertEqual(result.cfgs[0].interstitial.duration_s, 2.5)
 
 

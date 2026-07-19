@@ -14,11 +14,26 @@ import tempfile
 import tomllib
 import unittest
 
+from _fakes import MachineSettingsIsolation
+
 from c64cast import config as cfgmod
 from c64cast import config_serialize as ser
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _EXAMPLES_DIR = os.path.join(_REPO, "config", "examples")
+
+# The round-trip contract load(dumps(cfg)) == cfg must hold independent of any
+# real machine-settings file on the dev's machine (config.load applies that
+# layer). Isolate it for the whole module.
+_settings_isolation = MachineSettingsIsolation()
+
+
+def setUpModule() -> None:
+    _settings_isolation.start()
+
+
+def tearDownModule() -> None:
+    _settings_isolation.stop()
 
 
 def _reload(cfg: cfgmod.Config, **kwargs: object) -> cfgmod.Config:

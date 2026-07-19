@@ -12,6 +12,7 @@ tests/test_midi_control.py instead.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -457,9 +458,11 @@ class LoopPresetKeyTests(unittest.TestCase):
 
     def test_make_loop_preset_store_uses_loop_preset_path(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch("c64cast.transport.LOOP_PRESETS_DIR", Path(tmp)):
+            with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
                 store = make_loop_preset_store("clip.mp4")
                 self.assertEqual(store.path, loop_preset_path("clip.mp4"))
+                # The store lands under the redirected data dir.
+                self.assertTrue(str(store.path).startswith(tmp))
 
 
 if __name__ == "__main__":

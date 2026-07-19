@@ -42,6 +42,7 @@ from .config import (
     VIDEO_EXTS,
     Config,
     SceneCfg,
+    apply_machine_settings,
 )
 
 log = logging.getLogger(__name__)
@@ -381,6 +382,11 @@ def build_config(args: argparse.Namespace) -> Config:
     the shared :mod:`c64cast.connect` decomposer — the same scheme-aware path
     the config-driven CLI uses — rather than being treated as a bare URL."""
     cfg = Config()
+    # Machine settings (connection, capture device, SID model, …) are the
+    # lowest layer, applied before the arg-driven field sets below — so quick
+    # playback inherits them, and an explicit -u/--url still wins (it's applied
+    # after). See config.apply_machine_settings.
+    apply_machine_settings(cfg)
     # Each argument plays once, in order — no videos, no loop (unless --loop).
     cfg.playlist.loop = bool(args.loop)
     cfg.playlist.interleave_videos = False

@@ -10,9 +10,9 @@ reconstruction. No real hardware (the capture path is not exercised here)."""
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from _fakes import FakeAPI
@@ -119,11 +119,13 @@ class ResolveKeyTest(unittest.TestCase):
 class PersistenceTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._orig = dc.CALIBRATION_DIR
-        dc.CALIBRATION_DIR = Path(self._tmp.name) / "dac"
+        # Redirect the whole data root at the env layer (paths.calibration_dir()
+        # is resolved from $C64CAST_DATA_DIR); no module global to patch.
+        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
+        self._env.start()
 
     def tearDown(self):
-        dc.CALIBRATION_DIR = self._orig
+        self._env.stop()
         self._tmp.cleanup()
 
     def test_save_load_default_entry_round_trip(self):
@@ -146,7 +148,7 @@ class PersistenceTest(unittest.TestCase):
 
     def test_load_corrupt_file_returns_none(self):
         cfg = _u64_cfg()
-        dc.CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
+        dc.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
         dc.calibration_path(cfg).write_text("{ not json")
         self.assertIsNone(dc.load_calibrated_table(cfg))
 
@@ -154,7 +156,7 @@ class PersistenceTest(unittest.TestCase):
         # Clean cutover: an old schema=1 single-sidtable file is never read
         # under the new (also-renamed) key scheme; guard the shape too.
         cfg = _u64_cfg()
-        dc.CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
+        dc.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
         dc.calibration_path(cfg).write_text(
             '{"schema": 1, "key": "u64-192.168.2.64", "sidtable": ' + str(list(range(256))) + "}"
         )
@@ -239,11 +241,11 @@ class IsolateSocketTest(unittest.TestCase):
 class ResolveCurveTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._orig = dc.CALIBRATION_DIR
-        dc.CALIBRATION_DIR = Path(self._tmp.name) / "dac"
+        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
+        self._env.start()
 
     def tearDown(self):
-        dc.CALIBRATION_DIR = self._orig
+        self._env.stop()
         self._tmp.cleanup()
 
     def test_auto_ultimate_no_cal_uses_baked_mahoney(self):

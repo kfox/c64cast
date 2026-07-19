@@ -13,9 +13,46 @@ write_memory_file call as (addr_upper, bytes). Read injection: set
 
 from __future__ import annotations
 
+import os
+import tempfile
 import time
+from unittest import mock
 
 from c64cast.backend import HardwareProfile
+
+
+class MachineSettingsIsolation:
+    """Point ``$C64CAST_SETTINGS`` at a guaranteed-missing path for the
+    lifetime of a test module, so tests that assert config **defaults** /
+    the ``load(dumps(cfg)) == cfg`` round-trip are hermetic against a real
+    ``~/.config/c64cast/settings.toml`` on the developer's machine (the
+    machine-settings layer is applied inside ``config.load``). Use from a
+    module's ``setUpModule``/``tearDownModule``:
+
+        _iso = MachineSettingsIsolation()
+        def setUpModule():
+            _iso.start()
+        def tearDownModule():
+            _iso.stop()
+    """
+
+    def __init__(self) -> None:
+        self._tmp: tempfile.TemporaryDirectory[str] | None = None
+        self._patch: object | None = None
+
+    def start(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        missing = os.path.join(self._tmp.name, "no-such-settings.toml")
+        self._patch = mock.patch.dict(os.environ, {"C64CAST_SETTINGS": missing})
+        self._patch.start()  # type: ignore[attr-defined]
+
+    def stop(self) -> None:
+        if self._patch is not None:
+            self._patch.stop()  # type: ignore[attr-defined]
+            self._patch = None
+        if self._tmp is not None:
+            self._tmp.cleanup()
+            self._tmp = None
 
 
 class FakeSocketDMA:

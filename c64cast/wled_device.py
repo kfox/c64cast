@@ -74,6 +74,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from . import paths
 from .modes import PALETTE_MODES
 from .playlist import Playlist
 from .transport import atomic_write_text
@@ -628,9 +629,10 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
     mode.set_palette_mode(api, "percell", force_palette=True)
 
 
-# Where WLED presets are persisted — one JSON file per device name. Repo-root
-# anchored like calibration/, gitignored (only presets/README.md is tracked).
-PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets"
+# Where WLED presets are persisted — one JSON file per device name, under
+# `paths.presets_dir()` (<data root>/presets), resolved at use time so it works
+# from a repo checkout, a pip install, or a PyPI wheel (and honors
+# $C64CAST_DATA_DIR). Gitignored at the legacy repo location.
 
 # WLED preset ids are 1..250; id 0 is the reserved empty slot and is never stored.
 _PRESET_ID_MIN = 1
@@ -740,7 +742,7 @@ class WledBridge:
         self._started = time.monotonic()
         # Persisted WLED presets (one file per device name) + the currently
         # active preset id (state.ps; -1 = none / a manual change since recall).
-        self._presets = PresetStore(PRESETS_DIR / f"wled-{_sanitize_name(name)}.json")
+        self._presets = PresetStore(paths.presets_dir() / f"wled-{_sanitize_name(name)}.json")
         self._active_preset = -1
         # Per-segment echo state, one dict per system (indexed like _systems).
         self._seg_echo: list[dict[str, Any]] = [

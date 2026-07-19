@@ -105,6 +105,8 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out: list[Diagnostic] = []
 
     out.extend(_probe_environment())
+    out.extend(_probe_machine_settings())
+    out.extend(_probe_data_dirs())
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve_cfg(loaded))
@@ -225,6 +227,80 @@ def _probe_uv_lock() -> list[Diagnostic]:
             hint="Run `uv lock`, then `make sync` (uv sync --all-extras).",
         )
     ]
+
+
+def _probe_machine_settings() -> list[Diagnostic]:
+    """Report the machine-settings file (:func:`paths.settings_path`): absent,
+    present + which sections it sets, a parse failure, or a rejected
+    ``[scenes]``/``[ensemble]`` section. Offline — part of the ENVIRONMENT
+    section's one-stop "where everything lives" answer."""
+    import tomllib
+
+    from . import paths
+
+    path = paths.settings_path()
+    if not path.is_file():
+        return [Diagnostic("ok", "environment", "machine settings", f"none ({path})")]
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return [
+            Diagnostic(
+                "error",
+                "environment",
+                "machine settings",
+                f"could not parse {path}: {e}",
+                hint="Fix the TOML syntax, or move the file aside.",
+            )
+        ]
+    banned = [s for s in ("scenes", "ensemble") if s in data]
+    sections = sorted(s for s in data if s not in ("scenes", "ensemble"))
+    detail = ", ".join(sections) if sections else "no recognized sections"
+    out = [Diagnostic("ok", "environment", "machine settings", f"{path} — {detail}")]
+    for b in banned:
+        out.append(
+            Diagnostic(
+                "warn",
+                "environment",
+                "machine settings",
+                f"[{b}] in {path} is ignored — machine settings hold "
+                "cross-run defaults, not playlists",
+            )
+        )
+    return out
+
+
+def _probe_data_dirs() -> list[Diagnostic]:
+    """Report the resolved data root (:func:`paths.data_root`) and, when
+    running from a source checkout, warn about calibration/preset files still
+    sitting at the legacy repo location with the exact ``mv`` to migrate them.
+    There is no implicit migration — the move is always the user's call."""
+    from . import paths
+
+    root = paths.data_root()
+    out = [Diagnostic("ok", "environment", "data dir", str(root))]
+
+    legacy = paths.legacy_data_root()
+    if legacy is None:
+        return out  # installed package — no repo checkout to migrate from
+    for sub in ("calibration", "presets"):
+        legacy_sub = legacy / sub
+        canonical_sub = root / sub
+        if not legacy_sub.is_dir() or not any(legacy_sub.rglob("*.json")):
+            continue
+        if canonical_sub.exists():
+            continue  # already migrated, or the data dir already points here
+        out.append(
+            Diagnostic(
+                "warn",
+                "environment",
+                f"legacy {sub}",
+                f"data files at the old repo location {legacy_sub} — not yet migrated",
+                hint=f"mkdir -p {root} && mv {legacy_sub} {root}/",
+            )
+        )
+    return out
 
 
 def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:

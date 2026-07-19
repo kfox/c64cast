@@ -32,8 +32,9 @@ pair driving the same ``_loop_a``/``_loop_b``/``_loop_state`` state machine
 and Stop-held+pad / Record-held+pad chords (save / clear) into a per-video
 :class:`LoopPresetStore`. Phase 4 (real audio resync) and Phase 5
 (``--midi-setup`` learn wizard) are still to come. Kept import-light (stdlib
-only; ``Config``/``Playlist``/``Scene`` referenced under TYPE_CHECKING) so it
-can be pulled in from playlist.py (and now scenes.py) without a cycle.
+plus the leaf :mod:`c64cast.paths` module, which itself imports nothing from
+the package; ``Config``/``Playlist``/``Scene`` referenced under TYPE_CHECKING)
+so it can be pulled in from playlist.py (and now scenes.py) without a cycle.
 """
 
 from __future__ import annotations
@@ -50,6 +51,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from . import paths
 
 if TYPE_CHECKING:
     from .config import Config
@@ -394,16 +397,14 @@ class TransportSession:
 
 # ---- Loop preset store (Phase 3) -------------------------------------------
 #
-# One JSON file per video under presets/loops/ (gitignored — presets/* is
-# already ignored wholesale except presets/README.md, and an ignored
-# directory's contents are ignored too, so no .gitignore change is needed).
+# One JSON file per video under `paths.loop_presets_dir()`
+# (<data root>/presets/loops), resolved at use time so it works from a repo
+# checkout, a pip install, or a PyPI wheel (and honors $C64CAST_DATA_DIR).
 # Keyed by a path-move-tolerant identity: local files hash on basename+size
 # (survives a move, not a content edit — the same tradeoff
 # wled_device.PresetStore already accepts for its own presets); URL-backed
 # scenes hash on the URL itself. Slots are pad numbers (small positive ints);
 # b=None means "loop to end of file".
-
-LOOP_PRESETS_DIR = Path(__file__).resolve().parent.parent / "presets" / "loops"
 
 
 def _video_identity(filepath: str) -> tuple[str, int | None]:
@@ -429,7 +430,7 @@ def _slugify(filepath: str) -> str:
 
 
 def loop_preset_path(filepath: str) -> Path:
-    return LOOP_PRESETS_DIR / f"{_slugify(filepath)}.{loop_preset_key(filepath)}.json"
+    return paths.loop_presets_dir() / f"{_slugify(filepath)}.{loop_preset_key(filepath)}.json"
 
 
 class LoopPresetStore:

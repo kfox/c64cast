@@ -1049,17 +1049,20 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._orig_dir = dac_calibration.CALIBRATION_DIR
-        dac_calibration.CALIBRATION_DIR = Path(self._tmp.name) / "dac"
+        # Redirect the data root at the env layer; calibration files resolve
+        # under paths.calibration_dir() (= $C64CAST_DATA_DIR/calibration/dac).
+        self._env = mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
+        self._env.start()
 
     def tearDown(self):
-        dac_calibration.CALIBRATION_DIR = self._orig_dir
+        self._env.stop()
         self._tmp.cleanup()
 
     def _write_calibration(self, filename: str, backend: str = "ultimate") -> None:
-        dac_calibration.CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
+        cal_dir = dac_calibration.paths.calibration_dir()
+        cal_dir.mkdir(parents=True, exist_ok=True)
         _write(
-            str(dac_calibration.CALIBRATION_DIR / filename),
+            str(cal_dir / filename),
             f"""
             {{"schema": 2, "backend": "{backend}", "sids": {{"default": {{"sidtable": {[0] * 256}}}}}}}
             """,
@@ -1194,6 +1197,100 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
         self.assertEqual(diags[0].level, "error")
         self.assertIsNotNone(diags[0].hint)
         self.assertIn("--calibrate-dac", diags[0].hint or "")
+
+
+class MachineSettingsProbeTest(unittest.TestCase):
+    """_probe_machine_settings — the ENVIRONMENT-section report on the
+    machine-settings file (absent / present+sections / parse error / rejected
+    sections). $C64CAST_SETTINGS points at a tmp path so the real file is never
+    read."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._path = os.path.join(self._tmp.name, "settings.toml")
+
+    def _probe(self):
+        with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": self._path}):
+            return doctor._probe_machine_settings()
+
+    def _write(self, content: str) -> None:
+        with open(self._path, "w") as f:
+            f.write(content)
+
+    def test_absent_is_ok(self):
+        diags = self._probe()
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("none", diags[0].message)
+
+    def test_present_reports_sections(self):
+        self._write('[ultimate64]\nurl = "http://m.lan"\n[video]\ndevice = 1\n')
+        diags = self._probe()
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("ultimate64", diags[0].message)
+        self.assertIn("video", diags[0].message)
+
+    def test_parse_error_is_error(self):
+        self._write("[ultimate64]\nurl = \n")
+        diags = self._probe()
+        self.assertTrue(any(d.level == "error" for d in diags))
+
+    def test_rejected_section_warns(self):
+        self._write('[ultimate64]\nurl = "http://m.lan"\n[[scenes]]\ntype = "blank"\n')
+        diags = self._probe()
+        self.assertTrue(any(d.level == "warn" and "scenes" in d.message for d in diags))
+
+
+class DataDirsProbeTest(unittest.TestCase):
+    """_probe_data_dirs — reports the resolved data root and warns (with the
+    exact mv) about calibration/preset files left at the legacy repo
+    location."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_reports_data_root(self):
+        data = os.path.join(self._tmp.name, "data")
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            # No legacy checkout in play (patch it to None) so only the data-dir
+            # line is asserted here.
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
+                diags = doctor._probe_data_dirs()
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn(data, diags[0].message)
+
+    def test_legacy_files_warn_with_mv(self):
+        legacy = os.path.join(self._tmp.name, "repo")
+        data = os.path.join(self._tmp.name, "data")
+        cal = os.path.join(legacy, "calibration", "dac")
+        os.makedirs(cal)
+        with open(os.path.join(cal, "unit.json"), "w") as f:
+            f.write("{}")
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+                diags = doctor._probe_data_dirs()
+        warns = [d for d in diags if d.level == "warn"]
+        self.assertEqual(len(warns), 1)
+        self.assertIn("calibration", warns[0].subject)
+        self.assertIsNotNone(warns[0].hint)
+        self.assertIn("mv", warns[0].hint or "")
+
+    def test_no_warn_when_canonical_already_present(self):
+        legacy = os.path.join(self._tmp.name, "repo")
+        data = os.path.join(self._tmp.name, "data")
+        # Files at both legacy AND canonical → already migrated, no warning.
+        for base in (legacy, data):
+            cal = os.path.join(base, "calibration", "dac")
+            os.makedirs(cal)
+            with open(os.path.join(cal, "unit.json"), "w") as f:
+                f.write("{}")
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+                diags = doctor._probe_data_dirs()
+        self.assertEqual([d for d in diags if d.level == "warn"], [])
 
 
 if __name__ == "__main__":

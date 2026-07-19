@@ -278,6 +278,14 @@ def build_parser() -> argparse.ArgumentParser:
         "'wizard' extra). Optional PATH sets the output "
         "file (default ./c64cast.toml)",
     )
+    intro.add_argument(
+        "--save-settings",
+        action="store_true",
+        help="Persist this invocation's machine-relevant flags (-u/--url, "
+        "-d/--device, --sid-model, --system) into the machine-settings file "
+        "($C64CAST_SETTINGS, else ~/.config/c64cast/settings.toml), then exit. "
+        "Merges with any existing file; secrets are never written.",
+    )
 
     debug = p.add_argument_group("debug")
     debug.add_argument(
@@ -1185,6 +1193,76 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     return None
 
 
+def _connection_is_builtin_default(cfg: cfgmod.Config) -> bool:
+    """True when `cfg`'s connection fields still match a fresh dataclass Config
+    — i.e. neither a CLI target nor machine settings supplied one. Lets the
+    quick-playback "no target" warning fire only for the genuine built-in
+    default and stay quiet when machine settings provided the connection."""
+    d = cfgmod.Config()
+    return (
+        cfg.hardware.backend == d.hardware.backend
+        and cfg.ultimate64.url == d.ultimate64.url
+        and cfg.teensyrom.transport == d.teensyrom.transport
+        and cfg.teensyrom.serial_port == d.teensyrom.serial_port
+        and cfg.teensyrom.host == d.teensyrom.host
+    )
+
+
+def run_save_settings(args: argparse.Namespace) -> int:
+    """Persist this invocation's machine-relevant flags into the machine-
+    settings file, then exit.
+
+    Savable whitelist (v1): the ``-u/--url`` connection target (decomposed via
+    :func:`connect.parse_connection_uri` exactly as the run path does),
+    ``-d/--device`` → ``[video].device``, ``--sid-model`` →
+    ``[ultimate64].sid_model``, ``--system`` → ``[ultimate64].system``.
+    ``$C64CAST_URL`` deliberately does NOT auto-save (explicit flags only).
+
+    Merges onto the existing file (start from a machine-overlaid Config, apply
+    this invocation's flags on top), writes it sparsely (only non-default
+    fields) and atomically, prints the path + contents, and returns 0. If
+    nothing savable was provided, prints what's savable and returns 2. The DMA
+    password can never be written (``config_serialize`` suppresses it)."""
+    from . import config_serialize, paths, transport
+    from .connect import apply_to_config, parse_connection_uri
+
+    provided = (
+        args.url is not None
+        or args.device is not None
+        or args.sid_model is not None
+        or args.system is not None
+    )
+    if not provided:
+        log.error(
+            "--save-settings: nothing to save. Provide at least one of: "
+            "-u/--url (connection), -d/--device, --sid-model, --system. "
+            "Other fields: hand-edit %s (annotated TOML).",
+            paths.settings_path(),
+        )
+        return 2
+
+    # Start from the existing file's values so a save merges rather than
+    # replaces (defaults → existing machine settings → this invocation).
+    cfg = cfgmod.Config()
+    cfgmod.apply_machine_settings(cfg)
+
+    if args.url is not None:
+        apply_to_config(cfg, parse_connection_uri(args.url))
+    if args.device is not None:
+        cfg.video.device = args.device
+    if args.sid_model is not None:
+        cfg.ultimate64.sid_model = args.sid_model
+    if args.system is not None:
+        cfg.ultimate64.system = args.system
+
+    text = config_serialize.dumps(cfg, minimal=True, schema_path=None)
+    dest = paths.settings_path()
+    transport.atomic_write_text(dest, text)
+    print(f"Saved machine settings → {dest}\n")
+    print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
 def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[cfgmod.Config]]:
     """Produce the per-system configs to run, from one of two front doors:
 
@@ -1318,6 +1396,13 @@ def main(argv=None) -> int:
     if intro_rc is not None:
         return intro_rc
 
+    # --save-settings is a config-free command like the introspection ones:
+    # it persists this invocation's machine-relevant flags and exits, never
+    # touching hardware or loading a playlist.
+    if args.save_settings:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_save_settings(args)
+
     try:
         loaded, cfgs = _resolve_configs(args)
     except cfgmod.ConfigError as e:
@@ -1336,16 +1421,24 @@ def main(argv=None) -> int:
     # overridden).
     configure_logging(cfgs[0].debug.verbose, cfgs[0].debug.log_file)
 
-    # Quick-playback feedback: warn when pointing at the built-in default
-    # (no target given), and log where + which backend we resolved.
+    # Quick-playback feedback: warn only when we're really on the built-in
+    # default (no -u/env AND machine settings didn't supply a connection);
+    # otherwise note the connection came from machine settings. Then log which
+    # backend we resolved.
     if args.inputs:
         if not (args.url or os.environ.get("C64CAST_URL")):
-            log.warning(
-                "no connection target given (-u/--url or C64CAST_URL) — using "
-                "the built-in default %s. Point at your hardware with e.g. "
-                "-u u64://192.168.2.64 or -u tr://.",
-                cfgs[0].ultimate64.url,
-            )
+            if _connection_is_builtin_default(cfgs[0]):
+                log.warning(
+                    "no connection target given (-u/--url or C64CAST_URL) — using "
+                    "the built-in default %s. Point at your hardware with e.g. "
+                    "-u u64://192.168.2.64 or -u tr://.",
+                    cfgs[0].ultimate64.url,
+                )
+            else:
+                log.info(
+                    "no -u/--url given — using the connection from machine settings (%s backend)",
+                    cfgs[0].hardware.backend,
+                )
         log.info(
             "cast: %d scene(s) on the %s backend",
             len(cfgs[0].scenes),
