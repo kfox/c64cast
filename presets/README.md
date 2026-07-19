@@ -1,8 +1,23 @@
-# presets/
+# presets/ — legacy location
+
+> **This is the *old* location.** As of the machine-settings / canonical-data-dir
+> change, presets live under the **user data directory**, not the repo checkout:
+>
+> ```
+> ~/.local/share/c64cast/presets/                 # Linux / macOS (XDG)
+> %LOCALAPPDATA%\c64cast\presets\                  # Windows
+> ```
+>
+> Override the whole data root with **`$C64CAST_DATA_DIR`**. `c64cast --doctor`
+> prints the resolved location and, if it finds old files here, the exact `mv`
+> to migrate them. The paths are resolved by
+> [`c64cast/paths.py`](../c64cast/paths.py) (`presets_dir()` /
+> `loop_presets_dir()`), so they work from a repo checkout, a `pip install`, or
+> a PyPI wheel.
 
 Two unrelated kinds of captured, taste/machine-specific data live under this
-directory — both gitignored (only this README is tracked), like
-`calibration/` and `assets/`.
+directory — both gitignored at this legacy location (only this README is
+tracked), so an old file left here can never become committable.
 
 ## WLED presets
 

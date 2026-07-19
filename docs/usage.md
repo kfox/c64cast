@@ -100,6 +100,7 @@ overrides; everything has a sensible config-file equivalent.
 |---------------------|---------------------------------------|-------------------------------------------------------------|
 | `--config PATH`     | n/a                                   | Use a specific TOML file. Else `./c64cast.toml`, else defaults. |
 | `introspection`     | `--init [PATH]`                       | Interactively build a config (needs the `wizard` extra). Writes `./c64cast.toml` or `PATH`. See "Creating a config". |
+| `introspection`     | `--save-settings`                     | Persist this run's `-u`/`-d`/`--sid-model`/`-s` into the machine-settings file and exit. See "Where settings and data live". |
 | `connection`        | `-u TARGET`, `--system NTSC\|PAL`     | `-u` selects the backend **and** endpoint via a scheme (see below). `$C64CAST_URL` is the env fallback. |
 | `video input`       | `-d N`                                | Webcam index.                                               |
 | `audio`             | `--audio` / `--no-audio`, `-D N`,     | Audio is **on by default**; `--no-audio` mutes.             |
@@ -108,9 +109,10 @@ overrides; everything has a sensible config-file equivalent.
 | `debug`             | `-v`, `-vv`, `--heartbeat S`,         | `-v` info, `-vv` debug, `--skip-probe` skips the U64 reachability check. |
 |                     | `--skip-probe`, `--list-devices`      | `--list-devices` enumerates audio + video devices and exits. |
 
-**CLI vs config precedence:** built-in defaults < TOML config < CLI
-flags. Every overridable CLI option has `default=None` so the merge can
-tell "user passed the default" from "user didn't pass it."
+**CLI vs config precedence:** built-in defaults < machine settings
+(`~/.config/c64cast/settings.toml`, see "Where settings and data live") < TOML
+config < CLI flags. Every overridable CLI option has `default=None` so the
+merge can tell "user passed the default" from "user didn't pass it."
 
 ## Connecting to hardware (`-u` target)
 
@@ -172,6 +174,43 @@ Audio is **on by default** — pass `--no-audio` to mute. Flags:
 `-t/--duration S` (for scenes that honor it — waveform/slideshow), `--loop`,
 `--skip-probe`, `-v`/`-vv`. Audio-only files (mp3/wav over a test pattern) are
 recognized but not yet supported.
+
+## Where settings and data live
+
+c64cast keeps two kinds of machine-local state outside any config file:
+
+- **Machine settings** — `~/.config/c64cast/settings.toml`
+  (`$XDG_CONFIG_HOME`-aware; `%APPDATA%\c64cast\settings.toml` on Windows;
+  `$C64CAST_SETTINGS` overrides the whole path). A per-machine overlay of
+  *defaults* applied to **every** run — including quick playback above — so you
+  don't retype `-u`/`-d` each time. It holds any non-playlist config section
+  (connection, `[video].device`, `[ultimate64].sid_model`, …) but **not**
+  `[[scenes]]`/`[ensemble]`. Precedence: defaults → **machine settings** →
+  config file → CLI flags. Save the machine-relevant flags of an invocation with
+  **`--save-settings`** (merges with the existing file, writes it, prints it, exits):
+
+  ```bash
+  # Remember this box + capture device as the machine default:
+  c64cast -u u64://192.168.2.64 -d "Cam Link" --save-settings
+
+  # Now quick playback needs no -u/-d:
+  c64cast clip.mp4 tune.sid
+  ```
+
+  Savable via the flag: `-u/--url`, `-d/--device`, `--sid-model`, `-s/--system`.
+  Anything else: hand-edit the annotated file. The U64 DMA password is never
+  written to it (keep using `$C64CAST_DMA_PASSWORD` or a non-committed config).
+
+- **Persisted data** — `~/.local/share/c64cast/` (`$XDG_DATA_HOME`-aware;
+  `%LOCALAPPDATA%\c64cast\` on Windows; `$C64CAST_DATA_DIR` overrides). Holds DAC
+  calibration tables (`calibration/dac/`) and WLED + loop presets (`presets/`).
+  A dev who wants everything in the repo checkout can `export
+  C64CAST_DATA_DIR="$PWD"` (e.g. in `.envrc`).
+
+`c64cast --doctor` prints both resolved locations in its ENVIRONMENT section
+(the one-stop "where does everything live"), and — if you're running from a
+source checkout with old calibration/preset files still at the legacy repo
+`calibration/`/`presets/` dirs — the exact `mv` command to migrate them.
 
 ## Creating a config
 

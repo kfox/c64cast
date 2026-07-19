@@ -97,6 +97,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
+from . import paths
 from .asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -113,6 +114,7 @@ from .asid_sidmap import (
 )
 from .dac_curves import resolve_dac_curve
 from .sid_hw_config import detect_sockets, restore_sid_config, snapshot_sid_config
+from .transport import atomic_write_text
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
     from .backend import C64Backend
@@ -122,11 +124,12 @@ log = logging.getLogger(__name__)
 
 # --- persistence ------------------------------------------------------------
 
-# Calibration tables live at the repo root (anchored to the package, not the
-# cwd, so cron/ssh/one-liner runs find them). The directory is gitignored: a
-# calibration is machine-specific captured data, not source. See calibration/
-# README.md and .gitignore.
-CALIBRATION_DIR: Path = Path(__file__).resolve().parent.parent / "calibration" / "dac"
+# Calibration tables live under the canonical user data dir
+# (`paths.calibration_dir()` = <data root>/calibration/dac), resolved at use
+# time so the location works from a repo checkout, a pip install, or a PyPI
+# wheel — and so `$C64CAST_DATA_DIR` (and tests) can redirect it. A calibration
+# is machine-specific captured data, not source; the dir is gitignored at the
+# legacy repo location. See paths.py + calibration/README.md.
 
 _SCHEMA_VERSION = 2
 
@@ -181,7 +184,7 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
 
 
 def calibration_path(cfg: Config, be: C64Backend | None = None) -> Path:
-    return CALIBRATION_DIR / f"{resolve_calibration_key(cfg, be)}.json"
+    return paths.calibration_dir() / f"{resolve_calibration_key(cfg, be)}.json"
 
 
 def offline_key_is_authoritative(cfg: Config) -> bool:
@@ -205,9 +208,10 @@ def list_calibration_files(backend: str | None = None) -> list[Path]:
     (at save time) as belonging to the given ``[hardware].backend``. Used by
     offline diagnostics to note "a calibration exists somewhere, but this
     pass can't confirm it's the one that applies" without needing hardware."""
-    if not CALIBRATION_DIR.is_dir():
+    cal_dir = paths.calibration_dir()
+    if not cal_dir.is_dir():
         return []
-    files = sorted(CALIBRATION_DIR.glob("*.json"))
+    files = sorted(cal_dir.glob("*.json"))
     if backend is None:
         return files
     out = []
@@ -305,8 +309,7 @@ def save_calibration(
     device_info: dict[str, str],
 ) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system."""
-    CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
-    path = CALIBRATION_DIR / f"{key}.json"
+    path = paths.calibration_dir() / f"{key}.json"
     doc = {
         "schema": _SCHEMA_VERSION,
         "key": key,
@@ -322,7 +325,7 @@ def save_calibration(
             for name, r in entries.items()
         },
     }
-    path.write_text(json.dumps(doc, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(doc, indent=2) + "\n")
     return path
 
 

@@ -24,6 +24,7 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
+from . import paths
 from .c64 import nmi_rate_safety
 from .dac_curves import DAC_CURVE_CHOICES
 from .dither import DITHER_METHODS
@@ -2184,6 +2185,115 @@ def resolved_force_palette(color: ColorCfg) -> tuple[int, list[int] | None]:
     return int(fp), None
 
 
+# Scalar config sections whose TOML section name equals the Config attribute
+# name. Applied uniformly by _apply_toml_sections. [color] is handled out of
+# band (it carries the hue_corrections list-of-tables); [[scenes]]/[ensemble]
+# never go through here (playlists/ensemble metadata are load-/master-specific).
+_TOML_SCALAR_SECTIONS: tuple[str, ...] = (
+    "hardware",
+    "teensyrom",
+    "ultimate64",
+    "video",
+    "audio",
+    "vision",
+    "interstitial",
+    "playlist",
+    "debug",
+    "preview",
+    "recording",
+    "dsp",
+    "control",
+    "midi_control",
+    "menu",
+    "wled",
+)
+
+
+def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> None:
+    """Apply the scalar + [color] sections of a parsed TOML dict onto `cfg`
+    in place.
+
+    Shared by :func:`load` (a project / per-system file) and
+    :func:`apply_machine_settings` (the machine-settings file) so both go
+    through identical unknown-key difflib warnings, the tri-state / device
+    validations, and the [color]/hue_corrections special case. Deliberately
+    does NOT handle [[scenes]] or [ensemble] — those are load- / master-
+    specific. `source` names the origin for the debug log only (the unknown-key
+    warnings already carry the section name)."""
+    log.debug("applying config sections from %s", source)
+    for name in _TOML_SCALAR_SECTIONS:
+        if name in data:
+            _apply_section(getattr(cfg, name), data[name], name)
+
+    _validate_use_reu_staged(cfg.video)
+    _validate_double_buffer(cfg.video)
+    _validate_video_device(cfg.video)
+
+    # [color] is handled separately from the scalar section loop because it
+    # carries a list-of-tables field (hue_corrections) that must be pulled out
+    # before _apply_section, same as [[scenes.overlays]] in load().
+    if "color" in data:
+        raw_color = dict(data["color"])
+        raw_hc = raw_color.pop("hue_corrections", [])
+        _apply_section(cfg.color, raw_color, "color")
+        for hc in raw_hc:
+            if not isinstance(hc, dict):
+                raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
+            cfg.color.hue_corrections.append(dict(hc))
+        _validate_force_palette(cfg.color)
+
+
+def load_machine_settings() -> dict[str, Any]:
+    """Parse the machine-settings TOML at :func:`paths.settings_path` into a
+    raw dict (the machine layer that applies to *every* run type — see
+    :func:`apply_machine_settings`).
+
+    A missing file returns ``{}`` (machine settings are optional). A parse or
+    permission error raises :class:`ConfigError` naming the path. ``[[scenes]]``
+    and ``[ensemble]`` are rejected with a warning and dropped: machine settings
+    hold cross-run defaults (connection, capture device, SID model, …), not
+    playlists or ensemble topology."""
+    path = paths.settings_path()
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except PermissionError as e:
+        raise ConfigError(f"Could not read machine settings {path}: {e}") from e
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(_format_toml_error(str(path), e)) from e
+
+    for banned in ("scenes", "ensemble"):
+        if banned in data:
+            log.warning(
+                "machine settings %s: [%s] ignored — machine settings hold "
+                "cross-run defaults (connection, device, …), not playlists",
+                path,
+                banned,
+            )
+            data.pop(banned, None)
+    return data
+
+
+def apply_machine_settings(cfg: Config) -> Config:
+    """Overlay the machine-settings file onto `cfg` in place (defaults →
+    machine settings), returning it.
+
+    This is the lowest layer above the dataclass defaults; everything that
+    applies afterward still wins (project / per-system TOML, the master
+    cascade, CLI flags, the ``C64CAST_DMA_PASSWORD`` env var). When a file was
+    actually loaded, one INFO line logs its path + a rough field count so the
+    origin of a surprising default is discoverable."""
+    data = load_machine_settings()
+    if not data:
+        return cfg
+    _apply_toml_sections(cfg, data, source="machine settings")
+    n_fields = sum(len(v) for v in data.values() if isinstance(v, dict))
+    log.info("machine settings: %s (%d fields)", paths.settings_path(), n_fields)
+    return cfg
+
+
 def load(path: str | None) -> Config:
     """Load a Config from a TOML file path, or from the default search path
     if `path` is None, or return defaults if neither exists.
@@ -2192,9 +2302,14 @@ def load(path: str | None) -> Config:
       - None  → look for ./c64cast.toml; missing is fine.
       - str   → load that file; missing raises ConfigError.
 
+    The machine-settings layer (:func:`apply_machine_settings`) is applied
+    first — before the file's own sections — so the file (and later CLI/env)
+    override it.
+
     Parse failures (TOML syntax errors, missing file when path is given)
     raise `ConfigError` with a message formatted for end-user display."""
     cfg = Config()
+    apply_machine_settings(cfg)
     if path is None:
         if not os.path.exists(DEFAULT_CONFIG_PATH):
             return cfg
@@ -2213,43 +2328,7 @@ def load(path: str | None) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(_format_toml_error(path, e)) from e
 
-    for section, dc in (
-        ("hardware", cfg.hardware),
-        ("teensyrom", cfg.teensyrom),
-        ("ultimate64", cfg.ultimate64),
-        ("video", cfg.video),
-        ("audio", cfg.audio),
-        ("vision", cfg.vision),
-        ("interstitial", cfg.interstitial),
-        ("playlist", cfg.playlist),
-        ("debug", cfg.debug),
-        ("preview", cfg.preview),
-        ("recording", cfg.recording),
-        ("dsp", cfg.dsp),
-        ("control", cfg.control),
-        ("midi_control", cfg.midi_control),
-        ("menu", cfg.menu),
-        ("wled", cfg.wled),
-    ):
-        if section in data:
-            _apply_section(dc, data[section], section)
-
-    _validate_use_reu_staged(cfg.video)
-    _validate_double_buffer(cfg.video)
-    _validate_video_device(cfg.video)
-
-    # [color] is handled separately from the scalar section loop because it
-    # carries a list-of-tables field (hue_corrections) that must be pulled out
-    # before _apply_section, same as [[scenes.overlays]] below.
-    if "color" in data:
-        raw_color = dict(data["color"])
-        raw_hc = raw_color.pop("hue_corrections", [])
-        _apply_section(cfg.color, raw_color, "color")
-        for hc in raw_hc:
-            if not isinstance(hc, dict):
-                raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
-            cfg.color.hue_corrections.append(dict(hc))
-        _validate_force_palette(cfg.color)
+    _apply_toml_sections(cfg, data, source=path)
 
     for raw in data.get("scenes", []):
         sc = SceneCfg()
@@ -2349,16 +2428,25 @@ _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
 )
 
 
-def apply_master_defaults(defaults: Config, sys_cfg: Config) -> Config:
+def apply_master_defaults(
+    defaults: Config, sys_cfg: Config, baseline: Config | None = None
+) -> Config:
     """Cascade master-TOML defaults into a per-system Config.
 
     For each cascaded section, fields that the per-system file left at the
-    dataclass default inherit the master's value (when the master itself
-    set something other than the dataclass default). Fields the per-system
-    file explicitly set keep their values.
+    `baseline` value inherit the master's value (when the master itself
+    set something other than the baseline). Fields the per-system file
+    explicitly set keep their values.
+
+    `baseline` is the "unset" reference the comparison is measured against.
+    It defaults to a fresh blank Config (dataclass defaults), but the ensemble
+    loader passes a **machine-settings-overlaid** Config so that a value coming
+    only from the machine layer counts as "not set by this system" and can
+    still be overridden by the master TOML — keeping the precedence
+    machine < master < per-system intact.
 
     Approximation worth knowing about: "the user explicitly set this field"
-    is detected as "the field value differs from a fresh blank instance".
+    is detected as "the field value differs from the `baseline` instance".
     A user who explicitly sets `verbose = 0` in their per-system TOML looks
     identical to "didn't set it" — if the master sets `verbose = 2`, the
     per-system 0 gets overwritten. This is the price of TOML not telling
@@ -2370,7 +2458,7 @@ def apply_master_defaults(defaults: Config, sys_cfg: Config) -> Config:
     for section_name, skip_fields in _CASCADE_SECTIONS:
         master_section = getattr(defaults, section_name)
         sys_section = getattr(sys_cfg, section_name)
-        blank = type(sys_section)()
+        blank = getattr(baseline, section_name) if baseline is not None else type(sys_section)()
         for f in fields(sys_section):
             if f.name in skip_fields:
                 continue
@@ -2420,7 +2508,11 @@ def load_master(path: str | None) -> LoadResult:
     `apply_master_defaults`."""
     if path is None:
         if not os.path.exists(DEFAULT_CONFIG_PATH):
+            # No config file anywhere — still apply the machine layer so a
+            # bare `c64cast` run (no --config, no positional media) inherits
+            # machine settings (connection, device, …).
             cfg = Config()
+            apply_machine_settings(cfg)
             return LoadResult(
                 cfgs=[cfg],
                 names=["system"],
@@ -2462,7 +2554,10 @@ def load_master(path: str | None) -> LoadResult:
             path,
         )
 
+    # Master defaults start from the machine layer (defaults → machine →
+    # master), so a machine setting is the baseline the master TOML overrides.
     defaults = Config()
+    apply_machine_settings(defaults)
     for section, dc in (
         ("ultimate64", defaults.ultimate64),
         ("video", defaults.video),
@@ -2494,26 +2589,33 @@ def load_master(path: str | None) -> LoadResult:
             defaults.color.hue_corrections.append(dict(hc))
         _validate_force_palette(defaults.color)
 
+    # The "unset" baseline for the per-system cascade is a machine-overlaid
+    # Config (not a blank one): a field coming only from the machine layer must
+    # still be treated as "this system didn't set it" so the master TOML can
+    # override it — machine < master < per-system. Built once, reused per system.
+    machine_baseline = Config()
+    apply_machine_settings(machine_baseline)
+
     master_dir = os.path.dirname(os.path.abspath(path))
     cfgs: list[Config] = []
-    paths: list[str | None] = []
+    sys_paths: list[str | None] = []
     for entry in ensemble.systems:
         sub_path = entry.config
         if not os.path.isabs(sub_path):
             sub_path = os.path.join(master_dir, sub_path)
         sys_cfg = load(sub_path)
-        sys_cfg = apply_master_defaults(defaults, sys_cfg)
+        sys_cfg = apply_master_defaults(defaults, sys_cfg, baseline=machine_baseline)
         # Per-system Configs never carry ensemble metadata themselves —
         # only the master TOML does. (Belt and braces: load() never sets
         # ensemble either since it doesn't know about [ensemble].)
         sys_cfg.ensemble = None
         cfgs.append(sys_cfg)
-        paths.append(sub_path)
+        sys_paths.append(sub_path)
     _warn_audio_only_ensemble(cfgs, [e.name for e in ensemble.systems])
     return LoadResult(
         cfgs=cfgs,
         names=[e.name for e in ensemble.systems],
-        paths=paths,
+        paths=sys_paths,
         is_ensemble=True,
         master_control=defaults.control,
         master_midi_control=defaults.midi_control,

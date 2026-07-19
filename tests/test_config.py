@@ -11,11 +11,25 @@ import unittest
 from typing import cast
 from unittest import mock
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, MachineSettingsIsolation
 
 from c64cast import config as cfgmod
 from c64cast.backend import C64Backend
 from c64cast.modes import BlankDisplayMode
+
+# Tests here assert config defaults / precedence; isolate the module from any
+# real ~/.config/c64cast/settings.toml on the dev machine (config.load applies
+# the machine-settings layer). Tests that need their own settings file override
+# $C64CAST_SETTINGS locally, which nests cleanly under this.
+_settings_isolation = MachineSettingsIsolation()
+
+
+def setUpModule() -> None:
+    _settings_isolation.start()
+
+
+def tearDownModule() -> None:
+    _settings_isolation.stop()
 
 
 class ConfigLoaderTest(unittest.TestCase):
@@ -595,6 +609,130 @@ class MergeCLITest(unittest.TestCase):
         self.assertEqual(merged.audio.sample_rate, 22050)
         self.assertEqual(merged.audio.mic_sensitivity, 2.0)
         self.assertEqual(merged.audio.noise_gate, 0.1)
+
+
+class MachineSettingsTest(unittest.TestCase):
+    """The machine-settings layer (defaults → machine settings → config →
+    CLI). Every test points $C64CAST_SETTINGS at a tmp file so it never
+    touches the real ~/.config/c64cast/settings.toml."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._path = os.path.join(self._tmp.name, "settings.toml")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_settings(self, content: str) -> None:
+        with open(self._path, "w") as f:
+            f.write(content)
+
+    def _env(self):
+        return mock.patch.dict(os.environ, {"C64CAST_SETTINGS": self._path})
+
+    def _write_config(self, content: str) -> str:
+        p = os.path.join(self._tmp.name, "c64cast.toml")
+        with open(p, "w") as f:
+            f.write(content)
+        return p
+
+    def test_missing_file_is_noop(self):
+        # No file at the pointed path → machine settings are empty.
+        with self._env():
+            self.assertEqual(cfgmod.load_machine_settings(), {})
+            cfg = cfgmod.load(None)
+        self.assertEqual(cfg.ultimate64.url, "http://ultimate-64-ii.lan")
+
+    def test_machine_settings_applied_in_load(self):
+        self._write_settings(
+            '[ultimate64]\nurl = "http://machine.lan"\nsid_model = "8580"\n[video]\ndevice = 4\n'
+        )
+        with self._env():
+            cfg = cfgmod.load(None)
+        self.assertEqual(cfg.ultimate64.url, "http://machine.lan")
+        self.assertEqual(cfg.ultimate64.sid_model, "8580")
+        self.assertEqual(cfg.video.device, 4)
+
+    def test_config_overrides_machine(self):
+        # defaults < machine < config
+        self._write_settings('[ultimate64]\nsid_model = "8580"\nsystem = "PAL"\n')
+        cfg_path = self._write_config('[ultimate64]\nsid_model = "6581"\n')
+        with self._env():
+            cfg = cfgmod.load(cfg_path)
+        self.assertEqual(cfg.ultimate64.sid_model, "6581")  # config wins
+        self.assertEqual(cfg.ultimate64.system, "PAL")  # machine-only field kept
+
+    def test_cli_overrides_machine_and_config(self):
+        # defaults < machine < config < CLI
+        self._write_settings('[ultimate64]\nsid_model = "8580"\n')
+        cfg_path = self._write_config('[ultimate64]\nsid_model = "6581"\n')
+        with self._env():
+            cfg = cfgmod.load(cfg_path)
+            args = argparse.Namespace(**dict.fromkeys(cfgmod.CLI_TO_CFG))
+            args.sid_model = "off"
+            merged = cfgmod.merge_cli(cfg, args)
+        self.assertEqual(merged.ultimate64.sid_model, "off")
+
+    def test_scenes_section_rejected(self):
+        self._write_settings('[ultimate64]\nurl = "http://m.lan"\n[[scenes]]\ntype = "blank"\n')
+        with self._env():
+            data = cfgmod.load_machine_settings()
+            cfg = cfgmod.load(None)
+        self.assertNotIn("scenes", data)
+        self.assertEqual(cfg.scenes, [])
+        self.assertEqual(cfg.ultimate64.url, "http://m.lan")  # other sections still applied
+
+    def test_ensemble_section_rejected(self):
+        self._write_settings(
+            "[ensemble]\nsystems = [{name='a', config='a.toml'}]\n[audio]\nsample_rate = 8000\n"
+        )
+        with self._env():
+            data = cfgmod.load_machine_settings()
+            cfg = cfgmod.load(None)
+        self.assertNotIn("ensemble", data)
+        self.assertEqual(cfg.audio.sample_rate, 8000)
+
+    def test_corrupt_file_raises_config_error(self):
+        self._write_settings("[ultimate64]\nurl = \n")  # missing value
+        with self._env():
+            with self.assertRaises(cfgmod.ConfigError):
+                cfgmod.load_machine_settings()
+
+    def test_unknown_key_warns_but_loads(self):
+        self._write_settings('[ultimate64]\nurl = "http://m.lan"\nbogus_key = 1\n')
+        with self._env():
+            with self.assertLogs("c64cast.config", level="WARNING"):
+                cfg = cfgmod.load(None)
+        self.assertEqual(cfg.ultimate64.url, "http://m.lan")
+
+
+class DmaPasswordEnvTest(unittest.TestCase):
+    """C64CAST_DMA_PASSWORD env var is the final layer (env > config > default)
+    — folded in by merge_cli. Previously untested (a gap this change closes)."""
+
+    def _args(self) -> argparse.Namespace:
+        return argparse.Namespace(**dict.fromkeys(cfgmod.CLI_TO_CFG))
+
+    def test_env_sets_password(self):
+        cfg = cfgmod.Config()
+        with mock.patch.dict(os.environ, {"C64CAST_DMA_PASSWORD": "sekret"}):
+            merged = cfgmod.merge_cli(cfg, self._args())
+        self.assertEqual(merged.ultimate64.dma_password, "sekret")
+
+    def test_env_overrides_config_value(self):
+        cfg = cfgmod.Config()
+        cfg.ultimate64.dma_password = "from-config"
+        with mock.patch.dict(os.environ, {"C64CAST_DMA_PASSWORD": "from-env"}):
+            merged = cfgmod.merge_cli(cfg, self._args())
+        self.assertEqual(merged.ultimate64.dma_password, "from-env")
+
+    def test_no_env_keeps_config_value(self):
+        cfg = cfgmod.Config()
+        cfg.ultimate64.dma_password = "from-config"
+        env = {k: v for k, v in os.environ.items() if k != "C64CAST_DMA_PASSWORD"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            merged = cfgmod.merge_cli(cfg, self._args())
+        self.assertEqual(merged.ultimate64.dma_password, "from-config")
 
 
 class ValidateSceneCfgTest(unittest.TestCase):
