@@ -9,7 +9,7 @@ conductor's cfg as a fallback) until the conductor releases them.
 
 Two patterns are supported through the same Orchestrator interface:
 
-* **Span** (e.g. BigTextSpanOrchestrator, commit 13): each follower
+* **Span** (e.g. BigTextSpanOrchestrator): each follower
   renders a *slice* of the conductor's content. Followers' local
   SceneCfg overrides visual params; broadcast state (scroll position,
   glyph bits, ...) flows through `snapshot()`.
