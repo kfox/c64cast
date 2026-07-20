@@ -51,10 +51,22 @@ _PLACEHOLDER_COPYRIGHT = "TODO: add source link / license / attribution"
 
 # SceneCfg fields already surfaced elsewhere in the payload in resolved form
 # (scene.name, scene.display_mode, scene.duration_s, scene.target_fps,
-# scene.audio, scene.effect, scene.overlays, source.*) — skipped here so the
-# blob doesn't show a raw value next to its resolved counterpart.
+# scene.audio, scene.effects, scene.overlays, source.*) — skipped here so the
+# blob doesn't show a raw value next to its resolved counterpart. `mod_source`
+# is kept (it's a per-scene selector with no resolved twin).
 _SCENE_CFG_SKIP_FIELDS = frozenset(
-    {"type", "name", "display", "duration_s", "file", "target_fps", "audio", "effect", "overlays"}
+    {
+        "type",
+        "name",
+        "display",
+        "duration_s",
+        "file",
+        "target_fps",
+        "audio",
+        "effect",
+        "effects",
+        "overlays",
+    }
 )
 
 _AUDIO_FIELDS = (
@@ -180,9 +192,9 @@ def build_scene_recording_metadata(scene: Scene, cfg: Config, system_name: str) 
             ),
             "target_fps": getattr(scene, "target_fps", None) or "auto",
             "audio_enabled": getattr(scene, "audio", None) is not None,
-            "effect": type(getattr(scene, "effect", None)).__name__
-            if getattr(scene, "effect", None) is not None
-            else None,
+            # The resolved effect chain (layer class names in order); [] = none.
+            # A single-effect scene is just a one-element chain.
+            "effects": [type(eff).__name__ for eff in getattr(scene, "effects", []) or []],
             "overlays": overlay_names,
             **_scene_cfg_fields(scene_cfg),
         },

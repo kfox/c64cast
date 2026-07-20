@@ -334,14 +334,22 @@ class Scene:
         # global/source-aware default). Applied to the shared AudioStreamer in
         # setup() for audio-bearing scenes; ignored when the scene has no audio.
         self.pre_emphasis: float | None = None
-        # Optional per-scene pixel effect (None = no effect). Set by
-        # config.build_scene from [[scenes]].effect. Applied to the source
-        # frame in _render_with_overlays before the display mode quantizes, so
-        # it works on any frame-bearing scene (webcam/video/slideshow/
-        # generative). Self-rendered bitmap scenes (waveform/midi) bypass that
-        # helper, so the effect doesn't apply to them. Reset in setup() so a
-        # looping/re-entered scene starts with clean effect state.
-        self.effect: FrameEffect | None = None
+        # Ordered per-scene pixel effect chain (empty = no effect). Set by
+        # config.build_scene from [[scenes]].effects (or the legacy single
+        # `effect`). Each layer is applied in order in _render_with_overlays
+        # before the display mode quantizes, so it works on any frame-bearing
+        # scene (webcam/video/slideshow/generative). Self-rendered bitmap scenes
+        # (waveform/midi) bypass that helper, so effects don't apply to them.
+        # Reset in setup() so a looping/re-entered scene starts clean. The
+        # `effect` property below preserves the pre-chain single-effect API.
+        self.effects: list[FrameEffect] = []
+        # ClockModulationSource wrapping the playlist's beat grid, injected by
+        # Playlist._safe_setup. An effect layer with mod_source = "clock" reads
+        # its snapshot in _render_with_overlays so it locks to MIDI/tap tempo
+        # (Live DJ/VJ Phase 3). None until a playlist owns the scene (e.g. an
+        # armed-but-not-yet-set-up clip), which just means clock layers fall
+        # back to the no-modulation baseline until then.
+        self.clock_modulation: Any = None
         # Set by config.build_scene to the SceneCfg the scene was built
         # from — the playlist's orchestrator wiring reads this (and the
         # rest are populated for conductor/follower roles by the
@@ -352,6 +360,19 @@ class Scene:
         self._orchestrator: Any = None
         self._is_conductor: bool = False
         self._system_index: int = 0
+
+    @property
+    def effect(self) -> FrameEffect | None:
+        """Back-compat single-effect accessor over the `effects` chain: reads the
+        first layer (or None). Predates the Phase-3 layerable chain; kept so
+        callers that set/read one effect (the WLED bridge, older code) still
+        work. Setting it to a FrameEffect makes it the sole layer; setting None
+        clears the chain."""
+        return self.effects[0] if self.effects else None
+
+    @effect.setter
+    def effect(self, value: FrameEffect | None) -> None:
+        self.effects = [value] if value is not None else []
 
     def competes_for_audio_lock(self) -> bool:
         """Whether THIS instance contends for the ensemble audio slot.
@@ -393,9 +414,9 @@ class Scene:
         self.is_done = False
         self.prev_frame = None
         # Clear any inter-frame effect state so a looping or re-entered scene
-        # doesn't ghost a trail from the previous iteration.
-        if self.effect is not None:
-            self.effect.reset()
+        # doesn't ghost a trail from the previous iteration (every layer).
+        for eff in self.effects:
+            eff.reset()
         # Apply this scene's pre-emphasis to the shared streamer before the
         # subclass brings audio up (mic start / video pre-encode read the
         # updated DSP params). No-op when the scene has no audio.
@@ -584,6 +605,47 @@ class WebcamScene(Scene):
             self.audio.stop()
 
 
+def _effect_modulation(
+    scene: Scene, eff: FrameEffect, audio_mod: MusicModulation | None
+) -> MusicModulation | None:
+    """The MusicModulation snapshot a layer should react to, per its
+    `mod_source`: "audio" → the scene's feed, "clock" → the beat grid (via
+    `scene.clock_modulation`, None-safe), "off" (or anything else) → None (never
+    react — the byte-stable baseline)."""
+    src = getattr(eff, "mod_source", "audio")
+    if src == "audio":
+        return audio_mod
+    if src == "clock":
+        clock = scene.clock_modulation
+        return clock.features() if clock is not None else None
+    return None
+
+
+def _apply_effect_chain(
+    scene: Scene, frame: np.ndarray, t: float, audio_mod: MusicModulation | None
+) -> np.ndarray:
+    """Run the scene's effect chain over `frame`, layer by layer, in order.
+    Disabled layers (bypass) are skipped as exact identity; each enabled layer
+    gets the snapshot its `mod_source` selects. A layer that raises is dropped
+    from the chain (disabled) and the pre-layer frame carries on — one bad
+    effect never kills the scene. Iterates a copy of the list so a failing
+    layer can be removed without disturbing the loop."""
+    for eff in list(scene.effects):
+        if not getattr(eff, "enabled", True):
+            continue
+        try:
+            frame = eff.apply(frame, t, _effect_modulation(scene, eff, audio_mod))
+        except Exception:
+            log.exception(
+                "effect %r failed on %r — disabling",
+                getattr(eff, "name", eff),
+                scene.name,
+            )
+            if eff in scene.effects:
+                scene.effects.remove(eff)
+    return frame
+
+
 def _render_with_overlays(
     display_mode: DisplayMode,
     api: C64Backend,
@@ -609,23 +671,18 @@ def _render_with_overlays(
     that hit the None branch supply an empty placeholder — Blank's compose
     ignores its arg, and bitmap modes never get a None frame in practice.
 
-    A per-scene pixel effect (scene.effect), if present, transforms the source
-    frame here — before downscale/quantization — so it applies uniformly to
-    every frame-bearing scene. `modulation` (a music-feature snapshot, None on
-    non-reactive scenes) is handed to the effect so reactive effects can react
-    to the beat. Skipped when there's no frame (Blank). A failing effect disables
-    itself rather than killing the scene."""
+    The per-scene pixel effect *chain* (scene.effects), if any, transforms the
+    source frame here — before downscale/quantization — each layer in order, so
+    it applies uniformly to every frame-bearing scene. A disabled layer
+    (`enabled = False`, a live bypass toggle) is skipped (exact identity). Each
+    layer's `mod_source` selects which `MusicModulation` snapshot drives it:
+    "audio" gets the scene's feed (`modulation`, None on non-reactive scenes),
+    "clock" gets the beat grid (`scene.clock_modulation`), "off" gets None.
+    Skipped entirely when there's no frame (Blank). A failing layer disables
+    itself (dropped from the chain) rather than killing the scene."""
     prof = get_profiler()
-    if frame is not None and scene.effect is not None:
-        try:
-            frame = scene.effect.apply(frame, t, modulation)
-        except Exception:
-            log.exception(
-                "effect %r failed on %r — disabling",
-                getattr(scene.effect, "name", scene.effect),
-                scene.name,
-            )
-            scene.effect = None
+    if frame is not None and scene.effects:
+        frame = _apply_effect_chain(scene, frame, t, modulation)
     frame_arg = frame if frame is not None else np.empty(0, dtype=np.uint8)
     if not display_mode.supports_compose:
         with prof.stage("render"):

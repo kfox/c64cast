@@ -122,7 +122,38 @@ _GENERATIVE_SOURCE_CHOICES = (
     "soap",
     "fireworks",
 )
-_EFFECT_CHOICES = ("trails", "pulse", "rgb_shift", "blur")
+_EFFECT_CHOICES = (
+    "trails",
+    "pulse",
+    "rgb_shift",
+    "blur",
+    "strobe",
+    "invert",
+    "mirror",
+    "posterize",
+)
+# How a reactive effect layer is driven ([[scenes]].mod_source / clip slots):
+# "audio" = the scene's SID feature stream (today's behavior), "clock" = the
+# [performance] beat grid (MIDI/tap tempo), "off" = never react (baseline). A
+# drift note: mirrored in effects.FrameEffect.mod_source's docstring.
+_MOD_SOURCE_CHOICES = ("audio", "clock", "off")
+
+# The fixed `param` target holder prefixes (the bit before the first "."), plus
+# the layer-addressed effect forms `fx<N>` and `effect[<N>]` that reach a
+# specific effect-chain layer (Live DJ/VJ Phase 3). Mirrors the holder
+# resolution in midi_control._apply_param — kept independent so config stays
+# import-light (the module's standing rule).
+_PARAM_HOLDER_PREFIXES = ("effect", "source", "scene", "mode")
+_FX_LAYER_HOLDER_RE = re.compile(r"^(?:fx(\d+)|effect\[(\d+)\])$")
+
+
+def _is_valid_param_holder(holder: str) -> bool:
+    """Whether `holder` (the bit before the first "." in a `param` target) names
+    a real live-tune holder: one of the fixed prefixes, or a layer-addressed
+    effect (`fx0`, `effect[2]`, …)."""
+    return holder in _PARAM_HOLDER_PREFIXES or _FX_LAYER_HOLDER_RE.match(holder) is not None
+
+
 # How a slideshow image is fit to the C64 aspect before the display mode
 # downscales it. See scenes._apply_aspect.
 _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
@@ -1030,6 +1061,37 @@ class SceneCfg:
             "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
         },
     )
+    # Ordered pixel-effect chain (Live DJ/VJ Phase 3) — an alternative to the
+    # single `effect` above. Each layer is applied in order; every layer is
+    # independently live-tunable (fx<N>.<param>) and bypass-toggleable
+    # (fx_toggle). Mutually exclusive with `effect` (set one or the other).
+    effects: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "Ordered pixel-effect chain applied before quantization, e.g. "
+            'effects = ["trails", "rgb_shift", "strobe"]. Each is one of the '
+            "`effect` choices; layers apply in order and are individually "
+            "tunable (map a CC to fx0.<param>/fx1.<param>…) and bypass-"
+            "toggleable live (fx_toggle). Mutually exclusive with the single "
+            "`effect` field. Empty = none.",
+            "choices": _EFFECT_CHOICES,
+            "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
+        },
+    )
+    # Which modulation feeder drives the reactive effect layers on this scene.
+    mod_source: str = field(
+        default="audio",
+        metadata={
+            "help": "What drives this scene's reactive effect layers: 'audio' "
+            "(the SID feature stream — needs a music-reactive scene, i.e. "
+            "generative + audio_source = 'sid'), 'clock' (the [performance] beat "
+            "grid, so effects lock to MIDI/tap tempo on any scene — the way to "
+            "tempo-lock a 'strobe'), or 'off' (never react — layers use their "
+            "static baseline). Applies to every effect layer on the scene.",
+            "choices": _MOD_SOURCE_CHOICES,
+            "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
+        },
+    )
     # None = use global [dsp].pre_emphasis (which itself may be source-aware
     # auto); a number overrides it for this scene. Only meaningful when
     # [dsp].enabled and the scene has audio.
@@ -1805,6 +1867,10 @@ _MIDI_ACTION_CHOICES = (
     # quantized to the beat grid. Needs an int `slot` >= 1. Mirrored in
     # midi_control._ACTIONS.
     "clip_launch",
+    # Effect-layer bypass toggle (Live-performance Phase 3): note/PC/pad flips
+    # the `enabled` flag of effect layer `slot` (0-based) on the current scene.
+    # Needs an int `slot` >= 0. Mirrored in midi_control._ACTIONS.
+    "fx_toggle",
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
@@ -4020,12 +4086,13 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
             if (
                 not isinstance(target, str)
                 or "." not in target
-                or target.split(".", 1)[0] not in ("effect", "source", "scene", "mode")
+                or not _is_valid_param_holder(target.split(".", 1)[0])
             ):
                 raise ConfigError(
                     f"[midi_control].cc_map[{i}] action 'param' needs a string 'target' "
-                    "of the form 'effect.<name>', 'source.<name>', 'scene.<name>', or "
-                    f"'mode.<name>', got {target!r}"
+                    "of the form 'effect.<name>', 'source.<name>', 'scene.<name>', "
+                    "'mode.<name>', or a layer-addressed 'fx<N>.<name>' / "
+                    f"'effect[<N>].<name>', got {target!r}"
                 )
         if action == "transport.jog":
             mode = entry.get("mode")
@@ -4034,12 +4101,20 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                     f"[midi_control].cc_map[{i}] action 'transport.jog' mode must be "
                     f"'abs' or 'rel', got {mode!r}"
                 )
-        if action == "loop_slot":
+        if action in ("loop_slot", "clip_launch"):
             slot = entry.get("slot")
             if not isinstance(slot, int) or slot < 1:
                 raise ConfigError(
-                    f"[midi_control].cc_map[{i}] action 'loop_slot' needs an int 'slot' "
+                    f"[midi_control].cc_map[{i}] action {action!r} needs an int 'slot' "
                     f">= 1, got {slot!r}"
+                )
+        if action == "fx_toggle":
+            # Effect layer index is 0-based (fx0 is the first layer), so >= 0.
+            slot = entry.get("slot")
+            if not isinstance(slot, int) or isinstance(slot, bool) or slot < 0:
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'fx_toggle' needs an int 'slot' "
+                    f">= 0 (0-based effect layer index), got {slot!r}"
                 )
 
 
@@ -4156,16 +4231,27 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     self-validates (including its orchestrator) and we return immediately."""
     from .overlays import build_overlay, validate_for_scene
 
-    # Per-scene pixel effect: validated up front (before the launcher early
-    # return) so it's caught on every type. Only frame-bearing scenes support it.
-    if s.effect is not None:
-        if s.effect not in _EFFECT_CHOICES:
-            raise ValueError(f"effect must be one of {_EFFECT_CHOICES} or unset, got {s.effect!r}")
+    # Per-scene pixel effect(s): validated up front (before the launcher early
+    # return) so it's caught on every type. Only frame-bearing scenes support
+    # them. The single `effect` and the `effects` chain are mutually exclusive
+    # (one authoring style per scene — see build_scene's chain construction).
+    if s.effect is not None and s.effects:
+        raise ValueError(
+            "set either `effect` (single) or `effects` (chain), not both — got "
+            f"effect={s.effect!r} and effects={s.effects!r}"
+        )
+    effect_layers = s.effects if s.effects else ([s.effect] if s.effect is not None else [])
+    if effect_layers:
+        for name in effect_layers:
+            if name not in _EFFECT_CHOICES:
+                raise ValueError(f"effect must be one of {_EFFECT_CHOICES} or unset, got {name!r}")
         if s.type not in _EFFECT_SCENE_TYPES:
             raise ValueError(
                 f"effect is not supported on {s.type!r} scenes (they don't render a "
                 f"video frame). Supported: {tuple(sorted(_EFFECT_SCENE_TYPES))}."
             )
+    if s.mod_source not in _MOD_SOURCE_CHOICES:
+        raise ValueError(f"mod_source must be one of {_MOD_SOURCE_CHOICES}, got {s.mod_source!r}")
 
     # start_s is a video-only start offset (the only scene whose source has a
     # seekable timeline). Reject it elsewhere rather than silently ignoring it.
@@ -4717,12 +4803,21 @@ def build_scene(
             scene.duration_s = math.inf
     if s.target_fps is not None:
         scene.target_fps = float(s.target_fps)
-    # Per-scene pixel effect (validated frame-bearing in validate_scene_cfg).
-    # Applied to the source frame in scenes._render_with_overlays.
-    if s.effect is not None:
+    # Per-scene pixel effect chain (validated frame-bearing + mutually-exclusive
+    # in validate_scene_cfg). Applied in order in scenes._render_with_overlays.
+    # `effects` (the chain) wins if set; otherwise the legacy single `effect`
+    # becomes a one-layer chain. Each layer inherits the scene's mod_source so a
+    # clock/audio choice drives the whole stack uniformly.
+    effect_names = s.effects if s.effects else ([s.effect] if s.effect is not None else [])
+    if effect_names:
         from .effects import build_effect
 
-        scene.effect = build_effect(s.effect)
+        chain = []
+        for name in effect_names:
+            eff = build_effect(name)
+            eff.mod_source = s.mod_source
+            chain.append(eff)
+        scene.effects = chain
     _attach_overlays(scene, s.overlays, audio)
     # Debug aid: source-bearing scenes draw the playback timecode + frame
     # number into each frame (pre-quantization). Harmless no-op on scenes

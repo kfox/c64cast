@@ -1249,8 +1249,40 @@
               "trails",
               "pulse",
               "rgb_shift",
-              "blur"
+              "blur",
+              "strobe",
+              "invert",
+              "mirror",
+              "posterize"
             ]
+          },
+          "effects": {
+            "type": "array",
+            "description": "Ordered pixel-effect chain applied before quantization, e.g. effects = [\"trails\", \"rgb_shift\", \"strobe\"]. Each is one of the `effect` choices; layers apply in order and are individually tunable (map a CC to fx0.<param>/fx1.<param>\u2026) and bypass-toggleable live (fx_toggle). Mutually exclusive with the single `effect` field. Empty = none.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "trails",
+                "pulse",
+                "rgb_shift",
+                "blur",
+                "strobe",
+                "invert",
+                "mirror",
+                "posterize"
+              ]
+            },
+            "default": []
+          },
+          "mod_source": {
+            "type": "string",
+            "description": "What drives this scene's reactive effect layers: 'audio' (the SID feature stream \u2014 needs a music-reactive scene, i.e. generative + audio_source = 'sid'), 'clock' (the [performance] beat grid, so effects lock to MIDI/tap tempo on any scene \u2014 the way to tempo-lock a 'strobe'), or 'off' (never react \u2014 layers use their static baseline). Applies to every effect layer on the scene.",
+            "enum": [
+              "audio",
+              "clock",
+              "off"
+            ],
+            "default": "audio"
           },
           "pre_emphasis": {
             "type": [

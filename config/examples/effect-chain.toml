@@ -1,0 +1,64 @@
+#:schema ../../c64cast.schema.json
+# Layerable effect chain demo (Live DJ/VJ Phase 3): stack several pixel effects
+# on one scene, each independently tunable and bypass-toggleable live, with the
+# whole stack tempo-locked to the [performance] beat grid.
+#
+# `effects = [...]` replaces the single `effect` slot with an ORDERED chain —
+# every frame flows through the layers left to right before the display mode
+# quantizes it. Here a plasma generator gets:
+#   1. trails    — echo/comet tail
+#   2. rgb_shift  — chromatic split on the beat
+#   3. strobe     — blanks the frame for the dark part of each beat
+#
+# `mod_source = "clock"` drives the reactive layers (rgb_shift, strobe) from the
+# MIDI/tap beat grid instead of SID audio — so this asset-free scene (no .sid,
+# no video) still locks to tempo. With no external clock the grid free-runs at
+# [performance].bpm; map a `tempo_tap` pad (below, note 48) to set it live, or
+# set tempo_source = "midi" to follow a DAW's clock. `strobe` is the layer that
+# most wants this — it flashes on the bar. (Use mod_source = "audio" instead to
+# drive the chain from a SID feature stream on a generative + audio_source =
+# "sid" scene; "off" freezes every layer at its static baseline.)
+#
+# Live control (needs the `midi` extra + a controller):
+#   * Bypass a layer:  map `fx_toggle` with slot = 0/1/2 (0-based layer index).
+#       note 60 -> fx0 (trails), note 61 -> fx1 (rgb_shift), note 62 -> fx2 (strobe)
+#   * Sweep a layer's param:  map `param` with a target like `fx0.decay`,
+#       `fx2.duty`, or `fx2.rate` (the first layer also answers to `effect.<param>`).
+#   * Feedback is off-screen (OSD is on here for the demo; a real performance
+#     sets [midi_control].osd = "off" and reads controller LEDs / the web console).
+#
+# Run:
+#   python -m c64cast --config config/examples/effect-chain.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[midi_control]
+enabled = true                        # opens a MIDI input for the fx_toggle / param maps below
+# Bypass toggles for the three layers (0-based):
+cc_map = [
+  { type = "note", number = 60, action = "fx_toggle", slot = 0 },   # trails on/off
+  { type = "note", number = 61, action = "fx_toggle", slot = 1 },   # rgb_shift on/off
+  { type = "note", number = 62, action = "fx_toggle", slot = 2 },   # strobe on/off
+  { type = "note", number = 48, action = "tempo_tap" },             # tap the tempo
+  { type = "cc",   number = 13, action = "param", target = "fx0.decay" },  # trails tail
+  { type = "cc",   number = 14, action = "param", target = "fx2.duty" },   # strobe lit fraction
+  { type = "cc",   number = 15, action = "param", target = "fx2.rate" },   # strobe strobes/beat
+]
+
+[performance]
+tempo_source = "internal"             # free-run; tap note 48 to set the tempo
+bpm = 120.0
+beats_per_bar = 4
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Plasma + trails + rgb_shift + strobe"
+source = "plasma"
+display = "mcm"
+effects = ["trails", "rgb_shift", "strobe"]   # ordered chain (vs the single `effect` field)
+mod_source = "clock"                          # drive the reactive layers from the beat grid
+duration_s = 60.0
