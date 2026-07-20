@@ -1116,6 +1116,18 @@
           ],
           "description": "MIDI input port to read the external clock from when it arrives on a DIFFERENT port than the [midi_control] control surface (substring match, case-insensitive). None (default) = read clock on the same port as control. Only used when tempo_source = 'midi'."
         },
+        "midi_feedback": {
+          "type": "boolean",
+          "description": "Light a grid controller's pads to show performance state (Live DJ/VJ Phase 4): loaded clip pads dim, the arming pad blinks, the live clip bright, and enabled effect-chain layers lit \u2014 all over a MIDI OUTPUT port ([midi_control] must be enabled). The C64 screen stays audience-facing; this replaces on-screen readouts with controller LEDs. The velocity->color convention is per-controller and comes from the learned controller profile's `feedback` block (--midi-setup writes it); Launchpad-X palette defaults otherwise.",
+          "default": false
+        },
+        "feedback_port": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "MIDI OUTPUT port for LED feedback (substring match, case-insensitive). None (default) = the profile's own port, else the same device as the [midi_control] input, else the first output. Only used when midi_feedback = true."
+        },
         "clips": {
           "type": "array",
           "description": "Clip-launch grid ([[performance.clips]], Live DJ/VJ Phase 2): each table is a scene spec (any [[scenes]] field \u2014 type, file, source, display, name, duration_s, effect \u2026) plus launch semantics: `slot` (1-based id, unique), `pad`/`pad_type` (the note/PC number that fires it, auto-mapped when [midi_control] is on), `launch` (\"trigger\"|\"gate\"|\"toggle\"), `quantize` (\"off\"|\"beat\"|\"bar\" \u2014 align the swap to the beat grid), and `loop` (repeat until another clip fires). Fired from a controller or the web console; the scene is built on a background thread during the count-in and swapped in on the grid boundary. Empty = no grid.",

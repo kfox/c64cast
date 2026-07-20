@@ -295,19 +295,21 @@ def classify_message(msg: Any) -> tuple[str, int, int, bool] | None:
     return None
 
 
-def _find_profile_for_port(opened_port_name: str, profiles_dir: Path) -> list[dict[str, Any]]:
-    """Scan `profiles_dir` for the controller profile whose learned port name
-    matches the currently-opened MIDI port (case-insensitive substring, either
-    direction — OS port names sometimes gain/lose an index suffix between runs).
-    The most-specific match (longest stored port name) wins; no match → ``[]``."""
+def _matching_profile_store(opened_port_name: str, profiles_dir: Path) -> Any:
+    """Return the :class:`~c64cast.transport.ControllerProfileStore` whose learned
+    port name matches the currently-opened MIDI port (case-insensitive substring,
+    either direction — OS port names sometimes gain/lose an index suffix between
+    runs). The most-specific match (longest stored port name) wins; no match →
+    None. Shared by the mapping and LED-feedback profile loaders so both resolve
+    the *same* profile for a port."""
     from .transport import ControllerProfileStore
 
     opened = opened_port_name.lower()
-    best: tuple[int, list[dict[str, Any]]] | None = None
+    best: tuple[int, Any] | None = None
     try:
         candidates = sorted(profiles_dir.glob("*.json"))
     except OSError:
-        return []
+        return None
     for f in candidates:
         store = ControllerProfileStore(f)
         port = store.port()
@@ -315,8 +317,38 @@ def _find_profile_for_port(opened_port_name: str, profiles_dir: Path) -> list[di
             continue
         pl = port.lower()
         if (pl in opened or opened in pl) and (best is None or len(port) > best[0]):
-            best = (len(port), store.mappings())
-    return best[1] if best is not None else []
+            best = (len(port), store)
+    return best[1] if best is not None else None
+
+
+def _find_profile_for_port(opened_port_name: str, profiles_dir: Path) -> list[dict[str, Any]]:
+    """The cc_map mappings contributed by the profile matching `opened_port_name`
+    (see :func:`_matching_profile_store`); ``[]`` when none matches."""
+    store = _matching_profile_store(opened_port_name, profiles_dir)
+    return store.mappings() if store is not None else []
+
+
+def _load_profile_feedback(
+    controller_profile: str, opened_port_name: str | None, profiles_dir: Path | None = None
+) -> dict[str, Any]:
+    """Resolve the LED-feedback block a controller profile contributes (Phase 4),
+    resolving `controller_profile` exactly like :func:`_load_profile_mappings`:
+    ``"off"`` → none, ``"auto"`` → the profile matching the opened port,
+    ``"<name>"`` → the ``<name>.json`` profile. Any lookup problem yields ``{}``
+    (feedback then falls back to the shipped :class:`FeedbackMap` defaults)."""
+    if controller_profile == "off":
+        return {}
+    from . import paths
+    from .transport import ControllerProfileStore
+
+    base = profiles_dir if profiles_dir is not None else paths.controllers_dir()
+    if controller_profile == "auto":
+        if not opened_port_name:
+            return {}
+        store = _matching_profile_store(opened_port_name, base)
+    else:
+        store = ControllerProfileStore(base / f"{controller_profile}.json")
+    return store.feedback() if store is not None else {}
 
 
 def _load_profile_mappings(
@@ -364,6 +396,106 @@ def resolve_effective_cc_map(
     return [*profile, *base_cc_map]
 
 
+# ---- LED feedback (Live DJ/VJ Phase 4) --------------------------------------
+#
+# A grid controller (Launchpad / APC / KeyLab pads) lights a pad by sending it a
+# note-on to the pad's own note number, with the VELOCITY selecting a color. That
+# velocity->color convention is a property of the *controller*, not the show, so
+# it lives in the learned controller profile (a `feedback` block written by
+# --midi-setup) rather than the config; the shipped defaults below are
+# Launchpad-X programmer-mode palette indices. `[performance].midi_feedback`
+# enables the output and `[performance].feedback_port` (or the profile's own
+# `port`) picks the MIDI-OUT device.
+#
+# The "armed / counting-in" blink is done host-side by the feedback thread
+# alternating the pad between the `armed` color and `off`, so it needs no
+# controller-specific pulse/flash channel and works on any grid.
+
+# Feedback poll cadence (20 Hz) and the armed-pad blink half-period. Both are
+# cheap in-memory reads + at most a handful of note-ons per second, nowhere near
+# any MIDI ceiling (and never a DMA touch).
+_LED_POLL_INTERVAL_S = 0.05
+_LED_BLINK_HALF_PERIOD_S = 0.25
+
+# The velocity fields of a FeedbackMap / a profile `feedback` block (excludes
+# `port`, which is a device name, not a velocity).
+_FEEDBACK_KEYS: tuple[str, ...] = ("channel", "off", "loaded", "armed", "active", "fx_on")
+
+
+@dataclass(frozen=True)
+class FeedbackMap:
+    """Per-controller LED velocity convention: the note velocity that lights a
+    pad in each performance state, and the 0-based MIDI channel the LED note-ons
+    go out on. Defaults are Launchpad-X programmer-mode palette indices (off /
+    dim-grey / yellow / green / blue); a learned controller profile overrides
+    them via :func:`from_dict`."""
+
+    channel: int = 0
+    off: int = 0  # extinguish a pad
+    loaded: int = 1  # a clip slot bound to a pad, idle (dim)
+    armed: int = 13  # armed + building, blinked on/off (yellow)
+    active: int = 21  # the live clip (green)
+    fx_on: int = 45  # an enabled (not bypassed) effect layer (blue)
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any] | None) -> FeedbackMap:
+        """Build from a profile's `feedback` block, tolerantly: a non-int / bool /
+        out-of-range value for any field falls back to that field's default, and
+        unknown keys (including `port`) are ignored. A missing/empty block yields
+        all defaults — a malformed profile can never break feedback."""
+        if not raw:
+            return cls()
+        default = cls()
+        vals: dict[str, int] = {}
+        for k in _FEEDBACK_KEYS:
+            v = raw.get(k)
+            vals[k] = (
+                v
+                if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 127
+                else getattr(default, k)
+            )
+        return cls(**vals)
+
+    def to_dict(self) -> dict[str, int]:
+        return {k: getattr(self, k) for k in _FEEDBACK_KEYS}
+
+
+def compute_pad_leds(
+    clip_pads: list[tuple[int, int]],
+    fx_pads: list[tuple[int, int]],
+    active_slots: set[int],
+    armed_slots: set[int],
+    fx_enabled: set[int],
+    fmap: FeedbackMap,
+    *,
+    blink_on: bool,
+) -> dict[int, int]:
+    """The desired ``note -> velocity`` LED map for one feedback poll.
+
+    A clip pad (``(note, slot)``) is lit `active` (bright) when its slot is the
+    live clip, `armed` (blinked — the `armed` color on the on-phase, `off` on the
+    off-phase, so any controller blinks with no special flash channel) when it is
+    arming, else `loaded` (dim). An fx pad (``(note, layer)``) is `fx_on` when its
+    layer is enabled (i.e. not bypassed), else `off`. When one note is claimed by
+    more than one role the brighter velocity wins (pads are normally unique, so
+    this only matters for a deliberately overlapped mapping)."""
+    out: dict[int, int] = {}
+
+    def _set(note: int, vel: int) -> None:
+        out[note] = max(out.get(note, 0), vel)
+
+    for note, slot in clip_pads:
+        if slot in active_slots:
+            _set(note, fmap.active)
+        elif slot in armed_slots:
+            _set(note, fmap.armed if blink_on else fmap.off)
+        else:
+            _set(note, fmap.loaded)
+    for note, layer in fx_pads:
+        _set(note, fmap.fx_on if layer in fx_enabled else fmap.off)
+    return out
+
+
 class MidiControlListener:
     """Opens its own MIDI input port and dispatches mapped messages to one
     or more :class:`~c64cast.playlist.Playlist` instances. Construct via
@@ -382,6 +514,8 @@ class MidiControlListener:
         controller_profile: str = "off",
         profiles_dir: Path | None = None,
         clock_port: str | None = None,
+        feedback_enabled: bool = False,
+        feedback_port: str | None = None,
     ) -> None:
         if not playlists:
             raise ValueError("midi_control needs at least one playlist")
@@ -414,6 +548,22 @@ class MidiControlListener:
         self._warned_channels: set[int] = set()
         # Per-playlist last-tap time for the osd.position double-tap detection.
         self._osd_last_tap: dict[str, float] = {}
+        # LED feedback to a grid controller (Live DJ/VJ Phase 4). Opens a MIDI
+        # OUTPUT port (this module is otherwise input-only) and a poll thread that
+        # lights pads for loaded/armed/active clips + enabled effect layers. All
+        # of it is a no-op unless `feedback_enabled`. The velocity convention
+        # (`_fmap`) comes from the matched controller profile's `feedback` block
+        # (start() resolves it), falling back to the shipped Launchpad defaults.
+        self._feedback_enabled = feedback_enabled
+        self._feedback_port = feedback_port
+        self._feedback_profile_port: str | None = None
+        self._out_port: Any = None
+        self._feedback_thread: threading.Thread | None = None
+        self._fmap = FeedbackMap()
+        # note -> last velocity sent (feedback thread only; the diff cache).
+        self._led_state: dict[int, int] = {}
+        self._led_clip_pads: list[tuple[int, int]] = []  # (note, clip slot)
+        self._led_fx_pads: list[tuple[int, int]] = []  # (note, effect layer)
 
     # ---- MIDI plumbing --------------------------------------------------
     def _open_port(self) -> None:
@@ -471,6 +621,10 @@ class MidiControlListener:
             )
         self._stop.clear()
         self._open_clock_port()
+        # LED feedback needs the final effective mapping (for fx pads) and the
+        # clip pad folds already done above, so set it up here.
+        if self._feedback_enabled:
+            self._setup_feedback()
         self._reader_thread = threading.Thread(
             target=self._reader, daemon=True, name="midi-control-reader"
         )
@@ -480,10 +634,16 @@ class MidiControlListener:
                 target=self._clock_reader, daemon=True, name="midi-clock-reader"
             )
             self._clock_reader_thread.start()
+        if self._out_port is not None:
+            self._feedback_thread = threading.Thread(
+                target=self._feedback_reader, daemon=True, name="midi-led-feedback"
+            )
+            self._feedback_thread.start()
         log.info(
-            "midi_control: listening (%d mapping(s), %d target(s))",
+            "midi_control: listening (%d mapping(s), %d target(s)%s)",
             len(self._mapping),
             len(self._all),
+            ", LED feedback" if self._out_port is not None else "",
         )
 
     def _add_clip_pad_mappings(self) -> None:
@@ -541,14 +701,156 @@ class MidiControlListener:
             return
         log.info("midi_control: opened dedicated MIDI clock port %r", match)
 
+    # ---- LED feedback (Phase 4) -------------------------------------------
+    def _setup_feedback(self) -> None:
+        """Resolve the controller profile's LED velocity convention, build the
+        managed-pad lists from the effective mapping, and open the MIDI OUT port.
+        Called from start() after the mapping + clip-pad folds are final."""
+        raw = _load_profile_feedback(
+            self._controller_profile, self._opened_port_name, self._profiles_dir
+        )
+        self._fmap = FeedbackMap.from_dict(raw)
+        port = raw.get("port") if isinstance(raw, dict) else None
+        self._feedback_profile_port = port if isinstance(port, str) and port else None
+        self._build_led_pad_lists()
+        self._open_output_port()
+
+    def _build_led_pad_lists(self) -> None:
+        """Collect the note pads this listener lights: each clip's note `pad`
+        (from every playlist's clip grid; first-wins by note, matching
+        `_add_clip_pad_mappings`) and every `fx_toggle` note mapping. PC/CC/MMC
+        pads can't be lit (no note-on to send), so only `note` kinds are managed."""
+        clip_pads: dict[int, int] = {}
+        for pl in self._all:
+            perf = getattr(pl, "performance", None)
+            if perf is None:
+                continue
+            for pad_type, number, slot in perf.clip_pad_mappings():
+                if pad_type == "note" and number not in clip_pads:
+                    clip_pads[number] = slot
+        self._led_clip_pads = list(clip_pads.items())
+        self._led_fx_pads = [
+            (number, m.slot or 0)
+            for (kind, number), m in self._mapping.items()
+            if m.action == "fx_toggle" and kind == "note"
+        ]
+
+    def _open_output_port(self) -> None:
+        """Open the MIDI OUT port for LED feedback. Port selection order:
+        `feedback_port` (config) → the profile's own `port` → the already-opened
+        INPUT port name (same physical controller) → the first available output.
+        A missing/unopenable output disables feedback (warned, never fatal)."""
+        assert mido is not None
+        try:
+            names = mido.get_output_names()
+        except Exception:
+            names = []
+        if not names:
+            log.warning("midi_control: LED feedback enabled but no MIDI output ports available")
+            return
+        want = self._feedback_port or self._feedback_profile_port or self._opened_port_name
+        match = next((n for n in names if want.lower() in n.lower()), None) if want else None
+        if match is None:
+            match = names[0]
+        try:
+            self._out_port = mido.open_output(match)
+        except Exception:
+            log.warning(
+                "midi_control: could not open MIDI output %r for LED feedback", match, exc_info=True
+            )
+            return
+        log.info("midi_control: LED feedback on MIDI output %r", match)
+
+    def _feedback_reader(self) -> None:
+        """Poll performance/effect state and push LED diffs to the grid. Emits
+        only on change (a static state is silent after the first paint); the armed
+        blink flips on `_LED_BLINK_HALF_PERIOD_S`. Extinguishes every managed pad
+        on exit so the controller doesn't strand lit pads after shutdown."""
+        if self._out_port is None:
+            return
+        try:
+            while not self._stop.is_set():
+                blink_on = int(time.monotonic() / _LED_BLINK_HALF_PERIOD_S) % 2 == 0
+                self._emit_led_diff(self._compute_led_map(blink_on))
+                time.sleep(_LED_POLL_INTERVAL_S)
+        except Exception:
+            log.exception("midi_control feedback reader crashed")
+        finally:
+            self._extinguish_all()
+
+    def _compute_led_map(self, blink_on: bool) -> dict[int, int]:
+        """Snapshot the active/armed clip slots and enabled effect layers across
+        every playlist, then resolve the desired pad velocities. Reads are
+        GIL-atomic ref/attr reads (no lock needed) — the same cheap-read rule the
+        rest of this thread follows."""
+        active: set[int] = set()
+        armed: set[int] = set()
+        fx_enabled: set[int] = set()
+        for pl in self._all:
+            perf = getattr(pl, "performance", None)
+            if perf is not None:
+                a = perf.active_slot
+                if a is not None:
+                    active.add(a)
+                r = perf.armed_slot
+                if r is not None:
+                    armed.add(r)
+            effects = getattr(getattr(pl, "current", None), "effects", None)
+            if effects:
+                for idx, eff in enumerate(effects):
+                    if getattr(eff, "enabled", True):
+                        fx_enabled.add(idx)
+        return compute_pad_leds(
+            self._led_clip_pads,
+            self._led_fx_pads,
+            active,
+            armed,
+            fx_enabled,
+            self._fmap,
+            blink_on=blink_on,
+        )
+
+    def _emit_led_diff(self, desired: dict[int, int]) -> None:
+        for note, vel in desired.items():
+            if self._led_state.get(note) == vel:
+                continue
+            if self._send_led(note, vel):
+                self._led_state[note] = vel
+
+    def _send_led(self, note: int, velocity: int) -> bool:
+        port = self._out_port
+        if port is None:
+            return False
+        try:
+            port.send(
+                mido.Message("note_on", channel=self._fmap.channel, note=note, velocity=velocity)
+            )
+            return True
+        except Exception:
+            log.debug("midi_control: LED send failed", exc_info=True)
+            return False
+
+    def _extinguish_all(self) -> None:
+        """Send `off` to every managed pad (and anything we ever lit) and clear
+        the diff cache. Best-effort — a dead port just no-ops."""
+        notes = (
+            {n for n, _ in self._led_clip_pads}
+            | {n for n, _ in self._led_fx_pads}
+            | set(self._led_state)
+        )
+        for note in notes:
+            self._send_led(note, self._fmap.off)
+        self._led_state.clear()
+
     def stop(self) -> None:
         self._stop.set()
-        for thread in (self._reader_thread, self._clock_reader_thread):
+        for thread in (self._reader_thread, self._clock_reader_thread, self._feedback_thread):
             if thread is not None:
                 thread.join(timeout=1.0)
         self._reader_thread = None
         self._clock_reader_thread = None
-        for attr in ("_midi_port", "_clock_port"):
+        self._feedback_thread = None
+        for attr in ("_midi_port", "_clock_port", "_out_port"):
             port = getattr(self, attr)
             if port is not None:
                 try:
@@ -803,6 +1105,8 @@ def build_midi_control_listener(
     cfg: MidiControlCfg,
     *,
     clock_port: str | None = None,
+    feedback_enabled: bool = False,
+    feedback_port: str | None = None,
 ) -> MidiControlListener:
     """The one entry point cli.py calls (mirrors
     control_plane.start_control_server's shape, minus the auto-start — call
@@ -811,7 +1115,12 @@ def build_midi_control_listener(
 
     `clock_port` (from [performance].clock_port) opens a dedicated MIDI clock
     input when the external tempo clock arrives on a different port than the
-    control surface; None reads clock on the control port."""
+    control surface; None reads clock on the control port.
+
+    `feedback_enabled` / `feedback_port` (from [performance].midi_feedback /
+    .feedback_port) open a MIDI OUTPUT port and run the grid-controller LED
+    feedback loop (Phase 4); the velocity->color convention comes from the matched
+    controller profile's `feedback` block."""
     if not MIDI_AVAILABLE:
         raise RuntimeError("midi_control requires mido: pip install c64cast[midi]")
     return MidiControlListener(
@@ -823,4 +1132,6 @@ def build_midi_control_listener(
         cc_map_is_default=cfg.cc_map_is_default,
         controller_profile=cfg.controller_profile,
         clock_port=clock_port,
+        feedback_enabled=feedback_enabled,
+        feedback_port=feedback_port,
     )

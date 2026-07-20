@@ -77,6 +77,52 @@ class ControllerProfileStoreTests(unittest.TestCase):
             make_controller_profile_store("KeyLab").path.name,
         )
 
+    def test_feedback_block_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "grid.json"
+            store = ControllerProfileStore(p)
+            fb = {"channel": 0, "active": 5, "port": "Launchpad OUT"}
+            store.save("Launchpad", [{"type": "note", "number": 36, "action": "skip"}], feedback=fb)
+            self.assertEqual(ControllerProfileStore(p).feedback(), fb)
+
+    def test_feedback_absent_is_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "noled.json"
+            ControllerProfileStore(p).save("X", [])  # no feedback arg
+            self.assertEqual(ControllerProfileStore(p).feedback(), {})
+
+
+# ------------------------------------------------- LED feedback (Phase 4) -------
+class ProfileFeedbackLoaderTests(unittest.TestCase):
+    """midi_control._load_profile_feedback resolves a profile's feedback block
+    the same way the mapping loader resolves mappings."""
+
+    def _dir_with_feedback(self, d: str, port: str, fb: dict) -> Path:
+        base = Path(d)
+        ControllerProfileStore(base / "ctl.json").save(port, [], feedback=fb)
+        return base
+
+    def test_auto_resolves_matching_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = self._dir_with_feedback(d, "MyPort", {"active": 9, "port": "MyPort OUT"})
+            fb = mc._load_profile_feedback("auto", "USB MyPort 1", base)
+            self.assertEqual(fb.get("active"), 9)
+            # FeedbackMap picks it up (velocity override applied, defaults for the rest).
+            fm = mc.FeedbackMap.from_dict(fb)
+            self.assertEqual(fm.active, 9)
+            self.assertEqual(fm.loaded, mc.FeedbackMap().loaded)
+
+    def test_off_ignores_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = self._dir_with_feedback(d, "MyPort", {"active": 9})
+            self.assertEqual(mc._load_profile_feedback("off", "USB MyPort 1", base), {})
+
+    def test_named_profile_loads(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            ControllerProfileStore(base / "grid.json").save("W", [], feedback={"fx_on": 7})
+            self.assertEqual(mc._load_profile_feedback("grid", "Unrelated", base).get("fx_on"), 7)
+
 
 # ------------------------------------------------------ merge precedence -------
 class MergePrecedenceTests(unittest.TestCase):
@@ -198,6 +244,24 @@ class WizardHelperTests(unittest.TestCase):
         out = midi_setup.dedupe_mappings(maps)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["action"], "cycle_style")
+
+    def test_build_feedback_block_defaults_and_overrides(self):
+        # Defaults come from FeedbackMap; a valid override wins, a bad one is
+        # dropped; the port is included when given.
+        block = midi_setup.build_feedback_block(
+            port="Launchpad OUT", overrides={"active": 5, "loaded": 999, "bogus": 1}
+        )
+        default = mc.FeedbackMap().to_dict()
+        self.assertEqual(block["active"], 5)
+        self.assertEqual(block["loaded"], default["loaded"])  # out-of-range dropped
+        self.assertNotIn("bogus", block)
+        self.assertEqual(block["port"], "Launchpad OUT")
+        # Round-trips through the runtime reader without loss.
+        self.assertEqual(mc.FeedbackMap.from_dict(block).active, 5)
+
+    def test_build_feedback_block_no_port(self):
+        block = midi_setup.build_feedback_block()
+        self.assertNotIn("port", block)
 
     def test_learned_entries_validate(self):
         # Everything the wizard can build must pass the config validator, so a

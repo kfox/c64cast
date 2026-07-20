@@ -663,5 +663,217 @@ class BuildListenerTests(unittest.TestCase):
                 midi_control.build_midi_control_listener({"system": pl}, fake_cfg)
 
 
+# ----------------------------------------------------- LED feedback (Phase 4) ---
+class _FakeOutPort:
+    """mido-output stand-in: records every sent Message, closes cleanly."""
+
+    def __init__(self) -> None:
+        self.sent: list[Any] = []
+        self.closed = False
+
+    def send(self, msg: Any) -> None:
+        self.sent.append(msg)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakePerf:
+    def __init__(self, *, clip_pads=(), active=None, armed=None) -> None:
+        self._clip_pads = list(clip_pads)  # (pad_type, number, slot)
+        self.active_slot = active
+        self.armed_slot = armed
+
+    def clip_pad_mappings(self):
+        return list(self._clip_pads)
+
+
+class _FakeEffect:
+    def __init__(self, enabled=True) -> None:
+        self.enabled = enabled
+
+
+class _FakeScene:
+    def __init__(self, effects=()) -> None:
+        self.effects = list(effects)
+
+
+def _perf_playlist(name, *, clip_pads=(), active=None, armed=None, effects=()):
+    pl = mock.MagicMock(name=name)
+    pl.name = name
+    pl.performance = _FakePerf(clip_pads=clip_pads, active=active, armed=armed)
+    pl.current = _FakeScene(effects=effects)
+    return pl
+
+
+class ComputePadLedsTests(unittest.TestCase):
+    """The pure state→velocity mapping (no mido, no threads)."""
+
+    def setUp(self):
+        self.fm = midi_control.FeedbackMap()  # Launchpad-X defaults
+
+    def test_loaded_active_armed(self):
+        out = midi_control.compute_pad_leds(
+            [(60, 1), (61, 2), (62, 3)], [], {1}, {2}, set(), self.fm, blink_on=True
+        )
+        self.assertEqual(out[60], self.fm.active)  # slot 1 is live
+        self.assertEqual(out[61], self.fm.armed)  # slot 2 arming, blink on-phase
+        self.assertEqual(out[62], self.fm.loaded)  # slot 3 idle
+
+    def test_armed_blink_off_phase_extinguishes(self):
+        out = midi_control.compute_pad_leds(
+            [(61, 2)], [], set(), {2}, set(), self.fm, blink_on=False
+        )
+        self.assertEqual(out[61], self.fm.off)
+
+    def test_fx_pad_lit_when_layer_enabled(self):
+        on = midi_control.compute_pad_leds([], [(70, 0)], set(), set(), {0}, self.fm, blink_on=True)
+        off = midi_control.compute_pad_leds(
+            [], [(70, 0)], set(), set(), set(), self.fm, blink_on=True
+        )
+        self.assertEqual(on[70], self.fm.fx_on)
+        self.assertEqual(off[70], self.fm.off)
+
+    def test_brighter_role_wins_on_shared_note(self):
+        # A note claimed as both a loaded clip pad and a lit fx pad → the brighter.
+        out = midi_control.compute_pad_leds(
+            [(70, 9)], [(70, 0)], set(), set(), {0}, self.fm, blink_on=True
+        )
+        self.assertEqual(out[70], max(self.fm.loaded, self.fm.fx_on))
+
+
+class FeedbackMapTests(unittest.TestCase):
+    def test_none_and_empty_yield_defaults(self):
+        self.assertEqual(midi_control.FeedbackMap.from_dict(None), midi_control.FeedbackMap())
+        self.assertEqual(midi_control.FeedbackMap.from_dict({}), midi_control.FeedbackMap())
+
+    def test_override_and_tolerant_parsing(self):
+        fm = midi_control.FeedbackMap.from_dict(
+            {"active": 5, "loaded": 200, "armed": True, "bogus": 1, "port": "X"}
+        )
+        d = midi_control.FeedbackMap()
+        self.assertEqual(fm.active, 5)  # valid override
+        self.assertEqual(fm.loaded, d.loaded)  # 200 out of range → default
+        self.assertEqual(fm.armed, d.armed)  # bool rejected → default
+
+    def test_round_trip_to_dict(self):
+        fm = midi_control.FeedbackMap(channel=1, active=7)
+        self.assertEqual(midi_control.FeedbackMap.from_dict(fm.to_dict()), fm)
+
+
+class _FeedbackListenerTestCase(unittest.TestCase):
+    def _listener(self, playlists, cc_map=None, **kw):
+        return MidiControlListener(
+            {pl.name: pl for pl in playlists}, cc_map or [], feedback_enabled=True, **kw
+        )
+
+
+class LedPadListTests(_FeedbackListenerTestCase):
+    def test_build_led_pad_lists_from_clips_and_fx(self):
+        pl = _perf_playlist("a", clip_pads=[("note", 60, 1), ("pc", 5, 2)])
+        cc_map = [{"type": "note", "number": 70, "action": "fx_toggle", "slot": 2}]
+        lis = self._listener([pl], cc_map)
+        lis._build_led_pad_lists()
+        self.assertEqual(lis._led_clip_pads, [(60, 1)])  # pc pad excluded (no note-on)
+        self.assertEqual(lis._led_fx_pads, [(70, 2)])
+
+    def test_compute_led_map_reads_playlist_state(self):
+        fx = _FakeScene(effects=[_FakeEffect(True), _FakeEffect(False)])
+        pl = _perf_playlist("a", clip_pads=[("note", 60, 1)], active=1)
+        pl.current = fx
+        cc_map = [
+            {"type": "note", "number": 70, "action": "fx_toggle", "slot": 0},
+            {"type": "note", "number": 71, "action": "fx_toggle", "slot": 1},
+        ]
+        lis = self._listener([pl], cc_map)
+        lis._build_led_pad_lists()
+        m = lis._compute_led_map(blink_on=True)
+        fmap = lis._fmap
+        self.assertEqual(m[60], fmap.active)  # clip slot 1 is live
+        self.assertEqual(m[70], fmap.fx_on)  # layer 0 enabled
+        self.assertEqual(m[71], fmap.off)  # layer 1 bypassed
+
+
+class LedEmitTests(_FeedbackListenerTestCase):
+    def test_emit_diff_only_sends_changes(self):
+        lis = self._listener([_perf_playlist("a")])
+        lis._out_port = _FakeOutPort()
+        lis._emit_led_diff({60: 21, 61: 1})
+        self.assertEqual(len(lis._out_port.sent), 2)
+        lis._emit_led_diff({60: 21, 61: 1})  # unchanged → no sends
+        self.assertEqual(len(lis._out_port.sent), 2)
+        lis._emit_led_diff({60: 5, 61: 1})  # only 60 changed
+        self.assertEqual(len(lis._out_port.sent), 3)
+        last = lis._out_port.sent[-1]
+        self.assertEqual((last.type, last.note, last.velocity), ("note_on", 60, 5))
+
+    def test_extinguish_all_sends_off_for_managed_pads(self):
+        lis = self._listener([_perf_playlist("a")])
+        lis._out_port = _FakeOutPort()
+        lis._led_clip_pads = [(60, 1)]
+        lis._led_fx_pads = [(70, 0)]
+        lis._led_state = {60: 21, 99: 1}
+        lis._extinguish_all()
+        offed = {m.note for m in lis._out_port.sent}
+        self.assertEqual(offed, {60, 70, 99})
+        self.assertTrue(all(m.velocity == lis._fmap.off for m in lis._out_port.sent))
+        self.assertEqual(lis._led_state, {})
+
+
+class FeedbackLifecycleTests(_FeedbackListenerTestCase):
+    def test_start_opens_output_and_runs_thread_then_extinguishes(self):
+        pl = _perf_playlist("a", clip_pads=[("note", 60, 1)])
+        lis = self._listener([pl])
+        out = _FakeOutPort()
+        with (
+            mock.patch.object(
+                lis,
+                "_open_port",
+                side_effect=lambda: (
+                    setattr(lis, "_midi_port", _FakePort()),
+                    setattr(lis, "_opened_port_name", "Launchpad"),
+                ),
+            ),
+            mock.patch.object(midi_control.mido, "get_output_names", return_value=["Launchpad"]),
+            mock.patch.object(midi_control.mido, "open_output", return_value=out),
+        ):
+            lis.start()
+        try:
+            self.assertIs(lis._out_port, out)
+            fb = lis._feedback_thread
+            assert fb is not None
+            self.assertTrue(fb.is_alive())
+            # The clip pad gets painted (loaded) within a couple of poll cycles.
+            deadline = time.monotonic() + 1.0
+            while not out.sent and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(any(m.note == 60 for m in out.sent))
+        finally:
+            lis.stop()
+        self.assertIsNone(lis._feedback_thread)
+        self.assertTrue(out.closed)
+        # stop() extinguished pad 60 last (off velocity).
+        offs = [m for m in out.sent if m.note == 60 and m.velocity == lis._fmap.off]
+        self.assertTrue(offs)
+
+    def test_no_output_ports_disables_feedback_gracefully(self):
+        pl = _perf_playlist("a", clip_pads=[("note", 60, 1)])
+        lis = self._listener([pl])
+        with (
+            mock.patch.object(
+                lis,
+                "_open_port",
+                side_effect=lambda: setattr(lis, "_midi_port", _FakePort()),
+            ),
+            mock.patch.object(midi_control.mido, "get_output_names", return_value=[]),
+        ):
+            lis.start()
+        try:
+            self.assertIsNone(lis._out_port)
+            self.assertIsNone(lis._feedback_thread)
+        finally:
+            lis.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1729,9 +1729,12 @@ def main(argv=None) -> int:
                     playlists={st.name: st.playlist for st in stacks},
                     cfg=midi_cfg,
                     # [performance] is per-system-cascaded, so cfgs[0] carries
-                    # the effective clock_port (identical across systems in
-                    # ensemble mode — the clock is process-wide).
+                    # the effective clock_port / feedback settings (identical
+                    # across systems in ensemble mode — the clock + LED-out port
+                    # are process-wide).
                     clock_port=cfgs[0].performance.clock_port,
+                    feedback_enabled=cfgs[0].performance.midi_feedback,
+                    feedback_port=cfgs[0].performance.feedback_port,
                 )
                 midi_control_listener.start()
             except (cfgmod.ConfigError, RuntimeError, ValueError) as e:
