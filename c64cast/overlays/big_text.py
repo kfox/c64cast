@@ -666,9 +666,9 @@ class BigTextOverlay(Overlay):
 
         Pure render — does not advance `_scroll_frame`, pick a message,
         or check end-of-scroll. The conductor's compose() above handles
-        position math + advance; the follower overlay in BigTextSpan
-        mode (see commit 14) calls this directly with bits + x_left_px
-        derived from the orchestrator snapshot.
+        position math + advance; the follower path (`_compose_follower`
+        above) calls this directly with bits + x_left_px derived from
+        the orchestrator snapshot.
 
         `active_color` is an FG color index 0..15, or `_RAINBOW_SENTINEL`
         to color each column with a different palette entry."""

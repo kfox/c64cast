@@ -7,9 +7,9 @@ and renders a slice of the same message as if all N screens formed one
 rightmost system, exiting off the leftmost.
 
 This module ships the orchestrator subclass. The big_text overlay's
-conductor + follower hooks (which actually drive `publish_bits`/
-`advance` from the rightmost system's render path, and consume
-`snapshot()` from the followers') land in commit 14.
+conductor + follower hooks — which drive `publish_bits`/`advance` from
+the rightmost system's render path, and consume `snapshot()` from the
+followers' — live in `c64cast/overlays/big_text.py`.
 """
 
 from __future__ import annotations
