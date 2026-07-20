@@ -1002,6 +1002,27 @@ def build_stack(
         performance=cfg.performance,
     )
 
+    # Clip-launch build factory (Live-performance Phase 2): turn a
+    # [[performance.clips]] dict into a Scene, closing over this stack's
+    # api/audio/source/cfg (the playlist can't build scenes itself), mirroring
+    # the ensemble `build_follower_scene` wiring. The PerformanceSession calls
+    # this on a background thread during the count-in; setup() runs later on the
+    # playlist thread at the swap.
+    playlist.build_performance_scene = (
+        lambda clip, _cfg=cfg, _api=api, _audio=audio, _source=source, _reu=reu_available, _samp=sampler_available, _ens=is_ensemble: (
+            cfgmod.build_scene(
+                cfgmod.clip_scene_cfg(clip),
+                _cfg,
+                _api,
+                _audio,
+                _source,
+                is_ensemble=_ens,
+                reu_available=_reu,
+                sampler_available=_samp,
+            )
+        )
+    )
+
     return SystemStack(
         name=name,
         cfg=cfg,

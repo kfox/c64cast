@@ -110,17 +110,30 @@ _ACTIONS = (
     # the internal beat grid. In-memory only, no DMA. Mirrored in
     # config._MIDI_ACTION_CHOICES.
     "tempo_tap",
+    # Clip launch (Live-performance Phase 2): note/PC/pad -> clip `slot`, fired
+    # quantized to pl.tempo. Enqueues a ClipEvent onto pl.performance (drained on
+    # the playlist thread — no scene mutation here). Release-aware (gate/toggle);
+    # see _RELEASE_AWARE_ACTIONS. Mirrored in config._MIDI_ACTION_CHOICES.
+    "clip_launch",
 )
 
 # Double-tap window for the osd.position action (a second press within this many
 # seconds hides the OSD instead of toggling its corner).
 _OSD_DOUBLE_TAP_S = 0.4
 
-# Transport actions where a note release (note_off / note_on velocity==0)
-# carries meaning (stopping a held rw/ff ramp, or ending a Record/Stop hold
-# for the loop_slot pad chords) — every other action ignores releases
-# entirely, same as before this phase.
-_HOLD_TRANSPORT_ACTIONS = ("transport.rw", "transport.ff", "transport.record", "transport.stop")
+# Actions where a note release (note_off / note_on velocity==0) carries meaning
+# — every other action ignores releases entirely (a release is dropped in
+# _dispatch unless the action is in here). Covers the transport hold actions
+# (stopping a held rw/ff ramp, ending a Record/Stop hold for the loop_slot pad
+# chords) plus clip_launch (a gate clip plays while held; a toggle needs the
+# release delivered too, harmlessly ignored by the engine).
+_RELEASE_AWARE_ACTIONS = (
+    "transport.rw",
+    "transport.ff",
+    "transport.record",
+    "transport.stop",
+    "clip_launch",
+)
 
 # MMC (MIDI Machine Control) transport command bytes this module recognizes,
 # from the SysEx frame `F0 7F <dev> 06 <cmd> F7`: 01 stop, 02 play, 04 FF,
@@ -190,8 +203,8 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
                 f"cc_map[{i}] action 'transport.jog' mode must be 'abs' or 'rel', got {mode!r}"
             )
         slot = entry.get("slot")
-        if action == "loop_slot" and (not isinstance(slot, int) or slot < 1):
-            raise ValueError(f"cc_map[{i}] action 'loop_slot' needs an int 'slot' >= 1")
+        if action in ("loop_slot", "clip_launch") and (not isinstance(slot, int) or slot < 1):
+            raise ValueError(f"cc_map[{i}] action {action!r} needs an int 'slot' >= 1")
         out[(kind, number)] = _CCMapping(
             kind=kind,
             number=number,
@@ -410,6 +423,7 @@ class MidiControlListener:
                     self._controller_profile,
                     max(0, n_profile),
                 )
+            self._add_clip_pad_mappings()
         except ValueError:
             # A malformed profile file must never take down the listener — keep
             # the already-parsed base mapping and warn.
@@ -434,6 +448,23 @@ class MidiControlListener:
             len(self._mapping),
             len(self._all),
         )
+
+    def _add_clip_pad_mappings(self) -> None:
+        """Fold each clip's own ``pad``/``pad_type`` (from [[performance.clips]])
+        into the effective mapping as a ``clip_launch`` entry, so a clip fires
+        from its declared note/PC with no separate cc_map line. An explicit
+        cc_map/profile entry on the same (kind, number) wins (we never overwrite
+        one already present). Clip pads carry no channel, so a pad shared across
+        ensemble systems maps once (first system's slot wins by (kind, number) —
+        write an explicit per-channel cc_map to diverge)."""
+        for pl in self._all:
+            for kind, number, slot in pl.performance.clip_pad_mappings():
+                key = (kind, number)
+                if key in self._mapping:
+                    continue
+                self._mapping[key] = _CCMapping(
+                    kind=kind, number=number, action="clip_launch", slot=slot
+                )
 
     def _open_clock_port(self) -> None:
         """Open a dedicated MIDI clock input when `clock_port_name` is set and
@@ -573,7 +604,7 @@ class MidiControlListener:
         mapping = self._mapping.get((kind, number))
         if mapping is None:
             return
-        if not pressed and mapping.action not in _HOLD_TRANSPORT_ACTIONS:
+        if not pressed and mapping.action not in _RELEASE_AWARE_ACTIONS:
             return
         for pl in self._targets(msg):
             try:
@@ -615,6 +646,13 @@ class MidiControlListener:
             # grid's tap-tempo averager — in-memory only, no DMA. Runs directly
             # on the reader thread (TempoClock.tap is self-locked).
             pl.tempo.tap(time.monotonic())
+        elif action == "clip_launch":
+            # Enqueue only — the launch engine drains this on the playlist thread
+            # (arm → background build → quantized swap), never mutating scenes
+            # here on the reader thread. Release delivered for gate/toggle.
+            from .performance import ClipEvent
+
+            pl.performance.enqueue(ClipEvent(slot=mapping.slot or 0, pressed=pressed))
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(

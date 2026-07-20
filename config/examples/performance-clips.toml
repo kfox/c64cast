@@ -1,0 +1,88 @@
+#:schema ../../c64cast.schema.json
+# Clip-launch grid demo (Live DJ/VJ Phase 2): fire scenes from a MIDI
+# controller, quantized to a musical beat grid — a "video sampler" in the
+# spirit of a Roland P-10.
+#
+# The [[scenes]] block below is the *base program* (a plasma generator). The
+# [[performance.clips]] bank is the grid: each pad, when pressed, arms a clip,
+# builds its scene on a background thread during the count-in, and swaps it in
+# on the next beat/bar boundary — so even scene-*type* changes work as live
+# hits. Nothing is drawn on the C64 screen to say what's armed/active (the
+# output is audience-facing); that feedback is for controller LEDs / the web
+# console (later phases).
+#
+# This demo is asset-free (generative/blank sources), so it runs on real
+# hardware with no media files. Swap a clip's `type`/`file` for a video or a
+# `.sid` waveform to fire real clips.
+#
+# Live control (default: notes 60-63 fire slots 1-4; a `tempo_tap` pad on
+# note 48 sets the internal tempo):
+#   note 60  slot 1  trigger  bar   plasma loop
+#   note 61  slot 2  gate     beat  tunnel while held
+#   note 62  slot 3  toggle   bar   fire latch on/off
+#   note 63  slot 4  trigger  off   blank cut (instant)
+#
+# Requires the `midi` extra (`pip install -e .[midi]`) and a MIDI controller.
+# With no external clock the grid free-runs at [performance].bpm; tap note 48
+# to set it, or set tempo_source = "midi" to follow a DAW's clock.
+#
+# Run:
+#   python -m c64cast --config config/examples/performance-clips.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[midi_control]
+enabled = true                      # opens a MIDI input; clip pads auto-map
+
+[performance]
+tempo_source = "internal"           # free-run; tap note 48 to set the tempo
+bpm = 120.0
+beats_per_bar = 4
+
+[[performance.clips]]
+slot = 1
+type = "generative"
+source = "plasma"
+display = "mhires"
+pad = 60
+launch = "trigger"                  # play + loop until another clip fires
+quantize = "bar"
+
+[[performance.clips]]
+slot = 2
+type = "generative"
+source = "tunnel"
+display = "mhires"
+pad = 61
+launch = "gate"                     # plays while the pad is held, then returns
+quantize = "beat"
+
+[[performance.clips]]
+slot = 3
+type = "generative"
+source = "fire"
+display = "mhires"
+pad = 62
+launch = "toggle"                   # press on, press off
+quantize = "bar"
+
+[[performance.clips]]
+slot = 4
+type = "blank"
+pad = 63
+launch = "trigger"
+quantize = "off"                    # instant cut, no count-in
+
+[[midi_control.cc_map]]
+type = "note"
+number = 48
+action = "tempo_tap"                # tap this pad to set the internal tempo
+
+[[scenes]]
+type = "generative"
+name = "Base program"
+source = "plasma"
+display = "mhires"
+audio_source = "none"
+duration_s = 0.0                    # run forever — clips overlay it
