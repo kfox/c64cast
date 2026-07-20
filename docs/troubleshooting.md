@@ -19,11 +19,31 @@ at the right corner of the system.
 
 ### "Audio sounds robotic / metallic / quantized"
 
-Working as intended. The SID DAC streaming path is 4-bit @ 8 kHz; that
-*is* the format a real C64 plays through. Raising `[audio] sample_rate`
-does NOT improve quality — the C64-side NMI is sized for 8 kHz and
-nothing in the pipeline resamples; other rates play at the wrong
-pitch. See [caveats.md → "Audio is intentionally lo-fi"](caveats.md#audio-is-intentionally-lo-fi).
+Mostly working as intended — the SID's `$D418` DAC is inherently low-fi, and
+that character *is* the sound of a real C64. But if reaching for `[audio]
+sample_rate` is your instinct, that's the wrong lever; here's the accurate
+picture and the knobs that actually help:
+
+- **Rate isn't the quality knob.** The default is 12 kHz. The C64-side NMI
+  period is derived *from* `sample_rate` (it programs the CIA #2 Timer A
+  latch), so raising the rate keeps pitch correct and lifts the Nyquist
+  modestly — 12 kHz already carries the fricatives/sibilants 8 kHz lost. But
+  the NMI handler has a fixed cycle budget, so there's little headroom above
+  the default: the live pipeline starts underrunning around ~12.5 kHz, and
+  rates past the isolated-handler ceiling (~13.6 kHz NTSC) are *rejected at
+  load* (`c64.nmi_rate_safety`).
+- **Bit depth is `[audio] dac_curve`, not the rate.** The default `"auto"`
+  already lifts the U64's (deterministic emulated) SID to the Mahoney 8-bit
+  `$D418` technique — ~6-7 effective bits, not 4 — and `--calibrate-dac`
+  extends that to a physical SID. Only an uncalibrated physical/unknown chip
+  falls back to the classic 4-bit linear path.
+- **On the U64, video audio isn't on the `$D418` DAC at all by default.**
+  `[audio] backend = "auto"` uses the off-bus Ultimate Audio PCM sampler,
+  far higher fidelity than any `$D418` path. Persistent robotic *video*
+  audio usually means the DAC backend was forced (`backend = "dac"`) or the
+  sampler wasn't available.
+
+See [caveats.md → "Audio is intentionally lo-fi"](caveats.md#audio-is-intentionally-lo-fi).
 
 ### "Audio cuts in and out / drops to a steady `writes=4/s` trickle"
 
@@ -38,8 +58,10 @@ a queue percentage.) Possible causes:
 - DMA latency is spiking — run `--profile` and check the
   `u64 dma latency` line. Sustained values well above ~5 ms mean the
   network or U64 is congested.
-- `[audio] sample_rate` raised past 8 kHz. Set it back (the C64-side NMI
-  is sized for 8 kHz; nothing resamples).
+- `[audio] sample_rate` pushed near the ceiling. The default 12 kHz already
+  sits just below the ~12.5 kHz streaming-underrun onset, so if you raised
+  it, nudge it back toward the default. (Rates past ~13.6 kHz NTSC are
+  rejected at load outright, so this only bites in the 12.5–13.6 kHz band.)
 - For a `video` scene stuck at `writes=4/s bytes=4KiB/s` for
   minutes after the clip should have ended, the demuxer hit EOF but the
   video buffer never cleared — that's a known edge handled in
@@ -50,9 +72,12 @@ a queue percentage.) Possible causes:
 
 1. `python -m c64cast --list-devices` — is your mic listed under
    "Audio input devices"? If not, your OS denied microphone permission.
-2. Check `[audio] noise_gate` — at 0.05 it cuts only background hum,
-   but if your mic level is low everything gets gated. Lower it to
-   0.01 to test.
+2. Your mic level is low and the noise-floor cleanup is squelching
+   everything. By default the `[dsp]` chain is ON and its downward expander
+   handles the floor — lower `[dsp] expander_threshold_db` (default `-45`)
+   or raise `[audio] mic_sensitivity` to test. (`[audio] noise_gate` only
+   applies when `[dsp] enabled = false`; in that legacy path, lower it from
+   `0.05` toward `0.01`.)
 3. `pip install -e .[mic]` — without the `mic` extra the audio path
    silently disables itself with one warning.
 

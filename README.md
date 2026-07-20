@@ -64,8 +64,9 @@ for a set duration, with an "UP NEXT" interstitial between them:
 * **ASID client** — receive an ASID stream (DeepSID in a browser,
   SIDFactory II, Plogue chipsynth C64, …) and play it on the real SID with
   the same 3-voice scope (`midi` extra).
-* **Generative** — procedural plasma/tunnel/fire sources, optionally
-  music-reactive and with pixel effects (trails, pulse, RGB shift).
+* **Generative** — ~20 procedural sources (plasma, tunnel, fire,
+  mandelbrot, metaballs, game of life, …), optionally music-reactive and
+  with pixel effects (trails, pulse, RGB shift, blur).
 * **Launcher** — hand the machine over to a native `.prg`/`.crt` game or
   demo, then reclaim it.
 * **WLED matrix** — turn the C64 into a virtual LED matrix and stream live
@@ -76,8 +77,8 @@ for a set duration, with an "UP NEXT" interstitial between them:
 **Display + audio** — six VIC-II display modes (`hires`, `hires_edges`,
 `mhires`, `petscii`, `mcm`, `blank`), each with its own vectorized
 quantizer (~30 fps bitmap, 50/60 fps char over a LAN). Audio plays through
-the SID's 4-bit `$D418` DAC or, on the U64, the high-fidelity Ultimate
-Audio FPGA PCM sampler.
+the SID's lo-fi `$D418` DAC (4-bit, or ~6-7-bit via the Mahoney companding
+technique) or, on the U64, the high-fidelity Ultimate Audio FPGA PCM sampler.
 
 **Overlays** — stack on any compatible scene: scrolling text, marquee, RSS
 ticker, PETSCII spectrum analyzer, clock, weather, callsign, countdown,
@@ -340,10 +341,13 @@ There's a `Makefile` available that offers a few development targets:
 ```bash
 ⮑  make
 targets:
+  sync       uv sync --all-extras (refresh the project env)
   lint       ruff check
-  test       unittest discover
-  coverage   coverage report + HTML
+  fmt        ruff format
+  test       unittest discover (T=tests.test_foo runs just that)
+  coverage   coverage report + HTML + coverage.xml + JUnit XML
   typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)
+  doctor     offline env + config diagnostics (desynced .venv, drift)
   bench      scripts/bench.py — async write pipeline
   schema     regenerate c64cast.schema.json from the config metadata
   check      lint + typecheck + test

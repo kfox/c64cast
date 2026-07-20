@@ -3,7 +3,7 @@
 A small 6502 routine at $C020 pulls one sample per NMI from an 8 KB ring
 buffer at $4000-$5FFF, writing the low nibble to $D418. Python feeds the
 ring buffer via Socket DMA. CIA #2 Timer A fires NMIs at the configured
-sample rate (default 10.5 kHz — lifts the Nyquist to ~5.25 kHz so fricatives
+sample rate (default 12 kHz — lifts the Nyquist to ~6.0 kHz so fricatives
 survive; HW-verified to stay under the handler's badline cycle budget on both
 NTSC and PAL. c64.nmi_rate_safety guards against rates that would overrun it).
 
@@ -40,7 +40,7 @@ writes barely move the speaker on 8580s / emulated SIDs.
 
 The worker uses strict absolute pacing: chunk writes land exactly chunk_period
 after the previous one, never snapping forward on overrun. The 8 KB ring
-(~1 s @ 8 kHz) absorbs DMA stalls and GC pauses.
+absorbs DMA stalls and GC pauses.
 
 The NMI fires independently of whatever the 6502 is doing — typically a
 tiny `10 PRINT CHR$(147) : 20 GOTO 20` BASIC loop kicked off by
@@ -147,7 +147,7 @@ NMI_ROUTINE_ADDR = 0xC020
 
 # Audio ring buffer: 8 KB at $4000-$5FFF. The NMI routine reads one sample
 # per fire and the Python worker refills the buffer in chunk_size pieces,
-# wrapping at the end. 8 KB = ~1 s @ 8 kHz gives the paced worker enough
+# wrapping at the end. 8 KB gives the paced worker enough
 # slack that occasional latency spikes (DMA stalls, GC pauses) don't let
 # NMI's read pointer catch up to the worker's write pointer and start
 # replaying stale audio (audible as a brief echo).
@@ -167,7 +167,7 @@ RING_BUFFER_END_HI = RING_BUFFER_END >> 8
 # worker to silence the ring, it NEUTRAL-fills the unplayed span [R+guard, W).
 # The guard leaves a small stale tail un-stomped so the fill never races the NMI
 # read head R forward into a byte the FPGA/NMI is about to consume: the NMI
-# consumes ~8 B/ms @ 8 kHz, so 128 B ≈ 16 ms of headroom.
+# consumes one byte per sample, so 128 B ≈ 11 ms of headroom at the default rate.
 STOMP_GUARD_BYTES = 128
 
 
@@ -286,14 +286,14 @@ def encode_floats_to_dac(
 
 # Queue + backpressure sizing.
 AUDIO_QUEUE_MAX_BLOBS = 256  # outer cap (per-blob, not per-sample)
-MAX_QUEUED_SAMPLES = 16384  # soft cap (~2 s @ 8 kHz)
+MAX_QUEUED_SAMPLES = 16384  # soft cap (~1.4 s @ 12 kHz)
 PREBUFFER_CHUNKS = 6  # chunks to buffer before starting NMI
 QUEUE_PUT_TIMEOUT_S = 0.2
 BACKPRESSURE_SPIN_S = 0.005  # sleep between full-queue retries
 
 # Pre-quantization sample tap. Holds the most recent SAMPLE_TAP_SIZE float
 # samples in [-1, 1] for FFT-based overlays (spectrum analyzers). Sized to
-# cover ~256 ms at 8 kHz, giving a usable FFT down to ~30 Hz.
+# cover ~170 ms at 12 kHz, giving a usable FFT down to ~45 Hz.
 SAMPLE_TAP_SIZE = 2048
 
 
@@ -302,11 +302,11 @@ SAMPLE_TAP_SIZE = 2048
 # REU (RAM Expansion Unit) FPGA SRAM via socket DMA opcode 0xFF07 REUWRITE.
 # Once loaded, a small 6502 IRQ handler at $C100 triggers REU→ring DMAs at
 # the kernal IRQ rate (~62 Hz after CIA #1 reprogramming) to refill the audio
-# ring buffer at $4000. NMI continues to consume the ring at 8 kHz exactly as
-# in the existing host-DMA path. The key win: host-side DMAWRITEs to the ring
-# (which audibly perturb SID output on real hardware — the "gurgling" artifact)
-# are replaced entirely by C64-side REU DMAs whose deterministic CIA timing
-# produces perceptually cleaner audio.
+# ring buffer at $4000. NMI continues to consume the ring at the configured
+# sample_rate exactly as in the existing host-DMA path. The key win: host-side
+# DMAWRITEs to the ring (which audibly perturb SID output on real hardware —
+# the "gurgling" artifact) are replaced entirely by C64-side REU DMAs whose
+# deterministic CIA timing produces perceptually cleaner audio.
 #
 # REU mode is opt-in via [audio].use_reu_pump in TOML, and only the
 # VideoScene branch uses it today (whole track known upfront).
@@ -339,12 +339,12 @@ REU_UPLOAD_SLICE = 32 * 1024  # bytes per socket REUWRITE (one per slice)
 # crossed the pointers and produced the echo.
 #
 # Seeding W exactly half a ring behind R (dst = src = RING_BUFFER_SIZE/2)
-# is the symmetric optimum: ~0.5 s of jitter headroom in BOTH directions
+# is the symmetric optimum: half a ring of jitter headroom in BOTH directions
 # before a crossing. Data continuity is unchanged because src offset ≡ dst
 # position (mod ring) — the pump just redundantly re-writes the upper half
 # of the prefill with identical bytes once at startup, then runs steadily
 # half a ring behind the reader. See start_for_reu_staged step 3.
-REU_PUMP_INITIAL_MARGIN = RING_BUFFER_SIZE // 2  # 4096 B ≈ 0.5 s @ 8 kHz
+REU_PUMP_INITIAL_MARGIN = RING_BUFFER_SIZE // 2  # 4096 B = half the ring
 
 # When the active display mode halts the C64 bus heavily (mhires DMAWRITE
 # is ~300 KB/sec which makes NMI lose ~30% of its ticks — measured at
@@ -354,8 +354,9 @@ REU_PUMP_INITIAL_MARGIN = RING_BUFFER_SIZE // 2  # 4096 B ≈ 0.5 s @ 8 kHz
 # also varies with what video is doing. 80 is a compromise: slight
 # under-production for the worst-case (all-frame full bitmap) means NMI
 # pads NEUTRAL on a few percent of samples (mild background hiss) but the
-# ring never overflows. For PETSCII / Blank scenes (no bitmap DMA),
-# the default 128 = perfect 8 kHz match.
+# ring never overflows. For PETSCII / Blank scenes (no bitmap DMA), the
+# default 128 matches the consumer (the pump's CIA #1 latch tracks the live
+# NMI rate).
 REU_PUMP_CHUNK_SIZE_HEAVY_BUS = 80
 
 # CIA #1 Timer A latch for matched pump rate. Pump period = chunk × NMI
@@ -434,8 +435,8 @@ HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
 #
 # Deadband MUST be >= one latch quantum (~1% rate/step): the latch is integer, so
 # a narrower deadband limit-cycles ±1 step = an audible ~1% pitch wobble. The EMA
-# alpha sets the rate-estimator time constant (~chunk_period/alpha ≈ 2.5 s at
-# 10.5 kHz / 1024-byte chunks) — long enough to reject the torn-16-bit-read
+# alpha sets the rate-estimator time constant (~chunk_period/alpha ≈ 2.1 s at
+# 12 kHz / 1024-byte chunks) — long enough to reject the torn-16-bit-read
 # noise, short enough to re-acquire after a scene cut. The coarse zone allows a
 # bigger acquisition step so a cold start converges in ~2-3 s instead of ~9 s;
 # inside the fine zone it moves ±1 so steady-state pitch steps are inaudible.
@@ -904,7 +905,7 @@ assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
 # first burst of real mic data lands ahead of the pump's read position
 # (= steady-state latency of REU_MIC_BOOTSTRAP_BYTES / sample_rate).
 #
-# Sized for 64 KB / 8 sec @ 8 kHz — generous burst headroom. The host
+# Sized for 64 KB — generous burst headroom (several seconds). The host
 # produces at exact mic rate; the pump consumes at NMI-matched rate
 # (~0.16% slower than mic on NTSC, faster on PAL). The small mismatch
 # eats / produces ~16 B/sec of drift; the ring absorbs hours of mismatch
@@ -912,11 +913,11 @@ assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
 # sessions this is invisible; for very long sessions a periodic resync
 # would be needed (future work).
 REU_MIC_BASE = 0x100000  # 1 MB into REU — well above the audio region
-REU_MIC_SIZE = 0x10000  # 64 KB = 8 sec @ 8 kHz
+REU_MIC_SIZE = 0x10000  # 64 KB (several seconds of headroom)
 REU_MIC_END = REU_MIC_BASE + REU_MIC_SIZE
 REU_MIC_BASE_HI = (REU_MIC_BASE >> 16) & 0xFF
 REU_MIC_END_HI = (REU_MIC_END >> 16) & 0xFF
-REU_MIC_BOOTSTRAP_BYTES = 1600  # 200 ms @ 8 kHz; tunes steady-state latency
+REU_MIC_BOOTSTRAP_BYTES = 1600  # ~133 ms @ 12 kHz; tunes steady-state latency
 
 # Main-RAM REU-source tracker for the mic pump. Three bytes (LO/MI/HI) the
 # handler loads into $DF04/$DF05/$DF06 before each trigger, then increments
@@ -1378,7 +1379,7 @@ class AudioStreamer:
         self._flush_epoch = 0
         self._count_lock = threading.Lock()
         self._stomp_requested = False
-        # Cap the buffered audio at ~2 s @ 8 kHz so a stalled consumer
+        # Cap the buffered audio (MAX_QUEUED_SAMPLES) so a stalled consumer
         # doesn't accumulate a wall of stale audio.
         self._max_queued_samples = MAX_QUEUED_SAMPLES
         self.running = False
@@ -2259,7 +2260,7 @@ class AudioStreamer:
         self._pushed_count = 0
         # Bootstrap: start the host write head 200 ms ahead of the pump's
         # read head. Steady-state latency = REU_MIC_BOOTSTRAP_BYTES /
-        # sample_rate (200 ms at 8 kHz).
+        # sample_rate (~133 ms at the 12 kHz default).
         self._mic_reu_write_pos = REU_MIC_BOOTSTRAP_BYTES
 
         # 8. Open the mic input stream with the REU callback. _open_input_stream
@@ -2422,8 +2423,8 @@ class AudioStreamer:
         ``chunk_size`` overrides the default REU_PUMP_CHUNK_SIZE for scenes
         where the C64 bus is heavily halted (e.g. mhires DMAWRITE). The pump
         production rate is chunk × pump_irq_rate; when NMI consumption drops
-        below 8 kHz due to bus halts, a smaller chunk keeps the ring from
-        overflowing. See REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the measured
+        below the configured sample_rate due to bus halts, a smaller chunk keeps
+        the ring from overflowing. See REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the measured
         value (4020 Hz NMI under mhires-like halts → ~65 bytes/IRQ).
 
         ``skip_irq_vector_hook``: when True, skip step 6 (patching

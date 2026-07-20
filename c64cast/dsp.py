@@ -31,10 +31,10 @@ asserts this continuity directly for each processor.
 
 **Performance.** The attack/release envelope followers and the expander gate are
 genuinely recursive (per-sample state, attack≠release branch), so they use a
-Python loop rather than a vectorized form — no scipy in the dep set. At 8 kHz
-with realtime mic blocks (hundreds of samples) this is negligible; the offline
-video pre-encode runs it once over the whole track (~1 s for a 2.5-min
-clip), which is acceptable for one-time scene setup.
+Python loop rather than a vectorized form — no scipy in the dep set. At the
+DAC sample rate with realtime mic blocks (hundreds of samples) this is
+negligible; the offline video pre-encode runs it once over the whole track
+(~1 s for a 2.5-min clip), which is acceptable for one-time scene setup.
 """
 
 from __future__ import annotations

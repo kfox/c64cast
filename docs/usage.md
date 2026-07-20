@@ -81,9 +81,14 @@ Optional-dep groups in [pyproject.toml](../pyproject.toml):
 | `preview`     | `pygame`                              | Local preview window mirroring the U64 + recording     |
 | `control`     | `fastapi`, `uvicorn`                  | HTTP control plane (pause/resume/skip/reload)          |
 | `obs`         | `obsws-python`                        | `obs_status` overlay — polls OBS WebSocket v5          |
-| `midi`        | `mido`, `python-rtmidi`               | `midi` + `asid` scenes — MIDI/ASID input → SID + scope |
+| `midi`        | `mido`, `python-rtmidi`               | `midi` + `asid` scenes, MIDI control surface — MIDI/ASID input → SID + scope |
 | `logging`     | `rich`                                | Colored timestamped terminal logging (RichHandler)     |
-| `wizard`      | `questionary`                         | `--init` interactive config builder                    |
+| `tr`          | `pyserial`                            | TeensyROM+ backend over USB serial (raw-TCP needs no extra) |
+| `vision`      | `mediapipe`                           | `[vision]` webcam hand-gesture control (needs a `.task` model) |
+| `wizard`      | `questionary`                         | `--init` config builder + `--midi-setup` MIDI-learn wizard |
+| `camera`      | `cv2-enumerate-cameras`               | Select a webcam by name / `VID:PID` + richer `--list-devices` |
+| `yt`          | `yt-dlp`                              | YouTube / streaming-site URLs in quick playback (direct media URLs work without it) |
+| `wled`        | `zeroconf`, `fastapi`, `uvicorn`, `websockets` | WLED bridge Mode 1 (virtual WLED device / control surface) |
 | `all`         | every runtime extra above             | The "give me everything" install                       |
 | `dev`         | `ruff`, `coverage`, `mypy`, `pyright` | Lint + coverage + type-check                           |
 
@@ -102,11 +107,11 @@ overrides; everything has a sensible config-file equivalent.
 | `introspection`     | `--init [PATH]`                       | Interactively build a config (needs the `wizard` extra). Writes `./c64cast.toml` or `PATH`. See "Creating a config". |
 | `introspection`     | `--save-settings`                     | Persist this run's `-u`/`-d`/`--sid-model`/`-s` into the machine-settings file and exit. See "Where settings and data live". |
 | `connection`        | `-u TARGET`, `--system NTSC\|PAL`     | `-u` selects the backend **and** endpoint via a scheme (see below). `$C64CAST_URL` is the env fallback. |
-| `video input`       | `-d N`                                | Webcam index.                                               |
+| `video input`       | `-d INDEX\|NAME\|VID:PID`             | Webcam by index, name substring, or USB `VID:PID` (name/`VID:PID` need the `camera` extra). |
 | `audio`             | `--audio` / `--no-audio`, `-D N`,     | Audio is **on by default**; `--no-audio` mutes.             |
 |                     | `--sample-rate`, `--mic-sensitivity`, `--noise-gate` |                                              |
 | `playlist`          | `--videos DIR`                           | Directory of videos for auto-interleaving        |
-| `debug`             | `-v`, `-vv`, `--heartbeat S`,         | `-v` info, `-vv` debug, `--skip-probe` skips the U64 reachability check. |
+| `debug`             | `-v` / `-vv`, `--heartbeat S`,        | `-v`/`-vv` enable DEBUG (default INFO; `-vv` also unmutes noisy third-party loggers). `--skip-probe` skips the U64 reachability check. |
 |                     | `--skip-probe`, `--list-devices`      | `--list-devices` enumerates audio + video devices and exits. |
 
 **CLI vs config precedence:** built-in defaults < machine settings
@@ -275,7 +280,7 @@ rule is generated from the same metadata the program runs on, so it can't
 go stale.
 
 ```bash
-python -m c64cast --list-scenes        # the 7 scene types
+python -m c64cast --list-scenes        # the 10 scene types
 python -m c64cast --list-overlays      # the 12 overlays + their restrictions
 python -m c64cast --list-modes         # the display modes
 
@@ -409,18 +414,50 @@ exists; else built-in defaults apply. See
 [c64cast.example.toml](../config/c64cast.example.toml) for a fully-annotated
 reference; the sections below summarize each.
 
+### `[hardware]`
+
+Selects the backend *family*. The `-u` target (see
+[Connecting to hardware](#connecting-to-hardware--u-target)) normally sets
+this and the connection fields below in one string, so you rarely edit these
+by hand — a TOML sets them directly only for an ensemble system or a fixed
+install.
+
+```toml
+[hardware]
+backend = "ultimate"                # ultimate | teensyrom
+```
+
 ### `[ultimate64]`
+
+Connection + machine settings for the Ultimate backend (also the source of
+`system`, which every backend uses for NTSC/PAL timing):
 
 ```toml
 [ultimate64]
 url = "http://ultimate-64-ii.lan"   # bare hostname or IP works too
 system = "NTSC"                     # NTSC | PAL (affects fps, frame_time, cycles)
 dma_port = 64                       # Ultimate DMA Service TCP port
+sid_model = "auto"                  # SID Player Autoconfig: auto | 6581 | 8580 | off
 # dma_password = ""                 # prefer C64CAST_DMA_PASSWORD env var
 ```
 
 See the [prerequisite section](#prerequisite-enable-socket-dma-on-the-u64)
 above for how to enable the DMA service on the U64.
+
+### `[teensyrom]`
+
+Connection for the TeensyROM+ backend (`[hardware] backend = "teensyrom"`;
+needs the `tr` extra for USB serial). Usually set via a `tr://` `-u` target:
+
+```toml
+[teensyrom]
+transport = "serial"                # serial (USB) | tcp (raw TCP, port 2112)
+# serial_port = "/dev/cu.usbmodemXYZ"  # unset = auto-detect by USB serial (macOS)
+baud = 2000000                      # 2 Mbaud 8N1
+# host = "192.168.1.64"             # required for transport = "tcp"
+tcp_port = 2112
+storage = "sd"                      # sd | usb — where helper PRGs are staged
+```
 
 ### `[video]`
 
@@ -435,21 +472,88 @@ device = -1                         # -1 = system default camera; `--list-device
 [audio]
 enabled = true                      # on by default; --no-audio mutes
 device = -1                         # sounddevice input index; -1 = system default
-sample_rate = 12000                 # 4-bit $D418 DAC rate; live-pipeline onset ~12.5k NTSC (isolated ceiling ~13.6k/~13.1k PAL)
+sample_rate = 12000                 # $D418 DAC rate; live-pipeline onset ~12.5k NTSC (isolated ceiling ~13.6k/~13.1k PAL)
 backend = "auto"                    # video audio: "auto" (U64 Ultimate Audio FPGA
                                     #   sampler when available, else DAC), "dac"
-                                    #   (lo-fi 4-bit $D418, all backends), "sampler"
+                                    #   (lo-fi $D418 DAC, all backends), "sampler"
                                     #   (force the hi-fi FPGA PCM sampler)
+dac_curve = "auto"                  # $D418 DAC depth: auto | linear (4-bit) |
+                                    #   mahoney_ultisid (~6-7 bit) | calibrated
 sampler_sample_rate = 44100         # sampler backend rate (1000..48000); CD quality
 sampler_bits = 16                   # sampler PCM depth: 8 (signed) or 16 (signed LE)
+sampler_clock_hz = 6160000          # measured effective FPGA sampler clock (A/V drift fix)
 mic_sensitivity = 1.5               # pre-DAC gain
-noise_gate = 0.05                   # below this RMS, sample is silenced
+noise_gate = 0.05                   # legacy hard gate — only when [dsp] enabled = false
 ```
 
 On the Ultimate 64, `backend = "auto"` plays a video's soundtrack through the
 **Ultimate Audio FPGA PCM sampler** — far higher fidelity than the 4-bit DAC
 and entirely off the C64 bus. See "High-fidelity video audio" in
-[caveats.md](caveats.md). Mic/webcam audio always uses the 4-bit DAC.
+[caveats.md](caveats.md). Mic/webcam audio always uses the `$D418` DAC, where
+`dac_curve = "auto"` picks the Mahoney ~6-7-bit companding on a U64 (or a
+per-system `--calibrate-dac` table) and 4-bit `linear` only on an
+uncalibrated physical SID.
+
+`noise_gate` is the legacy hard gate; when the `[dsp]` chain is enabled (the
+default) its downward expander supersedes it. Rate/pitch fine-tuning for the
+DAC path lives in a few more knobs — `pitch_mult_petscii` / `pitch_mult_bitmap`
+(pitch correction), `dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` (A/V
+tempo compensation on bitmap modes), and `use_reu_pump` (C64-side audio pump);
+see `--describe section:audio` for all of them.
+
+### `[dsp]`
+
+Host-side audio DSP applied before the `$D418` DAC quantization —
+**ON by default** because the 4-bit DAC needs the help. A soft-knee
+compressor + limiter fit program dynamics into the DAC's narrow range, a
+downward expander (with hysteresis) replaces the old hard noise gate,
+optional pre-emphasis brightens speech, and an optional mic AGC lifts quiet
+input. Set `enabled = false` for the legacy linear encode + hard `noise_gate`.
+
+```toml
+[dsp]
+enabled = true                      # master switch for the whole chain
+compress = true                     # soft-knee compressor + makeup gain
+limiter = true                      # brickwall ceiling (final safety stage)
+expander = true                     # downward expander; replaces the hard gate
+expander_threshold_db = -45.0       # attenuate below this level (dBFS)
+# pre_emphasis = 0.6                 # unset = source-aware (mic 0.7 / line 0.6); 0 = off
+agc = false                         # mic-only automatic gain (experimental)
+```
+
+Every stage has its own time constants and thresholds — see
+`--describe section:dsp` for the full field list.
+
+### `[color]`
+
+The global color-rendering pipeline, applied before quantization on the
+quantizing modes (`mcm`, `mhires`, `petscii`, and — for dither — `hires`),
+orthogonal to a scene's `palette_mode`. It has several independent stages:
+color shaping (`channel_boost`, `hue_corrections`, and the per-source
+adaptive `auto_fit`, all covered under the [webcam scene](#type--webcam)),
+spatial `dither`, the `color_match` distance space, the mhires
+`cell_strategy` and `motion_smoothing` temporal control, and the opt-in
+false-color `force_palette` remap.
+
+```toml
+[color]
+auto_fit = true                     # per-source adaptive contrast/saturation fit
+auto_fit_strength = 1.0             # 0..1 (0 = off)
+dither = "auto"                     # auto | ordered | blue_noise | floyd-steinberg | atkinson | none
+dither_strength = 0.5               # 0..1
+color_match = "auto"                # auto | perceptual (CIE-Lab) | rgb (weighted BGR)
+cell_strategy = "auto"              # auto | frequency | luminance | contrast | error-min (mhires)
+motion_smoothing = 0.25             # 0..1 mhires after-image control (0 = track exactly)
+force_palette = false               # opt-in false-color remap to N distinct C64 colors
+force_palette_colors = 16           # N, or an explicit list of color names/indices
+# channel_boost = [1.3, 1.2, 1.0]   # per-channel [B, G, R] gain (see webcam scene)
+```
+
+`"auto"` resolves each knob per scene type (e.g. `dither` →
+`floyd-steinberg` for static slideshows, `blue_noise` for motion). Run
+`--describe section:color`, `--compat`, and `--suggest-palette FILE` (ranks a
+`force_palette_colors` set for a source) to explore. Every stage is detailed
+in [caveats.md](caveats.md).
 
 ### `[interstitial]`
 
@@ -517,6 +621,27 @@ port = 8765
 
 HTTP endpoints: `POST /pause`, `POST /resume`, `POST /skip`,
 `POST /reload`. Same surface as the keyboard poller (C= and CTRL keys).
+
+### `[midi_control]`
+
+A MIDI control surface for live performance — scene jumps, style cycling,
+DJ-style video transport (seek / loop / jog), and live sweeps of effect,
+generator, and display-pipeline params. Off by default; needs the `midi`
+extra.
+
+```toml
+[midi_control]
+enabled = false                     # run the MIDI control listener
+# port = "..."                       # input port (substring match); unset = first
+osd = "bottom"                      # live-tune OSD corner: bottom | top | off
+controller_profile = "auto"         # layer a --midi-setup profile: auto | <name> | off
+# [[midi_control.cc_map]] entries map MIDI messages → actions
+```
+
+The easiest way to map a controller is `c64cast --midi-setup` (a MIDI-learn
+wizard). See [Live performance (MIDI control)](#live-performance-midi-control)
+for the full workflow, the shipped `cc_map` defaults, and the transport
+engine.
 
 ### `[menu]`
 
@@ -651,7 +776,7 @@ Display modes:
 | `hires_edges` | `hires` after `cv2.Canny` — feels live even with stale frames |
 | `mhires`      | Multicolor hi-res bitmap. Half the horizontal resolution, 4 colors per cell. |
 | `petscii`     | 40×25 PETSCII text rendering — fast, atmospheric                 |
-| `mcm`         | 40×25 multicolor text — three FG colors + global BG per cell    |
+| `mcm`         | 80×50 multicolor char mode via an uploaded 2×2 charset — 4 colors per cell |
 | `blank`       | 40×25 PETSCII char mode with no video — pure canvas for overlays |
 
 The two palette-mapping modes (`mcm` and `mhires`) also accept:
@@ -1081,10 +1206,11 @@ run interactive programs at once, each player hearing their own SID.
 type = "generative"
 display = "mhires"                  # any quantizing mode (not blank/random)
 duration_s = 60.0
-source = "plasma"                   # plasma | tunnel | fire
+source = "plasma"                   # 20 sources; --describe scene:generative
 audio_source = "none"               # none (default) | mic | sid
 reactive = true                     # music drives the visuals (sid only)
-effect = "trails"                  # optional: trails | pulse | rgb_shift
+effect = "trails"                  # optional: trails | pulse | rgb_shift | blur
+# pre_emphasis = 0.5                 # per-scene HF boost (needs [dsp] + scene audio)
 # file = "assets/sids/Tune.sid"     # required when audio_source = "sid"
 ```
 
@@ -1093,7 +1219,11 @@ source**, an **audio source**, and an optional pixel **effect** —
 rendered through any quantizing display mode. The generators are pure
 numpy and deterministic in time:
 
-* `source` — `plasma`, `tunnel`, or `fire`.
+* `source` — one of 20 generators: `plasma`, `tunnel`, `fire`,
+  `mandelbrot`, `moire2`, `halo`, `epicycle`, `hopalong`, `rorschach`,
+  `hiphotic`, `metaballs`, `rotozoomer`, `lissajous`, `dna`, `drift`,
+  `colored_bursts`, `dotswarm`, `game_of_life`, `soap`, `fireworks`.
+  Run `--describe scene:generative` for the current list.
 * `audio_source` — `none` (silent, the default — a live mic never makes
   the visuals react, so it's opt-in passthrough only), `mic` (live mic
   through the SID DAC; needs `[audio] enabled = true` + the `mic`
@@ -1108,9 +1238,13 @@ numpy and deterministic in time:
   time-driven look.
 * `effect` — a pre-quantization pixel transform applied to any
   frame-bearing scene: `trails` (motion echo), `pulse` (beat-punch
-  zoom), `rgb_shift` (channel separation on a transient). `pulse` and
-  `rgb_shift` only visibly react on a music-reactive (`sid` + reactive)
+  zoom), `rgb_shift` (channel separation on a transient), `blur`. `pulse`
+  and `rgb_shift` only visibly react on a music-reactive (`sid` + reactive)
   scene; elsewhere they're inert.
+* `pre_emphasis` — per-scene high-frequency boost (0 = off, ~0.3-0.7
+  typical; brightens speech). Unset falls back to `[dsp] pre_emphasis` /
+  the source-aware default; needs `[dsp] enabled` + scene audio. Available
+  on any audio-bearing scene, not just generative.
 
 `song`, `palette_mode`, `style` (petscii), and the `target_fps` bitmap
 caps above all apply.
