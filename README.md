@@ -64,7 +64,7 @@ for a set duration, with an "UP NEXT" interstitial between them:
 * **ASID client** — receive an ASID stream (DeepSID in a browser,
   SIDFactory II, Plogue chipsynth C64, …) and play it on the real SID with
   the same 3-voice scope (`midi` extra).
-* **Generative** — ~20 procedural sources (plasma, tunnel, fire,
+* **Generative** — ≈20 procedural sources (plasma, tunnel, fire,
   mandelbrot, metaballs, game of life, …), optionally music-reactive and
   with pixel effects (trails, pulse, RGB shift, blur).
 * **Launcher** — hand the machine over to a native `.prg`/`.crt` game or
@@ -76,8 +76,8 @@ for a set duration, with an "UP NEXT" interstitial between them:
 
 **Display + audio** — six VIC-II display modes (`hires`, `hires_edges`,
 `mhires`, `petscii`, `mcm`, `blank`), each with its own vectorized
-quantizer (~30 fps bitmap, 50/60 fps char over a LAN). Audio plays through
-the SID's lo-fi `$D418` DAC (4-bit, or ~6-7-bit via the Mahoney companding
+quantizer (≈30 fps bitmap, 50/60 fps char over a LAN). Audio plays through
+the SID's lo-fi `$D418` DAC (4-bit, or ≈6-7-bit via the Mahoney companding
 technique) or, on the U64, the high-fidelity Ultimate Audio FPGA PCM sampler.
 
 **Overlays** — stack on any compatible scene: scrolling text, marquee, RSS
@@ -279,7 +279,9 @@ shell.
 * [docs/extending.md](docs/extending.md) — how to add a new Scene,
   Overlay, DisplayMode, or interstitial Background
 * [docs/architecture.md](docs/architecture.md) — per-module internals:
-  design rationale, hardware constraints, and edge-case history
+  design rationale, hardware constraints, and edge-case history. Split by
+  topic area under [docs/architecture/](docs/architecture/); the index
+  routes each module to its notes
 
 ## Hardware needed
 

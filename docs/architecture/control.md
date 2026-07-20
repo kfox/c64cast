@@ -1,0 +1,215 @@
+# Control surfaces & live performance
+
+Driving a running show: keyboard, hand gestures, HTTP, and the MIDI control surface plus its DJ transport engine and setup wizard.
+
+Part of the [architecture reference](../architecture.md). For end-user configuration see [usage.md](../usage.md), for known limitations [caveats.md](../caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](../extending.md).
+
+**Contents**
+
+* [`keyboard.py` — Commodore-key pause/resume, CTRL-key skip, SHIFT-key style cycle](#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle)
+* [`camera.py` — camera enumeration + name/VID:PID device selection (optional `camera` extra)](#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra)
+* [`vision.py` — webcam gesture control (optional, camera-as-input)](#visionpy--webcam-gesture-control-optional-camera-as-input)
+* [`control_plane.py` — HTTP control plane (optional)](#control_planepy--http-control-plane-optional)
+* [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
+* [`transport.py` — live-tune tracker + save-back (Phase 1) + DJ transport engine (Phase 2) + record workflow + loop presets (Phase 3) + controller profiles (Phase 5)](#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5)
+* [`midi_setup.py` — the `--midi-setup` MIDI-learn wizard (Phase 5)](#midi_setuppy--the---midi-setup-midi-learn-wizard-phase-5)
+
+---
+
+## `keyboard.py` — Commodore-key pause/resume, CTRL-key skip, SHIFT-key style cycle
+
+`CommodoreKeyPoller` runs a background thread that polls `$028D` (the kernal's keyboard-modifier scratch byte) at 10 Hz via `api.read_memory`. Bit 0 = SHIFT, bit 1 = Commodore key, bit 2 = CTRL.
+
+* **C= edge while running:** sets `Playlist.pause_event`. The run loop tears down the current scene + overlays, calls `api.pause_idle()`, then waits. `pause_idle()` leaves the machine in a paused state whose **kernal keyboard scan stays alive** so `$028D` keeps updating for the resume-hold detection. Backend-specific: the Ultimate's default is a plain `reset()` — no BASIC clear-loop, so the user sees the default C64 boot screen (BASIC banner + blinking READY cursor) as the paused indicator, and the editor's IRQ keeps `$028D` live. The **TeensyROM overrides** it to **clear the screen but keep the display ON (NOT reset, NOT blank)**: (1) a bare TR reset lands at the TeensyROM menu, whose own input handling doesn't run the kernal keyboard scan, so `$028D` would freeze and resume would strand; (2) turning the VIC display OFF (DEN=0) removes badlines, and the TR's cycle-clean DMA gates its `/DMA` assert on a safe VIC cycle (a badline) — no badlines means every read/write hangs, stranding resume *and* wedging the TR until a power-cycle (both HW-confirmed). Neither a reset nor a blank is needed: the IRQ-enabled clear-loop set up at bring-up is still running underneath every scene (that's what keeps `$028D` live so the keys work *during* a scene; the DMA only overwrites screen/VIC RAM, never the BASIC program), so clearing screen RAM to spaces with DEN left on gives a clean paused screen while badlines keep the resume-hold reads working — the closest possible idle to the working live-scene state. (`Playlist._handle_pause` clears `resume_event` *before* calling `pause_idle()`, not after, so a resume detected mid-call isn't wiped.)
+* **C= held continuously for 3 s while paused:** sets `Playlist.resume_event`. The run loop calls `api.reset()` + `run_basic_clear_loop()` to clear the boot screen, then `_advance()` re-sets-up the same scene (we don't bump `self.index`). The "same scene" includes the same overlays — they each get a fresh `setup()` so audio + poll threads come back online cleanly.
+* **CTRL edge while running:** sets `Playlist.skip_event`. The run loop forces `current.is_done = True` after the current frame, so the scene tears down cleanly and the playlist advances to the next interstitial. CTRL while paused is a no-op.
+* **SHIFT edge while running:** sets `Playlist.cycle_event`. See "SHIFT style cycling" below.
+* **SPACE while running (only when `[menu].enabled` + a read-capable backend):** opens/closes the on-C64 menu. SPACE isn't a `$028D` modifier, so the poller instead reads the kernal keyboard buffer — NDX `$00C6` + KEYD `$0277`, the same buffer the U64's CMD_KEYB opcode injects into — and toggles `Playlist.menu_event` (debounced by `_SPACE_COOLDOWN_S` so a held/repeating SPACE is one toggle). While `menu_active` is set the entire pause/skip/cycle branch is suppressed and the decoded cursor + RETURN codes drive menu navigation instead. `menu_eligible` gates the extra buffer read so it only happens when the menu is open or the current scene can host it. The menu UI lives in `playlist.py` (`_service_menu` + the `_menu_overlay`) — there is no standalone module.
+* **Chord rules:** C= + CTRL same tick → pause wins, skip suppressed. SHIFT held with C= or CTRL → SHIFT dropped (a thumb resting on shift while reaching for pause/skip shouldn't phantom-cycle the style).
+
+The poller distinguishes "definitely not pressed" from "couldn't tell" — a failed HTTP read returns `None` and is ignored rather than phantom-resetting the held-time counter. The kernal IRQ must be intact for $028D to stay current.
+
+### SHIFT style cycling
+
+On a `cycle_event` the run loop calls three things:
+
+1. `scene.cycle_style(api)` on the current scene — for scenes without a display_mode that still want SHIFT behavior, e.g. `WaveformScene` cycling to the next SID subtune.
+2. `display_mode.cycle_style(api)` on the display mode.
+3. `overlay.cycle_style(api, scene)` on every attached overlay.
+
+Each surface rotates through its own list of named styles, invalidates whatever caches it owns so the next push fully repaints, and returns a label. The labels are combined into one log line: `cycle: <scene> → scene=<s>, display=<x>, <overlay>=<y>`.
+
+**Opt-in by design.** `Scene` does not define `cycle_style` at all — the playlist checks via `getattr` plus `callable` — and the default `DisplayMode.cycle_style()` / `Overlay.cycle_style()` return None. Only surfaces that opt in actually rotate. `BigTextOverlay` opts in, rotating the message FG color through `(config, rainbow, *spectrum)`.
+
+**`WaveformScene.cycle_style()`** advances `self.song` modulo `header.num_songs`, returning None for single-song SIDs. It tears down and re-runs `api.run_sid_player(...)` on the new song, rebuilds `SidHostEmu` so the visualizer tracks the right subtune, and resets `start_time` so the new song gets its full `duration_s` — re-resolved from the SongLengths DB when present, with an explicit user `duration_s` winning.
+
+*Short-subtune skipping.* When the DB is loaded, candidates whose looked-up length is below `WaveformScene.MIN_CYCLE_SUBTUNE_S` (5 s) are skipped: most game SIDs put 1-3 s SFX in their tail subtunes, and the scope view of those is flat for most of the displayed time. The skip is bounded at `n-1` attempts, so an all-SFX SID still advances by one slot.
+
+Startup is exempt — a user-configured `song`, or the PSID `start_song`, plays no matter how short. Pinning an SFX as the start song is itself a strong "play this" signal, the same reasoning behind an explicit `duration_s` also disabling skip.
+
+**Scope and persistence.** Cycling is suppressed during interstitial transitions. Cycled style lives on the display_mode, overlay, and scene instance, so it persists across single-scene loop iterations and across pause/resume — but resets on a real scene boundary, since a multi-scene transition constructs fresh instances from config.
+
+## `camera.py` — camera enumeration + name/VID:PID device selection (optional `camera` extra)
+
+Lets `[video].device` (and `-d/--device`) be a **string** matched to a camera by name substring or USB `VID:PID`, not just a fragile cv2 index — the video-input analogue of the TeensyROM+ serial USB VID/PID auto-detect (`teensyrom_dma.autodetect_serial_port`), and it deliberately mirrors that module's shape: a lazy import behind a best-effort enumerator, a pure duck-typed matcher (VID/PID primary, name substring fallback), a resolver that **warns** rather than silently guessing on ambiguity.
+
+- `enumerate_cameras()` lazy-imports the optional `cv2-enumerate-cameras` package (the `camera` extra) and wraps its results into `CameraInfo` (`index`, `name`, `vid`, `pid`, `backend`), reading fields via `getattr` so tests can inject fakes without the extra. Returns `[]` (never raises) when the extra is absent or enumeration fails — same contract as `teensyrom_dma._list_comports`. Enumerates against the platform's native backend (`_platform_api_preference`: AVFoundation on macOS, Media Foundation on Windows, `CAP_ANY` on Linux).
+- `parse_camera_device(value, *, field_name)` is the **offline** syntax validator (models `config.parse_wled_endpoint`): an int, an int-in-a-string, a name substring, and a valid `VID:PID` all pass; a spaceless colon-bearing token that *isn't* two hex halves (`0fzz:0066`) raises `ConfigError` with `field_name` threaded in. Called from `config._validate_video_device` in the load/`--doctor` validate pass — it never touches hardware, so `--doctor --skip-probe` stays offline. (The one config↔camera import edge is broken by importing `ConfigError` lazily inside the function.)
+- `resolve_camera_index(device) -> (cv2_index, backend_or_None)` is the **runtime** resolver called from `WebcamSource.__init__`. An int (incl. `-1`→0) returns `(index, None)` = the unchanged `CAP_ANY` open. A string enumerates, matches VID:PID then name substring, and returns the matched camera's index **plus the backend it was enumerated with** (the caller must open with it). Missing extra or no match raises `RuntimeError` with an actionable message (extra-install hint / the enumerated candidate list); multiple matches warn and take the first.
+
+`--list-devices` (`cli.list_devices`) prefers `enumerate_cameras()` for the video listing (name + VID:PID + correct index, cross-platform, merged with a best-effort resolution probe), and falls back to the old cv2 open-probe + macOS `system_profiler` dump when the extra is absent.
+
+## `vision.py` — webcam gesture control (optional, camera-as-input)
+
+`VisionController` is a **second control surface** alongside the keyboard poller: a background thread reads frames from the shared `WebcamSource` broker, runs MediaPipe HandLandmarker, and sets the *same* `pause`/`resume`/`skip`/`cycle` events. The Playlist starts/stops it interchangeably with the key poller (`for controller in (key_poller, vision_controller)`), so the run loop can't tell which surface a press came from — exactly like the control plane. Reading the camera (not C64 memory) means it works on **any** backend — including a TeensyROM running firmware too old for the `$028D` keyboard poller (a cycle-clean TR+, fw v0.7.2.5+, now reads memory via ReadC64Mem and gets the physical keyboard too, so vision is no longer the *only* TR control surface). Enabled by `[vision].enabled`; needs the `vision` extra (`mediapipe`) + a downloaded HandLandmarker `.task` model (`assets/models/README.md`). A missing dep/model logs "vision control disabled" and the stream runs without gesture control — it never crashes the playlist.
+
+Gesture → control mapping mirrors the keyboard semantics: **running** → PINCH=pause, fast horizontal SWIPE=skip, OPEN_HAND=cycle; **paused** → PINCH held `hold_threshold_s`=resume, others no-op (same "pause means only the resume gesture matters" UI contract). Priority pinch > swipe > open-hand (the chord-rule analogue), at most one event per tick, with a `gesture_cooldown_s` debounce on top of edge detection since gestures are noisier than key bits. A no-hand/failed frame returns `None` and skips the tick (no phantom state change), the visual analogue of `keyboard.py`'s `None`-on-read-failure.
+
+The hand tracker is pluggable behind the `GestureRecognizer` protocol; `MediaPipeHandRecognizer` lazy-imports mediapipe (like `video.py`'s `_ensure_pyav`) so the rest of the app and the whole test suite run without the extra. The **static** pose classifiers (`is_pinch`, `count_extended_fingers`, `classify_static`) are pure functions on a `(21,3)` landmark array — directly unit-tested on synthetic fixtures, no camera/mediapipe. SWIPE is temporal (wrist x-velocity), handled in the controller. `latest_hands()` exposes the raw landmark snapshot as continuous state for future consumers (fingerpainting, pose/face scenes). The example config `config/examples/vision-gesture.toml` runs the controller over a blank scene to show gestures work over any scene, not just webcam ones.
+
+## `control_plane.py` — HTTP control plane (optional)
+
+When `[control] enabled = true` and the `control` extra is installed (`pip install c64cast[control]`), a FastAPI app runs on `127.0.0.1:8765` exposing:
+
+* `POST /pause` → `playlist.pause_event.set()`
+* `POST /resume` → `playlist.resume_event.set()`
+* `POST /skip` → `playlist.skip_event.set()` (same path as a CTRL press)
+* `POST /reload` → re-reads the config from disk and rebuilds the scene list at the next interstitial boundary
+
+The same three events are fed by the keyboard poller, so HTTP and the C64 keyboard are equivalent control surfaces.
+
+## `midi_control.py` — process-wide MIDI control surface (optional, live performance)
+
+When `[midi_control] enabled = true` and the `midi` extra is installed, `MidiControlListener` opens **its own** `mido.open_input()` and runs a 1ms-poll reader thread for the whole process — a *service*, not a Scene, unlike `midi_scene.py`'s `MidiScene` (only live while that scene is on screen). Mido ports are exclusive opens, so this is always a second port: it never shares a running `MidiScene`'s port even on the same physical controller (route the controller to two virtual ports, or OS-level MIDI Thru, to feed both from one device).
+
+**Why no coalescing, unlike MidiScene.** `MidiScene._reader` coalesces continuous CCs to `_CONTROL_FLUSH_INTERVAL_S = 1/60` because it writes SID registers over the DMA socket and bursting it is unsafe. `midi_control.py` never touches the DMA socket from its reader thread — every action it takes is either a `threading.Event.set()` on a `Playlist` or a plain in-process `setattr()` — so there is nothing to throttle: every message dispatches the instant it arrives. This is the deliberate, load-bearing difference between the two modules; don't "fix" it by adding a flush interval.
+
+**Two dispatch paths, chosen for latency:**
+
+* **Discrete actions** (`pause`/`resume`/`toggle_pause`/`skip`/`cycle_style`/`jump`) reuse the existing `Playlist` Event-flag pattern — the same mechanism `control_plane.py` and `keyboard.py` use — picked up at the next clean frame boundary (one frame period, worst case; the run loop's pacing wait isn't interrupted early by these Events, same floor the keyboard/control-plane already accept).
+* **`jump`** is `Playlist.request_jump(index, skip_interstitial=...)` — a new primitive generalizing `skip_event`'s "force `is_done=True` at the next boundary" pattern to an arbitrary target index instead of always `index+1`. `_advance()`'s end-of-scene branch consumes a locked `_jump_target` (last-write-wins: a burst of pad hits collapses to the final target) in place of the usual `index+1` computation. `jump_transition = "cut"` (the default, and what a live-hit control should always want) skips `_enter_interstitial()` entirely and goes straight to `_safe_setup` via the same `_wait_for_audio_claim` gate single-scene looping uses — a jump into an ensemble audio-gated scene **blocks on the real gate**, it does not silently retarget elsewhere (an explicit jump must not be second-guessed). `jump_transition = "interstitial"` routes through the normal "UP NEXT" card instead, for non-performance callers.
+* **`param`** (continuous CC → an effect/generator knob) skips the Event/frame-boundary machinery entirely: `setattr(holder, name, scaled_value)` directly on `scene.effect`/`scene.source`, an unlocked cross-thread write already-safe by the same precedent `MidiScene.adsr`/`.pulse_width` etc. use (GIL-atomic single-attribute writes, read by the render loop's normal next pass). This is the cheapest path in the system — no Event, no `_advance()` indirection, picked up on literally the next frame render.
+
+#### `transport.*` actions — a third dispatch path
+
+Phase 2, extended in Phase 3.
+
+**The vocabulary.** `_ACTIONS` gains `transport.play_pause`/`stop`/`loop_toggle`/`rw`/`ff`/`jog`/`record`, plus a plain `loop_slot` with no `transport.` prefix (mirroring `jump`/`param`). `_CC_TYPES` gains `"mmc"`.
+
+**Why this path defers.** Unlike the two paths above, these do **not** mutate `Playlist` or scene state directly on the MIDI reader thread. `_apply`'s `transport.` branch — plus a sibling `loop_slot` branch, since it has no prefix to match `startswith("transport.")` — builds a `transport.TransportEvent` and calls `pl.transport.enqueue(event)`. Actual dispatch happens in `TransportSession.tick()` on the playlist thread; see the [`transport.py`](#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5) notes below.
+
+`loop_slot`'s event carries `slot` from `_CCMapping.slot`, validated `>= 1` in both `_parse_cc_map` and `config.validate_midi_control_cfg`.
+
+**Two `_dispatch` wrinkles**, both from Phase 2 and still true:
+
+* A `msg.type == "sysex"` branch parses an **MMC** (MIDI Machine Control) transport SysEx, `F0 7F <dev> 06 <cmd> F7`. mido strips the F0/F7 framing, so `msg.data == (0x7F, dev, 0x06, cmd)`. `_parse_mmc_sysex` wildcards the device byte and recognizes only `_MMC_COMMANDS = {0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x06 record, 0x09 pause}`, looked up as `("mmc", cmd)`.
+* Note-release routing (`note_off`, or `note_on` with velocity 0) now reaches `_dispatch` rather than being discarded outright. It is still dropped unless the mapped action is in `_HOLD_TRANSPORT_ACTIONS` — which Phase 3 extends to `("transport.rw", "transport.ff", "transport.record", "transport.stop")` so the `loop_slot` pad chords get a real release to key off.
+
+> **MMC has no release concept at all.** A SysEx frame always dispatches `pressed=True, value=127`, since `_dispatch`'s sysex branch has no note-off equivalent. So an MMC-mapped Record or Stop still fires its one-shot action correctly, but cannot reliably drive the pad chords — those need a `note` mapping. `TransportSession`'s `_CHORD_HOLD_WINDOW_S` auto-expiry keeps this from wedging future presses; it just can't make MMC-sourced holds meaningful.
+
+**Duplicated vocabulary, pinned by a test.** `config.py` keeps its own copy — `_MIDI_ACTION_CHOICES` / `_MIDI_CC_TYPE_CHOICES` / `_MIDI_MMC_COMMAND_CHOICES`, validated in `validate_midi_control_cfg`. The duplication is deliberate, on the same "config stays import-light" rationale as the existing `_parse_cc_map` split, and `tests/test_midi_control.py::MidiActionChoicesDriftTest` pins the two copies together.
+
+**Side effect.** Mapping any `transport.*` action in `[midi_control].cc_map` forces `[audio].use_reu_pump` off process-wide via `cli._coerce_reu_for_transport` — see the [`scenes.py` transport note](scenes.md#videoscenes-transport-surface-midi-live-tune-phase-2) for why.
+
+**No new defaults.** Neither `transport.record` nor `loop_slot` ships a MIDI default; both are fully opt-in via an explicit `cc_map`. This matches Phase 2's as-built precedent, where `_DEFAULT_MIDI_CC_MAP` added zero MMC entries despite the original plan's "ship MMC defaults" aspiration.
+
+#### The `LIVE_PARAMS` registry
+`FrameEffect`/`GenerativeSource` each carry a class-level `LIVE_PARAMS: dict[str, tuple[float, float]]` (name → (min, max)), empty by default. A CC's 0-127 value is linearly scaled into the declared range and written with a plain `setattr` — no per-class wiring beyond the one-line class attribute. Only declare **independent single-numeric fields** here: a `setattr` is GIL-atomic for one attribute, not for two that must change together. Currently declared: `TrailsEffect.decay`, `PlasmaSource.{speed,scale}`, `TunnelSource.{speed,scale}`, `FireSource.{scroll_speed,intensity}`, and `PulseEffect.intensity` / `RgbShiftEffect.intensity`. The two reactive effects have no baseline output without a `MusicModulation`, so their `intensity` (a reaction-depth multiplier, `1.0` = the historical fixed response, `0.0` = identity) is a **visible no-op on a non-reactive scene** — inherent, since there's nothing to scale. `VoiceScopeRenderer` (the scope-scene mixin — WaveformScene/MidiScene/AsidScene) also declares `LIVE_PARAMS = {"gain": (0.25, 3.0)}`, applied in `_compute_ys` as a trace-amplitude multiplier (the existing `np.clip` keeps an overdriven trace inside the strip); because a scope scene *is* the renderer (no source/effect holder), it's reached via a **`scene.` target prefix** — `_set_live_param` (wled_device) and `_apply_param` (midi_control, kept verbatim-mirrored) special-case `holder = scene` when the target's holder segment is `scene`. To add a new live-tunable param to an effect/generator/scope, add one entry to its `LIVE_PARAMS` dict; nothing else needs to change.
+
+**Ensemble targeting is by MIDI channel**, not a config-time system list: channel *N* (1-based) addresses the Nth system in ensemble order (the same order `playlists.keys()` / `stacks` iterate in), and a reserved `broadcast_channel` (default 16) addresses every system at once. A performer retargets by switching their controller's transmit channel — zero app-side round trip, unlike a menu or HTTP call. Single-system mode ignores channel entirely. Mirrors `control_plane.py`'s "one service for the whole ensemble" shape (`build_midi_control_listener(playlists: Mapping[str, Playlist], cfg)`), not a per-system controller.
+
+**Config** (`[midi_control]`, `MidiControlCfg`) is process-wide like `[control]`: not in `_CASCADE_SECTIONS`, tracked via `LoadResult.master_midi_control` (parsed from the master TOML in ensemble mode, or the single config in single-system mode) rather than per-system `cfg.midi_control`. `cc_map` is a free-form `list[dict[str, Any]]`, following the `[[scenes.overlays]]` convention — validated by the consuming code (`config.validate_midi_control_cfg` / `midi_control._parse_cc_map`, deliberately duplicated so `midi_control.py` stays testable without importing `config.ConfigError`) rather than encoded rigidly in the dataclass. Ships a default map out of the box (notes 36-39 transport, notes 40-55 + Program Change 0-15 as a 16-scene jump bank, CC13-16 as an example knob bank) so the feature works with no config edits — see `--describe section:midi_control` for the exact table.
+
+**Explicitly out of scope:** anything that would need a scene rebuild — display-mode switches, scene-type changes — is not exposed. Those cost real network/DMA setup time (`_build_display_mode`, teardown+setup) and are categorically wrong for a live-hit control; this mirrors the existing "live" vs "rebuild" axis in `config._APPLY_CHOICES` for the on-C64 menu. Only Playlist-level Events and `LIVE_PARAMS`-declared single-numeric-attribute writes are ever touched.
+
+#### The `mode.<name>` holder and `LIVE_CHOICES` (Phase 1)
+Beyond `effect.`/`source.`/`scene.`, a `param` target may address `mode.<name>` — the running scene's `DisplayMode`. `_apply_param` resolves `mode` → `pl.current.display_mode` and then dispatches by kind: a name in the mode's `LIVE_PARAMS` (a **scalar** — `dither_strength`, `motion_smoothing`, `auto_fit_strength`) is a `setattr` on a property exactly like the effect/source path; a name in the mode's new `LIVE_CHOICES: dict[str, tuple[str, ...]]` (a **discrete choice** — `dither_method`, `cell_strategy`, `color_match`, `palette_mode`) is applied through `mode.set_live_choice(api, name, value)`, where a CC **bucket-selects** across the tuple (`value*len//128`) and a note/pad **cycles** from the current value (`mode.get_live_choice(name)`). `palette_mode` is special-cased inside `set_live_choice` because its setter needs the backend handle. The choice tuples equal `[color]`'s `metadata["choices"]` (minus the resolve-time `"auto"`) and a drift test pins them, so the live surface can't diverge from the config surface. `set_color_match`/the `motion_smoothing` setter re-derive the d²-space penalty scale + percell hysteresis (+ `_pal_pairwise`) so a live metric/smoothing change stays self-consistent. Every applied param posts a brief OSD message (`Playlist.post_osd` → the current scene's `OsdState`) and records the change into `Playlist.live_tracker` (mode targets only — the ones that map to config; see `transport.py` below). `wled_device._resolve_live_target`/`_set_live_param` mirror the `mode` holder resolution and post the same OSD, kept verbatim-in-sync with `_apply_param`.
+
+**Controller profiles + `classify_message` + `osd.position` (Phase 5).** Three additions let a learned controller profile drop mappings in with zero cc_map edits (see `midi_setup.py` below for the wizard that writes them):
+
+* **`classify_message(msg)`** — the msg → `(kind, number, value, pressed)` normalizer, **factored out of `_dispatch`** (which now just calls it) so the `--midi-setup` learn loop reads a controller *identically* to how the listener will later dispatch it — a learned mapping can't disagree with runtime interpretation. It's the same SysEx-MMC / note-on / note-off-or-vel-0 / CC / PC branching as before, just callable standalone.
+* **Profile merge** — `resolve_effective_cc_map(base_cc_map, cc_map_is_default, controller_profile, opened_port_name, *, profiles_dir=None)` layers a controller profile onto the config's cc_map and returns a concatenated list fed to the existing later-`(kind,number)`-wins `_parse_cc_map` (so concatenation order **is** precedence). Precedence is **shipped-defaults < profile < explicit cc_map**: when `cc_map_is_default` (the user authored no cc_map — `config.MidiControlCfg.cc_map_is_default`, set False whenever any TOML layer specifies `cc_map`), the order is `defaults + profile` so a profile can **reclaim** the default note/CC numbers; when a cc_map *is* authored, it's `profile + user_list` so the user's entries win and the defaults aren't re-injected (`cc_map = []` still disables everything the profile doesn't map). `_load_profile_mappings` resolves `controller_profile`: `"off"` → none, `"auto"` → `_find_profile_for_port` (scan `paths.controllers_dir()` for the profile whose learned port name case-insensitively substring-matches the opened port, most-specific wins), `"<name>"` → the `<name>.json` profile. **Resolution happens in `MidiControlListener.start()` after `_open_port`** (not in `__init__`), because the `"auto"` match needs the resolved port name — `__init__` stashes the raw base cc_map + `cc_map_is_default` + `controller_profile`, parses the base as a usable fallback, and `start()` re-parses the effective list once the port is known; a malformed profile is caught and the base mapping kept (a bad profile file can never take down the listener). `build_midi_control_listener` threads `cfg.cc_map_is_default`/`cfg.controller_profile` through.
+* **`osd.position` action** — a press-only cc_map action (added to `_ACTIONS` here + `_MIDI_ACTION_CHOICES` in config, drift-pinned): a tap flips the OSD corner, a double-tap within `_OSD_DOUBLE_TAP_S` (0.4 s, tracked per-playlist in `_osd_last_tap` on the listener) hides it, a tap while hidden re-enables it. It's dispatched directly on the reader thread (OsdState attrs are thread-safe simple writes) through `Playlist.cycle_osd(double_tap=...)`, which mutates `pl.current.osd`.
+
+## `transport.py` — live-tune tracker + save-back (Phase 1) + DJ transport engine (Phase 2) + record workflow + loop presets (Phase 3) + controller profiles (Phase 5)
+
+Phase 1 of the MIDI live-tune feature shipped the pieces that don't need a transport engine; Phase 2 added the transport session (seek / pause-in-place / A/B loop); Phase 3 added the record workflow + loop preset slots; Phase 4 added real audio resync across every splice (`[midi_control].loop_audio`, default `"on"` — see the `VideoScene` transport + `audio.py`/`sampler.py` `flush()` notes; the old mute-and-wall-clock behavior is now `loop_audio = "mute"`). Kept stdlib-only (`Config`/`Playlist` under `TYPE_CHECKING`, so it's cycle-free and importable from `playlist.py` and now `scenes.py`):
+
+- **`atomic_write_text(path, text)`** — the crash-safe "temp file in the same dir, fsync, `os.replace`" write, factored out of `wled_device.PresetStore._write` (which now calls it) so the config save-back and the future loop-preset store share one implementation.
+- **`LiveTuneTracker`** — records each `mode.<name>` change as `target → (old, new)`, keeping the *original* `old` across re-tunes and dropping an entry that lands back where it started (so a knob swept back and forth nets to no change). `apply(cfg)` writes the tracked values into `cfg.color` via `_MODE_FIELD_TO_COLOR` (`dither_method → [color].dither`, the rest same-named); `toml_snippet()` renders a pasteable `[color]` block for a quick-playback run with no file. `palette_mode` is deliberately **not** in the map — it lives per-scene (`[[scenes]].palette_mode`), so it tunes live but isn't persisted in this phase.
+- **`TransportEvent` / `TransportSession` (Phase 2, extended Phase 3)** — the queue between the MIDI reader thread and the playlist thread for `transport.*` actions. It mirrors the existing rule that all scene- and DMA-adjacent mutation happens on the playlist thread only.
+
+  `TransportEvent` carries:
+
+  | Field | Meaning |
+  | --- | --- |
+  | action | Short name (`play_pause`/`stop`/`loop_toggle`/`rw`/`ff`/`jog`/`record`/`loop_slot`) — the cc_map action string with any `transport.` prefix stripped in `midi_control._apply`; plain `loop_slot` has no prefix to strip |
+  | `pressed` | Note-on vs note-off; meaningful for the hold-aware `rw`/`ff`/`record`/`stop` |
+  | `value` | Raw 0-127, used by `jog` |
+  | `mode` | Jog's `abs` / `rel` |
+  | `slot` | The pad number for `loop_slot` |
+
+  `TransportSession.enqueue` runs on the MIDI thread and pushes onto a `queue.SimpleQueue`. `tick(pl, now)` runs on the playlist thread, called once per frame from `Playlist._run_one_frame` right after `_advance_fade_in`, drains the queue, and dispatches against `pl.current` via `getattr(..., None)`.
+
+  That dispatch is **duck-typed**, so a scene without the `transport_*` surface is a silent no-op — the same shape as a `LIVE_PARAMS`/`LIVE_CHOICES` target that doesn't exist on the current holder.
+
+  **Immediate actions.** `play_pause`, `loop_toggle`, and `record` dispatch immediately. `stop` does too, but its `bool` return decides whether `pl.stop_event.set()` fires (Phase 3).
+
+  **The hold ramp.** `rw`/`ff` press and release update `_held: dict[str, float]`, mapping action → the wall-time the hold started. These are tracked **regardless of whether a scene is current**, so a hold starting before a scene becomes current still ramps once one does.
+
+  Each `tick()` then applies:
+
+  ```
+  speed = min(30.0, 2 ** (elapsed / 0.75))
+  ```
+
+  in media-seconds per real second — doubling every 0.75 s of hold, capped at 30×. That times `dt` times ±1 is added to `scene.transport_position()` and passed to `scene.transport_seek()`.
+
+  **Jog.** `"abs"` mode maps `value/127 * (duration or 0)` directly. `"rel"` mode decodes the CC byte as a two's-complement-style relative encoder in `_decode_relative_jog` — `1..63` → +N ticks, `65..127` → −(128−N) ticks, `0` and `64` → no motion, the common Launch Control / APC convention — and moves `ticks * _JOG_SECONDS_PER_TICK` (1.0 s/tick) from the current position.
+
+  **OSD ownership.** OSD posts happen inside the scene's own `transport_*` methods via `pl.post_osd`, *not* inside `TransportSession`. That keeps OSD text ownership with the scene, consistent with Phase 1's `mode.*` pattern.
+- **Record workflow + loop preset pads (Phase 3)** — `record` and `stop` are now also hold-tracked (`_record_held_since`/`_stop_held_since: float | None`, separate from the rw/ff ramp's `_held` dict so they aren't swept into the seek ramp) for the `loop_slot` pad chords: `_chord_active(held_since, now)` treats a hold as expired after `_CHORD_HOLD_WINDOW_S` (5.0 s) even with no release — necessary because an MMC-sourced SysEx frame (see `midi_control._dispatch`) always dispatches `pressed=True` with no release equivalent, so without the expiry a single MMC record press would wedge every later pad press as "clear" for the rest of the session. A `loop_slot` press resolves `clear = _chord_active(record_held)`, then (only if not clearing) `save = _chord_active(stop_held)` — Record wins if somehow both are held — and calls `scene.transport_loop_slot(slot, save=save, clear=clear)`. `record`/`stop`'s one-shot press action and their hold-bookkeeping both fire on every press (mirrors rw/ff's "bookkeeping survives no current scene" rule, but these ALSO drive an immediate scene action, so they fall through to the normal dispatch below instead of returning early). `record`/`stop`/`loop_toggle` all mutate the identical `VideoScene._loop_a`/`_loop_b`/`_loop_state` machine (see the `scenes.py` note above) — Record/Stop are just a second, richer entry point into it, not a parallel state, so the red-border feedback and pad-slot persistence apply uniformly regardless of which control armed/closed the loop.
+- **`LoopPresetStore` (Phase 3)** — one JSON file per video under `paths.loop_presets_dir()` (the canonical `<data root>/presets/loops/`, `$C64CAST_DATA_DIR`-overridable, resolved at use time — see [`paths.py`](config.md#pathspy); gitignored at the legacy repo location), built on `atomic_write_text` and cloned from `wled_device.PresetStore`'s tolerant-load/atomic-write shape (not shared — the id scheme differs: a hash-string key with no fixed range, one file per video rather than one file per device holding many numbered presets). `loop_preset_key(filepath)` hashes `basename+":"+size` (`sha1(...)[:12]`) for a local file — path-move tolerant, not content-hash, the same tradeoff `PresetStore` already accepts — or the URL itself for a `"://"`-containing path; `_slugify` + `loop_preset_path` combine that key with a human-readable slug into `<data root>/presets/loops/<slug>.<hash12>.json`; `make_loop_preset_store(filepath)` wires both into a `LoopPresetStore(path, video_ref=..., size=...)`. The stored payload is `{"schema": 1, "video": ..., "size": ..., "loops": {"<slot>": {"a": <float>, "b": <float|null>}}}` — `b: null` means "loop to end of file". `VideoScene.setup()` rebuilds `self._loop_store` on every call (not just `__init__`) since a directory/glob-backed scene picks a different file each loop iteration.
+- **`ControllerProfileStore` (Phase 5)** — the `--midi-setup` wizard's output: one JSON file per controller under `paths.controllers_dir()` (the canonical `<data root>/controllers/`, `$C64CAST_DATA_DIR`-overridable — resolved at use time, **not** the master plan's stale repo `controllers/` dir), cloned again from `PresetStore`'s tolerant-load / `atomic_write_text` shape (not shared — the payload differs). `slugify_port(port_name)` makes the filesystem-safe `<port-slug>.json` stem (lower-cased alnum-run collapse — distinct from `_slugify`, which is video-path/URL-oriented); `controller_profile_path` + `make_controller_profile_store` wire it up. The payload is `{"schema": 1, "port": "<full mido port name>", "mappings": [<cc_map dict>, ...]}`; `.port()` / `.mappings()` load tolerantly (missing/corrupt file, or a malformed `mappings` list, → empty — a bad profile contributes nothing rather than crashing a run; each surviving entry is still shape-validated downstream by `_parse_cc_map`/`validate_midi_control_cfg`). The profile-merge resolver (`midi_control.resolve_effective_cc_map`, above) consumes these.
+
+#### Save-back on exit
+
+`cli._maybe_save_live_tune(stacks, overwrite)` runs after `teardown_stack`, so the terminal is free, and sits in `main`'s `finally` so it fires on a normal exit **and** on Ctrl+C:
+
+| Context | Behavior |
+| --- | --- |
+| `--overwrite` | Silently `apply`s and `Playlist._save_config`s, keeping a `.bak` |
+| Interactive terminal | Prints the changes and prompts — a plain `input()`, no wizard extra |
+| Headless / non-tty | Prints the changes without saving |
+| Quick playback (no config file) | Prints a pasteable TOML snippet |
+
+#### The OSD
+
+`scenes.OsdState` provides thread-safe `post`/`current`, plus `position` and `enabled`; `_annotate_osd` draws pre-quantization, like `_annotate_frame_number`.
+
+Every frame-bearing scene draws it via `Scene._apply_osd`. `VideoScene` handles it inline so it can bust its identity-skip for one render on an OSD change: a steady frame with a changed OSD triggers one re-quantize, while a steady OSD keeps the skip — preserving the DMA-load rationale.
+
+`[midi_control].osd = bottom|top|off` is stamped onto each scene's `OsdState` in `config.build_scene`.
+
+**Text rendering.** Both `_annotate_osd` and `_annotate_frame_number` render through the shared `_blit_c64_text` compositor, which paints from the real C64 character ROM — `bitmap_text.glyphs_to_mask` over `load_glyphs()`, using the uppercase charset at `assets/roms/characters.901225-01.bin` with a builtin-charset fallback — instead of a Hershey vector font.
+
+The 8×8 glyph cells are integer nearest-neighbor upscaled so the block spans a fixed fraction of frame width (0.55 for frame numbers, 0.85 for OSD), which keeps the authentic blocky pixel edges through the downscale to C64 output. White glyphs over a `cv2.dilate` black halo read on any background. Signatures and placement match the old Hershey versions, so every call site and test is unchanged.
+
+`bitmap_text.ascii_to_screen_code` special-cases `_` to screen code `0x6F`, the low horizontal-line graphics glyph, instead of the raw-mapping `0x1F` (← arrow). The C64 charset has no true ASCII underscore and `0x6F` is the closest visual match, so identifier text like `auto_fit_strength` reads correctly. This benefits every `ascii_to_screen_code` consumer, not just these overlays.
+
+#### `auto_fit_strength` moved mode-side
+
+To make it a live knob. The scenes now install a full-strength `ColorFit` (accumulator `strength=1.0`), and `DisplayMode._fit_for_apply()` lerps it by `_auto_fit_strength` via `ColorFit.lerped` at `apply_color_fit` time.
+
+This is mathematically identical to the old accumulator-baked lerp at every strength — test-proven in `test_live_tune.py` — so default rendering is unchanged.
+
+See the MIDI live-tune phase notes in [CLAUDE.md](../../CLAUDE.md) for the phased plan.
+
+## `midi_setup.py` — the `--midi-setup` MIDI-learn wizard (Phase 5)
+
+`c64cast --midi-setup` (needs the `midi` + `wizard` extras) watches a controller and writes a reusable `transport.ControllerProfileStore` profile, so live control needs no hand-authored cc_map TOML. Mirrors `wizard.py`'s split — **pure helpers** (unit-tested with scripted fake-mido messages) plus a **thin questionary shell** (`run_setup() -> int`, 0 saved / 2 cancelled-or-extra-missing) — and, like `--init`, runs *instead of* playback (dispatched config-free from `cli.run_introspection`, guarded on both extras with actionable install hints). The learn loop reads a controller through `midi_control.classify_message`, so a learned mapping matches how the listener will later dispatch it.
+
+#### Pure helpers
+`detect_encoder(values)` — relative-encoder detection: a value stream clustering near 0 (1,2,3 = CW) and near 127 (127,126,125 = CCW) with **nothing in the mid-range** is an endless encoder (proposed as a `transport.jog mode="rel"` binding); a swept absolute knob passes through the middle. `dominant_control(events)` picks the `(kind, number)` a learn burst intended (most frequent *pressed* event — a knob emits many CCs, a pad a note-on+off). `values_for` extracts one control's value stream (for encoder detection). `build_transport_entry`/`build_param_entry`/`build_jog_entry`/`build_jump_entry` assemble cc_map dicts (an MMC button classifies as `("mmc", cmd)` → a `type: "mmc"` entry, auto-recognized — no separate step). `dedupe_mappings` is a last-wins dedupe by `(type, number)` mirroring `_parse_cc_map`'s layering, so the review preview matches what the listener resolves. Everything the wizard can build is asserted to pass `validate_midi_control_cfg` + `_parse_cc_map` in the tests.
+
+**Flow** (each step skippable): port pick → transport/OSD-button learn (press-prompted over `_TRANSPORT_BUTTONS`) → knob auto-scan (`_read_burst` collects a settle-windowed burst per knob, deduped by CC, encoder-flagged) → **target picker** driven by `introspect.live_targets()` (the single-source-of-truth grouping of every `LIVE_PARAMS`/`LIVE_CHOICES` across the effect/generator/mode/scope registries — an encoder additionally offers the jog target) → optional scene-jump pads → review table (remove/discard) → save via `make_controller_profile_store(port_name)`. `introspect.live_targets()` is drift-tested against those class attrs (same spirit as the `LIVE_CHOICES` ↔ `[color]` metadata pin).
