@@ -27,7 +27,7 @@ scripts/c64cast.sh -u tr:// clip.mp4 tune.sid          # TeensyROM+ over auto-de
 scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/...'   # needs the `yt` extra
 ```
 
-**Audio is on by default** (`AudioCfg.enabled` defaults True); `--no-audio` mutes. On the U64, video audio defaults to the high-fidelity **Ultimate Audio FPGA PCM sampler** (`[audio].backend = "auto"` → sampler when available; see [sampler.py](c64cast/sampler.py)); `backend = "dac"` forces the lo-fi 4-bit `$D418` DAC (the only path on TeensyROM, and the path for mic/webcam audio everywhere). The U64 FPGA clocks the sampler ~1.44% **slow** vs the firmware-nominal 6.25 MHz, so at nominal the audio drifts against the (host-clock-paced) video over minutes. This is a firmware/FPGA-derivation property (identical across U64 units on the same firmware, not chip-to-chip), so `[audio].sampler_clock_hz` **ships defaulted to the measured effective clock, 6160000 Hz** (`SAMPLER_REF_CLOCK_DEFAULT`) — no per-unit calibration needed. It was measured rigorously with [scripts/diags/sampler_av_align_calib.py](scripts/diags/sampler_av_align_calib.py), which emits a SID reference tone (accurate system clock) and a sampler tone at each interval into one captured stream and fits their inter-marker drift — a differential that cancels the capture-side time compression (avfoundation drops samples under heavy host DMA load, a load-dependent factor — not the sampler; unlike the older pitch-based [sampler_clock_calib.py](scripts/diags/sampler_clock_calib.py)). A confirmation run driven at 6160000 showed residual drift of only -1.3 ms per 5 s. Re-measure and update the constant after any firmware release that changes sampler timing; hardware/firmware that clocks it correctly can set 6250000. Flag groups (`-h` shows them grouped): `connection`, `quick playback`, `video input`, `audio`, `vision input`, `playlist`, `introspection`, `debug`.
+**Audio is on by default** (`AudioCfg.enabled` defaults True); `--no-audio` mutes. On the U64, video audio defaults to the high-fidelity **Ultimate Audio FPGA PCM sampler** (`[audio].backend = "auto"` → sampler when available; see [sampler.py](c64cast/sampler.py)); `backend = "dac"` forces the lo-fi 4-bit `$D418` DAC (the only path on TeensyROM, and the path for mic/webcam audio everywhere). The U64 FPGA clocks the sampler ≈1.44% **slow** vs the firmware-nominal 6.25 MHz, so at nominal the audio drifts against the (host-clock-paced) video over minutes. This is a firmware/FPGA-derivation property (identical across U64 units on the same firmware, not chip-to-chip), so `[audio].sampler_clock_hz` **ships defaulted to the measured effective clock, 6160000 Hz** (`SAMPLER_REF_CLOCK_DEFAULT`) — no per-unit calibration needed. It was measured rigorously with [scripts/diags/sampler_av_align_calib.py](scripts/diags/sampler_av_align_calib.py), which emits a SID reference tone (accurate system clock) and a sampler tone at each interval into one captured stream and fits their inter-marker drift — a differential that cancels the capture-side time compression (avfoundation drops samples under heavy host DMA load, a load-dependent factor — not the sampler; unlike the older pitch-based [sampler_clock_calib.py](scripts/diags/sampler_clock_calib.py)). A confirmation run driven at 6160000 showed residual drift of only -1.3 ms per 5 s. Re-measure and update the constant after any firmware release that changes sampler timing; hardware/firmware that clocks it correctly can set 6250000. Flag groups (`-h` shows them grouped): `connection`, `quick playback`, `video input`, `audio`, `vision input`, `playlist`, `introspection`, `debug`.
 Notable: `--config`, `-v` / `-vv` (info / debug logging), `--log-file PATH` (mirror logs to disk for headless runs). Terminal logging uses `rich.logging.RichHandler` (colored + timestamped) when the `logging` extra is installed; falls back to plain stdlib `StreamHandler` otherwise.
 
 **Scene recording metadata.** Every scene activation logs one `SCENE_CONFIG_JSON` line (via [recording_metadata.py](c64cast/recording_metadata.py), called from `Playlist._safe_setup`) — a snapshot of that scene's coalesced settings (defaults→config→CLI, same precedence as everywhere else) plus scene-specific source metadata: display mode, `[color]`/`[audio]` knobs, hardware backend + NTSC/PAL + `sid_model`, and a `source` block (a video scene's original URL when it was one, or local filename; a waveform/generative-sid scene's real PSID header name/author/released). Deliberately excludes `[ultimate64].url`/`dma_password`/`[teensyrom]` host+port — this is meant to end up in a public video description, so no connection info leaks. Video `copyright` is a placeholder today (no yt-dlp uploader/license capture yet); SID tunes get their real header fields. [scripts/scene_config_to_description.py](scripts/scene_config_to_description.py) parses a `--log-file` run and renders the last (or `--all`/`--index N`) entry as a pasteable text blob for a video description.
@@ -70,10 +70,12 @@ The config defines the **playlist** (which scenes run, in what order, for how lo
 
 Per-module internals — design rationale, hardware constraints, and edge-case history
 for every module in `c64cast/` — live in [docs/architecture.md](docs/architecture.md),
-which is standalone and current. **Read the relevant section there before modifying a
-module**; it carries the *why* (and the dead ends) that the code alone doesn't. Keep the
-two in sync: a behavior change to a module updates its `docs/architecture.md` section in
-the same change set (see the "Docs reflect functionality changes" working rule).
+which is standalone and current. It is an index: the notes themselves are split by topic
+area under [docs/architecture/](docs/architecture/), and the index's module table routes
+any module to its section. **Read the relevant section before modifying a module**; it
+carries the *why* (and the dead ends) that the code alone doesn't. Keep the two in sync:
+a behavior change to a module updates its architecture section in the same change set
+(see the "Docs reflect functionality changes" working rule).
 
 Other docs: [usage.md](docs/usage.md), [caveats.md](docs/caveats.md),
 [troubleshooting.md](docs/troubleshooting.md), [extending.md](docs/extending.md).
@@ -89,26 +91,26 @@ lives in [docs/architecture.md](docs/architecture.md) — read the relevant sect
 before touching one of those subsystems.**
 
 - `C64_PALETTE_BGR` is OpenCV BGR order, not RGB.
-- `AudioStreamer` shares the render path's `Ultimate64API` instance. The U64 DMA service is single-connection only: a second concurrent socket TCP-accepts but its IDENTIFY never gets a reply, and the first socket blocks new ones for a few seconds after close. The shared `SocketDMAClient` is thread-safe (per-command mutex around sendall) and the combined write rate (audio ~8/sec + render ~30-60/sec) sits well under the ~200/sec DMA ceiling.
+- `AudioStreamer` shares the render path's `Ultimate64API` instance. The U64 DMA service is single-connection only: a second concurrent socket TCP-accepts but its IDENTIFY never gets a reply, and the first socket blocks new ones for a few seconds after close. The shared `SocketDMAClient` is thread-safe (per-command mutex around sendall) and the combined write rate (audio ≈8/sec + render ≈30-60/sec) sits well under the ≈200/sec DMA ceiling.
 - Address strings passed to `write_memory*` work in either case (`"d018"` and `"D018"` are both fine).
 - The dirty cache is keyed by `region_id` (small ints) not address — so a mode switch from PETSCII to MCM (both writing $0400) gets a clean diff baseline via `api.invalidate_cache()`. `InterstitialScene` reuses `REG_SCREEN`/`REG_COLOR` for the same reason.
 - `backgrounds.py` constants are C64 *screen codes* (what goes to $0400), not PETSCII codes — the encodings diverge above 0x40 (e.g. `@` is PETSCII 0x40 but screen code 0x00).
-- Memory writes go over the **Ultimate DMA Service** (TCP port 64, persistent socket, ~5 ms / ~200 writes/sec). See [docs/caveats.md](docs/caveats.md) → "Socket DMA replaced HTTP for writes" for the migration result and "U64 HTTP throughput wall" for the historical REST measurements that motivated it. Reducing write *count* (coalesce via `write_regs`, dirty-skip via `write_region`) is still the right move under DMA — it's cheaper than tightening the per-write floor.
+- Memory writes go over the **Ultimate DMA Service** (TCP port 64, persistent socket, ≈5 ms / ≈200 writes/sec). See [docs/caveats.md](docs/caveats.md) → "Socket DMA replaced HTTP for writes" for the migration result and "U64 HTTP throughput wall" for the historical REST measurements that motivated it. Reducing write *count* (coalesce via `write_regs`, dirty-skip via `write_region`) is still the right move under DMA — it's cheaper than tightening the per-write floor.
 
-Where the per-subsystem detail lives in [docs/architecture.md](docs/architecture.md):
+Where the per-subsystem detail lives (the [architecture reference](docs/architecture.md) is split by topic area; its module index routes any module to its notes):
 
 | Topic | Section |
 |---|---|
-| `[color]` shaping, `dither`, `color_match`, `cell_strategy`, `motion_smoothing`, `palette_mode`, fades | `modes.py` |
-| Forced-palette remap + rolling palette (`force_palette`) | `rolling_palette.py` + `palette.py` |
-| DAC curves, Mahoney `$D418`, per-system calibration, REU pump | `audio.py`, `dsp.py` |
-| Ultimate Audio FPGA sampler | `sampler.py` |
-| Bitmap + `$D418`-DAC tempo compensation (`tempo_scale`) | `video.py` |
-| SID player PRG — relocation, per-call `$01` banking, TR vector-swap | SID player PRG |
-| SID Player Autoconfig (`sid_model`, 6581/8580 matching) | `waveform.py` + `sidemu.py` + `sid_host_emu.py` |
-| ASID decode + buffered ring player | `asid.py` + `asid_scene.py` |
-| WLED bridge — broadcast / listen / pixel sink | `wled_sync.py`, `wled_device.py`, `wled_sink.py` |
-| MIDI live-tune Phases 1-5 (live params, transport, loops, resync, wizard) | `midi_control.py`, `transport.py`, `midi_setup.py` |
-| Ensemble audio slot contention | `ensemble.py` |
-| TeensyROM link errors + launcher upload race | `teensyrom_dma.py` |
-| Cross-ensemble span/mirror broadcasts | `orchestrator.py` + `orchestrators/` |
+| `[color]` shaping, `dither`, `color_match`, `cell_strategy`, `motion_smoothing`, `palette_mode`, fades | [`modes.py`](docs/architecture/video-color.md#modespy--displaymode-hierarchy) |
+| Forced-palette remap + rolling palette (`force_palette`) | [`rolling_palette.py` + `palette.py`](docs/architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
+| DAC curves, Mahoney `$D418`, per-system calibration, REU pump | [`audio.py`, `dsp.py`](docs/architecture/audio.md#audiopy--audiostreamer) |
+| Ultimate Audio FPGA sampler | [`sampler.py`](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
+| Bitmap + `$D418`-DAC tempo compensation (`tempo_scale`) | [`video.py`](docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
+| SID player PRG — relocation, per-call `$01` banking, TR vector-swap | [SID player PRG](docs/architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
+| SID Player Autoconfig (`sid_model`, 6581/8580 matching) | [`waveform.py` + `sidemu.py` + `sid_host_emu.py`](docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
+| ASID decode + buffered ring player | [`asid.py` + `asid_scene.py`](docs/architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
+| WLED bridge — broadcast / listen / pixel sink | [`wled_sync.py`, `wled_device.py`, `wled_sink.py`](docs/architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3) |
+| MIDI live-tune Phases 1-5 (live params, transport, loops, resync, wizard) | [`midi_control.py`, `transport.py`, `midi_setup.py`](docs/architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
+| Ensemble audio slot contention | [`ensemble.py`](docs/architecture/config.md#ensemblepy--audio-slot-coordination) |
+| TeensyROM link errors + launcher upload race | [`teensyrom_dma.py`](docs/architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
+| Cross-ensemble span/mirror broadcasts | [`orchestrator.py` + `orchestrators/`](docs/architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |

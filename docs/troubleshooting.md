@@ -29,12 +29,12 @@ picture and the knobs that actually help:
   latch), so raising the rate keeps pitch correct and lifts the Nyquist
   modestly — 12 kHz already carries the fricatives/sibilants 8 kHz lost. But
   the NMI handler has a fixed cycle budget, so there's little headroom above
-  the default: the live pipeline starts underrunning around ~12.5 kHz, and
-  rates past the isolated-handler ceiling (~13.6 kHz NTSC) are *rejected at
+  the default: the live pipeline starts underrunning around ≈12.5 kHz, and
+  rates past the isolated-handler ceiling (≈13.6 kHz NTSC) are *rejected at
   load* (`c64.nmi_rate_safety`).
 - **Bit depth is `[audio] dac_curve`, not the rate.** The default `"auto"`
   already lifts the U64's (deterministic emulated) SID to the Mahoney 8-bit
-  `$D418` technique — ~6-7 effective bits, not 4 — and `--calibrate-dac`
+  `$D418` technique — ≈6-7 effective bits, not 4 — and `--calibrate-dac`
   extends that to a physical SID. Only an uncalibrated physical/unknown chip
   falls back to the classic 4-bit linear path.
 - **On the U64, video audio isn't on the `$D418` DAC at all by default.**
@@ -43,7 +43,7 @@ picture and the knobs that actually help:
   audio usually means the DAC backend was forced (`backend = "dac"`) or the
   sampler wasn't available.
 
-See [caveats.md → "Audio is intentionally lo-fi"](caveats.md#audio-is-intentionally-lo-fi).
+See [caveats.md → "Audio is intentionally lo-fi"](caveats.md#audio-is-intentionally-lo-fi-the-4-bit-d418-dac).
 
 ### "Audio cuts in and out / drops to a steady `writes=4/s` trickle"
 
@@ -56,11 +56,11 @@ a queue percentage.) Possible causes:
 - LAN saturated by something else (other streaming, large transfers).
   Move the U64 onto wired Ethernet.
 - DMA latency is spiking — run `--profile` and check the
-  `u64 dma latency` line. Sustained values well above ~5 ms mean the
+  `u64 dma latency` line. Sustained values well above ≈5 ms mean the
   network or U64 is congested.
 - `[audio] sample_rate` pushed near the ceiling. The default 12 kHz already
-  sits just below the ~12.5 kHz streaming-underrun onset, so if you raised
-  it, nudge it back toward the default. (Rates past ~13.6 kHz NTSC are
+  sits just below the ≈12.5 kHz streaming-underrun onset, so if you raised
+  it, nudge it back toward the default. (Rates past ≈13.6 kHz NTSC are
   rejected at load outright, so this only bites in the 12.5–13.6 kHz band.)
 - For a `video` scene stuck at `writes=4/s bytes=4KiB/s` for
   minutes after the clip should have ended, the demuxer hit EOF but the

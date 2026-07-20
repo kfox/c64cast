@@ -472,13 +472,13 @@ device = -1                         # -1 = system default camera; `--list-device
 [audio]
 enabled = true                      # on by default; --no-audio mutes
 device = -1                         # sounddevice input index; -1 = system default
-sample_rate = 12000                 # $D418 DAC rate; live-pipeline onset ~12.5k NTSC (isolated ceiling ~13.6k/~13.1k PAL)
+sample_rate = 12000                 # $D418 DAC rate; live-pipeline onset ≈12.5k NTSC (isolated ceiling ≈13.6k/≈13.1k PAL)
 backend = "auto"                    # video audio: "auto" (U64 Ultimate Audio FPGA
                                     #   sampler when available, else DAC), "dac"
                                     #   (lo-fi $D418 DAC, all backends), "sampler"
                                     #   (force the hi-fi FPGA PCM sampler)
 dac_curve = "auto"                  # $D418 DAC depth: auto | linear (4-bit) |
-                                    #   mahoney_ultisid (~6-7 bit) | calibrated
+                                    #   mahoney_ultisid (≈6-7 bit) | calibrated
 sampler_sample_rate = 44100         # sampler backend rate (1000..48000); CD quality
 sampler_bits = 16                   # sampler PCM depth: 8 (signed) or 16 (signed LE)
 sampler_clock_hz = 6160000          # measured effective FPGA sampler clock (A/V drift fix)
@@ -490,7 +490,7 @@ On the Ultimate 64, `backend = "auto"` plays a video's soundtrack through the
 **Ultimate Audio FPGA PCM sampler** — far higher fidelity than the 4-bit DAC
 and entirely off the C64 bus. See "High-fidelity video audio" in
 [caveats.md](caveats.md). Mic/webcam audio always uses the `$D418` DAC, where
-`dac_curve = "auto"` picks the Mahoney ~6-7-bit companding on a U64 (or a
+`dac_curve = "auto"` picks the Mahoney ≈6-7-bit companding on a U64 (or a
 per-system `--calibrate-dac` table) and 4-bit `linear` only on an
 uncalibrated physical SID.
 
@@ -722,7 +722,7 @@ How to read it:
   bottleneck.
 * `writes/frame`, `bytes/frame` — DMA volume per frame.
 * `u64 dma latency` — rolling sendall round-trip on the DMA socket
-  (~5 ms is typical; persistent spikes mean the network or U64 is
+  (≈5 ms is typical; persistent spikes mean the network or U64 is
   congested).
 
 The profiler is off by default and has zero overhead when off (every hook
@@ -815,7 +815,7 @@ palette_mode = "percell"              # percell (default) | cheap | vivid | gray
   resolving to black/white for full 5-level coverage. Fixing the slots
   is the perf path — adaptive picking from only 5 entries shuffled the
   slot order on every frame, which busted the bitmap delta cache and
-  forced full re-uploads at ~13 fps.
+  forced full re-uploads at ≈13 fps.
 
 `palette_mode` only allocates the per-cell color slots. **Color shaping** —
 nudging source colors toward the C64 gamut before quantization — is the
@@ -940,9 +940,9 @@ set `[playlist] loop = false` (or pass `--no-loop`).
 
 On scene setup the file's audio stream is scanned end-to-end to find its
 peak amplitude, and every pushed sample is scaled to bring that peak to
-~90% of full scale (capped at +24 dB so a near-silent file isn't amplified
+≈90% of full scale (capped at +24 dB so a near-silent file isn't amplified
 into noise). The 4-bit SID DAC has no usable dynamic range for sources
-peaking below ~30% of int16 full scale, so without this normalization a
+peaking below ≈30% of int16 full scale, so without this normalization a
 quiet clip plays as silence-with-clicks. The pre-scan adds <1 s to scene
 setup, hidden under the interstitial in normal playlists. There's no TOML
 knob — the heuristic is fixed.
@@ -1241,7 +1241,7 @@ numpy and deterministic in time:
   zoom), `rgb_shift` (channel separation on a transient), `blur`. `pulse`
   and `rgb_shift` only visibly react on a music-reactive (`sid` + reactive)
   scene; elsewhere they're inert.
-* `pre_emphasis` — per-scene high-frequency boost (0 = off, ~0.3-0.7
+* `pre_emphasis` — per-scene high-frequency boost (0 = off, ≈0.3-0.7
   typical; brightens speech). Unset falls back to `[dsp] pre_emphasis` /
   the source-aware default; needs `[dsp] enabled` + scene audio. Available
   on any audio-bearing scene, not just generative.

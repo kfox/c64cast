@@ -13,10 +13,10 @@ $D418 at 12 kHz by default (`[audio] sample_rate`). The classic path is
 plays back. You *can* raise `sample_rate`, but it isn't the quality lever:
 the C64-side NMI period is derived *from* it (it programs the CIA #2 Timer A
 latch), so the pitch stays correct, and there's little headroom — rates
-past the ~13.6 kHz NTSC handler ceiling are rejected at load
+past the ≈13.6 kHz NTSC handler ceiling are rejected at load
 (`c64.nmi_rate_safety`). The real depth knob is `[audio] dac_curve`, whose
 `"auto"` default lifts the U64's (deterministic emulated) SID to the Mahoney
-~6-7-bit `$D418` technique; `--calibrate-dac` does the same for a physical
+≈6-7-bit `$D418` technique; `--calibrate-dac` does the same for a physical
 SID. Only an uncalibrated physical/unknown chip stays on the classic 4-bit
 linear path.
 
@@ -34,7 +34,7 @@ playback. The U64 firmware exposes an "Ultimate Audio" FPGA PCM sampler at
 `$DF20-$DFFF` that plays 8/16-bit PCM (up to 48 kHz) **directly out of REU
 SDRAM** — the FPGA fetches and converts the samples itself, with **zero**
 SID / `$D418` / NMI / CPU / turbo involvement. So it sidesteps every bus-halt
-and badline problem the 4-bit DAC fights (it kept the DAC capped at ~16 kHz and
+and badline problem the 4-bit DAC fights (it kept the DAC capped at ≈16 kHz and
 20 fps), and it sounds like an actual sound card instead of a digi-player.
 
 `[audio].backend` selects it: `"auto"` (default) uses the sampler on a capable
@@ -61,10 +61,10 @@ missing, or set them yourself in F2): **C64 and Cartridge Settings → Map Ultim
 Audio $DF20-DFFF = Enabled**, and **Audio Mixer → Vol Sampler L / Vol Sampler R**
 audible (0 dB, not OFF). `c64cast --doctor` reports the sampler's state.
 
-## Forced-DAC bitmap video plays ~12% slow (tempo compensation)
+## Forced-DAC bitmap video plays ≈12% slow (tempo compensation)
 
 Force `[audio].backend = "dac"` on a **bitmap** display mode (hires / hires_edges
-/ mhires) — or run the always-DAC TeensyROM+ — and video+audio play **~12% slow
+/ mhires) — or run the always-DAC TeensyROM+ — and video+audio play **≈12% slow
 at correct pitch**. The default U64 video path (the off-bus sampler above) and
 the char modes (petscii/mcm) are unaffected.
 
@@ -72,9 +72,9 @@ Cause: video is slaved to the audio **drain clock** (`AudioStreamer.
 position_seconds` → `VideoScene._clock_s`). In bitmap mode the audio worker
 shares the single socket-DMA link with heavy REU bank-swap bitmap writes; the
 host-DMA servo reads the ring pointer biased under that load and throttles the
-worker ~12% (`clock/wall` ≈ 0.88 mhires vs ≈1.0 petscii, servo-tuning-
+worker ≈12% (`clock/wall` ≈ 0.88 mhires vs ≈1.0 petscii, servo-tuning-
 independent). The `$D418` **output** rate stays ≈ `sample_rate` (a pure 1000 Hz
-tone reads ~993 Hz → pitch correct), so it's a **pitch-preserving time stretch**:
+tone reads ≈993 Hz → pitch correct), so it's a **pitch-preserving time stretch**:
 the ring under-fills and the NMI re-reads/duplicates samples at the right
 per-sample rate. No host-side servo tuning fixes both speed *and* smoothness
 (servo on = smooth but slow; open-loop = correct tempo but skips; REU-pump =
@@ -86,8 +86,8 @@ dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` (defaults **0.89 hires /
 0.88 mhires**, the measured U64-II NTSC speed fractions `s`) drive it: for the gated bitmap+DAC path,
 `AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
 `atempo` filter graph and multiplies each video PTS by `s`. The existing
-drain-clock A/V sync (which reads ~`s`) then lands both content streams at real
-time, in sync, pitch intact. `clock/wall` telemetry still reads ~`s` **by design**
+drain-clock A/V sync (which reads ≈`s`) then lands both content streams at real
+time, in sync, pitch intact. `clock/wall` telemetry still reads ≈`s` **by design**
 (it gauges the drain rate; the compensation makes *content* real-time, not the
 drain clock). Set the field to `1.0` to disable. Other platforms (U64+PAL, U2P,
 TR+ PAL/NTSC) have different `s` — measure per platform with
@@ -161,7 +161,7 @@ play-addr page):
 
 This replaces two earlier dead ends: an *unconditional* `$36` (broke
 Comic Bakery and Last Ninja 2), and a *per-tune-but-permanent* `$36`
-(set once, never restored — crashed tunes like Election ~24 s in because
+(set once, never restored — crashed tunes like Election ≈24 s in because
 they assume the `$37` resting environment between PLAY calls, and the
 `$36`/`$37` choice for "data under ROM, entry points in RAM" tunes proved
 undecidable offline). Banking per call sidesteps both. The re-INIT stub
@@ -182,7 +182,7 @@ Known limitations:
   ROM at `$A000-$BFFF` **are** supported; see "Per-tune memory banking"
   above.)
 * **PAL/NTSC speed flag is ignored.** The kernal's default CIA #1 Timer
-  A latch is left alone, so PAL tunes on an NTSC kernal play ~20% fast
+  A latch is left alone, so PAL tunes on an NTSC kernal play ≈20% fast
   (and vice versa). A future enhancement could reprogram the timer
   based on the SID's `speed_flags`.
 
@@ -305,7 +305,7 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
   fits — it's how the tune runs natively — but a pathological 8-SID × 16× frame
   can overrun and queue ticks, an inherent limit like the NMI DAC cycle budget.
 * **Coarse cycle delay.** The on-C64 busy-wait approximates each `0x30`
-  `wait_cycles` within a few cycles (~`DELAY_CYCLES_PER_UNIT` per unit) — far
+  `wait_cycles` within a few cycles (≈`DELAY_CYCLES_PER_UNIT` per unit) — far
   better than dropped/instant, a refinement target if it ever matters audibly.
 * **Frame grouping** assumes chip 0 (`0x4E`) is written every frame in
   multi-SID (the emit boundary); single-SID is unaffected. Costs one frame of
@@ -418,12 +418,12 @@ IDENTIFY round-trip never gets a reply, and the first connection
 continues to block subsequent ones for a few seconds after it closes.
 Sharing the API instance is safe because `SocketDMAClient` serializes
 every command on the wire via an internal lock, and the combined write
-rate (audio ~8/sec + render ~30-60/sec) sits well under the ~200/sec
+rate (audio ≈8/sec + render ≈30-60/sec) sits well under the ≈200/sec
 DMA ceiling.
 
 ## Socket DMA replaced HTTP for writes
 
-The U64's REST server caps sustained writes at ~50-70/sec because of a
+The U64's REST server caps sustained writes at ≈50-70/sec because of a
 combination of `Connection: close` (every PUT pays a fresh TCP
 handshake) and server-side request serialization — see the historical
 section below for the full measurements. The fix landed in 2026-05: the
@@ -434,8 +434,8 @@ Measured impact on U64 Elite II + firmware 3.x + wired LAN:
 
 | Transport       | Per-write latency (avg / p50 / p95) | Sustained writes/sec |
 |-----------------|-------------------------------------|----------------------|
-| HTTP (was)      | 14.0 ms / 14.8 ms / 19.9 ms         | ~71/s                |
-| Socket DMA (is) | 5.3 ms / 5.0 ms / 6.8 ms            | ~200/s               |
+| HTTP (was)      | 14.0 ms / 14.8 ms / 19.9 ms         | ≈71/s                |
+| Socket DMA (is) | 5.3 ms / 5.0 ms / 6.8 ms            | ≈200/s               |
 
 The persistent socket eliminates the per-write TCP handshake. The DMA
 service is single-connection only ([socket_dma.cc](https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc)
@@ -454,7 +454,7 @@ The CLI no longer exposes `--async-writes` / `--queue-depth` — they
 were HTTP-pipeline knobs and have no meaning under DMA. The TCP send
 buffer is the queue.
 
-## U64 HTTP throughput wall: ~50-70 writes/sec
+## U64 HTTP throughput wall: ≈50-70 writes/sec
 
 **Resolved 2026-05** by the Socket DMA migration above; this section is
 kept as background on *why* we moved off REST for writes.
@@ -467,7 +467,7 @@ new firmware claims throughput improvements.
 * **Every response includes `Connection: close`.** The server refuses
   HTTP keep-alive, even when explicitly asked via a request header.
   This means `requests.Session` cannot pool connections — every PUT /
-  POST pays a fresh TCP handshake. The measured floor is **~14 ms per
+  POST pays a fresh TCP handshake. The measured floor is **≈14 ms per
   request sequential** (p50 14.8 ms, max 20 ms over 50 samples), of
   which most is TCP setup, not actual write processing.
 * **The server serializes concurrent requests internally.** Running
@@ -475,14 +475,14 @@ new firmware claims throughput improvements.
   effective throughput of 65 writes/s — slightly *worse* than the
   sequential rate of 71/s, because the requests just queue at the
   server with extra TCP-setup overhead. Per-request latency under
-  concurrency scales linearly with worker count (8 workers → ~115 ms
+  concurrency scales linearly with worker count (8 workers → ≈115 ms
   per request), which is the signature of a single-threaded server
   draining a FIFO.
 
-The practical ceiling is therefore **~50-70 writes/sec sustained**
+The practical ceiling is therefore **≈50-70 writes/sec sustained**
 regardless of how many client threads we throw at it. Under real
 workload (audio NMI firing, VIC raster IRQs, GIL pressure) the
-sequential floor rises from 14 ms to ~20 ms per request, putting the
+sequential floor rises from 14 ms to ≈20 ms per request, putting the
 sustainable rate at the lower end of that range.
 
 **Implications for design**:
@@ -537,17 +537,17 @@ wrong for a specific tune.
 
 `WaveformScene` renders 3 voice bitmap strips per frame, and because the
 trace moves every frame the per-region delta cache skips almost nothing, so
-each frame is ~3 near-full strip uploads. At the full video rate (60 NTSC /
-50 PAL) that is **~170 writes/s** — right at the ~200/s DMA ceiling.
+each frame is ≈3 near-full strip uploads. At the full video rate (60 NTSC /
+50 PAL) that is **≈170 writes/s** — right at the ≈200/s DMA ceiling.
 
-HW-verified 2026-06-09 on a real Ultimate-64: at ~170 writes/s into a
+HW-verified 2026-06-09 on a real Ultimate-64: at ≈170 writes/s into a
 **bank-2-relocated** display (bitmap at `$A000-$BFFF`, the relocation target
 used when the SID payload overlaps bank 0's bitmap — see the bank 0↔2
 relocation note) the U64 **power-cycles itself mid-tune** (reproduced with
-`Times_of_Lore`, a 2× multispeed Galway tune: clean for ~50-90 s, then the
+`Times_of_Lore`, a 2× multispeed Galway tune: clean for ≈50-90 s, then the
 DMA socket drops, the screen blacks out, and the machine physically powers
-off). A bank-0 tune at the same ~170/s ran clean, and the *same* bank-2 tune
-at half rate (~90 writes/s) played its full 7:40 length cleanly — so the
+off). A bank-0 tune at the same ≈170/s ran clean, and the *same* bank-2 tune
+at half rate (≈90 writes/s) played its full 7:40 length cleanly — so the
 trigger is the **combination** of high write rate and writes landing in the
 bank-2 region, and the host can only avoid it by lowering the write rate. A
 C64 powering itself off from legal memory writes is a U64 firmware/FPGA
@@ -557,7 +557,7 @@ Mitigation (shipped): `WaveformScene.target_fps` defaults to **half** the
 system video rate (**30 NTSC / 25 PAL**) instead of the full rate. An
 oscilloscope reads fine at half-rate, a half-integer divisor keeps the
 render an exact submultiple of the video standard (so the wallclock
-phase-lock stays clean), and it halves DMA to ~90 writes/s with comfortable
+phase-lock stays clean), and it halves DMA to ≈90 writes/s with comfortable
 headroom. The host-emulator poll rate (`_video_hz`) is independent and stays
 at the full video rate so the scope still tracks every PLAY tick. An
 explicit `target_fps` in the CLI/TOML still overrides the default — but
@@ -568,7 +568,7 @@ raising a bank-2 tune back toward 60 fps risks the power-off above.
 The same DMA-ceiling reasoning applies to the frame-pushing scenes that can
 drive the 4-bit `$D418` digitized-audio DAC — `video`, live `webcam`, and a
 `generative` scene with `audio_source = "mic"`. A bitmap display (hires /
-hires_edges / mhires) re-uploads a full ~9-10 KB frame every frame, and each
+hires_edges / mhires) re-uploads a full ≈9-10 KB frame every frame, and each
 DMA write halts the C64 bus for the duration of the transfer. When the
 digitized-audio DAC is *also* streaming (the audio worker writing the ring +
 the NMI consuming it), the two write streams compete for the bus and the
@@ -724,8 +724,8 @@ app.
 
 The Phase 3 `loop_slot` pad workflow (recall a saved loop on a plain press,
 save the current loop while Stop is held, clear a slot while Record is held —
-see `[[project_midi_live_tune_video]]` / `docs/architecture.md`'s
-`transport.py` note) relies on `TransportSession` seeing both a press AND a
+see the `transport.py` notes in
+[architecture/control.md](architecture/control.md)) relies on `TransportSession` seeing both a press AND a
 release for whichever button (Record or Stop) is being held down. **MIDI
 Machine Control (MMC) has no release concept at all** — a SysEx transport
 frame (`F0 7F <dev> 06 <cmd> F7`) always dispatches as a single momentary
@@ -749,20 +749,20 @@ design, not bugs:
 - **Splice click.** There is no crossfade in v1. Both the DAC and sampler
   splice boundaries are DC-silence (NEUTRAL), so any click at a seek/loop wrap
   is only the *content* discontinuity (the new position's waveform not matching
-  the old), not a NEUTRAL step. An obvious v2 improvement is a ~5 ms host-side
+  the old), not a NEUTRAL step. An obvious v2 improvement is a ≈5 ms host-side
   fade-in on the first post-flush chunk.
 - **DAC splices cut over after the constant ring latency.** On the 4-bit
   `$D418` DAC path (`[audio].backend = "dac"`), `flush()` does not stomp the
-  ring at a seek/loop wrap — the servo-held ~4096-byte gap (~0.3-0.5 s) is the
+  ring at a seek/loop wrap — the servo-held ≈4096-byte gap (≈0.3-0.5 s) is the
   accepted constant output latency, so the not-yet-heard approach to the splice
   point finishes playing while fresh audio lands behind it. The audio therefore
-  cuts over a *constant* ~0.3-0.5 s after the video jumps, identical every
+  cuts over a *constant* ≈0.3-0.5 s after the video jumps, identical every
   splice — no silence hole, no mid-phrase chop, but not frame-tight either.
 - **Sampler splices play ≤ `FLUSH_GUARD_S` (0.15 s) past the splice point.**
   The sampler `flush()` leaves a small guard between the computed read head and
   the first rewritten byte (covers open-loop read-head jitter + REUWRITE
-  latency), so pre-splice content plays at most ~0.15 s past the cut. This is
-  also where the open-loop consumed-estimate drift (~0.16 s per 10 min worst
+  latency), so pre-splice content plays at most ≈0.15 s past the cut. This is
+  also where the open-loop consumed-estimate drift (≈0.16 s per 10 min worst
   case) is absorbed; a very-late-scene splice could in principle show an
   artifact if that drift ever exceeds the guard.
 - **`loop_audio = "mute"` is the permanent fallback.** It reproduces the
@@ -771,9 +771,9 @@ design, not bugs:
   anchor). Use it if the resync splices ever misbehave on unusual
   hardware/firmware.
 - **Mute-path DAC+bitmap tempo quirk (unchanged).** On the `"mute"` path over
-  the DAC+bitmap `tempo_scale` (~0.88) content, the wall-clock anchor runs at
+  the DAC+bitmap `tempo_scale` (≈0.88) content, the wall-clock anchor runs at
   1× while the video PTS timeline is scaled — so after transport is touched the
-  video plays ~1.14× (audio is muted, so only the picture is affected). This is
+  video plays ≈1.14× (audio is muted, so only the picture is affected). This is
   pre-existing Phase-2 behavior, out of scope for Phase 4 ("mute reproduces
   today bit-for-bit"), and does not occur on the default `"on"` path, whose
   audio-anchored clock stays in the scaled domain.
@@ -848,7 +848,7 @@ expands what's there, it does not recolor — that's the deliberately-stylized
 follow-up, not this), and the saturation lift is floored at 1.0 (never
 desaturates). It is **do-no-harm**: black/white points come from the 1st/99th
 luma percentiles (outlier-robust), a minimum-span floor caps the contrast gain
-(~8×) so a near-flat frame doesn't blow noise up to full contrast, and a
+(≈8×) so a near-flat frame doesn't blow noise up to full contrast, and a
 well-exposed source resolves to an identity fit (no-op). `auto_fit_strength`
 (0..1) lerps the whole transform toward identity — `auto_fit_strength = 0.0` is
 equivalent to off, handy for an A/B.
