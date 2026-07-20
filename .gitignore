@@ -63,8 +63,11 @@ videos/
 assets/*/*
 !assets/*/README.md
 
-# Claude
-.claude/
+# Claude — local settings/state stay out, project skills are shared.
+# Note: `.claude/*` (not `.claude/`) so git still descends into the dir;
+# a re-include cannot resurrect a file whose parent dir is itself excluded.
+.claude/*
+!.claude/skills/
 
 # OS
 .DS_Store
