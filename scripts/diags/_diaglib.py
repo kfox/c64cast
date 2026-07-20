@@ -96,7 +96,9 @@ CAMLINK_AVF_AUDIO = os.environ.get("C64_DIAG_AVF_AUDIO", ":3")
 def python_exe() -> str:
     """The interpreter running this tool — use it to spawn ``-m c64cast``
     so the subprocess gets the same ``.venv`` rather than a stray system
-    Python (the mise/uv footgun called out in CLAUDE.md)."""
+    Python — mise sets ``UV_PYTHON`` to the bare toolchain interpreter, so a
+    subprocess launched any other way can miss the project's installed
+    extras and report them as unavailable."""
     return sys.executable
 
 

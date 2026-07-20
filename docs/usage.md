@@ -2,7 +2,7 @@
 
 This document covers what you can put in a `c64cast.toml`, what the CLI
 flags do, and how to assemble a working streaming setup. For architecture
-notes, see [CLAUDE.md](../CLAUDE.md). For extending the codebase, see
+notes, see [architecture.md](architecture.md). For extending the codebase, see
 [extending.md](extending.md). For gotchas, see [caveats.md](caveats.md).
 
 ## Prerequisite: enable Socket DMA on the U64
@@ -1284,7 +1284,9 @@ runnable demo.
 Overlays are stackable decorations that attach to a scene via
 `[[scenes.overlays]]` arrays. Order matters — later overlays paint on top
 of earlier ones in overlapping cells. The full overlay catalog is in
-[CLAUDE.md](../CLAUDE.md#overlays); the most-used options:
+`c64cast --list-overlays` (and `--describe <name>` for one overlay's
+parameters); for how they render, see [architecture.md](architecture.md).
+The most-used options:
 
 ```toml
 [[scenes.overlays]]

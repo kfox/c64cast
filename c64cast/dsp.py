@@ -9,7 +9,8 @@ is the pure-numpy DSP stage that runs on float samples in [-1, 1] *before*
 `audio.encode_floats_to_dac` quantizes them, so the signal that reaches the DAC
 already lives in the loud, narrow band the 4 bits can represent.
 
-Five composable, stateful processors (see CLAUDE.md `[dsp]`):
+Five composable, stateful processors (config surface: `[dsp]` via
+`config.DSPCfg`; design notes in docs/architecture.md):
 
 * :class:`PreEmphasis` — gentle HF boost; brightens speech for intelligibility.
 * :class:`Expander` — downward expander with hysteresis, replacing the old hard

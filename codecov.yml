@@ -4,7 +4,7 @@
 # the codebase (live MIDI input, SID playback, REU/DMA streaming, the VIC
 # hires bring-up) can only be exercised on a real Ultimate-64, so the unit
 # suite mocks the hardware and 100% patch coverage is not a realistic goal.
-# See CLAUDE.md "Target test coverage = 80%" — ~75% project coverage today,
+# Target project coverage is 80% — ~75% today,
 # ratcheting toward 80%.
 coverage:
   status:
