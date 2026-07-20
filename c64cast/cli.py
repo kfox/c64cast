@@ -999,6 +999,7 @@ def build_stack(
         menu_cfg=cfg.menu,
         config=cfg,
         config_path=config_path,
+        performance=cfg.performance,
     )
 
     return SystemStack(
@@ -1706,6 +1707,10 @@ def main(argv=None) -> int:
                 midi_control_listener = build_midi_control_listener(
                     playlists={st.name: st.playlist for st in stacks},
                     cfg=midi_cfg,
+                    # [performance] is per-system-cascaded, so cfgs[0] carries
+                    # the effective clock_port (identical across systems in
+                    # ensemble mode — the clock is process-wide).
+                    clock_port=cfgs[0].performance.clock_port,
                 )
                 midi_control_listener.start()
             except (cfgmod.ConfigError, RuntimeError, ValueError) as e:

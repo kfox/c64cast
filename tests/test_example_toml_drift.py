@@ -46,6 +46,7 @@ _SECTION_DC = {
     "dsp": cfgmod.DSPCfg,
     "control": cfgmod.ControlPlaneCfg,
     "midi_control": cfgmod.MidiControlCfg,
+    "performance": cfgmod.PerformanceCfg,
     "menu": cfgmod.MenuCfg,
 }
 
