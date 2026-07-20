@@ -36,7 +36,7 @@ the calibrated table for the current system when one exists. Set
 ARM2SID/SwinSID/FPGASID) vary enormously chip-to-chip — a single baked table
 can't serve them. The U64's *emulated* UltiSID is deterministic, so it uses the
 baked `mahoney_ultisid` table without calibration. See the `dac_curve` notes in
-[`CLAUDE.md`](../CLAUDE.md).
+[`docs/architecture.md`](../docs/architecture.md).
 
 These `.json` tables are **machine-specific captured data and are gitignored**
 at this legacy location (only this README is tracked) — so an old file left

@@ -39,7 +39,7 @@ from . import introspect
 DEFAULT_SCHEMA_PATH = "./c64cast.schema.json"
 
 # Never written to disk — it's a secret, supplied via the C64CAST_DMA_PASSWORD
-# env var or hand-added to a non-committed file (see CLAUDE.md). Omitting it
+# env var or hand-added to a non-committed file (see docs/usage.md). Omitting it
 # keeps the serializer safe to point at a checked-in path.
 _SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
 

@@ -38,7 +38,7 @@ addresses every system at once. A performer retargets by switching their
 controller's transmit channel — zero app-side round trip, unlike a menu.
 Single-system mode ignores channel entirely.
 
-Out of scope (see CLAUDE.md's [midi_control] note / docs/architecture.md):
+Out of scope (see the midi_control.py section of docs/architecture.md):
 anything that would need a scene rebuild (display-mode switches, scene-type
 changes) — those cost real network/DMA setup time and are categorically
 wrong for a live-hit control. Only Playlist-level Events and

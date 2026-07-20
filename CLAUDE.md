@@ -78,7 +78,18 @@ c64cast/
 ├── api.py            Ultimate64API: routes writes through socket_dma +
 │                     delta uploads; REST for read_memory, reset, run_prg
 │                     (BASIC clear loop + SID-player SYS stub), probe
+├── backend.py        Backend protocol + BackendProfile capability flags
+│                     (supports_read/reu/sampler/config) + make_backend;
+│                     the seam Ultimate and TeensyROM both implement
+├── teensyrom_api.py  TeensyROM+ backend: the api.py-shaped surface over
+│                     teensyrom_dma (pure-DMA SID player, LaunchFile)
+├── teensyrom_dma.py  TeensyROM+ serial/TCP link: framing, ACK/NAK with
+│                     the firmware's failure text (TRBusyError), USB
+│                     auto-detect by VID/PID, latency tracking
 ├── audio.py          AudioStreamer: NMI + SID DAC + ring buffer + sample tap
+├── dsp.py            Host-side audio DSP for the 4-bit $D418 DAC path:
+│                     pre-emphasis → AGC (mic) → expander → compressor →
+│                     limiter, run before quantization ([dsp] section)
 ├── dac_curves.py     Mahoney 8-bit $D418 companding tables (baked emulated-
 │                     UltiSID amplitude→$D418 sidtable) + resolve_dac_curve;
 │                     drives [audio].dac_curve (auto | linear | mahoney_ultisid
@@ -169,6 +180,22 @@ c64cast/
 ├── songlengths.py    HVSC SongLengths.md5 parser + lookup
 ├── framebuffer.py    Software VIC mirror used by preview + recording
 ├── preview.py        Pygame preview window + cv2.VideoWriter recorder
+├── profiler.py       --profile timing buckets + end-of-run summary
+├── doctor.py         --doctor: offline config validation + live probes
+│                     (connectivity, REU/sampler provisioning + restore,
+│                     DAC-calibration status, ENVIRONMENT self-check)
+├── camera.py         Camera enumeration + name/VID:PID → cv2 index
+│                     resolution (optional `camera` extra)
+├── dither.py         Spatial dither: Bayer 8×8, baked 64×64 blue noise,
+│                     Floyd-Steinberg + Atkinson error diffusion
+├── rolling_palette.py  Rolling force-palette driver for LIVE sources:
+│                     worker-thread k-means over a sliding Lab window,
+│                     warm start + hysteresis + shot-cut detection
+├── audio_marker.py   Source-timeline alignment marker for Cam Link
+│                     captures (shared anchor across capture sessions)
+├── _pollthread.py    Shared background poll-thread helper
+├── _native_io.py     Process-level stderr muting for native-library
+│                     chatter written straight to fd 2 (bypasses logging)
 ├── control_plane.py  FastAPI HTTP control plane (pause/resume/skip/reload)
 ├── midi_control.py   Process-wide MIDI control surface for live performance:
 │                     scene jumps/style-cycle/transport via Playlist Events +
@@ -191,6 +218,16 @@ c64cast/
 │                     prompts driven by the introspect model + compat filter
 ├── keyboard.py       Polls $028D for Commodore key → pause/resume events
 ├── playlist.py       Scene state machine + overlay orchestration + pause loop
+├── ensemble.py       Multi-system coordination state: the audio lock
+│                     (WANTS_AUDIO_LOCK gating) + per-system broadcast
+│                     interrupt/resume Events + active_orchestrator slot
+├── orchestrator.py   Cross-ensemble scene coordination: Orchestrator ABC +
+│                     registry (conductor broadcasts a scene, followers run
+│                     a slice/mirror until released); [[scenes]] orchestrate
+├── orchestrators/    Orchestrator subclasses, registered at import
+│   └── big_text_span.py  Span pattern: one big_text message scrolls across
+│                     all N screens as a single 320·N canvas (conductor
+│                     must be the rightmost system)
 ├── recording_metadata.py  Per-scene SCENE_CONFIG_JSON log line (coalesced
 │                     settings + source/copyright metadata) for
 │                     scripts/scene_config_to_description.py; called from
@@ -209,7 +246,9 @@ c64cast/
 │   ├── network.py          Local IP / hostname / U64 ping in a corner
 │   ├── logo.py             Multi-line PETSCII art block from a file
 │   ├── big_text.py         Demo-scene 8×-scaled scrolling glyphs (blank/mcm)
-│   └── obs_status.py       OBS WebSocket scene + dropped-frame counter
+│   ├── obs_status.py       OBS WebSocket scene + dropped-frame counter
+│   └── menu.py             On-C64 live-knob panel (SPACE opens; runtime-
+│                           injected, not config-registered; can save back)
 ├── connect.py        Scheme-aware -u/--url target parser
 │                     (parse_connection_uri → ConnectionSpec →
 │                     apply_to_config); decomposes u64://, http(s)://,

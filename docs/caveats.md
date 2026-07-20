@@ -3,7 +3,7 @@
 Surprises, footguns, and design choices that look weird until you know
 why. Read this before you spend an evening debugging "it's almost
 working, but…". For end-user options see [usage.md](usage.md); for the
-architecture overview see [CLAUDE.md](../CLAUDE.md).
+architecture overview see [architecture.md](architecture.md).
 
 ## Audio is intentionally lo-fi (the 4-bit `$D418` DAC)
 
@@ -643,7 +643,8 @@ active). Consequences worth knowing:
 * **`bypass_audio_lock` lets several players hear their own games.** In
   ensemble mode at most one system normally holds the exclusive audio slot,
   so an audio-bearing scene on another system is skipped while it's taken
-  (see "Ensemble audio coordination" in CLAUDE.md). That's wrong for
+  (the audio lock in [`c64cast/ensemble.py`](../c64cast/ensemble.py)).
+  That's wrong for
   interactive launchers — two people at two machines both want to play and
   hear their own game. Setting `bypass_audio_lock = true` on a launcher
   makes it neither claim nor wait on the slot, so multiple launchers run

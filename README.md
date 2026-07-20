@@ -278,8 +278,8 @@ shell.
   index for "I saw X, what now?"
 * [docs/extending.md](docs/extending.md) — how to add a new Scene,
   Overlay, DisplayMode, or interstitial Background
-* [CLAUDE.md](CLAUDE.md) — architecture notes for code-spelunking AI
-  assistants and for humans who like dense reference material
+* [docs/architecture.md](docs/architecture.md) — per-module internals:
+  design rationale, hardware constraints, and edge-case history
 
 ## Hardware needed
 

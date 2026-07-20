@@ -43,13 +43,15 @@ tap from the WLED app or c64cast's own `/` control page:
 
 Presets survive restarts (like real WLED, which persists them on the ESP32's
 filesystem). See [`c64cast/wled_device.py`](../c64cast/wled_device.py)
-(`PresetStore`) and the WLED section of [`CLAUDE.md`](../CLAUDE.md).
+(`PresetStore`) and the WLED sections of
+[`docs/architecture.md`](../docs/architecture.md).
 
 ## MIDI live-tune loop presets
 
 A performer's saved A/B loop points from the MIDI live-tune DJ transport's
 Record/Stop + pad workflow (`[midi_control].cc_map`'s `loop_slot` action —
-see [`CLAUDE.md`](../CLAUDE.md)'s "MIDI live-tune record workflow" note)
+see the `transport.py` section of
+[`docs/architecture.md`](../docs/architecture.md))
 live under `presets/loops/`, one JSON file per video:
 
 ```

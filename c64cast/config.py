@@ -471,7 +471,8 @@ class AudioCfg:
             "for smoother hiss on already-noisy sources."
         },
     )
-    # See CLAUDE.md [audio].digi_boost for the full rationale. Essential on
+    # See the audio.py digi_boost note in docs/architecture.md for the full
+    # rationale. Essential on
     # 8580s and emulated SIDs; on a 6581 it just raises output level.
     digi_boost: bool = field(
         default=False,
@@ -490,7 +491,7 @@ class AudioCfg:
     # + 3-off bits) for ~6-7 effective bits, using a baked table measured on the
     # U64's emulated UltiSID. "calibrated" forces this system's calibrated table
     # (errors if none). Non-linear curves are mutually exclusive with digi_boost.
-    # See dac_curves.py, dac_calibration.py + CLAUDE.md.
+    # See dac_curves.py, dac_calibration.py + docs/architecture.md.
     dac_curve: str = field(
         default="auto",
         metadata={
@@ -530,7 +531,8 @@ class AudioCfg:
             "Attenuates the carrier above the audio band."
         },
     )
-    # See CLAUDE.md [audio].use_reu_pump. Eliminates the host-DMA 'gurgling'
+    # See the audio.py REU-pump note in docs/architecture.md. Eliminates the
+    # host-DMA 'gurgling'
     # artifact on real hardware by streaming from REU SRAM instead.
     use_reu_pump: bool = field(
         default=False,
@@ -539,7 +541,8 @@ class AudioCfg:
             "(bus-clean) instead of per-write host DMA. Requires REU enabled."
         },
     )
-    # See CLAUDE.md [audio].use_reu_pump. The C64-side pump (CIA #1 rate) and
+    # See the audio.py REU-pump note in docs/architecture.md. The C64-side
+    # pump (CIA #1 rate) and
     # the NMI reader free-run open-loop; video DMA bus-halts throttle the NMI
     # reader below nominal so the pump out-produces it and laps the ring every
     # ~15-23s = audible echo. The governor lives in the pump's own IRQ handler:
@@ -824,7 +827,7 @@ class PlaylistCfg:
             "auto-detection."
         },
     )
-    # See CLAUDE.md 'Playlist loop control' for single- vs multi-scene behavior.
+    # See docs/usage.md '[playlist]' for single- vs multi-scene behavior.
     loop: bool = field(
         default=True,
         metadata={
@@ -1248,7 +1251,8 @@ class SceneCfg:
             "applies_to": ("midi",),
         },
     )
-    # See CLAUDE.md modes.py for the per-mode palette_mode semantics.
+    # See the modes.py section of docs/architecture.md for the per-mode
+    # palette_mode semantics.
     palette_mode: str = field(
         default="percell",
         metadata={
@@ -1348,7 +1352,8 @@ class SceneCfg:
         default_factory=list,
         metadata={"help": "List of overlay tables ([[scenes.overlays]]); see --list-overlays."},
     )
-    # See CLAUDE.md ensemble coordination for orchestrate/follower_only.
+    # orchestrate/follower_only drive the conductor/follower broadcast
+    # protocol in c64cast/orchestrator.py; see docs/architecture.md.
     orchestrate: bool = field(
         default=False,
         metadata={
