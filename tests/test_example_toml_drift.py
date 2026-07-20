@@ -115,6 +115,19 @@ class ForwardStrictnessTest(unittest.TestCase):
                     f"{os.path.relpath(path, _REPO)} [[scenes]] unknown keys: {sorted(unknown)}",
                 )
 
+    def test_clip_keys_are_real(self):
+        # [[performance.clips]] tables carry SceneCfg scene-spec fields plus the
+        # launch/pad keys; _validate_clips is the authority (unknown keys, bad
+        # slot/launch/quantize/pad). Every shipped config's grid must pass it.
+        for path in _all_configs():
+            clips = _load(path).get("performance", {}).get("clips", [])
+            if not clips:
+                continue
+            try:
+                cfgmod._validate_clips(clips)
+            except ValueError as e:
+                self.fail(f"{os.path.relpath(path, _REPO)} [[performance.clips]] invalid: {e}")
+
     def test_overlay_keys_are_real(self):
         params = {od.name: {p.name for p in od.params} for od in introspect.overlay_docs()}
         for path in _all_configs():

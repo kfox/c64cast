@@ -1115,6 +1115,11 @@
             "null"
           ],
           "description": "MIDI input port to read the external clock from when it arrives on a DIFFERENT port than the [midi_control] control surface (substring match, case-insensitive). None (default) = read clock on the same port as control. Only used when tempo_source = 'midi'."
+        },
+        "clips": {
+          "type": "array",
+          "description": "Clip-launch grid ([[performance.clips]], Live DJ/VJ Phase 2): each table is a scene spec (any [[scenes]] field \u2014 type, file, source, display, name, duration_s, effect \u2026) plus launch semantics: `slot` (1-based id, unique), `pad`/`pad_type` (the note/PC number that fires it, auto-mapped when [midi_control] is on), `launch` (\"trigger\"|\"gate\"|\"toggle\"), `quantize` (\"off\"|\"beat\"|\"bar\" \u2014 align the swap to the beat grid), and `loop` (repeat until another clip fires). Fired from a controller or the web console; the scene is built on a background thread during the count-in and swapped in on the grid boundary. Empty = no grid.",
+          "default": []
         }
       }
     },

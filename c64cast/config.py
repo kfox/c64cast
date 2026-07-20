@@ -1801,6 +1801,10 @@ _MIDI_ACTION_CHOICES = (
     # Tap tempo (Live-performance Phase 1): each hit feeds the internal beat
     # grid's tap averager. Mirrored in midi_control._ACTIONS.
     "tempo_tap",
+    # Clip launch (Live-performance Phase 2): note/PC/pad -> clip `slot`, fired
+    # quantized to the beat grid. Needs an int `slot` >= 1. Mirrored in
+    # midi_control._ACTIONS.
+    "clip_launch",
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
@@ -1959,6 +1963,20 @@ class MidiControlCfg:
     cc_map_is_default: bool = field(default=True, compare=False, metadata={"internal": True})
 
 
+# Clip-launch grid choices (Live DJ/VJ Phase 2). Mirrored in
+# performance.py's launch engine; the drift/validation lives in
+# _validate_clips below so config stays the authority.
+_CLIP_LAUNCH_CHOICES = ("trigger", "gate", "toggle")
+_CLIP_QUANTIZE_CHOICES = ("off", "beat", "bar")
+_CLIP_PAD_TYPE_CHOICES = ("note", "pc")
+# Keys a [[performance.clips]] table carries on top of the scene-spec fields it
+# shares with [[scenes]] (SceneCfg): the launch semantics + pad binding.
+_CLIP_LAUNCH_KEYS: tuple[str, ...] = ("slot", "pad", "pad_type", "launch", "quantize", "loop")
+# Scene-spec fields a clip may NOT carry (deferred to a later phase / ensemble-
+# only). Overlays + orchestrate/follower belong to declared [[scenes]] only.
+_CLIP_SCENE_FIELD_DENY: frozenset[str] = frozenset({"overlays", "orchestrate", "follower_only"})
+
+
 @dataclass
 class PerformanceCfg:
     """Live-performance tempo/beat grid (Phase 1 of the Live DJ/VJ arc).
@@ -2004,6 +2022,22 @@ class PerformanceCfg:
             "arrives on a DIFFERENT port than the [midi_control] control surface "
             "(substring match, case-insensitive). None (default) = read clock on "
             "the same port as control. Only used when tempo_source = 'midi'."
+        },
+    )
+    clips: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata={
+            "help": "Clip-launch grid ([[performance.clips]], Live DJ/VJ Phase 2): "
+            "each table is a scene spec (any [[scenes]] field — type, file, "
+            "source, display, name, duration_s, effect …) plus launch "
+            "semantics: `slot` (1-based id, unique), `pad`/`pad_type` (the "
+            "note/PC number that fires it, auto-mapped when [midi_control] is "
+            'on), `launch` ("trigger"|"gate"|"toggle"), `quantize` '
+            '("off"|"beat"|"bar" — align the swap to the beat grid), and '
+            "`loop` (repeat until another clip fires). Fired from a controller "
+            "or the web console; the scene is built on a background thread "
+            "during the count-in and swapped in on the grid boundary. Empty = "
+            "no grid."
         },
     )
 
@@ -2256,6 +2290,104 @@ def _validate_performance(perf: PerformanceCfg) -> None:
         raise ValueError(
             f"[performance].clock_port must be a string or unset, got {perf.clock_port!r}"
         )
+    _validate_clips(perf.clips)
+
+
+# The full set of keys a [[performance.clips]] table may use: the launch/pad
+# keys plus every SceneCfg field it's allowed to carry (built lazily so it
+# tracks SceneCfg without a hand-maintained duplicate).
+def _clip_allowed_keys() -> set[str]:
+    scene_fields = {f.name for f in fields(SceneCfg)} - _CLIP_SCENE_FIELD_DENY
+    return scene_fields | set(_CLIP_LAUNCH_KEYS)
+
+
+def _validate_clips(clips: list[dict[str, Any]]) -> None:
+    """Validate the [[performance.clips]] grid at load time: each entry is a
+    table with a unique int `slot` >= 1, launch/quantize/pad_type within their
+    choice sets, an in-range `pad`, a real scene `type`, and no unknown keys
+    (difflib "did you mean"). The embedded scene spec's deeper validation
+    (display/file per type) is deferred to build time — build_scene runs the
+    full validate_scene_cfg when the clip is fired."""
+    allowed = _clip_allowed_keys()
+    seen_slots: set[int] = set()
+    for i, clip in enumerate(clips):
+        if not isinstance(clip, dict):
+            raise ValueError(f"[[performance.clips]][{i}] must be a table, got {clip!r}")
+        for k in clip:
+            if k not in allowed:
+                close = difflib.get_close_matches(k, allowed, n=1)
+                hint = f" — did you mean {close[0]!r}?" if close else ""
+                raise ValueError(f"[[performance.clips]][{i}] unknown key {k!r}{hint}")
+        slot = clip.get("slot")
+        if isinstance(slot, bool) or not isinstance(slot, int) or slot < 1:
+            raise ValueError(f"[[performance.clips]][{i}] needs an int `slot` >= 1, got {slot!r}")
+        if slot in seen_slots:
+            raise ValueError(f"[[performance.clips]][{i}] duplicate slot {slot}")
+        seen_slots.add(slot)
+        stype = clip.get("type", "webcam")
+        if stype not in SCENE_TYPES:
+            raise ValueError(
+                f"[[performance.clips]][{i}] (slot {slot}) type must be one of "
+                f"{SCENE_TYPES}, got {stype!r}"
+            )
+        launch = clip.get("launch", "trigger")
+        if launch not in _CLIP_LAUNCH_CHOICES:
+            raise ValueError(
+                f"[[performance.clips]][{i}] (slot {slot}) launch must be one of "
+                f"{_CLIP_LAUNCH_CHOICES}, got {launch!r}"
+            )
+        quantize = clip.get("quantize", "bar")
+        if quantize not in _CLIP_QUANTIZE_CHOICES:
+            raise ValueError(
+                f"[[performance.clips]][{i}] (slot {slot}) quantize must be one of "
+                f"{_CLIP_QUANTIZE_CHOICES}, got {quantize!r}"
+            )
+        pad_type = clip.get("pad_type", "note")
+        if pad_type not in _CLIP_PAD_TYPE_CHOICES:
+            raise ValueError(
+                f"[[performance.clips]][{i}] (slot {slot}) pad_type must be one of "
+                f"{_CLIP_PAD_TYPE_CHOICES}, got {pad_type!r}"
+            )
+        pad = clip.get("pad")
+        if pad is not None and (
+            isinstance(pad, bool) or not isinstance(pad, int) or not 0 <= pad <= 127
+        ):
+            raise ValueError(
+                f"[[performance.clips]][{i}] (slot {slot}) pad must be 0..127, got {pad!r}"
+            )
+        loop = clip.get("loop")
+        if loop is not None and not isinstance(loop, bool):
+            raise ValueError(
+                f"[[performance.clips]][{i}] (slot {slot}) loop must be true/false, got {loop!r}"
+            )
+
+
+def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
+    """Build a :class:`SceneCfg` from a [[performance.clips]] table by stripping
+    the launch/pad keys and applying the remaining scene-spec fields — the same
+    field set (and `_apply_section` path) a declared ``[[scenes]]`` block uses,
+    so a clip inherits every scene knob for free. Called by the launch engine's
+    build factory (see cli.build_stack / performance.PerformanceSession).
+
+    `loop` and `duration_s` interact: a looping non-video clip is forced to
+    ``duration_s = 0`` (run forever) so it holds until another clip fires; the
+    launch engine re-runs a finished video clip instead (video rejects
+    duration_s). A one-shot clip keeps its scene-type default duration."""
+    scene_keys = {k: v for k, v in clip.items() if k not in _CLIP_LAUNCH_KEYS}
+    sc = SceneCfg()
+    _apply_section(sc, scene_keys, "performance.clips")
+    if clip.get("loop", True) and sc.type in _CLIP_CONTINUOUS_TYPES and sc.duration_s is None:
+        # Loop forever: hold the continuous-frame scene on screen until the next
+        # clip launch, rather than auto-advancing at the scene-type default
+        # (e.g. 30 s). Audio-bearing/video clips instead re-setup on is_done (the
+        # launch engine's loop path), so their timing/song-length logic is kept.
+        sc.duration_s = 0.0
+    return sc
+
+
+# Clip scene types whose "loop" is a continuous hold (run-forever) rather than a
+# re-setup on end — the frame-based visual generators with no natural endpoint.
+_CLIP_CONTINUOUS_TYPES = frozenset({"webcam", "blank", "slideshow", "generative", "wled"})
 
 
 def _validate_force_palette(color: ColorCfg) -> None:

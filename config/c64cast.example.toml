@@ -733,6 +733,34 @@ clock_port = ""                     # read the external clock from a DIFFERENT M
                                     #   same port as [midi_control]. Only used when
                                     #   tempo_source = "midi"
 
+# Clip-launch grid (Live DJ/VJ Phase 2): a bank of pad-fired scenes, quantized
+# to the beat grid above. Each [[performance.clips]] table is a scene spec (any
+# [[scenes]] field — type, file, source, display, name, duration_s, effect, …)
+# plus launch semantics. Fire a clip from its `pad` (auto-mapped when
+# [midi_control] is on) or an explicit cc_map `clip_launch` entry (slot -> clip).
+# The scene builds on a background thread during the count-in and swaps in on the
+# grid boundary, so scene-*type* changes work as live hits. No on-screen
+# feedback (the C64 is audience-facing) — armed/active state goes to LEDs/web.
+[[performance.clips]]
+slot = 1                            # 1-based unique id (the clip_launch target)
+type = "video"                      # any scene type: video/generative/waveform/…
+file = "clips/loop.mp4"             # scene source (per type, like [[scenes]])
+pad = 60                            # note/PC that fires it (auto-mapped)
+pad_type = "note"                   # "note" | "pc"
+launch = "trigger"                  # "trigger" (play/loop) | "gate" (while held)
+                                    #   | "toggle" (latch on/off)
+quantize = "bar"                    # "off" (immediately) | "beat" | "bar" — align
+                                    #   the swap to the beat grid
+loop = true                         # repeat until another clip fires
+
+[[performance.clips]]
+slot = 2
+type = "generative"
+source = "plasma"
+pad = 61
+launch = "gate"                     # plays while the pad is held, then returns
+quantize = "beat"
+
 [menu]
 # On-C64 menu: SPACE opens an on-screen panel of context-sensitive knobs for
 # the current scene (palette mode, PETSCII style, …) with a live preview;

@@ -48,6 +48,7 @@ _SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
 # opened). Handled out-of-band by the section/scene emitters below.
 _COLOR_TABLE_ARRAY = "hue_corrections"  # under [color]
 _SCENE_TABLE_ARRAY = "overlays"  # under [[scenes]]
+_PERF_TABLE_ARRAY = "clips"  # under [performance]
 
 _BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -170,6 +171,8 @@ def _emit_section(
             continue
         if sd.name == "color" and fd.name == _COLOR_TABLE_ARRAY:
             continue  # emitted as [[color.hue_corrections]] below
+        if sd.name == "performance" and fd.name == _PERF_TABLE_ARRAY:
+            continue  # emitted as [[performance.clips]] below
         value = getattr(section, fd.name)
         if not _should_emit(value, fd.default, minimal=minimal):
             continue
@@ -177,11 +180,18 @@ def _emit_section(
             body += _comment_lines(fd.help, fd.choices, "")
         body.append(f"{_fmt_key(fd.name)} = {_fmt_value(value)}")
 
-    hue_rows: list[dict[str, object]] = []
+    # Trailing list-of-tables, emitted after the section's scalar keys (TOML
+    # forbids scalar keys once a sub-table header opens).
+    table_rows: list[dict[str, object]] = []
+    table_header = ""
     if sd.name == "color":
-        hue_rows = list(getattr(section, _COLOR_TABLE_ARRAY) or [])
+        table_rows = list(getattr(section, _COLOR_TABLE_ARRAY) or [])
+        table_header = "color.hue_corrections"
+    elif sd.name == "performance":
+        table_rows = list(getattr(section, _PERF_TABLE_ARRAY) or [])
+        table_header = "performance.clips"
 
-    if not body and not hue_rows:
+    if not body and not table_rows:
         return []  # nothing set in this section — skip the header entirely
 
     lines: list[str] = []
@@ -190,8 +200,8 @@ def _emit_section(
     lines.append(f"[{sd.name}]")
     lines += body
     lines.append("")
-    if hue_rows:
-        lines += _emit_table_array("color.hue_corrections", hue_rows, annotate)
+    if table_rows:
+        lines += _emit_table_array(table_header, table_rows, annotate)
     return lines
 
 

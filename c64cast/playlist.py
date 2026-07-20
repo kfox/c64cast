@@ -202,6 +202,20 @@ class Playlist:
         from .tempo import build_tempo_clock
 
         self.tempo = build_tempo_clock(performance)
+        # Clip-launch grid (Live-performance Phase 2). Built from
+        # [[performance.clips]] (empty when none configured, so `service` is a
+        # cheap no-op). Always present like `transport`/`tempo`. Fires scenes
+        # from pads quantized to `tempo`; all scene mutation runs on the playlist
+        # thread inside `service` (called from `_advance`), never on the MIDI
+        # reader thread. `build_performance_scene` is the injected factory
+        # (cli.build_stack) that turns a clip dict into a Scene — None until
+        # wired, which makes the grid inert.
+        from .performance import PerformanceSession
+
+        self.performance = PerformanceSession(
+            getattr(performance, "clips", None) if performance is not None else None
+        )
+        self.build_performance_scene: Callable[[dict[str, Any]], Scene] | None = None
         self.transitioning = False
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
@@ -313,6 +327,23 @@ class Playlist:
             self.interstitial_factory = new_interstitial
         self.index = 0
         self.transitioning = False
+
+    def _perf_swap_scene(self, new_scene: Scene) -> bool:
+        """Single-scene hot-swap for the clip-launch engine (Phase 2): tear down
+        the current scene and set up `new_scene` in its place, returning True on
+        success. Generalizes `_apply_reload`'s teardown+setup seam to one scene
+        with no scene-list/index mutation. Honors the ensemble audio claim like
+        single-scene looping does (a no-op returning True in single-system mode);
+        a lost claim / stop leaves `current` torn down and returns False. Runs on
+        the playlist thread only (from PerformanceSession.service)."""
+        if self.current is not None:
+            self._safe_teardown(self.current)
+            self.current = None
+        if not self._wait_for_audio_claim(new_scene):
+            return False
+        self._safe_setup(new_scene)
+        self.current = new_scene
+        return True
 
     def _default_interstitial_factory(self) -> InterstitialFactory:
         # Late import so tests that supply their own factory don't have
@@ -497,6 +528,14 @@ class Playlist:
         return None
 
     def _advance(self) -> None:
+        # Clip-launch engine gets first refusal each frame (Phase 2): it drains
+        # pad events, services background clip builds, performs the quantized
+        # swap, and manages clip looping/restore. When it owns the current
+        # program (an active clip) it fully handles this iteration and the normal
+        # playlist advance is suspended; otherwise it just processed pending pad
+        # events (arming a build under the count-in) and we fall through.
+        if self.performance.service(self):
+            return
         if self.single_scene:
             if self.current is None:
                 scene = self.scenes[0]
