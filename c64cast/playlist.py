@@ -58,6 +58,7 @@ class Playlist:
         menu_cfg: Any = None,
         config: Any = None,
         config_path: str | None = None,
+        performance: Any = None,
     ) -> None:
         if not scenes:
             raise ValueError("Playlist needs at least one scene")
@@ -192,6 +193,15 @@ class Playlist:
         # Always present (cheap; the queue just stays empty for a run with no
         # transport CC mappings), so callers needn't guard.
         self.transport = TransportSession()
+        # Process-wide musical beat grid (Live-performance Phase 1). Built from
+        # [performance] (or a 120-BPM 4/4 internal default), fed by the MIDI
+        # control listener's reader thread (external clock) and tap-tempo pads.
+        # Always present like `transport` so consumers (launch quantize,
+        # tempo-locked effects — later phases) can read `pl.tempo` unguarded.
+        # In-memory only — the reader thread never touches DMA to update it.
+        from .tempo import build_tempo_clock
+
+        self.tempo = build_tempo_clock(performance)
         self.transitioning = False
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}

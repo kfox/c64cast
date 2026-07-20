@@ -105,6 +105,11 @@ _ACTIONS = (
     # top/bottom, a double-tap (<_OSD_DOUBLE_TAP_S) hides it, a tap while hidden
     # re-enables it. Mirrored in config._MIDI_ACTION_CHOICES.
     "osd.position",
+    # Tap tempo (Live-performance Phase 1). Press-only: each hit feeds
+    # pl.tempo.tap(), which averages the inter-tap intervals into a live BPM for
+    # the internal beat grid. In-memory only, no DMA. Mirrored in
+    # config._MIDI_ACTION_CHOICES.
+    "tempo_tap",
 )
 
 # Double-tap window for the osd.position action (a second press within this many
@@ -326,6 +331,7 @@ class MidiControlListener:
         cc_map_is_default: bool = True,
         controller_profile: str = "off",
         profiles_dir: Path | None = None,
+        clock_port: str | None = None,
     ) -> None:
         if not playlists:
             raise ValueError("midi_control needs at least one playlist")
@@ -346,6 +352,13 @@ class MidiControlListener:
         self._mapping = _parse_cc_map(cc_map)
         self._midi_port: Any = None
         self._opened_port_name: str | None = None
+        # Optional dedicated MIDI clock port (Live-performance Phase 1): when the
+        # external clock arrives on a different port than the control surface,
+        # this second input is opened with its own reader thread that only feeds
+        # the tempo grid. None (the usual case) = clock rides the control port.
+        self.clock_port_name = clock_port
+        self._clock_port: Any = None
+        self._clock_reader_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
         self._warned_channels: set[int] = set()
@@ -406,27 +419,75 @@ class MidiControlListener:
                 exc_info=True,
             )
         self._stop.clear()
+        self._open_clock_port()
         self._reader_thread = threading.Thread(
             target=self._reader, daemon=True, name="midi-control-reader"
         )
         self._reader_thread.start()
+        if self._clock_port is not None:
+            self._clock_reader_thread = threading.Thread(
+                target=self._clock_reader, daemon=True, name="midi-clock-reader"
+            )
+            self._clock_reader_thread.start()
         log.info(
             "midi_control: listening (%d mapping(s), %d target(s))",
             len(self._mapping),
             len(self._all),
         )
 
+    def _open_clock_port(self) -> None:
+        """Open a dedicated MIDI clock input when `clock_port_name` is set and
+        resolves to a DIFFERENT port than the already-opened control port (mido
+        opens are exclusive, so re-opening the control port would fail — and is
+        pointless, since the clock already rides that port's reader). A missing /
+        unmatched clock port is a warning, not fatal: control still works and an
+        internal-tempo grid is unaffected."""
+        if not self.clock_port_name:
+            return
+        assert mido is not None
+        names = mido.get_input_names()
+        match = next((n for n in names if self.clock_port_name.lower() in n.lower()), None)
+        if match is None:
+            log.warning(
+                "midi_control: clock_port %r matches no MIDI input (available: %s) — "
+                "clock will only be read on the control port",
+                self.clock_port_name,
+                names,
+            )
+            return
+        if match == self._opened_port_name:
+            log.info(
+                "midi_control: clock_port %r is the control port — clock read there, "
+                "no second port opened",
+                match,
+            )
+            return
+        try:
+            self._clock_port = mido.open_input(match)
+        except Exception:
+            log.warning(
+                "midi_control: could not open clock_port %r — clock read on the control port only",
+                match,
+                exc_info=True,
+            )
+            return
+        log.info("midi_control: opened dedicated MIDI clock port %r", match)
+
     def stop(self) -> None:
         self._stop.set()
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=1.0)
-            self._reader_thread = None
-        if self._midi_port is not None:
-            try:
-                self._midi_port.close()
-            except Exception:
-                log.debug("midi_control: port close failed", exc_info=True)
-            self._midi_port = None
+        for thread in (self._reader_thread, self._clock_reader_thread):
+            if thread is not None:
+                thread.join(timeout=1.0)
+        self._reader_thread = None
+        self._clock_reader_thread = None
+        for attr in ("_midi_port", "_clock_port"):
+            port = getattr(self, attr)
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    log.debug("midi_control: port close failed", exc_info=True)
+                setattr(self, attr, None)
 
     def _reader(self) -> None:
         port = self._midi_port
@@ -442,6 +503,24 @@ class MidiControlListener:
                 time.sleep(_POLL_INTERVAL_S)
         except Exception:
             log.exception("midi_control reader crashed")
+
+    def _clock_reader(self) -> None:
+        """Reader for the dedicated clock port (opened only when clock_port names
+        a distinct device). Feeds the tempo grid and nothing else — clock
+        messages carry no channel and map to no action."""
+        port = self._clock_port
+        if port is None:
+            return
+        try:
+            while not self._stop.is_set():
+                for msg in port.iter_pending():
+                    try:
+                        self._feed_tempo(msg)
+                    except Exception:
+                        log.exception("midi_control: clock feed failed for %r", msg)
+                time.sleep(_POLL_INTERVAL_S)
+        except Exception:
+            log.exception("midi_control clock reader crashed")
 
     # ---- dispatch ---------------------------------------------------------
     def _targets(self, msg: Any) -> list[Playlist]:
@@ -468,10 +547,28 @@ class MidiControlListener:
             )
         return []
 
+    def _feed_tempo(self, msg: Any) -> bool:
+        """Fast path for MIDI real-time clock / transport / song-position
+        messages: update every playlist's :class:`~c64cast.tempo.TempoClock`.
+        Returns True when the message was a clock message (so `_dispatch` skips
+        the normal mapping lookup — these carry no channel and aren't mappable
+        actions). In-memory GIL-cheap writes only, never DMA — the same rule the
+        rest of this reader thread follows. Clock messages have no channel, so
+        they feed all systems (an ensemble stays phase-locked to one DAW)."""
+        mt = getattr(msg, "type", None)
+        if mt not in ("clock", "start", "continue", "stop", "songpos"):
+            return False
+        now = time.monotonic()
+        for pl in self._all:
+            pl.tempo.feed_message(msg, now)
+        return True
+
     def _dispatch(self, msg: Any) -> None:
+        if self._feed_tempo(msg):
+            return
         classified = classify_message(msg)
         if classified is None:
-            return  # pitchwheel, non-MMC sysex, clock, etc. — not mappable
+            return  # pitchwheel, non-MMC sysex, unmapped real-time, etc.
         kind, number, value, pressed = classified
         mapping = self._mapping.get((kind, number))
         if mapping is None:
@@ -513,6 +610,11 @@ class MidiControlListener:
             last = self._osd_last_tap.get(pl.name, 0.0)
             self._osd_last_tap[pl.name] = now
             pl.cycle_osd(double_tap=(now - last) < _OSD_DOUBLE_TAP_S)
+        elif action == "tempo_tap":
+            # Press-only (releases dropped in _dispatch). Feeds the internal beat
+            # grid's tap-tempo averager — in-memory only, no DMA. Runs directly
+            # on the reader thread (TempoClock.tap is self-locked).
+            pl.tempo.tap(time.monotonic())
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(
@@ -598,12 +700,19 @@ class MidiControlListener:
 
 
 def build_midi_control_listener(
-    playlists: Mapping[str, Playlist], cfg: MidiControlCfg
+    playlists: Mapping[str, Playlist],
+    cfg: MidiControlCfg,
+    *,
+    clock_port: str | None = None,
 ) -> MidiControlListener:
     """The one entry point cli.py calls (mirrors
     control_plane.start_control_server's shape, minus the auto-start — call
     .start() on the result). Raises RuntimeError when the `midi` extra isn't
-    installed, same pattern MidiScene.__init__ already uses."""
+    installed, same pattern MidiScene.__init__ already uses.
+
+    `clock_port` (from [performance].clock_port) opens a dedicated MIDI clock
+    input when the external tempo clock arrives on a different port than the
+    control surface; None reads clock on the control port."""
     if not MIDI_AVAILABLE:
         raise RuntimeError("midi_control requires mido: pip install c64cast[midi]")
     return MidiControlListener(
@@ -614,4 +723,5 @@ def build_midi_control_listener(
         jump_transition=cfg.jump_transition,
         cc_map_is_default=cfg.cc_map_is_default,
         controller_profile=cfg.controller_profile,
+        clock_port=clock_port,
     )

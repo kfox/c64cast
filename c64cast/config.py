@@ -1798,6 +1798,9 @@ _MIDI_ACTION_CHOICES = (
     # Live OSD toggle (MIDI live-tune Phase 5): tap flips top/bottom, a
     # double-tap (<400 ms) hides the OSD, a tap while hidden re-enables it.
     "osd.position",
+    # Tap tempo (Live-performance Phase 1): each hit feeds the internal beat
+    # grid's tap averager. Mirrored in midi_control._ACTIONS.
+    "tempo_tap",
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
@@ -1957,6 +1960,55 @@ class MidiControlCfg:
 
 
 @dataclass
+class PerformanceCfg:
+    """Live-performance tempo/beat grid (Phase 1 of the Live DJ/VJ arc).
+
+    Drives a process-wide :class:`~c64cast.tempo.TempoClock` — a musical beat
+    grid every performance consumer reads GIL-atomically (launch quantization,
+    effect tempo-lock, WLED). The grid takes tempo from an external MIDI clock
+    (fed by [midi_control]'s reader thread, so `[midi_control].enabled` must be
+    on to receive one) or free-runs internally at `bpm`. All tempo handling is
+    in-memory only — it never touches the DMA socket."""
+
+    tempo_source: str = field(
+        default="internal",
+        metadata={
+            "help": "Where the beat grid gets its tempo: 'midi' (follow an "
+            "external MIDI clock — 0xF8 clock / start / stop / song-position — "
+            "which arrives via the [midi_control] listener, so enable that too) "
+            "or 'internal' (free-run at `bpm`, with a `tempo_tap` pad for live "
+            "tapping). With 'midi' the grid idles until the first clock byte.",
+            "choices": ("internal", "midi"),
+        },
+    )
+    bpm: float = field(
+        default=120.0,
+        metadata={
+            "help": "Static tempo (beats per minute) for internal drive, and the "
+            "starting tempo before an external clock is measured. A tap-tempo pad "
+            "overrides it live."
+        },
+    )
+    beats_per_bar: int = field(
+        default=4,
+        metadata={
+            "help": "Beats per bar (the numerator of the time signature) — sets "
+            "where bar boundaries fall for bar-quantized launches and bar-locked "
+            "effects."
+        },
+    )
+    clock_port: str | None = field(
+        default=None,
+        metadata={
+            "help": "MIDI input port to read the external clock from when it "
+            "arrives on a DIFFERENT port than the [midi_control] control surface "
+            "(substring match, case-insensitive). None (default) = read clock on "
+            "the same port as control. Only used when tempo_source = 'midi'."
+        },
+    )
+
+
+@dataclass
 class MenuCfg:
     """On-C64 menu. When enabled, SPACE on the C64 keyboard opens an on-screen
     panel of context-sensitive knobs for the current scene (palette mode, style,
@@ -2076,6 +2128,7 @@ class Config:
     dsp: DSPCfg = field(default_factory=DSPCfg)
     control: ControlPlaneCfg = field(default_factory=ControlPlaneCfg)
     midi_control: MidiControlCfg = field(default_factory=MidiControlCfg)
+    performance: PerformanceCfg = field(default_factory=PerformanceCfg)
     menu: MenuCfg = field(default_factory=MenuCfg)
     wled: WledCfg = field(default_factory=WledCfg)
     # Set only on the master Config produced by load_master(). Per-system
@@ -2183,6 +2236,28 @@ def _validate_video_device(video: VideoCfg) -> None:
     camera.parse_camera_device(video.device, field_name="[video].device")
 
 
+def _validate_performance(perf: PerformanceCfg) -> None:
+    """Range/choice-check [performance] at load time so a bad tempo grid surfaces
+    before the run, not mid-performance. Raises ValueError (wrapped like the
+    other section validators here)."""
+    if perf.tempo_source not in ("internal", "midi"):
+        raise ValueError(
+            f"[performance].tempo_source must be 'internal' or 'midi', got {perf.tempo_source!r}"
+        )
+    if isinstance(perf.bpm, bool) or not isinstance(perf.bpm, (int, float)):
+        raise ValueError(f"[performance].bpm must be a number, got {perf.bpm!r}")
+    if not 20.0 <= float(perf.bpm) <= 400.0:
+        raise ValueError(f"[performance].bpm must be 20..400, got {perf.bpm}")
+    if isinstance(perf.beats_per_bar, bool) or not isinstance(perf.beats_per_bar, int):
+        raise ValueError(f"[performance].beats_per_bar must be an int, got {perf.beats_per_bar!r}")
+    if not 1 <= perf.beats_per_bar <= 32:
+        raise ValueError(f"[performance].beats_per_bar must be 1..32, got {perf.beats_per_bar}")
+    if perf.clock_port is not None and not isinstance(perf.clock_port, str):
+        raise ValueError(
+            f"[performance].clock_port must be a string or unset, got {perf.clock_port!r}"
+        )
+
+
 def _validate_force_palette(color: ColorCfg) -> None:
     """Range-check + normalize the [color].force_palette_colors knob at
     load/doctor time so a bad value surfaces before the playlist runs, not
@@ -2236,6 +2311,7 @@ _TOML_SCALAR_SECTIONS: tuple[str, ...] = (
     "dsp",
     "control",
     "midi_control",
+    "performance",
     "menu",
     "wled",
 )
@@ -2269,6 +2345,7 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     _validate_use_reu_staged(cfg.video)
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
+    _validate_performance(cfg.performance)
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out
@@ -2465,6 +2542,7 @@ _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("preview", frozenset()),
     ("recording", frozenset()),
     ("color", frozenset()),
+    ("performance", frozenset()),
     ("menu", frozenset()),
 )
 
@@ -2610,6 +2688,7 @@ def load_master(path: str | None) -> LoadResult:
         ("recording", defaults.recording),
         ("control", defaults.control),
         ("midi_control", defaults.midi_control),
+        ("performance", defaults.performance),
         ("menu", defaults.menu),
     ):
         if section in raw:
@@ -2624,6 +2703,7 @@ def load_master(path: str | None) -> LoadResult:
 
     _validate_use_reu_staged(defaults.video)
     _validate_double_buffer(defaults.video)
+    _validate_performance(defaults.performance)
 
     # [color] master defaults — handled separately for the list-of-tables
     # field, mirroring load() above.

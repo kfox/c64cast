@@ -1085,6 +1085,39 @@
         }
       }
     },
+    "performance": {
+      "type": "object",
+      "description": "Live-performance tempo/beat grid: follow an external MIDI clock or free-run at a static/tapped BPM (drives launch quantization + tempo-locked effects).",
+      "additionalProperties": false,
+      "properties": {
+        "tempo_source": {
+          "type": "string",
+          "description": "Where the beat grid gets its tempo: 'midi' (follow an external MIDI clock \u2014 0xF8 clock / start / stop / song-position \u2014 which arrives via the [midi_control] listener, so enable that too) or 'internal' (free-run at `bpm`, with a `tempo_tap` pad for live tapping). With 'midi' the grid idles until the first clock byte.",
+          "enum": [
+            "internal",
+            "midi"
+          ],
+          "default": "internal"
+        },
+        "bpm": {
+          "type": "number",
+          "description": "Static tempo (beats per minute) for internal drive, and the starting tempo before an external clock is measured. A tap-tempo pad overrides it live.",
+          "default": 120.0
+        },
+        "beats_per_bar": {
+          "type": "integer",
+          "description": "Beats per bar (the numerator of the time signature) \u2014 sets where bar boundaries fall for bar-quantized launches and bar-locked effects.",
+          "default": 4
+        },
+        "clock_port": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "MIDI input port to read the external clock from when it arrives on a DIFFERENT port than the [midi_control] control surface (substring match, case-insensitive). None (default) = read clock on the same port as control. Only used when tempo_source = 'midi'."
+        }
+      }
+    },
     "menu": {
       "type": "object",
       "description": "On-C64 SPACE-key menu for live scene tweaks.",

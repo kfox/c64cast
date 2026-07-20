@@ -160,6 +160,13 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
         "MIDI CC control surface for live performance: scene jumps, style "
         "cycling, transport, live effect params (extra).",
     ),
+    (
+        "performance",
+        cfgmod.PerformanceCfg,
+        "Live-performance tempo/beat grid: follow an external MIDI clock or "
+        "free-run at a static/tapped BPM (drives launch quantization + "
+        "tempo-locked effects).",
+    ),
     ("menu", cfgmod.MenuCfg, "On-C64 SPACE-key menu for live scene tweaks."),
     (
         "wled",

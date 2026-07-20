@@ -714,6 +714,25 @@ number = 80
 action = "osd.position"             # tap flips the OSD corner; double-tap (<400ms) hides
                                     #   it; a tap while hidden re-enables it
 
+[performance]
+# Live-performance tempo/beat grid (Live DJ/VJ Phase 1): a process-wide beat
+# clock every consumer reads (launch quantization, tempo-locked effects, WLED).
+# All in-memory — it never touches the DMA socket. No visible output on its own.
+tempo_source = "internal"           # "internal" free-runs at `bpm` (with a
+                                    #   `tempo_tap` cc_map pad for live tapping);
+                                    #   "midi" follows an external MIDI clock (fed
+                                    #   by the [midi_control] listener, so enable
+                                    #   that too — the grid idles until the first
+                                    #   0xF8 clock byte arrives)
+bpm = 120.0                         # static/starting tempo (20..400); a tap pad
+                                    #   overrides it live
+beats_per_bar = 4                   # time-signature numerator — where bar
+                                    #   boundaries fall (1..32)
+clock_port = ""                     # read the external clock from a DIFFERENT MIDI
+                                    #   port than control (substring match); "" =
+                                    #   same port as [midi_control]. Only used when
+                                    #   tempo_source = "midi"
+
 [menu]
 # On-C64 menu: SPACE opens an on-screen panel of context-sensitive knobs for
 # the current scene (palette mode, PETSCII style, …) with a live preview;
