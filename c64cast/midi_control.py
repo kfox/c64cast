@@ -50,6 +50,7 @@ Requires the `midi` extra (``pip install c64cast[midi]``).
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -115,6 +116,13 @@ _ACTIONS = (
     # the playlist thread — no scene mutation here). Release-aware (gate/toggle);
     # see _RELEASE_AWARE_ACTIONS. Mirrored in config._MIDI_ACTION_CHOICES.
     "clip_launch",
+    # Effect-layer bypass toggle (Live-performance Phase 3): flips the `enabled`
+    # flag of effect layer `slot` (0-based) on the current scene. A latched
+    # toggle — each press flips; releases ignored (press-only, not in
+    # _RELEASE_AWARE_ACTIONS). The `enabled` write is GIL-atomic (a plain bool),
+    # so it runs on the reader thread with no queue (like osd.position /
+    # tempo_tap). Mirrored in config._MIDI_ACTION_CHOICES.
+    "fx_toggle",
 )
 
 # Double-tap window for the osd.position action (a second press within this many
@@ -159,7 +167,7 @@ class _CCMapping:
     scene: int | None = None  # for "jump"
     target: str | None = None  # for "param": "effect.<name>" | "source.<name>"
     mode: str | None = None  # for "transport.jog": "abs" | "rel" (None -> "rel")
-    slot: int | None = None  # for "loop_slot": the pad/preset number (>= 1)
+    slot: int | None = None  # loop_slot/clip_launch: pad/preset (>= 1); fx_toggle: layer (>= 0)
 
 
 def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping]:
@@ -203,8 +211,15 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
                 f"cc_map[{i}] action 'transport.jog' mode must be 'abs' or 'rel', got {mode!r}"
             )
         slot = entry.get("slot")
-        if action in ("loop_slot", "clip_launch") and (not isinstance(slot, int) or slot < 1):
+        if action in ("loop_slot", "clip_launch") and (
+            not isinstance(slot, int) or isinstance(slot, bool) or slot < 1
+        ):
             raise ValueError(f"cc_map[{i}] action {action!r} needs an int 'slot' >= 1")
+        # fx_toggle addresses a 0-based effect-chain layer, so >= 0.
+        if action == "fx_toggle" and (
+            not isinstance(slot, int) or isinstance(slot, bool) or slot < 0
+        ):
+            raise ValueError(f"cc_map[{i}] action 'fx_toggle' needs an int 'slot' >= 0")
         out[(kind, number)] = _CCMapping(
             kind=kind,
             number=number,
@@ -215,6 +230,28 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
             slot=slot,
         )
     return out
+
+
+# A `param` target holder addressing a specific effect-chain layer:
+# `fx<N>` or `effect[<N>]`, 0-based (Live DJ/VJ Phase 3). Kept mirrored with
+# config._FX_LAYER_HOLDER_RE (independent copy so config stays import-light).
+_FX_LAYER_HOLDER_RE = re.compile(r"^(?:fx(\d+)|effect\[(\d+)\])$")
+
+
+def _resolve_param_holder(scene: Any, holder_attr: str) -> Any:
+    """Resolve a `param` target's holder prefix to the object that carries the
+    LIVE_PARAMS/LIVE_CHOICES: a plain attribute (`effect` → scene.effect,
+    `source` → scene.source), or a layer-addressed effect (`fx2`, `effect[2]`)
+    → scene.effects[2]. Returns None for an out-of-range layer or a scene with
+    no such attribute. Mirrors config._is_valid_param_holder's grammar."""
+    m = _FX_LAYER_HOLDER_RE.match(holder_attr)
+    if m is not None:
+        idx = int(m.group(1) if m.group(1) is not None else m.group(2))
+        effects = getattr(scene, "effects", None)
+        if effects and 0 <= idx < len(effects):
+            return effects[idx]
+        return None
+    return getattr(scene, holder_attr, None)
 
 
 def _parse_mmc_sysex(data: tuple[int, ...]) -> int | None:
@@ -653,6 +690,13 @@ class MidiControlListener:
             from .performance import ClipEvent
 
             pl.performance.enqueue(ClipEvent(slot=mapping.slot or 0, pressed=pressed))
+        elif action == "fx_toggle":
+            # Flip effect layer `slot`'s bypass on the current scene. A plain
+            # bool write (GIL-atomic), so it runs directly on the reader thread —
+            # no scene rebuild, no DMA, no transport queue. Latched: only presses
+            # act (releases already dropped in _dispatch); out-of-range slot or a
+            # scene with no such layer is a silent no-op.
+            self._toggle_effect_layer(pl, mapping.slot or 0)
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(
@@ -676,6 +720,22 @@ class MidiControlListener:
                 )
             )
 
+    @staticmethod
+    def _toggle_effect_layer(pl: Playlist, slot: int) -> None:
+        """Flip the bypass (`enabled`) of effect-chain layer `slot` on the
+        current scene. Out-of-range slot or a scene with no chain is a silent
+        no-op. The `enabled` write is a GIL-atomic bool, safe on the reader
+        thread; the render loop reads it next frame (Phase 3)."""
+        scene = pl.current
+        if scene is None:
+            return
+        effects = getattr(scene, "effects", None)
+        if not effects or not 0 <= slot < len(effects):
+            return
+        eff = effects[slot]
+        eff.enabled = not getattr(eff, "enabled", True)
+        pl.post_osd(f"fx{slot} {'on' if eff.enabled else 'bypass'}")
+
     def _apply_param(
         self, pl: Playlist, target: str | None, value_0_127: int, kind: str = "cc"
     ) -> None:
@@ -685,14 +745,15 @@ class MidiControlListener:
         # `scene.<name>` targets the scene itself (scope scenes mix in the
         # renderer, so the param lives on the scene, not a source/effect holder);
         # `mode.<name>` targets the scene's display mode (the live color-pipeline
-        # knobs — dither, motion smoothing, auto-fit, and the discrete choices).
+        # knobs — dither, motion smoothing, auto-fit, and the discrete choices);
+        # `fx<N>` / `effect[<N>]` target a specific effect-chain layer (Phase 3).
         # Kept mirrored with wled_device._resolve_live_target / _set_live_param.
         if holder_attr == "scene":
             holder = pl.current
         elif holder_attr == "mode":
             holder = getattr(pl.current, "display_mode", None)
         else:
-            holder = getattr(pl.current, holder_attr, None)
+            holder = _resolve_param_holder(pl.current, holder_attr)
         if holder is None:
             return
         live_params = getattr(type(holder), "LIVE_PARAMS", {})

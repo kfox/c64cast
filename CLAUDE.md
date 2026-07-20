@@ -111,7 +111,7 @@ Where the per-subsystem detail lives (the [architecture reference](docs/architec
 | ASID decode + buffered ring player | [`asid.py` + `asid_scene.py`](docs/architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | WLED bridge — broadcast / listen / pixel sink | [`wled_sync.py`, `wled_device.py`, `wled_sink.py`](docs/architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3) |
 | MIDI live-tune Phases 1-5 (live params, transport, loops, resync, wizard) | [`midi_control.py`, `transport.py`, `midi_setup.py`](docs/architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
-| Live DJ/VJ arc — tempo/beat grid (Phase 1) + clip-launch grid (Phase 2) | [`tempo.py`, `performance.py`](docs/architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2) |
+| Live DJ/VJ arc — tempo/beat grid (Phase 1) + clip-launch grid (Phase 2) + layerable effect chain (Phase 3) | [`tempo.py`, `performance.py`](docs/architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2), [`effects.py` chain](docs/architecture/scenes.md#the-layerable-chain-live-djvj-phase-3) |
 | Ensemble audio slot contention | [`ensemble.py`](docs/architecture/config.md#ensemblepy--audio-slot-coordination) |
 | TeensyROM link errors + launcher upload race | [`teensyrom_dma.py`](docs/architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
 | Cross-ensemble span/mirror broadcasts | [`orchestrator.py` + `orchestrators/`](docs/architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |

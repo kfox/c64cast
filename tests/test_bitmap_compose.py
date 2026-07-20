@@ -64,7 +64,7 @@ def _frame() -> np.ndarray:
 
 
 def _render(mode, api, frame=None) -> None:
-    scene = cast(Scene, SimpleNamespace(effect=None))
+    scene = cast(Scene, SimpleNamespace(effects=[], clock_modulation=None))
     _render_with_overlays(mode, api, _frame() if frame is None else frame, [], 0.0, scene)
 
 

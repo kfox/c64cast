@@ -199,9 +199,15 @@ class Playlist:
         # Always present like `transport` so consumers (launch quantize,
         # tempo-locked effects — later phases) can read `pl.tempo` unguarded.
         # In-memory only — the reader thread never touches DMA to update it.
-        from .tempo import build_tempo_clock
+        from .tempo import ClockModulationSource, build_tempo_clock
 
         self.tempo = build_tempo_clock(performance)
+        # Beat-grid-as-modulation feeder (Live-performance Phase 3). Wraps
+        # `self.tempo` as a MusicModulation source so an effect layer with
+        # `mod_source = "clock"` locks to the tempo grid exactly as an audio-
+        # reactive layer locks to the SID feature stream. Stamped onto each
+        # scene in _safe_setup; scenes read it in scenes._render_with_overlays.
+        self._clock_modulation = ClockModulationSource(self.tempo)
         # Clip-launch grid (Live-performance Phase 2). Built from
         # [[performance.clips]] (empty when none configured, so `service` is a
         # cheap no-op). Always present like `transport`/`tempo`. Fires scenes
@@ -692,6 +698,10 @@ class Playlist:
 
     def _safe_setup(self, scene: Scene) -> None:
         self._maybe_install_conductor(scene)
+        # Give clock-locked effect layers (mod_source = "clock") this playlist's
+        # beat-grid feeder before the scene renders a frame (Phase 3). Harmless
+        # on scenes with no such layer.
+        scene.clock_modulation = self._clock_modulation
         scene.setup()
         # Re-stamp the persistent user brightness onto this fresh scene's display
         # mode (mode instances are per-scene, so a dim set on a previous scene's

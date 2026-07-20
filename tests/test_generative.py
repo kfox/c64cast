@@ -609,6 +609,11 @@ class EffectTest(unittest.TestCase):
             "pulse": {"intensity"},
             "rgb_shift": {"intensity"},
             "blur": {"intensity"},
+            # Phase 3 VJ effects.
+            "strobe": {"duty", "rate"},
+            "invert": {"mix"},
+            "mirror": set(),  # choice-only (LIVE_CHOICES axis), no scalars
+            "posterize": {"levels"},
         }
         for name in expected:
             eff = build_effect(name)
@@ -810,7 +815,9 @@ class EffectTest(unittest.TestCase):
                 return frame
 
         mode = _FakeMode()
-        scene = SimpleNamespace(name="s", effect=_RecordingEffect(), overlays=[])
+        scene = SimpleNamespace(
+            name="s", effects=[_RecordingEffect()], overlays=[], clock_modulation=None
+        )
         frame = np.zeros((2, 2, 3), np.uint8)
         _render_with_overlays(
             cast(DisplayMode, mode),
@@ -836,7 +843,9 @@ class EffectTest(unittest.TestCase):
                 return frame
 
         mode = _FakeMode()
-        scene = SimpleNamespace(name="s", effect=_RecordingEffect(), overlays=[])
+        scene = SimpleNamespace(
+            name="s", effects=[_RecordingEffect()], overlays=[], clock_modulation=None
+        )
         _render_with_overlays(
             cast(DisplayMode, mode),
             cast(C64Backend, SimpleNamespace()),
@@ -1111,7 +1120,10 @@ class EffectHookTest(unittest.TestCase):
     def test_effect_applied_before_display(self):
         mode = _FakeMode()
         eff = _RecordingEffect()
-        scene = cast(Scene, SimpleNamespace(name="x", effect=eff, overlays=[]))
+        scene = cast(
+            Scene,
+            SimpleNamespace(name="x", effects=[eff], overlays=[], clock_modulation=None),
+        )
         frame = np.zeros((2, 2, 3), np.uint8)
         _render_with_overlays(
             cast(DisplayMode, mode), cast(C64Backend, SimpleNamespace()), frame, [], 0.0, scene
@@ -1122,7 +1134,9 @@ class EffectHookTest(unittest.TestCase):
 
     def test_no_effect_passes_raw_frame(self):
         mode = _FakeMode()
-        scene = cast(Scene, SimpleNamespace(name="x", effect=None, overlays=[]))
+        scene = cast(
+            Scene, SimpleNamespace(name="x", effects=[], overlays=[], clock_modulation=None)
+        )
         frame = np.full((2, 2, 3), 7, np.uint8)
         _render_with_overlays(
             cast(DisplayMode, mode), cast(C64Backend, SimpleNamespace()), frame, [], 0.0, scene

@@ -83,7 +83,13 @@ def _field_schema(
     if help:
         sch["description"] = help
     if choices:
-        sch["enum"] = list(choices)
+        # For a list field (e.g. `effects: list[str]`), the choices constrain the
+        # array's *items*, not the array value itself — otherwise the schema would
+        # (wrongly) require the whole list to equal one of the choice strings.
+        if sch.get("type") == "array":
+            sch["items"] = {"type": "string", "enum": list(choices)}
+        else:
+            sch["enum"] = list(choices)
     if include_default and default is not None:
         sch["default"] = default
     return sch
