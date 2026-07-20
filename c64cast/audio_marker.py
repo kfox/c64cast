@@ -28,8 +28,8 @@ import numpy as np
 
 # 100 ms linear chirp: long enough for clean correlation SNR even under
 # capture noise, short enough that listeners barely notice the pre-roll
-# blip at scene start. 200-3500 Hz fits inside the 4 kHz Nyquist of an
-# 8 kHz sample rate with margin against aliasing.
+# blip at scene start. 200-3500 Hz fits inside the ~6 kHz Nyquist of the
+# 12 kHz default sample rate with margin against aliasing.
 MARKER_DURATION_S = 0.1
 MARKER_FREQ_START_HZ = 200.0
 MARKER_FREQ_END_HZ = 3500.0
@@ -37,8 +37,9 @@ MARKER_FREQ_END_HZ = 3500.0
 # Capture rate used by Cam Link / sounddevice; the upsampling factor
 # below depends on this.
 DEFAULT_CAPTURE_RATE = 48000
-# Audio playback sample rate matches AudioCfg.sample_rate default (8000).
-# Could be parameterized, but every shipping config uses 8 kHz so far.
+# Default playback rate assumed by the marker synthesis/analysis helpers.
+# AudioCfg.sample_rate now defaults to 12000; pass the real playback_rate to
+# the builders below to match a capture made at the current rate.
 DEFAULT_PLAYBACK_RATE = 8000
 
 
@@ -77,7 +78,7 @@ def synthesize_capture_reference(
     SID output → Cam Link 48 kHz sampling. The capture sees a staircase
     where each 4-bit volume code is held for (capture_rate / playback_rate)
     output samples — sample-and-hold from the 6510 only writing $D418
-    at the 8 kHz NMI rate. Amplitude scale is approximate; cross-
+    at the NMI rate. Amplitude scale is approximate; cross-
     correlation is amplitude-invariant after mean subtraction so the
     exact scale doesn't matter for peak detection."""
     vol_bytes = synthesize_marker_4bit(playback_rate)
