@@ -153,6 +153,13 @@ class Playlist:
         # WLED Audio Sync packets so LAN LED matrices react to the SID. Built
         # only when [wled].broadcast is on; started/stopped around the run loop.
         self._wled: Any = None
+        # When [wled].broadcast_tempo_fallback is on, a scene with no SID features
+        # (video/webcam/slideshow) still feeds the broadcaster off the beat grid
+        # so WLED strips pulse to the MIDI/tap tempo (Live DJ/VJ Phase 6). Read
+        # once here; consulted in `_active_features`.
+        self._wled_tempo_fallback: bool = bool(
+            getattr(getattr(config, "wled", None), "broadcast_tempo_fallback", False)
+        )
         if config is not None:
             from .config import resolve_wled_broadcast
 
@@ -216,10 +223,11 @@ class Playlist:
         # reader thread. `build_performance_scene` is the injected factory
         # (cli.build_stack) that turns a clip dict into a Scene — None until
         # wired, which makes the grid inert.
-        from .performance import PerformanceSession
+        from .performance import PerformanceSession, default_look_store
 
         self.performance = PerformanceSession(
-            getattr(performance, "clips", None) if performance is not None else None
+            getattr(performance, "clips", None) if performance is not None else None,
+            look_store=default_look_store(name),
         )
         self.build_performance_scene: Callable[[dict[str, Any]], Scene] | None = None
         self.transitioning = False
@@ -284,6 +292,24 @@ class Playlist:
         else:
             osd.position = "top" if osd.position == "bottom" else "bottom"
             osd.post(f"OSD {osd.position}")
+
+    def toggle_effect_layer(self, slot: int) -> bool | None:
+        """Flip the bypass (`enabled`) of effect-chain layer `slot` on the current
+        scene, returning the new state (or None for an out-of-range slot / a scene
+        with no chain). A GIL-atomic bool write the render loop reads next frame
+        (Live DJ/VJ Phase 3), so it's safe to call from any control thread — the
+        MIDI reader (`fx_toggle`), the web console, and the vision controller
+        (Phase 6) all land here. No OSD (the C64 stays audience-facing)."""
+        scene = self.current
+        if scene is None:
+            return None
+        effects = getattr(scene, "effects", None)
+        if not effects or not 0 <= slot < len(effects):
+            return None
+        eff = effects[slot]
+        new_state = not getattr(eff, "enabled", True)
+        eff.enabled = new_state
+        return new_state
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         """Cut to scenes[index] at the next clean frame boundary (reuses
@@ -1033,9 +1059,18 @@ class Playlist:
         """The currently-playing scene's live music features (None when there's
         no scene, or the scene has no music source). The WLED broadcaster polls
         this from its own thread — Scene.features() reads are self-synchronized
-        (SID scenes take their own lock), so no extra locking is needed here."""
+        (SID scenes take their own lock), so no extra locking is needed here.
+
+        With `[wled].broadcast_tempo_fallback` on, a scene that reports no
+        features (video/webcam/slideshow) falls back to the beat grid's
+        `ClockModulationSource` while the tempo clock is running, so WLED keeps
+        pulsing to the MIDI/tap tempo on non-SID scenes (Live DJ/VJ Phase 6). A
+        SID-driven scene always wins — the fallback only fills a `None`."""
         scene = self.current
-        return scene.features() if scene is not None else None
+        feats = scene.features() if scene is not None else None
+        if feats is None and self._wled_tempo_fallback and self.tempo.running:
+            return self._clock_modulation.features()
+        return feats
 
     def run(self) -> None:
         self._last_heartbeat = 0.0

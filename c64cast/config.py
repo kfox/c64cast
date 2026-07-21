@@ -815,6 +815,19 @@ class VisionCfg:
             "the mirrored webcam view."
         },
     )
+    performance: bool = field(
+        default=False,
+        metadata={
+            "help": "Live DJ/VJ Phase 6: remap the RUNNING-state gestures to "
+            "clip-launch performance actions instead of transport — swipe = "
+            "launch the next [[performance.clips]] slot, pinch-hold = bypass "
+            "effect layer 0, open-hand-hold = bypass effect layer 1. Off "
+            "(default) keeps the transport mapping (swipe=skip, pinch=pause, "
+            "open-hand=cycle style). Pinch-hold-to-resume while paused is "
+            "unchanged either way. Needs a [[performance.clips]] grid for the "
+            "clip-advance gesture to do anything."
+        },
+    )
 
 
 @dataclass
@@ -1871,6 +1884,11 @@ _MIDI_ACTION_CHOICES = (
     # the `enabled` flag of effect layer `slot` (0-based) on the current scene.
     # Needs an int `slot` >= 0. Mirrored in midi_control._ACTIONS.
     "fx_toggle",
+    # Look snapshot / recall pads (Live-performance Phase 6): `look_save` captures
+    # the active clip + effect-chain state to look `slot`; `look_recall` re-fires
+    # it. Both need an int `slot` >= 1. Mirrored in midi_control._ACTIONS.
+    "look_save",
+    "look_recall",
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
@@ -2000,7 +2018,9 @@ class MidiControlCfg:
             "press, saves the current loop into it while Stop is held, or "
             "clears it while Record is held (note mappings only — an mmc "
             "record/stop can't reliably hold for the chord, since MMC has no "
-            "release event)."
+            "release event). 'look_save'/'look_recall' (Phase 6) each need an "
+            "int 'slot' >= 1 — a look captures the active clip + effect-chain "
+            "state on save and re-fires it on recall."
         },
     )
     controller_profile: str = field(
@@ -2192,6 +2212,19 @@ class WledCfg:
         metadata={
             "help": "Broadcast rate in Hz (Mode 3). WLED expects roughly "
             "frame-rate updates; ~40-60 is typical."
+        },
+    )
+    broadcast_tempo_fallback: bool = field(
+        default=False,
+        metadata={
+            "help": "Mode 3 performance glue (Live DJ/VJ Phase 6): when the "
+            "on-screen scene has NO SID features to broadcast (a video, webcam, "
+            "or slideshow), fall back to the [performance] beat grid so WLED "
+            "strips keep pulsing to the MIDI/tap tempo instead of going dark. "
+            "The synthesized pulse spikes on each beat (from the TempoClock "
+            "phase); only active while the grid is running. Off (default) = a "
+            "non-SID scene broadcasts nothing, matching pre-Phase-6 behavior. A "
+            "SID-driven scene always wins over the fallback."
         },
     )
     listen: str | None = field(
@@ -4134,9 +4167,9 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                     f"[midi_control].cc_map[{i}] action 'transport.jog' mode must be "
                     f"'abs' or 'rel', got {mode!r}"
                 )
-        if action in ("loop_slot", "clip_launch"):
+        if action in ("loop_slot", "clip_launch", "look_save", "look_recall"):
             slot = entry.get("slot")
-            if not isinstance(slot, int) or slot < 1:
+            if not isinstance(slot, int) or isinstance(slot, bool) or slot < 1:
                 raise ConfigError(
                     f"[midi_control].cc_map[{i}] action {action!r} needs an int 'slot' "
                     f">= 1, got {slot!r}"
@@ -4236,6 +4269,15 @@ def validate_wled_cfg(cfg: Config) -> None:
     resolve_wled_listen(cfg)  # parse for validation side effect (raises on bad)
     if not 1.0 <= cfg.wled.rate_hz <= 120.0:
         raise ConfigError(f"[wled].rate_hz must be 1..120, got {cfg.wled.rate_hz}")
+    if not isinstance(cfg.wled.broadcast_tempo_fallback, bool):
+        raise ConfigError(
+            "[wled].broadcast_tempo_fallback must be true/false, got "
+            f"{cfg.wled.broadcast_tempo_fallback!r}"
+        )
+    if broadcast_on and cfg.wled.broadcast_tempo_fallback:
+        # The tempo fallback keeps a non-SID scene lit, so the "nothing to
+        # broadcast" warning below no longer applies — the grid supplies packets.
+        return
     if broadcast_on and not _has_sid_scene(cfg):
         log.warning(
             "[wled] broadcast enabled but no SID-driven scene (waveform, or "

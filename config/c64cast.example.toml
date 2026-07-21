@@ -452,6 +452,11 @@ gesture_cooldown_s = 1.0            # min seconds between fired gesture events
 gesture_dwell_s = 0.4              # seconds a pose must be held STILL before firing
 hold_threshold_s = 3.0             # pinch-hold seconds to resume while paused
 mirror = true                       # mirror frame so swipe matches webcam view
+performance = false                 # Live DJ/VJ Phase 6: remap RUNNING gestures to
+                                    #   clip-launch actions — swipe = next clip slot,
+                                    #   pinch-hold = bypass fx layer 0, open-hand-hold
+                                    #   = bypass fx layer 1 (needs [[performance.clips]]);
+                                    #   false keeps swipe=skip/pinch=pause/open=cycle
 
 [interstitial]
 duration_s = 4.0
@@ -801,6 +806,11 @@ broadcast = "disabled"              # "enabled" -> multicast 239.0.0.1:11988
                                     # (every WLED with Receive on reacts); or a
                                     # unicast "192.168.1.50[:11988]"
 rate_hz = 50.0                      # broadcast rate (WLED expects ~frame-rate)
+broadcast_tempo_fallback = false    # Live DJ/VJ Phase 6: when the on-screen scene
+                                    #   has no SID to broadcast (video/webcam/
+                                    #   slideshow), pulse WLED to the [performance]
+                                    #   beat grid instead of going dark. Only while
+                                    #   the grid runs; a SID scene always wins
 #
 # Mode 1 — listen (control surface IN): advertise c64cast as a virtual WLED
 # device (mDNS _wled._tcp) and serve a subset of the WLED JSON API, so the WLED

@@ -54,12 +54,20 @@ class _FakePerf:
         self.armed_detail: tuple[int, str, float, float] | None = None
         self._clips = clips or []
         self.events: list[tuple[int, bool]] = []
+        self.look_events: list[tuple[int, bool]] = []
+        self.looks: list[int] = []
 
     def clips_info(self) -> list[dict[str, Any]]:
         return [dict(c) for c in self._clips]
 
     def enqueue(self, event: Any) -> None:
         self.events.append((event.slot, event.pressed))
+
+    def enqueue_look(self, slot: int, *, save: bool) -> None:
+        self.look_events.append((slot, save))
+
+    def saved_look_slots(self) -> list[int]:
+        return list(self.looks)
 
 
 class _FakeScene:
@@ -119,6 +127,20 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertAlmostEqual(fx["params"][0]["value"], 0.48, places=4)
         # norm = 0.48 / 0.96 = 0.5
         self.assertAlmostEqual(fx["params"][0]["norm"], 0.5, places=3)
+        # Saved-look slots surface for the console's look pads (Phase 6).
+        self.assertEqual(sys["looks"], [])
+
+    def test_saved_looks_surface_in_state(self):
+        bridge, pl = _bridge()
+        pl.performance.looks = [2, 5]
+        self.assertEqual(_system_state("c64cast", pl)["looks"], [2, 5])
+
+    def test_look_enqueues_save_and_recall(self):
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.look(None, 3, save=True))
+        self.assertTrue(bridge.look(None, 3, save=False))
+        self.assertEqual(pl.performance.look_events, [(3, True), (3, False)])
+        self.assertFalse(bridge.look("nope", 1, save=True))
 
     def test_clip_state_reflects_active_and_armed(self):
         clips = [
@@ -188,6 +210,9 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertEqual(pl.tempo.taps, 1)
         self.assertFalse(eff.enabled)
         self.assertAlmostEqual(eff.decay, 0.24, places=4)
+        bridge.apply({"action": "look", "slot": 4, "save": True})
+        bridge.apply({"action": "look", "slot": 4})  # recall (save defaults False)
+        self.assertEqual(pl.performance.look_events, [(4, True), (4, False)])
         self.assertFalse(bridge.apply({"action": "bogus"}))
 
     def test_beats_remaining(self):

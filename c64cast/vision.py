@@ -16,6 +16,18 @@ Gesture → control mapping mirrors the keyboard semantics exactly:
   * SWIPE (fast horizontal wrist motion)         → skip_event   (running only)
   * OPEN_HAND (all fingers extended) (running)   → cycle_event
 
+**Performance mode (Live DJ/VJ Phase 6).** With a Playlist bound via
+`bind_performance()` (gated on `[vision].performance`), the RUNNING-state
+gestures instead drive the clip-launch grid — a hands-free performance surface:
+
+  * SWIPE      → `pl.performance.advance_clip()` (launch the next clip slot)
+  * PINCH held → `pl.toggle_effect_layer(0)`     (bypass effect layer 0)
+  * OPEN_HAND held → `pl.toggle_effect_layer(1)` (bypass effect layer 1)
+
+Both paths bottom out in the same thread-safe hand-offs the MIDI/web surfaces
+use (an enqueued `ClipEvent`, a GIL-atomic `enabled` flip) — no scene mutation
+on the poll thread. The paused-state pinch-hold-to-resume gesture is unchanged.
+
 The hand tracker is pluggable behind the `GestureRecognizer` protocol; the
 shipped implementation is `MediaPipeHandRecognizer` (MediaPipe Tasks
 HandLandmarker), lazy-imported so the rest of the app and the whole test suite
@@ -342,6 +354,15 @@ class VisionController:
         self._resume_event: threading.Event | None = None
         self._skip_event: threading.Event | None = None
         self._cycle_event: threading.Event | None = None
+        # Optional performance binding (Live DJ/VJ Phase 6). When set (via
+        # bind_performance, gated on [vision].performance), the RUNNING-state
+        # gestures drive the clip-launch grid instead of transport: swipe =
+        # advance to the next clip, pinch-hold = bypass fx layer 0, open-hand-hold
+        # = bypass fx layer 1. Kept as a duck-typed handle (the Playlist) so
+        # vision.py stays import-light — it only calls `.performance.advance_clip`
+        # (enqueue-only, thread-safe) and `.toggle_effect_layer` (a GIL-atomic
+        # bool write), never mutating a scene on this poll thread.
+        self._perf: Any = None
         # Continuous-state snapshot for future consumers (fingerpainting).
         self._state_lock = threading.Lock()
         self._latest_hand: HandState | None = None
@@ -375,6 +396,13 @@ class VisionController:
             self.recognizer.close()
         except Exception:  # noqa: BLE001 — best-effort cleanup
             self.log.debug("recognizer.close() failed", exc_info=True)
+
+    def bind_performance(self, playlist: Any) -> None:
+        """Route RUNNING-state gestures to the clip-launch grid instead of
+        transport (Live DJ/VJ Phase 6). `playlist` is the owning Playlist; wired
+        by cli.build_stack when [vision].performance is on. Call before/after
+        start() interchangeably — the poll loop reads `self._perf` each tick."""
+        self._perf = playlist
 
     def latest_hands(self) -> HandState | None:
         """Thread-safe snapshot of the most recent detected hand (or None)."""
@@ -486,15 +514,31 @@ class VisionController:
             held = static_run >= self._dwell_frames and not static_fired
 
             cooled = now - last_fire >= self.gesture_cooldown_s
+            perf = self._perf  # snapshot once (bind_performance may set it live)
 
-            if cooled and is_swipe and self._skip_event is not None:
+            if cooled and is_swipe and perf is not None:
+                slot = perf.performance.advance_clip()
+                self.log.info("swipe detected — launching next clip (slot %s)", slot)
+                last_fire = now
+                swipe_run = 0
+            elif cooled and is_swipe and self._skip_event is not None:
                 self.log.info("swipe detected — skipping to next scene")
                 self._skip_event.set()
                 last_fire = now
                 swipe_run = 0
+            elif cooled and held and static == Gesture.PINCH and perf is not None:
+                enabled = perf.toggle_effect_layer(0)
+                self.log.info("pinch held — fx layer 0 %s", "on" if enabled else "bypass")
+                last_fire = now
+                static_fired = True
             elif cooled and held and static == Gesture.PINCH:
                 self.log.info("pinch held — pausing")
                 self._pause_event.set()
+                last_fire = now
+                static_fired = True
+            elif cooled and held and static == Gesture.OPEN_HAND and perf is not None:
+                enabled = perf.toggle_effect_layer(1)
+                self.log.info("open hand held — fx layer 1 %s", "on" if enabled else "bypass")
                 last_fire = now
                 static_fired = True
             elif cooled and held and static == Gesture.OPEN_HAND and self._cycle_event is not None:

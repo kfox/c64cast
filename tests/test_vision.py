@@ -291,6 +291,86 @@ class VisionControllerTest(unittest.TestCase):
         np.testing.assert_array_equal(snap.landmarks, target.landmarks)
         ctl.stop()
 
+
+class _FakePerfSession:
+    def __init__(self) -> None:
+        self.advanced = 0
+
+    def advance_clip(self):
+        self.advanced += 1
+        return 1
+
+
+class _FakePerfPlaylist:
+    """The bind_performance() surface: pl.performance.advance_clip and
+    pl.toggle_effect_layer, both thread-safe no-ops here that just record."""
+
+    def __init__(self) -> None:
+        self.performance = _FakePerfSession()
+        self.toggled: list[int] = []
+
+    def toggle_effect_layer(self, slot: int):
+        self.toggled.append(slot)
+        return True
+
+
+class VisionPerformanceModeTest(unittest.TestCase):
+    """Live DJ/VJ Phase 6: a bound playlist remaps RUNNING gestures to the
+    clip-launch grid (swipe = next clip, pinch = fx0 bypass, open = fx1 bypass)."""
+
+    def test_swipe_launches_next_clip_not_skip(self):
+        ctl = _controller([fist(0.1), fist(0.9), fist(0.1), fist(0.9)], swipe_velocity=1.0)
+        perf = _FakePerfPlaylist()
+        ctl.bind_performance(perf)
+        pause, resume = threading.Event(), threading.Event()
+        skip, cycle = threading.Event(), threading.Event()
+        ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
+        deadline = time.time() + 0.5
+        while perf.performance.advanced == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        ctl.stop()
+        self.assertGreaterEqual(perf.performance.advanced, 1, "swipe should advance the clip grid")
+        self.assertFalse(skip.is_set(), "in performance mode a swipe must not skip")
+
+    def test_pinch_toggles_fx_layer_0_not_pause(self):
+        ctl = _controller([fist(), pinch()])
+        perf = _FakePerfPlaylist()
+        ctl.bind_performance(perf)
+        pause, resume = threading.Event(), threading.Event()
+        skip, cycle = threading.Event(), threading.Event()
+        ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
+        deadline = time.time() + 0.5
+        while not perf.toggled and time.time() < deadline:
+            time.sleep(0.01)
+        ctl.stop()
+        self.assertIn(0, perf.toggled, "pinch-hold should bypass fx layer 0")
+        self.assertFalse(pause.is_set(), "in performance mode a pinch must not pause")
+
+    def test_open_hand_toggles_fx_layer_1_not_cycle(self):
+        ctl = _controller([fist(), open_hand()])
+        perf = _FakePerfPlaylist()
+        ctl.bind_performance(perf)
+        pause, resume = threading.Event(), threading.Event()
+        skip, cycle = threading.Event(), threading.Event()
+        ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
+        deadline = time.time() + 0.5
+        while not perf.toggled and time.time() < deadline:
+            time.sleep(0.01)
+        ctl.stop()
+        self.assertIn(1, perf.toggled, "open-hand-hold should bypass fx layer 1")
+        self.assertFalse(cycle.is_set(), "in performance mode open-hand must not cycle style")
+
+    def test_paused_pinch_still_resumes_in_performance_mode(self):
+        # The paused-state resume gesture is unchanged whether or not perf is bound.
+        ctl = _controller([pinch()], hold_threshold_s=0.05)
+        perf = _FakePerfPlaylist()
+        ctl.bind_performance(perf)
+        pause, resume = threading.Event(), threading.Event()
+        pause.set()
+        ctl.start(pause, resume)
+        self.assertTrue(resume.wait(0.5), "pinch-hold while paused should still resume")
+        ctl.stop()
+
     def test_stop_closes_recognizer(self):
         rec = FakeRecognizer([None])
         ctl = VisionController(

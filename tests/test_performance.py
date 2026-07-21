@@ -16,13 +16,21 @@ real-`mido`-guarded listener path the rest of the suite uses.
 
 from __future__ import annotations
 
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from c64cast import config as cfgmod
-from c64cast.performance import ClipEvent, PerformanceSession
+from c64cast.performance import (
+    ClipEvent,
+    LookStore,
+    PerformanceSession,
+    _apply_effects_state,
+    _snapshot_effects,
+)
 
 
 class _FakeTempo:
@@ -35,11 +43,12 @@ class _FakeTempo:
 
 
 class _FakeScene:
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, effects: Any = None) -> None:
         self.name = label
         self.is_done = False
         self.setups = 0
         self.teardowns = 0
+        self.effects = effects if effects is not None else []
 
     def setup(self) -> None:  # pragma: no cover - not called directly by engine
         self.setups += 1
@@ -375,6 +384,163 @@ class MidiClipLaunchTest(unittest.TestCase):
         lis._dispatch(mido.Message("note_on", note=64, velocity=100))
         ev = pl.performance._queue.get_nowait()
         self.assertEqual(ev.slot, 9)
+
+
+class _FakeEffect:
+    """A minimal FrameEffect stand-in with a LIVE_PARAM + a LIVE_CHOICE, enough
+    to exercise _snapshot_effects / _apply_effects_state without pulling numpy."""
+
+    LIVE_PARAMS = {"decay": (0.0, 0.96)}
+    LIVE_CHOICES = {"axis": ("horizontal", "vertical", "quad")}
+
+    def __init__(self, decay: float = 0.5, axis: str = "horizontal") -> None:
+        self.name = "fake"
+        self.enabled = True
+        self.mod_source = "audio"
+        self.decay = decay
+        self.axis = axis
+
+    def get_live_choice(self, name: str) -> Any:
+        return self.axis if name == "axis" else None
+
+    def set_live_choice(self, api: Any, name: str, value: Any) -> Any:
+        if name == "axis" and value in self.LIVE_CHOICES["axis"]:
+            self.axis = value
+        return None
+
+
+class LookStoreTest(unittest.TestCase):
+    def test_roundtrip_and_delete(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = LookStore(Path(d) / "looks.json")
+            self.assertEqual(store.load(), {})
+            store.save(1, {"clip": 3, "effects": [{"name": "trails"}]})
+            self.assertEqual(store.get(1), {"clip": 3, "effects": [{"name": "trails"}]})
+            self.assertEqual(sorted(store.load()), ["1"])
+            store.delete(1)
+            self.assertEqual(store.load(), {})
+
+    def test_corrupt_file_reads_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "looks.json"
+            p.write_text("{not json", encoding="utf-8")
+            self.assertEqual(LookStore(p).load(), {})
+
+    def test_slot_bounds_are_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = LookStore(Path(d) / "looks.json")
+            store.save(0, {"clip": None})  # slot 0 never stored
+            store.save(999, {"clip": None})  # past SLOT_MAX
+            self.assertEqual(store.load(), {})
+
+
+class EffectSnapshotTest(unittest.TestCase):
+    def test_snapshot_captures_state(self):
+        eff = _FakeEffect(decay=0.6, axis="quad")
+        eff.enabled = False
+        eff.mod_source = "clock"
+        scene = _FakeScene("s", effects=[eff])
+        snap = _snapshot_effects(scene)
+        self.assertEqual(len(snap), 1)
+        st = snap[0]
+        self.assertEqual(st["name"], "fake")
+        self.assertFalse(st["enabled"])
+        self.assertEqual(st["mod_source"], "clock")
+        self.assertAlmostEqual(st["params"]["decay"], 0.6)
+        self.assertEqual(st["choices"]["axis"], "quad")
+
+    def test_apply_restores_state_and_clamps(self):
+        eff = _FakeEffect(decay=0.1, axis="horizontal")
+        scene = _FakeScene("s", effects=[eff])
+        _apply_effects_state(
+            scene,
+            [
+                {
+                    "enabled": False,
+                    "mod_source": "clock",
+                    "params": {"decay": 5.0},  # out of range -> clamped to 0.96
+                    "choices": {"axis": "vertical"},
+                }
+            ],
+        )
+        self.assertFalse(eff.enabled)
+        self.assertEqual(eff.mod_source, "clock")
+        self.assertAlmostEqual(eff.decay, 0.96)
+        self.assertEqual(eff.axis, "vertical")
+
+    def test_apply_ignores_extra_states_past_chain(self):
+        eff = _FakeEffect()
+        scene = _FakeScene("s", effects=[eff])
+        # Two states, one layer — the second is silently ignored (no error).
+        _apply_effects_state(scene, [{"enabled": False}, {"enabled": False}])
+        self.assertFalse(eff.enabled)
+
+
+class LookSessionTest(unittest.TestCase):
+    """Snapshot/recall on a PerformanceSession driven against the fake playlist."""
+
+    def _session(self, tmp: str, clips: Any = None) -> PerformanceSession:
+        return PerformanceSession(clips=clips, look_store=LookStore(Path(tmp) / "looks.json"))
+
+    def test_snapshot_effects_only_and_recall_current_scene(self):
+        with tempfile.TemporaryDirectory() as d:
+            session = self._session(d)
+            store: Any = session._look_store
+            pl: Any = _FakePlaylist()
+            eff = _FakeEffect(decay=0.8)
+            pl.current = _FakeScene("live", effects=[eff])
+            # Save look 1 (no active clip -> clip=None).
+            session.enqueue_look(1, save=True)
+            session.service(pl)
+            look = store.get(1)
+            self.assertIsNone(look["clip"])
+            self.assertAlmostEqual(look["effects"][0]["params"]["decay"], 0.8)
+            # Mutate, then recall -> restored on the current scene.
+            eff.decay = 0.1
+            eff.enabled = False
+            session.enqueue_look(1, save=False)
+            session.service(pl)
+            self.assertAlmostEqual(eff.decay, 0.8)
+            self.assertTrue(eff.enabled)
+
+    def test_recall_of_empty_slot_is_noop(self):
+        with tempfile.TemporaryDirectory() as d:
+            session = self._session(d)
+            pl: Any = _FakePlaylist()
+            session.enqueue_look(7, save=False)
+            session.service(pl)  # must not raise
+
+    def test_recall_relaunches_captured_clip_and_applies_effects(self):
+        with tempfile.TemporaryDirectory() as d:
+            clips = [{"slot": 1, "type": "generative", "quantize": "off", "loop": True}]
+            session = self._session(d, clips=clips)
+            store: Any = session._look_store
+            pl: Any = _FakePlaylist()
+            # The clip's built scene carries an effect layer so the look's effect
+            # state has somewhere to land.
+            built_eff = _FakeEffect(decay=0.2)
+
+            def _build(clip: dict[str, Any]) -> _FakeScene:
+                return _FakeScene("clip1", effects=[built_eff])
+
+            pl.build_performance_scene = _build
+            # A saved look targeting clip slot 1 with a specific effect state.
+            store.save(3, {"clip": 1, "effects": [{"enabled": False, "params": {"decay": 0.9}}]})
+            session.enqueue_look(3, save=False)
+            _pump(session, pl)
+            self.assertEqual(session.active_slot, 1)
+            self.assertIn("clip1", pl.swaps)
+            self.assertFalse(built_eff.enabled)
+            self.assertAlmostEqual(built_eff.decay, 0.9)
+
+    def test_saved_look_slots_lists_sorted(self):
+        with tempfile.TemporaryDirectory() as d:
+            session = self._session(d)
+            store: Any = session._look_store
+            store.save(5, {"clip": None})
+            store.save(2, {"clip": None})
+            self.assertEqual(session.saved_look_slots(), [2, 5])
+            self.assertTrue(session.has_looks)
 
 
 if __name__ == "__main__":
