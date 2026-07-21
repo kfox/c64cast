@@ -732,6 +732,18 @@ clock_port = ""                     # read the external clock from a DIFFERENT M
                                     #   port than control (substring match); "" =
                                     #   same port as [midi_control]. Only used when
                                     #   tempo_source = "midi"
+midi_feedback = false               # Live DJ/VJ Phase 4: light a grid controller's
+                                    #   pads for loaded/armed/active clips + lit
+                                    #   effect layers over a MIDI OUT port (needs
+                                    #   [midi_control] on). Keeps performer readouts
+                                    #   off the audience-facing C64 screen. Colors
+                                    #   come from the controller profile's feedback
+                                    #   block (--midi-setup); Launchpad-X defaults
+                                    #   otherwise
+feedback_port = ""                  # MIDI OUT port for LED feedback (substring
+                                    #   match); "" = the profile's port, else the
+                                    #   [midi_control] input device, else first
+                                    #   output. Only used when midi_feedback = true
 
 # Clip-launch grid (Live DJ/VJ Phase 2): a bank of pad-fired scenes, quantized
 # to the beat grid above. Each [[performance.clips]] table is a scene spec (any

@@ -2090,6 +2090,31 @@ class PerformanceCfg:
             "the same port as control. Only used when tempo_source = 'midi'."
         },
     )
+    midi_feedback: bool = field(
+        default=False,
+        metadata={
+            "help": "Light a grid controller's pads to show performance state "
+            "(Live DJ/VJ Phase 4): loaded clip pads dim, the arming pad blinks, "
+            "the live clip bright, and enabled effect-chain layers lit — all over "
+            "a MIDI OUTPUT port ([midi_control] must be enabled). The C64 screen "
+            "stays audience-facing; this replaces on-screen readouts with "
+            "controller LEDs. The velocity->color convention is per-controller and "
+            "comes from the learned controller profile's `feedback` block "
+            "(--midi-setup writes it); Launchpad-X palette defaults otherwise. "
+            "Needs a grid that lights pads from note-on velocity (Novation "
+            "Launchpad, Akai APC/MPC, Ableton Push); Arturia and other "
+            "SysEx-only controllers won't light — use the web console for those."
+        },
+    )
+    feedback_port: str | None = field(
+        default=None,
+        metadata={
+            "help": "MIDI OUTPUT port for LED feedback (substring match, "
+            "case-insensitive). None (default) = the profile's own port, else the "
+            "same device as the [midi_control] input, else the first output. Only "
+            "used when midi_feedback = true."
+        },
+    )
     clips: list[dict[str, Any]] = field(
         default_factory=list,
         metadata={
@@ -2355,6 +2380,14 @@ def _validate_performance(perf: PerformanceCfg) -> None:
     if perf.clock_port is not None and not isinstance(perf.clock_port, str):
         raise ValueError(
             f"[performance].clock_port must be a string or unset, got {perf.clock_port!r}"
+        )
+    if not isinstance(perf.midi_feedback, bool):
+        raise ValueError(
+            f"[performance].midi_feedback must be true/false, got {perf.midi_feedback!r}"
+        )
+    if perf.feedback_port is not None and not isinstance(perf.feedback_port, str):
+        raise ValueError(
+            f"[performance].feedback_port must be a string or unset, got {perf.feedback_port!r}"
         )
     _validate_clips(perf.clips)
 

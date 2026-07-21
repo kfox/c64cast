@@ -568,8 +568,21 @@ class ControllerProfileStore:
             return []
         return [dict(m) for m in raw if isinstance(m, dict)]
 
-    def save(self, port: str, mappings: list[dict[str, Any]]) -> None:
-        payload = {"schema": self.SCHEMA, "port": port, "mappings": mappings}
+    def feedback(self) -> dict[str, Any]:
+        """The optional grid-controller LED-feedback block (Live DJ/VJ Phase 4):
+        the per-controller velocity->color convention + an output `port`. An empty
+        dict when the file is missing/corrupt or carries no `feedback` table —
+        :meth:`c64cast.midi_control.FeedbackMap.from_dict` then falls back to the
+        shipped defaults, so a bad block can never break feedback."""
+        raw = self._load_raw().get("feedback")
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def save(
+        self, port: str, mappings: list[dict[str, Any]], *, feedback: dict[str, Any] | None = None
+    ) -> None:
+        payload: dict[str, Any] = {"schema": self.SCHEMA, "port": port, "mappings": mappings}
+        if feedback:
+            payload["feedback"] = feedback
         atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
 
 

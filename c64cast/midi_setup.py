@@ -28,7 +28,7 @@ from collections import Counter
 from typing import Any
 
 from . import introspect
-from .midi_control import MIDI_AVAILABLE, classify_message, mido
+from .midi_control import MIDI_AVAILABLE, FeedbackMap, classify_message, mido
 from .transport import make_controller_profile_store
 
 # The transport / OSD buttons the wizard offers to learn, in prompt order.
@@ -105,6 +105,22 @@ def build_jog_entry(number: int) -> dict[str, Any]:
 
 def build_jump_entry(kind: str, number: int, scene: int) -> dict[str, Any]:
     return {"type": kind, "number": number, "action": "jump", "scene": scene}
+
+
+def build_feedback_block(
+    *, port: str | None = None, overrides: dict[str, int] | None = None
+) -> dict[str, Any]:
+    """Assemble a profile `feedback` block (Live DJ/VJ Phase 4): the LED
+    velocity->color convention (Launchpad-X defaults via :class:`FeedbackMap`,
+    with any `overrides` applied) plus an optional MIDI-OUT `port` name. What
+    :meth:`c64cast.midi_control.FeedbackMap.from_dict` reads back at runtime."""
+    block: dict[str, Any] = dict(FeedbackMap().to_dict())
+    for k, v in (overrides or {}).items():
+        if k in block and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 127:
+            block[k] = v
+    if port:
+        block["port"] = port
+    return block
 
 
 def dedupe_mappings(mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -309,6 +325,65 @@ def _learn_scene_jumps(q: Any, port: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _pick_output_port(q: Any) -> str | None:
+    """Pick a MIDI OUTPUT port for LED feedback (distinct from the input port —
+    many grids expose in/out under near-identical names). Returns the chosen full
+    port name, or None to skip (feedback then auto-selects at runtime)."""
+    try:
+        names = mido.get_output_names()
+    except Exception:
+        names = []
+    if not names:
+        print("  (no MIDI output ports found — feedback will auto-select at run time)")
+        return None
+    choices = ["(auto — match the input device)"] + list(names)
+    pick = q.select("Which MIDI OUTPUT port lights the pads?", choices=choices).ask()
+    if pick is None or pick.startswith("(auto"):
+        return None
+    return str(pick)
+
+
+def _learn_feedback(q: Any, existing: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Grid-controller LED-feedback pass (Phase 4). Offers to record the MIDI-OUT
+    port + the per-controller velocity->color convention (accept the Launchpad-X
+    defaults or hand-tune each state). Returns the `feedback` block to store, or
+    None to leave feedback unset. `existing` (a re-run's current block) is the
+    starting point so skipping keeps what's already there."""
+    default_new = not existing
+    if not q.confirm(
+        "Set up grid-controller LED feedback (light pads for clips + effects)?",
+        default=default_new,
+    ).ask():
+        return existing  # unchanged — preserve any prior block
+    print(
+        "\nLED feedback lights your controller's pads: loaded clips dim, the "
+        "arming pad blinks, the live clip bright, lit effect layers on.\n"
+    )
+    port = _pick_output_port(q)
+    overrides: dict[str, int] = {}
+    if q.confirm(
+        "Customize the pad colors? (velocity values — controller-specific)",
+        default=False,
+    ).ask():
+        base = FeedbackMap().to_dict()
+        prompts = {
+            "loaded": "loaded clip (dim)",
+            "armed": "arming clip (blinks)",
+            "active": "live clip (bright)",
+            "fx_on": "enabled effect layer",
+            "channel": "LED MIDI channel (0-based)",
+        }
+        for key, label in prompts.items():
+            raw = q.text(f"  {label} velocity", default=str(base[key])).ask()
+            if raw is None:
+                continue
+            try:
+                overrides[key] = int(raw)
+            except ValueError:
+                print(f"    (not a number — keeping {base[key]})")
+    return build_feedback_block(port=port, overrides=overrides)
+
+
 def _review(q: Any, mappings: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     while True:
         if not mappings:
@@ -362,6 +437,7 @@ def run_setup() -> int:
         print(f"Could not open MIDI port {port_name!r}: {e}")
         return 2
 
+    store = make_controller_profile_store(port_name)
     try:
         mappings: list[dict[str, Any]] = []
         mappings += _learn_transport(q, port)
@@ -380,9 +456,18 @@ def run_setup() -> int:
         print("Nothing saved.")
         return 2
 
-    store = make_controller_profile_store(port_name)
-    store.save(port_name, reviewed)
+    # Grid-controller LED feedback pass (Phase 4) — after the input mappings,
+    # since the OUT port picker doesn't need the learn port open. Preserves any
+    # existing block on skip (re-run friendly).
+    try:
+        feedback = _learn_feedback(q, store.feedback())
+    except KeyboardInterrupt:
+        feedback = store.feedback() or None
+
+    store.save(port_name, reviewed, feedback=feedback or None)
     print(f"\nSaved {len(reviewed)} mapping(s) to {store.path}")
+    if feedback:
+        print(f"LED feedback: {feedback}")
     print(
         "Use it by enabling MIDI control in your config:\n"
         "  [midi_control]\n"
