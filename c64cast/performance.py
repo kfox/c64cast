@@ -150,6 +150,40 @@ class PerformanceSession:
     def armed_slot(self) -> int | None:
         return self._armed.slot if self._armed is not None else None
 
+    @property
+    def armed_detail(self) -> tuple[int, str, float, float] | None:
+        """``(slot, quantize, arm_beat, arm_bar)`` for the pending arm, or None —
+        the web console (Phase 5) reads it to render a count-in (beats remaining
+        to the quantize boundary, computed against ``pl.tempo``). A GIL-atomic
+        snapshot of the immutable fields of the ``_Armed`` record; ``None`` once
+        the swap lands or the arm is cancelled."""
+        armed = self._armed
+        if armed is None:
+            return None
+        return (armed.slot, armed.quantize, armed.arm_beat, armed.arm_bar)
+
+    def clips_info(self) -> list[dict[str, Any]]:
+        """The configured grid as a list of ``{slot, name, type, pad, pad_type,
+        launch, quantize, loop}`` dicts in declaration order — the data the web
+        console (Phase 5) and any other feedback surface renders the pad grid
+        from. Read-only view of the validated clip specs; ``name`` falls back to
+        ``"clip <slot>"`` when the spec declares none."""
+        out: list[dict[str, Any]] = []
+        for slot, clip in self._clips.items():
+            out.append(
+                {
+                    "slot": slot,
+                    "name": str(clip.get("name") or f"clip {slot}"),
+                    "type": clip.get("type"),
+                    "pad": clip.get("pad"),
+                    "pad_type": clip.get("pad_type", "note"),
+                    "launch": clip.get("launch", "trigger"),
+                    "quantize": clip.get("quantize", "bar"),
+                    "loop": bool(clip.get("loop", True)),
+                }
+            )
+        return out
+
     def clip_pad_mappings(self) -> list[tuple[str, int, int]]:
         """``(pad_type, pad_number, slot)`` for every clip that declares a
         ``pad`` — the auto-mappings :mod:`midi_control` folds into its cc_map so a

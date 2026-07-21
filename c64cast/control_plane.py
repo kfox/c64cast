@@ -210,6 +210,16 @@ def build_app(
             raise HTTPException(500, f"reload failed: {errors}")
         return {"ok": True, "reloaded": reloaded, "errors": errors}
 
+    # Live DJ/VJ Phase 5: the phone/web performance console rides the same server
+    # (GET /perf page + /perf/state + /perf/command + /perf/ws), driving the same
+    # performance engine the MIDI surface does. Always registered when the control
+    # plane is up — the tempo readout + effect rack are useful even with no clip
+    # grid configured. Kept in its own module (which, unlike this one, omits
+    # `from __future__ import annotations`) so the WebSocket param injects.
+    from .perf_console import PerfBridge, register_perf_routes
+
+    register_perf_routes(app, PerfBridge(list(playlists.items())))
+
     return app
 
 
