@@ -364,6 +364,11 @@
           "type": "boolean",
           "description": "Mirror the frame before tracking so swipe direction matches the mirrored webcam view.",
           "default": true
+        },
+        "performance": {
+          "type": "boolean",
+          "description": "Live DJ/VJ Phase 6: remap the RUNNING-state gestures to clip-launch performance actions instead of transport \u2014 swipe = launch the next [[performance.clips]] slot, pinch-hold = bypass effect layer 0, open-hand-hold = bypass effect layer 1. Off (default) keeps the transport mapping (swipe=skip, pinch=pause, open-hand=cycle style). Pinch-hold-to-resume while paused is unchanged either way. Needs a [[performance.clips]] grid for the clip-advance gesture to do anything.",
+          "default": false
         }
       }
     },
@@ -837,7 +842,7 @@
         },
         "cc_map": {
           "type": "array",
-          "description": "MIDI-message -> action mappings ([[midi_control.cc_map]] tables); see --describe section:midi_control. Set to [] to disable the shipped defaults, or override/extend individual entries. Each entry: type ('cc'|'note'|'pc'|'mmc'), number (0-127 for cc/note/pc; an MMC command byte \u2014 0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x06 record, 0x09 pause \u2014 for mmc), action ('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'|'transport.play_pause'|'transport.stop'|'transport.loop_toggle'|'transport.rw'|'transport.ff'|'transport.jog'|'transport.record'|'loop_slot'); 'jump' also needs an int scene; 'param' also needs a string target ('effect.<name>', 'source.<name>', 'scene.<name>' for scope scenes, or 'mode.<name>' for the display mode's live color knobs \u2014 dither_strength/method, motion_smoothing, auto_fit_strength, cell_strategy, color_match, palette_mode). A knob (cc) sweeps a scalar or bucket-selects a choice; a note/pad cycles a choice. The transport.* actions give DJ-style control of a playing video scene (pause-in-place, seek, RW/FF with acceleration while a note is held, an A/B loop, and a rotary jog \u2014 'mode' 'abs'|'rel', default 'rel'); once touched, that scene's audio follows every seek/pause/loop by default (see loop_audio, and docs/architecture.md's transport note). A 'mmc' entry also matches an MMC transport SysEx from a DAW/controller. 'transport.record' arms a loop (Record -> Stop workflow, red border while armed); 'loop_slot' also needs an int 'slot' >= 1 (a pad number) and recalls that per-video saved loop on a plain press, saves the current loop into it while Stop is held, or clears it while Record is held (note mappings only \u2014 an mmc record/stop can't reliably hold for the chord, since MMC has no release event).",
+          "description": "MIDI-message -> action mappings ([[midi_control.cc_map]] tables); see --describe section:midi_control. Set to [] to disable the shipped defaults, or override/extend individual entries. Each entry: type ('cc'|'note'|'pc'|'mmc'), number (0-127 for cc/note/pc; an MMC command byte \u2014 0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x06 record, 0x09 pause \u2014 for mmc), action ('pause'|'resume'|'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'|'transport.play_pause'|'transport.stop'|'transport.loop_toggle'|'transport.rw'|'transport.ff'|'transport.jog'|'transport.record'|'loop_slot'); 'jump' also needs an int scene; 'param' also needs a string target ('effect.<name>', 'source.<name>', 'scene.<name>' for scope scenes, or 'mode.<name>' for the display mode's live color knobs \u2014 dither_strength/method, motion_smoothing, auto_fit_strength, cell_strategy, color_match, palette_mode). A knob (cc) sweeps a scalar or bucket-selects a choice; a note/pad cycles a choice. The transport.* actions give DJ-style control of a playing video scene (pause-in-place, seek, RW/FF with acceleration while a note is held, an A/B loop, and a rotary jog \u2014 'mode' 'abs'|'rel', default 'rel'); once touched, that scene's audio follows every seek/pause/loop by default (see loop_audio, and docs/architecture.md's transport note). A 'mmc' entry also matches an MMC transport SysEx from a DAW/controller. 'transport.record' arms a loop (Record -> Stop workflow, red border while armed); 'loop_slot' also needs an int 'slot' >= 1 (a pad number) and recalls that per-video saved loop on a plain press, saves the current loop into it while Stop is held, or clears it while Record is held (note mappings only \u2014 an mmc record/stop can't reliably hold for the chord, since MMC has no release event). 'look_save'/'look_recall' (Phase 6) each need an int 'slot' >= 1 \u2014 a look captures the active clip + effect-chain state on save and re-fires it on recall.",
           "default": [
             {
               "type": "note",
@@ -1168,6 +1173,11 @@
           "type": "number",
           "description": "Broadcast rate in Hz (Mode 3). WLED expects roughly frame-rate updates; ~40-60 is typical.",
           "default": 50.0
+        },
+        "broadcast_tempo_fallback": {
+          "type": "boolean",
+          "description": "Mode 3 performance glue (Live DJ/VJ Phase 6): when the on-screen scene has NO SID features to broadcast (a video, webcam, or slideshow), fall back to the [performance] beat grid so WLED strips keep pulsing to the MIDI/tap tempo instead of going dark. The synthesized pulse spikes on each beat (from the TempoClock phase); only active while the grid is running. Off (default) = a non-SID scene broadcasts nothing, matching pre-Phase-6 behavior. A SID-driven scene always wins over the fallback.",
+          "default": false
         },
         "listen": {
           "type": [

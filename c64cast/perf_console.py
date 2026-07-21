@@ -20,6 +20,9 @@ a web launch and a pad launch are indistinguishable downstream:
   ``LIVE_PARAMS`` field — the identical GIL-atomic writes ``midi_control`` and the
   WLED bridge already make off the render thread. **No** ``post_osd``: performance
   feedback stays off the audience screen (the whole point of this surface).
+* **Looks** (Live DJ/VJ Phase 6) enqueue a :class:`~c64cast.performance.LookEvent`
+  (``save`` / recall), drained on the playlist thread exactly like a clip launch —
+  a look captures the active clip + effect-chain state and re-fires it on recall.
 
 The effect-rack controls are generated from each live layer's own class
 ``LIVE_PARAMS`` — the same class attribute :func:`introspect.live_targets` reads —
@@ -158,6 +161,10 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
         "armed": armed_block,
         "clips": clips,
         "effects": _effects_dict(pl),
+        # Saved look slots (Live DJ/VJ Phase 6) — the console lights a recall pad
+        # only for a slot that holds a look. Reads the store from disk; cheap at
+        # the state-poll cadence.
+        "looks": perf.saved_look_slots(),
     }
 
 
@@ -246,9 +253,21 @@ class PerfBridge:
         setattr(eff, param, lo + clamped * (hi - lo))
         return True
 
+    def look(self, system: str | None, slot: int, save: bool) -> bool:
+        """Save or recall a "look" (active clip + effect-chain state) on the
+        target system — enqueues a :class:`~c64cast.performance.LookEvent`, drained
+        on the playlist thread, exactly as ``midi_control``'s ``look_save`` /
+        ``look_recall`` do. Returns False for an unknown system."""
+        pl = self._resolve(system)
+        if pl is None:
+            return False
+        pl.performance.enqueue_look(slot, save=save)
+        return True
+
     def apply(self, cmd: Mapping[str, Any]) -> bool:
         """Dispatch one console command dict (shared by the POST endpoints and,
-        potentially, a WS command frame). ``{"action": "launch"|"tap"|"fx", ...}``."""
+        potentially, a WS command frame). ``{"action":
+        "launch"|"tap"|"fx"|"look", ...}``."""
         action = cmd.get("action")
         system = cmd.get("system")
         if action == "launch":
@@ -260,6 +279,8 @@ class PerfBridge:
             if "param" in cmd:
                 return self.fx_param(system, layer, str(cmd["param"]), float(cmd.get("value", 0.0)))
             return self.fx_bypass(system, layer, bool(cmd.get("enabled", True)))
+        if action == "look":
+            return self.look(system, int(cmd["slot"]), bool(cmd.get("save", False)))
         return False
 
 
@@ -332,6 +353,13 @@ _PERF_HTML = """<!doctype html>
                font-size: 0.82em; }
   .empty { color: var(--dim); font-size: 0.9em; }
   .scene { color: var(--dim); font-size: 0.8em; margin-top: 0.2em; }
+  .looks { grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); }
+  .look { aspect-ratio: 1 / 1; border-radius: 10px; border: 1px solid var(--line);
+          background: var(--loaded); display: flex; align-items: center;
+          justify-content: center; font-weight: 600; user-select: none;
+          touch-action: manipulation; opacity: 0.5; }
+  .look.saved { opacity: 1; border-color: var(--fxon); }
+  #looksave.arm { background: var(--armed); color: #111; border-color: var(--armed); }
 </style>
 </head>
 <body>
@@ -351,6 +379,8 @@ _PERF_HTML = """<!doctype html>
   <div class="grid" id="clips"></div>
   <h2>Effects</h2>
   <div id="fx"></div>
+  <h2>Looks <button id="looksave">SAVE</button></h2>
+  <div class="grid looks" id="looks"></div>
 </main>
 <script>
 let state = null;      // last full state from the server
@@ -411,6 +441,24 @@ function render() {
   renderCountin(sys);
   renderClips(sys);
   renderFx(sys);
+  renderLooks(sys);
+}
+
+// Number of look slots the console exposes (1-based pads).
+const LOOK_SLOTS = 8;
+let saveMode = false;   // when armed, a look-pad tap saves instead of recalls
+
+function renderLooks(sys) {
+  const grid = document.getElementById('looks');
+  const saved = new Set(sys.looks || []);
+  grid.innerHTML = '';
+  for (let slot = 1; slot <= LOOK_SLOTS; slot++) {
+    const pad = document.createElement('div');
+    pad.className = 'look' + (saved.has(slot) ? ' saved' : '');
+    pad.textContent = slot;
+    pad.onclick = () => post({action: 'look', slot: slot, save: saveMode});
+    grid.appendChild(pad);
+  }
 }
 
 function renderCountin(sys) {
@@ -556,6 +604,10 @@ function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(poll, 1000
 function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 document.getElementById('tap').onclick = () => post({action: 'tap'});
+document.getElementById('looksave').onclick = (ev) => {
+  saveMode = !saveMode;
+  ev.currentTarget.classList.toggle('arm', saveMode);
+};
 poll();          // initial paint before WS connects
 startWS();
 requestAnimationFrame(animate);

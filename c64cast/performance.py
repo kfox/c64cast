@@ -40,13 +40,18 @@ without a cycle — the same rule transport.py follows.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import re
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .playlist import Playlist
     from .scenes import Scene
 
@@ -63,6 +68,161 @@ class ClipEvent:
 
     slot: int
     pressed: bool = True
+
+
+@dataclass(frozen=True)
+class LookEvent:
+    """A "look" snapshot/recall pad press (Live DJ/VJ Phase 6), queued by a
+    control thread (:mod:`midi_control`'s ``look_save``/``look_recall`` actions,
+    or the web console) and drained on the playlist thread by
+    :meth:`PerformanceSession.service`. A *look* is the current active clip plus
+    the on-screen scene's effect-chain state (per-layer bypass + params +
+    choices); ``save`` captures it to slot ``slot``, else recalls it."""
+
+    slot: int
+    save: bool = False
+
+
+def _snapshot_effects(scene: Any) -> list[dict[str, Any]]:
+    """Capture the effect-chain state of ``scene`` — one dict per layer with its
+    name, bypass (``enabled``), ``mod_source``, LIVE_PARAMS values, and any
+    LIVE_CHOICES selection. Pure reads (GIL-atomic attribute/param reads), so
+    it's safe on the playlist thread. Empty list when the scene has no chain."""
+    effects = getattr(scene, "effects", None) or []
+    out: list[dict[str, Any]] = []
+    for eff in effects:
+        cls = type(eff)
+        params = {
+            k: float(getattr(eff, k))
+            for k in getattr(cls, "LIVE_PARAMS", {})
+            if isinstance(getattr(eff, k, None), (int, float))
+        }
+        choices: dict[str, Any] = {}
+        get_choice = getattr(eff, "get_live_choice", None)
+        if get_choice is not None:
+            for k in getattr(cls, "LIVE_CHOICES", {}):
+                v = get_choice(k)
+                if v is not None:
+                    choices[k] = v
+        out.append(
+            {
+                "name": getattr(eff, "name", "?"),
+                "enabled": bool(getattr(eff, "enabled", True)),
+                "mod_source": getattr(eff, "mod_source", "audio"),
+                "params": params,
+                "choices": choices,
+            }
+        )
+    return out
+
+
+def _apply_effects_state(scene: Any, states: list[dict[str, Any]]) -> None:
+    """Re-apply a captured effect-chain state (from :func:`_snapshot_effects`) to
+    ``scene``'s chain, matching by layer index (extra states past the chain
+    length are ignored). Only touches per-layer live knobs — ``enabled``,
+    ``mod_source``, declared LIVE_PARAMS (clamped to range) and LIVE_CHOICES — so
+    it never rebuilds the chain; a look recalled onto a scene with a different
+    chain simply skips the layers/params it doesn't have. All GIL-atomic writes
+    the render loop reads next frame; runs on the playlist thread."""
+    effects = getattr(scene, "effects", None) or []
+    for idx, st in enumerate(states):
+        if idx >= len(effects) or not isinstance(st, dict):
+            continue
+        eff = effects[idx]
+        if "enabled" in st:
+            eff.enabled = bool(st["enabled"])
+        ms = st.get("mod_source")
+        if isinstance(ms, str):
+            eff.mod_source = ms
+        live_params: dict[str, tuple[float, float]] = getattr(type(eff), "LIVE_PARAMS", {}) or {}
+        for k, v in (st.get("params") or {}).items():
+            if k in live_params and isinstance(v, (int, float)) and not isinstance(v, bool):
+                lo, hi = live_params[k]
+                setattr(eff, k, max(lo, min(hi, float(v))))
+        set_choice = getattr(eff, "set_live_choice", None)
+        if set_choice is not None:
+            for k, v in (st.get("choices") or {}).items():
+                try:
+                    set_choice(None, k, v)
+                except Exception:  # noqa: BLE001 — a bad stored choice must not abort recall
+                    log.debug("performance: look choice %r=%r rejected", k, v, exc_info=True)
+
+
+def _slugify_name(name: str) -> str:
+    """Filesystem-safe slug for a system name (the look-preset filename)."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-")
+    return slug or "c64cast"
+
+
+class LookStore:
+    """Persist performance "looks" to a JSON file, one map per system.
+
+    A look is ``{"clip": <slot|null>, "effects": [<layer state>, ...]}`` keyed by
+    a 1-based pad slot. Mirrors :class:`~c64cast.wled_device.PresetStore`'s
+    tolerant-load / atomic-write contract exactly: a missing or corrupt file
+    reads as an empty map, and writes go through ``transport.atomic_write_text``
+    (temp file + ``os.replace``) so a crash mid-write can't leave a half-written
+    map. The path is injectable so tests point it at a tempdir."""
+
+    #: Look slots are 1-based pad ids (slot 0 is never stored).
+    SLOT_MIN = 1
+    SLOT_MAX = 250
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for k, v in data.items():
+            if isinstance(v, dict) and str(k).isdigit() and int(k) != 0:
+                out[str(int(k))] = v
+        return out
+
+    def get(self, slot: int) -> dict[str, Any] | None:
+        return self.load().get(str(int(slot)))
+
+    def save(self, slot: int, look: Mapping[str, Any]) -> None:
+        if not self.SLOT_MIN <= slot <= self.SLOT_MAX:
+            return
+        data = self.load()
+        data[str(slot)] = dict(look)
+        self._write(data)
+
+    def delete(self, slot: int) -> None:
+        if slot == 0:
+            return
+        data = self.load()
+        if data.pop(str(slot), None) is not None:
+            self._write(data)
+
+    def _write(self, data: Mapping[str, Any]) -> None:
+        from .transport import atomic_write_text
+
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self._path, json.dumps(data, indent=2, sort_keys=True))
+
+
+def default_look_store(name: str) -> LookStore:
+    """The :class:`LookStore` for a system, under ``paths.presets_dir()`` (one
+    ``looks-<slug>.json`` per system name, alongside the WLED presets). Resolved
+    at call time so it honors ``$C64CAST_DATA_DIR`` like every other data file."""
+    from . import paths
+
+    return LookStore(paths.presets_dir() / f"looks-{_slugify_name(name)}.json")
 
 
 # A "program" to return to when an overlaid clip ends: either a declared playlist
@@ -120,10 +280,20 @@ class PerformanceSession:
     are cheap in-memory work — the only network/DMA touch is inside the
     playlist-thread ``_safe_setup``/``_safe_teardown`` a swap triggers."""
 
-    def __init__(self, clips: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self, clips: list[dict[str, Any]] | None = None, look_store: LookStore | None = None
+    ) -> None:
         import queue
 
         self._queue: queue.SimpleQueue[ClipEvent] = queue.SimpleQueue()
+        # Look snapshot/recall pad presses (Live DJ/VJ Phase 6) — a separate
+        # queue so a save/recall doesn't interleave with the clip-event stream;
+        # both drain on the playlist thread in `service`.
+        self._look_queue: queue.SimpleQueue[LookEvent] = queue.SimpleQueue()
+        self._look_store = look_store
+        # Effect state a pending look recall will apply once its clip activates
+        # (set by a recall that also launches a clip; consumed in `_activate`).
+        self._pending_look_effects: list[dict[str, Any]] | None = None
         # slot -> clip dict, in declaration order.
         self._clips: dict[int, dict[str, Any]] = {}
         for clip in clips or []:
@@ -195,9 +365,47 @@ class PerformanceSession:
                 out.append((clip.get("pad_type", "note"), pad, slot))
         return out
 
+    @property
+    def has_looks(self) -> bool:
+        """Whether a look store is wired (looks can be saved/recalled)."""
+        return self._look_store is not None
+
+    def saved_look_slots(self) -> list[int]:
+        """Sorted slot ids that currently hold a saved look (for LED/web
+        feedback). Reads the store from disk; empty when no store is wired."""
+        if self._look_store is None:
+            return []
+        return sorted(int(k) for k in self._look_store.load())
+
     # ---- MIDI reader thread ------------------------------------------------
     def enqueue(self, event: ClipEvent) -> None:
         self._queue.put(event)
+
+    def enqueue_look(self, slot: int, *, save: bool) -> None:
+        """Queue a look save (``save=True``) or recall for pad ``slot`` — drained
+        on the playlist thread in :meth:`service`, so a control thread never
+        reads/writes a scene or the store directly. A no-op stream when no look
+        store is wired (the events drain to nothing)."""
+        self._look_queue.put(LookEvent(slot=slot, save=save))
+
+    def advance_clip(self) -> int | None:
+        """Enqueue a launch of the clip slot *after* the currently active/armed
+        one, cycling back to the first — the "next clip in a row" gesture the
+        vision controller fires (Live DJ/VJ Phase 6). Returns the slot enqueued
+        (or None when the grid is empty). Slots are taken in declaration order;
+        with nothing playing yet it fires the first slot. Enqueue-only (a
+        :class:`ClipEvent` drained on the playlist thread), so it's safe to call
+        from any control thread, exactly like :meth:`enqueue`."""
+        slots = list(self._clips.keys())
+        if not slots:
+            return None
+        current = self.active_slot if self.active_slot is not None else self.armed_slot
+        if current is None or current not in slots:
+            nxt = slots[0]
+        else:
+            nxt = slots[(slots.index(current) + 1) % len(slots)]
+        self._queue.put(ClipEvent(slot=nxt, pressed=True))
+        return nxt
 
     # ---- playlist thread ---------------------------------------------------
     def service(self, pl: Playlist) -> bool:
@@ -209,6 +417,7 @@ class PerformanceSession:
         try:
             self._reconcile(pl)
             self._drain(pl)
+            self._drain_looks(pl)
             self._progress_armed(pl)
             self._progress_active(pl)
         except Exception:
@@ -227,6 +436,7 @@ class PerformanceSession:
             self._active = None
             self._return = None
             self._armed = None
+            self._pending_look_effects = None
 
     def _drain(self, pl: Playlist) -> None:
         import queue
@@ -271,6 +481,65 @@ class PerformanceSession:
             ):
                 self._cancel_arm()
 
+    def _drain_looks(self, pl: Playlist) -> None:
+        import queue
+
+        while True:
+            try:
+                event = self._look_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._handle_look(pl, event)
+
+    def _handle_look(self, pl: Playlist, event: LookEvent) -> None:
+        if self._look_store is None:
+            return
+        if event.save:
+            self._snapshot_look(pl, event.slot)
+        else:
+            self._recall_look(pl, event.slot)
+
+    def _snapshot_look(self, pl: Playlist, slot: int) -> None:
+        """Capture the active clip + the on-screen scene's effect chain to a look
+        slot. Runs on the playlist thread, so the scene reads are consistent."""
+        assert self._look_store is not None
+        look = {
+            "clip": self.active_slot,
+            "effects": _snapshot_effects(pl.current),
+        }
+        self._look_store.save(slot, look)
+        log.info(
+            "performance: saved look %d (clip %s, %d fx layer(s))",
+            slot,
+            look["clip"],
+            len(look["effects"]),
+        )
+
+    def _recall_look(self, pl: Playlist, slot: int) -> None:
+        """Recall a saved look: (re)launch its captured clip if it's still a valid
+        slot — applying the captured effect state once the clip activates — else
+        apply the effect state to the current scene straight away."""
+        assert self._look_store is not None
+        look = self._look_store.get(slot)
+        if not look:
+            log.debug("performance: recall of empty look slot %d", slot)
+            return
+        effects_state = look.get("effects") or []
+        clip_slot = look.get("clip")
+        if (
+            isinstance(clip_slot, int)
+            and not isinstance(clip_slot, bool)
+            and clip_slot in self._clips
+        ):
+            # Arm the captured clip; stash the effect state to apply after the
+            # swap lands (set AFTER _arm, which clears any prior pending look).
+            self._arm(pl, clip_slot, self._clips[clip_slot])
+            self._pending_look_effects = list(effects_state)
+            log.info("performance: recalled look %d → clip %d", slot, clip_slot)
+        else:
+            _apply_effects_state(pl.current, effects_state)
+            log.info("performance: recalled look %d → effects on current scene", slot)
+
     def _arm(self, pl: Playlist, slot: int, clip: dict[str, Any]) -> None:
         """Arm a slot: capture the quantize anchor and kick off the background
         build. Supersedes any pending arm (last press wins, like a performer
@@ -310,6 +579,9 @@ class PerformanceSession:
         just to release any file/decoder handle the constructor opened)."""
         armed = self._armed
         self._armed = None
+        # Any look-recall effect state was tied to this arm; drop it so an
+        # unrelated later launch can't inherit it.
+        self._pending_look_effects = None
         if armed is None:
             return
         if armed.built.is_set() and armed.scene is not None:
@@ -324,6 +596,7 @@ class PerformanceSession:
             return
         if armed.error:
             self._armed = None
+            self._pending_look_effects = None
             return
         if not self._boundary_reached(pl, armed):
             return
@@ -361,6 +634,11 @@ class PerformanceSession:
             launch=armed.launch,
             loop=armed.loop,
         )
+        # A look recall that launched this clip stashed its effect state; apply it
+        # now the scene is set up (its chain exists), then clear.
+        if self._pending_look_effects is not None:
+            _apply_effects_state(armed.scene, self._pending_look_effects)
+            self._pending_look_effects = None
         log.info(
             "performance: launched clip slot %d (%s, %s)",
             armed.slot,

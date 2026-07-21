@@ -1023,6 +1023,13 @@ def build_stack(
         )
     )
 
+    # Vision performance mode (Live DJ/VJ Phase 6): route hand gestures to the
+    # clip-launch grid instead of transport. Bound after the playlist exists so
+    # the controller can reach pl.performance / pl.toggle_effect_layer.
+    if vision_controller is not None and cfg.vision.performance:
+        vision_controller.bind_performance(playlist)
+        log.info("%s: vision gestures routed to performance grid", name)
+
     return SystemStack(
         name=name,
         cfg=cfg,

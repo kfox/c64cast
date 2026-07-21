@@ -148,5 +148,71 @@ class BroadcasterPeakTests(unittest.TestCase):
         self.assertFalse(bc._derive_peak(_mod()))
 
 
+class _FakeApi:
+    def __init__(self) -> None:
+        self.stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
+
+    def format_write_latency(self):
+        return None
+
+
+class _FakeScene:
+    """A scene whose music features are settable (None = no SID)."""
+
+    def __init__(self, feats: MusicModulation | None) -> None:
+        self.name = "fake"
+        self._feats = feats
+
+    def features(self) -> MusicModulation | None:
+        return self._feats
+
+
+class TempoFallbackTest(unittest.TestCase):
+    """[wled].broadcast_tempo_fallback: a non-SID scene falls back to the beat
+    grid so WLED keeps pulsing on video/webcam/slideshow (Live DJ/VJ Phase 6)."""
+
+    def _playlist(self, fallback: bool):
+        from c64cast import config as cfgmod
+        from c64cast.playlist import Playlist
+
+        cfg = cfgmod.Config()
+        cfg.wled.broadcast_tempo_fallback = fallback
+        scene = _FakeScene(None)
+        pl = Playlist(
+            [scene],  # type: ignore[list-item]
+            _FakeApi(),  # type: ignore[arg-type]
+            target_fps=60.0,
+            interstitial_factory=lambda name: scene,  # type: ignore[arg-type,return-value]
+            config=cfg,
+        )
+        return pl
+
+    def test_no_fallback_keeps_none_on_non_sid_scene(self):
+        pl = self._playlist(fallback=False)
+        pl.current = _FakeScene(None)  # type: ignore[assignment]
+        self.assertIsNone(pl._active_features())
+
+    def test_fallback_uses_clock_on_non_sid_scene(self):
+        pl = self._playlist(fallback=True)
+        pl.current = _FakeScene(None)  # type: ignore[assignment]
+        # Internal grid free-runs (running=True), so the fallback fires.
+        feats = pl._active_features()
+        self.assertIsNotNone(feats)
+        assert feats is not None
+        self.assertGreater(feats.bpm, 0.0)
+
+    def test_real_sid_features_win_over_fallback(self):
+        pl = self._playlist(fallback=True)
+        real = _mod(level=0.7)
+        pl.current = _FakeScene(real)  # type: ignore[assignment]
+        self.assertIs(pl._active_features(), real)
+
+    def test_fallback_fills_between_scenes(self):
+        pl = self._playlist(fallback=True)
+        pl.current = None
+        # No current scene, but the grid runs — WLED still gets a pulse.
+        self.assertIsNotNone(pl._active_features())
+
+
 if __name__ == "__main__":
     unittest.main()

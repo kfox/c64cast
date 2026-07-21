@@ -123,6 +123,13 @@ _ACTIONS = (
     # so it runs on the reader thread with no queue (like osd.position /
     # tempo_tap). Mirrored in config._MIDI_ACTION_CHOICES.
     "fx_toggle",
+    # Look snapshot / recall pads (Live-performance Phase 6): `look_save` captures
+    # the active clip + effect-chain state to look `slot`; `look_recall` re-fires
+    # it (relaunch the clip + re-apply the effect state). Both press-only, needing
+    # an int `slot` >= 1; enqueued onto pl.performance (drained on the playlist
+    # thread — no scene mutation here). Mirrored in config._MIDI_ACTION_CHOICES.
+    "look_save",
+    "look_recall",
 )
 
 # Double-tap window for the osd.position action (a second press within this many
@@ -211,7 +218,7 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
                 f"cc_map[{i}] action 'transport.jog' mode must be 'abs' or 'rel', got {mode!r}"
             )
         slot = entry.get("slot")
-        if action in ("loop_slot", "clip_launch") and (
+        if action in ("loop_slot", "clip_launch", "look_save", "look_recall") and (
             not isinstance(slot, int) or isinstance(slot, bool) or slot < 1
         ):
             raise ValueError(f"cc_map[{i}] action {action!r} needs an int 'slot' >= 1")
@@ -999,6 +1006,11 @@ class MidiControlListener:
             # act (releases already dropped in _dispatch); out-of-range slot or a
             # scene with no such layer is a silent no-op.
             self._toggle_effect_layer(pl, mapping.slot or 0)
+        elif action in ("look_save", "look_recall"):
+            # Enqueue only (Phase 6) — the snapshot/recall runs on the playlist
+            # thread in PerformanceSession.service (reads/writes the scene there),
+            # never here on the reader thread. Press-only.
+            pl.performance.enqueue_look(mapping.slot or 1, save=action == "look_save")
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
             pl.transport.enqueue(
