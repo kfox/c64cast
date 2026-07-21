@@ -1118,7 +1118,7 @@
         },
         "midi_feedback": {
           "type": "boolean",
-          "description": "Light a grid controller's pads to show performance state (Live DJ/VJ Phase 4): loaded clip pads dim, the arming pad blinks, the live clip bright, and enabled effect-chain layers lit \u2014 all over a MIDI OUTPUT port ([midi_control] must be enabled). The C64 screen stays audience-facing; this replaces on-screen readouts with controller LEDs. The velocity->color convention is per-controller and comes from the learned controller profile's `feedback` block (--midi-setup writes it); Launchpad-X palette defaults otherwise.",
+          "description": "Light a grid controller's pads to show performance state (Live DJ/VJ Phase 4): loaded clip pads dim, the arming pad blinks, the live clip bright, and enabled effect-chain layers lit \u2014 all over a MIDI OUTPUT port ([midi_control] must be enabled). The C64 screen stays audience-facing; this replaces on-screen readouts with controller LEDs. The velocity->color convention is per-controller and comes from the learned controller profile's `feedback` block (--midi-setup writes it); Launchpad-X palette defaults otherwise. Needs a grid that lights pads from note-on velocity (Novation Launchpad, Akai APC/MPC, Ableton Push); Arturia and other SysEx-only controllers won't light \u2014 use the web console for those.",
           "default": false
         },
         "feedback_port": {

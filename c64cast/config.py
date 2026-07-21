@@ -2100,7 +2100,10 @@ class PerformanceCfg:
             "stays audience-facing; this replaces on-screen readouts with "
             "controller LEDs. The velocity->color convention is per-controller and "
             "comes from the learned controller profile's `feedback` block "
-            "(--midi-setup writes it); Launchpad-X palette defaults otherwise."
+            "(--midi-setup writes it); Launchpad-X palette defaults otherwise. "
+            "Needs a grid that lights pads from note-on velocity (Novation "
+            "Launchpad, Akai APC/MPC, Ableton Push); Arturia and other "
+            "SysEx-only controllers won't light — use the web console for those."
         },
     )
     feedback_port: str | None = field(
