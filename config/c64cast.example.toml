@@ -656,6 +656,22 @@ agc_max_gain_db = 24.0              # max gain/attenuation magnitude (dB)
 agc_time_ms = 300.0                 # adaptation time constant (ms; larger = steadier)
 agc_noise_floor_db = -60.0          # below this RMS, hold gain (don't amplify noise)
 
+[audio_features]
+# Turns live audio input into reactive-visual features. Active for a generative
+# scene with audio_source = "mic" and reactive = true: block RMS becomes the
+# brightness "level", an FFT becomes log-spaced frequency bands (bass punches
+# the brightness, treble shifts the hue), spectral flux becomes transient
+# "onsets", and the onset rate becomes the BPM the colors cycle at. That is the
+# same feature struct a SID tune produces via the host-side emulator, so the
+# generators, the effect chain and the WLED broadcaster all react to it.
+# Deliberately taps the input BEFORE [dsp] — the compressor/limiter flatten the
+# very transients an onset detector needs. Analysis is host-side only: no extra
+# C64 bus traffic, and the audio still streams to the DAC unchanged.
+bands = 8                           # log-spaced bands reported, low→high
+onset_sensitivity = 1.0             # >1 = more transients, <1 = fewer (the one knob to try first)
+poll_hz = 60.0                      # analysis rate; 60 = fresh features every frame
+fft_size = 1024                     # analysis window in samples (bigger = finer freq, blurrier timing)
+
 [control]
 enabled = false                     # requires the `control` extra
 host = "127.0.0.1"

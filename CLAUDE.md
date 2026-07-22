@@ -105,6 +105,7 @@ Where the per-subsystem detail lives (the [architecture reference](docs/architec
 | Forced-palette remap + rolling palette (`force_palette`) | [`rolling_palette.py` + `palette.py`](docs/architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | DAC curves, Mahoney `$D418`, per-system calibration, REU pump | [`audio.py`, `dsp.py`](docs/architecture/audio.md#audiopy--audiostreamer) |
 | Ultimate Audio FPGA sampler | [`sampler.py`](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
+| Audio-input music features (reactive visuals from live input), `[audio_features]` | [`audio_features.py`](docs/architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
 | Bitmap + `$D418`-DAC tempo compensation (`tempo_scale`) | [`video.py`](docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
 | SID player PRG — relocation, per-call `$01` banking, TR vector-swap | [SID player PRG](docs/architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
 | SID Player Autoconfig (`sid_model`, 6581/8580 matching) | [`waveform.py` + `sidemu.py` + `sid_host_emu.py`](docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |

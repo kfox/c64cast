@@ -4,6 +4,7 @@ config wiring for `type = "generative"` + per-scene `effect`."""
 
 from __future__ import annotations
 
+import time
 import unittest
 from types import SimpleNamespace
 from typing import cast
@@ -871,6 +872,10 @@ class _FakeStreamer:
     def __init__(self):
         self.started: dict[str, object] | None = None
         self.stopped = False
+        # The real AudioStreamer's pre-DSP analysis hook + rate, which a
+        # reactive MicAudioSource installs into (see audio_features.py).
+        self.sample_rate = 12000
+        self.analysis_sink = None
 
     def start_mic(self, device, sensitivity, noise_gate, *, skip_irq_vector_hook=False):
         self.started = {
@@ -901,16 +906,76 @@ class AudioSourceTest(unittest.TestCase):
         cfg = SimpleNamespace(device=-1, mic_sensitivity=1.0, noise_gate=0.02)
         mode = SimpleNamespace(audio_reu_pump_active=True)
         mic = MicAudioSource(
-            cast(AudioStreamer, streamer), cast(AudioCfg, cfg), display_mode=cast(DisplayMode, mode)
+            cast(AudioStreamer, streamer),
+            cast(AudioCfg, cfg),
+            display_mode=cast(DisplayMode, mode),
+            reactive=False,
         )
         self.assertFalse(mic.wants_audio_lock)
-        self.assertIsNone(mic.features())  # live mic has no SID feature stream
+        self.assertIsNone(mic.features())  # non-reactive → no feature stream
         mic.setup()
         assert streamer.started is not None
         self.assertEqual(streamer.started["device"], -1)
         self.assertTrue(streamer.started["skip"])  # mirrors REU-pump coordination
         mic.teardown()
         self.assertTrue(streamer.stopped)
+
+    def _mic(self, streamer, *, reactive: bool) -> MicAudioSource:
+        return MicAudioSource(
+            cast(AudioStreamer, streamer),
+            cast(AudioCfg, SimpleNamespace(device=-1, mic_sensitivity=1.0, noise_gate=0.02)),
+            display_mode=cast(DisplayMode, SimpleNamespace(audio_reu_pump_active=False)),
+            reactive=reactive,
+        )
+
+    def test_non_reactive_mic_installs_no_analysis_sink(self):
+        streamer = _FakeStreamer()
+        mic = self._mic(streamer, reactive=False)
+        mic.setup()
+        try:
+            self.assertIsNone(streamer.analysis_sink)
+            self.assertIsNone(mic.features())
+        finally:
+            mic.teardown()
+
+    def test_reactive_mic_registers_and_clears_the_analysis_sink(self):
+        streamer = _FakeStreamer()
+        mic = self._mic(streamer, reactive=True)
+        mic.setup()
+        try:
+            # The sink must be live BEFORE capture starts, so the first
+            # callbacks already reach the analyzer.
+            self.assertIsNotNone(streamer.analysis_sink)
+            self.assertIsNotNone(streamer.started)
+        finally:
+            mic.teardown()
+        self.assertIsNone(streamer.analysis_sink)
+        self.assertIsNone(mic.features())  # stream torn down
+        self.assertTrue(streamer.stopped)
+
+    def test_reactive_mic_features_reflect_pushed_audio(self):
+        streamer = _FakeStreamer()
+        mic = self._mic(streamer, reactive=True)
+        mic.setup()
+        try:
+            sink = streamer.analysis_sink
+            assert sink is not None
+            # Drive the sink the way a mic callback would, then let the poll
+            # thread pick it up.
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                t = np.arange(2048, dtype=np.float32) / streamer.sample_rate
+                sink((0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32))
+                feat = mic.features()
+                if feat is not None and feat.level > 0.0:
+                    break
+                time.sleep(0.02)
+            feat = mic.features()
+            assert feat is not None
+            self.assertGreater(feat.level, 0.0)
+            self.assertEqual(len(feat.bands), 8)  # [audio_features].bands default
+        finally:
+            mic.teardown()
 
 
 class _FakeMode:

@@ -131,24 +131,28 @@ class FeatureMathTest(unittest.TestCase):
         self.assertEqual(feat.bpm, 0.0)
         self.assertEqual(feat.beat_phase, 0.0)
 
+    # Tempo estimation itself now lives in the shared modulation.TempoEstimator
+    # (see tests/test_audio_features.py); these two keep guarding that
+    # SidFeatureStream actually delegates to it and gets the old behavior.
+
     def test_simultaneous_onset_folds_into_one_beat(self):
-        # Two onsets within _MIN_IOI must not corrupt the beat reference: the
+        # Two onsets within MIN_IOI must not corrupt the beat reference: the
         # near-simultaneous second onset is folded into the current beat.
         s = _PrimedStream.primed(self.sid)
         s._poll_dt = 1 / 60.0
-        s._register_onset(0.0)
-        s._register_onset(0.01)  # < _MIN_IOI_S
-        self.assertEqual(s._last_onset_time, 0.0)  # reference unchanged
-        self.assertIsNone(s._ioi_ema)
+        s._tempo.note_onset(0.0)
+        s._tempo.note_onset(0.01)  # < MIN_IOI_S
+        self.assertEqual(s._tempo._last_onset_time, 0.0)  # reference unchanged
+        self.assertIsNone(s._tempo._ioi_ema)
 
     def test_long_gap_reanchors_without_polluting_tempo(self):
         s = _PrimedStream.primed(self.sid)
-        s._register_onset(0.0)
-        s._register_onset(0.5)  # establishes 120 BPM
-        self.assertAlmostEqual(s._bpm, 120.0, delta=1.0)
-        s._register_onset(5.0)  # > _MAX_IOI_S — re-anchor, don't fold in
-        self.assertEqual(s._last_onset_time, 5.0)
-        self.assertAlmostEqual(s._bpm, 120.0, delta=1.0)  # estimate unchanged
+        s._tempo.note_onset(0.0)
+        s._tempo.note_onset(0.5)  # establishes 120 BPM
+        self.assertAlmostEqual(s._tempo.bpm, 120.0, delta=1.0)
+        s._tempo.note_onset(5.0)  # > MAX_IOI_S — re-anchor, don't fold in
+        self.assertEqual(s._tempo._last_onset_time, 5.0)
+        self.assertAlmostEqual(s._tempo.bpm, 120.0, delta=1.0)  # estimate unchanged
 
 
 class StreamLifecycleTest(unittest.TestCase):

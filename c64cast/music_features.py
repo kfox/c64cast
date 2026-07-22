@@ -19,7 +19,12 @@ host-DMA and bitmap displays already run at half-rate.
 between note onsets (gate-on edges + hard-restarts), folded into a plausible
 tempo band. `beat_phase` is the running integral of `bpm/60`, so a jittery
 estimate never causes a phase discontinuity (the cycle rate it drives stays
-smooth). A real beat tracker can be dropped in behind the same struct later.
+smooth). That math lives in `modulation.TempoEstimator`, shared with the
+audio-input analyzer ([audio_features.py](audio_features.py)) so both producers
+report tempo identically; a real beat tracker can be dropped in behind it later.
+
+This stream reports no `bands` — it reads envelopes, not a spectrum, so
+`MusicModulation.bands` stays empty on the SID path (see modulation.py).
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ import time
 
 from ._pollthread import PollThread
 from .c64 import SID, cpu_clock
-from .modulation import MusicModulation
+from .modulation import MusicModulation, TempoEstimator
 from .sid_host_emu import SidHostEmu
 from .sidemu import ACCUMULATOR_RANGE, SIDEmulator
 
@@ -60,16 +65,6 @@ class SidFeatureStream:
     # exp(-dt/τ); τ≈0.18 s gives a brief, visible pulse that fades over ~3-4
     # frames at 60 Hz.
     _ONSET_TAU_S = 0.18
-
-    # Tempo estimation band. Onsets closer than _MIN_IOI are treated as the
-    # same beat (near-simultaneous voices); gaps longer than _MAX_IOI re-anchor
-    # without polluting the estimate (a rest / phrase boundary). The derived BPM
-    # is clamped to [_BPM_MIN, _BPM_MAX].
-    _MIN_IOI_S = 0.10
-    _MAX_IOI_S = 1.50
-    _IOI_EMA_ALPHA = 0.30
-    _BPM_MIN = 50.0
-    _BPM_MAX = 220.0
 
     def __init__(
         self,
@@ -103,10 +98,7 @@ class SidFeatureStream:
         # Feature accumulators (reset in start()).
         self._tick_index = 0
         self._onset = 0.0
-        self._beat_phase = 0.0
-        self._bpm = 0.0
-        self._ioi_ema: float | None = None
-        self._last_onset_time: float | None = None
+        self._tempo = TempoEstimator()
         self._prev_gate = [False] * SID.N_VOICES
 
     # ---- lifecycle ----------------------------------------------------------
@@ -148,10 +140,7 @@ class SidFeatureStream:
         # Reset accumulators + clocks so a fresh stream starts clean.
         self._tick_index = 0
         self._onset = 0.0
-        self._beat_phase = 0.0
-        self._bpm = 0.0
-        self._ioi_ema = None
-        self._last_onset_time = None
+        self._tempo.reset()
         self._prev_gate = [False] * SID.N_VOICES
         self._sid_start_time = time.time()
         self._ticks_done = 0
@@ -226,35 +215,9 @@ class SidFeatureStream:
             self._onset *= self._onset_decay
             if onset_now:
                 self._onset = 1.0
-                self._register_onset(now)
+                self._tempo.note_onset(now)
 
-            if self._bpm > 0.0:
-                self._beat_phase += (self._bpm / 60.0) * self._poll_dt
-
-    def _register_onset(self, now: float) -> None:
-        """Update the tempo estimate from a new onset at time `now`. Folds
-        near-simultaneous onsets into one beat and re-anchors across long rests,
-        EMAing the inter-onset interval into `_bpm`. Caller holds `_lock`."""
-        last = self._last_onset_time
-        if last is None:
-            self._last_onset_time = now
-            return
-        ioi = now - last
-        if ioi < self._MIN_IOI_S:
-            # Another voice attacking on the same beat — keep the earlier
-            # reference so the next beat-to-beat interval isn't corrupted.
-            return
-        self._last_onset_time = now
-        if ioi > self._MAX_IOI_S:
-            # Long gap (rest / phrase boundary) — re-anchor without polluting
-            # the estimate.
-            return
-        if self._ioi_ema is None:
-            self._ioi_ema = ioi
-        else:
-            a = self._IOI_EMA_ALPHA
-            self._ioi_ema = (1.0 - a) * self._ioi_ema + a * ioi
-        self._bpm = min(self._BPM_MAX, max(self._BPM_MIN, 60.0 / self._ioi_ema))
+            self._tempo.advance(self._poll_dt)
 
     # ---- feature snapshot ---------------------------------------------------
 
@@ -276,8 +239,8 @@ class SidFeatureStream:
             return MusicModulation(
                 level=level,
                 onset=self._onset,
-                beat_phase=self._beat_phase,
-                bpm=self._bpm,
+                beat_phase=self._tempo.beat_phase,
+                bpm=self._tempo.bpm,
                 voice_freqs=freqs,
                 voice_gates=gates,
             )

@@ -1014,27 +1014,30 @@ class SceneCfg:
     audio_source: str = field(
         default="none",
         metadata={
-            "help": "Audio for a generative scene: 'none' = silent (default — a "
-            "live mic never makes the visuals react, so it's opt-in passthrough "
-            "only); 'mic' = live mic (only when [audio].enabled); 'sid' = play "
-            "the `file` .sid on the real chip. A SID source forces a host-DMA "
+            "help": "Audio for a generative scene: 'none' = silent (default); "
+            "'mic' = live audio input — an instrument/mixer feed via an "
+            "interface, or a mic (only when [audio].enabled); 'sid' = play the "
+            "`file` .sid on the real chip. Both 'mic' and 'sid' drive reactive "
+            "visuals (see `reactive`) — 'mic' analyzes the incoming audio, "
+            "tunable under [audio_features]. A SID source forces a host-DMA "
             "display and needs a char display (petscii/mcm) for most tunes "
             "(see `file`).",
             "choices": _AUDIO_SOURCE_CHOICES,
             "applies_to": ("generative",),
         },
     )
-    # Generative scene: drive the visuals from the music. Only takes effect with
-    # audio_source = sid today (a host-side SID emulator supplies the features);
-    # inert for mic/none (no feature stream yet).
+    # Generative scene: drive the visuals from the music. Two producers supply
+    # the features — a host-side SID emulator (audio_source = sid) or the
+    # audio-input analyzer (audio_source = mic). Inert for "none".
     reactive: bool = field(
         default=True,
         metadata={
             "help": "Generative scene: let the music drive the visuals — BPM "
-            "cycles the colors, transients pulse them. Only takes effect with "
-            "audio_source = 'sid' (a host-side SID emulator supplies the "
-            "features, adding no U64 traffic); inert for mic/none. Set false to "
-            "keep the pure time-driven look.",
+            "cycles the colors, transients pulse them, bass reads differently "
+            "from treble. Works with audio_source = 'sid' (a host-side SID "
+            "emulator supplies the features, adding no U64 traffic) and 'mic' "
+            "(the live input is analyzed on the host — see [audio_features]); "
+            "inert for 'none'. Set false to keep the pure time-driven look.",
             "applies_to": ("generative",),
         },
     )
@@ -1672,6 +1675,59 @@ class ColorCfg:
 
 
 @dataclass
+class AudioFeaturesCfg:
+    """Analyzer that turns live audio input into reactive-visual features.
+
+    A generative scene with `audio_source = "mic"` and `reactive = true` runs
+    this over a PRE-DSP tap of the input (see c64cast/audio_features.py): block
+    RMS becomes `level`, an FFT becomes log-spaced `bands`, spectral flux
+    becomes `onset`, and the onset rate becomes `bpm`/`beat_phase`. That is the
+    same `MusicModulation` a SID tune produces via the host-side emulator, so
+    the generators, the effect chain and the WLED broadcaster all react to it
+    without knowing where it came from.
+
+    Defaults are tuned for music through a line input (an iRig, a mixer feed).
+    The only knob most setups touch is `onset_sensitivity`."""
+
+    bands: int = field(
+        default=8,
+        metadata={
+            "help": "Number of log-spaced frequency bands the analyzer reports "
+            "(low→high). Generators fold these into bass/mid/treble thirds, so "
+            "multiples of 3 are not required; 8 matches the spectrum_petscii "
+            "overlay's bands. More bands = finer spectral detail, no meaningful "
+            "cost."
+        },
+    )
+    onset_sensitivity: float = field(
+        default=1.0,
+        metadata={
+            "help": "Transient-detection sensitivity. The spectral-flux "
+            "threshold is divided by this, so >1 fires onsets more readily "
+            "(sparse/soft material, a quiet feed) and <1 fires less (dense or "
+            "heavily compressed material where everything reads as a transient). "
+            "1.0 is the tuned default."
+        },
+    )
+    poll_hz: float = field(
+        default=60.0,
+        metadata={
+            "help": "Analysis rate in Hz. 60 matches a full-rate display, so "
+            "every rendered frame sees fresh features. Lower it only to save "
+            "host CPU; below ~30 transients start to smear."
+        },
+    )
+    fft_size: int = field(
+        default=1024,
+        metadata={
+            "help": "Analysis window in samples. Larger = finer frequency "
+            "resolution but blurrier transient timing; 1024 is the balance point "
+            "at the DAC's sample rates."
+        },
+    )
+
+
+@dataclass
 class DSPCfg:
     """Host-side audio DSP applied to float samples BEFORE the 4-bit $D418 DAC
     quantization (see c64cast/dsp.py). The DAC has ~24 dB of usable range;
@@ -2284,6 +2340,7 @@ class Config:
     recording: RecordingCfg = field(default_factory=RecordingCfg)
     color: ColorCfg = field(default_factory=ColorCfg)
     dsp: DSPCfg = field(default_factory=DSPCfg)
+    audio_features: AudioFeaturesCfg = field(default_factory=AudioFeaturesCfg)
     control: ControlPlaneCfg = field(default_factory=ControlPlaneCfg)
     midi_control: MidiControlCfg = field(default_factory=MidiControlCfg)
     performance: PerformanceCfg = field(default_factory=PerformanceCfg)
@@ -2573,6 +2630,7 @@ _TOML_SCALAR_SECTIONS: tuple[str, ...] = (
     "preview",
     "recording",
     "dsp",
+    "audio_features",
     "control",
     "midi_control",
     "performance",
@@ -3793,6 +3851,16 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
         mode = _display_mode_for_scene(display, s, cfg, force_host_dma=True)
         _check_first_sid_clears_display(s, mode, display)
         return mode
+    if s.audio_source == "mic" and s.reactive and (not cfg.audio.enabled or s.audio is False):
+        # The analyzer taps the mic callback, so no capture ⇒ no features. Warn
+        # rather than fail: `reactive` defaults True, so a user who only wanted
+        # silent generative visuals shouldn't have to turn it off explicitly.
+        log.warning(
+            "generative scene: audio_source = 'mic' with reactive = true, but the "
+            "mic never runs (%s) — the visuals will stay time-driven. Enable "
+            "[audio] to make them react to the input.",
+            "this scene sets audio = false" if s.audio is False else "[audio].enabled is false",
+        )
     # mic / none: standard frame-source display (REU staging allowed).
     return _display_mode_for_scene(s.display, s, cfg)
 
@@ -4753,7 +4821,13 @@ def build_scene(
                     )
                 scene_audio = None
             if s.audio_source == "mic" and scene_audio is not None:
-                audio_src = MicAudioSource(scene_audio, cfg.audio, display_mode=mode)
+                audio_src = MicAudioSource(
+                    scene_audio,
+                    cfg.audio,
+                    display_mode=mode,
+                    reactive=s.reactive,
+                    features_cfg=cfg.audio_features,
+                )
             else:
                 # "none", or "mic" with audio disabled → silence.
                 audio_src = NullAudioSource()

@@ -9,6 +9,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`audio.py` — AudioStreamer](#audiopy--audiostreamer)
 * [`sampler.py` — UltimateAudioSampler (U64 "Ultimate Audio" FPGA PCM)](#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm)
 * [`dsp.py` — host-side audio DSP for the 4-bit DAC path](#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path)
+* [`audio_features.py` — audio-input music features (reactive visuals from live input)](#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input)
 
 ---
 
@@ -372,3 +373,51 @@ Five stateful processors, wired by `AudioDSP` in a source-appropriate order: **p
 **Streaming contract (the invariant to preserve when editing).** Every processor is stateful and fed arbitrary-sized blocks from realtime callbacks, so processing a signal split across blocks **must** match processing it in one shot — the recursive smoothers carry envelope/gain state across `process()` calls. `tests/test_dsp.py` asserts this continuity per processor. Note `AGC` deliberately smooths per-*sample* rather than per-block for exactly this reason: a per-block gain trajectory would depend on the callback block size and break the property.
 
 **Performance.** `_ar_envelope` (the attack/release follower) and the expander/AGC loops are genuinely recursive — per-sample state with an attack≠release branch — so they use Python loops rather than a vectorized form (no scipy in the dep set). At DAC sample rates with realtime mic blocks (hundreds of samples) this is negligible; the offline video pre-encode runs it once over the whole track (≈1 s for a 2.5-min clip), acceptable for one-time scene setup.
+
+## `audio_features.py` — audio-input music features (reactive visuals from live input)
+
+The **second producer** of `modulation.MusicModulation`, alongside [`music_features.SidFeatureStream`](sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene). The SID stream reads envelope/gate/frequency out of a host-side 6502 running the same tune the chip plays; this one analyzes **actual audio samples**, so a generative scene reacts to music c64cast has no symbolic knowledge of — an instrument or mixer feed through an audio interface, a phone into an iRig, a mic in the room.
+
+Everything downstream of `MusicModulation` was already source-agnostic (`generators.py`, the effect chain, `wled_sync.py`), so this module *is* the whole feature: an analyzer, a ring the audio path pushes into, and a poll thread between them. `MicAudioSource.features()` — which returned `None` for years with a "a future audio-tap feature source could light this up" comment — now returns its snapshot.
+
+### Why a separate pre-DSP tap (the non-obvious constraint)
+
+`AudioStreamer.get_recent_samples()` already exposes a 2048-sample mono float ring — the one `overlays/spectrum_petscii.py` FFTs. Reusing it would have been free, and it is the wrong tap: it is filled inside `_encode_and_enqueue` **after** `_apply_dsp`, and `[dsp].enabled` defaults **True**. That puts AGC + compressor + limiter ahead of it on the mic path — stages that exist precisely to flatten dynamics into the 4-bit DAC's ~24 dB, which is exactly the information an onset detector reads. A compressed kick barely moves the spectral flux.
+
+So `AudioStreamer.analysis_sink` is a separate hook, invoked from `_mic_callback`, `_mic_callback_reu` and `push_samples` right after the mono downmix × `sensitivity` and **before** the noise gate and the DSP chain. It is `None` unless a reactive source installs one, so a non-reactive run pays a single attribute load per callback. `_push_to_analysis` wraps the call in `try/except`: the first failure logs once and clears the sink — a failing analyzer must never take down a realtime sounddevice callback, and losing the visuals' reactivity is a far better outcome than losing the audio.
+
+The spectrum overlay's tap is deliberately left alone. The two want different signals for good reasons: the overlay visualizes *what the C64 is actually playing* (post-DSP is correct), the analyzer needs the dynamics of *what came in*.
+
+### The analyzer
+
+`AudioFeatureAnalyzer.update(window, now)` → `snapshot() -> MusicModulation`. Pure numpy — no threads, no I/O — so the entire feature math is testable with synthetic signals (`tests/test_audio_features.py`). Every decay rate is derived from the *measured* elapsed time between calls, not the nominal poll period, so a stuttering poll thread degrades smoothly instead of changing the feel.
+
+* **`level`** — block RMS through a one-pole attack/release follower (10 ms attack so a transient is on screen the frame it happens, 150 ms release so brightness breathes rather than flickers), normalized against a rolling peak that decays toward `_PEAK_FLOOR` over ~2 s. That makes `level` *relative* loudness: a quiet feed still reaches full scale within a couple of seconds, while true silence reads 0 rather than being amplified into noise. Per-**block** deliberately — `dsp._ar_envelope` is a per-sample Python loop and is the wrong tool at 60 blocks/sec.
+* **`bands`** — Hann → `np.fft.rfft` → mean magnitude over log-spaced edges → `log1p` compression, clipped to [0, 1]. The band-edge function and the `log1p(mag * 100)` curve are **shared with `spectrum_petscii`** (moved here, the overlay imports them), so the bars it draws and the bands the analyzer reports describe identical frequency ranges — one definition, not two that can drift.
+* **`onset`** — spectral flux: the sum of positive per-band deltas in log magnitude against the previous frame, compared to an adaptive threshold (running median of ~1 s of flux history × `_THRESH_MULT`, plus an absolute `_FLUX_FLOOR`). The floor matters: with a median near zero, any numerical dust would read as a crossing. A separate `_SILENCE_LEVEL` guard suppresses onsets entirely below a floor level, which is what stops a silent room from growing a phantom tempo. On a crossing, `onset` latches to 1.0; otherwise it decays by `exp(-dt/0.18)` — **the same τ as `SidFeatureStream._ONSET_TAU_S`**, so a pulse looks identical to the SID path after 16-color quantization. Flux is computed on the *unclipped* log magnitudes so a loud transient isn't hidden by the [0, 1] clip the consumers see.
+* **`bpm` / `beat_phase`** — delegated to `modulation.TempoEstimator` (below).
+* **`voice_freqs` / `voice_gates`** — zeros/False. They are SID-specific with no audio-input analogue, so the two generators that read them (moire, kaleidoscope) fall back to their base geometry and react through level/onset/beat_phase/bands like everything else.
+
+### `modulation.TempoEstimator` — one tempo implementation, two producers
+
+Lifted verbatim (logic and constants) out of `SidFeatureStream`, which was the only producer until this module needed exactly the same math: EMA the inter-onset interval, fold near-simultaneous onsets into one beat, re-anchor across long rests, clamp to a plausible BPM band, and integrate `bpm/60` into `beat_phase` so a jittery estimate never causes a phase discontinuity. It lives in `modulation.py` because that module is stdlib-only by design — the one place both the py65-backed SID stream and the numpy-backed audio analyzer can import without dragging in each other's deps. `SidFeatureStream` now delegates to it (a behavior-identical refactor; `tests/test_music_features.py` guards it).
+
+`MusicModulation` also gained **`bands: tuple[float, ...] = ()`** plus `bass`/`mid`/`treble` properties that fold whatever band count the analyzer was configured for into thirds. It is defaulted, so every pre-existing construction site is untouched, and it stays empty on the SID path — which is what keeps the SID look bit-for-bit unchanged: `generators._reactive_value`'s bass term and `_reactive_hue_offset`'s treble term both evaluate to exactly 0.0 there.
+
+**Why bass→brightness and treble→hue** (and not saturation): the 16-color quantizer handles a desaturated hue badly — it lands in the greys — so the spectral split rides the two axes that survive quantization. A kick punches the value, a hi-hat pattern shimmers the hue, and they read as different events.
+
+### The stream + tap
+
+`AnalysisTap` is a small lock-protected mono float ring with the same wrap arithmetic as `AudioStreamer._push_to_tap`/`get_recent_samples` — lifted rather than shared, because the writer here is a realtime callback on a streamer that may not exist yet (the tap outlives any single `start_mic`). `push()` is nothing but a couple of slice assignments under a short-lived lock.
+
+`AudioFeatureStream` is the `PollThread` between them, modelled directly on `SidFeatureStream`: `start()` / `stop()` / `features()`, a `_lock` around the snapshot, `features()` returning `None` before the first tick, and `_process_tick` split out so tests drive it over a hand-filled tap with no thread. The FFT runs outside the lock; only the snapshot swap takes it.
+
+### Config + wiring
+
+`[audio_features]` (`config.AudioFeaturesCfg`): `bands` (8), `onset_sensitivity` (1.0), `poll_hz` (60.0), `fft_size` (1024). `onset_sensitivity` divides the flux threshold and is the one knob worth turning in practice — dense, heavily-compressed material reads as continuous transients at high values; sparse material needs a push.
+
+`MicAudioSource` gained `reactive` (default True) + `features_cfg`. `setup()` installs the tap **before** `start_mic` so the first callbacks already reach the analyzer; `teardown()` clears `analysis_sink` **before** `audio.stop()` so no callback can push into a tap whose thread is going away. A startup failure degrades to non-reactive with the audio intact — the same contract as `SidFileAudioSource.setup`.
+
+The analyzer taps the capture callback, so `reactive = true` with `audio_source = "mic"` needs `[audio].enabled`; `validate_scene_cfg` **warns** rather than failing (`reactive` defaults True, so someone who only wanted silent generative visuals shouldn't have to opt out explicitly).
+
+Demo config: `config/examples/audio-reactive-input.toml`.

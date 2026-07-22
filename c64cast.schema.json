@@ -768,6 +768,33 @@
         }
       }
     },
+    "audio_features": {
+      "type": "object",
+      "description": "Analyzer that turns live audio input into reactive-visual features (level / bands / transients / tempo) for a generative scene with audio_source = 'mic' and reactive = true.",
+      "additionalProperties": false,
+      "properties": {
+        "bands": {
+          "type": "integer",
+          "description": "Number of log-spaced frequency bands the analyzer reports (low\u2192high). Generators fold these into bass/mid/treble thirds, so multiples of 3 are not required; 8 matches the spectrum_petscii overlay's bands. More bands = finer spectral detail, no meaningful cost.",
+          "default": 8
+        },
+        "onset_sensitivity": {
+          "type": "number",
+          "description": "Transient-detection sensitivity. The spectral-flux threshold is divided by this, so >1 fires onsets more readily (sparse/soft material, a quiet feed) and <1 fires less (dense or heavily compressed material where everything reads as a transient). 1.0 is the tuned default.",
+          "default": 1.0
+        },
+        "poll_hz": {
+          "type": "number",
+          "description": "Analysis rate in Hz. 60 matches a full-rate display, so every rendered frame sees fresh features. Lower it only to save host CPU; below ~30 transients start to smear.",
+          "default": 60.0
+        },
+        "fft_size": {
+          "type": "integer",
+          "description": "Analysis window in samples. Larger = finer frequency resolution but blurrier transient timing; 1024 is the balance point at the DAC's sample rates.",
+          "default": 1024
+        }
+      }
+    },
     "control": {
       "type": "object",
       "description": "HTTP control plane (extra).",
@@ -2321,7 +2348,7 @@
           },
           "audio_source": {
             "type": "string",
-            "description": "Audio for a generative scene: 'none' = silent (default \u2014 a live mic never makes the visuals react, so it's opt-in passthrough only); 'mic' = live mic (only when [audio].enabled); 'sid' = play the `file` .sid on the real chip. A SID source forces a host-DMA display and needs a char display (petscii/mcm) for most tunes (see `file`).",
+            "description": "Audio for a generative scene: 'none' = silent (default); 'mic' = live audio input \u2014 an instrument/mixer feed via an interface, or a mic (only when [audio].enabled); 'sid' = play the `file` .sid on the real chip. Both 'mic' and 'sid' drive reactive visuals (see `reactive`) \u2014 'mic' analyzes the incoming audio, tunable under [audio_features]. A SID source forces a host-DMA display and needs a char display (petscii/mcm) for most tunes (see `file`).",
             "enum": [
               "none",
               "mic",
@@ -2331,7 +2358,7 @@
           },
           "reactive": {
             "type": "boolean",
-            "description": "Generative scene: let the music drive the visuals \u2014 BPM cycles the colors, transients pulse them. Only takes effect with audio_source = 'sid' (a host-side SID emulator supplies the features, adding no U64 traffic); inert for mic/none. Set false to keep the pure time-driven look.",
+            "description": "Generative scene: let the music drive the visuals \u2014 BPM cycles the colors, transients pulse them, bass reads differently from treble. Works with audio_source = 'sid' (a host-side SID emulator supplies the features, adding no U64 traffic) and 'mic' (the live input is analyzed on the host \u2014 see [audio_features]); inert for 'none'. Set false to keep the pure time-driven look.",
             "default": true
           },
           "sink_width": {

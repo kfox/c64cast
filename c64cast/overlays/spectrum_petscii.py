@@ -18,6 +18,7 @@ import logging
 
 import numpy as np
 
+from ..audio_features import FFT_SIZE, WINDOW, band_edges
 from ..c64 import SCREEN
 from ..palette import C64_COLORS
 from . import SC_FULL, Overlay, register
@@ -45,19 +46,12 @@ BAND_COLORS = np.array(
     dtype=np.uint8,
 )
 
-FFT_SIZE = 1024
-WINDOW = np.hanning(FFT_SIZE).astype(np.float32)
-
-
-def _band_edges(n_bands: int, fft_size: int) -> np.ndarray:
-    """Return n_bands+1 bin indices (inclusive ranges) for log-spaced bands.
-
-    rfft yields fft_size//2 + 1 bins. We skip bin 0 (DC) and pick log-spaced
-    edges through bin (fft_size//2)."""
-    n_bins = fft_size // 2
-    # log spacing from bin 1 → bin n_bins
-    edges = np.logspace(0, np.log10(n_bins), n_bands + 1)
-    return np.clip(edges.astype(np.int32), 1, n_bins)
+# FFT_SIZE / WINDOW / band_edges come from audio_features, which owns the one
+# band-edge definition shared with the audio-input feature analyzer — the bars
+# drawn here and that analyzer's `bands` therefore span identical frequency
+# ranges. Note this overlay reads AudioStreamer's POST-DSP tap on purpose: it
+# visualizes what the C64 is actually playing, where the feature analyzer needs
+# the pre-DSP signal (see audio_features.py).
 
 
 @register("spectrum_petscii")
@@ -85,7 +79,7 @@ class PetsciiSpectrumOverlay(Overlay):
         self.placement = placement
         self.height_rows = int(height_rows)
         self.gain = float(gain)
-        self._edges = _band_edges(N_BANDS, FFT_SIZE)
+        self._edges = band_edges(N_BANDS, FFT_SIZE)
         # Strip rows we ever touch — used by compose to scope buffer writes.
         self._strip_rows = self._compute_strip_rows()
 
