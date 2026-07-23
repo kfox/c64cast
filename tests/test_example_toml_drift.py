@@ -44,6 +44,7 @@ _SECTION_DC = {
     "recording": cfgmod.RecordingCfg,
     "color": cfgmod.ColorCfg,
     "dsp": cfgmod.DSPCfg,
+    "audio_features": cfgmod.AudioFeaturesCfg,
     "control": cfgmod.ControlPlaneCfg,
     "midi_control": cfgmod.MidiControlCfg,
     "performance": cfgmod.PerformanceCfg,

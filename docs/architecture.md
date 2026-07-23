@@ -9,7 +9,7 @@ For end-user configuration see [usage.md](usage.md), for known limitations [cave
 ## Topic areas
 
 * **[Hardware I/O & transports](architecture/hardware-io.md)** — `api.py`, `teensyrom_dma.py`, Startup: BASIC clear-and-loop program
-* **[Audio output](architecture/audio.md)** — `audio.py`, `sampler.py`, `dsp.py`
+* **[Audio output](architecture/audio.md)** — `audio.py`, `sampler.py`, `dsp.py`, `audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
@@ -27,6 +27,7 @@ Every module, alphabetically, and where its notes live.
 | `asid.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `audio.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
+| `audio_features.py` | [Audio output](architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
 | `backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
 | `cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |

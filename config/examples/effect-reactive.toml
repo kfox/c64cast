@@ -15,10 +15,11 @@
 #     tightens between hits when a reactive scene feeds it.
 #
 # IMPORTANT: pulse and rgb_shift only visibly REACT when there's a music-feature
-# stream to react to — i.e. a generative scene with `audio_source = "sid"` (and
-# `reactive = true`, the default). On a webcam/video scene, or a generative
-# scene with no SID audio, there's no modulation and these two effects are inert
-# (the identity transform). trails always works, reactive or not.
+# stream to react to — i.e. a generative scene with `reactive = true` (the
+# default) and `audio_source = "sid"` (this file) or `"mic"` (live audio input;
+# see audio-reactive-input.toml). On a webcam/video scene, or a generative scene
+# with audio_source = "none", there's no modulation and these two effects are
+# inert (the identity transform). trails always works, reactive or not.
 #
 # Display note (same as scene-generative-sid.toml): a SID audio source can't
 # relocate the C64 display, so a CHAR display (mcm here, or petscii) is the

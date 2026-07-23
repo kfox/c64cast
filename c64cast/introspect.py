@@ -153,6 +153,13 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
         cfgmod.DSPCfg,
         "Host-side audio DSP before the 4-bit DAC: compressor/limiter, expander (replaces the hard gate), pre-emphasis, and mic AGC.",
     ),
+    (
+        "audio_features",
+        cfgmod.AudioFeaturesCfg,
+        "Analyzer that turns live audio input into reactive-visual features "
+        "(level / bands / transients / tempo) for a generative scene with "
+        "audio_source = 'mic' and reactive = true.",
+    ),
     ("control", cfgmod.ControlPlaneCfg, "HTTP control plane (extra)."),
     (
         "midi_control",

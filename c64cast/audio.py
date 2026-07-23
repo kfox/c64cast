@@ -65,6 +65,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -1399,6 +1400,15 @@ class AudioStreamer:
         self._tap_write = 0
         self._tap_lock = threading.Lock()
 
+        # Optional PRE-DSP analysis sink for the music-feature analyzer
+        # (audio_features.AnalysisTap.push). Set by a reactive audio source at
+        # setup() and cleared at teardown(). Deliberately NOT the tap above: this
+        # one is fed before the noise gate and _apply_dsp, because AGC +
+        # compressor + limiter flatten exactly the transients an onset detector
+        # reads. See audio_features.py for the full rationale.
+        self.analysis_sink: Callable[[np.ndarray], None] | None = None
+        self._analysis_sink_failed = False
+
     # ---- 6502 bring-up -------------------------------------------------------
     @property
     def dac_curve(self) -> np.ndarray | None:
@@ -1917,6 +1927,26 @@ class AudioStreamer:
         self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
 
     # ---- sample tap ----------------------------------------------------------
+    def _push_to_analysis(self, mono_floats: np.ndarray) -> None:
+        """Feed the pre-DSP analysis sink, if one is installed.
+
+        Called from realtime callbacks, so a failing analyzer must never take
+        the audio path down with it: the first exception is logged and the sink
+        is dropped for the rest of the run (visuals stop reacting, sound keeps
+        playing)."""
+        # getattr-guarded like _dsp_active: streamers built via __new__ in tests
+        # (no __init__) must read as "no sink" rather than raising in a callback.
+        sink: Callable[[np.ndarray], None] | None = getattr(self, "analysis_sink", None)
+        if sink is None:
+            return
+        try:
+            sink(mono_floats)
+        except Exception:
+            if not self._analysis_sink_failed:
+                self._analysis_sink_failed = True
+                log.exception("audio analysis sink failed — disabling it (playback continues)")
+            self.analysis_sink = None
+
     def _push_to_tap(self, mono_floats: np.ndarray) -> None:
         """Append float samples in [-1, 1] to the FFT tap ring buffer."""
         n = mono_floats.size
@@ -2060,6 +2090,8 @@ class AudioStreamer:
             return
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
         mono = mono * self.sensitivity
+        # Analysis tap first: pre-gate, pre-DSP (see _push_to_analysis).
+        self._push_to_analysis(mono.astype(np.float32, copy=False))
         # The DSP expander supersedes the legacy hard gate when DSP is on.
         if not self._dsp_active():
             mono[np.abs(mono) < self.noise_gate] = 0
@@ -2079,6 +2111,7 @@ class AudioStreamer:
             return
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
         mono = mono * self.sensitivity
+        self._push_to_analysis(mono.astype(np.float32, copy=False))
         if not self._dsp_active():
             mono[np.abs(mono) < self.noise_gate] = 0
         mono = self._apply_dsp(mono.astype(np.float32, copy=False))
@@ -2685,6 +2718,9 @@ class AudioStreamer:
         briefly when the queue is full so the PyAV demuxer naturally
         throttles to the audio sample rate."""
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
+        # Pre-DSP analysis tap, same as the mic callbacks — this is what lets a
+        # decoded file drive reactive visuals through the identical analyzer.
+        self._push_to_analysis(floats)
         self._encode_and_enqueue(floats, block_on_full=True)
 
     def position_seconds(self) -> float:

@@ -93,6 +93,13 @@ class GenerativeSource(BaseFrameSource):
     _V_REST = 0.50  # dim resting HSV value so onsets + loudness clearly flash up
     _ONSET_FLASH = 0.45  # sharp value punch on a transient (the on-beat flash)
     _LEVEL_GAIN = 0.32  # value lift from overall loudness (envelope breathing)
+    # Spectral split (audio-input sources only — `bands` is empty on the SID
+    # path, so both terms are exactly 0.0 there and the SID look is unchanged).
+    # Bass drives brightness and treble drives hue, deliberately: that makes a
+    # kick and a hi-hat read differently without ever desaturating, which the
+    # 16-color quantizer handles badly (a desaturated hue lands in the greys).
+    _BASS_VALUE_GAIN = 0.25  # extra value from low-band energy → kicks punch the brightness
+    _TREBLE_HUE_GAIN = 0.10  # hue shift from high-band energy → cymbals/hats shimmer the color
 
     def __init__(self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT):
         self.width = width
@@ -116,15 +123,26 @@ class GenerativeSource(BaseFrameSource):
 
     @classmethod
     def _reactive_hue_offset(cls, modulation: MusicModulation) -> float:
-        """Extra hue offset from the music: tempo-driven cycling (beat_phase)
-        plus a transient hue kick (onset)."""
-        return modulation.beat_phase * cls._BEAT_HUE_GAIN + modulation.onset * cls._ONSET_HUE_KICK
+        """Extra hue offset from the music: tempo-driven cycling (beat_phase),
+        a transient hue kick (onset), and a treble shimmer when the source
+        reports a spectrum (0.0 on the SID path, whose `bands` is empty)."""
+        return (
+            modulation.beat_phase * cls._BEAT_HUE_GAIN
+            + modulation.onset * cls._ONSET_HUE_KICK
+            + modulation.treble * cls._TREBLE_HUE_GAIN
+        )
 
     @classmethod
     def _reactive_value(cls, modulation: MusicModulation) -> float:
         """HSV value (brightness) from the music: a dimmer rest that flashes on a
-        transient and lifts with loudness, clipped to [0, 1]."""
-        val = cls._V_REST + cls._ONSET_FLASH * modulation.onset + cls._LEVEL_GAIN * modulation.level
+        transient, lifts with loudness, and punches with bass energy when the
+        source reports a spectrum (0.0 on the SID path). Clipped to [0, 1]."""
+        val = (
+            cls._V_REST
+            + cls._ONSET_FLASH * modulation.onset
+            + cls._LEVEL_GAIN * modulation.level
+            + cls._BASS_VALUE_GAIN * modulation.bass
+        )
         return float(min(1.0, max(0.0, val)))
 
     @staticmethod

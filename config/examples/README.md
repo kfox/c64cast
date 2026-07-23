@@ -71,6 +71,7 @@ Exit with `Ctrl+C`.
 | `scene-generative-plasma.toml`    | Procedural plasma rendered as a multicolor bitmap.         |
 | `scene-generative-petscii.toml`   | The same plasma source rendered as PETSCII glyphs.         |
 | `scene-generative-sid.toml`       | Plasma × SID playback — music-reactive composable scene.   |
+| `audio-reactive-input.toml`       | Generative visuals driven by LIVE audio input (iRig/mic).  |
 | `scene-generative-fire.toml`      | Fire generator × SID playback (the loudest reactive look). |
 | `scene-generative-hiphotic.toml`  | Hiphotic — WLED-effect port, nested trig interference.     |
 | `scene-generative-metaballs.toml` | Metaballs — WLED-effect port, inverse-distance blob field. |

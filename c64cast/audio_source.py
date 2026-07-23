@@ -7,7 +7,8 @@ independently.
 Today's implementations:
 - `NullAudioSource` — silence.
 - `MicAudioSource` — streaming sampled audio from the shared AudioStreamer's
-  live mic path (the same path WebcamScene uses).
+  live mic path (the same path WebcamScene uses). Reactive by default: it also
+  runs the pre-DSP audio analyzer, so live input drives the visuals.
 - `SidFileAudioSource` — plays a .sid file on the U64's real chip (the audio
   half of WaveformScene, factored out so it composes with any FrameSource).
   This is the seam that lets "generative video + SID audio" compose.
@@ -27,8 +28,9 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from .audio import AudioStreamer
+    from .audio_features import AudioFeatureStream
     from .backend import C64Backend
-    from .config import AudioCfg
+    from .config import AudioCfg, AudioFeaturesCfg
     from .modes import DisplayMode
     from .modulation import MusicModulation
     from .music_features import SidFeatureStream
@@ -81,7 +83,17 @@ class MicAudioSource:
     """Streaming sampled audio from the live microphone via the shared
     AudioStreamer. `display_mode` is consulted only to mirror WebcamScene's
     REU-pump coordination: when a bitmap mode installs the merged $0314
-    dispatcher, the mic REU pump must skip its own IRQ hook."""
+    dispatcher, the mic REU pump must skip its own IRQ hook.
+
+    Music-reactive visuals: when `reactive` (default True), setup() installs a
+    pre-DSP `AnalysisTap` on the streamer and starts an
+    [AudioFeatureStream](audio_features.py) over it, so `features()` reports live
+    level / onset / band energies / tempo from whatever is being played into the
+    input — an iRig, a mixer feed, a mic. That is the same `MusicModulation` the
+    SID path produces, so generators, the effect chain and the WLED broadcaster
+    all react without knowing which producer is behind it. `reactive=False` (or
+    a startup failure) leaves features() returning None and the visuals purely
+    time-driven; audio still streams to the DAC either way."""
 
     # A live mic is uncorrelated input, not the ensemble's SID spotlight —
     # it never claims the audio lock (matches WebcamScene's WANTS_AUDIO_LOCK=False).
@@ -93,13 +105,23 @@ class MicAudioSource:
         audio: AudioStreamer,
         audio_cfg: AudioCfg,
         display_mode: DisplayMode | None = None,
+        *,
+        reactive: bool = True,
+        features_cfg: AudioFeaturesCfg | None = None,
     ):
         self._audio = audio
         self._cfg = audio_cfg
         self._display_mode = display_mode
+        self._reactive = reactive
+        self._features_cfg = features_cfg
+        # Built per setup() when reactive; None otherwise.
+        self._features: AudioFeatureStream | None = None
 
     def setup(self) -> None:
         skip_hook = bool(getattr(self._display_mode, "audio_reu_pump_active", False))
+        # Install the analysis tap BEFORE capture starts, so the first callbacks
+        # already feed the analyzer.
+        self._start_features()
         self._audio.start_mic(
             self._cfg.device,
             self._cfg.mic_sensitivity,
@@ -107,16 +129,51 @@ class MicAudioSource:
             skip_irq_vector_hook=skip_hook,
         )
 
+    def _start_features(self) -> None:
+        """Spin up the pre-DSP analyzer. A failure here must not cost the user
+        their audio, so it degrades to non-reactive (same contract as
+        SidFileAudioSource.setup)."""
+        if not self._reactive:
+            return
+        from .audio_features import AnalysisTap, AudioFeatureStream
+        from .config import AudioFeaturesCfg
+
+        cfg = self._features_cfg or AudioFeaturesCfg()
+        try:
+            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096))
+            stream = AudioFeatureStream(
+                tap,
+                self._audio.sample_rate,
+                n_bands=cfg.bands,
+                fft_size=cfg.fft_size,
+                poll_hz=cfg.poll_hz,
+                onset_sensitivity=cfg.onset_sensitivity,
+            )
+            self._audio.analysis_sink = tap.push
+            stream.start()
+        except Exception:
+            log.exception(
+                "mic audio: feature stream failed to start — visuals will not "
+                "react to the input (audio continues)"
+            )
+            self._audio.analysis_sink = None
+            return
+        self._features = stream
+
     def teardown(self) -> None:
+        # Unhook the sink before the streamer stops, so no callback can push
+        # into a tap whose analyzer thread is already going away.
+        self._audio.analysis_sink = None
+        if self._features is not None:
+            self._features.stop()
+            self._features = None
         self._audio.stop()
 
     def position_seconds(self) -> float | None:
         return None
 
     def features(self) -> MusicModulation | None:
-        # A live mic has no SID host-emulator to read features from; a future
-        # audio-tap feature source could light this up.
-        return None
+        return self._features.features() if self._features is not None else None
 
 
 class SidFileAudioSource:

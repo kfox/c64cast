@@ -1,0 +1,54 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: generative visuals driven by LIVE AUDIO INPUT. Plug an
+# instrument/mixer/phone into an audio interface (an iRig or similar) — or just
+# use the built-in mic — and the plasma reacts to what you play: the colors
+# cycle at the detected tempo, transients flash the brightness, bass punches
+# differently from treble.
+#
+# How it works: `audio_source = "mic"` streams the input to the C64's 4-bit DAC
+# as it always has, and `reactive = true` additionally runs a host-side analyzer
+# over a PRE-DSP tap of that same input (see [audio_features] in
+# c64cast.example.toml). RMS becomes "level", an FFT becomes frequency bands,
+# spectral flux becomes transient "onsets", and the onset rate becomes the BPM
+# the colors cycle at. It is host-side only — no extra C64 bus traffic — and it
+# produces the same feature struct a SID tune does, so reactive EFFECTS work
+# here too (the `effect` slot below), as does the WLED audio-sync broadcaster.
+#
+# Requires [audio].enabled (the analyzer taps the capture callback — no capture,
+# no features) and the `mic` extra (sounddevice). Set `[audio].device` to your
+# interface's input index; `python -m c64cast --list-audio-devices` enumerates
+# them. If the visuals feel under- or over-reactive, `onset_sensitivity` is the
+# one knob worth turning: >1 fires transients more readily, <1 less.
+#
+# A/B it: set `reactive = false` and the same scene falls back to its pure
+# time-driven look, with the audio still playing.
+#
+# Run:
+#   python -m c64cast --config config/examples/audio-reactive-input.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[audio]
+enabled = true
+# device = 1                          # input device index (else the system default)
+# mic_sensitivity = 1.0               # raise for a quiet feed
+
+[audio_features]
+onset_sensitivity = 1.0               # >1 = more transients, <1 = fewer
+# bands = 8                           # log-spaced bands, low→high
+# poll_hz = 60.0                      # analysis rate
+# fft_size = 1024                     # analysis window in samples
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Plasma + live input"
+source = "plasma"
+display = "mcm"
+audio_source = "mic"
+reactive = true                       # (default) the input drives the visuals; false = time-driven
+effect = "pulse"                      # beat-punch zoom; try "rgb_shift" or "trails"
+duration_s = 120.0
