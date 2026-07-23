@@ -162,10 +162,11 @@ _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
 # building block in audio_source.py. "none" = silence; "mic" = live mic via the
 # shared AudioStreamer, streamed to the 4-bit DAC AND analyzed for reactive
 # visuals; "listen" = analyze the live input for reactive visuals only, no C64
-# audio output (the VJ case); "sid" = play a .sid on the real chip (needs
-# `file`). "mic"/"listen" are gated by [audio].enabled (they need the capture
-# subsystem). Default "none". A drift test pins this list.
-_AUDIO_SOURCE_CHOICES = ("none", "mic", "listen", "sid")
+# audio output (the VJ case); "file" = decode an audio file (mp3/wav/…, needs
+# `file`) to the DAC AND analyze it for reactive visuals; "sid" = play a .sid on
+# the real chip (needs `file`). "mic"/"listen"/"file" are gated by [audio].enabled
+# (they need the shared streamer). Default "none". A drift test pins this list.
+_AUDIO_SOURCE_CHOICES = ("none", "mic", "listen", "file", "sid")
 
 # Video-audio backend selector ([audio].backend). "dac" = the 4-bit $D418 NMI
 # DAC (every backend; lo-fi, bus-coupled). "sampler" = the U64 "Ultimate Audio"
@@ -3871,6 +3872,26 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
         mode = _display_mode_for_scene(display, s, cfg, force_host_dma=True)
         _check_first_sid_clears_display(s, mode, display)
         return mode
+    if s.audio_source == "file":
+        # Decode an audio file to the DAC + analyzer. `file` is required (no
+        # default dir); resolve it now so a bad path/glob fails at load time. The
+        # scene re-resolves at each setup() (a dir/glob random-picks per play).
+        if not s.file:
+            raise ValueError(
+                'generative scene with audio_source = "file" needs `file = "..."` '
+                "(an audio file, or a directory/glob of them)."
+            )
+        resolve_file_spec(s.file, AUDIO_EXTS, label="generative file audio")
+        if not cfg.audio.enabled or s.audio is False:
+            # The file streams to the DAC and the analyzer taps that same path, so
+            # with the DAC off there's neither playback nor reactivity. Warn, don't
+            # fail (mirrors the mic/listen guidance).
+            log.warning(
+                "generative scene: audio_source = 'file' but the DAC path is off "
+                "(%s) — the file won't play or drive the visuals. Enable [audio] to "
+                "hear the track and make the visuals react.",
+                "this scene sets audio = false" if s.audio is False else "[audio].enabled is false",
+            )
     if s.audio_source == "mic" and s.reactive and (not cfg.audio.enabled or s.audio is False):
         # The analyzer taps the mic callback, so no capture ⇒ no features. Warn
         # rather than fail: `reactive` defaults True, so a user who only wanted
@@ -4804,6 +4825,7 @@ def build_scene(
         )
     elif s.type == "generative":
         from .audio_source import (
+            AudioFileSource,
             AudioSource,
             MicAudioSource,
             NullAudioSource,
@@ -4881,6 +4903,7 @@ def build_scene(
                             name,
                         )
                     scene_audio = None
+                file_audio_src: AudioFileSource | None = None
                 if s.audio_source == "mic" and scene_audio is not None:
                     audio_src = MicAudioSource(
                         scene_audio,
@@ -4889,15 +4912,35 @@ def build_scene(
                         reactive=s.reactive,
                         features_cfg=cfg.audio_features,
                     )
+                elif s.audio_source == "file" and scene_audio is not None:
+                    # Decode a music file to the DAC AND analyze it — the same
+                    # streamer + analyzer the mic path uses, sourced from a file.
+                    assert s.file is not None  # narrowed by _validate_generative
+                    file_audio_src = AudioFileSource(
+                        scene_audio,
+                        s.file,
+                        reactive=s.reactive,
+                        features_cfg=cfg.audio_features,
+                    )
+                    audio_src = file_audio_src
                 else:
-                    # "none", or "mic" with audio disabled → silence.
+                    # "none", or "mic"/"file" with audio disabled → silence.
                     audio_src = NullAudioSource()
                 scene = SourceScene(api, scene_audio, mode, gen, audio_src, name, color=cfg.color)
-                # A mic-source generative scene is digitized-audio-capable like
-                # webcam/video, so it gets the same bitmap frame-push caps (20 fps
-                # while the DAC streams, half rate otherwise). The "none" source
-                # never drives the DAC, so it keeps the playlist default.
-                if s.target_fps is None and s.audio_source == "mic":
+                # Size a file-audio scene to the track so `c64cast tune.mp3` plays
+                # the whole song then advances/loops (an explicit duration_s still
+                # wins, applied in the duration-resolution block below).
+                if (
+                    file_audio_src is not None
+                    and s.duration_s is None
+                    and file_audio_src.duration_s
+                ):
+                    scene.duration_s = file_audio_src.duration_s
+                # A mic/file-source generative scene is digitized-audio-capable
+                # like webcam/video, so it gets the same bitmap frame-push caps
+                # (20 fps while the DAC streams, half rate otherwise). The "none"
+                # source never drives the DAC, so it keeps the playlist default.
+                if s.target_fps is None and s.audio_source in ("mic", "file"):
                     fps = _frame_push_default_fps(
                         mode, scene_audio is not None, cfg.ultimate64.system
                     )
@@ -5182,6 +5225,9 @@ VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov", ".webm", ".m4v")
 SID_EXTS = (".sid",)
 PICTURE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 PROGRAM_EXTS = (".prg", ".crt")
+# Audio-only formats — a generative scene with `audio_source = "file"` decodes
+# one (PyAV) to the DAC and reacts to it. Shared with quickcast.py.
+AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus")
 
 # Default `file =` value for scenes that don't set one. The scene picks a
 # random file from the directory at each setup() (same as an explicit

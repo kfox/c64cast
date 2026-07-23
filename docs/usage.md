@@ -171,14 +171,15 @@ Each argument is mapped to a scene type:
 | `.sid`                  | `waveform`   |
 | image (`.jpg`, `.png` …) | `slideshow`  |
 | `.prg` / `.crt`         | `launcher`   |
+| audio (`.mp3`, `.wav`, `.flac` …) | `generative` + `audio_source = "file"` — the track plays on the DAC while a reactive plasma visual breathes with it |
 | directory or glob       | inferred from the contents (a single kind); the spec is passed through, so the scene random-picks at setup |
 | URL                     | `video` (direct media plays as-is; YouTube/others resolved by yt-dlp). A `?t=`/`&start=`/`#t=` timestamp (`90`, `90s`, `1m30s`, `1h2m3s`) seeks playback to that offset |
 
 Audio is **on by default** — pass `--no-audio` to mute. Flags:
 `-u/--url`, `-s/--system`, `--display MODE` (default `mhires` for video/slideshow),
-`-t/--duration S` (for scenes that honor it — waveform/slideshow), `--loop`,
-`--skip-probe`, `-v`/`-vv`. Audio-only files (mp3/wav over a test pattern) are
-recognized but not yet supported.
+`-t/--duration S` (for scenes that honor it — waveform/slideshow, and an audio file
+as a cap over its natural length), `--loop`, `--skip-probe`, `-v`/`-vv`. Audio
+**files** play reactively (`c64cast tune.mp3`); audio **URLs** aren't wired yet.
 
 ## Where settings and data live
 
@@ -742,7 +743,7 @@ each plays for `duration_s` seconds, then advances. Common fields:
   50 PAL), with two groups defaulting lower to stay under the DMA
   bus-halt ceiling (an explicit `target_fps` always wins):
   * **Bitmap (hires/mhires) frame-pushing scenes** — `video`, live
-    `webcam`, and `generative` with `audio_source = "mic"` — cap at
+    `webcam`, and `generative` with `audio_source = "mic"`/`"file"` — cap at
     **20 fps** while streaming digitized audio and at half rate
     (30 NTSC / 25 PAL) when muted. **Video on the U64 Ultimate Audio
     sampler is the exception:** that audio is off the C64 bus, so it
@@ -1207,11 +1208,11 @@ type = "generative"
 display = "mhires"                  # any quantizing mode (not blank/random)
 duration_s = 60.0
 source = "plasma"                   # 20 sources; --describe scene:generative
-audio_source = "none"               # none (default) | mic | sid
-reactive = true                     # music drives the visuals (sid only)
+audio_source = "none"               # none (default) | mic | listen | file | sid
+reactive = true                     # music drives the visuals (sid/mic/listen/file)
 effect = "trails"                  # optional: trails | pulse | rgb_shift | blur
 # pre_emphasis = 0.5                 # per-scene HF boost (needs [dsp] + scene audio)
-# file = "assets/sids/Tune.sid"     # required when audio_source = "sid"
+# file = "assets/sids/Tune.sid"     # required when audio_source = "sid"/"file"
 ```
 
 A procedural scene composed from three orthogonal choices — a **frame
@@ -1227,8 +1228,11 @@ numpy and deterministic in time:
 * `audio_source` — `none` (silent, the default — a live mic never makes
   the visuals react, so it's opt-in passthrough only), `mic` (live mic
   through the SID DAC; needs `[audio] enabled = true` + the `mic`
-  extra), or `sid` (play the `file` `.sid` on the real chip). A `sid`
-  source forces a host-DMA display and pairs most robustly with a
+  extra), `listen` (analyze a live input for reactive visuals only, no
+  C64 audio), `file` (decode the `file` audio track — mp3/wav/… — to the
+  DAC and react to it; needs `[audio] enabled = true` + the `video`
+  extra for PyAV), or `sid` (play the `file` `.sid` on the real chip). A
+  `sid` source forces a host-DMA display and pairs most robustly with a
   **char** display (`mcm` / `petscii`); a bitmap display works only
   with a tune that loads high enough to clear `$2000`.
 * `reactive` (default `true`) — when `audio_source = "sid"`, a host-side

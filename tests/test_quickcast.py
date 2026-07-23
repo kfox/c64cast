@@ -69,10 +69,19 @@ class ClassifyLiteralFileTest(unittest.TestCase):
         self.assertEqual(self._classify("game.prg"), "launcher")
         self.assertEqual(self._classify("cart.crt"), "launcher")
 
-    def test_audio_is_deferred(self):
-        with self.assertRaises(ValueError) as cm:
-            self._classify("song.mp3")
-        self.assertIn("audio-only", str(cm.exception))
+    def test_audio_becomes_a_reactive_generative_scene(self):
+        scene = quickcast.classify_local("song.mp3", display=None, duration_s=None)
+        self.assertEqual(scene.type, "generative")
+        self.assertEqual(scene.audio_source, "file")
+        self.assertEqual(scene.source, "plasma")
+        self.assertEqual(scene.file, "song.mp3")
+        # A char display keeps the DAC path clean.
+        self.assertEqual(scene.display, "mcm")
+
+    def test_audio_duration_override(self):
+        scene = quickcast.classify_local("song.wav", display=None, duration_s=30.0)
+        self.assertEqual(scene.type, "generative")
+        self.assertEqual(scene.duration_s, 30.0)
 
     def test_unknown_extension(self):
         with self.assertRaises(ValueError) as cm:
@@ -131,11 +140,13 @@ class ClassifyDirAndGlobTest(unittest.TestCase):
             quickcast.classify_local(self.tmp, display=None, duration_s=None)
         self.assertIn("no playable files", str(cm.exception))
 
-    def test_directory_audio_only(self):
+    def test_directory_of_audio(self):
         self._touch("a.mp3", "b.wav")
-        with self.assertRaises(ValueError) as cm:
-            quickcast.classify_local(self.tmp, display=None, duration_s=None)
-        self.assertIn("audio", str(cm.exception))
+        scene = quickcast.classify_local(self.tmp, display=None, duration_s=None)
+        self.assertEqual(scene.type, "generative")
+        self.assertEqual(scene.audio_source, "file")
+        # The directory spec is passed through verbatim (scene random-picks).
+        self.assertEqual(scene.file, self.tmp)
 
     def test_directory_mixed_types(self):
         self._touch("a.sid", "b.mp4")
