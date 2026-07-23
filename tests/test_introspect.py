@@ -173,7 +173,7 @@ class ChoiceVocabSyncTest(unittest.TestCase):
         # No registry backs the AudioSource family (it's a fixed protocol set);
         # pin the literal so a new value can't be added to the SceneCfg field
         # metadata without build_scene learning to construct it.
-        self.assertEqual(cfgmod._AUDIO_SOURCE_CHOICES, ("none", "mic", "sid"))
+        self.assertEqual(cfgmod._AUDIO_SOURCE_CHOICES, ("none", "mic", "listen", "sid"))
         # SceneCfg metadata must match the constant.
         from dataclasses import fields
 

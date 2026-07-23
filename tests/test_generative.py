@@ -885,6 +885,14 @@ class _FakeStreamer:
             "skip": skip_irq_vector_hook,
         }
 
+    def start_listen(self, device, sensitivity, *, sample_rate=None):
+        self.started = {
+            "device": device,
+            "sens": sensitivity,
+            "sample_rate": sample_rate,
+            "listen": True,
+        }
+
     def stop(self):
         self.stopped = True
 
@@ -974,6 +982,63 @@ class AudioSourceTest(unittest.TestCase):
             assert feat is not None
             self.assertGreater(feat.level, 0.0)
             self.assertEqual(len(feat.bands), 8)  # [audio_features].bands default
+        finally:
+            mic.teardown()
+
+    def _listen(self, streamer) -> MicAudioSource:
+        return MicAudioSource(
+            cast(AudioStreamer, streamer),
+            cast(AudioCfg, SimpleNamespace(device=-1, mic_sensitivity=1.0, noise_gate=0.02)),
+            display_mode=cast(DisplayMode, SimpleNamespace(audio_reu_pump_active=False)),
+            reactive=True,
+            listen_only=True,
+        )
+
+    def test_listen_only_captures_without_the_dac(self):
+        # Listen-only must open the analysis-only capture path (start_listen),
+        # NOT start_mic — no audio reaches the 4-bit DAC.
+        streamer = _FakeStreamer()
+        mic = self._listen(streamer)
+        mic.setup()
+        try:
+            assert streamer.started is not None
+            self.assertTrue(streamer.started.get("listen"))
+            # The sink is installed for reactive analysis.
+            self.assertIsNotNone(streamer.analysis_sink)
+        finally:
+            mic.teardown()
+        self.assertIsNone(streamer.analysis_sink)
+        self.assertTrue(streamer.stopped)
+
+    def test_listen_analyzer_uses_full_bandwidth_rate(self):
+        # Freed from the DAC rate, listen captures + analyzes at the higher
+        # listen_sample_rate (44.1 kHz by default), while mic stays at the DAC
+        # rate so the analyzer matches what the C64 plays.
+        from c64cast.config import AudioFeaturesCfg
+
+        listen_streamer = _FakeStreamer()
+        listen = self._listen(listen_streamer)
+        listen.setup()
+        try:
+            assert listen_streamer.started is not None
+            self.assertEqual(
+                listen_streamer.started["sample_rate"], AudioFeaturesCfg().listen_sample_rate
+            )
+            self.assertEqual(
+                listen._features._analyzer.sample_rate,  # type: ignore[union-attr]
+                float(AudioFeaturesCfg().listen_sample_rate),
+            )
+        finally:
+            listen.teardown()
+
+        mic_streamer = _FakeStreamer()
+        mic = self._mic(mic_streamer, reactive=True)
+        mic.setup()
+        try:
+            self.assertEqual(
+                mic._features._analyzer.sample_rate,  # type: ignore[union-attr]
+                float(mic_streamer.sample_rate),
+            )
         finally:
             mic.teardown()
 
@@ -1277,6 +1342,36 @@ class ConfigGenerativeTest(unittest.TestCase):
         assert isinstance(scene, SourceScene)
         self.assertIsInstance(scene.audio_source, NullAudioSource)
         self.assertIsNone(scene.audio)
+
+    def test_audio_source_listen_builds_listen_only_source(self):
+        # "listen" builds a listen-only MicAudioSource driven by the shared
+        # streamer, but the scene carries NO DAC audio (SourceScene.audio None):
+        # it produces no C64 sound, only reactive visuals.
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="listen")
+        streamer = cast(AudioStreamer, _FakeStreamer())
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), streamer, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, MicAudioSource)
+        self.assertTrue(scene.audio_source._listen_only)  # type: ignore[union-attr]
+        self.assertIsNone(scene.audio)  # no DAC path on the scene
+
+    def test_audio_source_listen_not_suppressed_in_ensemble(self):
+        # Listen produces no sound, so it never contends for the ensemble audio
+        # spotlight — unlike a mic source, it stays live under is_ensemble.
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="listen")
+        streamer = cast(AudioStreamer, _FakeStreamer())
+        scene = build_scene(
+            s, self.cfg, cast(C64Backend, _DummyAPI()), streamer, None, is_ensemble=True
+        )
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, MicAudioSource)
+        self.assertTrue(scene.audio_source._listen_only)  # type: ignore[union-attr]
+
+    def test_audio_source_listen_falls_back_to_null_without_streamer(self):
+        s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="listen")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, NullAudioSource)
 
     def test_invalid_audio_source_rejected(self):
         s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="bogus")

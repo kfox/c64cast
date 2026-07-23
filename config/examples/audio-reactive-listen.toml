@@ -1,0 +1,56 @@
+#:schema ../../c64cast.schema.json
+# Single-scene demo: generative visuals driven by LIVE AUDIO INPUT, with NO C64
+# audio output — the "listen-only" VJ case. Plug an instrument/mixer/phone into
+# an audio interface (an iRig or similar), or use the built-in mic, and the
+# plasma reacts to what it hears: the colors cycle at the detected tempo,
+# transients flash the brightness, bass punches differently from treble.
+#
+# Difference from audio-reactive-input.toml: that one uses `audio_source = "mic"`,
+# which ALSO streams the input to the C64's 4-bit DAC (a lo-fi copy plays out the
+# C64). This one uses `audio_source = "listen"`, which analyzes the input for the
+# visuals ONLY — nothing reaches the DAC or the SID. That is what you want when
+# the real sound is already on a PA / your monitors and you only want the C64 to
+# *watch* it. The analyzer is identical either way (same [audio_features]).
+#
+# Bonus: freed from the DAC's ~12 kHz sample rate, the listen path captures at
+# full bandwidth ([audio_features].listen_sample_rate, 44.1 kHz by default), so
+# the analyzer sees real cymbal/hi-hat energy above 6 kHz and detects transients
+# more crisply than the mic path can.
+#
+# Still requires [audio].enabled (the shared streamer owns the capture) and the
+# `mic` extra (sounddevice) — "enabled" here just means the capture subsystem is
+# on; listen never makes the C64 produce sound. Set `[audio].device` to your
+# interface's input index (`python -m c64cast --list-audio-devices` enumerates
+# them). If the visuals feel under- or over-reactive, `onset_sensitivity` is the
+# one knob worth turning: >1 fires transients more readily, <1 less.
+#
+# Run:
+#   python -m c64cast --config config/examples/audio-reactive-listen.toml
+
+[ultimate64]
+url = "http://ultimate-64-ii.lan"
+
+[audio]
+enabled = true                        # needed for the capture subsystem (no C64 audio is produced)
+# device = 1                          # input device index (else the system default)
+# mic_sensitivity = 1.0               # raise for a quiet feed
+
+[audio_features]
+onset_sensitivity = 1.0               # >1 = more transients, <1 = fewer
+# listen_sample_rate = 44100          # full-bandwidth capture rate for the listen path
+# bands = 8                           # log-spaced bands, low→high
+# poll_hz = 60.0                      # analysis rate
+# fft_size = 1024                     # analysis window in samples
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Plasma + listen-only input"
+source = "plasma"
+display = "mcm"
+audio_source = "listen"               # analyze the input for visuals only; no C64 audio out
+reactive = true                       # (default) the input drives the visuals
+effect = "pulse"                      # beat-punch zoom; try "rgb_shift" or "trails"
+duration_s = 120.0

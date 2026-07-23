@@ -160,13 +160,12 @@ _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
 
 # Per-scene audio source for composable (generative) scenes — the AudioSource
 # building block in audio_source.py. "none" = silence; "mic" = live mic via the
-# shared AudioStreamer (gated by [audio].enabled); "sid" = play a .sid on the
-# real chip (needs `file`). Default "none": a live mic has no SID host-emulator
-# to read features from, so a generative scene left on "mic" just passes audio
-# through without ever making the visuals react to it — opt in explicitly if
-# that passthrough (not reactivity) is what you want. A drift test pins this
-# list.
-_AUDIO_SOURCE_CHOICES = ("none", "mic", "sid")
+# shared AudioStreamer, streamed to the 4-bit DAC AND analyzed for reactive
+# visuals; "listen" = analyze the live input for reactive visuals only, no C64
+# audio output (the VJ case); "sid" = play a .sid on the real chip (needs
+# `file`). "mic"/"listen" are gated by [audio].enabled (they need the capture
+# subsystem). Default "none". A drift test pins this list.
+_AUDIO_SOURCE_CHOICES = ("none", "mic", "listen", "sid")
 
 # Video-audio backend selector ([audio].backend). "dac" = the 4-bit $D418 NMI
 # DAC (every backend; lo-fi, bus-coupled). "sampler" = the U64 "Ultimate Audio"
@@ -1016,12 +1015,17 @@ class SceneCfg:
         metadata={
             "help": "Audio for a generative scene: 'none' = silent (default); "
             "'mic' = live audio input — an instrument/mixer feed via an "
-            "interface, or a mic (only when [audio].enabled); 'sid' = play the "
-            "`file` .sid on the real chip. Both 'mic' and 'sid' drive reactive "
-            "visuals (see `reactive`) — 'mic' analyzes the incoming audio, "
-            "tunable under [audio_features]. A SID source forces a host-DMA "
-            "display and needs a char display (petscii/mcm) for most tunes "
-            "(see `file`).",
+            "interface, or a mic — streamed to the 4-bit DAC and analyzed; "
+            "'listen' = analyze the live input for reactive visuals ONLY, with "
+            "no C64 audio output (the VJ case: the real sound is on a PA and "
+            "only the visuals track it — and, freed from the DAC rate, it "
+            "captures full-bandwidth at [audio_features].listen_sample_rate); "
+            "'sid' = play the `file` .sid on the real chip. 'mic'/'listen' need "
+            "[audio].enabled for the capture subsystem. 'mic', 'listen' and "
+            "'sid' all drive reactive visuals (see `reactive`); the input "
+            "analyzer is tunable under [audio_features]. A SID source forces a "
+            "host-DMA display and needs a char display (petscii/mcm) for most "
+            "tunes (see `file`).",
             "choices": _AUDIO_SOURCE_CHOICES,
             "applies_to": ("generative",),
         },
@@ -1035,9 +1039,10 @@ class SceneCfg:
             "help": "Generative scene: let the music drive the visuals — BPM "
             "cycles the colors, transients pulse them, bass reads differently "
             "from treble. Works with audio_source = 'sid' (a host-side SID "
-            "emulator supplies the features, adding no U64 traffic) and 'mic' "
-            "(the live input is analyzed on the host — see [audio_features]); "
-            "inert for 'none'. Set false to keep the pure time-driven look.",
+            "emulator supplies the features, adding no U64 traffic) and "
+            "'mic'/'listen' (the live input is analyzed on the host — see "
+            "[audio_features]); inert for 'none'. Set false to keep the pure "
+            "time-driven look (and, for 'listen', to skip capture entirely).",
             "applies_to": ("generative",),
         },
     )
@@ -1723,6 +1728,17 @@ class AudioFeaturesCfg:
             "help": "Analysis window in samples. Larger = finer frequency "
             "resolution but blurrier transient timing; 1024 is the balance point "
             "at the DAC's sample rates."
+        },
+    )
+    listen_sample_rate: int = field(
+        default=44100,
+        metadata={
+            "help": "Capture rate in Hz for audio_source = 'listen' (the "
+            "listen-only path, which never feeds the DAC and so isn't bound to "
+            "its ~12 kHz rate). 44100 gives the analyzer full-bandwidth audio — "
+            "real hi-hat energy above the DAC's 6 kHz Nyquist and cleaner "
+            "transients. Ignored by audio_source = 'mic' (that path analyzes at "
+            "the DAC rate, matching what the C64 actually plays)."
         },
     )
 
@@ -3861,7 +3877,26 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
             "[audio] to make them react to the input.",
             "this scene sets audio = false" if s.audio is False else "[audio].enabled is false",
         )
-    # mic / none: standard frame-source display (REU staging allowed).
+    if s.audio_source == "listen":
+        # Listen-only exists solely to drive the visuals from the input, so
+        # reactive = false leaves it opening nothing. And its capture still needs
+        # the shared streamer, i.e. [audio].enabled (the per-scene `audio` DAC
+        # toggle is irrelevant — listen never feeds the DAC). Warn, don't fail.
+        if not s.reactive:
+            log.warning(
+                "generative scene: audio_source = 'listen' with reactive = false — "
+                "listen captures the input only to drive the visuals, so with "
+                "reactive off it opens nothing (silent, time-driven). Use "
+                "audio_source = 'none' for a plain silent scene."
+            )
+        elif not cfg.audio.enabled:
+            log.warning(
+                "generative scene: audio_source = 'listen' with reactive = true, "
+                "but [audio].enabled is false — the capture subsystem is off, so "
+                "the visuals will stay time-driven. Enable [audio] (listen still "
+                "produces no C64 audio) to make them react to the input."
+            )
+    # mic / listen / none: standard frame-source display (REU staging allowed).
     return _display_mode_for_scene(s.display, s, cfg)
 
 
@@ -4809,37 +4844,61 @@ def build_scene(
                 reu_available=reu_available,
                 backend_supports_reu=backend_supports_reu,
             )
-            # mic / none: the live-frame audio path. Like webcam/blank, a live
-            # mic source is suppressed in ensemble mode.
-            scene_audio = None if s.audio is False else audio
-            if is_ensemble and scene_audio is not None:
-                if s.audio is True:
-                    log.info(
-                        "[%s] generative scene: audio suppressed in ensemble mode "
-                        "(live scenes never hold the audio spotlight)",
-                        name,
+            if s.audio_source == "listen":
+                # Listen-only: analyze the live input for reactive visuals with
+                # NO C64 audio output. It drives neither the DAC nor the SID, so
+                # it is never ensemble-suppressed and ignores the per-scene
+                # `audio` DAC toggle — it just needs the shared streamer to own
+                # the input + analysis sink. The SourceScene gets no DAC audio
+                # (None): the analyzer taps pre-DSP, so per-scene pre-emphasis is
+                # irrelevant, and there is no DAC stream to frame-cap against.
+                if audio is not None and s.reactive:
+                    audio_src = MicAudioSource(
+                        audio,
+                        cfg.audio,
+                        display_mode=mode,
+                        reactive=True,
+                        listen_only=True,
+                        features_cfg=cfg.audio_features,
                     )
-                scene_audio = None
-            if s.audio_source == "mic" and scene_audio is not None:
-                audio_src = MicAudioSource(
-                    scene_audio,
-                    cfg.audio,
-                    display_mode=mode,
-                    reactive=s.reactive,
-                    features_cfg=cfg.audio_features,
-                )
+                else:
+                    # No streamer ([audio] off) or reactive = false → silence.
+                    audio_src = NullAudioSource()
+                scene = SourceScene(api, None, mode, gen, audio_src, name, color=cfg.color)
             else:
-                # "none", or "mic" with audio disabled → silence.
-                audio_src = NullAudioSource()
-            scene = SourceScene(api, scene_audio, mode, gen, audio_src, name, color=cfg.color)
-            # A mic-source generative scene is digitized-audio-capable like
-            # webcam/video, so it gets the same bitmap frame-push caps (20 fps
-            # while the DAC streams, half rate otherwise). The "none" source
-            # never drives the DAC, so it keeps the playlist default.
-            if s.target_fps is None and s.audio_source == "mic":
-                fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
-                if fps is not None:
-                    scene.target_fps = fps
+                # mic / none: the live-frame audio path. Like webcam/blank, a live
+                # mic source is suppressed in ensemble mode.
+                scene_audio = None if s.audio is False else audio
+                if is_ensemble and scene_audio is not None:
+                    if s.audio is True:
+                        log.info(
+                            "[%s] generative scene: audio suppressed in ensemble mode "
+                            "(live scenes never hold the audio spotlight)",
+                            name,
+                        )
+                    scene_audio = None
+                if s.audio_source == "mic" and scene_audio is not None:
+                    audio_src = MicAudioSource(
+                        scene_audio,
+                        cfg.audio,
+                        display_mode=mode,
+                        reactive=s.reactive,
+                        features_cfg=cfg.audio_features,
+                    )
+                else:
+                    # "none", or "mic" with audio disabled → silence.
+                    audio_src = NullAudioSource()
+                scene = SourceScene(api, scene_audio, mode, gen, audio_src, name, color=cfg.color)
+                # A mic-source generative scene is digitized-audio-capable like
+                # webcam/video, so it gets the same bitmap frame-push caps (20 fps
+                # while the DAC streams, half rate otherwise). The "none" source
+                # never drives the DAC, so it keeps the playlist default.
+                if s.target_fps is None and s.audio_source == "mic":
+                    fps = _frame_push_default_fps(
+                        mode, scene_audio is not None, cfg.ultimate64.system
+                    )
+                    if fps is not None:
+                        scene.target_fps = fps
     elif s.type == "wled":
         from .audio_source import NullAudioSource
         from .wled_sink import WLEDSource
