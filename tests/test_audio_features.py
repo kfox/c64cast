@@ -11,6 +11,7 @@ drives `SidFeatureStream._process_tick`.
 from __future__ import annotations
 
 import math
+import time
 import unittest
 
 import numpy as np
@@ -305,8 +306,6 @@ class StreamTest(unittest.TestCase):
             for _ in range(200):
                 if stream.features() is not None:
                     break
-                import time
-
                 time.sleep(0.01)
             self.assertIsNotNone(stream.features())
         finally:
@@ -323,7 +322,15 @@ class StreamTest(unittest.TestCase):
         self.assertIsNotNone(stream.features())
         stream.start()
         try:
-            self.assertIsNotNone(stream.features())  # thread ticks immediately
+            # start() resets the snapshot to None, then the poll thread
+            # repopulates it on its first tick (run_first=True). Poll for it
+            # rather than asserting immediately — the thread's first tick races
+            # this line and loses on a loaded CI runner.
+            for _ in range(200):
+                if stream.features() is not None:
+                    break
+                time.sleep(0.01)
+            self.assertIsNotNone(stream.features())
         finally:
             stream.stop()
 

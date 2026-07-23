@@ -792,6 +792,11 @@
           "type": "integer",
           "description": "Analysis window in samples. Larger = finer frequency resolution but blurrier transient timing; 1024 is the balance point at the DAC's sample rates.",
           "default": 1024
+        },
+        "listen_sample_rate": {
+          "type": "integer",
+          "description": "Capture rate in Hz for audio_source = 'listen' (the listen-only path, which never feeds the DAC and so isn't bound to its ~12 kHz rate). 44100 gives the analyzer full-bandwidth audio \u2014 real hi-hat energy above the DAC's 6 kHz Nyquist and cleaner transients. Ignored by audio_source = 'mic' (that path analyzes at the DAC rate, matching what the C64 actually plays).",
+          "default": 44100
         }
       }
     },
@@ -2348,17 +2353,18 @@
           },
           "audio_source": {
             "type": "string",
-            "description": "Audio for a generative scene: 'none' = silent (default); 'mic' = live audio input \u2014 an instrument/mixer feed via an interface, or a mic (only when [audio].enabled); 'sid' = play the `file` .sid on the real chip. Both 'mic' and 'sid' drive reactive visuals (see `reactive`) \u2014 'mic' analyzes the incoming audio, tunable under [audio_features]. A SID source forces a host-DMA display and needs a char display (petscii/mcm) for most tunes (see `file`).",
+            "description": "Audio for a generative scene: 'none' = silent (default); 'mic' = live audio input \u2014 an instrument/mixer feed via an interface, or a mic \u2014 streamed to the 4-bit DAC and analyzed; 'listen' = analyze the live input for reactive visuals ONLY, with no C64 audio output (the VJ case: the real sound is on a PA and only the visuals track it \u2014 and, freed from the DAC rate, it captures full-bandwidth at [audio_features].listen_sample_rate); 'sid' = play the `file` .sid on the real chip. 'mic'/'listen' need [audio].enabled for the capture subsystem. 'mic', 'listen' and 'sid' all drive reactive visuals (see `reactive`); the input analyzer is tunable under [audio_features]. A SID source forces a host-DMA display and needs a char display (petscii/mcm) for most tunes (see `file`).",
             "enum": [
               "none",
               "mic",
+              "listen",
               "sid"
             ],
             "default": "none"
           },
           "reactive": {
             "type": "boolean",
-            "description": "Generative scene: let the music drive the visuals \u2014 BPM cycles the colors, transients pulse them, bass reads differently from treble. Works with audio_source = 'sid' (a host-side SID emulator supplies the features, adding no U64 traffic) and 'mic' (the live input is analyzed on the host \u2014 see [audio_features]); inert for 'none'. Set false to keep the pure time-driven look.",
+            "description": "Generative scene: let the music drive the visuals \u2014 BPM cycles the colors, transients pulse them, bass reads differently from treble. Works with audio_source = 'sid' (a host-side SID emulator supplies the features, adding no U64 traffic) and 'mic'/'listen' (the live input is analyzed on the host \u2014 see [audio_features]); inert for 'none'. Set false to keep the pure time-driven look (and, for 'listen', to skip capture entirely).",
             "default": true
           },
           "sink_width": {

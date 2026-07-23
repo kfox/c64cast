@@ -657,6 +657,88 @@ class MicCallbackTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 32)
 
 
+class ListenOnlyCaptureTest(unittest.TestCase):
+    """start_listen: analysis-only capture — no NMI, no worker, no DAC/SID
+    writes. The samples reach the analysis sink and stop there."""
+
+    def _patch_sd(self, fake: Any) -> None:
+        orig_sd, orig_avail = audio_mod.sd, audio_mod.AUDIO_AVAILABLE
+        audio_mod.sd = fake
+        audio_mod.AUDIO_AVAILABLE = True
+        self.addCleanup(lambda: setattr(audio_mod, "sd", orig_sd))
+        self.addCleanup(lambda: setattr(audio_mod, "AUDIO_AVAILABLE", orig_avail))
+
+    def test_listen_callback_feeds_only_the_analysis_sink(self):
+        s = _make()
+        s.running = True
+        s.sensitivity = 2.0
+        pushed: list[np.ndarray] = []
+        s.analysis_sink = pushed.append
+        s._listen_callback(np.full((16, 1), 0.25, dtype=np.float32), 16, None, None)
+        # Reached the sink, scaled by sensitivity; never queued for the DAC.
+        self.assertEqual(len(pushed), 1)
+        np.testing.assert_allclose(pushed[0], 0.5)
+        self.assertEqual(s._queued_samples, 0)
+
+    def test_listen_callback_drops_when_not_running(self):
+        s = _make()
+        s.running = False
+        pushed: list[np.ndarray] = []
+        s.analysis_sink = pushed.append
+        s._listen_callback(np.ones((8, 1), dtype=np.float32), 8, None, None)
+        self.assertEqual(pushed, [])
+
+    def test_start_listen_opens_analysis_only_at_the_given_rate(self):
+        fake = _FakeSD([{"name": "line", "max_input_channels": 2}], 0)
+        self._patch_sd(fake)
+        s = _make(sample_rate=8000)
+        try:
+            s.start_listen(0, 1.0, sample_rate=44100)
+            self.assertTrue(s.running)
+            self.assertTrue(s._listen_mode)
+            # Opened once, at the listen rate, with the listen callback — and no
+            # worker thread was spun up (the DAC path's tell).
+            self.assertEqual(len(fake.created), 1)
+            self.assertEqual(fake.created[0]["samplerate"], 44100)
+            self.assertEqual(fake.created[0]["callback"], s._listen_callback)
+            self.assertIsNone(s._worker_thread)
+        finally:
+            s.stop()
+
+    def test_start_listen_defaults_to_the_dac_rate(self):
+        fake = _FakeSD([{"name": "line", "max_input_channels": 1}], 0)
+        self._patch_sd(fake)
+        s = _make(sample_rate=8000)
+        try:
+            s.start_listen(0, 1.0)
+            self.assertEqual(fake.created[0]["samplerate"], 8000)
+        finally:
+            s.stop()
+
+    def test_stop_after_listen_skips_dac_teardown(self):
+        fake = _FakeSD([{"name": "line", "max_input_channels": 2}], 0)
+        self._patch_sd(fake)
+        s = _make()
+        s.start_listen(0, 1.0)
+        # The listen branch of stop() must not run the DAC/REU teardown at all.
+        disarmed: list[bool] = []
+        s._disarm_reu_pump = lambda: disarmed.append(True)  # type: ignore[method-assign]
+        s.stop()
+        self.assertEqual(disarmed, [])
+        self.assertFalse(s.running)
+        self.assertFalse(s._listen_mode)
+        self.assertIsNone(s.mic_stream)
+
+    def test_start_listen_without_sounddevice_warns(self):
+        orig_avail = audio_mod.AUDIO_AVAILABLE
+        audio_mod.AUDIO_AVAILABLE = False
+        self.addCleanup(lambda: setattr(audio_mod, "AUDIO_AVAILABLE", orig_avail))
+        s = _make()
+        with self.assertLogs("c64cast.audio", level="WARNING"):
+            s.start_listen(0, 1.0)
+        self.assertFalse(s.running)
+
+
 # --- fake sounddevice for input-device resolution ------------------------
 
 

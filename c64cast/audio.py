@@ -1389,6 +1389,11 @@ class AudioStreamer:
         self.noise_gate = 0.05
         self.mic_stream: Any = None
         self._worker_thread: threading.Thread | None = None
+        # Set True by start_listen(): a capture-only session that feeds the
+        # analysis sink and nothing else — no NMI, no worker, no DAC/SID writes.
+        # stop() short-circuits its DAC teardown when this is set. The other
+        # start_* methods clear it, since the streamer is reused across scenes.
+        self._listen_mode = False
 
         # Audio-master clock bookkeeping (used by PyAV-driven scenes).
         self._pushed_count = 0
@@ -2170,6 +2175,7 @@ class AudioStreamer:
             self._dsp = AudioDSP(dsp_params, sample_rate=self.sample_rate, is_mic=True)
             if self._dsp.active:
                 log.info("audio: host DSP active (mic chain)")
+        self._listen_mode = False
         if self.use_reu_pump:
             self._start_mic_for_reu_pump(device, skip_irq_vector_hook=skip_irq_vector_hook)
             return
@@ -2189,6 +2195,50 @@ class AudioStreamer:
             self.sample_rate,
             sensitivity,
             noise_gate,
+        )
+
+    # ---- listen-only capture (analysis, no C64 audio output) ----------------
+    def _listen_callback(
+        self, indata: np.ndarray, frames: int, time_info: Any, status: Any
+    ) -> None:
+        """Listen-only capture callback: feed the analysis sink and nothing
+        else. No noise gate, no DSP, no DAC encode, no ring — the input drives
+        reactive visuals only, so the raw pre-gate signal is exactly what the
+        onset detector wants (mirrors the tap point in `_mic_callback`)."""
+        if status or not self.running:
+            return
+        mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
+        mono = mono * self.sensitivity
+        self._push_to_analysis(mono.astype(np.float32, copy=False))
+
+    def start_listen(
+        self, device: int, sensitivity: float, *, sample_rate: int | None = None
+    ) -> None:
+        """Open the input for analysis ONLY — no NMI, no worker thread, no DAC
+        or SID writes. The samples reach `analysis_sink` (the music-feature
+        analyzer) and stop there, so a generative scene reacts to whatever is
+        played into the input without the 4-bit DAC also blasting a lo-fi copy.
+
+        Unlike `start_mic`, nothing downstream is bound to the DAC sample rate,
+        so the input opens at `sample_rate` when given (default the DAC rate).
+        A higher rate — e.g. 44.1 kHz — hands the analyzer full-bandwidth audio
+        (real hi-hat energy above the DAC's 6 kHz Nyquist, cleaner transients).
+        The analyzer's feature math is sample-rate-agnostic, so the caller only
+        has to build its `AudioFeatureStream` with the matching rate."""
+        if not AUDIO_AVAILABLE:
+            log.warning("sounddevice not installed; listen capture disabled")
+            return
+        self.sensitivity = sensitivity
+        self._listen_mode = True
+        rate = int(sample_rate) if sample_rate else self.sample_rate
+        self.running = True
+        assert sd is not None
+        self.mic_stream = self._open_input_stream(
+            device, callback=self._listen_callback, sample_rate=rate
+        )
+        self.mic_stream.start()
+        log.info(
+            "audio: listen-only capture device=%d %dHz sensitivity=%.2f", device, rate, sensitivity
         )
 
     # ---- REU-staged mic (live capture, opt-in via use_reu_pump) -------------
@@ -2357,7 +2407,9 @@ class AudioStreamer:
         )
         return fallback, name
 
-    def _open_input_stream(self, device: int, callback: Any = None) -> Any:
+    def _open_input_stream(
+        self, device: int, callback: Any = None, *, sample_rate: int | None = None
+    ) -> Any:
         """Open an InputStream with sensible channel-count fallback.
 
         CoreAudio (and a few ALSA drivers) reject `channels=1` on devices
@@ -2369,11 +2421,14 @@ class AudioStreamer:
 
         `callback` defaults to the host-DMA `_mic_callback`. The REU mic
         path passes `_mic_callback_reu` to redirect samples into the REU
-        ring instead of the worker queue.
+        ring instead of the worker queue; the listen-only path passes
+        `_listen_callback`. `sample_rate` defaults to the DAC rate; the
+        listen path passes a higher rate for full-bandwidth analysis.
         """
         assert sd is not None
         if callback is None:
             callback = self._mic_callback
+        rate = int(sample_rate) if sample_rate else self.sample_rate
         resolved, dev_name = self._resolve_input_device(device)
 
         try:
@@ -2405,7 +2460,7 @@ class AudioStreamer:
         for ch in candidates:
             try:
                 stream = sd.InputStream(
-                    device=resolved, samplerate=self.sample_rate, channels=ch, callback=callback
+                    device=resolved, samplerate=rate, channels=ch, callback=callback
                 )
                 if ch != 1:
                     log.info("mic: opened %r with channels=%d (downmixing to mono)", dev_name, ch)
@@ -2416,12 +2471,12 @@ class AudioStreamer:
                     "mic: device %r rejected channels=%d sr=%d: %s",
                     dev_name,
                     ch,
-                    self.sample_rate,
+                    rate,
                     e,
                 )
         raise RuntimeError(
             f"could not open mic on {dev_name!r} at "
-            f"{self.sample_rate} Hz (tried channels {candidates}): "
+            f"{rate} Hz (tried channels {candidates}): "
             f"{last_err}"
         )
 
@@ -2429,6 +2484,7 @@ class AudioStreamer:
     def start_for_external_source(self) -> None:
         """Bring up NMI + worker without an input thread. Caller feeds samples
         via push_samples()."""
+        self._listen_mode = False
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
         self.running = True
@@ -2489,6 +2545,7 @@ class AudioStreamer:
         if not audio_4bit:
             log.warning("audio: start_for_reu_staged called with empty data")
             return
+        self._listen_mode = False
         chunk = REU_PUMP_CHUNK_SIZE if chunk_size is None else chunk_size
         # CIA #1 latch: pump period = chunk × NMI period. The NMI period is
         # (NMI latch + 1) cycles — derive it from the actual consumer latch
@@ -2802,6 +2859,21 @@ class AudioStreamer:
 
     # ---- shutdown ------------------------------------------------------------
     def stop(self) -> None:
+        # Listen-only sessions never touched the NMI/DAC/SID, so skip all of
+        # that teardown (writing $D418/NMI vectors would be spurious U64 traffic)
+        # — just close the input stream and reset the flag. getattr-guarded for
+        # streamers built via __new__ in tests.
+        if getattr(self, "_listen_mode", False):
+            self.running = False
+            self._listen_mode = False
+            if self.mic_stream:
+                try:
+                    self.mic_stream.stop()
+                    self.mic_stream.close()
+                except Exception as e:
+                    log.debug("listen close: %s", e)
+                self.mic_stream = None
+            return
         # Order matters for clean audio cutoff:
         #  - REU pump (if armed): restore IRQ vector + CIA #1 latch FIRST
         #    so the pump doesn't fire into a teardown-in-progress.

@@ -241,7 +241,7 @@ class StartMicForReuPumpTest(unittest.TestCase):
 
     def _start(self):
         s = _new_streamer()
-        s._open_input_stream = lambda device, callback=None: _FakeStream()
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
         s._start_mic_for_reu_pump(device=-1)
         return s
 
@@ -362,7 +362,7 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")
         # Re-route the heavy bits: pretend mic open succeeded.
-        s._open_input_stream = lambda device, callback=None: _FakeStream()  # type: ignore[method-assign]
+        s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()  # type: ignore[method-assign]
         called_reu: list[int] = []
         s._start_mic_for_reu_pump = lambda device: called_reu.append(device)  # type: ignore[method-assign]
         s.start_mic(device=5, sensitivity=1.0, noise_gate=0.0)

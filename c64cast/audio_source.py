@@ -8,7 +8,9 @@ Today's implementations:
 - `NullAudioSource` — silence.
 - `MicAudioSource` — streaming sampled audio from the shared AudioStreamer's
   live mic path (the same path WebcamScene uses). Reactive by default: it also
-  runs the pre-DSP audio analyzer, so live input drives the visuals.
+  runs the pre-DSP audio analyzer, so live input drives the visuals. With
+  `listen_only` (audio_source = "listen") it analyzes the input for reactive
+  visuals but plays no C64 audio — the VJ case where the sound is on a PA.
 - `SidFileAudioSource` — plays a .sid file on the U64's real chip (the audio
   half of WaveformScene, factored out so it composes with any FrameSource).
   This is the seam that lets "generative video + SID audio" compose.
@@ -93,7 +95,15 @@ class MicAudioSource:
     SID path produces, so generators, the effect chain and the WLED broadcaster
     all react without knowing which producer is behind it. `reactive=False` (or
     a startup failure) leaves features() returning None and the visuals purely
-    time-driven; audio still streams to the DAC either way."""
+    time-driven; audio still streams to the DAC either way.
+
+    `listen_only` (audio_source = "listen") captures the input for analysis but
+    plays NO C64 audio: setup() calls `start_listen` instead of `start_mic`, so
+    nothing reaches the 4-bit DAC. Because it is freed from the DAC's sample
+    rate, the input opens at `features_cfg.listen_sample_rate` (44.1 kHz by
+    default) and the analyzer is built to match — full-bandwidth audio for
+    cleaner onset/treble detection than the 12 kHz DAC path allows. This is the
+    VJ case: the real music comes from a PA, and only the visuals track it."""
 
     # A live mic is uncorrelated input, not the ensemble's SID spotlight —
     # it never claims the audio lock (matches WebcamScene's WANTS_AUDIO_LOCK=False).
@@ -107,43 +117,59 @@ class MicAudioSource:
         display_mode: DisplayMode | None = None,
         *,
         reactive: bool = True,
+        listen_only: bool = False,
         features_cfg: AudioFeaturesCfg | None = None,
     ):
         self._audio = audio
         self._cfg = audio_cfg
         self._display_mode = display_mode
         self._reactive = reactive
+        self._listen_only = listen_only
         self._features_cfg = features_cfg
         # Built per setup() when reactive; None otherwise.
         self._features: AudioFeatureStream | None = None
 
     def setup(self) -> None:
         skip_hook = bool(getattr(self._display_mode, "audio_reu_pump_active", False))
+        from .config import AudioFeaturesCfg
+
+        fcfg = self._features_cfg or AudioFeaturesCfg()
+        # Listen-only frees the capture from the DAC rate — open (and analyze)
+        # at the higher listen rate. The mic path stays at the streamer's DAC
+        # rate so the analyzer matches what the DAC actually samples.
+        analyzer_rate = (
+            float(fcfg.listen_sample_rate) if self._listen_only else self._audio.sample_rate
+        )
         # Install the analysis tap BEFORE capture starts, so the first callbacks
         # already feed the analyzer.
-        self._start_features()
-        self._audio.start_mic(
-            self._cfg.device,
-            self._cfg.mic_sensitivity,
-            self._cfg.noise_gate,
-            skip_irq_vector_hook=skip_hook,
-        )
+        self._start_features(fcfg, analyzer_rate)
+        if self._listen_only:
+            self._audio.start_listen(
+                self._cfg.device,
+                self._cfg.mic_sensitivity,
+                sample_rate=int(analyzer_rate),
+            )
+        else:
+            self._audio.start_mic(
+                self._cfg.device,
+                self._cfg.mic_sensitivity,
+                self._cfg.noise_gate,
+                skip_irq_vector_hook=skip_hook,
+            )
 
-    def _start_features(self) -> None:
-        """Spin up the pre-DSP analyzer. A failure here must not cost the user
-        their audio, so it degrades to non-reactive (same contract as
-        SidFileAudioSource.setup)."""
+    def _start_features(self, cfg: AudioFeaturesCfg, sample_rate: float) -> None:
+        """Spin up the pre-DSP analyzer at `sample_rate`. A failure here must not
+        cost the user their audio, so it degrades to non-reactive (same contract
+        as SidFileAudioSource.setup)."""
         if not self._reactive:
             return
         from .audio_features import AnalysisTap, AudioFeatureStream
-        from .config import AudioFeaturesCfg
 
-        cfg = self._features_cfg or AudioFeaturesCfg()
         try:
             tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096))
             stream = AudioFeatureStream(
                 tap,
-                self._audio.sample_rate,
+                sample_rate,
                 n_bands=cfg.bands,
                 fft_size=cfg.fft_size,
                 poll_hz=cfg.poll_hz,
