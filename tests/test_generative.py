@@ -28,6 +28,7 @@ from c64cast.frame_source import BaseFrameSource, FrameSource
 from c64cast.generators import build_generator, generator_names
 from c64cast.modes import DisplayMode
 from c64cast.scenes import Scene, SourceScene, _render_with_overlays
+from c64cast.video import _ensure_pyav
 
 
 class GeneratorTest(unittest.TestCase):
@@ -1383,6 +1384,7 @@ class ConfigGenerativeTest(unittest.TestCase):
             w.setframerate(rate)
             w.writeframes(b"\x00\x00" * int(rate * seconds))
 
+    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_builds_source_sized_to_track(self):
         import tempfile
 
