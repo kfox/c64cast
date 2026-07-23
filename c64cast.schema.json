@@ -2359,6 +2359,7 @@
               "none",
               "mic",
               "listen",
+              "file",
               "sid"
             ],
             "default": "none"

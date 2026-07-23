@@ -10,6 +10,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`sampler.py` — UltimateAudioSampler (U64 "Ultimate Audio" FPGA PCM)](#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm)
 * [`dsp.py` — host-side audio DSP for the 4-bit DAC path](#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path)
 * [`audio_features.py` — audio-input music features (reactive visuals from live input)](#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input)
+* [`audio_source.py` — AudioFileSource (audio-file reactive source)](#audio_sourcepy--audiofilesource-audio-file-reactive-source)
 
 ---
 
@@ -428,3 +429,17 @@ Lifted verbatim (logic and constants) out of `SidFeatureStream`, which was the o
 The analyzer taps the capture callback, so `reactive = true` with `audio_source = "mic"`/`"listen"` needs `[audio].enabled` (the shared streamer owns the capture); `_validate_generative` **warns** rather than failing (`reactive` defaults True, so someone who only wanted silent generative visuals shouldn't have to opt out explicitly). Listen additionally warns on `reactive = false`, since a listen source exists only to drive the visuals — with reactivity off it opens nothing.
 
 Demo config: `config/examples/audio-reactive-input.toml`.
+
+## `audio_source.py` — AudioFileSource (audio-file reactive source)
+
+The third `MusicModulation` producer's *plumbing*, and what makes `c64cast tune.mp3` a first-class reactive source (`audio_source = "file"`). Where `MicAudioSource` analyzes a live capture, `AudioFileSource` decodes an **audio file** (mp3/wav/flac/… via PyAV) and plays it while the same analyzer reacts to it — the "full-track sampled streaming" the `AudioSource` protocol always anticipated.
+
+**Mechanism.** A background decode thread demuxes + resamples the file to the streamer's mono int16 rate and feeds `AudioStreamer.push_samples` — exactly as `AVFileSource` feeds a video's audio. `push_samples` both 4-bit-DAC-encodes the samples *and* forwards them (pre-DSP) to `analysis_sink`, so the identical `AudioFeatureAnalyzer` the mic path uses drives the visuals off the decoded track. Playback is real-time-paced by `push_samples`' queue-full backpressure, so the decode thread tracks DAC consumption without a separate clock. The analyzer opens at the streamer's DAC rate (what the DAC actually plays, like the mic path — *not* the 44.1 kHz listen rate).
+
+**Why a focused source, not `AVFileSource`.** `AVFileSource` hard-requires `container.streams.video[0]` (an audio file has none), and it carries the whole video/atempo/transport apparatus. `AudioFileSource` is a small decode loop — open, resample, push — plus the reactive-analyzer install lifted from `MicAudioSource`. It reuses `video._av_open`/`_ensure_pyav` for the PyAV bring-up.
+
+**Scene sizing.** `AudioFileSource` reads the container `duration_s` at construction (parity with `SidFileAudioSource`'s init-time validate); `config.build_scene` sizes the scene to the track when the cfg leaves `duration_s` unset, so `c64cast tune.mp3` plays the whole song then advances (or loops in single-scene mode). An explicit `duration_s`/`-t` still wins. A dir/glob spec random-picks one file per play, like the SID path.
+
+**Wiring + gating.** In `build_scene`'s generative branch, `audio_source = "file"` builds the source from the shared streamer (`scene_audio`) exactly where `"mic"` does — so it inherits the same bitmap frame-push caps and the same ensemble live-audio suppression, and falls back to `NullAudioSource` (silent, non-reactive) when the streamer is absent (`[audio]` off / `audio = false`). `_validate_generative` **requires** `file` for this source (no default dir), resolves the spec at load time, and **warns** (doesn't fail) when the DAC path is off — with no streamer the file neither plays nor drives the visuals. On the U64 the track plays through the lo-fi 4-bit `$D418` DAC (the "DAC-copy, like mic" choice), which the `[dsp]` compressor conditions into 4 bits; the off-bus sampler path is a possible future upgrade. A startup/decode failure degrades to non-reactive with the visual intact, the same contract as `MicAudioSource`/`SidFileAudioSource`.
+
+Quick playback: `quickcast` maps an audio extension (`AUDIO_EXTS`, shared with `config.py`) to a `generative` + `audio_source = "file"` scene (a `plasma` visual on an `mcm` char display — a char mode keeps the DAC ring off the bitmap-DMA bus).

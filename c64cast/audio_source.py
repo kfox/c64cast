@@ -11,14 +11,16 @@ Today's implementations:
   runs the pre-DSP audio analyzer, so live input drives the visuals. With
   `listen_only` (audio_source = "listen") it analyzes the input for reactive
   visuals but plays no C64 audio — the VJ case where the sound is on a PA.
+- `AudioFileSource` — decodes an audio file (mp3/wav/… via PyAV) to the 4-bit
+  DAC AND runs the same pre-DSP analyzer over it, so a generative/test-pattern
+  visual reacts to the track. This is what makes `c64cast tune.mp3` a
+  first-class reactive source (audio_source = "file"). It is the "full-track
+  sampled streaming" implementation the protocol always anticipated.
 - `SidFileAudioSource` — plays a .sid file on the U64's real chip (the audio
   half of WaveformScene, factored out so it composes with any FrameSource).
   This is the seam that lets "generative video + SID audio" compose.
   `wants_audio_lock=True` because it drives the SID, so a SourceScene using it
   contends for the ensemble audio slot; live/silent sources leave it False.
-
-Full-track sampled streaming (AVFileSource → AudioStreamer.push_samples) is a
-future implementation of this same protocol.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -197,6 +200,207 @@ class MicAudioSource:
 
     def position_seconds(self) -> float | None:
         return None
+
+    def features(self) -> MusicModulation | None:
+        return self._features.features() if self._features is not None else None
+
+
+class AudioFileSource:
+    """Decode an audio file (mp3/wav/flac/… via PyAV) to the 4-bit DAC and run
+    the pre-DSP analyzer over it, so a generative/test-pattern visual reacts to
+    the track. The audio half of `c64cast tune.mp3` (audio_source = "file").
+
+    Mechanism: a background thread demuxes + resamples the file to the streamer's
+    mono int16 rate and feeds `AudioStreamer.push_samples`, exactly as
+    `AVFileSource` feeds a video's audio — push_samples both DAC-encodes the
+    samples and (pre-DSP) forwards them to `analysis_sink`, so the *same*
+    analyzer the mic path uses drives the visuals off the decoded audio. Playback
+    is real-time paced by push_samples' backpressure (queue-full block), so the
+    decode thread naturally tracks the DAC consumption rate.
+
+    `wants_audio_lock=False`: like the mic/video paths, a file is not the
+    ensemble's SID spotlight (`config.build_scene` also suppresses its DAC audio
+    in ensemble mode). `resets_display=False`: the DAC path never touches the VIC.
+
+    `duration_s` (read from the container at construction) lets `build_scene` size
+    the scene to the track so `c64cast tune.mp3` plays the whole song then
+    advances/loops. A startup failure degrades to non-reactive silence with the
+    scene intact, the same contract as `MicAudioSource`/`SidFileAudioSource`.
+    """
+
+    wants_audio_lock = False
+    resets_display = False
+
+    # Bounded candidate attempts for a multi-entry (dir/glob) spec, mirroring
+    # SidFileAudioSource: a file that won't open is skipped and the next tried.
+    _MAX_PICK_ATTEMPTS = 8
+
+    def __init__(
+        self,
+        audio: AudioStreamer,
+        file: str,
+        *,
+        reactive: bool = True,
+        features_cfg: AudioFeaturesCfg | None = None,
+    ):
+        self._audio = audio
+        self.file_spec = file
+        self._reactive = reactive
+        self._features_cfg = features_cfg
+        self._path: str = ""
+        # Track length in seconds (from the container), used by build_scene to
+        # size the scene. 0.0 when the container reports no duration.
+        self.duration_s: float = 0.0
+        self._features: AudioFeatureStream | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        # Validate + measure the first candidate now, so a misconfigured single
+        # scene raises at build time (parity with SidFileAudioSource.__init__).
+        self._pick_and_probe()
+
+    # ---- file selection / probe --------------------------------------------
+
+    def _pick_and_probe(self) -> None:
+        """Re-resolve the spec, shuffle, and probe the first file that opens.
+        Sets self._path + self.duration_s. Raises if none open."""
+        from .config import AUDIO_EXTS, resolve_file_spec
+        from .video import _av_open, _ensure_pyav
+
+        if not _ensure_pyav():
+            raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
+        candidates = resolve_file_spec(self.file_spec, AUDIO_EXTS, label="audio file")
+        pool = list(candidates)
+        random.shuffle(pool)
+        last_error: Exception | None = None
+        for path in pool[: self._MAX_PICK_ATTEMPTS]:
+            try:
+                container = _av_open(path)
+                try:
+                    if not container.streams.audio:
+                        raise ValueError(f"no audio stream in {os.path.basename(path)}")
+                    self.duration_s = container.duration / 1_000_000 if container.duration else 0.0
+                finally:
+                    container.close()
+            except Exception as e:  # noqa: BLE001 — any open/probe failure → try next
+                log.warning("audio file: skipping %s: %s", os.path.basename(path), e)
+                last_error = e
+                continue
+            self._path = path
+            if len(candidates) > 1:
+                log.info(
+                    "audio file: picked %s from %d candidates",
+                    os.path.basename(path),
+                    len(candidates),
+                )
+            return
+        raise ValueError(
+            f"audio file: file spec {self.file_spec!r} resolved to "
+            f"{len(candidates)} candidate(s) but none could be opened; "
+            f"last error: {last_error}"
+        )
+
+    # ---- AudioSource protocol ----------------------------------------------
+
+    def setup(self) -> None:
+        """Re-pick from the (re-resolved) pool, install the analyzer, and spin up
+        the decode→DAC thread. Never raises on a decode/analyzer hiccup — degrades
+        to non-reactive so the visual keeps running."""
+        self._pick_and_probe()
+        self._stop.clear()
+        self._start_features()
+        self._audio.start_for_external_source()
+        thread = threading.Thread(target=self._decode_loop, daemon=True, name="audio-file-decode")
+        self._thread = thread
+        thread.start()
+        log.info(
+            "audio file: %s → DAC @ %dHz%s",
+            os.path.basename(self._path),
+            self._audio.sample_rate,
+            " (reactive)" if self._features is not None else "",
+        )
+
+    def _start_features(self) -> None:
+        """Install the pre-DSP analyzer at the streamer's DAC rate (what the DAC
+        actually plays, like the mic path). A failure must not cost playback."""
+        if not self._reactive:
+            return
+        from .audio_features import AnalysisTap, AudioFeatureStream
+        from .config import AudioFeaturesCfg
+
+        cfg = self._features_cfg or AudioFeaturesCfg()
+        try:
+            tap = AnalysisTap(size=max(cfg.fft_size * 4, 4096))
+            stream = AudioFeatureStream(
+                tap,
+                self._audio.sample_rate,
+                n_bands=cfg.bands,
+                fft_size=cfg.fft_size,
+                poll_hz=cfg.poll_hz,
+                onset_sensitivity=cfg.onset_sensitivity,
+            )
+            self._audio.analysis_sink = tap.push
+            stream.start()
+        except Exception:
+            log.exception(
+                "audio file: feature stream failed to start — visuals will not "
+                "react (audio continues)"
+            )
+            self._audio.analysis_sink = None
+            return
+        self._features = stream
+
+    def _decode_loop(self) -> None:
+        """Demux + resample the file to mono int16 at the DAC rate and feed
+        push_samples (which DAC-encodes AND taps the analyzer). Real-time paced by
+        push_samples' queue-full block. Ends at EOF or when `_stop` is set."""
+        import numpy as np
+
+        from .video import _av_open
+
+        try:
+            container = _av_open(self._path)
+        except Exception:
+            log.exception("audio file: could not open %s for decode", self._path)
+            return
+        try:
+            import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
+
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=self._audio.sample_rate)
+            a_stream = container.streams.audio[0]
+            for packet in container.demux(a_stream):
+                if self._stop.is_set():
+                    return
+                for frame in packet.decode():
+                    for resampled in resampler.resample(frame):
+                        if self._stop.is_set():
+                            return
+                        arr = resampled.to_ndarray().reshape(-1).astype(np.int16, copy=False)
+                        if arr.size:
+                            self._audio.push_samples(arr)
+            log.info("audio file: %s reached end of track", os.path.basename(self._path))
+        except Exception:
+            if not self._stop.is_set():
+                log.exception("audio file: decode of %s failed", os.path.basename(self._path))
+        finally:
+            container.close()
+
+    def teardown(self) -> None:
+        # Signal the decode thread, unhook the analyzer sink before the streamer
+        # stops (so no callback pushes into a dying tap), then stop everything.
+        self._stop.set()
+        self._audio.analysis_sink = None
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self._features is not None:
+            self._features.stop()
+            self._features = None
+        self._audio.stop()
+
+    def position_seconds(self) -> float | None:
+        # The DAC consumer clock — exposed for the protocol; the scene ends on its
+        # duration (sized to the track), not this.
+        return self._audio.position_seconds()
 
     def features(self) -> MusicModulation | None:
         return self._features.features() if self._features is not None else None
