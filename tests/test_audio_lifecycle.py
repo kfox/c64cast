@@ -729,6 +729,28 @@ class ListenOnlyCaptureTest(unittest.TestCase):
         self.assertFalse(s._listen_mode)
         self.assertIsNone(s.mic_stream)
 
+    def test_start_listen_by_name_resolves_and_opens(self):
+        # Regression: a device *name* must be resolved to an int before the
+        # "device=%d" log line — otherwise %d on a str raises TypeError and the
+        # scene aborts (caught on real hardware with -D "Cam Link").
+        fake = _FakeSD(
+            [
+                {"name": "Built-in Mic", "max_input_channels": 1},
+                {"name": "Cam Link 4K", "max_input_channels": 2},
+            ],
+            0,
+        )
+        self._patch_sd(fake)
+        s = _make(sample_rate=8000)
+        try:
+            with self.assertLogs("c64cast.audio", level="INFO"):
+                s.start_listen("Cam Link", 1.0, sample_rate=44100)
+            self.assertTrue(s.running)
+            # Opened against the name-resolved index (Cam Link → 1).
+            self.assertEqual(fake.created[0]["device"], 1)
+        finally:
+            s.stop()
+
     def test_start_listen_without_sounddevice_warns(self):
         orig_avail = audio_mod.AUDIO_AVAILABLE
         audio_mod.AUDIO_AVAILABLE = False
@@ -782,9 +804,11 @@ class _FakeSD:
         self.reject_channels = reject_channels or set()
         self.created: list[dict[str, Any]] = []
 
-    def query_devices(self, idx: Any = None, kind: Any = None) -> dict[str, Any]:
+    def query_devices(self, idx: Any = None, kind: Any = None) -> Any:
+        # Real sounddevice returns the full DeviceList on a no-arg call (what
+        # resolve_audio_input_device iterates) and a single dict when indexed.
         if idx is None:
-            return self._devices[self.default.device[0]]
+            return list(self._devices)
         return self._devices[idx]
 
     def InputStream(self, **kw: Any) -> _FakeStream:

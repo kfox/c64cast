@@ -105,10 +105,10 @@ overrides; everything has a sensible config-file equivalent.
 |---------------------|---------------------------------------|-------------------------------------------------------------|
 | `--config PATH`     | n/a                                   | Use a specific TOML file. Else `./c64cast.toml`, else defaults. |
 | `introspection`     | `--init [PATH]`                       | Interactively build a config (needs the `wizard` extra). Writes `./c64cast.toml` or `PATH`. See "Creating a config". |
-| `introspection`     | `--save-settings`                     | Persist this run's `-u`/`-d`/`--sid-model`/`-s` into the machine-settings file and exit. See "Where settings and data live". |
+| `introspection`     | `--save-settings`                     | Persist this run's `-u`/`-d`/`-D`/`--sid-model`/`-s` into the machine-settings file and exit. See "Where settings and data live". |
 | `connection`        | `-u TARGET`, `--system NTSC\|PAL`     | `-u` selects the backend **and** endpoint via a scheme (see below). `$C64CAST_URL` is the env fallback. |
 | `video input`       | `-d INDEX\|NAME\|VID:PID`             | Webcam by index, name substring, or USB `VID:PID` (name/`VID:PID` need the `camera` extra). |
-| `audio`             | `--audio` / `--no-audio`, `-D N`,     | Audio is **on by default**; `--no-audio` mutes.             |
+| `audio`             | `--audio` / `--no-audio`, `-D INDEX\|NAME`, | Audio is **on by default**; `--no-audio` mutes. `-D` picks the input device by index or name substring. |
 |                     | `--sample-rate`, `--mic-sensitivity`, `--noise-gate` |                                              |
 | `playlist`          | `--videos DIR`                           | Directory of videos for auto-interleaving        |
 | `debug`             | `-v` / `-vv`, `--heartbeat S`,        | `-v`/`-vv` enable DEBUG (default INFO; `-vv` also unmutes noisy third-party loggers). `--skip-probe` skips the U64 reachability check. |
@@ -203,7 +203,7 @@ c64cast keeps two kinds of machine-local state outside any config file:
   c64cast clip.mp4 tune.sid
   ```
 
-  Savable via the flag: `-u/--url`, `-d/--device`, `--sid-model`, `-s/--system`.
+  Savable via the flag: `-u/--url`, `-d/--device`, `-D/--audio-device`, `--sid-model`, `-s/--system`.
   Anything else: hand-edit the annotated file. The U64 DMA password is never
   written to it (keep using `$C64CAST_DMA_PASSWORD` or a non-committed config).
 
@@ -472,7 +472,7 @@ device = -1                         # -1 = system default camera; `--list-device
 ```toml
 [audio]
 enabled = true                      # on by default; --no-audio mutes
-device = -1                         # sounddevice input index; -1 = system default
+device = -1                         # int index (-1 = system default), or an input device name substring (e.g. "Cam Link"); -L lists both
 sample_rate = 12000                 # $D418 DAC rate; live-pipeline onset ≈12.5k NTSC (isolated ceiling ≈13.6k/≈13.1k PAL)
 backend = "auto"                    # video audio: "auto" (U64 Ultimate Audio FPGA
                                     #   sampler when available, else DAC), "dac"

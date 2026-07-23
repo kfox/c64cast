@@ -441,6 +441,40 @@ class VideoDeviceTest(unittest.TestCase):
         self.assertEqual(reloaded.video.device, "Cam Link")
 
 
+class AudioDeviceTest(unittest.TestCase):
+    """[audio].device accepts an int index or a device name substring."""
+
+    def _load(self, toml: str) -> cfgmod.Config:
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(toml)
+            path = f.name
+        try:
+            return cfgmod.load(path)
+        finally:
+            os.unlink(path)
+
+    def test_int_device_loads(self):
+        cfg = self._load("[audio]\ndevice = 2\n")
+        self.assertEqual(cfg.audio.device, 2)
+
+    def test_name_string_device_loads(self):
+        cfg = self._load('[audio]\ndevice = "Cam Link"\n')
+        self.assertEqual(cfg.audio.device, "Cam Link")
+
+    def test_empty_string_raises_config_error(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._load('[audio]\ndevice = "   "\n')
+        self.assertIn("[audio].device", str(ctx.exception))
+
+    def test_string_device_round_trips_through_serialize(self):
+        from c64cast import config_serialize as ser
+
+        cfg = cfgmod.Config()
+        cfg.audio.device = "Cam Link"
+        reloaded = self._load(ser.dumps(cfg))
+        self.assertEqual(reloaded.audio.device, "Cam Link")
+
+
 class FormatTomlErrorTest(unittest.TestCase):
     """The pure TOML-error formatter — both the structured-attrs path and the
     regex-fallback path used when the parser doesn't expose lineno/colno."""

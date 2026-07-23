@@ -69,6 +69,17 @@ class SaveSettingsTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.url, "http://box.lan")
         self.assertEqual(cfg.video.device, 3)
 
+    def test_audio_device_name_saved(self):
+        rc, _ = self._main(["-D", "Cam Link", "--save-settings"])
+        self.assertEqual(rc, 0)
+        with open(self._settings) as f:
+            text = f.read()
+        self.assertIn("[audio]", text)
+        self.assertIn('device = "Cam Link"', text)
+        with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": self._settings}):
+            cfg = cfgmod.load(None)
+        self.assertEqual(cfg.audio.device, "Cam Link")
+
     def test_nothing_to_save_exits_2(self):
         rc, _ = self._main(["--save-settings"])
         self.assertEqual(rc, 2)

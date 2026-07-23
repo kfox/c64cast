@@ -419,8 +419,15 @@ class AudioCfg:
             "On by default; mute with the --no-audio CLI flag."
         },
     )
-    device: int = field(
-        default=-1, metadata={"help": "Audio input device index; -1 = system default microphone."}
+    device: int | str = field(
+        default=-1,
+        metadata={
+            "help": (
+                "Audio input device: an integer index (-1 = system default microphone), "
+                'or a string matched to an input device by name substring (e.g. "Cam Link"). '
+                "Run --list-devices to see names + indices."
+            )
+        },
     )
     sample_rate: int = field(
         default=12000,
@@ -2471,6 +2478,15 @@ def _validate_video_device(video: VideoCfg) -> None:
     camera.parse_camera_device(video.device, field_name="[video].device")
 
 
+def _validate_audio_device(audio: AudioCfg) -> None:
+    """Offline syntax check for [audio].device — an int index or a string matched
+    to a sounddevice input by name substring. PortAudio devices have no USB
+    VID:PID, so (unlike [video].device) the only failure mode is an empty string;
+    actual name->index resolution is deferred to AudioStreamer at runtime."""
+    if isinstance(audio.device, str) and not audio.device.strip():
+        raise ConfigError("[audio].device: empty audio device string")
+
+
 def _validate_performance(perf: PerformanceCfg) -> None:
     """Range/choice-check [performance] at load time so a bad tempo grid surfaces
     before the run, not mid-performance. Raises ValueError (wrapped like the
@@ -2688,6 +2704,7 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     _validate_use_reu_staged(cfg.video)
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
+    _validate_audio_device(cfg.audio)
     _validate_performance(cfg.performance)
 
     # [color] is handled separately from the scalar section loop because it

@@ -27,7 +27,7 @@ from . import (
 from . import config as cfgmod
 from ._native_io import silence_native_stderr
 from .api import SocketDMAError
-from .audio import AUDIO_AVAILABLE, AudioStreamer
+from .audio import AUDIO_AVAILABLE, AudioStreamer, resolve_audio_input_device
 from .backend import C64Backend, make_backend
 from .ensemble import Ensemble, SystemStack
 from .interstitial import default_factory as interstitial_factory
@@ -61,9 +61,10 @@ class _CliUsageError(Exception):
 
 
 def _device_arg(s: str) -> int | str:
-    """argparse type for -d/--device: an int cv2 index when it parses as one,
-    else the raw string (a camera name substring or USB VID:PID). Mirrors the
-    int|str shape of [video].device; resolution happens later."""
+    """argparse type for -d/--device and -D/--audio-device: an int index when it
+    parses as one, else the raw string (a camera name substring / USB VID:PID, or
+    an audio device name substring). Mirrors the int|str shape of
+    [video].device / [audio].device; resolution happens later."""
     try:
         return int(s)
     except ValueError:
@@ -170,9 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument(
         "-D",
         "--audio-device",
-        type=int,
+        type=_device_arg,
         default=None,
-        help=f"Audio input device index, -1 = system default microphone (default: {audio_def.device})",
+        help="Audio input device: an int index (-1 = system default microphone), or a "
+        f"device name substring (needs the 'mic' extra) (default: {audio_def.device})",
     )
     a.add_argument(
         "-r",
@@ -469,7 +471,7 @@ def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) ->
 
 
 def list_devices() -> int:
-    print("Audio input devices (use with -D / --audio-device):")
+    print("Audio input devices (use with -D / --audio-device — an index or a name substring):")
     if AUDIO_AVAILABLE:
         import sounddevice as sd
 
@@ -1255,9 +1257,10 @@ def run_save_settings(args: argparse.Namespace) -> int:
 
     Savable whitelist (v1): the ``-u/--url`` connection target (decomposed via
     :func:`connect.parse_connection_uri` exactly as the run path does),
-    ``-d/--device`` → ``[video].device``, ``--sid-model`` →
-    ``[ultimate64].sid_model``, ``--system`` → ``[ultimate64].system``.
-    ``$C64CAST_URL`` deliberately does NOT auto-save (explicit flags only).
+    ``-d/--device`` → ``[video].device``, ``-D/--audio-device`` →
+    ``[audio].device``, ``--sid-model`` → ``[ultimate64].sid_model``,
+    ``--system`` → ``[ultimate64].system``. ``$C64CAST_URL`` deliberately does
+    NOT auto-save (explicit flags only).
 
     Merges onto the existing file (start from a machine-overlaid Config, apply
     this invocation's flags on top), writes it sparsely (only non-default
@@ -1270,14 +1273,15 @@ def run_save_settings(args: argparse.Namespace) -> int:
     provided = (
         args.url is not None
         or args.device is not None
+        or args.audio_device is not None
         or args.sid_model is not None
         or args.system is not None
     )
     if not provided:
         log.error(
             "--save-settings: nothing to save. Provide at least one of: "
-            "-u/--url (connection), -d/--device, --sid-model, --system. "
-            "Other fields: hand-edit %s (annotated TOML).",
+            "-u/--url (connection), -d/--device, -D/--audio-device, --sid-model, "
+            "--system. Other fields: hand-edit %s (annotated TOML).",
             paths.settings_path(),
         )
         return 2
@@ -1291,6 +1295,8 @@ def run_save_settings(args: argparse.Namespace) -> int:
         apply_to_config(cfg, parse_connection_uri(args.url))
     if args.device is not None:
         cfg.video.device = args.device
+    if args.audio_device is not None:
+        cfg.audio.device = args.audio_device
     if args.sid_model is not None:
         cfg.ultimate64.sid_model = args.sid_model
     if args.system is not None:
@@ -1501,9 +1507,12 @@ def main(argv=None) -> int:
                 "'mic' extra: uv sync --extra mic"
             )
             return 3
-        dev = (
-            args.audio_device if args.audio_device is not None and args.audio_device >= 0 else None
-        )
+        # Resolve a name substring / index to a concrete input index (-1 → None
+        # = system default). find_capture_device wants int | None.
+        dev: int | None = None
+        if args.audio_device is not None:
+            idx = resolve_audio_input_device(args.audio_device)
+            dev = idx if idx >= 0 else None
         be = make_backend(cfg)
         try:
             dac_calibration.run_calibration(be, cfg, device=dev, log_fn=lambda m: log.info("%s", m))
