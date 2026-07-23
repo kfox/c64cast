@@ -4,7 +4,7 @@ Live DJ/VJ arc — see docs/architecture/control.md → "Live performance").
 `TempoClock` is a tiny, dependency-light beat grid that every performance
 consumer reads the same way a generator reads :class:`MusicModulation` today —
 one grid, many consumers (launch quantization, effect tempo-lock, WLED). It has
-two drive modes:
+three drive modes:
 
 - **External MIDI clock** — the :mod:`midi_control` reader thread feeds it the
   real-time bytes ``0xF8`` clock (24 PPQN), ``0xFA`` start / ``0xFB`` continue /
@@ -15,6 +15,13 @@ two drive modes:
 - **Internal / tap tempo** — with no external clock, the grid free-runs at a
   static ``[performance].bpm``, and a mapped ``tempo_tap`` pad averages the
   inter-tap intervals into a live BPM (re-anchoring the downbeat to each tap).
+- **Live audio** (``tempo_source = "audio"``) — the playlist forwards the BPM
+  the live-input analyzer already derives (:mod:`audio_features`, which runs the
+  same :class:`modulation.TempoEstimator` over spectral-flux onsets) into
+  :meth:`TempoClock.audio_drive` each frame. The grid then free-runs its phase
+  at that live BPM exactly as internal mode does — so a detected beat drives
+  launch quantization, ``mod_source = "clock"`` effects, and WLED tempo with no
+  MIDI clock or tap. The grid holds stopped until the analyzer locks a tempo.
 
 The whole thing is host-side memory only: the feed methods do GIL-cheap writes
 under a small lock and touch **no** DMA socket — the same rule the rest of
@@ -96,8 +103,9 @@ class TempoClock:
         self._phase_base = 0.0
         self._base_time = t
         # Internal mode free-runs immediately; MIDI mode waits for the first
-        # clock/start/continue byte to start advancing.
-        self._running = source != "midi"
+        # clock/start/continue byte, and audio mode waits for the analyzer to
+        # lock a tempo (the first audio_drive with bpm > 0).
+        self._running = source == "internal"
         # Flips True once any external transport/clock byte arrives; gates the
         # per-pulse extrapolation cap (external is pulse-truthed, internal isn't).
         self._external = False
@@ -205,6 +213,37 @@ class TempoClock:
             # on the beat grid (the downbeat re-anchors to the performer's hand).
             self._phase_base = float(round(self._phase_at_locked(now)))
             self._base_time = now
+            self._running = True
+
+    # ---- live-audio drive (playlist thread) --------------------------------
+    def audio_drive(self, bpm: float, now: float | None = None) -> None:
+        """Drive the grid from the live-input analyzer's tempo estimate
+        (``tempo_source = "audio"``). The playlist calls this once per frame with
+        the BPM the :mod:`audio_features` analyzer already derives (it runs a full
+        :class:`~c64cast.modulation.TempoEstimator` over spectral-flux onsets), so
+        the process-wide grid locks to the detected beat and every consumer —
+        launch quantize, ``mod_source = "clock"`` effects, WLED tempo — follows.
+
+        Only the BPM is taken; the grid integrates its *own* phase forward at that
+        rate (re-anchoring the base each call to keep the phase continuous across
+        the tempo change), exactly mirroring internal-mode advance. That keeps
+        `beat_phase` monotonic and jitter-immune regardless of scene changes, and
+        matches the MIDI/internal grid's contract (rate-locked, free phase). A
+        ``bpm <= 0`` — the analyzer has not locked a tempo, or the input went
+        silent — freezes the phase and holds the grid stopped, so a non-audio
+        scene never grows a phantom tempo."""
+        t = now if now is not None else time.monotonic()
+        with self._lock:
+            self._external = False
+            self._source = "audio"
+            # Re-anchor: freeze the current phase at `now`, then advance from
+            # there. Continuous whether we're changing bpm, starting, or stopping.
+            self._phase_base = self._phase_at_locked(t)
+            self._base_time = t
+            if bpm <= 0.0:
+                self._running = False
+                return
+            self._bpm = min(_BPM_MAX, max(_BPM_MIN, float(bpm)))
             self._running = True
 
     # ---- reads (consumer threads) ------------------------------------------

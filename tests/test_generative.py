@@ -28,6 +28,7 @@ from c64cast.frame_source import BaseFrameSource, FrameSource
 from c64cast.generators import build_generator, generator_names
 from c64cast.modes import DisplayMode
 from c64cast.scenes import Scene, SourceScene, _render_with_overlays
+from c64cast.video import _ensure_pyav
 
 
 class GeneratorTest(unittest.TestCase):
@@ -1372,6 +1373,51 @@ class ConfigGenerativeTest(unittest.TestCase):
         scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
         assert isinstance(scene, SourceScene)
         self.assertIsInstance(scene.audio_source, NullAudioSource)
+
+    @staticmethod
+    def _make_wav(path: str, seconds: float = 0.4, rate: int = 8000) -> None:
+        import wave
+
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(b"\x00\x00" * int(rate * seconds))
+
+    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    def test_audio_source_file_builds_source_sized_to_track(self):
+        import tempfile
+
+        from c64cast.audio_source import AudioFileSource
+
+        with tempfile.TemporaryDirectory() as d:
+            wav = f"{d}/tune.wav"
+            self._make_wav(wav, seconds=0.4)
+            s = SceneCfg(
+                type="generative", source="plasma", display="mcm", audio_source="file", file=wav
+            )
+            streamer = cast(AudioStreamer, _FakeStreamer())
+            scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), streamer, None)
+            assert isinstance(scene, SourceScene)
+            self.assertIsInstance(scene.audio_source, AudioFileSource)
+            self.assertIs(scene.audio, streamer)
+            # duration_s (unset on the cfg) is sized to the track (~0.4 s).
+            self.assertGreater(scene.duration_s, 0.2)
+            self.assertLess(scene.duration_s, 1.0)
+
+    def test_audio_source_file_falls_back_to_null_without_streamer(self):
+        s = SceneCfg(
+            type="generative", source="plasma", display="mcm", audio_source="file", file="x.mp3"
+        )
+        # No streamer → silence (never opens the file).
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        self.assertIsInstance(scene.audio_source, NullAudioSource)
+
+    def test_audio_source_file_requires_file(self):
+        s = SceneCfg(type="generative", source="plasma", display="mcm", audio_source="file")
+        with self.assertRaisesRegex(ValueError, "file"):
+            validate_scene_cfg(s, self.cfg, audio_enabled=True)
 
     def test_invalid_audio_source_rejected(self):
         s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="bogus")

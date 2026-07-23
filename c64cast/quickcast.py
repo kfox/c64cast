@@ -15,15 +15,13 @@ Argument → scene type mapping:
 * ``.sid``                → ``waveform``
 * image (``.jpg`` …)      → ``slideshow``
 * ``.prg`` / ``.crt``     → ``launcher``
+* audio file (``.mp3`` …) → ``generative`` + ``audio_source = "file"`` — the
+  track plays on the DAC and a reactive plasma visual breathes with it
 * directory / glob        → the single scene type its contents imply
   (the dir/glob spec is passed straight through, so the scene random-picks
   at setup — "a directory of SIDs plays a random SID")
 * URL                     → ``video`` (direct media URLs play as-is;
   YouTube and other sites are resolved via the optional ``yt-dlp`` extra)
-
-Audio-only files (``.mp3`` …) are recognized but **not yet supported** (a
-test-pattern-over-audio scene is a planned follow-up); they raise a clear
-message rather than a generic "unknown file type".
 """
 
 from __future__ import annotations
@@ -36,6 +34,7 @@ import re
 import urllib.parse
 
 from .config import (
+    AUDIO_EXTS,
     PICTURE_EXTS,
     PROGRAM_EXTS,
     SID_EXTS,
@@ -69,19 +68,22 @@ class _YtDlpLog:
         log.debug("yt-dlp: %s", msg)
 
 
-# Audio-only formats. Recognized so the user gets a clear "deferred" message
-# instead of "unknown file type" — audio-over-test-pattern is a planned
-# follow-up (it needs a scene that doesn't require a video stream, which
-# AVFileSource currently does).
-AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus")
-
 # Extension group → scene type. The first match wins; groups are disjoint.
+# Audio maps to the sentinel "audio", turned into a generative + audio_source =
+# "file" scene by _make_scene (a plasma visual reacting to the decoded track).
 _GROUP_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (VIDEO_EXTS, "video"),
     (SID_EXTS, "waveform"),
     (PICTURE_EXTS, "slideshow"),
     (PROGRAM_EXTS, "launcher"),
+    (AUDIO_EXTS, "audio"),
 )
+
+# The generator an audio-file scene reacts with (a good all-round reactive look).
+_AUDIO_GENERATOR = "plasma"
+# Display for an audio-file scene: a char mode keeps the 4-bit DAC path clean
+# (no bitmap DMA competing with the audio ring), and reacts well.
+_AUDIO_DISPLAY = "mcm"
 
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _GLOB_CHARS = re.compile(r"[*?\[]")
@@ -102,8 +104,9 @@ _DEFAULT_VIDEO_DISPLAY = "mhires"
 
 # Scene types that accept a `duration_s` override from `-t/--duration`.
 # Video rejects it (video-driven); launcher treats it as an idle timeout
-# (surprising for a playback shortcut), so both are excluded.
-_DURATION_TYPES = ("waveform", "slideshow")
+# (surprising for a playback shortcut), so both are excluded. "audio" honors it
+# as a cap over the track's natural length.
+_DURATION_TYPES = ("waveform", "slideshow", "audio")
 
 
 def _is_url(arg: str) -> bool:
@@ -151,12 +154,10 @@ def _parse_start_offset(url: str) -> float | None:
 
 
 def _type_for_ext(ext: str) -> str | None:
-    """Scene type for a single extension (case-insensitive). Returns the
-    sentinel ``"audio"`` for audio-only formats (deferred), or ``None`` for an
-    unrecognized extension."""
+    """Scene type for a single extension (case-insensitive). Returns the sentinel
+    ``"audio"`` for audio-only formats (mapped to a generative file scene by
+    _make_scene), or ``None`` for an unrecognized extension."""
     ext = ext.lower()
-    if ext in AUDIO_EXTS:
-        return "audio"
     for exts, scene_type in _GROUP_TO_TYPE:
         if ext in exts:
             return scene_type
@@ -165,38 +166,27 @@ def _type_for_ext(ext: str) -> str | None:
 
 def _scene_type_for_file(arg: str) -> str:
     """Scene type for a single (literal) file argument. Raises ValueError with
-    an actionable message for audio-only or unknown extensions."""
+    an actionable message for an unknown extension."""
     ext = os.path.splitext(arg)[1]
     scene_type = _type_for_ext(ext)
-    if scene_type == "audio":
-        raise ValueError(
-            f"{arg!r}: audio-only playback isn't supported yet "
-            "(test-pattern-over-audio is a planned follow-up). "
-            "Use a video file for now."
-        )
     if scene_type is None:
-        known = ", ".join(VIDEO_EXTS + SID_EXTS + PICTURE_EXTS + PROGRAM_EXTS)
+        known = ", ".join(VIDEO_EXTS + SID_EXTS + PICTURE_EXTS + PROGRAM_EXTS + AUDIO_EXTS)
         raise ValueError(f"{arg!r}: unknown file type {ext!r}. Supported: {known}")
     return scene_type
 
 
 def _scene_type_for_paths(paths: list[str], *, label: str) -> str:
     """Single scene type implied by a collection of paths (a directory's
-    contents or a glob's matches). Raises ValueError on empty, audio-only,
-    mixed, or unknown-only sets."""
+    contents or a glob's matches). Raises ValueError on empty, mixed, or
+    unknown-only sets."""
     types: set[str] = set()
-    saw_audio = False
     for p in paths:
         t = _type_for_ext(os.path.splitext(p)[1])
-        if t == "audio":
-            saw_audio = True
-        elif t is not None:
+        if t is not None:
             types.add(t)
     if len(types) == 1:
         return types.pop()
     if not types:
-        if saw_audio:
-            raise ValueError(f"{label} contains only audio files, which aren't supported yet.")
         raise ValueError(f"{label} contains no playable files.")
     raise ValueError(
         f"{label} mixes scene types ({', '.join(sorted(types))}); "
@@ -213,7 +203,21 @@ def _make_scene(
     name: str | None = None,
 ) -> SceneCfg:
     """Construct a SceneCfg, applying the display + duration overrides only
-    where they're meaningful for that scene type."""
+    where they're meaningful for that scene type. The ``"audio"`` sentinel builds
+    a generative + audio_source = "file" scene (a plasma visual reacting to the
+    decoded track)."""
+    if scene_type == "audio":
+        scene = SceneCfg(
+            type="generative",
+            source=_AUDIO_GENERATOR,
+            file=file_spec,
+            audio_source="file",
+            display=display or _AUDIO_DISPLAY,
+            name=name,
+        )
+        if duration_s is not None:
+            scene.duration_s = duration_s
+        return scene
     scene = SceneCfg(type=scene_type, file=file_spec, name=name)
     if scene_type in ("video", "slideshow"):
         scene.display = display or _DEFAULT_VIDEO_DISPLAY
@@ -352,8 +356,8 @@ def resolve_video_url(url: str) -> tuple[str, float | None, str | None]:
     stream_url, kind, title = resolve_media_url(url)
     if kind != "video":
         raise ValueError(
-            f"{url!r} resolves to audio only, which isn't supported yet "
-            "(test-pattern-over-audio is a planned follow-up)."
+            f"{url!r} resolves to audio only. Reactive audio playback is "
+            "supported for local files (`c64cast tune.mp3`) but not yet for URLs."
         )
     return stream_url, _parse_start_offset(url), title
 
