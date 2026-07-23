@@ -216,7 +216,9 @@ double_buffer = "auto"              # Host-DMA double-buffer (page flip) for
 
 [audio]
 enabled = true                      # on by default; --no-audio mutes
-device = -1                         # -1 = system default input; -L lists indices
+device = -1                         # int index (-1 = system default input), or a string
+                                    # matched by input device name substring, e.g. "Cam Link".
+                                    # `--list-devices` (-L) shows names + indices.
 sample_rate = 12000                 # SID DAC rate; 12000 keeps fricatives (>8000 Nyquist). Live-pipeline overrun onset ~12.5k NTSC (isolated-handler ceiling ~13.6k / ~13.1k PAL)
 backend = "auto"                    # video-audio backend: "auto" = U64 "Ultimate
                                     # Audio" FPGA PCM sampler when available (high

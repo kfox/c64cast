@@ -100,6 +100,74 @@ except ImportError:
     sd = None
     AUDIO_AVAILABLE = False
 
+
+def resolve_audio_input_device(device: int | str) -> int:
+    """Map a ``[audio].device`` value (int index, int-in-string, or a device
+    *name substring*) to a sounddevice input index.
+
+    Returns ``-1`` ("use the system default input") for a negative/empty value,
+    when sounddevice is unavailable, or when a name matches nothing. Unlike the
+    camera resolver (:func:`c64cast.camera.resolve_camera_index`) this never
+    raises: audio degrades to the default input with a warning, matching
+    :meth:`AudioStreamer._resolve_input_device`'s forgiving fallback. PortAudio
+    exposes no USB VID:PID, so the only string form is a name substring, matched
+    case-insensitively against *input-capable* devices (first match on a tie,
+    with a warning). Names come from ``sd.query_devices()`` — the same listing
+    ``c64cast --list-devices`` prints."""
+    if isinstance(device, int):
+        return device
+    token = device.strip()
+    if not token:
+        return -1
+    try:
+        return int(token)
+    except ValueError:
+        pass
+
+    if not AUDIO_AVAILABLE or sd is None:
+        log.warning(
+            "selecting an audio device by name (%r) needs sounddevice (the 'mic' "
+            "extra); using the system default input",
+            token,
+        )
+        return -1
+
+    low = token.lower()
+    matches: list[tuple[int, str]] = []
+    try:
+        for idx, info in enumerate(sd.query_devices()):
+            if int(info.get("max_input_channels", 0)) <= 0:
+                continue
+            name = str(info.get("name", ""))
+            if low in name.lower():
+                matches.append((idx, name))
+    except Exception as e:  # pragma: no cover - defensive; enumerates the OS
+        log.warning("audio device enumeration failed (%s); using system default input", e)
+        return -1
+
+    if not matches:
+        log.warning(
+            "no audio input device matched %r; using the system default input "
+            "(run `c64cast --list-devices` to see names + indices)",
+            token,
+        )
+        return -1
+    if len(matches) > 1:
+        others = ", ".join(f"[{i}] {n}" for i, n in matches)
+        log.warning(
+            "audio device %r matched %d input devices (%s) — using [%d] %s; "
+            "narrow it with a more specific name or an index",
+            token,
+            len(matches),
+            others,
+            matches[0][0],
+            matches[0][1],
+        )
+    idx, name = matches[0]
+    log.info("resolved audio device %r -> index %d (%s)", token, idx, name)
+    return idx
+
+
 # $D418 DAC NMI routine assembled at $C020 (32 bytes).
 # Saves/restores only A (X and Y are not touched), saving 8 cycles vs the
 # original version that preserved all three registers.
@@ -2150,7 +2218,7 @@ class AudioStreamer:
 
     def start_mic(
         self,
-        device: int,
+        device: int | str,
         sensitivity: float,
         noise_gate: float,
         *,
@@ -2164,6 +2232,10 @@ class AudioStreamer:
         if not AUDIO_AVAILABLE:
             log.warning("sounddevice not installed; mic capture disabled")
             return
+        # Resolve a name substring / int-in-string to an index up front, so the
+        # log line below and the reu delegation both see a plain int (and
+        # _open_input_stream's re-coercion is a no-op on the int).
+        device = resolve_audio_input_device(device)
         self.sensitivity = sensitivity
         self.noise_gate = noise_gate
         # Rebuild the DSP chain for a mic source so the AGC stage activates
@@ -2212,7 +2284,7 @@ class AudioStreamer:
         self._push_to_analysis(mono.astype(np.float32, copy=False))
 
     def start_listen(
-        self, device: int, sensitivity: float, *, sample_rate: int | None = None
+        self, device: int | str, sensitivity: float, *, sample_rate: int | None = None
     ) -> None:
         """Open the input for analysis ONLY — no NMI, no worker thread, no DAC
         or SID writes. The samples reach `analysis_sink` (the music-feature
@@ -2228,6 +2300,7 @@ class AudioStreamer:
         if not AUDIO_AVAILABLE:
             log.warning("sounddevice not installed; listen capture disabled")
             return
+        device = resolve_audio_input_device(device)
         self.sensitivity = sensitivity
         self._listen_mode = True
         rate = int(sample_rate) if sample_rate else self.sample_rate
@@ -2242,7 +2315,9 @@ class AudioStreamer:
         )
 
     # ---- REU-staged mic (live capture, opt-in via use_reu_pump) -------------
-    def _start_mic_for_reu_pump(self, device: int, *, skip_irq_vector_hook: bool = False) -> None:
+    def _start_mic_for_reu_pump(
+        self, device: int | str, *, skip_irq_vector_hook: bool = False
+    ) -> None:
         """Bring up live mic capture using the REU-staged pump.
 
         Same C64-side architecture as start_for_reu_staged() but with a
@@ -2260,6 +2335,9 @@ class AudioStreamer:
         Order matches start_for_reu_staged: REU prefill → NMI bring-up →
         REU pump install → CIA #1 reprogram → NMI arm → IRQ vector patch.
         """
+        # Idempotent on an int (start_mic already resolved before delegating);
+        # keeps the device=%d log below correct if ever called with a name.
+        device = resolve_audio_input_device(device)
         # 1. Pre-fill the REU mic ring with NEUTRAL so the pump's first
         # ~ring-size worth of reads play silence (not stale FPGA SRAM,
         # which could be loud noise). One REUWRITE slice = 32 KB, so two
@@ -2362,7 +2440,7 @@ class AudioStreamer:
             1000 * REU_MIC_BOOTSTRAP_BYTES / self.sample_rate,
         )
 
-    def _resolve_input_device(self, device: int) -> tuple[int | None, str]:
+    def _resolve_input_device(self, device: int | str) -> tuple[int | None, str]:
         """Pick an input-capable device.
 
         - `device < 0`: use the system default input device (PortAudio
@@ -2374,6 +2452,10 @@ class AudioStreamer:
         Returns (device_or_None, friendly_name).
         """
         assert sd is not None
+
+        # Coerce a name substring / int-in-string to an index first (returns -1
+        # for default / no-match), so the rest of this method is plain int logic.
+        device = resolve_audio_input_device(device)
 
         def _default_input() -> tuple[int | None, str]:
             try:
@@ -2408,7 +2490,7 @@ class AudioStreamer:
         return fallback, name
 
     def _open_input_stream(
-        self, device: int, callback: Any = None, *, sample_rate: int | None = None
+        self, device: int | str, callback: Any = None, *, sample_rate: int | None = None
     ) -> Any:
         """Open an InputStream with sensible channel-count fallback.
 

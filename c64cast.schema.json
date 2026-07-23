@@ -161,8 +161,11 @@
           "default": true
         },
         "device": {
-          "type": "integer",
-          "description": "Audio input device index; -1 = system default microphone.",
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Audio input device: an integer index (-1 = system default microphone), or a string matched to an input device by name substring (e.g. \"Cam Link\"). Run --list-devices to see names + indices.",
           "default": -1
         },
         "sample_rate": {
