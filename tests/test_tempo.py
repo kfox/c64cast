@@ -177,6 +177,48 @@ class TapTempoTest(unittest.TestCase):
         self.assertAlmostEqual(c.bpm, 100.0, places=6)
 
 
+class AudioDriveTest(unittest.TestCase):
+    def test_audio_source_idles_until_a_tempo_locks(self):
+        c = TempoClock(bpm=120.0, source="audio", now=0.0)
+        self.assertFalse(c.running)
+        # No advance while the analyzer hasn't locked a tempo.
+        self.assertEqual(c.beat_phase_at(10.0), 0.0)
+
+    def test_bpm_drives_the_grid_and_phase_integrates_at_that_rate(self):
+        c = TempoClock(bpm=120.0, source="audio", now=0.0)
+        c.audio_drive(140.0, now=0.0)
+        self.assertTrue(c.running)
+        self.assertAlmostEqual(c.bpm, 140.0, places=9)
+        self.assertEqual(c.source, "audio")
+        # 140 BPM = 7/3 beats/sec, integrated over wall clock (internal-style).
+        self.assertAlmostEqual(c.beat_phase_at(3.0), 7.0, places=9)
+
+    def test_phase_stays_continuous_across_a_tempo_change(self):
+        c = TempoClock(bpm=120.0, source="audio", now=0.0)
+        c.audio_drive(120.0, now=0.0)  # 2 beats/sec
+        # At t=2 -> 4 beats; re-drive at a new tempo and the phase must not jump.
+        before = c.beat_phase_at(2.0)
+        self.assertAlmostEqual(before, 4.0, places=9)
+        c.audio_drive(240.0, now=2.0)  # 4 beats/sec from here
+        self.assertAlmostEqual(c.beat_phase_at(2.0), before, places=9)
+        self.assertAlmostEqual(c.beat_phase_at(3.0), before + 4.0, places=9)
+
+    def test_zero_bpm_freezes_the_grid_without_rewinding(self):
+        c = TempoClock(bpm=120.0, source="audio", now=0.0)
+        c.audio_drive(120.0, now=0.0)
+        parked = c.beat_phase_at(2.0)
+        c.audio_drive(0.0, now=2.0)  # analyzer lost the beat / went silent
+        self.assertFalse(c.running)
+        # Frozen where it was, no runaway and no rewind.
+        self.assertAlmostEqual(c.beat_phase_at(2.0), parked, places=9)
+        self.assertAlmostEqual(c.beat_phase_at(10.0), parked, places=9)
+
+    def test_out_of_band_bpm_is_clamped(self):
+        c = TempoClock(bpm=120.0, source="audio", now=0.0)
+        c.audio_drive(10_000.0, now=0.0)
+        self.assertLessEqual(c.bpm, 400.0)
+
+
 class FeedMessageTest(unittest.TestCase):
     def test_routes_clock_messages_and_reports_consumption(self):
         c = TempoClock(bpm=120.0, source="midi", now=0.0)

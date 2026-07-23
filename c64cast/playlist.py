@@ -209,6 +209,18 @@ class Playlist:
         from .tempo import ClockModulationSource, build_tempo_clock
 
         self.tempo = build_tempo_clock(performance)
+        # Live-audio tempo drive (tempo_source = "audio"). When set, `_run_one_
+        # frame` forwards the current scene's analyzer BPM into `self.tempo` each
+        # frame (`_drive_tempo_from_audio`), so the detected beat drives the whole
+        # performance grid. Off for internal/midi (the default). See
+        # tempo.TempoClock.audio_drive.
+        self._tempo_audio_drive: bool = (
+            performance is not None and getattr(performance, "tempo_source", "") == "audio"
+        )
+        # Lock-transition state for the audio-drive log (below). Lets the run
+        # loop announce when the live beat locks / is lost without per-frame spam.
+        self._tempo_audio_locked = False
+        self._tempo_audio_log_t = 0.0
         # Beat-grid-as-modulation feeder (Live-performance Phase 3). Wraps
         # `self.tempo` as a MusicModulation source so an effect layer with
         # `mod_source = "clock"` locks to the tempo grid exactly as an audio-
@@ -879,6 +891,10 @@ class Playlist:
             # against this scene before it renders, so a seek issued this tick
             # is reflected in the frame we're about to compose.
             self.transport.tick(self, t0)
+            # Live-audio tempo drive: feed the beat grid this scene's detected BPM
+            # (tempo_source = "audio"). No-op for internal/midi drive.
+            if self._tempo_audio_drive:
+                self._drive_tempo_from_audio(scene, t0)
 
             with self.profiler.stage("cpu_render"):
                 try:
@@ -1054,6 +1070,32 @@ class Playlist:
         # touch self.index during the broadcast, but pin it anyway in
         # case some future code path mutates it mid-flight.
         self.index = saved_idx
+
+    def _drive_tempo_from_audio(self, scene: Scene, now: float) -> None:
+        """Forward the current scene's analyzer BPM into the process-wide beat
+        grid (`tempo_source = "audio"`). The live-input analyzer already runs a
+        full TempoEstimator over its onsets, so we mirror that BPM into
+        `self.tempo`; the grid integrates its own phase from it (see
+        TempoClock.audio_drive). A scene with no feature stream (or an unlocked
+        analyzer, bpm == 0) freezes the grid — no phantom tempo on a non-audio
+        scene. Called every frame on the playlist thread; cheap in-memory work."""
+        feats = scene.features()
+        self.tempo.audio_drive(feats.bpm if feats is not None else 0.0, now)
+        # Announce lock/loss transitions at INFO (rare); trickle the live BPM at
+        # DEBUG (~2 s) while locked so `-vv` shows the grid tracking the beat.
+        locked = self.tempo.running
+        if locked != self._tempo_audio_locked:
+            self._tempo_audio_locked = locked
+            if locked:
+                self.log.info("tempo: audio beat locked — %.1f BPM", self.tempo.bpm)
+            else:
+                self.log.info("tempo: audio beat lost — grid idle")
+            self._tempo_audio_log_t = now
+        elif locked and now - self._tempo_audio_log_t >= 2.0:
+            self.log.debug(
+                "tempo: audio beat %.1f BPM, phase %.2f", self.tempo.bpm, self.tempo.beat_phase
+            )
+            self._tempo_audio_log_t = now
 
     def _active_features(self) -> MusicModulation | None:
         """The currently-playing scene's live music features (None when there's

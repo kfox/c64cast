@@ -1235,5 +1235,66 @@ class PlaylistUserDimTest(unittest.TestCase):
         self.assertEqual(a.display_mode.user_dim, 0.7)
 
 
+class PlaylistAudioTempoDriveTest(unittest.TestCase):
+    """tempo_source = "audio": the playlist forwards the current scene's analyzer
+    BPM into its TempoClock each frame, so the detected beat drives the grid."""
+
+    class _FeatureScene(FakeScene):
+        def __init__(self, name, bpm):
+            super().__init__(name)
+            self._bpm = bpm
+
+        def features(self):
+            from c64cast.modulation import MusicModulation
+
+            if self._bpm is None:
+                return None
+            return MusicModulation(
+                level=0.5,
+                onset=0.0,
+                beat_phase=0.0,
+                bpm=self._bpm,
+                voice_freqs=(0.0, 0.0, 0.0),
+                voice_gates=(False, False, False),
+            )
+
+    def _playlist(self, tempo_source):
+        from types import SimpleNamespace
+
+        perf = SimpleNamespace(tempo_source=tempo_source, bpm=120.0, beats_per_bar=4)
+        return Playlist(
+            [FakeScene("A")],
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            performance=perf,
+        )
+
+    def test_flag_off_for_internal(self):
+        pl = self._playlist("internal")
+        self.assertFalse(pl._tempo_audio_drive)
+
+    def test_flag_on_for_audio(self):
+        pl = self._playlist("audio")
+        self.assertTrue(pl._tempo_audio_drive)
+
+    def test_scene_bpm_drives_the_clock(self):
+        pl = self._playlist("audio")
+        self.assertFalse(pl.tempo.running)  # idle until a tempo locks
+        pl._drive_tempo_from_audio(self._FeatureScene("A", 132.0), now=0.0)
+        self.assertTrue(pl.tempo.running)
+        self.assertAlmostEqual(pl.tempo.bpm, 132.0, places=6)
+        self.assertEqual(pl.tempo.source, "audio")
+
+    def test_scene_without_features_freezes_the_grid(self):
+        pl = self._playlist("audio")
+        pl._drive_tempo_from_audio(self._FeatureScene("A", 120.0), now=0.0)
+        self.assertTrue(pl.tempo.running)
+        # A non-audio scene reports no features -> the grid holds, no phantom tempo.
+        pl._drive_tempo_from_audio(self._FeatureScene("B", None), now=1.0)
+        self.assertFalse(pl.tempo.running)
+
+
 if __name__ == "__main__":
     unittest.main()

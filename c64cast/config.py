@@ -2149,12 +2149,15 @@ class PerformanceCfg:
     tempo_source: str = field(
         default="internal",
         metadata={
-            "help": "Where the beat grid gets its tempo: 'midi' (follow an "
+            "help": "Where the beat grid gets its tempo: 'internal' (free-run at "
+            "`bpm`, with a `tempo_tap` pad for live tapping), 'midi' (follow an "
             "external MIDI clock — 0xF8 clock / start / stop / song-position — "
-            "which arrives via the [midi_control] listener, so enable that too) "
-            "or 'internal' (free-run at `bpm`, with a `tempo_tap` pad for live "
-            "tapping). With 'midi' the grid idles until the first clock byte.",
-            "choices": ("internal", "midi"),
+            "which arrives via the [midi_control] listener, so enable that too), "
+            "or 'audio' (lock to the beat the live-input analyzer detects — the "
+            "audio_source = 'mic'/'listen' scene's reactive tempo drives launch "
+            "quantize, mod_source='clock' effects and WLED tempo). With 'midi' or "
+            "'audio' the grid idles until the first clock byte / detected tempo.",
+            "choices": ("internal", "midi", "audio"),
         },
     )
     bpm: float = field(
@@ -2471,9 +2474,10 @@ def _validate_performance(perf: PerformanceCfg) -> None:
     """Range/choice-check [performance] at load time so a bad tempo grid surfaces
     before the run, not mid-performance. Raises ValueError (wrapped like the
     other section validators here)."""
-    if perf.tempo_source not in ("internal", "midi"):
+    if perf.tempo_source not in ("internal", "midi", "audio"):
         raise ValueError(
-            f"[performance].tempo_source must be 'internal' or 'midi', got {perf.tempo_source!r}"
+            "[performance].tempo_source must be 'internal', 'midi' or 'audio', "
+            f"got {perf.tempo_source!r}"
         )
     if isinstance(perf.bpm, bool) or not isinstance(perf.bpm, (int, float)):
         raise ValueError(f"[performance].bpm must be a number, got {perf.bpm!r}")

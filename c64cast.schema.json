@@ -1129,10 +1129,11 @@
       "properties": {
         "tempo_source": {
           "type": "string",
-          "description": "Where the beat grid gets its tempo: 'midi' (follow an external MIDI clock \u2014 0xF8 clock / start / stop / song-position \u2014 which arrives via the [midi_control] listener, so enable that too) or 'internal' (free-run at `bpm`, with a `tempo_tap` pad for live tapping). With 'midi' the grid idles until the first clock byte.",
+          "description": "Where the beat grid gets its tempo: 'internal' (free-run at `bpm`, with a `tempo_tap` pad for live tapping), 'midi' (follow an external MIDI clock \u2014 0xF8 clock / start / stop / song-position \u2014 which arrives via the [midi_control] listener, so enable that too), or 'audio' (lock to the beat the live-input analyzer detects \u2014 the audio_source = 'mic'/'listen' scene's reactive tempo drives launch quantize, mod_source='clock' effects and WLED tempo). With 'midi' or 'audio' the grid idles until the first clock byte / detected tempo.",
           "enum": [
             "internal",
-            "midi"
+            "midi",
+            "audio"
           ],
           "default": "internal"
         },
