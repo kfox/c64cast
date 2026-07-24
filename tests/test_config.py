@@ -249,6 +249,45 @@ hue_hi_deg = 195
             cfgmod._validate_blank(cfg.scenes[0], cfg)
 
 
+class SidPanningConfigTest(unittest.TestCase):
+    """[ultimate64].sid_panning — a bad pan value must fail at load, not
+    mid-scene when the U64 mixer is configured (see c64cast/sid_panning.py)."""
+
+    def _load(self, toml):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(toml)
+            path = f.name
+        try:
+            return cfgmod.load(path)
+        finally:
+            os.unlink(path)
+
+    def test_defaults_to_empty_meaning_auto_spread(self):
+        self.assertEqual(cfgmod.Config().ultimate64.sid_panning, [])
+
+    def test_int_list_loads(self):
+        cfg = self._load("[ultimate64]\nsid_panning = [-3, 3]\n")
+        self.assertEqual(cfg.ultimate64.sid_panning, [-3, 3])
+
+    def test_label_list_loads(self):
+        cfg = self._load('[ultimate64]\nsid_panning = ["Left 4", "Center", "Right 4"]\n')
+        self.assertEqual(cfg.ultimate64.sid_panning, ["Left 4", "Center", "Right 4"])
+
+    def test_mixed_ints_and_labels_load(self):
+        cfg = self._load('[ultimate64]\nsid_panning = [0, "Right 3"]\n')
+        self.assertEqual(cfg.ultimate64.sid_panning, [0, "Right 3"])
+
+    def test_out_of_range_int_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load("[ultimate64]\nsid_panning = [0, 9]\n")
+        self.assertIn("sid_panning", str(ctx.exception))
+
+    def test_unknown_label_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[ultimate64]\nsid_panning = ["Middle"]\n')
+        self.assertIn("Middle", str(ctx.exception))
+
+
 class DoubleBufferTest(unittest.TestCase):
     """[video].double_buffer — the host-DMA page-flip path for no-REU backends."""
 

@@ -116,6 +116,11 @@
             "off"
           ],
           "default": "auto"
+        },
+        "sid_panning": {
+          "type": "array",
+          "description": "Stereo pan per SID audio source, U64 only. Max 4 entries \u2014 the U64 has one pan control per source (2 SID sockets + 2 UltiSID cores), and entry N pans the Nth source the tune uses. Each entry is an int -5..5 (negative = left, 0 = center) or a label ('Left 3', 'Center', 'Right 2'). Empty = auto spread: 1 source centered, 2 [-3, 3], 3 [0, -3, 3], 4 [-2, 2, -5, 5] \u2014 ordered so the primary chip stays nearest center. Fewer positions exist without socketed SIDs: with none, only the 2 UltiSID cores are pannable, so chips beyond the 2nd share a pan.",
+          "default": []
         }
       }
     },

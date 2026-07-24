@@ -91,11 +91,19 @@ class SidMap:
     ``addresses[i]`` is the ``$Dxxx`` base ASID chip *i* is written to.
     ``config`` is the ordered ``{(category, item): value}`` set of REST PUTs that
     realize this map on the U64. ``requested`` is the chip count asked for and
-    ``n`` the count actually realized (clamped to what the hardware can host)."""
+    ``n`` the count actually realized (clamped to what the hardware can host).
+
+    ``sources[i]`` names the audio *source* — ``"socket1"``/``"socket2"``/
+    ``"ultisid1"``/``"ultisid2"`` — realizing chip *i*, parallel to
+    ``addresses``. The U64 mixes each source at its own stereo pan, so
+    :mod:`c64cast.sid_panning` needs the source (not the address) to pan a
+    chip. Two chips can share one source when a split core hosts both (≥5
+    SIDs); they then share that source's pan."""
 
     addresses: tuple[int, ...]
     config: dict[tuple[str, str], str] = field(default_factory=dict)
     requested: int = 0
+    sources: tuple[str, ...] = ()
 
     @property
     def n(self) -> int:
@@ -128,18 +136,20 @@ def plan_sid_map(
     n_sids = max(0, min(n_sids, MAX_SIDS))
 
     addresses: list[int] = []
+    sources: list[str] = []
     config: dict[tuple[str, str], str] = {}
 
     # 1) Sockets first (real chips), lowest indices.
     sockets = []
     if socket1_present:
-        sockets.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0]))
+        sockets.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0], "socket1"))
     if socket2_present:
-        sockets.append((ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1]))
+        sockets.append((ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1], "socket2"))
 
     used_sockets = min(len(sockets), n_sids)
-    for addr_item, en_item, base in sockets[:used_sockets]:
+    for addr_item, en_item, base, source in sockets[:used_sockets]:
         addresses.append(base)
+        sources.append(source)
         config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
         config[(CAT_SOCKETS, en_item)] = "Enabled"
 
@@ -154,13 +164,16 @@ def plan_sid_map(
         config[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)] = f"${core1_base:04X}"
         # Realize instances core-by-core, lowest address first, until tail met.
         instances = [core1_base + k * _SPLIT_STRIDE for k in range(cap)]
+        instance_sources = ["ultisid1"] * cap
         if tail > cap:
             core2_base = core1_base + cap * _SPLIT_STRIDE
             config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = f"${core2_base:04X}"
             instances += [core2_base + k * _SPLIT_STRIDE for k in range(cap)]
+            instance_sources += ["ultisid2"] * cap
         else:
             config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = ADDR_UNMAPPED
         addresses.extend(instances[:tail])
+        sources.extend(instance_sources[:tail])
     else:
         config[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)] = ADDR_UNMAPPED
         config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = ADDR_UNMAPPED
@@ -168,7 +181,12 @@ def plan_sid_map(
     # 3) Distinct addresses only.
     config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
 
-    return SidMap(addresses=tuple(addresses), config=config, requested=requested)
+    return SidMap(
+        addresses=tuple(addresses),
+        config=config,
+        requested=requested,
+        sources=tuple(sources),
+    )
 
 
 # Split label → (per-core instance capacity, base-address alignment). The
@@ -216,6 +234,23 @@ def _plan_ultisid_cores(targets: list[int]) -> tuple[str, list[int]] | None:
     return None
 
 
+def _source_for_address(
+    addr: int, served_by_socket: dict[int, str], core_bases: list[int], capacity: int
+) -> str:
+    """Which audio source realizes `addr`: its physical socket if one serves it,
+    else the UltiSID core whose split window covers it (``""`` if neither —
+    an address the map doesn't actually answer). Core windows are disjoint by
+    construction, so the first match is the only match."""
+    socket = served_by_socket.get(addr)
+    if socket:
+        return socket
+    for core_index, core_base in enumerate(core_bases):
+        window = {core_base + k * _SPLIT_STRIDE for k in range(capacity)}
+        if addr in window:
+            return f"ultisid{core_index + 1}"
+    return ""
+
+
 def plan_sid_map_for_addresses(
     addresses: tuple[int, ...],
     *,
@@ -239,15 +274,15 @@ def plan_sid_map_for_addresses(
 
     socket_specs = []
     if socket1_present:
-        socket_specs.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0]))
+        socket_specs.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0], "socket1"))
     if socket2_present:
-        socket_specs.append((ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1]))
-    served_by_socket: set[int] = set()
-    for addr_item, en_item, base in socket_specs:
+        socket_specs.append((ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1], "socket2"))
+    served_by_socket: dict[int, str] = {}
+    for addr_item, en_item, base, source in socket_specs:
         if base in targets:
             config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
             config[(CAT_SOCKETS, en_item)] = "Enabled"
-            served_by_socket.add(base)
+            served_by_socket[base] = source
 
     remaining = [t for t in targets if t not in served_by_socket]
     core_plan = _plan_ultisid_cores(remaining)
@@ -262,4 +297,14 @@ def plan_sid_map_for_addresses(
         f"${core_bases[1]:04X}" if len(core_bases) > 1 else ADDR_UNMAPPED
     )
     config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
-    return SidMap(addresses=tuple(addresses), config=config, requested=len(addresses))
+
+    capacity = _SPLIT_CAPACITY[split_label]
+    sources = tuple(
+        _source_for_address(addr, served_by_socket, core_bases, capacity) for addr in addresses
+    )
+    return SidMap(
+        addresses=tuple(addresses),
+        config=config,
+        requested=len(addresses),
+        sources=sources,
+    )

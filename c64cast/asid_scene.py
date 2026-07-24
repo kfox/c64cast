@@ -49,12 +49,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from . import asid
 from ._pollthread import PollThread
 from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
-from .asid_sidmap import MAX_SIDS, plan_sid_map
+from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
 from .c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
 from .palette import C64_COLORS
 from .scenes import Scene
@@ -64,6 +65,7 @@ from .sid_hw_config import (
     restore_sid_config,
     snapshot_sid_config,
 )
+from .sid_panning import apply_panning, sources_for_addresses
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
     D018_HIRES_BITMAP,
@@ -135,6 +137,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         multi_sid: bool = True,
         max_sids: int | None = None,
         buffered_player: str = "auto",
+        sid_panning: Sequence[int | str] | None = None,
         name: str = "ASID",
     ):
         super().__init__(api, audio, None, name)
@@ -249,6 +252,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # restore on teardown. None until a remap happens.
         self._saved_config: dict[tuple[str, str], str] | None = None
         self._socket_present = (False, False)
+        # [ultimate64].sid_panning — empty means the auto spread. Applied at
+        # setup for the initial single chip and re-applied on every remap.
+        self._sid_panning = list(sid_panning or ())
 
         self._midi_port = None
         self._reader_thread: threading.Thread | None = None
@@ -528,7 +534,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
         )
         # Reflow the split scope: new window count, then a full bitmap bring-up
         # to clear the old windows' pixels and repaint idle strips + info rows.
+        # Panning runs after _set_window_count, which resets the column order.
         self._set_window_count(sid_map.n)
+        self._apply_sid_panning(sid_map)
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
         self._window_sounding = [[False] * MAX_SIDS for _ in range(SID.N_VOICES)]
@@ -537,6 +545,27 @@ class AsidScene(VoiceScopeRenderer, Scene):
             self._paint_strip_color_row(v, [C64_COLORS[_IDLE_GRAY]] * self._n_windows)
         self._alloc_scope_buffers()
         self._dirty = True
+
+    def _apply_sid_panning(self, sid_map: SidMap | None = None) -> None:
+        """Pan the active SID chips across the U64 mixer's stereo field
+        ([ultimate64].sid_panning; auto-spread when unset). Called at setup for
+        the initial single chip and again after every remap, so the spread
+        always matches the current chip count. Originals fold into the same
+        snapshot teardown restores, and the scope's columns are reordered to run
+        left-to-right across the stereo field."""
+        n = sid_map.n if sid_map is not None else self._active_chips
+        if sid_map is not None and sid_map.sources:
+            sources: Sequence[str | None] = sid_map.sources
+        else:
+            sources = sources_for_addresses(self.api, self._chip_addresses[:n])
+
+        panning = apply_panning(self.api, sources, self._sid_panning)
+        self.set_window_chip_order(panning.window_order)
+        if not panning.originals:
+            return
+        if self._saved_config is None:
+            self._saved_config = {}
+        self._saved_config.update(panning.originals)
 
     def _restore_config(self) -> None:
         if self._saved_config:
@@ -591,6 +620,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # envelope ticker. No SID pre-programming — the ASID stream sets it all.
         if self._multi_sid:
             self._socket_present = detect_sockets(self.api)
+        self._apply_sid_panning()
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
         self._window_sounding = [[False] * MAX_SIDS for _ in range(SID.N_VOICES)]
@@ -623,6 +653,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # Activity coloring per (voice, chip): a sounding window (gated or still
         # decaying) draws in its color; an idle one fades to gray. Change-
         # detected per strip so the screen color write only fires on a change.
+        window_emus = self._scope_emulators()
         with self._reg_lock:
             states = [
                 [
@@ -630,7 +661,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
                         v.gated() or v.envelope_level > _ENV_SILENCE_EPS,
                         primary_waveform(v.control),
                     )
-                    for v in self._emulators[c].voices
+                    for v in window_emus[c].voices
                 ]
                 for c in range(self._active_chips)
             ]
@@ -646,7 +677,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
                     self._window_sounding[v_idx][c] = sounding
                     self._last_window_wave[v_idx][c] = wave
                 color = (
-                    self._voice_color_now(v_idx, self._emulators[c])
+                    self._voice_color_now(v_idx, window_emus[c])
                     if sounding
                     else C64_COLORS[_IDLE_GRAY]
                 )

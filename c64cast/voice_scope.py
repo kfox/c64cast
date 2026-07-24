@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -279,19 +280,44 @@ class VoiceScopeRenderer:
     _emulators: list[SIDEmulator]
     _n_windows: int
     _window_slices: list[tuple[int, int]]
+    # Window index → chip index. Identity by default (chip 0 leftmost); a scene
+    # that pans its chips reorders this so columns run left-to-right across the
+    # stereo field instead of by chip number (see sid_panning.window_order_for_pans).
+    _window_chip_order: list[int]
 
     def _scope_emulators(self) -> list[SIDEmulator]:
-        """The per-window SID sources — ``self._emulators`` if a host scene set
-        it, else the single ``self.emulator`` (single-chip default)."""
+        """The per-window SID sources, in window (left-to-right) order —
+        ``self._emulators`` permuted by ``_window_chip_order`` if a host scene
+        set it, else the single ``self.emulator`` (single-chip default)."""
         emus = getattr(self, "_emulators", None)
-        return emus if emus else [self.emulator]
+        if not emus:
+            return [self.emulator]
+        order = getattr(self, "_window_chip_order", None)
+        if not order:
+            return emus
+        return [emus[chip] for chip in order if chip < len(emus)]
+
+    def set_window_chip_order(self, order: Sequence[int]) -> None:
+        """Set which chip each scope column shows, left to right. Ignored unless
+        `order` is a permutation of the current window count — a mismatched
+        order (a stale one from a different chip count) falls back to identity
+        rather than dropping or duplicating a chip's window."""
+        if sorted(order) != list(range(self._n_windows)):
+            log.debug(
+                "scope: ignoring window order %s for %d window(s)", list(order), self._n_windows
+            )
+            return
+        self._window_chip_order = list(order)
 
     def _set_window_count(self, n: int) -> None:
         """Reflow the split scope to `n` chip windows (multi-chip scenes call
         this when the SID count changes). Recomputes the cell-aligned window
-        slices and forces the fast render path for n>1 (see _init_scope_knobs)."""
+        slices, resets the column order to chip order (a caller that pans
+        re-applies its own order after), and forces the fast render path for
+        n>1 (see _init_scope_knobs)."""
         self._n_windows = max(1, n)
         self._window_slices = _compute_window_slices(self._n_windows)
+        self._window_chip_order = list(range(self._n_windows))
         if self._n_windows > 1:
             self._voice_render_modes = ["fast"] * 3
             self._fast_path = True
@@ -422,6 +448,7 @@ class VoiceScopeRenderer:
             raise ValueError(f"voice_scope: n_windows must be >= 1, got {n_windows!r}")
         self._n_windows = n_windows
         self._window_slices = _compute_window_slices(n_windows)
+        self._window_chip_order = list(range(n_windows))
         if n_windows > 1 and not self._fast_path:
             log.warning(
                 "voice_scope: scroll/persistence not supported for the multi-chip "

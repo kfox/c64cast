@@ -137,6 +137,46 @@ Both call sites are best-effort, and no-op on a backend without a SID config API
 
 `tests/test_sid_autoconfig.py` carries the decision-matrix coverage.
 
+### SID panning
+
+`sid_panning.py`, config `[ultimate64].sid_panning`. U64 only.
+
+Spreads a tune's SID chips across the stereo field: a single SID centered, a multi-SID tune fanned out so each chip occupies its own place in the image. Applied live before playback, restored at teardown — the same best-effort snapshot/apply/restore contract as address routing and model autoconfig, and folded into the **same** saved-config dict so one restore puts everything back.
+
+**Panning is per audio *source*, not per address.** The U64 mixes each source — physical SID socket 1/2, UltiSID core 1/2 — at its own pan, via the `Audio Mixer` category items `Pan Socket 1`/`Pan Socket 2`/`Pan UltiSID 1`/`Pan UltiSID 2` (enum `Left 5 … Left 1, Center, Right 1 … Right 5`, confirmed live against a U64). So a chip is panned wherever it was *routed*, which is why panning runs **last**, after any address remap has decided that placement.
+
+Where the per-chip source comes from:
+
+| Case | Source of truth |
+| --- | --- |
+| Remapped multi-SID (WaveformScene, AsidScene) | `SidMap.sources` — a tuple parallel to `SidMap.addresses`, populated by both planners in `asid_sidmap.py` |
+| Single-SID / no remap (WaveformScene, `SidFileAudioSource`, AsidScene at setup) | `sources_for_addresses` → `sid_hw_config.current_source_map`, the live addressing read (shared with `sid_autoconfig`, which moved its `_current_addr_map` body there) |
+
+Panning runs **after** address routing for the same reason, and in `AsidScene._reconfigure_chips` it runs after `_set_window_count` (which resets the column order).
+
+**The list is indexed by source, capped at 4.** There is exactly one pan control per source, so `sid_panning` entry *k* positions the *k*-th source the tune claims (`distinct_sources`, first-claim order) — **not** chip *k*. Through 4 chips the two coincide, since each chip lands on its own source. A list longer than `MAX_PANNED_SOURCES` (4) could never take effect and is rejected at config load.
+
+**The achievable count is lower without socketed SIDs.** The ceiling is 2 (UltiSID cores) + 1 per populated SID socket. With **no socketed SIDs there are only two distinct pan positions**, so a 3+ chip tune necessarily doubles chips onto a shared pan; `_warn_if_sources_limited` warns at apply time (and separately when the config carries more entries than the machine can use).
+
+**Values and defaults.** An entry is an int `-5..5` (negative = left, `0` = center) or a label string; both normalize through `pan_to_label`. A configured list wins, truncated or center-extended to the source count; empty means `default_pan_spread`:
+
+| Sources | Spread |
+| --- | --- |
+| 1 | `[0]` (Center) |
+| 2 | `[-3, 3]` |
+| 3 | `[0, -3, 3]` |
+| 4 | `[-2, 2, -5, 5]` |
+
+These are ordered by **musical importance**, not as a uniform fan: with an odd count the primary chip sits dead center and the rest flank it; with an even count the first two chips sit closest to center and later ones spread wider.
+
+**The scope's columns follow the pans.** Because the spreads are importance-ordered rather than monotonic, raw chip order would draw the 3-SID default as `Center | Left 3 | Right 3` while it *sounds* left-to-right as `Left 3 | Center | Right 3`. So `apply_panning` also returns a `window_order` (`window_order_for_pans`: chips sorted by pan, ties keeping chip order), which the scene hands to `VoiceScopeRenderer.set_window_chip_order`. Scope column *w* then shows `window_order[w]`, and `_scope_emulators()` — the single choke point every window-indexed render/color path goes through — serves the emulators in that order. The 3-SID default therefore puts the primary chip in the **middle** column; the 4-SID default puts chips 1-2 in the two middle columns. An all-equal or single-chip set yields the identity order, so those renders are unchanged, and `_set_window_count` resets to identity (the panning pass re-applies afterward).
+
+**Only differences are written.** `apply_panning` reads the mixer once and PUTs only the sources whose pan actually changes, returning just those originals. A tune whose panning already matches (the common single-SID-on-a-centered-mixer case) writes nothing at setup and restores nothing at teardown.
+
+Applies to the three tune-playing scenes: `WaveformScene`, `AsidScene` (at setup for the initial chip, and again on every `_reconfigure_chips` remap so the spread tracks the live chip count), and `SidFileAudioSource` (the `generative` + `audio_source = "sid"` path). **`MidiScene` is deliberately excluded** — it is a live instrument rather than a tune, always one voice-set at `$D400`, and carries no SID-hw snapshot/restore scaffold; pan it from the U64's own mixer if wanted.
+
+`tests/test_sid_panning.py` covers the pure planner + the diff-only apply.
+
 ## `midi_scene.py` — MidiScene (live MIDI → SID + oscilloscope)
 
 `MidiScene` (inherits `VoiceScopeRenderer`) turns the C64 into a 3-voice MIDI sound module and visualizes it with the **same** hires oscilloscope as `WaveformScene`. Note on/off → voice freq + gate; pitch-bend → ±2 semitones on gated voices. **Voice allocation** layers a mono melody over a polyphonic sustain pad: held notes keep their voice, and a new note over capacity steals the *most-recently-started* voice (`max` t_changed) so the older/held notes form a stable pad while an overlapping line/arp cycles on the top voice; freeing a voice resurrects the most-recent still-held suspended note (LIFO). **Gate-edge hard restart:** the real SID re-attacks only on a gate 0→1 edge, so re-using an already-gated voice (re-press / steal / trill) writes a gate-off control byte *before* the new voice block — without it the chip changes pitch but never re-triggers (silent note while the host-emulator waveform, fed a `retrigger` flag, still moves). The MIDI reader thread coalesces continuous-controller floods (wheel sweeps) to ≤60 Hz so they can't burst the DMA socket; notes stay immediate.
