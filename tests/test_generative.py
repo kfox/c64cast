@@ -1405,6 +1405,106 @@ class ConfigGenerativeTest(unittest.TestCase):
             self.assertGreater(scene.duration_s, 0.2)
             self.assertLess(scene.duration_s, 1.0)
 
+    @staticmethod
+    def _sampler_api() -> _DummyAPI:
+        """A build-time API whose profile advertises the Ultimate Audio sampler,
+        so the file path resolves to it (parity with the video sampler tests)."""
+        from dataclasses import replace
+
+        api = _DummyAPI()
+        api.profile = replace(api.profile, supports_sampler=True)
+        return api
+
+    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    def test_audio_source_file_routes_to_sampler_and_caps_fps_at_30(self):
+        # On a sampler-capable U64 (backend auto/sampler + sampler_available),
+        # audio_source="file" decodes into the off-bus UltimateAudioSampler
+        # instead of the staticky 4-bit DAC. Crucially the bitmap fps stays at
+        # the muted 30 cap — NOT the video path's 60 uncap: a generative source
+        # doesn't dedup, so 60 real mhires frames/s would starve the sampler ring
+        # (static) and crash the C64 (HW 2026-07-24).
+        import tempfile
+
+        from c64cast.sampler import UltimateAudioSampler
+
+        with tempfile.TemporaryDirectory() as d:
+            wav = f"{d}/tune.wav"
+            self._make_wav(wav, seconds=0.4)
+            s = SceneCfg(
+                type="generative", source="plasma", display="mhires", audio_source="file", file=wav
+            )
+            streamer = cast(AudioStreamer, _FakeStreamer())
+            scene = build_scene(
+                s,
+                self.cfg,
+                cast(C64Backend, self._sampler_api()),
+                streamer,
+                None,
+                sampler_available=True,
+            )
+            assert isinstance(scene, SourceScene)
+            # The scene's base audio AND the source's audio object are the sampler.
+            self.assertIsInstance(scene.audio, UltimateAudioSampler)
+            self.assertIsInstance(scene.audio_source._audio, UltimateAudioSampler)  # type: ignore[attr-defined]
+            self.assertEqual(scene.target_fps, 30.0)
+
+    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    def test_audio_source_file_sampler_char_mode_uncapped(self):
+        # A char display (mcm) is cheap, so a sampler-routed file scene keeps the
+        # playlist default (None) — the quickcast `c64cast tune.mp3` path.
+        import tempfile
+
+        from c64cast.sampler import UltimateAudioSampler
+
+        with tempfile.TemporaryDirectory() as d:
+            wav = f"{d}/tune.wav"
+            self._make_wav(wav, seconds=0.4)
+            s = SceneCfg(
+                type="generative", source="plasma", display="mcm", audio_source="file", file=wav
+            )
+            streamer = cast(AudioStreamer, _FakeStreamer())
+            scene = build_scene(
+                s,
+                self.cfg,
+                cast(C64Backend, self._sampler_api()),
+                streamer,
+                None,
+                sampler_available=True,
+            )
+            assert isinstance(scene, SourceScene)
+            self.assertIsInstance(scene.audio_source._audio, UltimateAudioSampler)  # type: ignore[attr-defined]
+            self.assertIsNone(scene.target_fps)
+
+    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    def test_audio_source_file_dac_backend_stays_on_dac_at_20_fps(self):
+        # backend="dac" forces the 4-bit DAC even on a sampler-capable U64 (also
+        # the only path on TeensyROM), keeping its 20 fps bitmap cap. Proves the
+        # DAC remains a user-selectable option after the sampler default.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            wav = f"{d}/tune.wav"
+            self._make_wav(wav, seconds=0.4)
+            cfg = Config()
+            cfg.audio.backend = "dac"
+            s = SceneCfg(
+                type="generative", source="plasma", display="mhires", audio_source="file", file=wav
+            )
+            streamer = cast(AudioStreamer, _FakeStreamer())
+            scene = build_scene(
+                s,
+                cfg,
+                cast(C64Backend, self._sampler_api()),
+                streamer,
+                None,
+                sampler_available=True,
+            )
+            assert isinstance(scene, SourceScene)
+            # The DAC path keeps the shared streamer (not a sampler).
+            self.assertIs(scene.audio, streamer)
+            self.assertIs(scene.audio_source._audio, streamer)  # type: ignore[attr-defined]
+            self.assertEqual(scene.target_fps, 20.0)
+
     def test_audio_source_file_falls_back_to_null_without_streamer(self):
         s = SceneCfg(
             type="generative", source="plasma", display="mcm", audio_source="file", file="x.mp3"
