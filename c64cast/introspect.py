@@ -728,5 +728,9 @@ def render_compat() -> str:
         lines.append(f"  {ov.name:<{name_w + 2}}{cells}")
     lines.append("")
     lines.append("Columns: " + ", ".join(f"{abbr.get(m.name, m.name)}={m.name}" for m in modes))
-    lines.append("Note: audio overlays additionally need [audio].enabled.")
+    # Only worth saying when some overlay actually carries the gate — the
+    # spectrum overlays used to and no longer do (they read the scene's music
+    # features first), so this note would otherwise be a lie by default.
+    if any(ov.requires_audio for ov, _ in rows):
+        lines.append("Note: audio overlays additionally need [audio].enabled.")
     return "\n".join(lines)

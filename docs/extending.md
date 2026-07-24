@@ -100,8 +100,13 @@ hz = 2.0
   supports. Empty (default) = no restriction. Used when the overlay
   isn't a clean fit for the PETSCII/bitmap split — e.g. `big_text`
   whitelists `("blank", "mcm")`.
-* `REQUIRES_AUDIO` — true when `process_frame` reads
-  `audio.get_recent_samples()`. Loader raises with a clear error.
+* `REQUIRES_AUDIO` — true when the overlay cannot work at all without
+  the streamer. Loader raises with a clear error when audio is off.
+* `WANTS_AUDIO` — true when the overlay *uses* the streamer if one
+  exists but has another source to fall back on. `build_overlay` passes
+  it as an `audio` kwarg (possibly `None`) and never refuses. The
+  spectrum overlays: they read `scene.features()` first and only FFT
+  `audio.get_recent_samples()` when the scene reports no features.
 
 These are validated by `overlays.validate_for_scene` (invoked from
 `config._attach_overlays` in [config.py](../c64cast/config.py)) at

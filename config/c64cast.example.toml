@@ -969,9 +969,11 @@ duration_s = 45.0
     { text = "ULTIMATE 64 TRICKS", color = "cyan" },
   ]
 
-  # spectrum_petscii needs an AudioStreamer to read from. [audio] is on by
-  # default (--no-audio mutes) — the scene picks up the streamer
-  # automatically unless overridden with `audio = false`.
+  # spectrum_petscii reads band energies from the scene's music features when
+  # it has them (a SID or reactive audio scene), and otherwise FFTs the live
+  # AudioStreamer — which is what a webcam scene like this one gives it.
+  # [audio] is on by default (--no-audio mutes) — the scene picks up the
+  # streamer automatically unless overridden with `audio = false`.
   # Requires the `mic` extra: `pip install -e .[mic]`.
   # [[scenes.overlays]]
   # type = "spectrum_petscii"
@@ -1439,7 +1441,7 @@ palette_mode = "grayscale"
 # | scrolling_text     | petscii / blank         | One row of multi-message marquee    |
 # | marquee            | petscii / blank         | One row, single ticker text         |
 # | rss                | petscii / blank         | RSS/Atom headlines (bg fetch)       |
-# | spectrum_petscii   | petscii / blank, audio  | 8-band FFT, vertical bars in RAM    |
+# | spectrum_petscii   | petscii / blank         | 8-band spectrum, bars in screen RAM |
 # | clock              | petscii / blank         | Time/date in a corner               |
 # | weather            | petscii / blank         | Temp + conditions in a corner       |
 # | callsign           | petscii / blank         | Static text in a corner             |

@@ -1,9 +1,10 @@
 """PETSCII spectrum-analyzer overlay.
 
-Reads recent audio samples from AudioStreamer, runs an FFT, groups
-magnitudes into 8 log-spaced bands, and paints colored "bars" into the
-40×25 char grid. Each band occupies 5 columns. Vertical extent of each
-bar tracks band energy.
+Reads N log-spaced band magnitudes from the shared spectrum source
+([_spectrum.py](_spectrum.py) — the scene's music features first, an FFT over
+recent audio samples as a fallback) and paints colored "bars" into the 40×25
+char grid. Each band occupies 5 columns. Vertical extent of each bar tracks
+band energy.
 
 Placement modes:
   bottom — bars rise from row 24 upward (classic VU meter look).
@@ -18,52 +19,28 @@ import logging
 
 import numpy as np
 
-from ..audio_features import FFT_SIZE, WINDOW, band_edges
 from ..c64 import SCREEN
-from ..palette import C64_COLORS
 from . import SC_FULL, Overlay, register
+from ._spectrum import BAND_COLORS, N_BANDS, _SpectrumBands
 
 log = logging.getLogger(__name__)
 
 SCREEN_W = SCREEN.W_CHARS
 SCREEN_H = SCREEN.H_CHARS
 
-N_BANDS = 8
 COLS_PER_BAND = SCREEN_W // N_BANDS  # 5
-
-# Lowest → highest frequency band color (as in the plan).
-BAND_COLORS = np.array(
-    [
-        C64_COLORS["red"],  # band 0 — lowest
-        C64_COLORS["orange"],
-        C64_COLORS["yellow"],
-        C64_COLORS["light green"],
-        C64_COLORS["cyan"],
-        C64_COLORS["light blue"],
-        C64_COLORS["purple"],
-        C64_COLORS["light red"],  # band 7 — highest
-    ],
-    dtype=np.uint8,
-)
-
-# FFT_SIZE / WINDOW / band_edges come from audio_features, which owns the one
-# band-edge definition shared with the audio-input feature analyzer — the bars
-# drawn here and that analyzer's `bands` therefore span identical frequency
-# ranges. Note this overlay reads AudioStreamer's POST-DSP tap on purpose: it
-# visualizes what the C64 is actually playing, where the feature analyzer needs
-# the pre-DSP signal (see audio_features.py).
 
 
 @register("spectrum_petscii")
-class PetsciiSpectrumOverlay(Overlay):
+class PetsciiSpectrumOverlay(_SpectrumBands, Overlay):
     REQUIRES_PETSCII = True
-    REQUIRES_AUDIO = True
+    WANTS_AUDIO = True
     PAINTS_INTO_BUFFERS = True
-    HELP = "Audio FFT rendered as vertical color bars in screen RAM (needs audio)."
+    HELP = "Audio spectrum rendered as vertical color bars in screen RAM."
     PARAM_HELP = {
         "placement": "Where the bars sit: 'bottom', 'center', or 'split'.",
         "height_rows": "Height of the bar strip in character rows.",
-        "gain": "Multiplier applied to FFT magnitudes before bar height.",
+        "gain": "Multiplier applied to band magnitudes before bar height.",
     }
 
     def __init__(
@@ -79,7 +56,8 @@ class PetsciiSpectrumOverlay(Overlay):
         self.placement = placement
         self.height_rows = int(height_rows)
         self.gain = float(gain)
-        self._edges = band_edges(N_BANDS, FFT_SIZE)
+        self.n_bands = N_BANDS
+        self._init_bands()
         # Strip rows we ever touch — used by compose to scope buffer writes.
         self._strip_rows = self._compute_strip_rows()
 
@@ -98,26 +76,6 @@ class PetsciiSpectrumOverlay(Overlay):
         # placement of cells handled in render below.
         return range(0, SCREEN_H)
 
-    # ---- FFT → band magnitudes ---------------------------------------------
-
-    def _band_magnitudes(self) -> np.ndarray:
-        assert self.audio is not None  # REQUIRES_AUDIO; guaranteed by build_overlay
-        samples = self.audio.get_recent_samples(FFT_SIZE)
-        if samples.size < FFT_SIZE:
-            return np.zeros(N_BANDS, dtype=np.float32)
-        spec = np.abs(np.fft.rfft(samples * WINDOW))
-        mags = np.zeros(N_BANDS, dtype=np.float32)
-        for i in range(N_BANDS):
-            lo, hi = int(self._edges[i]), int(self._edges[i + 1])
-            if hi <= lo:
-                continue
-            mags[i] = spec[lo:hi].mean()
-        # Normalize: log-compress so loud signals don't dwarf quiet ones.
-        # FFT magnitudes scale with FFT_SIZE; divide first.
-        mags = mags / (FFT_SIZE * 0.5)
-        mags = np.log1p(mags * 100.0 * self.gain)
-        return mags
-
     def _bar_lengths(self, mags: np.ndarray) -> np.ndarray:
         """Map band magnitudes to integer bar lengths in [0, height_rows]."""
         # Heuristic mapping: clip at 1.0 after log compression, scale to rows.
@@ -127,8 +85,7 @@ class PetsciiSpectrumOverlay(Overlay):
     # ---- per-frame paint ----------------------------------------------------
 
     def compose(self, buffers: dict, scene, t: float) -> None:
-        mags = self._band_magnitudes()
-        lengths = self._bar_lengths(mags)
+        lengths = self._bar_lengths(self.bands_now(scene))
 
         screen = buffers["screen"]
         color = buffers["color"]

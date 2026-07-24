@@ -1088,20 +1088,34 @@ class ValidateSceneCfgTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "petscii"):
             cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
-    def test_overlay_requires_audio_with_audio_enabled_passes(self):
-        # `spectrum_petscii` has REQUIRES_AUDIO; passing audio_enabled=True
-        # supplies the sentinel so validation succeeds.
-        s = cfgmod.SceneCfg(
-            type="webcam", display="petscii", overlays=[{"type": "spectrum_petscii"}]
-        )
-        cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=True)
+    def test_overlay_requires_audio_gate(self):
+        # No shipped overlay sets REQUIRES_AUDIO (the spectrum overlays only
+        # WANT audio — they read the scene's music features first), but the
+        # gate is a live framework facility, so cover it with a stub.
+        from c64cast import overlays as overlays_mod
 
-    def test_overlay_requires_audio_with_audio_disabled_rejected(self):
+        class _NeedsAudio(overlays_mod.Overlay):
+            name = "_needs_audio"
+            REQUIRES_AUDIO = True
+
+            def __init__(self, audio=None):
+                self.audio = audio
+
+        overlays_mod._load_all()
+        s = cfgmod.SceneCfg(type="webcam", display="petscii", overlays=[{"type": "_needs_audio"}])
+        with mock.patch.dict(overlays_mod._REGISTRY, {"_needs_audio": _NeedsAudio}):
+            # audio_enabled=True supplies the sentinel, so validation succeeds.
+            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=True)
+            with self.assertRaisesRegex(ValueError, "requires audio"):
+                cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+
+    def test_spectrum_overlay_valid_without_audio(self):
+        # It falls back to the scene's music features / paints nothing, rather
+        # than refusing to build.
         s = cfgmod.SceneCfg(
             type="webcam", display="petscii", overlays=[{"type": "spectrum_petscii"}]
         )
-        with self.assertRaisesRegex(ValueError, "requires audio"):
-            cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
+        cfgmod.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_orchestrate_with_no_claiming_subclass_rejected(self):
         # A `blank` scene with no orchestrator-specific shape won't be
