@@ -94,8 +94,16 @@ jobs:
       - name: Pyright (basic, whole tree)
         run: uv run pyright
 
+      # unittest_parallel forks one process per test module (still stdlib
+      # unittest; default --level=module keeps each module's shared state
+      # isolated). The suite is mostly blocked on socket/thread waits, so
+      # overlapping them across the runner's cores cuts wall time ~3x. `-b`
+      # buffers per-test stdout/stderr, surfacing it only for failures — so
+      # the matrix logs stay clean instead of interleaving every module's
+      # INFO spam. The coverage job below stays on serial xmlrunner (it emits
+      # the JUnit XML for Codecov Test Analytics, which this runner can't).
       - name: Unit tests
-        run: uv run python -m unittest discover tests -v
+        run: uv run python -m unittest_parallel -s tests -b
 
   coverage:
     name: coverage (py${{ matrix.python-version }})
