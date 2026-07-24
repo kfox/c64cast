@@ -121,6 +121,7 @@ Each overlay file picks the smallest compatible scene as a host.
 | `overlay-marquee.toml`                | marquee                | PETSCII webcam         |
 | `overlay-rss.toml`                    | rss                    | PETSCII webcam         |
 | `overlay-spectrum_petscii.toml`       | spectrum_petscii       | PETSCII webcam + audio |
+| `overlay-spectrum_bitmap.toml`        | spectrum_bitmap        | mhires plasma + audio  |
 | `overlay-clock.toml`                  | clock                  | PETSCII webcam         |
 | `overlay-weather.toml`                | weather                | PETSCII webcam         |
 | `overlay-callsign.toml`               | callsign               | PETSCII webcam         |
@@ -132,12 +133,13 @@ Each overlay file picks the smallest compatible scene as a host.
 
 ## Audio-enabled demos
 
-Five files exercise the audio path; the first three require `[audio] enabled = true`:
+Eight files exercise the audio path; the first three require `[audio] enabled = true`:
 
 | File                              | Audio source                                     |
 |-----------------------------------|--------------------------------------------------|
 | `scene-webcam-audio.toml`         | Mic capture → SID DAC (needs `mic` extra)        |
-| `overlay-spectrum_petscii.toml`   | Mic capture + visual 8-band FFT (needs `mic`)    |
+| `overlay-spectrum_petscii.toml`   | Mic capture + visual 8-band spectrum (needs `mic`) |
+| `overlay-spectrum_bitmap.toml`    | Same, painted into the mhires bitmap (needs `mic`) |
 | `scene-video.toml`           | Video-file soundtrack (needs `video`)      |
 | `scene-video-sampler.toml`        | Video soundtrack via Ultimate Audio FPGA sampler |
 | `scene-waveform.toml`             | Native SID playback of a `.sid` file             |

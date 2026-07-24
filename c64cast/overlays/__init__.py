@@ -292,6 +292,7 @@ def _load_all():
         obs_status,
         rss,
         scrolling_text,
+        spectrum_bitmap,
         spectrum_petscii,
         weather,
     )

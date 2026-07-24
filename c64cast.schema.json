@@ -1413,6 +1413,7 @@
                     "obs_status",
                     "rss",
                     "scrolling_text",
+                    "spectrum_bitmap",
                     "spectrum_petscii",
                     "weather"
                   ]
@@ -1960,6 +1961,44 @@
                     "required": [
                       "type",
                       "messages"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "type": {
+                        "const": "spectrum_bitmap"
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "type": {
+                        "const": "spectrum_bitmap"
+                      },
+                      "placement": {
+                        "type": "string",
+                        "description": "Where the bars sit: 'bottom', 'center', or 'split'.",
+                        "default": "bottom"
+                      },
+                      "height_frac": {
+                        "type": "number",
+                        "description": "Fraction of screen height a full-energy bar reaches.",
+                        "default": 0.5
+                      },
+                      "gain": {
+                        "type": "number",
+                        "description": "Multiplier applied to band magnitudes before bar height.",
+                        "default": 1.0
+                      }
+                    },
+                    "required": [
+                      "type"
                     ],
                     "additionalProperties": false
                   }
