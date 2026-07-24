@@ -467,6 +467,7 @@ class SidFileAudioSource:
         reactive: bool = True,
         sid_model: str = "auto",
         sid_panning: Sequence[int | str] | None = None,
+        sid_volume: Sequence[int | str] | None = None,
     ):
         self._api = api
         self.file_spec = file
@@ -479,6 +480,9 @@ class SidFileAudioSource:
         self._sid_model = sid_model
         # [ultimate64].sid_panning — empty/None means the auto spread.
         self._sid_panning = list(sid_panning or ())
+        # [ultimate64].sid_volume — empty/None means "0 dB for a source that
+        # would otherwise be inaudible, leave a deliberate level alone".
+        self._sid_volume = list(sid_volume or ())
         # The display is fixed at VIC bank 0; only the bitmap flag matters for
         # the payload-clearance check (bitmap modes reserve $2000 as well as
         # $0400). Read once at construction — the mode never changes per scene.
@@ -629,7 +633,7 @@ class SidFileAudioSource:
         from .sid_autoconfig import apply_sid_autoconfig
 
         self._saved_sid_config = apply_sid_autoconfig(self._api, self.header, self._sid_model)
-        self._apply_sid_panning()
+        self._apply_sid_mixer()
         # May raise (RSID / load<$0820 / under KERNAL) — propagate to
         # SourceScene.setup, which aborts the scene cleanly.
         self._api.run_sid_player(self.sid_bytes, song=self.song, avoid=avoid, play_bank=play_bank)
@@ -653,22 +657,28 @@ class SidFileAudioSource:
                 )
                 self._features = None
 
-    def _apply_sid_panning(self) -> None:
-        """Pan the tune's SID chip(s) across the U64 mixer's stereo field
-        ([ultimate64].sid_panning; auto-spread when unset). This path does no
-        address routing, so the source playing each chip is whatever currently
-        answers its address. Originals fold into the same snapshot teardown
-        restores."""
+    def _apply_sid_mixer(self) -> None:
+        """Pan the tune's SID chip(s) across the U64 mixer's stereo field and
+        make every source they play on audible ([ultimate64].sid_panning /
+        sid_volume). This path does no address routing, so the source playing
+        each chip is whatever currently answers its address. Originals fold into
+        the same snapshot teardown restores."""
         assert self.header is not None  # set by _pick_and_load, called by setup
         from .sid_panning import apply_panning, sources_for_addresses
+        from .sid_volume import apply_volume
 
         sources = sources_for_addresses(self._api, self.header.sid_addresses)
         panning = apply_panning(self._api, sources, self._sid_panning)
-        if not panning.originals:
+        self._fold_into_restore(panning.originals)
+        self._fold_into_restore(apply_volume(self._api, sources, self._sid_volume))
+
+    def _fold_into_restore(self, originals: dict[tuple[str, str], str]) -> None:
+        """Merge mixer originals into the snapshot teardown restores."""
+        if not originals:
             return
         if self._saved_sid_config is None:
             self._saved_sid_config = {}
-        self._saved_sid_config.update(panning.originals)
+        self._saved_sid_config.update(originals)
 
     def teardown(self) -> None:
         """Stop the feature stream, then SID playback. SID order mirrors

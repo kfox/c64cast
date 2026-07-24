@@ -66,6 +66,7 @@ from .sid_hw_config import (
     snapshot_sid_config,
 )
 from .sid_panning import apply_panning, sources_for_addresses
+from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
     D018_HIRES_BITMAP,
@@ -138,6 +139,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         max_sids: int | None = None,
         buffered_player: str = "auto",
         sid_panning: Sequence[int | str] | None = None,
+        sid_volume: Sequence[int | str] | None = None,
         name: str = "ASID",
     ):
         super().__init__(api, audio, None, name)
@@ -255,6 +257,11 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # [ultimate64].sid_panning — empty means the auto spread. Applied at
         # setup for the initial single chip and re-applied on every remap.
         self._sid_panning = list(sid_panning or ())
+        # [ultimate64].sid_volume — empty means "0 dB for a source that would
+        # otherwise be inaudible". Applied alongside panning: an ASID stream
+        # that grows past 2 chips routes the rest onto UltiSID cores, which are
+        # silent on any machine whose mixer leaves them at OFF.
+        self._sid_volume = list(sid_volume or ())
 
         self._midi_port = None
         self._reader_thread: threading.Thread | None = None
@@ -536,7 +543,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # to clear the old windows' pixels and repaint idle strips + info rows.
         # Panning runs after _set_window_count, which resets the column order.
         self._set_window_count(sid_map.n)
-        self._apply_sid_panning(sid_map)
+        self._apply_sid_mixer(sid_map)
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
         self._window_sounding = [[False] * MAX_SIDS for _ in range(SID.N_VOICES)]
@@ -546,26 +553,36 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._alloc_scope_buffers()
         self._dirty = True
 
-    def _apply_sid_panning(self, sid_map: SidMap | None = None) -> None:
-        """Pan the active SID chips across the U64 mixer's stereo field
-        ([ultimate64].sid_panning; auto-spread when unset). Called at setup for
-        the initial single chip and again after every remap, so the spread
-        always matches the current chip count. Originals fold into the same
-        snapshot teardown restores, and the scope's columns are reordered to run
-        left-to-right across the stereo field."""
-        n = sid_map.n if sid_map is not None else self._active_chips
+    def _sid_sources(self, sid_map: SidMap | None) -> Sequence[str | None]:
+        """The mixer source playing each active chip, in chip order — straight
+        from the map a remap just applied, else from the live config."""
         if sid_map is not None and sid_map.sources:
-            sources: Sequence[str | None] = sid_map.sources
-        else:
-            sources = sources_for_addresses(self.api, self._chip_addresses[:n])
+            return sid_map.sources
+        n = sid_map.n if sid_map is not None else self._active_chips
+        return sources_for_addresses(self.api, self._chip_addresses[:n])
 
-        panning = apply_panning(self.api, sources, self._sid_panning)
-        self.set_window_chip_order(panning.window_order)
-        if not panning.originals:
+    def _fold_into_restore(self, originals: dict[tuple[str, str], str]) -> None:
+        """Merge mixer originals into the snapshot teardown restores."""
+        if not originals:
             return
         if self._saved_config is None:
             self._saved_config = {}
-        self._saved_config.update(panning.originals)
+        self._saved_config.update(originals)
+
+    def _apply_sid_mixer(self, sid_map: SidMap | None = None) -> None:
+        """Pan the active SID chips across the U64 mixer's stereo field and make
+        every source they landed on audible ([ultimate64].sid_panning /
+        sid_volume). Called at setup for the initial single chip and again after
+        every remap, so both track the current chip count — a stream growing
+        past 2 chips spills onto UltiSID cores, which are inaudible on a machine
+        whose mixer leaves them at OFF. Originals fold into the same snapshot
+        teardown restores, and the scope's columns are reordered to run
+        left-to-right across the stereo field."""
+        sources = self._sid_sources(sid_map)
+        panning = apply_panning(self.api, sources, self._sid_panning)
+        self.set_window_chip_order(panning.window_order)
+        self._fold_into_restore(panning.originals)
+        self._fold_into_restore(apply_volume(self.api, sources, self._sid_volume))
 
     def _restore_config(self) -> None:
         if self._saved_config:
@@ -620,7 +637,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # envelope ticker. No SID pre-programming — the ASID stream sets it all.
         if self._multi_sid:
             self._socket_present = detect_sockets(self.api)
-        self._apply_sid_panning()
+        self._apply_sid_mixer()
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
         self._window_sounding = [[False] * MAX_SIDS for _ in range(SID.N_VOICES)]

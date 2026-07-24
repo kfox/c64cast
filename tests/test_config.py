@@ -288,6 +288,46 @@ class SidPanningConfigTest(unittest.TestCase):
         self.assertIn("Middle", str(ctx.exception))
 
 
+class SidVolumeConfigTest(unittest.TestCase):
+    """[ultimate64].sid_volume — a level the mixer can't represent must fail at
+    load, not mid-scene when it is configured (see c64cast/sid_volume.py)."""
+
+    def _load(self, toml):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(toml)
+            path = f.name
+        try:
+            return cfgmod.load(path)
+        finally:
+            os.unlink(path)
+
+    def test_defaults_to_empty_meaning_auto(self):
+        self.assertEqual(cfgmod.Config().ultimate64.sid_volume, [])
+
+    def test_db_int_list_loads(self):
+        cfg = self._load("[ultimate64]\nsid_volume = [0, -6]\n")
+        self.assertEqual(cfg.ultimate64.sid_volume, [0, -6])
+
+    def test_labels_and_off_load(self):
+        cfg = self._load('[ultimate64]\nsid_volume = ["-6 dB", "off"]\n')
+        self.assertEqual(cfg.ultimate64.sid_volume, ["-6 dB", "off"])
+
+    def test_level_outside_the_ladder_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load("[ultimate64]\nsid_volume = [-20]\n")
+        self.assertIn("sid_volume", str(ctx.exception))
+
+    def test_unknown_label_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[ultimate64]\nsid_volume = ["loud"]\n')
+        self.assertIn("loud", str(ctx.exception))
+
+    def test_more_entries_than_sources_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load("[ultimate64]\nsid_volume = [0, 0, 0, 0, 0]\n")
+        self.assertIn("sid_volume", str(ctx.exception))
+
+
 class DoubleBufferTest(unittest.TestCase):
     """[video].double_buffer — the host-DMA page-flip path for no-REU backends."""
 

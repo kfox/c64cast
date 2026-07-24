@@ -28,6 +28,15 @@ def _ultimate_fake(*, supports_config: bool = True, mixer: dict[str, str] | None
     return api
 
 
+def _bind(scene, cls, *methods) -> None:
+    """Attach `cls`'s helper methods to a SimpleNamespace stand-in, so the
+    scene method under test can call its own helpers. These tests drive scene
+    methods unbound against a namespace rather than building a real scene (which
+    would need a MIDI port, a .sid file and a display)."""
+    for name in methods:
+        setattr(scene, name, getattr(cls, name).__get__(scene))
+
+
 class PanValueConversionTest(unittest.TestCase):
     """int ↔ label, the two spellings a config may use."""
 
@@ -97,6 +106,16 @@ class DefaultPanSpreadTest(unittest.TestCase):
         self.assertEqual(sp.default_pan_spread(0), ())
         self.assertEqual(sp.default_pan_spread(-1), ())
 
+    def test_more_chips_than_sources_collapses_to_center(self):
+        # A 3-SID tune on a machine with no socketed SID has only the 2 UltiSID
+        # cores. Spreading them [-3, 3] would throw two chips hard left against
+        # one hard right; mono is the honest default.
+        self.assertEqual(sp.default_pan_spread(2, 3), (0, 0))
+
+    def test_one_chip_per_source_still_spreads(self):
+        self.assertEqual(sp.default_pan_spread(2, 2), (-3, 3))
+        self.assertEqual(sp.default_pan_spread(3, 3), (0, -3, 3))
+
 
 class ResolvePanningTest(unittest.TestCase):
     def test_empty_config_uses_the_default_spread(self):
@@ -108,6 +127,12 @@ class ResolvePanningTest(unittest.TestCase):
 
     def test_short_config_centers_the_remaining_chips(self):
         self.assertEqual(sp.resolve_panning([-1], 3), (-1, 0, 0))
+
+    def test_config_still_spreads_when_sources_are_doubled_up(self):
+        # The all-center collapse is a *default*, not a cap on what a user can
+        # ask for.
+        self.assertEqual(sp.resolve_panning(None, 2, 3), (0, 0))
+        self.assertEqual(sp.resolve_panning([-5, 5], 2, 3), (-5, 5))
 
     def test_long_config_is_truncated(self):
         self.assertEqual(sp.resolve_panning([-4, 4, 5, -5], 2), (-4, 4))
@@ -378,9 +403,12 @@ class LimitedSourceWarningTest(unittest.TestCase):
         self.assertTrue(any("3 SID chips but only 2" in m for m in cm.output), cm.output)
 
     def test_warning_names_the_no_socket_cause(self):
+        # "in use", not "present": model-aware routing skips a populated socket
+        # whose chip is the wrong model, which is how a machine with two 6581s
+        # ends up with only the two cores pannable.
         with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
             sp.apply_panning(self._api(), ("ultisid1", "ultisid1", "ultisid2"), [])
-        self.assertTrue(any("no socketed SIDs" in m for m in cm.output), cm.output)
+        self.assertTrue(any("no socketed SID in use" in m for m in cm.output), cm.output)
 
     def test_warns_when_config_has_more_entries_than_sources(self):
         with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
@@ -401,15 +429,19 @@ class ScenePanningFoldTest(unittest.TestCase):
     def _waveform_self(self, api, *, n_sids, addresses, panning=(), saved=None):
         from types import SimpleNamespace
 
+        from c64cast.waveform import WaveformScene
+
         scene = SimpleNamespace(
             api=api,
             _n_sids=n_sids,
             _sid_addresses=addresses,
             _sid_panning=list(panning),
+            _sid_volume=[],
             _saved_sid_config=saved,
             window_order=None,
         )
         scene.set_window_chip_order = lambda order: setattr(scene, "window_order", tuple(order))
+        _bind(scene, WaveformScene, "_sid_sources", "_fold_into_restore")
         return scene
 
     def _centered_socket_api(self):
@@ -527,13 +559,15 @@ class ScenePanningFoldTest(unittest.TestCase):
             _active_chips=2,
             _chip_addresses=[0xD400, 0xD420],
             _sid_panning=[],
+            _sid_volume=[],
             _saved_config=None,
             window_order=None,
         )
         scene.set_window_chip_order = lambda order: setattr(scene, "window_order", tuple(order))
+        _bind(scene, AsidScene, "_sid_sources", "_fold_into_restore")
         sid_map = SidMap(addresses=(0xD400, 0xD420), requested=2, sources=("socket1", "socket2"))
 
-        AsidScene._apply_sid_panning(scene, sid_map)
+        AsidScene._apply_sid_mixer(scene, sid_map)
 
         self.assertEqual(api.config_store[CAT]["Pan Socket 1"], "Left 3")
         self.assertEqual(api.config_store[CAT]["Pan Socket 2"], "Right 3")

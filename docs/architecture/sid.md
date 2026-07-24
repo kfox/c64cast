@@ -123,11 +123,17 @@ Each entry is gated on the same version and address-byte conditions that make it
 
 **The setting.** `"auto"` (default) reads the header per chip. An explicit `"6581"`/`"8580"` forces that model for every chip, ignoring the header. `"off"` disables header inspection entirely.
 
-**Ordering and the single-snapshot rule.** `WaveformScene._apply_sid_hw_config` calls `sid_autoconfig.plan_model_config_for_header` **after** applying multi-SID address routing, against the now-current addressing, so a model swap doesn't fight an address remap decided moments earlier.
+**Multi-SID does not use this pass — it routes and matches in one.** `plan_sid_map_for_addresses` takes the header's `required_models` and the live `socket_models`, so a socket claims an address only when it carries the model that chip asked for; unclaimed sockets are disabled and each core's filter curve is set from the model its chips want. See [Multi-SID on the U64](#multi-sid-on-the-u64-asid_sidmappy).
 
-Both changes merge under **one** snapshot taken before either is applied. Two sequential `snapshot_sid_config` calls would capture the address-routing change as if it were the original state, corrupting the teardown restore.
+This replaced a two-pass arrangement — route, then correct models — that could not be made correct, because the two planners decided chip placement from different premises. HW-reproduced on a machine with 6581s in both sockets playing Jammer's *Light Years* (3 chips at `$D400/$D420/$D440`, all tagged 8580):
 
-**Runs for single-SID tunes too**, unlike address routing which is gated on `_n_sids >= 2`. A single-SID tune requesting 8580 on a 6581-socketed `$D400` still needs remapping.
+1. Routing was model-blind, so it put chips 0-1 on the 6581 sockets and chip 2 on UltiSID 1 at `$D440`.
+2. The model pass then saw two 8580-wanting chips on 6581s, found no matching socket, and moved them onto UltiSID 1 (`$D400`) and UltiSID 2 (`$D420`) — **taking the core chip 2 had been given**. `$D440` was left addressed to nothing and chip 2 went silent, while both sockets stayed `Enabled` and answered `$D400`/`$D420` alongside the cores.
+3. Panning then read `SidMap.sources`, which described the pre-correction placement, and panned sources the tune was no longer using.
+
+**Where the pass still runs.** Single-SID tunes (nothing to route, but a tune requesting 8580 on a 6581-socketed `$D400` still needs remapping) and the canonical fallback layout `plan_sid_map`, which is chosen only when the tune's exact addresses aren't realizable and is model-blind. `WaveformScene._plan_multi_sid_map` reports which case applied; the fallback re-derives the model plan **after** applying the map, against the now-current addressing.
+
+**The single-snapshot rule.** Address routing, model correction and the mixer changes all merge under **one** snapshot taken before any is applied. Two sequential `snapshot_sid_config` calls would capture the first change as if it were the original state, corrupting the teardown restore.
 
 **The other call site.** `SidFileAudioSource` — the `generative` + `audio_source = "sid"` path in `audio_source.py` — has no address-routing counterpart, so it calls the simpler `sid_autoconfig.apply_sid_autoconfig` wrapper directly, with its own snapshot and apply, restored in `teardown()`.
 
@@ -156,7 +162,7 @@ Panning runs **after** address routing for the same reason, and in `AsidScene._r
 
 **The list is indexed by source, capped at 4.** There is exactly one pan control per source, so `sid_panning` entry *k* positions the *k*-th source the tune claims (`distinct_sources`, first-claim order) — **not** chip *k*. Through 4 chips the two coincide, since each chip lands on its own source. A list longer than `MAX_PANNED_SOURCES` (4) could never take effect and is rejected at config load.
 
-**The achievable count is lower without socketed SIDs.** The ceiling is 2 (UltiSID cores) + 1 per populated SID socket. With **no socketed SIDs there are only two distinct pan positions**, so a 3+ chip tune necessarily doubles chips onto a shared pan; `_warn_if_sources_limited` warns at apply time (and separately when the config carries more entries than the machine can use).
+**The achievable count is lower when the tune doesn't use both sockets.** The ceiling is 2 (UltiSID cores) + 1 per socket *playing a chip* — which is not the same as populated, since model-aware routing skips a socket whose chip is the wrong model for the tune. With **no socket in use there are only two distinct pan positions**, so a 3+ chip tune necessarily doubles chips onto a shared pan; `_warn_if_sources_limited` warns at apply time (and separately when the config carries more entries than the machine can use).
 
 **Values and defaults.** An entry is an int `-5..5` (negative = left, `0` = center) or a label string; both normalize through `pan_to_label`. A configured list wins, truncated or center-extended to the source count; empty means `default_pan_spread`:
 
@@ -169,6 +175,8 @@ Panning runs **after** address routing for the same reason, and in `AsidScene._r
 
 These are ordered by **musical importance**, not as a uniform fan: with an odd count the primary chip sits dead center and the rest flank it; with an even count the first two chips sit closest to center and later ones spread wider.
 
+**A spread the hardware can't carry collapses to center.** When chips outnumber sources — a 3-SID tune on a machine with no socketed 8580, where all three land on the 2 UltiSID cores — the table's spread would throw two chips hard left against one hard right, which misrepresents the tune rather than opening it up. `default_pan_spread(n_sources, n_chips)` returns all-Center in that case. This is a *default*, not a cap: an explicit `sid_panning` still spreads doubled-up sources however the user asks.
+
 **The scope's columns follow the pans.** Because the spreads are importance-ordered rather than monotonic, raw chip order would draw the 3-SID default as `Center | Left 3 | Right 3` while it *sounds* left-to-right as `Left 3 | Center | Right 3`. So `apply_panning` also returns a `window_order` (`window_order_for_pans`: chips sorted by pan, ties keeping chip order), which the scene hands to `VoiceScopeRenderer.set_window_chip_order`. Scope column *w* then shows `window_order[w]`, and `_scope_emulators()` — the single choke point every window-indexed render/color path goes through — serves the emulators in that order. The 3-SID default therefore puts the primary chip in the **middle** column; the 4-SID default puts chips 1-2 in the two middle columns. An all-equal or single-chip set yields the identity order, so those renders are unchanged, and `_set_window_count` resets to identity (the panning pass re-applies afterward).
 
 **Only differences are written.** `apply_panning` reads the mixer once and PUTs only the sources whose pan actually changes, returning just those originals. A tune whose panning already matches (the common single-SID-on-a-centered-mixer case) writes nothing at setup and restores nothing at teardown.
@@ -176,6 +184,49 @@ These are ordered by **musical importance**, not as a uniform fan: with an odd c
 Applies to the three tune-playing scenes: `WaveformScene`, `AsidScene` (at setup for the initial chip, and again on every `_reconfigure_chips` remap so the spread tracks the live chip count), and `SidFileAudioSource` (the `generative` + `audio_source = "sid"` path). **`MidiScene` is deliberately excluded** — it is a live instrument rather than a tune, always one voice-set at `$D400`, and carries no SID-hw snapshot/restore scaffold; pan it from the U64's own mixer if wanted.
 
 `tests/test_sid_panning.py` covers the pure planner + the diff-only apply.
+
+### SID volume
+
+`sid_volume.py`, config `[ultimate64].sid_volume`. U64 only.
+
+The panning sibling, and the reason it exists: **the U64 mixes each source at an independent level, and the two UltiSID levels are commonly `OFF`.** Routing a chip onto an UltiSID core — which multi-SID routing and model autoconfig both do freely — then produces silence *with no error anywhere*: the chip is mapped, the player writes to it, and nothing comes out. Confirmed live on a stock machine (`Vol UltiSid 1`/`2` = `OFF`, `Vol Socket 1`/`2` = `" 0 dB"`), which silently drops the third chip of any 3-SID tune and every ASID chip past the second.
+
+The mirror failure is just as real, and is why unused sources are muted rather than left alone: a tune that deliberately uses the socketed chips is doubled by an UltiSID core still mapped at the same address with its level up — including the LED mirrors this codebase now sets up deliberately.
+
+**The policy**, one source at a time (`target_level`):
+
+| Source | Level |
+| --- | --- |
+| In use, `sid_volume` entry set | that entry |
+| In use, currently `OFF` | `" 0 dB"` |
+| In use, at some other level | left alone — a rig trimmed to `-6 dB` is a deliberate choice |
+| Not in use | `OFF` |
+| Absent from the mixer read | left alone — writing it would make a change with no original to restore |
+
+**Same shape as panning throughout.** A pure planner (`plan_sid_volume`, `resolve_volumes`, label/int conversion) plus one best-effort `apply_volume` that reads the mixer once, writes only what differs, and returns the originals for the caller's restore snapshot. Source derivation is shared, not duplicated — `sid_panning.distinct_sources` decides which sources a tune claims and in what order — so `sid_volume` is indexed by **source**, exactly like `sid_panning`: entry *k* is the *k*-th source claimed, capped at 4.
+
+A configured list is truncated to the source count and padded with *auto*, not with a level: padding with a level would let a one-entry list silently dictate every other source.
+
+**Values.** A dB int (`0`, `-6`, `3`), a label (`"0 dB"`, `"-6 dB"`, `"off"`), or a stringified int. Two firmware traps, both confirmed live via `GET /v1/configs/Audio%20Mixer`:
+
+* the volume items spell it `Vol UltiSid 1`/`2` (lowercase `id`) while the pan items spell it `Pan UltiSID 1`/`2` (uppercase `SID`). The inconsistency is the firmware's.
+* every non-negative level carries a **leading space** — `" 0 dB"`, not `"0 dB"`. An exact-match comparison against a stripped string never matches, so the mixer would be rewritten on every setup and the "no change ⇒ no writes" contract would be quietly lost.
+
+The ladder is also **not** a uniform 1 dB fan — `OFF`, `-42`, `-36`, `-30`, `-27`, `-24`, then every dB from `-18` to `+6` — so an int with no representation (`-20`) is rejected at config load rather than snapped to a neighbor.
+
+Applied at the same three call sites as panning, folding into the same restore snapshot: `WaveformScene._apply_sid_volume`, `AsidScene._apply_sid_mixer` (setup and every remap), and `SidFileAudioSource._apply_sid_mixer`.
+
+`tests/test_sid_volume.py` covers the conversions, the policy, the pure planner and the diff-only apply.
+
+### LED mirroring of socketed SIDs
+
+The U64's built-in LED display is driven by **UltiSID core activity**, so a tune playing entirely on socketed chips lights nothing unless a core is also listening at those addresses. Both planners therefore point leftover cores at the socket-served addresses instead of unmapping them (`asid_sidmap.mirror_bases`) — which is how the firmware ships by default (`UltiSID 1 = $D400`, `UltiSID 2 = $D420`, both at `Vol OFF`).
+
+The mirrors carry no chip of their own, so they never appear in `SidMap.sources`, which means `sid_volume` classifies them as not-in-use and mutes them. That is the whole safety story: LEDs from the core, audio from the real chip, and nothing doubled.
+
+Mirroring is skipped unless the UltiSID split is off, since a split core answers a window of 2 or 4 addresses whose extra instances would collide with the real chips. That costs nothing in practice — a split is only ever chosen when both cores are already hosting real chips, leaving nothing spare to mirror with.
+
+**Single-SID tunes are deliberately not mirrored.** They never reach a map planner (there is no address to route), so nothing touches the UltiSID addresses — and the firmware default already parks the cores at `$D400`/`$D420` with `Vol OFF`, so the LEDs light anyway. Adding a mirror there would mean the single-SID path starts writing addressing config it otherwise never touches, breaking the HW-verified rule that an already-matching single-SID tune produces **no REST traffic at all**. The cost is that a machine which has explicitly unmapped its cores gets no LEDs on single-SID tunes; set `UltiSID 1 Address` back to `$D400` on the U64 itself if that matters.
 
 ## `midi_scene.py` — MidiScene (live MIDI → SID + oscilloscope)
 
@@ -262,5 +313,15 @@ Because the producer feeds in real time at exactly the consume cadence, the ring
 
 ### Multi-SID on the U64 (`asid_sidmap.py`)
  When the stream reveals a chip index > 0 and the backend exposes the config API (`profile.supports_config` — Ultimate only), the scene honors real multi-SID. The **pure planner** `plan_sid_map(n_sids, socket1_present, socket2_present)` decides the U64 address map: it prefers **physical socket SIDs** (chips 0-1 → sockets at `$D400`/`$D420` when detected), then fills the tail from the two UltiSID FPGA cores using the minimal address-line split (`Off`/`1/2`/`1/4`, up to 8 total). The cores sit on the `$D400` page when no sockets are used (chip 0 stays at `$D400`) or the `$D5xx` page when sockets occupy `$D4xx` — the firmware force-aligns a split core's base (`1/2`→`$40`, `1/4`→`$80`), so the `$5xx` page keeps cores clear of the sockets at any split. `Auto Address Mirroring` is disabled so each base responds distinctly. The planner is unit-tested against a Python port of the firmware address math (`u64_offsets`/`split_bits`/`fix_splits`) that asserts the realized instances are distinct and cover the routed addresses (`tests/test_asid_sidmap.py`). Chip count is **detected dynamically**: the reader tracks the max chip index seen; `process_frame` (main thread, to keep display mutation off the reader) grows the map — snapshots the current SID-address config once (via `api.get_config_category`, restored on teardown), applies the new map live (`api.put_config_item`, no reboot / not flashed → reverts on power-cycle), updates routing, and reflows the split scope. The **scope subdivides each of the three voice rows horizontally**, one cell-aligned window per chip (`voice_scope._compute_window_slices`), a 1px gutter between chips; single-chip output is byte-identical so waveform/midi are untouched. `asid_multi_sid` (default true) and `asid_max_sids` (1-8) gate/cap it; on TeensyROM or when disabled, extra chips downmix to the primary SID with a one-time warning. See docs/caveats.md.
+
+**Two planners, one policy.** `plan_sid_map` above is the *canonical* layout — it chooses its own addresses and knows only which sockets are populated, which is all an ASID stream can tell it (no chip-model information rides the protocol). `plan_sid_map_for_addresses` realizes a `.sid` file's **own** fixed bases and additionally takes `required_models` + `socket_models`, so a socket claims a target only when it carries the model that chip asked for. That is what lets routing and model matching happen in one pass — see [SID Player Autoconfig](#sid-player-autoconfig) for the two-pass failure it replaced.
+
+Both share the rest of the policy:
+
+* **Unclaimed sockets are explicitly `Disabled`.** A socket left enabled at an address the plan just handed to an UltiSID core answers alongside it, and the tune plays on both chips at once. The disable is unconditional rather than gated on chip detection, because detection is exactly what can't be trusted when a stale config is the problem.
+* **Spare cores mirror the socket addresses** rather than being unmapped, so the LED display still lights — see [LED mirroring of socketed SIDs](#led-mirroring-of-socketed-sids).
+* **Cores beyond that are `Unmapped`**, so a stale mapping from a previous run can't answer an address this plan didn't intend.
+
+The oracle in `tests/test_asid_sidmap.py` asserts each routed chip is realized *by the source the map says plays it*, and that the only address answered by two sources is a deliberate LED mirror.
 
 **Follow-ups (see auto-memory):** the reverse direction — c64cast as an ASID *host* emitting `0x4E` from the `sid_host_emu` register capture to drive external ASID synths; and per-chip color tint / labels on the split scope (v1 distinguishes chips by position + gutter only).
