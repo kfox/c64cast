@@ -1293,8 +1293,11 @@ def sampler_is_available(api: object) -> bool | None:
 
 def _wants_sampler(cfg: object) -> tuple[bool, list[str]]:
     """Return (wants_sampler, reasons). The run wants the sampler when audio is
-    enabled, [audio].backend is auto/sampler (not the forced DAC), and there's a
-    video scene to play through it (the only scene type wired to the sampler)."""
+    enabled, [audio].backend is auto/sampler (not the forced DAC), and a scene is
+    wired to play through it: a ``video`` scene, or a ``generative`` scene with
+    ``audio_source = "file"`` (a decoded track — the DAC path is staticky, so it
+    routes through the sampler too). Provisioning uses this to enable the FPGA
+    map, so missing a sampler-routed scene here leaves it silent."""
     reasons: list[str] = []
     # Duck-type to avoid a circular doctor<->config import (see _wants_reu).
     audio = getattr(cfg, "audio", None)
@@ -1306,6 +1309,11 @@ def _wants_sampler(cfg: object) -> tuple[bool, list[str]]:
     scenes = getattr(cfg, "scenes", None) or []
     if any(getattr(s, "type", None) == "video" for s in scenes):
         reasons.append(f"[audio].backend = {backend!r} + video scene(s)")
+    if any(
+        getattr(s, "type", None) == "generative" and getattr(s, "audio_source", None) == "file"
+        for s in scenes
+    ):
+        reasons.append(f'[audio].backend = {backend!r} + generative audio_source="file" scene(s)')
     return bool(reasons), reasons
 
 

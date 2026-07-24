@@ -3983,11 +3983,12 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
             )
         resolve_file_spec(s.file, AUDIO_EXTS, label="generative file audio")
         if not cfg.audio.enabled or s.audio is False:
-            # The file streams to the DAC and the analyzer taps that same path, so
-            # with the DAC off there's neither playback nor reactivity. Warn, don't
-            # fail (mirrors the mic/listen guidance).
+            # The file streams to the C64's audio output (the off-bus sampler on a
+            # sampler-capable U64, else the 4-bit DAC) and the analyzer taps that
+            # same path, so with audio off there's neither playback nor
+            # reactivity. Warn, don't fail (mirrors the mic/listen guidance).
             log.warning(
-                "generative scene: audio_source = 'file' but the DAC path is off "
+                "generative scene: audio_source = 'file' but audio is off "
                 "(%s) — the file won't play or drive the visuals. Enable [audio] to "
                 "hear the track and make the visuals react.",
                 "this scene sets audio = false" if s.audio is False else "[audio].enabled is false",
@@ -5008,6 +5009,14 @@ def build_scene(
                         )
                     scene_audio = None
                 file_audio_src: AudioFileSource | None = None
+                # The audio object the SourceScene carries as its base `.audio`
+                # (the set_pre_emphasis hook + overlay sample tap). Defaults to
+                # the shared 4-bit DAC streamer; the file path may swap it for a
+                # per-scene off-bus sampler (below), so it must widen to either.
+                scene_base_audio: AudioStreamer | UltimateAudioSampler | None = scene_audio
+                # True when the file path decodes into the Ultimate Audio sampler
+                # rather than the $D418 DAC — lifts the DAC bitmap fps caps.
+                file_uses_sampler = False
                 if s.audio_source == "mic" and scene_audio is not None:
                     audio_src = MicAudioSource(
                         scene_audio,
@@ -5017,11 +5026,38 @@ def build_scene(
                         features_cfg=cfg.audio_features,
                     )
                 elif s.audio_source == "file" and scene_audio is not None:
-                    # Decode a music file to the DAC AND analyze it — the same
-                    # streamer + analyzer the mic path uses, sourced from a file.
+                    # Decode a music file to the C64's audio AND analyze it — the
+                    # same analyzer the mic path uses, sourced from a file.
+                    # Resolve the backend exactly like a video scene: on a
+                    # sampler-capable U64 with the Ultimate Audio sampler
+                    # available (backend = auto/sampler), decode into the off-bus
+                    # 16-bit sampler instead of the 4-bit $D418 DAC. The DAC path
+                    # is intrinsically staticky here — its NMI service is jittered
+                    # by every host-DMA RAM write and it quantizes to ~6-7 bits —
+                    # so a decoded track is barely recognizable regardless of
+                    # display mode (HW-measured 2026-07-24); the sampler is immune
+                    # (no $D418/NMI/CPU). Falls back to the DAC on TeensyROM, when
+                    # the sampler is unavailable, or backend = "dac".
                     assert s.file is not None  # narrowed by _validate_generative
+                    file_audio_obj: AudioStreamer | UltimateAudioSampler = scene_audio
+                    file_backend = resolve_audio_backend(
+                        cfg.audio.backend,
+                        supports_sampler=api.profile.supports_sampler,
+                        sampler_available=sampler_available,
+                    )
+                    if file_backend == "sampler":
+                        from .sampler import UltimateAudioSampler
+
+                        file_audio_obj = UltimateAudioSampler(
+                            api,
+                            sample_rate=cfg.audio.sampler_sample_rate,
+                            bits=cfg.audio.sampler_bits,
+                            ref_clock_hz=cfg.audio.sampler_clock_hz,
+                        )
+                        file_uses_sampler = True
+                    scene_base_audio = file_audio_obj
                     file_audio_src = AudioFileSource(
-                        scene_audio,
+                        file_audio_obj,
                         s.file,
                         reactive=s.reactive,
                         features_cfg=cfg.audio_features,
@@ -5030,7 +5066,9 @@ def build_scene(
                 else:
                     # "none", or "mic"/"file" with audio disabled → silence.
                     audio_src = NullAudioSource()
-                scene = SourceScene(api, scene_audio, mode, gen, audio_src, name, color=cfg.color)
+                scene = SourceScene(
+                    api, scene_base_audio, mode, gen, audio_src, name, color=cfg.color
+                )
                 # Size a file-audio scene to the track so `c64cast tune.mp3` plays
                 # the whole song then advances/loops (an explicit duration_s still
                 # wins, applied in the duration-resolution block below).
@@ -5041,12 +5079,23 @@ def build_scene(
                 ):
                     scene.duration_s = file_audio_src.duration_s
                 # A mic/file-source generative scene is digitized-audio-capable
-                # like webcam/video, so it gets the same bitmap frame-push caps
-                # (20 fps while the DAC streams, half rate otherwise). The "none"
-                # source never drives the DAC, so it keeps the playlist default.
+                # like webcam/video, so a bitmap display caps its frame push:
+                # 20 fps while the 4-bit DAC streams (its NMI + ring DMAWRITEs
+                # compete with frame uploads), half the system rate (30/25)
+                # otherwise. The off-bus sampler frees the *audio* from the bus,
+                # but NOT the video: a generative source renders a fresh frame
+                # every tick (no VideoScene-style dedup), so uncapping to the
+                # system rate would push 60 real mhires frames/s of REU bank-swap
+                # traffic — which starves the sampler's own REU writes (audible
+                # static) and overloads the bus (C64-side visual crash, HW
+                # 2026-07-24). So a sampler-routed file scene keeps the muted
+                # 30/25 bitmap cap: off-bus audio, no on-bus digi, no uncap. The
+                # "none" source drives no audio, so it keeps the playlist default.
                 if s.target_fps is None and s.audio_source in ("mic", "file"):
                     fps = _frame_push_default_fps(
-                        mode, scene_audio is not None, cfg.ultimate64.system
+                        mode,
+                        scene_audio is not None and not file_uses_sampler,
+                        cfg.ultimate64.system,
                     )
                     if fps is not None:
                         scene.target_fps = fps

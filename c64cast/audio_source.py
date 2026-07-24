@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .modes import DisplayMode
     from .modulation import MusicModulation
     from .music_features import SidFeatureStream
+    from .sampler import UltimateAudioSampler
     from .sid_host_emu import SidHeader
 
 log = logging.getLogger(__name__)
@@ -207,17 +208,30 @@ class MicAudioSource:
 
 
 class AudioFileSource:
-    """Decode an audio file (mp3/wav/flac/… via PyAV) to the 4-bit DAC and run
-    the pre-DSP analyzer over it, so a generative/test-pattern visual reacts to
-    the track. The audio half of `c64cast tune.mp3` (audio_source = "file").
+    """Decode an audio file (mp3/wav/flac/… via PyAV) to the C64's audio output
+    and run the pre-DSP analyzer over it, so a generative/test-pattern visual
+    reacts to the track. The audio half of `c64cast tune.mp3`
+    (audio_source = "file").
 
-    Mechanism: a background thread demuxes + resamples the file to the streamer's
-    mono int16 rate and feeds `AudioStreamer.push_samples`, exactly as
-    `AVFileSource` feeds a video's audio — push_samples both DAC-encodes the
-    samples and (pre-DSP) forwards them to `analysis_sink`, so the *same*
+    **Backend.** The audio object is whatever `config.build_scene` resolved for
+    the run: on a sampler-capable U64 with `[audio].backend` = auto/sampler it is
+    an off-bus `UltimateAudioSampler` (16-bit PCM straight from REU — no
+    $D418/NMI/4-bit quantization/DSP, and immune to the CPU-freeze that host-DMA
+    RAM writes inflict on the NMI DAC); otherwise the shared 4-bit `$D418`
+    `AudioStreamer`. The 4-bit DAC path is intrinsically lo-fi and — because its
+    NMI service is jittered by every host-DMA transfer — audibly staticky on the
+    U64 regardless of display mode, so the sampler is the strongly preferred path
+    (HW-measured 2026-07-24). Both satisfy the same scene-facing contract
+    (`sample_rate` / `push_samples` / `position_seconds` / `stop` /
+    `analysis_sink`), so this source drives either polymorphically.
+
+    Mechanism: a background thread demuxes + resamples the file to the audio
+    object's mono int16 rate and feeds its `push_samples`, exactly as
+    `AVFileSource` feeds a video's audio — push_samples both encodes the samples
+    for the C64 and (pre-DSP) forwards them to `analysis_sink`, so the *same*
     analyzer the mic path uses drives the visuals off the decoded audio. Playback
     is real-time paced by push_samples' backpressure (queue-full block), so the
-    decode thread naturally tracks the DAC consumption rate.
+    decode thread naturally tracks the consumption rate.
 
     `wants_audio_lock=False`: like the mic/video paths, a file is not the
     ensemble's SID spotlight (`config.build_scene` also suppresses its DAC audio
@@ -238,13 +252,17 @@ class AudioFileSource:
 
     def __init__(
         self,
-        audio: AudioStreamer,
+        audio: AudioStreamer | UltimateAudioSampler,
         file: str,
         *,
         reactive: bool = True,
         features_cfg: AudioFeaturesCfg | None = None,
     ):
         self._audio = audio
+        # True when routed through the off-bus Ultimate Audio sampler (see the
+        # class docstring); the sampler's start() blocks collecting a prebuffer,
+        # so setup() starts the decode thread FIRST to feed it (below).
+        self._is_sampler = bool(getattr(audio, "is_sampler", False))
         self.file_spec = file
         self._reactive = reactive
         self._features_cfg = features_cfg
@@ -304,18 +322,38 @@ class AudioFileSource:
 
     def setup(self) -> None:
         """Re-pick from the (re-resolved) pool, install the analyzer, and spin up
-        the decode→DAC thread. Never raises on a decode/analyzer hiccup — degrades
-        to non-reactive so the visual keeps running."""
+        the decode→audio thread. Never raises on a decode/analyzer hiccup —
+        degrades to non-reactive so the visual keeps running.
+
+        Ordering differs by backend. The 4-bit DAC's `start_for_external_source`
+        just arms its worker (non-blocking), so it starts before the decode
+        thread. The sampler's `start()` blocks up to ~2 s collecting a prebuffer
+        from `push_samples`, so the decode thread must already be feeding it —
+        start decode FIRST, then bring the ring up. `push_samples` accepts data
+        before the ring is gated (it enqueues, blocking only when full), so the
+        prebuffer fills promptly and playback starts without the empty-prebuffer
+        stall."""
         self._pick_and_probe()
         self._stop.clear()
         self._start_features()
-        self._audio.start_for_external_source()
-        thread = threading.Thread(target=self._decode_loop, daemon=True, name="audio-file-decode")
-        self._thread = thread
-        thread.start()
+        if self._is_sampler:
+            thread = threading.Thread(
+                target=self._decode_loop, daemon=True, name="audio-file-decode"
+            )
+            self._thread = thread
+            thread.start()
+            self._audio.start_for_external_source()
+        else:
+            self._audio.start_for_external_source()
+            thread = threading.Thread(
+                target=self._decode_loop, daemon=True, name="audio-file-decode"
+            )
+            self._thread = thread
+            thread.start()
         log.info(
-            "audio file: %s → DAC @ %dHz%s",
+            "audio file: %s → %s @ %dHz%s",
             os.path.basename(self._path),
+            "sampler" if self._is_sampler else "DAC",
             self._audio.sample_rate,
             " (reactive)" if self._features is not None else "",
         )

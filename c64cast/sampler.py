@@ -32,6 +32,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -416,6 +417,15 @@ class UltimateAudioSampler:
         self._tap_write = 0
         self._tap_lock = threading.Lock()
 
+        # Pre-DSP analysis sink for music-reactive visuals (audio_source =
+        # "file"). Mirrors AudioStreamer.analysis_sink: a reactive source installs
+        # its AnalysisTap.push here and push_samples feeds it the mono floats
+        # BEFORE any DSP, so the same AudioFeatureAnalyzer the DAC path uses
+        # drives the visuals off the sampler-routed track. None (the default) =
+        # non-reactive, one attribute load per push.
+        self.analysis_sink: Callable[[np.ndarray], None] | None = None
+        self._analysis_sink_failed = False
+
     # ---- bring-up ---------------------------------------------------------
     def start(self, prebuffer_timeout: float = 2.0) -> None:
         """Prefill the ring with silence, prebuffer ``_prebuffer_target`` bytes
@@ -509,6 +519,9 @@ class UltimateAudioSampler:
         epoch = self._flush_epoch
         floats = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
         self._tap_push(floats)
+        # Pre-DSP analysis tap (parity with AudioStreamer.push_samples): feed the
+        # reactive analyzer the raw floats before the optional DSP shaping.
+        self._push_to_analysis(floats)
         if self._dsp is not None and self._dsp.active:
             floats = self._dsp.process(floats)
         out_i16 = np.clip(np.rint(floats * 32767.0), -32768, 32767).astype(np.int16)
@@ -662,6 +675,30 @@ class UltimateAudioSampler:
             total_s = self._pushed_samples / self._actual_rate
             return max(0.0, min(elapsed, total_s))
         return max(0.0, elapsed)
+
+    def start_for_external_source(self) -> None:
+        """Alias for ``start()`` so a caller feeding via ``push_samples`` (e.g.
+        AudioFileSource) can bring up either backend with the same call. The DAC
+        streamer uses this name for its no-input-thread bring-up; the sampler's
+        ``start()`` already is that path (prefill + gate + writer thread)."""
+        self.start()
+
+    # ---- reactive analysis tap (audio_source = "file") --------------------
+    def _push_to_analysis(self, mono_floats: np.ndarray) -> None:
+        """Feed the pre-DSP analysis sink, if one is installed. A failing analyzer
+        must never take the audio path down, so the first exception is logged and
+        the sink dropped for the rest of the run (mirrors
+        AudioStreamer._push_to_analysis)."""
+        sink = self.analysis_sink
+        if sink is None:
+            return
+        try:
+            sink(mono_floats)
+        except Exception:
+            if not self._analysis_sink_failed:
+                self._analysis_sink_failed = True
+                log.exception("sampler analysis sink failed — disabling it (playback continues)")
+            self.analysis_sink = None
 
     # ---- sample tap (spectrum overlays) -----------------------------------
     def _tap_push(self, mono_floats: np.ndarray) -> None:

@@ -739,7 +739,7 @@ class SourceScene(Scene):
     def __init__(
         self,
         api: C64Backend,
-        audio: AudioStreamer | None,
+        audio: SceneAudio | None,
         display_mode: DisplayMode,
         source: FrameSource,
         audio_source: AudioSource,
