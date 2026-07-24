@@ -49,6 +49,7 @@ from .asid_sidmap import (
     ITEM_ULTISID1_FILTER,
     ITEM_ULTISID2_ADDR,
     ITEM_ULTISID2_FILTER,
+    NO_MODEL_REQUIREMENT,
 )
 from .sid_hw_config import (
     apply_config,
@@ -72,8 +73,10 @@ log = logging.getLogger(__name__)
 SID_MODEL_CHOICES: Final[tuple[str, ...]] = ("auto", "6581", "8580", "off")
 
 # A chip whose header model is one of these carries no definite requirement —
-# always a no-op regardless of what's socketed.
-_NO_REQUIREMENT = (None, "?", "6581+8580")
+# always a no-op regardless of what's socketed. Defined in asid_sidmap so the
+# address planner (which matches models in the same pass as routing) and this
+# module agree on what "no requirement" means.
+_NO_REQUIREMENT = NO_MODEL_REQUIREMENT
 
 
 def _current_addr_map(api: C64Backend) -> dict[int, str]:

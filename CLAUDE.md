@@ -110,6 +110,7 @@ Where the per-subsystem detail lives (the [architecture reference](docs/architec
 | SID player PRG — relocation, per-call `$01` banking, TR vector-swap | [SID player PRG](docs/architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
 | SID Player Autoconfig (`sid_model`, 6581/8580 matching) | [`waveform.py` + `sidemu.py` + `sid_host_emu.py`](docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | SID stereo panning (`sid_panning`, per-source U64 mixer pan) | [`sid_panning.py`](docs/architecture/sid.md#sid-panning) |
+| SID mixer volume (`sid_volume`) + LED mirroring of socketed SIDs | [`sid_volume.py`](docs/architecture/sid.md#sid-volume) |
 | ASID decode + buffered ring player | [`asid.py` + `asid_scene.py`](docs/architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | WLED bridge — broadcast / listen / pixel sink | [`wled_sync.py`, `wled_device.py`, `wled_sink.py`](docs/architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3) |
 | MIDI live-tune Phases 1-5 (live params, transport, loops, resync, wizard) | [`midi_control.py`, `transport.py`, `midi_setup.py`](docs/architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |

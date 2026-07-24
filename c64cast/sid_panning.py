@@ -158,29 +158,43 @@ def normalize_pan_spec(spec: Sequence[int | str]) -> tuple[int, ...]:
     return tuple(pan_from_label(pan_to_label(v)) for v in spec)
 
 
-def default_pan_spread(n_sources: int) -> tuple[int, ...]:
-    """The default pan positions for `n_sources` pannable sources.
+def default_pan_spread(n_sources: int, n_chips: int | None = None) -> tuple[int, ...]:
+    """The default pan positions for `n_sources` pannable sources hosting
+    `n_chips` tune chips (`n_chips` defaults to one chip per source).
 
     The values encode *musical importance*, not a uniform fan: with an odd
     count the primary chip sits dead center and the rest flank it; with an even
     count the first two chips sit closest to center and later ones spread
-    wider. `n_sources` is clamped to :data:`MAX_PANNED_SOURCES`."""
-    return _DEFAULT_SPREAD[max(0, min(n_sources, MAX_PANNED_SOURCES))]
+    wider. `n_sources` is clamped to :data:`MAX_PANNED_SOURCES`.
+
+    **A spread the hardware can't carry collapses to center.** When there are
+    fewer sources than chips — a 3-SID tune on a machine with no socketed SID
+    has only the 2 UltiSID cores — some source is hosting more than one chip,
+    so the usual spread would throw two chips hard left against one hard right
+    rather than opening the image up. Mono is the honest default there; an
+    explicit ``sid_panning`` still overrides it."""
+    n_sources = max(0, min(n_sources, MAX_PANNED_SOURCES))
+    if n_chips is not None and n_chips > n_sources:
+        return (0,) * n_sources
+    return _DEFAULT_SPREAD[n_sources]
 
 
-def resolve_panning(configured: Sequence[int | str] | None, n_sources: int) -> tuple[int, ...]:
+def resolve_panning(
+    configured: Sequence[int | str] | None, n_sources: int, n_chips: int | None = None
+) -> tuple[int, ...]:
     """The pan value (int ``-5..5``) for each of `n_sources` pannable sources.
     A non-empty `configured` list (from ``[ultimate64].sid_panning``) wins,
     truncated or center-extended to length `n_sources`; otherwise
-    :func:`default_pan_spread`. Assumes `configured` already passed
-    :func:`normalize_pan_spec` validation."""
+    :func:`default_pan_spread`, which needs `n_chips` to tell an open spread
+    from one the hardware would render lopsided. Assumes `configured` already
+    passed :func:`normalize_pan_spec` validation."""
     n_sources = max(0, min(n_sources, MAX_PANNED_SOURCES))
     if n_sources == 0:
         return ()
     if configured:
         values = normalize_pan_spec(configured)[:n_sources]
         return values + (0,) * (n_sources - len(values))
-    return default_pan_spread(n_sources)
+    return default_pan_spread(n_sources, n_chips)
 
 
 def distinct_sources(sources: Sequence[str | None]) -> tuple[str, ...]:
@@ -251,17 +265,20 @@ def _warn_if_sources_limited(
     sources: Sequence[str | None], configured: Sequence[int | str]
 ) -> None:
     """Warn when the hardware can't give every chip (or every configured entry)
-    its own pan position. The ceiling is one position per *source*: the two
-    UltiSID cores plus one per populated SID socket. With no socketed SIDs only
-    two positions exist, so a 3+ chip tune necessarily doubles chips up."""
+    its own pan position. The ceiling is one position per *source* the tune
+    actually uses: the two UltiSID cores plus any socket playing a chip. With no
+    socket in use only two positions exist, so a 3+ chip tune necessarily
+    doubles chips up."""
     claimed = distinct_sources(sources)
     if not claimed:
         return  # nothing routed to pan at all — not a "limited sources" case
     n_chips = len(sources)
     if n_chips > len(claimed):
         socketed = [s for s in claimed if s.startswith("socket")]
+        # "not in use" rather than "not present": model-aware routing skips a
+        # populated socket whose chip is the wrong model for the tune.
         why = (
-            "no socketed SIDs, so only the 2 UltiSID cores are pannable"
+            "no socketed SID in use, so only the 2 UltiSID cores are pannable"
             if not socketed
             else f"{len(claimed)} pannable source(s) in use"
         )
@@ -297,7 +314,7 @@ def apply_panning(
     if not getattr(api.profile, "supports_config", False):
         return SidPanning.identity(len(sources))
 
-    pans = resolve_panning(configured, len(distinct_sources(sources)))
+    pans = resolve_panning(configured, len(distinct_sources(sources)), len(sources))
     _warn_if_sources_limited(sources, configured or ())
     chip_pans = chip_pan_values(sources, pans)
     window_order = window_order_for_pans(chip_pans)

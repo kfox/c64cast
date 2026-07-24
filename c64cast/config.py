@@ -33,6 +33,7 @@ from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
 from .sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
+from .sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 
 if TYPE_CHECKING:
     from .audio import AudioStreamer
@@ -347,6 +348,23 @@ class Ultimate64Cfg:
             "chip stays nearest center. Fewer positions exist without socketed "
             "SIDs: with none, only the 2 UltiSID cores are pannable, so chips "
             "beyond the 2nd share a pan.",
+        },
+    )
+    # Applied live to the U64's Audio Mixer alongside sid_panning and restored
+    # at teardown. Indexed by SOURCE exactly like sid_panning — see
+    # c64cast/sid_volume.py.
+    sid_volume: list[int | str] = field(
+        default_factory=list,
+        metadata={
+            "help": "Mixer level per SID audio source, U64 only. Max 4 entries — "
+            "the U64 has one volume control per source (2 SID sockets + 2 UltiSID "
+            "cores), and entry N sets the Nth source the tune uses, same indexing "
+            "as sid_panning. Each entry is a dB int (0, -6, 3) or a label "
+            "('0 dB', '-6 dB', 'off'). Empty = auto: a source the tune plays on is "
+            "raised to 0 dB when it would otherwise be OFF (silent), a source "
+            "already at a deliberate level is left alone, and every source the tune "
+            "does not use is muted. The ladder is sparse below -18 dB: -42, -36, "
+            "-30, -27, -24, then every dB from -18 to +6.",
         },
     )
 
@@ -2658,6 +2676,27 @@ def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
         raise ValueError(f"ultimate64.sid_panning: {e}") from e
 
 
+def _validate_sid_volume(u64: Ultimate64Cfg) -> None:
+    """Range-check [ultimate64].sid_volume at load/doctor time so a level the
+    mixer can't represent surfaces before the playlist runs, not mid-scene when
+    the mixer is configured. Values stay as authored (ints or labels);
+    sid_volume.resolve_volumes normalizes them at apply time."""
+    if not u64.sid_volume:
+        return
+    if not isinstance(u64.sid_volume, list):
+        raise ValueError(f"ultimate64.sid_volume must be a list of levels, got {u64.sid_volume!r}")
+    if len(u64.sid_volume) > MAX_VOLUME_SOURCES:
+        raise ValueError(
+            f"ultimate64.sid_volume accepts at most {MAX_VOLUME_SOURCES} entries "
+            f"(the U64 has one volume control per audio source: 2 SID sockets + 2 "
+            f"UltiSID cores), got {len(u64.sid_volume)}"
+        )
+    try:
+        normalize_volume_spec(u64.sid_volume)
+    except ValueError as e:
+        raise ValueError(f"ultimate64.sid_volume: {e}") from e
+
+
 def _validate_force_palette(color: ColorCfg) -> None:
     """Range-check + normalize the [color].force_palette_colors knob at
     load/doctor time so a bad value surfaces before the playlist runs, not
@@ -2749,6 +2788,7 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     _validate_audio_device(cfg.audio)
     _validate_performance(cfg.performance)
     _validate_sid_panning(cfg.ultimate64)
+    _validate_sid_volume(cfg.ultimate64)
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out
@@ -4847,6 +4887,7 @@ def build_scene(
             songlengths_db=db,
             sid_model=resolve_sid_model_cfg(cfg),
             sid_panning=cfg.ultimate64.sid_panning,
+            sid_volume=cfg.ultimate64.sid_volume,
         )
         if s.name:
             scene.name = s.name
@@ -4915,6 +4956,7 @@ def build_scene(
                 reactive=s.reactive,
                 sid_model=resolve_sid_model_cfg(cfg),
                 sid_panning=cfg.ultimate64.sid_panning,
+                sid_volume=cfg.ultimate64.sid_volume,
             )
             scene = SourceScene(api, None, mode, gen, audio_src, name, color=cfg.color)
             # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at
@@ -5096,6 +5138,7 @@ def build_scene(
             max_sids=s.asid_max_sids,
             buffered_player=s.asid_buffered_player,
             sid_panning=cfg.ultimate64.sid_panning,
+            sid_volume=cfg.ultimate64.sid_volume,
             name=s.name or "ASID",
         )
     # Duration resolution. `scene.duration_s = math.inf` means "run until

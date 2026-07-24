@@ -55,9 +55,31 @@ class PlanBasicsTest(unittest.TestCase):
         self.assertEqual(sm.addresses, (0xD400,))
         self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_SOCKET1_ADDR)], "$D400")
         self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Enabled")
-        # Both cores unmapped when only sockets are used.
-        self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID1_ADDR)], m.ADDR_UNMAPPED)
+        # The spare core shadows the socket so the U64's LED display still
+        # lights (it plays no chip of its own, and sid_volume leaves it muted).
+        self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID1_ADDR)], "$D400")
         self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID2_ADDR)], m.ADDR_UNMAPPED)
+        self.assertEqual(sm.sources, ("socket1",))
+
+    def test_unclaimed_socket_is_disabled(self):
+        # A socket left enabled at an address the plan gave to a core answers
+        # alongside it — the tune would play on both chips at once.
+        sm = m.plan_sid_map(1, socket1_present=True, socket2_present=True)
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Enabled")
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET2_EN)], "Disabled")
+
+    def test_both_sockets_disabled_when_cores_play_everything(self):
+        sm = m.plan_sid_map(2)
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Disabled")
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET2_EN)], "Disabled")
+
+    def test_no_mirror_when_both_cores_carry_chips(self):
+        sm = m.plan_sid_map(3, socket1_present=True)
+        cores = {
+            sm.config[(m.CAT_ADDRESSING, item)]
+            for item in (m.ITEM_ULTISID1_ADDR, m.ITEM_ULTISID2_ADDR)
+        }
+        self.assertNotIn("$D400", cores, "socket address must not be shadowed by a playing core")
 
     def test_single_no_socket_uses_ultisid_at_d400(self):
         # No sockets → cores stay on the conventional $D400 page (chip 0 = $D400).
@@ -96,28 +118,64 @@ class PlanBasicsTest(unittest.TestCase):
         self.assertTrue(sm.clamped)
 
 
+def _realized_by_source(sm: m.SidMap) -> dict[str, list[int]]:
+    """Every $Dxxx base each audio source answers at under `sm`'s config (port
+    of the firmware address math via _realize_core). A disabled socket answers
+    nothing, so the enable item gates it."""
+    cfg = sm.config
+    by_source: dict[str, list[int]] = {}
+    for index, (addr_item, en_item) in enumerate(
+        ((m.ITEM_SOCKET1_ADDR, m.ITEM_SOCKET1_EN), (m.ITEM_SOCKET2_ADDR, m.ITEM_SOCKET2_EN))
+    ):
+        value = cfg.get((m.CAT_ADDRESSING, addr_item))
+        if cfg.get((m.CAT_SOCKETS, en_item)) == "Enabled" and value and value != m.ADDR_UNMAPPED:
+            by_source[f"socket{index + 1}"] = [int(value.lstrip("$"), 16)]
+    split = cfg.get((m.CAT_ADDRESSING, m.ITEM_ULTISID_SPLIT), m.SPLIT_OFF)
+    for index, core_item in enumerate((m.ITEM_ULTISID1_ADDR, m.ITEM_ULTISID2_ADDR)):
+        value = cfg.get((m.CAT_ADDRESSING, core_item))
+        if value and value != m.ADDR_UNMAPPED:
+            by_source[f"ultisid{index + 1}"] = _realize_core(int(value.lstrip("$"), 16), split)
+    return by_source
+
+
+def _realized_addresses(sm: m.SidMap) -> set[int]:
+    """Every $Dxxx base the config in `sm` makes some source answer at."""
+    return {addr for addrs in _realized_by_source(sm).values() for addr in addrs}
+
+
 class RealizationOracleTest(unittest.TestCase):
-    """Every planned map must realize its routed addresses as distinct."""
+    """Every planned map must realize each routed chip on the source that plans
+    to play it, with no aliasing beyond the deliberate LED mirrors."""
 
     def _assert_realizable(self, sm: m.SidMap):
-        realized: list[int] = []
-        cfg = sm.config
-        # Sockets (no split in our plans).
-        for addr_item in (m.ITEM_SOCKET1_ADDR, m.ITEM_SOCKET2_ADDR):
-            v = cfg.get((m.CAT_ADDRESSING, addr_item))
-            if v and v != m.ADDR_UNMAPPED:
-                realized.append(int(v.lstrip("$"), 16))
-        # UltiSID cores (with split).
-        split = cfg.get((m.CAT_ADDRESSING, m.ITEM_ULTISID_SPLIT), m.SPLIT_OFF)
-        for core_item in (m.ITEM_ULTISID1_ADDR, m.ITEM_ULTISID2_ADDR):
-            v = cfg.get((m.CAT_ADDRESSING, core_item))
-            if v and v != m.ADDR_UNMAPPED:
-                realized.extend(_realize_core(int(v.lstrip("$"), 16), split))
-        # All realized addresses distinct (no aliasing).
-        self.assertEqual(len(realized), len(set(realized)), f"aliased addresses: {realized}")
-        # Every routed address is actually realized by the hardware config.
-        for a in sm.addresses:
-            self.assertIn(a, realized, f"routed ${a:04X} not realized by {sm.config}")
+        by_source = _realized_by_source(sm)
+        for address, source in zip(sm.addresses, sm.sources, strict=True):
+            self.assertIn(
+                address,
+                by_source.get(source, []),
+                f"routed ${address:04X} not realized by {source} in {sm.config}",
+            )
+
+    def _assert_only_mirrors_alias(self, sm: m.SidMap):
+        """Two sources may answer one address only when one of them is a spare
+        core shadowing a socket for the LEDs — never two sources both playing
+        chips, which would sound as a detuned double."""
+        by_source = _realized_by_source(sm)
+        playing = set(sm.sources)
+        for source, addrs in by_source.items():
+            for other, other_addrs in by_source.items():
+                overlap = set(addrs) & set(other_addrs)
+                if other <= source or not overlap:
+                    continue
+                spares = [
+                    s for s in (source, other) if s not in playing and s.startswith("ultisid")
+                ]
+                self.assertEqual(
+                    len(spares),
+                    1,
+                    f"{source} and {other} both answer "
+                    f"{[hex(a) for a in sorted(overlap)]} in {sm.config}",
+                )
 
     def test_all_counts_and_socket_combos(self):
         for n in range(1, m.MAX_SIDS + 1):
@@ -127,23 +185,7 @@ class RealizationOracleTest(unittest.TestCase):
                     with self.subTest(n=n, s1=s1, s2=s2):
                         self.assertEqual(len(set(sm.addresses)), sm.n)  # routed distinct
                         self._assert_realizable(sm)
-
-
-def _realized_addresses(sm: m.SidMap) -> set[int]:
-    """Every $Dxxx base the config in `sm` makes a chip answer at (port of the
-    firmware address math via _realize_core)."""
-    realized: list[int] = []
-    cfg = sm.config
-    for addr_item in (m.ITEM_SOCKET1_ADDR, m.ITEM_SOCKET2_ADDR):
-        v = cfg.get((m.CAT_ADDRESSING, addr_item))
-        if v and v != m.ADDR_UNMAPPED:
-            realized.append(int(v.lstrip("$"), 16))
-    split = cfg.get((m.CAT_ADDRESSING, m.ITEM_ULTISID_SPLIT), m.SPLIT_OFF)
-    for core_item in (m.ITEM_ULTISID1_ADDR, m.ITEM_ULTISID2_ADDR):
-        v = cfg.get((m.CAT_ADDRESSING, core_item))
-        if v and v != m.ADDR_UNMAPPED:
-            realized.extend(_realize_core(int(v.lstrip("$"), 16), split))
-    return set(realized)
+                        self._assert_only_mirrors_alias(sm)
 
 
 class PlanForAddressesTest(unittest.TestCase):
@@ -175,9 +217,7 @@ class PlanForAddressesTest(unittest.TestCase):
         self._assert_realizes([0xD400, 0xDE00])
 
     def test_socket_serves_matching_target(self):
-        sm = m.plan_sid_map_for_addresses(
-            (0xD400, 0xD420), socket1_present=True, socket2_present=True
-        )
+        sm = m.plan_sid_map_for_addresses((0xD400, 0xD420), socket_models=("6581", "6581"))
         assert sm is not None
         self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Enabled")
         self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET2_EN)], "Enabled")
@@ -190,6 +230,69 @@ class PlanForAddressesTest(unittest.TestCase):
 
     def test_empty_returns_none(self):
         self.assertIsNone(m.plan_sid_map_for_addresses(()))
+
+
+class ModelAwareRoutingTest(unittest.TestCase):
+    """A socket may only claim an address when it carries the model that chip
+    asks for — routing and model matching decided in the same pass."""
+
+    def test_light_years_3x8580_on_6581_sockets_goes_all_ultisid(self):
+        # HW repro: Jammer's "Light Years" (3 chips at $D400/$D420/$D440, all
+        # tagged 8580) on a machine with 6581s in both sockets. Routing the
+        # first two onto those sockets and letting a later model pass move them
+        # is what left the third chip addressed to nothing.
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420, 0xD440),
+            socket_models=("6581", "6581"),
+            required_models=("8580", "8580", "8580"),
+        )
+        assert sm is not None
+        self.assertEqual(sm.sources, ("ultisid1", "ultisid1", "ultisid2"))
+        for address in (0xD400, 0xD420, 0xD440):
+            self.assertIn(address, _realized_addresses(sm))
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Disabled")
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET2_EN)], "Disabled")
+        self.assertEqual(sm.config[(m.CAT_ULTISID, m.ITEM_ULTISID1_FILTER)], m.FILTER_CURVE_8580)
+        self.assertEqual(sm.config[(m.CAT_ULTISID, m.ITEM_ULTISID2_FILTER)], m.FILTER_CURVE_8580)
+
+    def test_matching_socket_still_claims_its_address(self):
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420),
+            socket_models=("8580", "6581"),
+            required_models=("8580", "8580"),
+        )
+        assert sm is not None
+        self.assertEqual(sm.sources, ("socket1", "ultisid1"))
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Enabled")
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET2_EN)], "Disabled")
+
+    def test_no_requirement_lets_any_socket_claim(self):
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420), socket_models=("6581", "6581"), required_models=(None, "?")
+        )
+        assert sm is not None
+        self.assertEqual(sm.sources, ("socket1", "socket2"))
+
+    def test_curve_follows_the_model_each_core_hosts(self):
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400,), socket_models=(None, None), required_models=("6581",)
+        )
+        assert sm is not None
+        self.assertEqual(sm.config[(m.CAT_ULTISID, m.ITEM_ULTISID1_FILTER)], m.FILTER_CURVE_6581)
+
+    def test_no_curve_written_when_the_tune_states_no_model(self):
+        sm = m.plan_sid_map_for_addresses((0xD400,))
+        assert sm is not None
+        self.assertNotIn((m.CAT_ULTISID, m.ITEM_ULTISID1_FILTER), sm.config)
+
+    def test_socket_tune_mirrors_spare_cores_for_the_leds(self):
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420), socket_models=("6581", "6581"), required_models=("6581", "6581")
+        )
+        assert sm is not None
+        self.assertEqual(sm.sources, ("socket1", "socket2"))
+        self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID1_ADDR)], "$D400")
+        self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID2_ADDR)], "$D420")
 
 
 class SidMapSourcesTest(unittest.TestCase):
@@ -228,9 +331,7 @@ class SidMapSourcesTest(unittest.TestCase):
         self.assertEqual(sm.sources.count("ultisid2"), 2)
 
     def test_for_addresses_sources_follow_the_requested_order(self):
-        sm = m.plan_sid_map_for_addresses(
-            (0xD400, 0xD420, 0xD440), socket1_present=True, socket2_present=True
-        )
+        sm = m.plan_sid_map_for_addresses((0xD400, 0xD420, 0xD440), socket_models=("6581", "6581"))
         assert sm is not None
         self.assertEqual(sm.sources, ("socket1", "socket2", "ultisid1"))
 
@@ -241,7 +342,7 @@ class SidMapSourcesTest(unittest.TestCase):
 
     def test_for_addresses_sources_are_parallel_to_addresses(self):
         addresses = (0xD400, 0xD420, 0xD440, 0xD460)
-        sm = m.plan_sid_map_for_addresses(addresses, socket1_present=True, socket2_present=True)
+        sm = m.plan_sid_map_for_addresses(addresses, socket_models=("6581", "6581"))
         assert sm is not None
         self.assertEqual(len(sm.sources), len(addresses))
 

@@ -12,7 +12,7 @@ For end-user configuration see [usage.md](usage.md), for known limitations [cave
 * **[Audio output](architecture/audio.md)** — `audio.py`, `sampler.py`, `dsp.py`, `audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
-* **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `sid_panning.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
+* **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `sid_panning.py`, `sid_volume.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `keyboard.py`, `camera.py`, `vision.py`, `control_plane.py`, `midi_control.py`, `tempo.py`, `performance.py`, `perf_console.py`, `transport.py`, `midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled_sync.py`, `wled_device.py`, `wled_sink.py`
 * **[Config, CLI & ensemble](architecture/config.md)** — `ensemble.py`, `orchestrator.py`, `orchestrators/`, `paths.py`, `config.py`, `cli.py`, `recording_metadata.py`
@@ -58,6 +58,7 @@ Every module, alphabetically, and where its notes live.
 | SID player PRG | [SID playback & the oscilloscope](architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
 | `sid_host_emu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | `sid_panning.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-panning) |
+| `sid_volume.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-volume) |
 | `sidemu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
 | `teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |

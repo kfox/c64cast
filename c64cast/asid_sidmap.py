@@ -24,6 +24,20 @@ the emulated cores for the primary voices):
      matters because the firmware force-aligns a split core's base
      (``1/2`` → ``$40``-aligned, ``1/4`` → ``$80``-aligned).
   3. ``Auto Address Mirroring`` is disabled so every base responds distinctly.
+  4. Every socket the plan does **not** claim is explicitly ``Disabled``. A
+     socket left enabled at an address the plan just handed to an UltiSID core
+     answers it too, so the tune plays on both the real chip and the core at
+     once — audible as a detuned double, and the reason a stale enable from a
+     previous run must never be allowed to survive into this one.
+  5. A core left over after every chip is placed is **mirrored** onto a
+     socket-served address rather than unmapped (see :func:`mirror_bases`).
+
+:func:`plan_sid_map_for_addresses` additionally takes the tune's per-chip model
+requirements, so a socket only claims an address when its chip is the model the
+tune asked for. Without that, a 3×8580 tune on a 6581-socketed machine gets its
+first two chips routed onto the wrong chips here, and the model-autoconfig pass
+that runs afterwards has to fight this planner to undo it — the two disagree,
+and the chip that loses ends up mapped to nothing at all.
 
 Hardware ceiling: 2 sockets + 2 cores × 4 (``1/4`` split) = 10 theoretical, but
 ASID tops out at chip 16 and real multi-SID tunes are 2-3 SID. We support up to
@@ -60,6 +74,12 @@ ITEM_ULTISID2_FILTER = "UltiSID 2 Filter Curve"
 FILTER_CURVE_6581 = "6581"
 FILTER_CURVE_8580 = "8580 Lo"
 
+# PSID header model values that carry no definite requirement — any chip
+# satisfies them, so they never force a socket swap or an UltiSID fallback.
+# Shared with sid_autoconfig (which cannot be imported from here: it imports
+# these names).
+NO_MODEL_REQUIREMENT = (None, "?", "6581+8580")
+
 # Address enum value for a disabled slot (u64_sid_base[0]).
 ADDR_UNMAPPED = "Unmapped"
 
@@ -82,6 +102,69 @@ _ULTISID_PAGE_NO_SOCKETS = 0xD400
 _ULTISID_PAGE_WITH_SOCKETS = 0xD500
 
 MAX_SIDS = 8
+
+# (address item, enable item, fixed base) per physical socket, socket 1 first.
+_SOCKET_SPECS: tuple[tuple[str, str, int], ...] = (
+    (ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0]),
+    (ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1]),
+)
+_CORE_ADDR_ITEMS: tuple[str, str] = (ITEM_ULTISID1_ADDR, ITEM_ULTISID2_ADDR)
+_CORE_FILTER_ITEMS: tuple[str, str] = (ITEM_ULTISID1_FILTER, ITEM_ULTISID2_FILTER)
+N_ULTISID_CORES = len(_CORE_ADDR_ITEMS)
+
+
+def curve_for_model(model: str | None) -> str | None:
+    """The representative UltiSID filter curve for a required chip model, or
+    None when the model carries no definite requirement."""
+    if model in NO_MODEL_REQUIREMENT:
+        return None
+    return FILTER_CURVE_6581 if model == "6581" else FILTER_CURVE_8580
+
+
+def disable_unclaimed_sockets(config: dict[tuple[str, str], str], claimed: set[str]) -> None:
+    """Explicitly ``Disabled`` every socket not in `claimed` (a set of
+    ``"socket1"``/``"socket2"``). Unconditional rather than gated on chip
+    detection: an enabled socket sitting at an address this plan just gave to an
+    UltiSID core answers alongside it, and detection is exactly the thing that
+    can't be trusted when a stale config is the problem."""
+    for index, (_addr_item, en_item, _base) in enumerate(_SOCKET_SPECS):
+        if f"socket{index + 1}" not in claimed:
+            config[(CAT_SOCKETS, en_item)] = "Disabled"
+
+
+def mirror_bases(split: str, core_bases: list[int], socket_bases: list[int]) -> list[int]:
+    """Socket-served addresses for the leftover UltiSID cores to shadow.
+
+    The U64's built-in LED display is driven by UltiSID core activity, so a tune
+    playing entirely on socketed chips lights nothing unless a core is also
+    listening at those addresses. Pointing the spare cores at the socket
+    addresses restores it — this is how the firmware ships by default
+    (``UltiSID 1 = $D400``, ``UltiSID 2 = $D420``, both at ``Vol OFF``). The
+    mirrors stay muted, because :mod:`c64cast.sid_volume` only raises sources a
+    tune actually plays on, so they contribute LEDs and no audio.
+
+    Skipped unless the split is off: a split core answers a window of 2 or 4
+    addresses and a mirror's extra instances would collide with the real chips.
+    That costs nothing in practice — a split is only ever chosen when both cores
+    are already hosting real chips, leaving nothing spare to mirror with."""
+    if split != SPLIT_OFF:
+        return []
+    spare = N_ULTISID_CORES - len(core_bases)
+    return socket_bases[: max(0, spare)]
+
+
+def _assign_cores(
+    config: dict[tuple[str, str], str], bases: list[int], curves: list[str | None]
+) -> None:
+    """Write each UltiSID core's address (and filter curve, where the model is
+    definite), unmapping the cores `bases` doesn't reach so a stale mapping from
+    a previous run can't answer an address this plan didn't intend."""
+    for index, addr_item in enumerate(_CORE_ADDR_ITEMS):
+        base = bases[index] if index < len(bases) else None
+        config[(CAT_ADDRESSING, addr_item)] = ADDR_UNMAPPED if base is None else f"${base:04X}"
+        curve = curves[index] if index < len(curves) else None
+        if curve is not None:
+            config[(CAT_ULTISID, _CORE_FILTER_ITEMS[index])] = curve
 
 
 @dataclass(frozen=True)
@@ -129,9 +212,12 @@ def plan_sid_map(
     socket SIDs. See the module docstring for the policy.
 
     `socket1_present` / `socket2_present` reflect whether a real SID is detected
-    (and will be enabled) in each socket. The result is clamped to what the
-    hardware can realize (2 sockets + up to 8 UltiSID instances, overall
-    :data:`MAX_SIDS`)."""
+    (and will be enabled) in each socket; sockets the plan doesn't claim are
+    explicitly disabled. The result is clamped to what the hardware can realize
+    (2 sockets + up to 8 UltiSID instances, overall :data:`MAX_SIDS`).
+
+    An ASID stream carries no chip-model information, so this planner routes on
+    presence alone — :func:`plan_sid_map_for_addresses` is the model-aware one."""
     requested = n_sids
     n_sids = max(0, min(n_sids, MAX_SIDS))
 
@@ -153,33 +239,35 @@ def plan_sid_map(
         config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
         config[(CAT_SOCKETS, en_item)] = "Enabled"
 
-    # 2) UltiSID cores fill the tail on the $D5xx page. Unused cores are
-    #    explicitly unmapped so a stale prior mapping can't collide.
+    # 2) UltiSID cores fill the tail on the $D5xx page. Cores left over after
+    #    the tail is placed mirror the socket addresses (LED display); cores
+    #    beyond even that are unmapped so a stale mapping can't collide.
     tail = n_sids - used_sockets
+    split = _pick_split(tail)
+    config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split
+    core_bases: list[int] = []
     if tail > 0:
-        split = _pick_split(tail)
         cap = _SPLIT_CAPACITY[split]
-        config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split
         core1_base = _ULTISID_PAGE_NO_SOCKETS if used_sockets == 0 else _ULTISID_PAGE_WITH_SOCKETS
-        config[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)] = f"${core1_base:04X}"
+        core_bases.append(core1_base)
         # Realize instances core-by-core, lowest address first, until tail met.
         instances = [core1_base + k * _SPLIT_STRIDE for k in range(cap)]
         instance_sources = ["ultisid1"] * cap
         if tail > cap:
             core2_base = core1_base + cap * _SPLIT_STRIDE
-            config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = f"${core2_base:04X}"
+            core_bases.append(core2_base)
             instances += [core2_base + k * _SPLIT_STRIDE for k in range(cap)]
             instance_sources += ["ultisid2"] * cap
-        else:
-            config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = ADDR_UNMAPPED
         addresses.extend(instances[:tail])
         sources.extend(instance_sources[:tail])
-    else:
-        config[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)] = ADDR_UNMAPPED
-        config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = ADDR_UNMAPPED
+
+    mirrors = mirror_bases(split, core_bases, addresses[:used_sockets])
+    _assign_cores(config, core_bases + mirrors, curves=[])
 
     # 3) Distinct addresses only.
     config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
+
+    disable_unclaimed_sockets(config, set(sources[:used_sockets]))
 
     return SidMap(
         addresses=tuple(addresses),
@@ -251,54 +339,88 @@ def _source_for_address(
     return ""
 
 
+def _models_by_address(
+    addresses: tuple[int, ...], required_models: tuple[str | None, ...]
+) -> dict[int, str | None]:
+    """The definite model requirement at each address, or None where the tune
+    states none. Two chips at one address can't disagree in practice (a PSID
+    header lists each base once), so first-wins is enough."""
+    models: dict[int, str | None] = {}
+    for address, model in zip(addresses, required_models, strict=False):
+        if models.get(address) is None:
+            models[address] = None if model in NO_MODEL_REQUIREMENT else model
+    return models
+
+
+def _core_curve(base: int, capacity: int, models: dict[int, str | None]) -> str | None:
+    """The filter curve for a core at `base`: the model required by the first
+    chip in its split window that asks for one."""
+    window = [base + k * _SPLIT_STRIDE for k in range(capacity)]
+    required = next((models.get(addr) for addr in window if models.get(addr)), None)
+    return curve_for_model(required)
+
+
 def plan_sid_map_for_addresses(
     addresses: tuple[int, ...],
     *,
-    socket1_present: bool = False,
-    socket2_present: bool = False,
+    socket_models: tuple[str | None, str | None] = (None, None),
+    required_models: tuple[str | None, ...] = (),
 ) -> SidMap | None:
     """Plan a U64 address map that answers at a SID *file's own* fixed chip
     addresses (chip 0 = $D400), unlike :func:`plan_sid_map` which chooses its own
     canonical layout. A `.sid` tune writes to the exact $Dxxx bases in its PSID
     header, so the hardware must respond there or those chips stay silent.
 
-    Physical sockets (fixed $D400/$D420) serve a target when present and asked
-    for; the rest come from up to two UltiSID cores sharing one split. Returns a
-    :class:`SidMap` whose ``addresses`` echo the requested bases verbatim, or
-    **None** when the set isn't realizable on 2 sockets + 2 cores (caller falls
-    back to :func:`plan_sid_map`)."""
+    `socket_models` is the chip each physical socket carries (``None`` = empty,
+    which is also how "no socket routing wanted" is expressed).
+    `required_models` is the model each chip in `addresses` requires, parallel to
+    it — from the PSID header, or forced by ``[ultimate64].sid_model``. An empty
+    tuple means no chip states a requirement.
+
+    A socket (fixed $D400/$D420) serves a target only when it carries the model
+    that target asks for; everything else comes from up to two UltiSID cores
+    sharing one split, with each core's filter curve set to the model its chips
+    want. **Model matching happens here, in the same pass as routing** — a
+    separate model-correction pass afterwards would be working from addresses
+    this planner had already assigned and would move chips out from under it.
+    Sockets the plan doesn't claim are disabled; cores left spare mirror the
+    socket addresses (see :func:`mirror_bases`).
+
+    Returns a :class:`SidMap` whose ``addresses`` echo the requested bases
+    verbatim, or **None** when the set isn't realizable on 2 sockets + 2 cores
+    (caller falls back to :func:`plan_sid_map`)."""
     if not addresses:
         return None
     targets = sorted(set(addresses))
+    models = _models_by_address(addresses, required_models)
     config: dict[tuple[str, str], str] = {}
 
-    socket_specs = []
-    if socket1_present:
-        socket_specs.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0], "socket1"))
-    if socket2_present:
-        socket_specs.append((ITEM_SOCKET2_ADDR, ITEM_SOCKET2_EN, _SOCKET_BASES[1], "socket2"))
     served_by_socket: dict[int, str] = {}
-    for addr_item, en_item, base, source in socket_specs:
-        if base in targets:
-            config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
-            config[(CAT_SOCKETS, en_item)] = "Enabled"
-            served_by_socket[base] = source
+    for index, (addr_item, en_item, base) in enumerate(_SOCKET_SPECS):
+        socketed = socket_models[index]
+        required = models.get(base)
+        if socketed is None or base not in targets or (required and socketed != required):
+            continue
+        config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
+        config[(CAT_SOCKETS, en_item)] = "Enabled"
+        served_by_socket[base] = f"socket{index + 1}"
 
     remaining = [t for t in targets if t not in served_by_socket]
     core_plan = _plan_ultisid_cores(remaining)
     if core_plan is None:
         return None
     split_label, core_bases = core_plan
-    config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split_label
-    config[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)] = (
-        f"${core_bases[0]:04X}" if core_bases else ADDR_UNMAPPED
-    )
-    config[(CAT_ADDRESSING, ITEM_ULTISID2_ADDR)] = (
-        f"${core_bases[1]:04X}" if len(core_bases) > 1 else ADDR_UNMAPPED
-    )
-    config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
-
     capacity = _SPLIT_CAPACITY[split_label]
+    config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split_label
+
+    mirrors = mirror_bases(split_label, core_bases, sorted(served_by_socket))
+    curves = [_core_curve(base, capacity, models) for base in core_bases]
+    curves += [curve_for_model(models.get(base)) for base in mirrors]
+    _assign_cores(config, core_bases + mirrors, curves)
+
+    config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
+    disable_unclaimed_sockets(config, set(served_by_socket.values()))
+
     sources = tuple(
         _source_for_address(addr, served_by_socket, core_bases, capacity) for addr in addresses
     )
