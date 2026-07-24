@@ -206,6 +206,7 @@ dev = [
     { name = "pyright" },
     { name = "ruff" },
     { name = "types-requests" },
+    { name = "unittest-parallel" },
     { name = "unittest-xml-reporting" },
 ]
 
@@ -261,6 +262,7 @@ dev = [
     { name = "pyright", specifier = "==1.1.411" },
     { name = "ruff", specifier = "==0.15.22" },
     { name = "types-requests", specifier = "==2.33.0.20260712" },
+    { name = "unittest-parallel", specifier = "==1.8.2" },
     { name = "unittest-xml-reporting", specifier = "==4.0.0" },
 ]
 
@@ -2147,6 +2149,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/55/e3/70399cb7dd41c10ac53367ae42139cf4b1ca5f36bb3dc6c9d33acdb43655/typing_inspection-0.4.2.tar.gz", hash = "sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464", size = 75949, upload-time = "2025-10-01T02:14:41.687Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl", hash = "sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7", size = 14611, upload-time = "2025-10-01T02:14:40.154Z" },
+]
+
+[[package]]
+name = "unittest-parallel"
+version = "1.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "coverage" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4c/a8/ef232e095e36b131891f12442063c24da81e455ca8db9304494993d6bb24/unittest_parallel-1.8.2.tar.gz", hash = "sha256:42238ad1f93ef5cc88600b6bb6b8052512c591c9ba2bd57b7cdcf57ce196c01b", size = 10392, upload-time = "2026-05-01T17:30:19.738Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/e6/ce66604ea5de192913ce8d4825565cf5ba1d97439f49b39ddecd4ec373c8/unittest_parallel-1.8.2-py3-none-any.whl", hash = "sha256:b86bb180d509f2b280cc96a5332fda6324c8cbd59de28be88dea78db3329743d", size = 9571, upload-time = "2026-05-01T17:30:18.4Z" },
 ]
 
 [[package]]

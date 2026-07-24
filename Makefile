@@ -5,7 +5,7 @@
 #   make sync       # uv sync --all-extras (refresh the project env)
 #   make lint       # ruff check
 #   make fmt        # ruff format
-#   make test       # unittest suite (whole tree)
+#   make test       # unittest suite (whole tree, parallel across cores)
 #   make test T=tests.test_midi_scene   # just that module/class/method
 #   make coverage   # tests under coverage -> report + HTML + coverage.xml + JUnit XML
 #   make typecheck  # mypy --strict on hot modules + pyright across the tree
@@ -36,7 +36,7 @@ help:
 	@echo "  sync       uv sync --all-extras (refresh the project env)"
 	@echo "  lint       ruff check"
 	@echo "  fmt        ruff format"
-	@echo "  test       unittest discover (T=tests.test_foo runs just that)"
+	@echo "  test       unittest suite, parallel (T=tests.test_foo runs just that, serial)"
 	@echo "  coverage   coverage report + HTML + coverage.xml + JUnit XML"
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
 	@echo "  doctor     offline env + config diagnostics (desynced .venv, drift)"
@@ -54,10 +54,14 @@ lint: $(SYNC)
 fmt:
 	uv run ruff format .
 
-# `make test` runs the whole suite; `make test T=tests.test_midi_scene` (or a
-# class/method, e.g. T=tests.test_midi_scene.MidiSceneTest.test_x) runs just that.
+# `make test` runs the whole suite in parallel (unittest_parallel forks one
+# process per test module — still stdlib unittest, ~3x faster since the suite
+# is mostly blocked on socket/thread waits that now overlap across cores).
+# `make test T=tests.test_midi_scene` (or a class/method, e.g.
+# T=tests.test_midi_scene.MidiSceneTest.test_x) runs just that, serially — the
+# parallel runner discovers by directory, not by dotted path.
 test: $(SYNC)
-	$(PY) -m unittest $(if $(T),$(T),discover tests)
+	$(if $(T),$(PY) -m unittest $(T),$(PY) -m unittest_parallel -s tests)
 
 coverage: $(SYNC)
 	uv run scripts/coverage.sh

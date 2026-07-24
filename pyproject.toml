@@ -129,6 +129,17 @@ dev = [
     # `python -m xmlrunner discover` so Codecov Test Analytics can ingest the
     # results. Dev/CI-only; the runtime never imports it.
     "unittest-xml-reporting==4.0.0",
+    # Parallel runner for the stdlib unittest suite (still stdlib unittest,
+    # NOT a different framework). `make test` and the CI unit-test step run
+    # the whole tree through `python -m unittest_parallel -s tests`, which
+    # forks one process per test module (default `--level=module`, so each
+    # module's shared state stays isolated in its own process). The suite is
+    # ~75% blocked on socket timeouts / thread joins, so overlapping those
+    # waits across cores cuts wall time ~3x (20s -> 7s on 16 cores) with
+    # identical results. The `coverage` job stays on serial `xmlrunner`
+    # because that path emits the JUnit XML that Codecov Test Analytics
+    # ingests, which unittest_parallel doesn't produce. Dev/CI-only.
+    "unittest-parallel==1.8.2",
 ]
 
 [project.scripts]
