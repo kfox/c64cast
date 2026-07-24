@@ -1442,6 +1442,7 @@ palette_mode = "grayscale"
 # | marquee            | petscii / blank         | One row, single ticker text         |
 # | rss                | petscii / blank         | RSS/Atom headlines (bg fetch)       |
 # | spectrum_petscii   | petscii / blank         | 8-band spectrum, bars in screen RAM |
+# | spectrum_bitmap    | mhires only             | 8-band spectrum, pixel-height bars  |
 # | clock              | petscii / blank         | Time/date in a corner               |
 # | weather            | petscii / blank         | Temp + conditions in a corner       |
 # | callsign           | petscii / blank         | Static text in a corner             |

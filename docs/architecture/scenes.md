@@ -296,6 +296,7 @@ The built-in overlays:
 | `marquee`          | text modes                | One row, single text string, ticker-style continuous loop with separator.      |
 | `rss`              | text modes                | Marquee fed by a background RSS/Atom fetch (stdlib `ElementTree`).             |
 | `spectrum_petscii` | petscii / blank           | A strip of cells (bottom / center / split mode), 8 bands × 5 cols.             |
+| `spectrum_bitmap`  | mhires only               | The same 8 bands as pixel-height bars folded into the multicolor bitmap.       |
 | `clock`            | text modes                | Time/date in a corner; only updates when the formatted string changes.         |
 | `weather`          | text modes                | Temp + conditions in a corner; background thread polls every N minutes.        |
 | `callsign`         | text modes                | Static text in a corner. Single paint, then change-detect zero traffic.        |
@@ -307,6 +308,16 @@ The built-in overlays:
 Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `network`) share `overlays/corner_text.py` — subclass `CornerTextOverlay` and just implement `compute_strings(t) → Optional[list[str]]`. The base handles change-detection, blanking-on-shrink, and teardown cleanup.
 
 `marquee` and `rss` share `overlays/marquee.py:MarqueeBase` — subclass and implement `_current_text()`.
+
+### `spectrum_bitmap` — bars in the multicolor bitmap
+
+The bitmap-native sibling of `spectrum_petscii`, whitelisted to `mhires` via `COMPATIBLE_MODES` (it is written against that mode's exact buffer set). It is not a port of the char version: bar height is a *scanline*, 200 levels instead of 25, with tops landing mid-cell. Horizontal geometry falls out of the arithmetic — 160 mhires px / 8 bands = 20 px = exactly 5 hardware cells per band, of which 4 are bar and 1 is a gutter so neighbouring bars don't fuse into a solid strip.
+
+**It owns c3, and only c3.** MCBM gives each 4×8 cell bg0 + c1 + c2 (the two screen nibbles) + c3 (color RAM), and the frame underneath is already using all four. A bar wants one solid color per cell, so it sets that cell's pixels to `%11` and writes the band color into color RAM — leaving the screen nibbles, and therefore every frame pixel on bg0/c1/c2, untouched. `MHiresTextSurface` makes the opposite trade (c1 = text bg, c2 = text fg, c3 left to the frame) because text needs two colors per cell; a bar needs one. The paint is four numpy slice writes per band against `bitmap.reshape(25, 40, 8)` / `color.reshape(25, 40)` views, so it costs nothing per frame.
+
+**The sub-cell top is the one compromise.** c3 is per-*cell*, so the single 4×8 cell at a bar's tip hands its whole c3 slot to the bar even though the bar only covers part of it: any frame pixel in the exposed part of that one cell that was using c3 is recolored to the band color. Frame pixels on the other three slots are unaffected, as is every cell the bar doesn't reach. Snapping tops to the 8px boundary would remove even that artifact and simultaneously throw away the vertical resolution the overlay exists for, so it isn't the default. On hardware (plasma under bars, 4× zoom on the tips) the edges read as clean flat lines — the artifact is not visible in practice.
+
+Because the overlay is `PAINTS_INTO_BUFFERS`, `config`'s `use_reu_staged = "auto"` already steers an mhires scene carrying it onto the host-DMA delta path rather than the REU bank-swap (see `overlays.paints_into_buffers`) — the same treatment folded text gets, confirmed on hardware (`mhires: host-DMA double-buffer armed`).
 
 ### The shared spectrum band source (`overlays/_spectrum.py`)
 
