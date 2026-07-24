@@ -29,6 +29,7 @@ import logging
 import os
 import random
 import threading
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -465,6 +466,7 @@ class SidFileAudioSource:
         system: str = "NTSC",
         reactive: bool = True,
         sid_model: str = "auto",
+        sid_panning: Sequence[int | str] | None = None,
     ):
         self._api = api
         self.file_spec = file
@@ -475,6 +477,8 @@ class SidFileAudioSource:
         # caller (sid_autoconfig.resolve_sid_model_cfg). "auto"/"6581"/
         # "8580"/"off". See setup()/teardown().
         self._sid_model = sid_model
+        # [ultimate64].sid_panning — empty/None means the auto spread.
+        self._sid_panning = list(sid_panning or ())
         # The display is fixed at VIC bank 0; only the bitmap flag matters for
         # the payload-clearance check (bitmap modes reserve $2000 as well as
         # $0400). Read once at construction — the mode never changes per scene.
@@ -625,6 +629,7 @@ class SidFileAudioSource:
         from .sid_autoconfig import apply_sid_autoconfig
 
         self._saved_sid_config = apply_sid_autoconfig(self._api, self.header, self._sid_model)
+        self._apply_sid_panning()
         # May raise (RSID / load<$0820 / under KERNAL) — propagate to
         # SourceScene.setup, which aborts the scene cleanly.
         self._api.run_sid_player(self.sid_bytes, song=self.song, avoid=avoid, play_bank=play_bank)
@@ -647,6 +652,27 @@ class SidFileAudioSource:
                     "react to the music (playback continues)"
                 )
                 self._features = None
+
+    def _apply_sid_panning(self) -> None:
+        """Pan the tune's SID chip(s) across the U64 mixer's stereo field
+        ([ultimate64].sid_panning; auto-spread when unset). This path does no
+        address routing, so the source playing each chip is whatever currently
+        answers its address. Originals fold into the same snapshot teardown
+        restores."""
+        assert self.header is not None  # set by _pick_and_load, called by setup
+        from .sid_panning import plan_and_apply_panning, resolve_panning, sources_for_addresses
+
+        addresses = self.header.sid_addresses
+        originals = plan_and_apply_panning(
+            self._api,
+            sources_for_addresses(self._api, addresses),
+            resolve_panning(self._sid_panning, len(addresses)),
+        )
+        if not originals:
+            return
+        if self._saved_sid_config is None:
+            self._saved_sid_config = {}
+        self._saved_sid_config.update(originals)
 
     def teardown(self) -> None:
         """Stop the feature stream, then SID playback. SID order mirrors

@@ -32,6 +32,7 @@ from .dsp import DSPParams
 from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
+from .sid_panning import normalize_pan_spec
 
 if TYPE_CHECKING:
     from .audio import AudioStreamer
@@ -328,6 +329,21 @@ class Ultimate64Cfg:
             "socket or an UltiSID core if needed. 'off' disables. An explicit "
             "'6581'/'8580' forces that model for every chip, ignoring the header.",
             "choices": SID_MODEL_CHOICES,
+        },
+    )
+    # Applied live to the U64's Audio Mixer before playback and restored at
+    # teardown, like sid_model. Panning is per audio SOURCE (socket / UltiSID
+    # core), so each tune chip is panned wherever it was routed — see
+    # c64cast/sid_panning.py.
+    sid_panning: list[int | str] = field(
+        default_factory=list,
+        metadata={
+            "help": "Stereo pan per SID chip, U64 only. Each entry is an int "
+            "-5..5 (negative = left, 0 = center) or a label ('Left 3', "
+            "'Center', 'Right 2'). Empty = auto spread: 1 SID centered, "
+            "multi-SID spread across the field (2 SIDs [-3, 3], 3 [0, -3, 3], "
+            "4 [-2, 2, -5, 5]). A list shorter than the tune's chip count is "
+            "centered for the rest; longer is truncated.",
         },
     )
 
@@ -2616,6 +2632,23 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
 _CLIP_CONTINUOUS_TYPES = frozenset({"webcam", "blank", "slideshow", "generative", "wled"})
 
 
+def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
+    """Range-check [ultimate64].sid_panning at load/doctor time so a bad pan
+    value surfaces before the playlist runs, not mid-scene when the mixer is
+    configured. Values stay as authored (ints or labels); sid_panning.
+    resolve_panning normalizes them at apply time."""
+    if not u64.sid_panning:
+        return
+    if not isinstance(u64.sid_panning, list):
+        raise ValueError(
+            f"ultimate64.sid_panning must be a list of pan values, got {u64.sid_panning!r}"
+        )
+    try:
+        normalize_pan_spec(u64.sid_panning)
+    except ValueError as e:
+        raise ValueError(f"ultimate64.sid_panning: {e}") from e
+
+
 def _validate_force_palette(color: ColorCfg) -> None:
     """Range-check + normalize the [color].force_palette_colors knob at
     load/doctor time so a bad value surfaces before the playlist runs, not
@@ -2706,6 +2739,7 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     _validate_video_device(cfg.video)
     _validate_audio_device(cfg.audio)
     _validate_performance(cfg.performance)
+    _validate_sid_panning(cfg.ultimate64)
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out
@@ -4803,6 +4837,7 @@ def build_scene(
             scroll_columns=s.scroll_columns,
             songlengths_db=db,
             sid_model=resolve_sid_model_cfg(cfg),
+            sid_panning=cfg.ultimate64.sid_panning,
         )
         if s.name:
             scene.name = s.name
@@ -4870,6 +4905,7 @@ def build_scene(
                 system=cfg.ultimate64.system,
                 reactive=s.reactive,
                 sid_model=resolve_sid_model_cfg(cfg),
+                sid_panning=cfg.ultimate64.sid_panning,
             )
             scene = SourceScene(api, None, mode, gen, audio_src, name, color=cfg.color)
             # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at
@@ -5050,6 +5086,7 @@ def build_scene(
             multi_sid=s.asid_multi_sid,
             max_sids=s.asid_max_sids,
             buffered_player=s.asid_buffered_player,
+            sid_panning=cfg.ultimate64.sid_panning,
             name=s.name or "ASID",
         )
     # Duration resolution. `scene.duration_s = math.inf` means "run until

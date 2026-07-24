@@ -116,6 +116,11 @@
             "off"
           ],
           "default": "auto"
+        },
+        "sid_panning": {
+          "type": "array",
+          "description": "Stereo pan per SID chip, U64 only. Each entry is an int -5..5 (negative = left, 0 = center) or a label ('Left 3', 'Center', 'Right 2'). Empty = auto spread: 1 SID centered, multi-SID spread across the field (2 SIDs [-3, 3], 3 [0, -3, 3], 4 [-2, 2, -5, 5]). A list shorter than the tune's chip count is centered for the rest; longer is truncated.",
+          "default": []
         }
       }
     },

@@ -44,6 +44,7 @@ import os
 import random
 import threading
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -79,6 +80,7 @@ from .sid_hw_config import (
     restore_sid_config,
     snapshot_sid_config,
 )
+from .sid_panning import plan_and_apply_panning, resolve_panning, sources_for_addresses
 from .sidemu import ACCUMULATOR_RANGE, SIDEmulator, primary_waveform
 
 # The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
@@ -108,6 +110,7 @@ from .voice_scope import (
 )
 
 if TYPE_CHECKING:
+    from .asid_sidmap import SidMap
     from .songlengths import LengthsDB
 
 log = logging.getLogger(__name__)
@@ -325,6 +328,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         reg_poll_hz: float | None = None,
         songlengths_db: LengthsDB | None = None,
         sid_model: str = "auto",
+        sid_panning: Sequence[int | str] | None = None,
     ):
         """Initialize the scene.
 
@@ -360,6 +364,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # caller (sid_autoconfig.resolve_sid_model_cfg) — see
         # _apply_sid_hw_config. "auto"/"6581"/"8580"/"off".
         self._sid_model = sid_model
+        # [ultimate64].sid_panning — empty/None means the auto spread.
+        self._sid_panning = list(sid_panning or ())
 
         # Initial resolution: __init__ raises on bad specs (mirrors
         # validate_scene_cfg). Also raises if every candidate fails the
@@ -982,6 +988,30 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         if model_plan:
             apply_config(self.api, model_plan)
+
+        self._apply_sid_panning(sid_map)
+
+    def _apply_sid_panning(self, sid_map: SidMap | None) -> None:
+        """Pan each of the tune's SID chips across the U64 mixer's stereo field
+        ([ultimate64].sid_panning; auto-spread when unset). Runs last, so the
+        source each chip landed on reflects any address routing applied above.
+
+        A remapped multi-SID tune takes its per-chip sources straight from the
+        map; a single-SID (or unrealizable) tune has none, so we ask the live
+        config which source answers each address. Originals fold into the same
+        restore snapshot the address/model changes use."""
+        pans = resolve_panning(self._sid_panning, self._n_sids)
+        if sid_map is not None and sid_map.sources:
+            sources: Sequence[str | None] = sid_map.sources
+        else:
+            sources = sources_for_addresses(self.api, self._sid_addresses)
+
+        originals = plan_and_apply_panning(self.api, sources, pans)
+        if not originals:
+            return
+        if self._saved_sid_config is None:
+            self._saved_sid_config = {}
+        self._saved_sid_config.update(originals)
 
     def _restore_sid_hw_config(self) -> None:
         """Restore the SID address config snapshotted by _apply_sid_hw_config."""

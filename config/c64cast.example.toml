@@ -101,6 +101,17 @@ sid_model = "auto"                  # auto | 6581 | 8580 | off — match a .sid
                                     # or fall back to an UltiSID core). "auto"
                                     # reads the header per chip; an explicit
                                     # 6581/8580 forces every chip; off disables.
+sid_panning = []                    # stereo pan per SID chip (U64 only), applied
+                                    # live before playback and restored at
+                                    # teardown. Each entry is an int -5..5
+                                    # (negative = left, 0 = center) or a label
+                                    # ("Left 3", "Center", "Right 2"). [] = auto
+                                    # spread: 1 SID centered; 2 [-3, 3];
+                                    # 3 [0, -3, 3]; 4 [-2, 2, -5, 5]; 5+ spread
+                                    # evenly. Panning is per audio SOURCE (SID
+                                    # socket / UltiSID core), so each chip is
+                                    # panned wherever it was routed. Short list =
+                                    # remaining chips centered; long = truncated.
 
 [video]
 device = -1                         # int cv2 index (-1 = system default camera), or a

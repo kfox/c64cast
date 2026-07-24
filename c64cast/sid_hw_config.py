@@ -22,9 +22,15 @@ from .asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
     CAT_ULTISID,
+    ITEM_SOCKET1_ADDR,
+    ITEM_SOCKET1_EN,
     ITEM_SOCKET1_TYPE,
+    ITEM_SOCKET2_ADDR,
+    ITEM_SOCKET2_EN,
     ITEM_SOCKET2_TYPE,
+    ITEM_ULTISID1_ADDR,
     ITEM_ULTISID1_FILTER,
+    ITEM_ULTISID2_ADDR,
     ITEM_ULTISID2_FILTER,
 )
 
@@ -51,6 +57,54 @@ MANAGED_SOCKET_ITEMS = ("SID Socket 1", "SID Socket 2")
 # MANAGED_SOCKET_ITEMS rather than folded into either — distinct category
 # (CAT_ULTISID), distinct concern (chip model, not address routing).
 MANAGED_MODEL_ITEMS = (ITEM_ULTISID1_FILTER, ITEM_ULTISID2_FILTER)
+
+
+def _parse_dxxx(value: str) -> int | None:
+    """Parse a ``"$D400"``-style address enum value; None for "Unmapped" or any
+    other non-``$xxxx`` value."""
+    if not value.startswith("$"):
+        return None
+    try:
+        return int(value[1:], 16)
+    except ValueError:
+        return None
+
+
+def current_source_map(api: C64Backend) -> dict[int, str]:
+    """Which source — ``"socket1"``/``"socket2"``/``"ultisid1"``/``"ultisid2"``
+    — currently answers each ``$Dxxx`` address, per the live `SID Addressing` +
+    `SID Sockets Configuration` REST categories (best-effort; ``{}`` on any read
+    failure). Physical sockets are populated LAST so they win an
+    ``Auto Address Mirroring`` collision (a socket's real chip is what a listener
+    hears; an UltiSID core "at" the same address in that state is just
+    mirroring). Used by :mod:`c64cast.sid_autoconfig` (chip-model matching) and
+    :mod:`c64cast.sid_panning` (which mixer source to pan for a non-remapped
+    single-SID tune).
+
+    v1 simplification: an UltiSID core is tracked only at its own configured base
+    address, not the full window a split (`1/2`/`1/4`) expands it across — a chip
+    at a split core's *secondary* instance address won't be recognized as
+    already served by that core and may get a harmless re-route."""
+    try:
+        addressing = api.get_config_category(CAT_ADDRESSING)
+        sockets = api.get_config_category(CAT_SOCKETS)
+    except Exception:
+        log.debug("sid_hw_config: live addressing read failed", exc_info=True)
+        return {}
+    addr_map: dict[int, str] = {}
+    for core, item in (("ultisid1", ITEM_ULTISID1_ADDR), ("ultisid2", ITEM_ULTISID2_ADDR)):
+        base = _parse_dxxx(addressing.get(item, ""))
+        if base is not None:
+            addr_map[base] = core
+    if sockets.get(ITEM_SOCKET1_EN) == "Enabled":
+        base = _parse_dxxx(addressing.get(ITEM_SOCKET1_ADDR, ""))
+        if base is not None:
+            addr_map[base] = "socket1"
+    if sockets.get(ITEM_SOCKET2_EN) == "Enabled":
+        base = _parse_dxxx(addressing.get(ITEM_SOCKET2_ADDR, ""))
+        if base is not None:
+            addr_map[base] = "socket2"
+    return addr_map
 
 
 def detect_sockets(api: C64Backend) -> tuple[bool, bool]:

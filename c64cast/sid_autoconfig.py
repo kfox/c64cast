@@ -50,7 +50,12 @@ from .asid_sidmap import (
     ITEM_ULTISID2_ADDR,
     ITEM_ULTISID2_FILTER,
 )
-from .sid_hw_config import apply_config, detect_socket_models, snapshot_sid_config
+from .sid_hw_config import (
+    apply_config,
+    current_source_map,
+    detect_socket_models,
+    snapshot_sid_config,
+)
 
 if TYPE_CHECKING:
     from .backend import C64Backend
@@ -71,58 +76,13 @@ SID_MODEL_CHOICES: Final[tuple[str, ...]] = ("auto", "6581", "8580", "off")
 _NO_REQUIREMENT = (None, "?", "6581+8580")
 
 
-def _parse_dxxx(value: str) -> int | None:
-    """Parse a ``"$D400"``-style address enum value; None for "Unmapped" or
-    any other non-``$xxxx`` value."""
-    if not value.startswith("$"):
-        return None
-    try:
-        return int(value[1:], 16)
-    except ValueError:
-        return None
-
-
 def _current_addr_map(api: C64Backend) -> dict[int, str]:
-    """Which source — ``"socket1"``/``"socket2"``/``"ultisid1"``/
-    ``"ultisid2"`` — currently answers each ``$Dxxx`` address, per the live
-    `SID Addressing` + `SID Sockets Configuration` REST categories (best-
-    effort; ``{}`` on any read failure).
+    """Which source answers each ``$Dxxx`` address, per the live SID config.
 
-    v1 simplification: an UltiSID core is tracked only at its own configured
-    base address, not the full window a split (`1/2`/`1/4`) would expand it
-    across — a chip requesting a model at a split core's *secondary* instance
-    address won't be recognized as "already served by an UltiSID core" and
-    may get an unnecessary (harmless) re-route. Reasonable follow-up, not MVP
-    scope — multi-SID tunes needing model-autoconfig on a split core are rare.
-
-    HW-observed: with `Auto Address Mirroring` enabled (the factory-default
-    resting state — c64cast's own multi-SID/model plans explicitly disable
-    it), an UltiSID core and an enabled physical socket can both report the
-    *same* configured base (e.g. both default to `$D400`) even though only
-    the socket is actually audible there. Physical sockets are populated
-    LAST so they win any such collision — a socket's real chip is what a
-    listener hears; an UltiSID core "at" the same address in this state is
-    just mirroring, not actually driving it."""
-    try:
-        addressing = api.get_config_category(CAT_ADDRESSING)
-        sockets = api.get_config_category(CAT_SOCKETS)
-    except Exception:
-        log.debug("sid_autoconfig: live addressing read failed", exc_info=True)
-        return {}
-    addr_map: dict[int, str] = {}
-    for core, item in (("ultisid1", ITEM_ULTISID1_ADDR), ("ultisid2", ITEM_ULTISID2_ADDR)):
-        base = _parse_dxxx(addressing.get(item, ""))
-        if base is not None:
-            addr_map[base] = core
-    if sockets.get(ITEM_SOCKET1_EN) == "Enabled":
-        base = _parse_dxxx(addressing.get(ITEM_SOCKET1_ADDR, ""))
-        if base is not None:
-            addr_map[base] = "socket1"
-    if sockets.get(ITEM_SOCKET2_EN) == "Enabled":
-        base = _parse_dxxx(addressing.get(ITEM_SOCKET2_ADDR, ""))
-        if base is not None:
-            addr_map[base] = "socket2"
-    return addr_map
+    Thin back-compat alias for :func:`c64cast.sid_hw_config.current_source_map`
+    (the logic moved there so :mod:`c64cast.sid_panning` can share it). See that
+    function for the Auto-Address-Mirroring / split-core notes."""
+    return current_source_map(api)
 
 
 def plan_sid_model_config(

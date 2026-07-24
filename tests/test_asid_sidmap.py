@@ -192,5 +192,59 @@ class PlanForAddressesTest(unittest.TestCase):
         self.assertIsNone(m.plan_sid_map_for_addresses(()))
 
 
+class SidMapSourcesTest(unittest.TestCase):
+    """`sources` names the audio source realizing each chip, parallel to
+    `addresses` — what sid_panning pans (a pan is per source, not per address)."""
+
+    def test_sources_are_parallel_to_addresses(self):
+        for n in range(1, m.MAX_SIDS + 1):
+            for s1, s2 in ((False, False), (True, False), (True, True)):
+                sm = m.plan_sid_map(n, socket1_present=s1, socket2_present=s2)
+                self.assertEqual(len(sm.sources), len(sm.addresses), f"n={n} s1={s1} s2={s2}")
+
+    def test_every_source_is_a_known_mixer_source(self):
+        known = {"socket1", "socket2", "ultisid1", "ultisid2"}
+        for n in range(1, m.MAX_SIDS + 1):
+            sm = m.plan_sid_map(n, socket1_present=True, socket2_present=True)
+            self.assertTrue(set(sm.sources) <= known, sm.sources)
+
+    def test_sockets_are_preferred_then_cores(self):
+        sm = m.plan_sid_map(4, socket1_present=True, socket2_present=True)
+        self.assertEqual(sm.sources, ("socket1", "socket2", "ultisid1", "ultisid2"))
+
+    def test_cores_only_when_no_sockets(self):
+        sm = m.plan_sid_map(2)
+        self.assertEqual(sm.sources, ("ultisid1", "ultisid2"))
+
+    def test_through_four_chips_every_source_is_distinct(self):
+        # The pannable-independently guarantee sid_panning documents.
+        for n in range(1, 5):
+            sm = m.plan_sid_map(n, socket1_present=True, socket2_present=True)
+            self.assertEqual(len(set(sm.sources)), n, sm.sources)
+
+    def test_split_core_hosts_several_chips_on_one_source(self):
+        sm = m.plan_sid_map(6, socket1_present=True, socket2_present=True)
+        self.assertEqual(sm.sources.count("ultisid1"), 2)
+        self.assertEqual(sm.sources.count("ultisid2"), 2)
+
+    def test_for_addresses_sources_follow_the_requested_order(self):
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420, 0xD440), socket1_present=True, socket2_present=True
+        )
+        assert sm is not None
+        self.assertEqual(sm.sources, ("socket1", "socket2", "ultisid1"))
+
+    def test_for_addresses_uses_cores_when_no_sockets(self):
+        sm = m.plan_sid_map_for_addresses((0xD400, 0xD500))
+        assert sm is not None
+        self.assertEqual(sm.sources, ("ultisid1", "ultisid2"))
+
+    def test_for_addresses_sources_are_parallel_to_addresses(self):
+        addresses = (0xD400, 0xD420, 0xD440, 0xD460)
+        sm = m.plan_sid_map_for_addresses(addresses, socket1_present=True, socket2_present=True)
+        assert sm is not None
+        self.assertEqual(len(sm.sources), len(addresses))
+
+
 if __name__ == "__main__":
     unittest.main()
