@@ -80,16 +80,13 @@ class DefaultPanSpreadTest(unittest.TestCase):
     def test_single_sid_is_centered(self):
         self.assertEqual(sp.default_pan_spread(1), (0,))
 
-    def test_five_plus_spreads_evenly_across_the_full_field(self):
+    def test_beyond_four_clamps_to_the_four_source_ceiling(self):
+        # The U64 has only 4 pan controls, so there is no 5+ spread to give.
         for n in range(5, 9):
-            spread = sp.default_pan_spread(n)
-            self.assertEqual(len(spread), n)
-            self.assertEqual(spread[0], sp.PAN_MIN)
-            self.assertEqual(spread[-1], sp.PAN_MAX)
-            self.assertEqual(list(spread), sorted(spread), "even spread must be monotonic")
+            self.assertEqual(sp.default_pan_spread(n), sp.default_pan_spread(4))
 
     def test_every_spread_is_in_range_and_right_length(self):
-        for n in range(1, 9):
+        for n in range(1, sp.MAX_PANNED_SOURCES + 1):
             spread = sp.default_pan_spread(n)
             self.assertEqual(len(spread), n)
             for value in spread:
@@ -138,10 +135,13 @@ class PlanSidPanningTest(unittest.TestCase):
         self.assertEqual(sp.plan_sid_panning(("socket1",), (0,)), {PAN_S1: "Center"})
 
     def test_unrouted_and_unknown_sources_are_skipped(self):
+        # socket2 is the only pannable source, so it is the FIRST distinct one
+        # and takes pans[0] — entries are per source, not per chip.
         plan = sp.plan_sid_panning((None, "socket2", "", "nonsense"), (0, 3, 1, 2))
-        self.assertEqual(plan, {PAN_S2: "Right 3"})
+        self.assertEqual(plan, {PAN_S2: "Center"})
 
-    def test_chips_sharing_one_split_core_keep_the_first_pan(self):
+    def test_chips_sharing_one_split_core_share_its_single_pan(self):
+        # One source ⇒ one entry consumed; the core has one pan control.
         plan = sp.plan_sid_panning(("ultisid1", "ultisid1"), (-2, 4))
         self.assertEqual(plan, {PAN_U1: "Left 2"})
 
@@ -187,43 +187,149 @@ class SourcesForAddressesTest(unittest.TestCase):
         self.assertEqual(sp.sources_for_addresses(api, (0xD420,)), (None,))
 
 
-class PlanAndApplyPanningTest(unittest.TestCase):
-    """The live path: read once, write only what differs, hand back originals."""
+class DistinctSourcesTest(unittest.TestCase):
+    """sid_panning entries index distinct SOURCES, not chips — the U64 has one
+    pan control per source, so that is the only thing a pan can address."""
+
+    def test_first_claim_order(self):
+        self.assertEqual(
+            sp.distinct_sources(("socket1", "socket2", "ultisid1")),
+            ("socket1", "socket2", "ultisid1"),
+        )
+
+    def test_repeats_collapse(self):
+        self.assertEqual(
+            sp.distinct_sources(("socket1", "ultisid1", "ultisid1", "ultisid2")),
+            ("socket1", "ultisid1", "ultisid2"),
+        )
+
+    def test_unrouted_entries_are_dropped(self):
+        self.assertEqual(sp.distinct_sources((None, "socket2", "", "bogus")), ("socket2",))
+
+    def test_no_sockets_leaves_only_two_positions(self):
+        # The U64-without-socketed-SIDs case: both cores, nothing else.
+        sources = ("ultisid1", "ultisid1", "ultisid2", "ultisid2")
+        self.assertEqual(sp.distinct_sources(sources), ("ultisid1", "ultisid2"))
+
+    def test_ceiling_is_four(self):
+        crowded = ("socket1", "socket2", "ultisid1", "ultisid1", "ultisid2", "ultisid2")
+        self.assertLessEqual(len(sp.distinct_sources(crowded)), sp.MAX_PANNED_SOURCES)
+
+    def test_kth_entry_pans_the_kth_source(self):
+        sources = ("socket1", "ultisid1", "ultisid1", "ultisid2")
+        self.assertEqual(
+            sp.source_pans(sources, (-5, 0, 5)),
+            {"socket1": -5, "ultisid1": 0, "ultisid2": 5},
+        )
+
+
+class ChipPanValuesTest(unittest.TestCase):
+    """Per-chip effective pan — what the scope orders its columns by."""
+
+    def test_one_chip_per_source(self):
+        self.assertEqual(
+            sp.chip_pan_values(("socket1", "socket2", "ultisid1"), (0, -3, 3)), (0, -3, 3)
+        )
+
+    def test_chips_sharing_a_source_report_its_shared_pan(self):
+        sources = ("socket1", "ultisid1", "ultisid1")
+        self.assertEqual(sp.chip_pan_values(sources, (-3, 3)), (-3, 3, 3))
+
+    def test_unrouted_chip_reports_center(self):
+        self.assertEqual(sp.chip_pan_values((None, "socket1"), (4,)), (0, 4))
+
+
+class WindowOrderTest(unittest.TestCase):
+    """Scope columns run left-to-right across the stereo field, so the display
+    matches what you hear (see the user-facing spread rationale in sid.md)."""
+
+    def test_identity_when_all_equal(self):
+        self.assertEqual(sp.window_order_for_pans((0, 0, 0)), (0, 1, 2))
+
+    def test_single_chip_is_identity(self):
+        self.assertEqual(sp.window_order_for_pans((0,)), (0,))
+
+    def test_three_sid_default_puts_primary_chip_in_the_centre_column(self):
+        # Default [0, -3, 3]: chip 0 is the primary and sits dead centre, so it
+        # must render in the MIDDLE column, flanked by chips 1 and 2.
+        order = sp.window_order_for_pans(sp.default_pan_spread(3))
+        self.assertEqual(order, (1, 0, 2))
+
+    def test_four_sid_default_puts_chips_0_and_1_closest_to_centre(self):
+        # Default [-2, 2, -5, 5]: chips 0/1 are the important pair and sit
+        # nearest centre, so they occupy the two middle columns.
+        order = sp.window_order_for_pans(sp.default_pan_spread(4))
+        self.assertEqual(order, (2, 0, 1, 3))
+
+    def test_two_sid_default_is_identity(self):
+        self.assertEqual(sp.window_order_for_pans(sp.default_pan_spread(2)), (0, 1))
+
+    def test_ties_keep_chip_order(self):
+        self.assertEqual(sp.window_order_for_pans((3, -3, 3, -3)), (1, 3, 0, 2))
+
+    def test_order_is_always_a_permutation(self):
+        for pans in ((0,), (0, -3, 3), (-2, 2, -5, 5), (1, 1, -1), (5, -5)):
+            self.assertEqual(sorted(sp.window_order_for_pans(pans)), list(range(len(pans))))
+
+
+class ApplyPanningTest(unittest.TestCase):
+    """The live path: read once, write only what differs, hand back originals
+    plus the column order."""
 
     def test_writes_only_the_sources_whose_pan_changes(self):
         api = _ultimate_fake(mixer={"Pan Socket 1": "Center", "Pan Socket 2": "Center"})
-        originals = sp.plan_and_apply_panning(api, ("socket1", "socket2"), (0, 3))
+        result = sp.apply_panning(api, ("socket1", "socket2"), [0, 3])
 
         self.assertEqual(api.config_puts, [(CAT, "Pan Socket 2", "Right 3")])
-        self.assertEqual(originals, {PAN_S2: "Center"})
+        self.assertEqual(result.originals, {PAN_S2: "Center"})
 
     def test_already_correct_writes_nothing_and_restores_nothing(self):
         api = _ultimate_fake(mixer={"Pan Socket 1": "Center"})
-        originals = sp.plan_and_apply_panning(api, ("socket1",), (0,))
+        result = sp.apply_panning(api, ("socket1",), [])
 
         self.assertEqual(api.config_puts, [])
-        self.assertEqual(originals, {})
+        self.assertEqual(result.originals, {})
 
     def test_originals_capture_the_pre_change_values(self):
         api = _ultimate_fake(mixer={"Pan Socket 1": "Right 2", "Pan UltiSID 1": "Left 1"})
-        originals = sp.plan_and_apply_panning(api, ("socket1", "ultisid1"), (-3, 3))
+        result = sp.apply_panning(api, ("socket1", "ultisid1"), [-3, 3])
 
-        self.assertEqual(originals, {PAN_S1: "Right 2", PAN_U1: "Left 1"})
+        self.assertEqual(result.originals, {PAN_S1: "Right 2", PAN_U1: "Left 1"})
         self.assertEqual(
             dict(api.config_store[CAT]),
             {"Pan Socket 1": "Left 3", "Pan UltiSID 1": "Right 3"},
         )
 
-    def test_backend_without_config_api_is_a_no_op(self):
+    def test_default_spread_applied_when_unconfigured(self):
+        api = _ultimate_fake(
+            mixer={"Pan Socket 1": "Center", "Pan Socket 2": "Center", "Pan UltiSID 1": "Center"}
+        )
+        sp.apply_panning(api, ("socket1", "socket2", "ultisid1"), [])
+
+        self.assertEqual(
+            dict(api.config_store[CAT]),
+            {"Pan Socket 1": "Center", "Pan Socket 2": "Left 3", "Pan UltiSID 1": "Right 3"},
+        )
+
+    def test_returns_the_column_order(self):
+        api = _ultimate_fake(
+            mixer={"Pan Socket 1": "Center", "Pan Socket 2": "Center", "Pan UltiSID 1": "Center"}
+        )
+        result = sp.apply_panning(api, ("socket1", "socket2", "ultisid1"), [])
+        self.assertEqual(result.window_order, (1, 0, 2))
+
+    def test_backend_without_config_api_is_a_no_op_with_identity_columns(self):
         api = _ultimate_fake(supports_config=False, mixer={"Pan Socket 1": "Center"})
-        originals = sp.plan_and_apply_panning(api, ("socket1",), (3,))
+        result = sp.apply_panning(api, ("socket1", "socket2"), [3, -3])
 
         self.assertEqual(api.config_puts, [])
-        self.assertEqual(originals, {})
+        self.assertEqual(result.originals, {})
+        self.assertEqual(result.window_order, (0, 1), "no panning ⇒ columns stay in chip order")
 
     def test_no_routed_sources_is_a_no_op(self):
         api = _ultimate_fake(mixer={"Pan Socket 1": "Center"})
-        self.assertEqual(sp.plan_and_apply_panning(api, (None, None), (0, 3)), {})
+        result = sp.apply_panning(api, (None, None), [0, 3])
+        self.assertEqual(result.originals, {})
         self.assertEqual(api.config_puts, [])
 
     def test_mixer_read_failure_degrades_to_no_change(self):
@@ -233,7 +339,8 @@ class PlanAndApplyPanningTest(unittest.TestCase):
 
         api = BrokenAPI()
         api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=True)
-        self.assertEqual(sp.plan_and_apply_panning(api, ("socket1",), (3,)), {})
+        result = sp.apply_panning(api, ("socket1",), [3])
+        self.assertEqual(result.originals, {})
         self.assertEqual(api.config_puts, [])
 
     def test_a_full_four_sid_spread_lands_on_four_distinct_sources(self):
@@ -245,8 +352,7 @@ class PlanAndApplyPanningTest(unittest.TestCase):
                 "Pan UltiSID 2": "Center",
             }
         )
-        sources = ("socket1", "socket2", "ultisid1", "ultisid2")
-        sp.plan_and_apply_panning(api, sources, sp.default_pan_spread(4))
+        sp.apply_panning(api, ("socket1", "socket2", "ultisid1", "ultisid2"), [])
 
         self.assertEqual(
             dict(api.config_store[CAT]),
@@ -259,24 +365,61 @@ class PlanAndApplyPanningTest(unittest.TestCase):
         )
 
 
+class LimitedSourceWarningTest(unittest.TestCase):
+    """The U64 can offer fewer pan positions than a tune has chips — notably
+    with no socketed SIDs, where only the 2 UltiSID cores are pannable."""
+
+    def _api(self):
+        return _ultimate_fake(mixer={"Pan UltiSID 1": "Center", "Pan UltiSID 2": "Center"})
+
+    def test_warns_when_chips_outnumber_pannable_sources(self):
+        with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
+            sp.apply_panning(self._api(), ("ultisid1", "ultisid1", "ultisid2"), [])
+        self.assertTrue(any("3 SID chips but only 2" in m for m in cm.output), cm.output)
+
+    def test_warning_names_the_no_socket_cause(self):
+        with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
+            sp.apply_panning(self._api(), ("ultisid1", "ultisid1", "ultisid2"), [])
+        self.assertTrue(any("no socketed SIDs" in m for m in cm.output), cm.output)
+
+    def test_warns_when_config_has_more_entries_than_sources(self):
+        with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
+            sp.apply_panning(self._api(), ("ultisid1", "ultisid2"), [-5, 5, 3, -3])
+        self.assertTrue(any("extra entries are ignored" in m for m in cm.output), cm.output)
+
+    def test_no_warning_when_every_chip_has_its_own_source(self):
+        api = _ultimate_fake(mixer={"Pan Socket 1": "Center", "Pan Socket 2": "Center"})
+        with self.assertNoLogs("c64cast.sid_panning", level="WARNING"):
+            sp.apply_panning(api, ("socket1", "socket2"), [])
+
+
 class ScenePanningFoldTest(unittest.TestCase):
     """The scene glue: whatever panning changed must land in the scene's
     saved-config dict, which teardown PUTs back — otherwise the user's mixer
-    stays where the tune left it."""
+    stays where the tune left it. The scope's column order comes along too."""
 
     def _waveform_self(self, api, *, n_sids, addresses, panning=(), saved=None):
         from types import SimpleNamespace
 
-        return SimpleNamespace(
+        scene = SimpleNamespace(
             api=api,
             _n_sids=n_sids,
             _sid_addresses=addresses,
             _sid_panning=list(panning),
             _saved_sid_config=saved,
+            window_order=None,
         )
+        scene.set_window_chip_order = lambda order: setattr(scene, "window_order", tuple(order))
+        return scene
 
     def _centered_socket_api(self):
-        api = _ultimate_fake(mixer={"Pan Socket 1": "Center", "Pan Socket 2": "Center"})
+        api = _ultimate_fake(
+            mixer={
+                "Pan Socket 1": "Center",
+                "Pan Socket 2": "Center",
+                "Pan UltiSID 1": "Center",
+            }
+        )
         api.config_store["SID Addressing"] = {
             "SID Socket 1 Address": "$D400",
             "SID Socket 2 Address": "$D420",
@@ -299,9 +442,26 @@ class ScenePanningFoldTest(unittest.TestCase):
 
         self.assertEqual(
             dict(api.config_store[CAT]),
-            {"Pan Socket 1": "Left 3", "Pan Socket 2": "Right 3"},
+            {"Pan Socket 1": "Left 3", "Pan Socket 2": "Right 3", "Pan UltiSID 1": "Center"},
         )
         self.assertEqual(scene._saved_sid_config, {PAN_S1: "Center", PAN_S2: "Center"})
+
+    def test_waveform_sets_the_scope_column_order(self):
+        from c64cast.asid_sidmap import SidMap
+        from c64cast.waveform import WaveformScene
+
+        api = self._centered_socket_api()
+        scene = self._waveform_self(api, n_sids=3, addresses=(0xD400, 0xD420, 0xD440))
+        sid_map = SidMap(
+            addresses=(0xD400, 0xD420, 0xD440),
+            requested=3,
+            sources=("socket1", "socket2", "ultisid1"),
+        )
+
+        WaveformScene._apply_sid_panning(scene, sid_map)
+
+        # Default [0, -3, 3] ⇒ the centred primary chip renders in the middle.
+        self.assertEqual(scene.window_order, (1, 0, 2))
 
     def test_waveform_single_sid_reads_the_live_source(self):
         from c64cast.waveform import WaveformScene
@@ -325,10 +485,8 @@ class ScenePanningFoldTest(unittest.TestCase):
 
         WaveformScene._apply_sid_panning(scene, None)
 
-        self.assertEqual(
-            dict(api.config_store[CAT]),
-            {"Pan Socket 1": "Left 5", "Pan Socket 2": "Right 5"},
-        )
+        self.assertEqual(api.config_store[CAT]["Pan Socket 1"], "Left 5")
+        self.assertEqual(api.config_store[CAT]["Pan Socket 2"], "Right 5")
 
     def test_waveform_merges_into_an_existing_snapshot(self):
         from c64cast.waveform import WaveformScene
@@ -370,15 +528,15 @@ class ScenePanningFoldTest(unittest.TestCase):
             _chip_addresses=[0xD400, 0xD420],
             _sid_panning=[],
             _saved_config=None,
+            window_order=None,
         )
+        scene.set_window_chip_order = lambda order: setattr(scene, "window_order", tuple(order))
         sid_map = SidMap(addresses=(0xD400, 0xD420), requested=2, sources=("socket1", "socket2"))
 
         AsidScene._apply_sid_panning(scene, sid_map)
 
-        self.assertEqual(
-            dict(api.config_store[CAT]),
-            {"Pan Socket 1": "Left 3", "Pan Socket 2": "Right 3"},
-        )
+        self.assertEqual(api.config_store[CAT]["Pan Socket 1"], "Left 3")
+        self.assertEqual(api.config_store[CAT]["Pan Socket 2"], "Right 3")
         self.assertEqual(scene._saved_config, {PAN_S1: "Center", PAN_S2: "Center"})
 
 

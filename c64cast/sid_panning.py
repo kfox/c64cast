@@ -8,12 +8,22 @@ config items ``Pan Socket 1``/``Pan Socket 2``/``Pan UltiSID 1``/``Pan UltiSID 2
 *source*, not the ``$Dxxx`` address — so we pan whichever source each tune chip
 is routed onto (see :func:`plan_sid_panning`).
 
+Because a pan belongs to a source, the ``sid_panning`` config list is indexed by
+*source*, not by chip: entry *k* positions the *k*-th source the tune claims. At
+most :data:`MAX_PANNED_SOURCES` (4) entries can ever apply, and fewer when the
+machine has no socketed SIDs — then only the 2 UltiSID cores are pannable, so a
+3+ chip tune necessarily doubles chips onto a shared pan (warned at apply time).
+
 This module is the panning sibling of :mod:`c64cast.sid_autoconfig` (chip-model
 matching) and :mod:`c64cast.asid_sidmap` (address routing): a **pure** planner
-(`plan_sid_panning`, `resolve_panning`, `default_pan_spread`, label/int
-conversion) plus one best-effort impure entry point (`plan_and_apply_panning`)
+(`plan_sid_panning`, `resolve_panning`, `default_pan_spread`, `window_order_for_pans`,
+label/int conversion) plus one best-effort impure entry point (`apply_panning`)
 that every SID-playing scene calls, reusing :mod:`c64cast.sid_hw_config`'s REST
 plumbing (`apply_config`, `current_source_map`) rather than duplicating it.
+
+`apply_panning` also reports the scope's column order, so the oscilloscope's
+side-by-side chip windows run left-to-right across the stereo field and the
+picture matches what you hear.
 
 U64 only, best-effort — every function no-ops on a backend without a SID config
 API (TeensyROM), and a REST failure never crashes a scene. The scene folds the
@@ -25,6 +35,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from .sid_hw_config import apply_config, current_source_map
@@ -65,9 +76,16 @@ _LABEL_TO_VALUE: Final[dict[str, int]] = {
     lbl.lower(): PAN_MIN + i for i, lbl in enumerate(PAN_LABELS)
 }
 
-# Default stereo spreads by SID count. 1 → dead center; 2-4 hand-picked for a
-# comfortable gap (outer chips wider as the count grows); 5+ fall through to an
-# even spread across the full field (see default_pan_spread).
+# The U64 has exactly one pan control per source, so at most this many distinct
+# pan positions exist — and a sid_panning list longer than this can never take
+# effect. The *achievable* count is lower without socketed SIDs: 2 UltiSID cores
+# + one per populated socket (_warn_if_sources_limited surfaces the shortfall).
+MAX_PANNED_SOURCES: Final = len(PAN_ITEM)
+
+# Default stereo spreads by pannable-source count, ordered by musical
+# importance rather than as a uniform fan: an odd count puts the primary chip
+# dead center with the rest flanking it; an even count keeps the first two
+# closest to center and spreads later ones wider.
 _DEFAULT_SPREAD: Final[dict[int, tuple[int, ...]]] = {
     0: (),
     1: (0,),
@@ -75,6 +93,25 @@ _DEFAULT_SPREAD: Final[dict[int, tuple[int, ...]]] = {
     3: (0, -3, 3),
     4: (-2, 2, -5, 5),
 }
+
+
+@dataclass(frozen=True)
+class SidPanning:
+    """What :func:`apply_panning` did, and what the scope should do about it.
+
+    ``originals`` is the ``{(category, item): value}`` set the caller folds into
+    its SID-config restore snapshot (empty when nothing was changed).
+    ``window_order`` lists chip indices left-to-right by pan position, so scope
+    column *w* shows ``window_order[w]`` — the display then matches the stereo
+    image instead of raw chip order."""
+
+    originals: dict[tuple[str, str], str]
+    window_order: tuple[int, ...]
+
+    @classmethod
+    def identity(cls, n_chips: int) -> SidPanning:
+        """Nothing panned: no restore set, columns left in chip order."""
+        return cls(originals={}, window_order=tuple(range(n_chips)))
 
 
 def pan_to_label(v: int | str) -> str:
@@ -121,67 +158,83 @@ def normalize_pan_spec(spec: Sequence[int | str]) -> tuple[int, ...]:
     return tuple(pan_from_label(pan_to_label(v)) for v in spec)
 
 
-def default_pan_spread(n: int) -> tuple[int, ...]:
-    """The default pan positions for `n` SID chips: a hand-tuned table for the
-    common 1-4 counts, else an even spread across the full ``[-5, 5]`` field."""
-    if n <= 0:
-        return ()
-    if n in _DEFAULT_SPREAD:
-        return _DEFAULT_SPREAD[n]
-    # Even spread: chip i at -5 + 10*i/(n-1), rounded into range.
-    span = PAN_MAX - PAN_MIN
-    return tuple(round(PAN_MIN + span * i / (n - 1)) for i in range(n))
+def default_pan_spread(n_sources: int) -> tuple[int, ...]:
+    """The default pan positions for `n_sources` pannable sources.
+
+    The values encode *musical importance*, not a uniform fan: with an odd
+    count the primary chip sits dead center and the rest flank it; with an even
+    count the first two chips sit closest to center and later ones spread
+    wider. `n_sources` is clamped to :data:`MAX_PANNED_SOURCES`."""
+    return _DEFAULT_SPREAD[max(0, min(n_sources, MAX_PANNED_SOURCES))]
 
 
-def resolve_panning(configured: Sequence[int | str] | None, n: int) -> tuple[int, ...]:
-    """The pan value (int ``-5..5``) for each of `n` SID chips. A non-empty
-    `configured` list (from ``[ultimate64].sid_panning``) wins, truncated or
-    zero-extended (Center) to length `n`; otherwise :func:`default_pan_spread`.
-    Assumes `configured` already passed :func:`normalize_pan_spec` validation."""
-    if n <= 0:
+def resolve_panning(configured: Sequence[int | str] | None, n_sources: int) -> tuple[int, ...]:
+    """The pan value (int ``-5..5``) for each of `n_sources` pannable sources.
+    A non-empty `configured` list (from ``[ultimate64].sid_panning``) wins,
+    truncated or center-extended to length `n_sources`; otherwise
+    :func:`default_pan_spread`. Assumes `configured` already passed
+    :func:`normalize_pan_spec` validation."""
+    n_sources = max(0, min(n_sources, MAX_PANNED_SOURCES))
+    if n_sources == 0:
         return ()
     if configured:
-        vals = normalize_pan_spec(configured)
-        if len(vals) >= n:
-            return vals[:n]
-        return vals + (0,) * (n - len(vals))
-    return default_pan_spread(n)
+        values = normalize_pan_spec(configured)[:n_sources]
+        return values + (0,) * (n_sources - len(values))
+    return default_pan_spread(n_sources)
+
+
+def distinct_sources(sources: Sequence[str | None]) -> tuple[str, ...]:
+    """The pannable sources `sources` uses, in first-claim (chip) order.
+
+    This is what the ``sid_panning`` list indexes: entry *k* is the pan of the
+    *k*-th source the tune claims, NOT of chip *k*. The two coincide while every
+    chip lands on its own source (through 4 chips); beyond that, chips sharing a
+    split UltiSID core share its single pan control."""
+    claimed: list[str] = []
+    for source in sources:
+        if source in PAN_ITEM and source not in claimed:
+            claimed.append(str(source))
+    return tuple(claimed)
+
+
+def source_pans(sources: Sequence[str | None], pans: Sequence[int]) -> dict[str, int]:
+    """Map each pannable source to its pan: the *k*-th distinct source claimed
+    takes ``pans[k]``. Sources beyond `pans` are left unset."""
+    return dict(zip(distinct_sources(sources), pans, strict=False))
+
+
+def chip_pan_values(sources: Sequence[str | None], pans: Sequence[int]) -> tuple[int, ...]:
+    """The effective pan of each *chip* — its source's pan (0 for a chip on no
+    pannable source). Chips sharing a source all report that shared value. This
+    is what the scope orders its columns by, so the display matches the stereo
+    image."""
+    by_source = source_pans(sources, pans)
+    return tuple(by_source.get(source or "", 0) for source in sources)
+
+
+def window_order_for_pans(chip_pans: Sequence[int]) -> tuple[int, ...]:
+    """Chip indices ordered left-to-right by pan position, so scope column *w*
+    shows the *w*-th chip across the stereo field. Ties (chips sharing a source,
+    or equal pans) keep chip order, and an all-equal set yields the identity
+    order — so a single-chip or all-centered tune renders exactly as before."""
+    return tuple(sorted(range(len(chip_pans)), key=lambda chip: (chip_pans[chip], chip)))
 
 
 def plan_sid_panning(
     sources: Sequence[str | None], pans: Sequence[int]
 ) -> dict[tuple[str, str], str]:
-    """Pure planner: map each ``(source, pan)`` to the mixer PUT that pans that
-    source. ``sources[i]`` is the audio source (``"socket1"``/``"socket2"``/
-    ``"ultisid1"``/``"ultisid2"``) playing tune chip *i*; ``pans[i]`` its desired
-    position. Returns ``{(CAT_MIXER, "Pan <Source>"): <label>}``.
+    """Pure planner: the mixer PUT that pans each source the tune uses.
+    ``sources[i]`` is the audio source (``"socket1"``/``"socket2"``/
+    ``"ultisid1"``/``"ultisid2"``) playing tune chip *i*; ``pans[k]`` is the
+    position of the *k*-th distinct source claimed. Returns
+    ``{(CAT_MIXER, "Pan <Source>"): <label>}``.
 
-    A ``None`` or unknown source is skipped (its chip isn't hardware-routed). If
-    two chips share one source (two split instances of one UltiSID core — only
-    possible at ≥5 SIDs), the **first** chip's pan wins, since the core has one
-    pan control; a differing later request is logged and ignored."""
-    plan: dict[tuple[str, str], str] = {}
-    for i, source in enumerate(sources):
-        if i >= len(pans):
-            break
-        item = PAN_ITEM.get(source) if source else None
-        if item is None:
-            continue
-        key = (CAT_MIXER, item)
-        label = pan_to_label(pans[i])
-        if key in plan:
-            if plan[key] != label:
-                log.debug(
-                    "sid panning: %s already set to %s; chip %d wants %s — "
-                    "sharing one pan control, keeping the first",
-                    item,
-                    plan[key],
-                    i,
-                    label,
-                )
-            continue
-        plan[key] = label
-    return plan
+    A chip on no pannable source is skipped. Chips sharing one source (two split
+    instances of a single UltiSID core) share its one pan control."""
+    return {
+        (CAT_MIXER, PAN_ITEM[source]): pan_to_label(pan)
+        for source, pan in source_pans(sources, pans).items()
+    }
 
 
 def sources_for_addresses(api: C64Backend, addresses: Sequence[int]) -> tuple[str | None, ...]:
@@ -194,31 +247,79 @@ def sources_for_addresses(api: C64Backend, addresses: Sequence[int]) -> tuple[st
     return tuple(src_map.get(a) for a in addresses)
 
 
-def plan_and_apply_panning(
-    api: C64Backend, sources: Sequence[str | None], pans: Sequence[int]
-) -> dict[tuple[str, str], str]:
-    """Apply the desired panning live (U64 only, best-effort) and return the
-    **originals** to restore, for the caller to fold into its SID-config restore
-    snapshot. No-ops (returns ``{}``) on a backend without a SID config API.
+def _warn_if_sources_limited(
+    sources: Sequence[str | None], configured: Sequence[int | str]
+) -> None:
+    """Warn when the hardware can't give every chip (or every configured entry)
+    its own pan position. The ceiling is one position per *source*: the two
+    UltiSID cores plus one per populated SID socket. With no socketed SIDs only
+    two positions exist, so a 3+ chip tune necessarily doubles chips up."""
+    claimed = distinct_sources(sources)
+    if not claimed:
+        return  # nothing routed to pan at all — not a "limited sources" case
+    n_chips = len(sources)
+    if n_chips > len(claimed):
+        socketed = [s for s in claimed if s.startswith("socket")]
+        why = (
+            "no socketed SIDs, so only the 2 UltiSID cores are pannable"
+            if not socketed
+            else f"{len(claimed)} pannable source(s) in use"
+        )
+        log.warning(
+            "sid panning: %d SID chips but only %d distinct pan position(s) "
+            "available (%s) — chips sharing a source share its pan",
+            n_chips,
+            len(claimed),
+            why,
+        )
+    if len(configured) > len(claimed):
+        log.warning(
+            "sid panning: sid_panning has %d entries but only %d source(s) are "
+            "pannable here — the extra entries are ignored",
+            len(configured),
+            len(claimed),
+        )
+
+
+def apply_panning(
+    api: C64Backend, sources: Sequence[str | None], configured: Sequence[int | str] | None
+) -> SidPanning:
+    """Resolve, apply, and report the panning for a tune (U64 only,
+    best-effort). `sources` is the audio source playing each chip, in chip
+    order; `configured` is ``[ultimate64].sid_panning``.
 
     Reads the current pan items once and writes only the sources whose pan
-    actually differs, so an already-correct configuration (e.g. a centered
-    single-SID tune on a mixer already at Center) does no writes and returns an
-    empty restore set — nothing to put back on teardown."""
+    actually differs, so an already-correct configuration (a centered single-SID
+    tune on a mixer already at Center) does no writes and returns an empty
+    restore set — nothing to put back on teardown. The returned
+    :class:`SidPanning` carries the originals for the caller's restore snapshot
+    plus the scope's left-to-right column order."""
     if not getattr(api.profile, "supports_config", False):
-        return {}
+        return SidPanning.identity(len(sources))
+
+    pans = resolve_panning(configured, len(distinct_sources(sources)))
+    _warn_if_sources_limited(sources, configured or ())
+    chip_pans = chip_pan_values(sources, pans)
+    window_order = window_order_for_pans(chip_pans)
+    if window_order != tuple(range(len(sources))):
+        log.info(
+            "sid panning: scope columns left→right = %s",
+            ", ".join(f"chip {chip} ({pan_to_label(chip_pans[chip])})" for chip in window_order),
+        )
+
     desired = plan_sid_panning(sources, pans)
     if not desired:
-        return {}
+        return SidPanning.identity(len(sources))
     try:
         mixer = api.get_config_category(CAT_MIXER)
     except Exception:
         log.debug("sid panning: mixer read failed — skipping", exc_info=True)
-        return {}
+        return SidPanning.identity(len(sources))
+
     changes = {key: label for key, label in desired.items() if mixer.get(key[1]) != label}
     if not changes:
         log.info("sid panning: mixer already at the target — no change")
-        return {}
+        return SidPanning(originals={}, window_order=window_order)
     originals = {key: mixer[item] for key in changes if (item := key[1]) in mixer}
 
     apply_config(api, changes)
@@ -226,4 +327,4 @@ def plan_and_apply_panning(
         "sid panning: %s",
         ", ".join(f"{item}={label}" for (_category, item), label in sorted(changes.items())),
     )
-    return originals
+    return SidPanning(originals=originals, window_order=window_order)

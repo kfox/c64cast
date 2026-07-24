@@ -660,19 +660,15 @@ class SidFileAudioSource:
         answers its address. Originals fold into the same snapshot teardown
         restores."""
         assert self.header is not None  # set by _pick_and_load, called by setup
-        from .sid_panning import plan_and_apply_panning, resolve_panning, sources_for_addresses
+        from .sid_panning import apply_panning, sources_for_addresses
 
-        addresses = self.header.sid_addresses
-        originals = plan_and_apply_panning(
-            self._api,
-            sources_for_addresses(self._api, addresses),
-            resolve_panning(self._sid_panning, len(addresses)),
-        )
-        if not originals:
+        sources = sources_for_addresses(self._api, self.header.sid_addresses)
+        panning = apply_panning(self._api, sources, self._sid_panning)
+        if not panning.originals:
             return
         if self._saved_sid_config is None:
             self._saved_sid_config = {}
-        self._saved_sid_config.update(originals)
+        self._saved_sid_config.update(panning.originals)
 
     def teardown(self) -> None:
         """Stop the feature stream, then SID playback. SID order mirrors

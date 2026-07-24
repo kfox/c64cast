@@ -101,17 +101,27 @@ sid_model = "auto"                  # auto | 6581 | 8580 | off — match a .sid
                                     # or fall back to an UltiSID core). "auto"
                                     # reads the header per chip; an explicit
                                     # 6581/8580 forces every chip; off disables.
-sid_panning = []                    # stereo pan per SID chip (U64 only), applied
-                                    # live before playback and restored at
-                                    # teardown. Each entry is an int -5..5
-                                    # (negative = left, 0 = center) or a label
-                                    # ("Left 3", "Center", "Right 2"). [] = auto
-                                    # spread: 1 SID centered; 2 [-3, 3];
-                                    # 3 [0, -3, 3]; 4 [-2, 2, -5, 5]; 5+ spread
-                                    # evenly. Panning is per audio SOURCE (SID
-                                    # socket / UltiSID core), so each chip is
-                                    # panned wherever it was routed. Short list =
-                                    # remaining chips centered; long = truncated.
+sid_panning = []                    # stereo pan per SID audio SOURCE (U64 only),
+                                    # applied live before playback and restored
+                                    # at teardown. MAX 4 ENTRIES: the U64 has one
+                                    # pan control per source (2 SID sockets +
+                                    # 2 UltiSID cores), and entry N pans the Nth
+                                    # source the tune uses. Each entry is an int
+                                    # -5..5 (negative = left, 0 = center) or a
+                                    # label ("Left 3", "Center", "Right 2").
+                                    # [] = auto spread: 1 source centered;
+                                    # 2 [-3, 3]; 3 [0, -3, 3]; 4 [-2, 2, -5, 5] —
+                                    # ordered by importance, so the primary chip
+                                    # stays nearest center. The oscilloscope
+                                    # reorders its chip columns to match, left to
+                                    # right across the stereo field.
+                                    #
+                                    # NOTE: fewer positions exist without
+                                    # socketed SIDs. The ceiling is 2 (UltiSID
+                                    # cores) + 1 per populated SID socket, so a
+                                    # U64 with NO socketed SIDs has only TWO
+                                    # distinct pan positions — a 3+ chip tune
+                                    # then shares pans (logged as a warning).
 
 [video]
 device = -1                         # int cv2 index (-1 = system default camera), or a

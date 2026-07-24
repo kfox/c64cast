@@ -32,7 +32,7 @@ from .dsp import DSPParams
 from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
-from .sid_panning import normalize_pan_spec
+from .sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 
 if TYPE_CHECKING:
     from .audio import AudioStreamer
@@ -338,12 +338,15 @@ class Ultimate64Cfg:
     sid_panning: list[int | str] = field(
         default_factory=list,
         metadata={
-            "help": "Stereo pan per SID chip, U64 only. Each entry is an int "
-            "-5..5 (negative = left, 0 = center) or a label ('Left 3', "
-            "'Center', 'Right 2'). Empty = auto spread: 1 SID centered, "
-            "multi-SID spread across the field (2 SIDs [-3, 3], 3 [0, -3, 3], "
-            "4 [-2, 2, -5, 5]). A list shorter than the tune's chip count is "
-            "centered for the rest; longer is truncated.",
+            "help": "Stereo pan per SID audio source, U64 only. Max 4 entries — "
+            "the U64 has one pan control per source (2 SID sockets + 2 UltiSID "
+            "cores), and entry N pans the Nth source the tune uses. Each entry "
+            "is an int -5..5 (negative = left, 0 = center) or a label ('Left 3', "
+            "'Center', 'Right 2'). Empty = auto spread: 1 source centered, "
+            "2 [-3, 3], 3 [0, -3, 3], 4 [-2, 2, -5, 5] — ordered so the primary "
+            "chip stays nearest center. Fewer positions exist without socketed "
+            "SIDs: with none, only the 2 UltiSID cores are pannable, so chips "
+            "beyond the 2nd share a pan.",
         },
     )
 
@@ -2642,6 +2645,12 @@ def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
     if not isinstance(u64.sid_panning, list):
         raise ValueError(
             f"ultimate64.sid_panning must be a list of pan values, got {u64.sid_panning!r}"
+        )
+    if len(u64.sid_panning) > MAX_PANNED_SOURCES:
+        raise ValueError(
+            f"ultimate64.sid_panning accepts at most {MAX_PANNED_SOURCES} entries "
+            f"(the U64 has one pan control per audio source: 2 SID sockets + 2 "
+            f"UltiSID cores), got {len(u64.sid_panning)}"
         )
     try:
         normalize_pan_spec(u64.sid_panning)

@@ -80,7 +80,7 @@ from .sid_hw_config import (
     restore_sid_config,
     snapshot_sid_config,
 )
-from .sid_panning import plan_and_apply_panning, resolve_panning, sources_for_addresses
+from .sid_panning import apply_panning, sources_for_addresses
 from .sidemu import ACCUMULATOR_RANGE, SIDEmulator, primary_waveform
 
 # The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
@@ -999,19 +999,20 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         A remapped multi-SID tune takes its per-chip sources straight from the
         map; a single-SID (or unrealizable) tune has none, so we ask the live
         config which source answers each address. Originals fold into the same
-        restore snapshot the address/model changes use."""
-        pans = resolve_panning(self._sid_panning, self._n_sids)
+        restore snapshot the address/model changes use, and the scope's columns
+        are reordered to run left-to-right across the stereo field."""
         if sid_map is not None and sid_map.sources:
             sources: Sequence[str | None] = sid_map.sources
         else:
             sources = sources_for_addresses(self.api, self._sid_addresses)
 
-        originals = plan_and_apply_panning(self.api, sources, pans)
-        if not originals:
+        panning = apply_panning(self.api, sources, self._sid_panning)
+        self.set_window_chip_order(panning.window_order)
+        if not panning.originals:
             return
         if self._saved_sid_config is None:
             self._saved_sid_config = {}
-        self._saved_sid_config.update(originals)
+        self._saved_sid_config.update(panning.originals)
 
     def _restore_sid_hw_config(self) -> None:
         """Restore the SID address config snapshotted by _apply_sid_hw_config."""
@@ -1503,8 +1504,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # controls (one column per SID chip) so per_waveform coloring is
         # per-(voice, chip); env levels span every chip so the silence check
         # doesn't end a tune whose primary chip rests while another plays.
+        window_emus = self._scope_emulators()
         with self._reg_lock:
-            window_controls = [[emu.voices[v].control for emu in self._emulators] for v in range(3)]
+            window_controls = [[emu.voices[v].control for emu in window_emus] for v in range(3)]
             env_levels = [v.envelope_level for emu in self._emulators for v in emu.voices]
 
         # End-of-tune detection: a short non-looping subtune that has gone
@@ -1524,7 +1526,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     if wave_now != self._last_window_wave[v_idx][c]:
                         changed = True
                         self._last_window_wave[v_idx][c] = wave_now
-                    colors.append(self._voice_color_now(v_idx, self._emulators[c]))
+                    colors.append(self._voice_color_now(v_idx, window_emus[c]))
                 if changed:
                     self._paint_strip_color_row(v_idx, colors)
 
