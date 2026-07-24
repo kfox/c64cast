@@ -53,11 +53,14 @@ class CompatibleOverlaysTest(unittest.TestCase):
         b = {o.name for o in wizard.compatible_overlays("hires", audio_enabled=False)}
         self.assertEqual(a, b)
 
-    def test_audio_overlay_gated_by_audio_flag(self):
+    def test_spectrum_offered_with_audio_off(self):
+        # The spectrum overlays read the scene's music features first (a SID
+        # scene has those and no AudioStreamer), so they are no longer gated on
+        # [audio] — they only WANT audio, for the FFT fallback.
         without = {o.name for o in wizard.compatible_overlays("petscii", audio_enabled=False)}
         with_ = {o.name for o in wizard.compatible_overlays("petscii", audio_enabled=True)}
         self.assertIn("spectrum_petscii", with_)
-        self.assertNotIn("spectrum_petscii", without)
+        self.assertIn("spectrum_petscii", without)
 
     def test_filter_matches_introspect_gate(self):
         # compatible_overlays must agree with the authority (overlay_mode_ok +

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from contextlib import contextmanager
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,29 @@ from c64cast.overlays import (
     known_overlays,
     validate_for_scene,
 )
+from c64cast.scenes import Scene
+
+
+class _RequiresAudioOverlay(Overlay):
+    """Stub for the REQUIRES_AUDIO build gate. No shipped overlay sets that
+    flag today (the spectrum overlays only WANT audio), but the gate is a
+    framework facility overlays can still opt into, so it stays covered."""
+
+    name = "_needs_audio"
+    REQUIRES_AUDIO = True
+
+    def __init__(self, audio=None):
+        self.audio = audio
+
+
+@contextmanager
+def _registered(name: str, cls: type[Overlay]):
+    """Temporarily put `cls` in the overlay registry under `name`."""
+    from c64cast import overlays as overlays_mod
+
+    overlays_mod._load_all()
+    with patch.dict(overlays_mod._REGISTRY, {name: cls}):
+        yield
 
 
 def _fake_api() -> C64Backend:
@@ -59,6 +83,41 @@ class FakeAudio:
         out = np.zeros(n, dtype=np.float32)
         out[-self.samples.size :] = self.samples
         return out
+
+
+class FakeScene:
+    """Minimal stand-in for the `scene` handed to compose(). `features()` is
+    what the spectrum overlays read for band energies — None means "this scene
+    has no music source", which is what every non-reactive scene returns."""
+
+    name = "fake"
+
+    def __init__(self, features=None):
+        self._features = features
+
+    def features(self):
+        return self._features
+
+
+def _scene(features=None) -> Scene:
+    """A FakeScene typed as the Scene compose()/bands_now() expect — a
+    structural stand-in, same boundary cast as _fake_api()."""
+    return cast(Scene, FakeScene(features))
+
+
+def _sid_features(freqs, gates, level=0.8):
+    """A SID-shaped MusicModulation: voices and level, but no `bands` (the SID
+    feature producers read envelopes, not a spectrum)."""
+    from c64cast.modulation import MusicModulation
+
+    return MusicModulation(
+        level=level,
+        onset=0.0,
+        beat_phase=0.0,
+        bpm=0.0,
+        voice_freqs=freqs,
+        voice_gates=gates,
+    )
 
 
 class FakePetsciiMode:
@@ -106,10 +165,22 @@ class RegistryTest(unittest.TestCase):
             build_overlay({"type": "nope"}, audio=None)
         self.assertIn("nope", str(cm.exception))
 
-    def test_audio_overlay_without_audio_raises(self):
-        with self.assertRaises(ValueError) as cm:
-            build_overlay({"type": "spectrum_petscii"}, audio=None)
+    def test_requires_audio_overlay_without_audio_raises(self):
+        with _registered("_needs_audio", _RequiresAudioOverlay):
+            with self.assertRaises(ValueError) as cm:
+                build_overlay({"type": "_needs_audio"}, audio=None)
         self.assertIn("audio", str(cm.exception).lower())
+
+    def test_wants_audio_overlay_builds_without_audio(self):
+        # The spectrum overlays read the scene's music features first, so they
+        # build (and paint) on a scene with no AudioStreamer at all.
+        ov = build_overlay({"type": "spectrum_petscii"}, audio=None)
+        self.assertIsNone(ov.audio)
+
+    def test_wants_audio_overlay_receives_the_streamer(self):
+        audio = FakeAudio(np.zeros(2048, dtype=np.float32))
+        ov = build_overlay({"type": "spectrum_petscii"}, audio=audio)
+        self.assertIs(ov.audio, audio)
 
     def test_validate_for_scene_accepts_bitmap_text_overlay(self):
         # Text overlays (clock/marquee/…) now fold glyphs into the bitmap, so
@@ -217,7 +288,7 @@ class SpectrumPetsciiTest(unittest.TestCase):
         audio = FakeAudio(np.zeros(2048, dtype=np.float32))
         ov = PetsciiSpectrumOverlay(audio=audio, placement="bottom", height_rows=8)
         buffers = _make_buffers()
-        ov.compose(buffers, scene=MagicMock(), t=0.0)
+        ov.compose(buffers, scene=_scene(), t=0.0)
         # Silence → strip rows should be all-space (no bars).
         top = ov._strip_rows.start * 40
         bot = ov._strip_rows.stop * 40
@@ -236,10 +307,133 @@ class SpectrumPetsciiTest(unittest.TestCase):
         audio = FakeAudio(tone, sample_rate=sr)
         ov = PetsciiSpectrumOverlay(audio=audio, placement="bottom", height_rows=12, gain=2.0)
         buffers = _make_buffers()
-        ov.compose(buffers, scene=MagicMock(), t=0.0)
+        ov.compose(buffers, scene=_scene(), t=0.0)
         self.assertTrue(
             (buffers["screen"] == SC_FULL).any(), "a loud tone should light at least one bar"
         )
+
+    def test_scene_features_drive_bars_without_any_streamer(self):
+        # The retrofit's headline case: a scene reporting `bands` paints bars
+        # with no AudioStreamer in sight (a SID/waveform scene has none).
+        from c64cast.modulation import MusicModulation
+        from c64cast.overlays import SC_FULL, SC_SPACE
+        from c64cast.overlays.spectrum_petscii import COLS_PER_BAND, PetsciiSpectrumOverlay
+
+        # 8 bands: only the last one has energy.
+        feat = MusicModulation(
+            level=1.0,
+            onset=0.0,
+            beat_phase=0.0,
+            bpm=0.0,
+            voice_freqs=(0.0, 0.0, 0.0),
+            voice_gates=(False, False, False),
+            bands=(0.0,) * 7 + (1.0,),
+        )
+        ov = PetsciiSpectrumOverlay(audio=None, placement="bottom", height_rows=10)
+        buffers = _make_buffers()
+        ov.compose(buffers, scene=_scene(feat), t=0.0)
+        # Band 7 occupies the rightmost COLS_PER_BAND columns, full height.
+        row = 24 * 40
+        self.assertTrue(
+            (buffers["screen"][row + 40 - COLS_PER_BAND : row + 40] == SC_FULL).all(),
+            "the loud top band should be a full-height bar",
+        )
+        # Band 0 (leftmost) is silent — untouched, so the frame shows through.
+        self.assertTrue((buffers["screen"][row : row + COLS_PER_BAND] == SC_SPACE).all())
+
+    def test_sid_voices_synthesize_bars(self):
+        # SID features carry no `bands` at all — the voice-synthesis tier turns
+        # gated oscillator frequencies into bars so a tune isn't blank.
+        from c64cast.overlays import SC_FULL
+        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+
+        feat = _sid_features(freqs=(80.0, 1200.0, 0.0), gates=(True, True, False))
+        ov = PetsciiSpectrumOverlay(audio=None, placement="bottom", height_rows=10)
+        buffers = _make_buffers()
+        ov.compose(buffers, scene=_scene(feat), t=0.0)
+        self.assertTrue((buffers["screen"] == SC_FULL).any(), "gated SID voices should light bars")
+
+    def test_no_source_paints_nothing(self):
+        from c64cast.overlays import SC_SPACE
+        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+
+        ov = PetsciiSpectrumOverlay(audio=None, placement="bottom", height_rows=10)
+        buffers = _make_buffers()
+        with self.assertLogs("c64cast.overlays._spectrum", level="WARNING"):
+            ov.compose(buffers, scene=_scene(), t=0.0)
+        self.assertTrue((buffers["screen"] == SC_SPACE).all())
+
+
+class SpectrumBandsSourceTest(unittest.TestCase):
+    """Precedence of the shared `bands_now` tiers."""
+
+    def _overlay(self, audio=None):
+        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+
+        return PetsciiSpectrumOverlay(audio=audio)
+
+    def test_features_bands_win_over_streamer(self):
+        from c64cast.modulation import MusicModulation
+
+        loud = 0.8 * np.sin(2 * np.pi * 1000 * np.arange(2048) / 8000).astype(np.float32)
+        audio = FakeAudio(loud)
+        feat = MusicModulation(
+            level=0.0,
+            onset=0.0,
+            beat_phase=0.0,
+            bpm=0.0,
+            voice_freqs=(0.0, 0.0, 0.0),
+            voice_gates=(False, False, False),
+            bands=(0.0,) * 8,
+        )
+        ov = self._overlay(audio=audio)
+        # The streamer holds a loud tone; features report silence and must win
+        # (no second FFT of a signal the analyzer already described).
+        self.assertTrue((ov.bands_now(_scene(feat)) == 0).all())
+
+    def test_falls_back_to_fft_when_scene_has_no_features(self):
+        loud = 0.8 * np.sin(2 * np.pi * 1000 * np.arange(2048) / 8000).astype(np.float32)
+        ov = self._overlay(audio=FakeAudio(loud))
+        self.assertTrue((ov.bands_now(_scene()) > 0).any())
+
+    def test_zeros_with_neither(self):
+        ov = self._overlay(audio=None)
+        with self.assertLogs("c64cast.overlays._spectrum", level="WARNING"):
+            bands = ov.bands_now(_scene())
+        self.assertEqual(bands.shape, (8,))
+        self.assertTrue((bands == 0).all())
+
+    def test_rebin_resamples_to_overlay_band_count(self):
+        from c64cast.overlays._spectrum import rebin
+
+        # Ends stay pinned; the count changes.
+        out = rebin((0.0, 1.0), 5)
+        self.assertEqual(out.shape, (5,))
+        self.assertAlmostEqual(float(out[0]), 0.0)
+        self.assertAlmostEqual(float(out[-1]), 1.0)
+        self.assertTrue(np.all(np.diff(out) > 0))
+        # Matching counts are an identity copy.
+        same = rebin((0.1, 0.2, 0.3), 3)
+        np.testing.assert_allclose(same, [0.1, 0.2, 0.3], rtol=1e-6)
+
+    def test_voice_bands_place_frequencies_low_to_high(self):
+        from c64cast.overlays._spectrum import voice_bands
+
+        low = voice_bands(_sid_features((60.0, 0.0, 0.0), (True, False, False)), 8)
+        high = voice_bands(_sid_features((6000.0, 0.0, 0.0), (True, False, False)), 8)
+        self.assertLess(int(np.argmax(low)), int(np.argmax(high)))
+
+    def test_voice_bands_ignore_ungated_voices(self):
+        from c64cast.overlays._spectrum import voice_bands
+
+        out = voice_bands(_sid_features((440.0, 440.0, 440.0), (False, False, False)), 8)
+        self.assertTrue((out == 0).all())
+
+    def test_voice_bands_silent_at_zero_level(self):
+        from c64cast.overlays._spectrum import voice_bands
+
+        out = voice_bands(_sid_features((440.0, 0.0, 0.0), (True, False, False), level=0.0), 8)
+        self.assertTrue((out == 0).all())
 
 
 # ---------------------------------------------------------------------------

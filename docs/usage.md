@@ -1404,6 +1404,7 @@ The loader validates these at config-load time, not at runtime:
 | `REQUIRES_PETSCII`  | Paints PETSCII glyphs. Allowed on any display mode with `is_petscii_compatible` set — `petscii` and `blank`.  |
 | `COMPATIBLE_MODES`  | Whitelist of display-mode names this overlay supports (e.g. `big_text` → `blank`/`mcm`). Empty = no limit.    |
 | `REQUIRES_AUDIO`    | Needs `[audio] enabled = true`. Loader raises with a clear message otherwise.                                 |
+| `WANTS_AUDIO`       | Gets the shared audio streamer when there is one, but builds and runs without it (the spectrum overlays).     |
 
 `big_text` paints into screen + color RAM but is built for the blank canvas (`blank`) or the multicolor-character canvas (`mcm`); it explicitly refuses `petscii` (would stomp the live PETSCII frame) and bitmap modes. Everything else is PETSCII-only (which also means it works on `blank`).
 

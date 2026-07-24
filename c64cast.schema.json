@@ -1992,7 +1992,7 @@
                       },
                       "gain": {
                         "type": "number",
-                        "description": "Multiplier applied to FFT magnitudes before bar height.",
+                        "description": "Multiplier applied to band magnitudes before bar height.",
                         "default": 1.0
                       }
                     },

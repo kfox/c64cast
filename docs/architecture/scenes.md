@@ -283,7 +283,8 @@ Restrictions:
 * `REQUIRES_PETSCII = True` — the overlay paints text (screen codes + color). Accepted on any `is_petscii_compatible = True` char mode (`PETSCIIDisplayMode`, `BlankDisplayMode`). Rejects `mcm` (color RAM bit 3 reinterprets the cell as multicolor + halved horizontal resolution).
 * `SUPPORTS_BITMAP_TEXT = True` (alongside `REQUIRES_PETSCII`) — the overlay folds its glyphs via the TextSurface, so it ALSO renders on bitmap modes (`is_bitmap_text_compatible = True`: `HiresDisplayMode`, `MultiHiresDisplayMode`). Set on the shared text bases (`corner_text`, `marquee`, `scrolling_text`) + `logo`, so every text overlay works on petscii/blank/hires/mhires. Overlays whose paint isn't a simple text run (the `spectrum_petscii` bar renderer) leave it `False` and stay char-only.
 * `COMPATIBLE_MODES = ("a", "b", ...)` — whitelist of display-mode names this overlay supports. Empty tuple (default) = no restriction. Used for overlays that don't map onto the binary "PETSCII vs bitmap" split — e.g. `big_text` paints into blank or MCM buffers but not into a PETSCII webcam scene (where it would stomp the live-frame PETSCII glyphs).
-* `REQUIRES_AUDIO = True` — needs `[audio]` enabled. `build_overlay` raises with a clear message otherwise.
+* `REQUIRES_AUDIO = True` — needs `[audio]` enabled. `build_overlay` raises with a clear message otherwise. No shipped overlay sets it today; it stays as the framework gate for one that truly can't work without a streamer.
+* `WANTS_AUDIO = True` — `build_overlay` passes the shared `AudioStreamer` as an `audio` kwarg **if there is one**, but never refuses to build. The spectrum overlays: their primary source is the scene's music features (a SID scene has those and no streamer at all), and the streamer is only the fallback.
 
 The built-in overlays:
 
@@ -294,7 +295,7 @@ The built-in overlays:
 | `scrolling_text`   | text modes                | One row of screen + color RAM, configurable row/speed/messages.                |
 | `marquee`          | text modes                | One row, single text string, ticker-style continuous loop with separator.      |
 | `rss`              | text modes                | Marquee fed by a background RSS/Atom fetch (stdlib `ElementTree`).             |
-| `spectrum_petscii` | petscii / blank, audio    | A strip of cells (bottom / center / split mode), 8 bands × 5 cols.             |
+| `spectrum_petscii` | petscii / blank           | A strip of cells (bottom / center / split mode), 8 bands × 5 cols.             |
 | `clock`            | text modes                | Time/date in a corner; only updates when the formatted string changes.         |
 | `weather`          | text modes                | Temp + conditions in a corner; background thread polls every N minutes.        |
 | `callsign`         | text modes                | Static text in a corner. Single paint, then change-detect zero traffic.        |
@@ -307,7 +308,21 @@ Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `n
 
 `marquee` and `rss` share `overlays/marquee.py:MarqueeBase` — subclass and implement `_current_text()`.
 
-Audio overlays read recent float samples from `AudioStreamer.get_recent_samples(n)`, which exposes a 2048-sample tap filled by every input path (mic, WAV, PyAV).
+### The shared spectrum band source (`overlays/_spectrum.py`)
+
+Both spectrum overlays ask the same question every frame — *how much energy is in each of N log-spaced bands right now?* — and differ only in how they draw the answer. `_SpectrumBands.bands_now(scene)` answers it once, for both.
+
+It reads **`scene.features()` first**, not the `AudioStreamer`. That inversion is the whole point: FFT-ing the streamer inside the overlay (what `spectrum_petscii` did originally) made it `REQUIRES_AUDIO` and therefore blank on a SID/waveform scene — the chip makes the sound, there is no streamer — while *duplicating* analysis on a mic/file scene, where [`audio_features.AudioFeatureStream`](audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) had already run the identical FFT one layer down. `features()` is the source-agnostic seam every reactive scene already exposes, so the overlays read that and the FFT becomes a fallback.
+
+Four tiers, in precedence order:
+
+1. **`features().bands`** — a real spectrum, already Hann → rfft → per-band mean → `log1p`-compressed by the upstream analyzer over its *pre-DSP* tap. The mic and audio-file paths land here. `rebin()` resamples it to the overlay's band count by interpolating over band *index* (both sides are log-spaced energies, so index space is the right geometry — no Hz conversion).
+2. **Voice synthesis** — the SID producers (`music_features.SidFeatureStream`, `WaveformScene.features`) read envelopes and oscillator frequencies, not a spectrum, so their `bands` is empty **by design** (see modulation.py). Rather than leave a tune blank, `voice_bands()` places each *gated* voice's real frequency into a log-spaced Hz band over 40 Hz–8 kHz, deposits the snapshot's `level` there (max-combined, with a modest skirt into the neighbours so three oscillators across eight bands don't read as disconnected blips), and calls it a spectrum. It is a three-oscillator approximation of one — which for a chiptune is most of what the spectrum actually is. What the eye reads is the *frequency* motion: the bass holding low while the lead walks up the bands.
+   This lives in the overlay layer deliberately. Filling `MusicModulation.bands` in the SID producers instead would make `bass`/`mid`/`treble` non-zero on the SID path and change every existing SID-reactive generator (`generators.py` feeds both into hue and value) — reversing the byte-identical guarantee modulation.py documents. The display layer wanting a spectrum is not a reason to change what the feature struct claims to know.
+3. **The legacy FFT** — `features()` is None but an `AudioStreamer` is attached (a `reactive = false` mic scene, a webcam scene with audio on). Math unchanged. Note this is the *post*-DSP tap on purpose: with no upstream analyzer to defer to, it's a scope on what the C64 is actually playing, where the feature analyzer needs the pre-DSP signal.
+4. **Zeros** — no source at all. The overlay paints nothing and logs one warning naming the scene, since a silent no-op would otherwise look like a rendering bug (it used to be a hard build-time refusal via `REQUIRES_AUDIO`).
+
+Other audio overlays read recent float samples from `AudioStreamer.get_recent_samples(n)` directly, which exposes a 2048-sample tap filled by every input path (mic, WAV, PyAV).
 
 `Overlay.is_busy()` (default `False`) lets a slow-paint overlay defer the scene's auto-advance. When a scene's `duration_s` timer expires, the Playlist checks every attached overlay's `is_busy()` and, if any returns True, flips `is_done` back to False so the scene runs another frame. `big_text` uses this in `loop = false` mode to make the Playlist wait for the last message to finish scrolling off-screen before the interstitial appears. In the default `loop = true` mode, `is_busy()` always returns False (the message list is effectively infinite — busy-defer would freeze the playlist) and `duration_s` is the source of truth. **CTRL skip always wins**: when `skip_event` is set, `is_done = True` is forced regardless of busy state — the busy guard runs above the CTRL branch, so the CTRL branch overwrites it. For the busy-defer to actually paint frames past `duration_s`, the scene's `process_frame` must keep rendering after the deadline; `BlankScene` does (it returns `still_active = False` but renders the frame first), `WebcamScene` and `VideoScene` short-circuit.
 

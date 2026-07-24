@@ -77,6 +77,13 @@ class Overlay:
     # False, staying petscii/blank-only. See modes.is_bitmap_text_compatible.
     SUPPORTS_BITMAP_TEXT = False
     REQUIRES_AUDIO = False
+    # When True, the overlay is HANDED the shared AudioStreamer (as an `audio`
+    # constructor kwarg) if one exists, but works without it — unlike
+    # REQUIRES_AUDIO, which refuses to build when audio is off. The spectrum
+    # overlays are the case: they read band energies from the scene's music
+    # features (a SID scene has those and no streamer at all) and fall back to
+    # FFT-ing the streamer only when the scene reports none.
+    WANTS_AUDIO = False
     # Optional whitelist of display-mode names this overlay supports. Empty
     # tuple = no restriction (works on any display mode that accepts it via
     # the other flags). Use this when an overlay is too custom to gate on
@@ -200,7 +207,8 @@ def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
     # Filter 'type' out; pass remaining as kwargs.
     kwargs = {k: v for k, v in cfg.items() if k != "type"}
     # The overlay's __init__ accepts an `audio` kw for audio-using overlays.
-    if cls.REQUIRES_AUDIO:
+    # WANTS_AUDIO overlays get it too (possibly None — they cope).
+    if cls.REQUIRES_AUDIO or cls.WANTS_AUDIO:
         kwargs.setdefault("audio", audio)
     try:
         return cls(**kwargs)
