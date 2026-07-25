@@ -52,7 +52,17 @@ def _ultimate_fake() -> FakeAPI:
 
 
 def _result(fill: int) -> dc.CalibrationResult:
-    return dc.CalibrationResult(sidtable=[fill & 0xFF] * 256, metrics={"effective_bits": 6.5})
+    return dc.CalibrationResult(sidtable=[fill & 0xFF] * 256, metrics={"ladder_bits": 6.5})
+
+
+def _consistent_raw(lmax: float = 0.5) -> list[tuple[int, float, float]]:
+    """A two-reference measurement that IS a metric: p and q are real distances
+    to a single set of signed levels, so the volume-0 self-test passes exactly.
+    Codes with volume nibble 0 output silence (master volume 0); the rest spread
+    negative→positive."""
+    levels = {c: 0.0 if (c & 0x0F) == 0 else (c - 128) / 256.0 for c in range(256)}
+    levels[0x0F] = lmax
+    return [(c, abs(levels[c]), abs(levels[c] - lmax)) for c in range(256)]
 
 
 class ResolveKeyTest(unittest.TestCase):
@@ -384,20 +394,83 @@ class MissingCalibrationLogTest(unittest.TestCase):
 
 class BuildSidtableTest(unittest.TestCase):
     def test_reconstruct_from_synthetic_signed_curve(self):
-        # A synthetic bipolar transfer curve: L(c) known, p=|L|, q=|L-Lmax|.
-        # Codes with volume nibble 0 output ~silence (master volume 0) — that's
-        # the measured noise floor; the rest spread negative→positive.
-        lmax = 0.5
-        levels = {c: 0.0 if (c & 0x0F) == 0 else (c - 128) / 256.0 for c in range(256)}
-        levels[0x0F] = lmax
-        signed_raw = [(c, abs(levels[c]), abs(levels[c] - lmax)) for c in range(256)]
-        sidtable, metrics = dc.build_sidtable_from_signed(signed_raw)
+        sidtable, metrics = dc.build_sidtable_from_signed(_consistent_raw())
+        assert sidtable is not None
         self.assertEqual(len(sidtable), 256)
         self.assertTrue(all(0 <= v <= 255 for v in sidtable))
-        self.assertGreater(metrics["distinct_levels"], 16)
         self.assertIn("signed_span", metrics)
         lo, hi = metrics["signed_span"]
         self.assertLess(lo, hi)
+        self.assertGreater(metrics["ladder_bits"], 4.0)
+
+
+class Volume0SelfTestTest(unittest.TestCase):
+    """Codes $h0 set the master volume to 0, so their level equals $00's and
+    q($h0) must equal lmax exactly. That holds with no model assumptions, which
+    makes it the one check that can tell a sound measurement from a measurement
+    whose p/q are not distances at all — the failure the two-reference scheme
+    is otherwise silent about."""
+
+    def test_consistent_measurement_passes_and_yields_a_table(self):
+        sidtable, metrics = dc.build_sidtable_from_signed(_consistent_raw())
+        self.assertIsNotNone(sidtable)
+        self.assertAlmostEqual(metrics["volume0_selftest_worst"], 0.0, places=6)
+        self.assertEqual(len(metrics["volume0_selftest"]), 16)
+
+    def test_inconsistent_measurement_is_rejected_with_no_table(self):
+        # Reproduces the measured failure: q comes back short for codes whose
+        # upper nibble is non-zero, by an amount that depends on the nibble. The
+        # volume-0 codes then report a distance to $0F that is not lmax, which
+        # is impossible for any real set of levels.
+        raw = [(c, p, q * (1.0 - 0.03 * (c >> 4))) for c, p, q in _consistent_raw()]
+        sidtable, metrics = dc.build_sidtable_from_signed(raw)
+        self.assertIsNone(sidtable)
+        self.assertGreater(metrics["volume0_selftest_worst"], dc.SELFTEST_TOLERANCE)
+        # Still fully diagnosable: the metrics survive the rejection.
+        self.assertIn("signed_span", metrics)
+        self.assertEqual(len(metrics["volume0_selftest"]), 16)
+
+    def test_rejection_writes_no_sidtable_and_reads_back_as_no_calibration(self):
+        cfg = _u64_cfg()
+        key = dc.resolve_calibration_key(cfg)
+        raw = [(c, p, q * 0.5) for c, p, q in _consistent_raw()]
+        sidtable, metrics = dc.build_sidtable_from_signed(raw)
+        self.assertIsNone(sidtable)
+        path = dc.save_calibration(
+            cfg, key, {"default": dc.CalibrationResult(sidtable, metrics, None, raw)}, {}
+        )
+        doc = json.loads(path.read_text())
+        entry = doc["sids"]["default"]
+        self.assertNotIn("sidtable", entry)
+        # The raw levels are kept so the failure can be investigated without
+        # repeating the ~6 min/socket measurement.
+        self.assertEqual(len(entry["raw_levels"]), 256)
+        self.assertIsNone(dc.load_calibrated_table(cfg))
+
+
+class LadderMetricsTest(unittest.TestCase):
+    def test_quality_is_independent_of_capture_noise_floor(self):
+        """The metrics this replaced counted level steps exceeding the capture
+        noise floor, so a quieter rig scored more "effective bits" on identical
+        hardware — it once rated a chip degraded to ~4 bits above a working one.
+        Scaling the whole capture must not change the ladder's quality figures."""
+        raw = _consistent_raw()
+        loud = [(c, p * 10.0, q * 10.0) for c, p, q in raw]
+        _, m1 = dc.build_sidtable_from_signed(raw)
+        _, m2 = dc.build_sidtable_from_signed(loud)
+        for k in ("ladder_bits", "worst_gap_frac", "ladder_rms_err_frac"):
+            self.assertAlmostEqual(m1[k], m2[k], places=3, msg=k)
+        # …while the noise floor itself, being a property of the rig, does move.
+        self.assertAlmostEqual(m2["capture_noise_floor"], m1["capture_noise_floor"] * 10, places=5)
+
+    def test_worst_gap_position_is_reported_relative_to_silence(self):
+        sidtable, metrics = dc.build_sidtable_from_signed(_consistent_raw())
+        self.assertIsNotNone(sidtable)
+        # 0 = the gap straddles silence (crossover distortion), ±0.5 = it sits
+        # out at an extreme, where the same gap is benign.
+        self.assertGreaterEqual(metrics["worst_gap_from_zero_frac"], -0.5)
+        self.assertLessEqual(metrics["worst_gap_from_zero_frac"], 0.5)
+        self.assertGreaterEqual(metrics["crossover_gap_frac"], 0.0)
 
 
 if __name__ == "__main__":
