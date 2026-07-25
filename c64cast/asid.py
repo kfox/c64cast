@@ -1,6 +1,6 @@
 """ASID protocol decoder — ASID MIDI SysEx payloads → SID register updates.
 
-The ASID protocol (spec: /Users/kfox/src/asid-protocol) streams SID register
+The ASID protocol (spec: https://github.com/thomasj/asid-protocol) streams SID register
 writes frame-by-frame over MIDI SysEx; the receiving unit's SID chip
 synthesizes the sound. Each message is ``F0 2D <cmd> <payload...> F7``; mido
 hands us the bytes between ``F0`` and ``F7`` as ``msg.data``, i.e.

@@ -45,7 +45,7 @@ class RemoteUrlTest(unittest.TestCase):
         self.assertTrue(_is_remote_url("https://rr4.googlevideo.com/videoplayback?x=1"))
 
     def test_local_paths_are_not_remote(self):
-        self.assertFalse(_is_remote_url("/Users/kfox/assets/videos/clip.mp4"))
+        self.assertFalse(_is_remote_url("/home/user/assets/videos/clip.mp4"))
         self.assertFalse(_is_remote_url("assets/videos/clip.webm"))
         self.assertFalse(_is_remote_url("file:///tmp/clip.mp4"))
 
