@@ -309,7 +309,13 @@ def save_calibration(
     entries: dict[str, CalibrationResult],
     device_info: dict[str, str],
 ) -> Path:
-    """Persist one or more per-socket sidtables + provenance for this system."""
+    """Persist one or more per-socket sidtables + provenance for this system.
+
+    ``raw_levels`` is written additively under the *same* schema version:
+    readers only ever require ``sidtable`` (see :func:`load_calibrated_table`),
+    so old files keep loading and new files stay readable by older code. A
+    version bump would orphan every calibration on disk and force a re-measure
+    for no reader-visible reason."""
     path = paths.calibration_dir() / f"{key}.json"
     doc = {
         "schema": _SCHEMA_VERSION,
@@ -322,6 +328,11 @@ def save_calibration(
                 "detected": r.detected,
                 "sidtable": [int(v) & 0xFF for v in r.sidtable],
                 "metrics": r.metrics,
+                **(
+                    {"raw_levels": [[int(c), round(p, 8), round(q, 8)] for c, p, q in r.raw]}
+                    if r.raw is not None
+                    else {}
+                ),
             }
             for name, r in entries.items()
         },
@@ -413,6 +424,13 @@ class CalibrationResult:
     sidtable: list[int]  # 256 entries: amplitude index → $D418 byte
     metrics: dict[str, Any]
     detected: str | None = None  # e.g. "6581" (SID Detected Socket N), or None
+    # Raw per-code measurements (code, p, q) — p = |L(code) − L($00)|,
+    # q = |L(code) − L($0F)|. The inputs build_sidtable_from_signed folds into
+    # the ladder. Persisted so a finished calibration stays diagnosable: the
+    # sign inference and lmax both derive from these, and without them a
+    # suspect table can only be re-examined by repeating the ~6 min/socket
+    # measurement. None on results loaded from a pre-raw-levels file.
+    raw: list[tuple[int, float, float]] | None = None
 
 
 @dataclass(frozen=True)
@@ -594,7 +612,9 @@ def run_calibration(
         mono = rec.mean(axis=1).astype(np.float64)
         return tone_amplitude(mono, CAP_SR, TOGGLE_FREQ)
 
-    def measure_one(dev: int, label: str) -> tuple[list[int], dict[str, Any]]:
+    def measure_one(
+        dev: int, label: str
+    ) -> tuple[list[int], dict[str, Any], list[tuple[int, float, float]]]:
         signed_raw: list[tuple[int, float, float]] = []
         log_fn(
             f"[calib] measuring {label}: 256 codes × 2 refs @ {TOGGLE_FREQ:.0f} Hz "
@@ -604,9 +624,19 @@ def run_calibration(
             p = capture_amp(c, REF_ZERO, dev)
             qv = capture_amp(c, REF_POS, dev)
             signed_raw.append((c, p, qv))
-            if c % 16 == 0:
-                log_fn(f"[calib]   {label} code ${c:02X} ({c:3d}/255)  |L|={p:.5f}")
-        return build_sidtable_from_signed(signed_raw)
+            # Sample the progress line at volume nibble 8, NOT 0. Codes ≡ 0 mod
+            # 16 set $D418's master volume to 0, so |L| is the silence floor for
+            # every one of them — the old `c % 16 == 0` line printed 0.00000 on
+            # a perfectly healthy run and on a dead capture alike, hiding a
+            # no-signal rig for the full ~6 min. q is shown too: it anchors
+            # against $0F, so a sane run has p and q both moving.
+            if c % 16 == 8:
+                log_fn(
+                    f"[calib]   {label} code ${c:02X} ({c:3d}/255)  "
+                    f"|L|={p:.5f}  |L−L($0F)|={qv:.5f}"
+                )
+        sidtable, metrics = build_sidtable_from_signed(signed_raw)
+        return sidtable, metrics, signed_raw
 
     sockets_present: list[tuple[int, str]] = []
     saved_sid_config: dict[tuple[str, str], str] = {}
@@ -665,13 +695,15 @@ def run_calibration(
                     )
                     _isolate_socket(be, socket)
                     time.sleep(0.2)
-                    sidtable, metrics = measure_one(dev, f"socket {socket}")
-                    entries[str(socket)] = CalibrationResult(sidtable, metrics, detected or None)
+                    sidtable, metrics, raw = measure_one(dev, f"socket {socket}")
+                    entries[str(socket)] = CalibrationResult(
+                        sidtable, metrics, detected or None, raw
+                    )
             finally:
                 restore_sid_config(be, saved_sid_config)
         else:
-            sidtable, metrics = measure_one(dev, "SID")
-            entries["default"] = CalibrationResult(sidtable, metrics, None)
+            sidtable, metrics, raw = measure_one(dev, "SID")
+            entries["default"] = CalibrationResult(sidtable, metrics, None, raw)
     finally:
         try:
             be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)

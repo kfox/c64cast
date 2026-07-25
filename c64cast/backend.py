@@ -695,6 +695,16 @@ def make_backend(cfg: Config) -> C64Backend:
                 port = autodetect_serial_port()
                 if port:
                     log.info("[teensyrom] auto-detected serial device %s", port)
+                    # Write the resolved device back into the config. Anything
+                    # downstream that identifies the link reads it from there,
+                    # not from the transport — most importantly
+                    # dac_calibration.resolve_calibration_key, which only looks
+                    # up the board's USB serial number when serial_port is set.
+                    # Left empty, an auto-detected run silently degrades to the
+                    # generic "tr-serial-auto" key and records an empty port in
+                    # the calibration's provenance, so two different TR+ boards
+                    # on one host collide on a single file.
+                    tr.serial_port = port
             if not port:
                 raise ValueError(
                     "[teensyrom].serial_port is required when transport = "
