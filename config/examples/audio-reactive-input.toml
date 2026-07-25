@@ -27,7 +27,7 @@
 #   python -m c64cast --config config/examples/audio-reactive-input.toml
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"
+url = "http://192.168.2.64"
 
 [audio]
 enabled = true

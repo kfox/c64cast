@@ -1,0 +1,20 @@
+#:schema ../../../c64cast.schema.json
+# fig-4-1-modes (hires) — one of four runs that make up the comparison plate.
+#
+# A still, not a video: "the same frame in four modes" has to be literally the
+# same frame, and four separate runs can only agree on one if the source does
+# not move.
+#
+# `file` is not in the checkout (assets/ is git-ignored). Substituting matters
+# more here than for the other figures — the picture is doing pedagogical work.
+# Pick one with big, high-contrast shapes and saturated colour: that is what
+# keeps the subject recognisable at PETSCII's 40x25 while still giving mcm and
+# mhires something to show. Dim, detailed photographs were tried first and made
+# the petscii panel read as noise.
+
+[[scenes]]
+type = "slideshow"
+file = "assets/pictures/plus4.jpg"
+display = "hires"
+name = "hires"
+duration_s = 40.0

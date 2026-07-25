@@ -19,7 +19,7 @@
 #   python -m c64cast --config config/examples/scene-launcher.toml
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"
+url = "http://192.168.2.64"
 
 [playlist]
 interleave_videos = false   # single-scene mode — relaunches the program forever

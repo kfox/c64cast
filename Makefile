@@ -29,7 +29,19 @@ SYNC := $(if $(CI),,sync)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema
+.PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema \
+        guide guide-figures
+
+# The User's Guide PDF is rendered by Typst, which is an external binary
+# rather than a Python package. Its two faces (Jost*, Inconsolata) are OFL and
+# committed under docs/guide/fonts/, so --font-path is unconditional: the PDF
+# must not change appearance based on what fonts a given machine happens to
+# have installed.
+GUIDE_DIR   := docs/guide
+GUIDE_TYP   := $(GUIDE_DIR)/c64cast-users-guide.typ
+GUIDE_PDF   := $(GUIDE_DIR)/c64cast-users-guide.pdf
+GUIDE_FONTS := $(GUIDE_DIR)/fonts
+TYPST_FLAGS  = --root . --font-path $(GUIDE_FONTS)
 
 help:
 	@echo "targets:"
@@ -42,6 +54,8 @@ help:
 	@echo "  doctor     offline env + config diagnostics (desynced .venv, drift)"
 	@echo "  bench      scripts/bench.py — async write pipeline"
 	@echo "  schema     regenerate c64cast.schema.json from the config metadata"
+	@echo "  guide      render docs/guide/*.md to the User's Guide PDF (needs typst)"
+	@echo "  guide-figures  redraw the guide's placeholder figures"
 	@echo "  check      lint + typecheck + test"
 	@echo "  clean      remove build artifacts"
 
@@ -84,10 +98,28 @@ bench:
 schema:
 	$(PY) -m c64cast --print-schema > c64cast.schema.json
 
+# Redraw the guide's placeholder figures. Real captures saved over the same
+# filenames are detected and left alone; see the script's --force-all escape.
+guide-figures: $(SYNC)
+	$(PY) scripts/make_guide_figures.py
+
+# Markdown -> Typst -> PDF. Typst is not a Python dependency, so say so
+# plainly rather than failing with "command not found".
+guide: $(SYNC)
+	@command -v typst >/dev/null 2>&1 || { \
+	  echo "make guide needs the typst binary, which is not a Python package."; \
+	  echo "Install it with:  brew install typst"; \
+	  echo "(see https://typst.app for other platforms)"; \
+	  exit 1; }
+	$(PY) scripts/build_guide.py
+	typst compile $(TYPST_FLAGS) $(GUIDE_TYP) $(GUIDE_PDF)
+	@echo "wrote $(GUIDE_PDF)"
+
 check: lint typecheck test
 
 clean:
 	rm -rf build dist .coverage .coverage.* htmlcov coverage.xml
 	rm -rf .ruff_cache .mypy_cache .pytest_cache
+	rm -f $(GUIDE_TYP) $(GUIDE_PDF)
 	find . -type d -name '__pycache__' -prune -exec rm -rf {} +
 	find . -type d -name '*.egg-info' -prune -exec rm -rf {} +

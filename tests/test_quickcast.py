@@ -232,7 +232,7 @@ class BuildConfigTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("C64CAST_URL", None)
             cfg = quickcast.build_config(_parse(["a.mp4"]))
-        self.assertEqual(cfg.ultimate64.url, "http://ultimate-64-ii.lan")
+        self.assertEqual(cfg.ultimate64.url, "http://192.168.2.64")
 
     def test_env_url_used_when_unset(self):
         # $C64CAST_URL is the fallback connection target when -u is absent.

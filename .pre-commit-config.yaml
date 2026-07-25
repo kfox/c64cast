@@ -13,6 +13,13 @@
 # (and therefore `make lint` / `make fmt`). Keep the two in sync — bump this
 # rev whenever you `uv lock --upgrade-package ruff`, or formatting will differ
 # between local `make fmt` and the pre-commit/CI check.
+
+# docs/guide/fonts/ holds third-party OFL fonts and their licence texts,
+# vendored byte-for-byte from upstream. The whitespace fixers happily rewrite
+# a licence file, which is not ours to reformat. Its README is ours, so that
+# one stays in.
+exclude: '^docs/guide/fonts/(?!README\.md)'
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -23,6 +30,16 @@ repos:
       - id: check-toml
       - id: check-added-large-files
         args: ["--maxkb=512"]
+        exclude: '^docs/guide/(img|fonts)/'
+      # The guide's figures are print-resolution captures off a C64's HDMI
+      # output. The signal carries enough sampling noise that a nominally
+      # 16-colour screen arrives with thousands of distinct values, so they
+      # neither palettize nor compress anywhere near the general limit. They
+      # still get a ceiling, just a realistic one.
+      - id: check-added-large-files
+        name: check for added large files (guide figures)
+        args: ["--maxkb=2048"]
+        files: '^docs/guide/img/'
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: ["--fix=lf"]

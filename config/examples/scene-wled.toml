@@ -23,7 +23,7 @@
 #   scripts/diags/wled_pixel_sender.py --host <this-host> --protocol ddp
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"
+url = "http://192.168.2.64"
 
 [playlist]
 interleave_videos = false

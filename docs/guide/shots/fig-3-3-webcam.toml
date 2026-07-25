@@ -1,0 +1,14 @@
+#:schema ../../../c64cast.schema.json
+# fig-3-3-webcam — a live camera feed as PETSCII.
+
+[video]
+# The built-in camera, NOT the capture device. On a capture rig cv2 index 0 is
+# usually the Cam Link carrying the C64's own HDMI output, and pointing the
+# webcam scene at that feeds the screen back into itself. Check with
+# `c64cast --list-devices` — the index differs per machine.
+device = 1
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "webcam petscii"
