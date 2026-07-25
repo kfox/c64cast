@@ -37,6 +37,16 @@ picture and the knobs that actually help:
   `$D418` technique — ≈6-7 effective bits, not 4 — and `--calibrate-dac`
   extends that to a physical SID. Only an uncalibrated physical/unknown chip
   falls back to the classic 4-bit linear path.
+- **`--calibrate-dac` says "REJECTED — the volume-0 self-test is off by N%"**
+  (and exits 4 if every SID failed). The measurement came back internally
+  inconsistent: codes `$h0` set the master volume to 0, so they *must* measure
+  identical to `$00`, and on this chip they don't. That makes the signed
+  reconstruction unfounded, so no table is written and playback keeps the
+  previous curve — deliberately, because a wrong table sounds worse than none.
+  There's nothing to retry: the deviation is exactly reproducible and is a
+  limitation of the two-reference measurement on chips with a live filter path,
+  not a capture problem. The raw levels are still saved in the calibration file
+  for diagnosis. See the audio architecture notes for the measured detail.
 - **On the U64, video audio isn't on the `$D418` DAC at all by default.**
   `[audio] backend = "auto"` uses the off-bus Ultimate Audio PCM sampler,
   far higher fidelity than any `$D418` path. Persistent robotic *video*

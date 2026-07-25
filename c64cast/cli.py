@@ -1557,12 +1557,25 @@ def main(argv=None) -> int:
             dev = idx if idx >= 0 else None
         be = make_backend(cfg)
         try:
-            dac_calibration.run_calibration(be, cfg, device=dev, log_fn=lambda m: log.info("%s", m))
+            run = dac_calibration.run_calibration(
+                be, cfg, device=dev, log_fn=lambda m: log.info("%s", m)
+            )
         except dac_calibration.CaptureUnavailableError as e:
             log.error("%s", e)
             return 3
         finally:
             be.close()
+        # A run that measured every SID but trusted none of them still wrote a
+        # file (raw levels, for diagnosis) — but it produced no usable table, so
+        # it must not look like a success.
+        if not any(r.sidtable is not None for r in run.entries.values()):
+            log.error(
+                "no usable DAC table was produced: every measured SID failed its "
+                "volume-0 self-test. Playback keeps the existing curve. The raw "
+                "levels were saved to %s for diagnosis.",
+                run.path,
+            )
+            return 4
         return 0
 
     if args.doctor:

@@ -81,6 +81,34 @@ avfoundation sample drops (a dropped sample perturbs amplitude a little, not the
 dominant frequency). Stereo capture is folded to mono by averaging, so the SID
 pan setting only scales all measurements uniformly and cancels in the
 normalised ladder — no mixer changes needed.
+
+The volume-0 self-test (why a calibration can be rejected)
+----------------------------------------------------------
+That two-reference scheme only works if ``p`` and ``q`` are genuine *distances*
+between output levels. On some chips they are not, and the failure is silent:
+the resulting ladder looks confident and plays back worse than the uncalibrated
+4-bit path.
+
+There is a ground truth already in the measurements that catches it, for free.
+The 16 codes ``$h0`` set the master volume nibble to 0, so their output level is
+identical to ``$00``'s *whatever* the upper nibble does — which means
+``q($h0) = |L($h0) − L($0F)|`` must equal ``lmax`` exactly, for every ``h``,
+with no model assumptions at all. :func:`build_sidtable_from_signed` checks
+that and refuses to emit a ladder when it fails (see
+:data:`SELFTEST_TOLERANCE`); ``run_calibration`` then persists ``raw_levels`` +
+``metrics`` for the socket but no ``sidtable``, so playback degrades to the
+baked/linear curve instead of to a wrong table.
+
+Measured on two socketed 6581s (2026-07-25, one U64): a chip whose filter path
+has degraded until its curve is degenerately unipolar passes at 2.4 % worst
+error, while a chip on which Mahoney genuinely works fails at 52 %. On the
+latter, 89 of 256 codes violate the triangle inequality ``p + q ≥ lmax`` by up
+to 51 % of ``lmax`` — so no 1-D embedding of those measurements exists, and the
+sign inference is not merely ill-conditioned but unfounded. The effect is
+exactly reproducible, independent of toggle frequency from 500 Hz down to
+31.25 Hz, and reproduces within a single capture, so it is a property of the
+measurement primitive rather than noise, drift, or capture gain. Fixing that
+primitive is open work; rejecting its output is not.
 """
 
 from __future__ import annotations
@@ -315,7 +343,23 @@ def save_calibration(
     readers only ever require ``sidtable`` (see :func:`load_calibrated_table`),
     so old files keep loading and new files stay readable by older code. A
     version bump would orphan every calibration on disk and force a re-measure
-    for no reader-visible reason."""
+    for no reader-visible reason.
+
+    An entry whose measurement failed its self-test is written *without* a
+    ``sidtable`` — same reason. ``load_calibrated_table`` already treats a
+    missing/malformed table as "no calibration applies" and falls back, so the
+    rejection needs no reader change, and keeping its ``raw_levels`` +
+    ``metrics`` means the failure can be investigated without re-measuring."""
+
+    def entry(r: CalibrationResult) -> dict[str, Any]:
+        out: dict[str, Any] = {"detected": r.detected}
+        if r.sidtable is not None:
+            out["sidtable"] = [int(v) & 0xFF for v in r.sidtable]
+        out["metrics"] = r.metrics
+        if r.raw is not None:
+            out["raw_levels"] = [[int(c), round(p, 8), round(q, 8)] for c, p, q in r.raw]
+        return out
+
     path = paths.calibration_dir() / f"{key}.json"
     doc = {
         "schema": _SCHEMA_VERSION,
@@ -323,19 +367,7 @@ def save_calibration(
         "backend": cfg.hardware.backend,
         "device": device_info,
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
-        "sids": {
-            name: {
-                "detected": r.detected,
-                "sidtable": [int(v) & 0xFF for v in r.sidtable],
-                "metrics": r.metrics,
-                **(
-                    {"raw_levels": [[int(c), round(p, 8), round(q, 8)] for c, p, q in r.raw]}
-                    if r.raw is not None
-                    else {}
-                ),
-            }
-            for name, r in entries.items()
-        },
+        "sids": {name: entry(r) for name, r in entries.items()},
     }
     atomic_write_text(path, json.dumps(doc, indent=2) + "\n")
     return path
@@ -418,10 +450,22 @@ CAP_SR = 48000  # Cam Link capture sample rate
 REF_ZERO = 0x00  # master-volume-0 floor reference
 REF_POS = 0x0F  # positive full-scale anchor (measured L($0F))
 
+#: How far the volume-0 self-test may miss before a measurement is rejected, as
+#: a fraction of ``lmax``. Codes ``$h0`` are master-volume-0, so ``q($h0)`` must
+#: equal ``lmax`` exactly — any deviation is pure measurement error against a
+#: known answer (see the module docstring). Measured worst-case on two socketed
+#: 6581s: 2.4 % on the chip the two-reference model does fit, 52 % on the one it
+#: does not. 10 % sits clear of both, and well inside the margin needed for a
+#: ladder to be worth applying at all.
+SELFTEST_TOLERANCE = 0.10
+
 
 @dataclass(frozen=True)
 class CalibrationResult:
-    sidtable: list[int]  # 256 entries: amplitude index → $D418 byte
+    # 256 entries: amplitude index → $D418 byte. None when the measurement
+    # failed its self-test — the raw levels are still kept for diagnosis, but
+    # no table is written, so playback falls back to the baked/linear curve.
+    sidtable: list[int] | None
     metrics: dict[str, Any]
     detected: str | None = None  # e.g. "6581" (SID Detected Socket N), or None
     # Raw per-code measurements (code, p, q) — p = |L(code) − L($00)|,
@@ -464,7 +508,7 @@ def tone_amplitude(cap: np.ndarray, sr: int, freq: float) -> float:
 
 def build_sidtable_from_signed(
     signed_raw: list[tuple[int, float, float]],
-) -> tuple[list[int], dict[str, Any]]:
+) -> tuple[list[int] | None, dict[str, Any]]:
     """Reconstruct signed output levels from the two-reference measurements and
     build the 256-entry amplitude→code sidtable + quality metrics.
 
@@ -473,11 +517,25 @@ def build_sidtable_from_signed(
     in-range code has p+q ≈ Lmax; a negative code has q−p ≈ Lmax. So the sign is
     + when (p+q) is closer to Lmax than (q−p) is. signed level = sign·p. The
     sidtable maps 256 uniform target levels across the measured signed span to
-    the code whose level is nearest."""
+    the code whose level is nearest.
+
+    Returns ``(None, metrics)`` when the volume-0 self-test misses by more than
+    :data:`SELFTEST_TOLERANCE` — the whole two-reference reconstruction rests on
+    p and q being real distances, and that test proves they are not (see the
+    module docstring). Emitting a ladder anyway is the failure mode this guards:
+    it looks exactly like a good one and plays back worse than no calibration at
+    all. The metrics are returned either way, so a rejected measurement is still
+    fully diagnosable."""
     code = np.array([c for c, _, _ in signed_raw])
     p = np.array([pp for _, pp, _ in signed_raw])
     q = np.array([qq for _, _, qq in signed_raw])
     lmax = float(p[code == REF_POS][0]) if np.any(code == REF_POS) else float(p.max())
+
+    # Ground truth: codes $h0 are master-volume-0, so L($h0) == L($00) and
+    # q($h0) must be exactly lmax. Deviation is measurement error, full stop.
+    at_vol0 = (code & 0x0F) == 0
+    selftest = (q[at_vol0] / lmax - 1.0) if lmax else np.zeros(int(at_vol0.sum()))
+    worst = float(np.max(np.abs(selftest))) if selftest.size else 0.0
 
     sign = np.where(np.abs((p + q) - lmax) <= np.abs((q - p) - lmax), 1.0, -1.0)
     level = sign * p  # signed output level per code, in capture-amplitude units
@@ -487,20 +545,66 @@ def build_sidtable_from_signed(
     targets = np.linspace(lo, hi, 256)
     sidtable = [int(code[np.argmin(np.abs(level - t))]) for t in targets]
 
-    nf = float(np.median(p[(code & 0x0F) == 0]))  # vol-nibble-0 noise floor
-    srt = np.sort(np.unique(level))
-    distinct = 1 + int(np.sum(np.diff(srt) > nf)) if srt.size > 1 else 1
-    ach = np.array([float(level[code == c][0]) for c in sidtable])
-    max_gap = float(np.max(np.diff(ach))) if ach.size > 1 else 0.0
-    metrics = {
+    metrics: dict[str, Any] = {
         "signed_span": [round(lo, 6), round(hi, 6)],
         "lmax": round(lmax, 6),
-        "noise_floor": round(nf, 6),
-        "distinct_levels": distinct,
-        "effective_bits": round(float(np.log2(max(distinct, 1))), 2),
-        "worst_gap_frac": round(max_gap / span, 4) if span else 0.0,
+        "volume0_selftest_worst": round(worst, 4),
+        "volume0_selftest": [round(float(e), 4) for e in selftest],
+        "capture_noise_floor": round(float(np.median(p[at_vol0])), 6),
+        **_ladder_metrics(np.array([float(level[code == c][0]) for c in sidtable]), targets, span),
     }
+    if worst > SELFTEST_TOLERANCE:
+        return None, metrics
     return sidtable, metrics
+
+
+def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> dict[str, float]:
+    """Honest, capture-independent quality figures for a finished ladder.
+
+    The metrics this replaced counted level differences exceeding the *capture
+    noise floor*, which measured the recording rig rather than the DAC: across
+    three runs a quieter capture scored 6.55 → 7.52 → 7.92 "effective bits" on
+    the same hardware, rating a chip whose Mahoney path had degraded to roughly
+    4 bits (7.52) above a working one (6.6). Everything here is a property of
+    the reconstructed ladder alone.
+
+    * ``ladder_bits`` — ENOB-style: the RMS distance between each of the 256
+      requested target levels and the level actually achieved, expressed as the
+      uniform quantiser that would have the same RMS error.
+    * ``worst_gap_frac`` / ``worst_gap_from_zero_frac`` — the largest hole in
+      the ladder, and where it sits. Position is what makes a gap benign or
+      not: ~0 means it straddles silence (crossover distortion), ±0.5 means it
+      is out at an extreme, where it costs almost nothing.
+    * ``crossover_gap_frac`` — the gap spanning zero specifically, the one a
+      listener hears as grit on quiet passages.
+    """
+    if span <= 0:
+        return {
+            "ladder_bits": 0.0,
+            "ladder_rms_err_frac": 0.0,
+            "ladder_max_err_frac": 0.0,
+            "worst_gap_frac": 0.0,
+            "worst_gap_from_zero_frac": 0.0,
+            "crossover_gap_frac": 0.0,
+        }
+    resid = achieved - targets
+    rms = float(np.sqrt(np.mean(resid**2)))
+    srt = np.unique(achieved)
+    gaps = np.diff(srt)
+    wi = int(np.argmax(gaps)) if gaps.size else 0
+    mid = float(srt[wi] + srt[wi + 1]) / 2 if gaps.size else 0.0
+    below = float(srt[srt <= 0].max()) if np.any(srt <= 0) else 0.0
+    above = float(srt[srt >= 0].min()) if np.any(srt >= 0) else 0.0
+    return {
+        # A perfect 256-step ladder is 8 bits; rms == 0 means every target was
+        # hit exactly, which only happens on synthetic input.
+        "ladder_bits": round(float(np.log2(span / (rms * np.sqrt(12)))), 2) if rms else 8.0,
+        "ladder_rms_err_frac": round(rms / span, 5),
+        "ladder_max_err_frac": round(float(np.max(np.abs(resid))) / span, 5),
+        "worst_gap_frac": round(float(gaps[wi]) / span, 4) if gaps.size else 0.0,
+        "worst_gap_from_zero_frac": round(mid / span, 3) if gaps.size else 0.0,
+        "crossover_gap_frac": round((above - below) / span, 4),
+    }
 
 
 def find_capture_device(preferred: int | None) -> int:
@@ -614,7 +718,7 @@ def run_calibration(
 
     def measure_one(
         dev: int, label: str
-    ) -> tuple[list[int], dict[str, Any], list[tuple[int, float, float]]]:
+    ) -> tuple[list[int] | None, dict[str, Any], list[tuple[int, float, float]]]:
         signed_raw: list[tuple[int, float, float]] = []
         log_fn(
             f"[calib] measuring {label}: 256 codes × 2 refs @ {TOGGLE_FREQ:.0f} Hz "
@@ -636,6 +740,17 @@ def run_calibration(
                     f"|L|={p:.5f}  |L−L($0F)|={qv:.5f}"
                 )
         sidtable, metrics = build_sidtable_from_signed(signed_raw)
+        if sidtable is None:
+            log_fn(
+                f"[calib] {label}: REJECTED — the volume-0 self-test is off by "
+                f"{metrics['volume0_selftest_worst'] * 100:.1f}% (tolerance "
+                f"{SELFTEST_TOLERANCE * 100:.0f}%). Codes $h0 set the master volume "
+                "to 0, so they must measure identical to $00; that they don't means "
+                "this chip's p/q measurements are not consistent output levels, and "
+                "any ladder folded from them would be wrong. No table written for "
+                f"{label} — playback keeps the baked/linear curve, which is better "
+                "than a bad table. The raw levels are saved for diagnosis."
+            )
         return sidtable, metrics, signed_raw
 
     sockets_present: list[tuple[int, str]] = []
@@ -714,9 +829,16 @@ def run_calibration(
 
     path = save_calibration(cfg, key, entries, device_info)
     for name, r in entries.items():
+        if r.sidtable is None:
+            log_fn(
+                f"[calib] {name}: no table — self-test off by "
+                f"{r.metrics['volume0_selftest_worst'] * 100:.1f}%"
+            )
+            continue
         log_fn(
-            f"[calib] {name}: {r.metrics['distinct_levels']} distinct levels "
-            f"(~{r.metrics['effective_bits']} effective bits), span {r.metrics['signed_span']}"
+            f"[calib] {name}: ~{r.metrics['ladder_bits']} ladder bits, span "
+            f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
+            f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
         )
     log_fn(f"[calib] wrote {path}")
     return CalibrationRun(key=key, path=path, entries=entries)
