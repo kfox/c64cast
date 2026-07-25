@@ -374,6 +374,47 @@ REUWRITE opcode, so [cli.py](../c64cast/cli.py) coerces any `use_reu_pump`
 audio through the host-DMA NMI DAC and video through host-DMA; `--doctor`
 reports the same.)
 
+## Preview window fidelity + limits
+
+`[preview] enabled = true` opens a desktop window mirroring the C64. It is a
+*reconstruction*, not a capture: [`framebuffer.py`](../c64cast/framebuffer.py)
+shadows the memory writes c64cast sends and re-renders them host-side. What
+that costs you:
+
+* **Only the modes c64cast draws** — standard text, MCM text, hires bitmap,
+  multicolor bitmap. Sprites, raster splits, and anything a running C64
+  program draws for itself aren't modelled.
+* **Launcher scenes show nothing.** A `.prg`/`.crt` renders on the C64 with no
+  host-side pixel writes at all, so the window (and the recording) stay blank.
+* **REU-staged bitmap scenes show black.** With `[video].use_reu_staged`
+  active (the default on a REU-enabled U64 for hires/mhires), frames go out
+  via `REUWRITE` and a C64-side IRQ DMAs them into the off-screen VIC bank.
+  Those writes never reach `add_write_listener`, so the shadow never sees the
+  pixels. `[video].use_reu_staged = false` routes them back through host DMA
+  and the preview fills in — verified on hardware. The same blind spot applies
+  to the host-DMA `double_buffer` page flip, for a second reason: `render()`
+  reads the bitmap from a fixed `$2000`/`$0400`, so it doesn't model `$DD00`
+  bank selection at all. Teaching the shadow about banks (and notifying it
+  from the REU path) is what a fully faithful preview would need.
+* **Text needs a real CHARGEN dump** — see below.
+* **It is not visual verification.** Proving what the VIC actually put on
+  HDMI needs a capture device (the `hw-visual-verify` skill), not this.
+
+Two mechanical constraints, both from cv2's HighGUI:
+
+* **The window lives on the main thread.** Desktop windows may only be created
+  and serviced from the process's main thread — a hard Cocoa requirement on
+  macOS, where an off-thread `namedWindow` raises "Unknown C++ exception from
+  OpenCV code" out of the first call. Playlists all run on worker threads, so
+  `cli._pump_previews_until_done` pumps the window from the parked main
+  thread. (This is why the window is *not* a background thread like the
+  recorder: the pre-cv2 pygame implementation was threaded, and therefore
+  never actually worked on macOS.)
+* **A headless opencv build has no GUI.** `namedWindow` then throws; the
+  window logs an error, disables itself, and the session runs on.
+
+Closing the window is not a stop signal — playback continues headless.
+
 ## Char ROM substitution
 
 `[preview] charset_path` points at the C64 character ROM
@@ -947,8 +988,6 @@ most features are disabled. Failure modes:
 * `type = "video"` without `[video]` extra → loader logs
   "Found N video files but PyAV is not installed; skipping videos"
   and the playlist runs without videos.
-* `[preview]` enabled without `[preview]` extra → preview window
-  silently disabled with a warning.
 * `[control]` enabled without `[control]` extra → control plane
   silently disabled with a warning.
 * `type = "midi"` without `[midi]` extra → scene setup raises

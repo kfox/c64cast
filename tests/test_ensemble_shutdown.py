@@ -75,7 +75,7 @@ class TeardownStackOrderTest(unittest.TestCase):
         order: list[str] = []
         st = _fake_stack("only")
         st.preview_window = MagicMock()
-        st.preview_window.stop.side_effect = lambda: order.append("preview")
+        st.preview_window.close.side_effect = lambda: order.append("preview")
         st.recorder = MagicMock()
         st.recorder.stop.side_effect = lambda: order.append("recorder")
         st.audio = MagicMock()

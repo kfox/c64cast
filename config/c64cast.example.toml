@@ -534,7 +534,7 @@ fade_duration_s = 0.4               # fade each scene up from black on entry
 #                                    "" to disable auto-detection.
 
 [preview]
-enabled = false                     # requires the `preview` extra
+enabled = false                     # cv2 HighGUI window; uses opencv-python
 fps = 30
 scale = 3                           # window pixels per C64 pixel
 charset_path = "assets/roms/characters.901225-01.bin"

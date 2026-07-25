@@ -141,7 +141,7 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
     ("interstitial", cfgmod.InterstitialCfg, "The 'UP NEXT' card shown between scenes."),
     ("playlist", cfgmod.PlaylistCfg, "Playlist behavior + video interleaving."),
     ("debug", cfgmod.DebugCfg, "Logging, heartbeat, profiling."),
-    ("preview", cfgmod.PreviewCfg, "Local pygame mirror window (extra)."),
+    ("preview", cfgmod.PreviewCfg, "Local mirror window of the C64 display."),
     ("recording", cfgmod.RecordingCfg, "Record the rendered display to a file."),
     (
         "color",

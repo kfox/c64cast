@@ -64,7 +64,6 @@ class Diagnostic:
 _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("mic", "sounddevice", "[audio] enabled, mic capture"),
     ("video", "av", "video scenes, video interleaving"),
-    ("preview", "pygame", "[preview] enabled local window"),
     ("control", "fastapi", "[control] enabled HTTP plane"),
     ("obs", "obsws_python", "obs_status overlay"),
     ("midi", "mido", "midi scenes; [midi_control] live control"),
