@@ -128,8 +128,9 @@ log = logging.getLogger(__name__)
 # (`paths.calibration_dir()` = <data root>/calibration/dac), resolved at use
 # time so the location works from a repo checkout, a pip install, or a PyPI
 # wheel — and so `$C64CAST_DATA_DIR` (and tests) can redirect it. A calibration
-# is machine-specific captured data, not source; the dir is gitignored at the
-# legacy repo location. See paths.py + calibration/README.md.
+# is machine-specific captured data, not source (never committed; only guarded
+# by a .gitignore entry if a dev points $C64CAST_DATA_DIR at the checkout). See
+# paths.py and the "per-system calibration" notes in docs/architecture/audio.md.
 
 _SCHEMA_VERSION = 2
 
@@ -370,8 +371,29 @@ def resolve_dac_curve_for_backend(
         table = load_calibrated_table(cfg, be=be)
         if table is not None:
             return (f"calibrated:{resolve_calibration_key(cfg, be)}", table)
+        # Went looking for a per-unit calibration and found none. With a live
+        # backend — a real playback resolution, not an offline --doctor pass,
+        # which can't confirm the identity key and reports separately — say so
+        # in the log, so a missing calibration isn't a silent fidelity
+        # downgrade. Level matches the fallback: the emulated-UltiSID baked
+        # table is a correct default (info); the 4-bit linear path is a real
+        # downgrade for a physical SID (warning).
         if cfg.hardware.backend == "ultimate":
+            if be is not None:
+                log.info(
+                    "no per-unit DAC calibration found for %s; using the baked "
+                    "mahoney_ultisid table. Run `--calibrate-dac` to measure a "
+                    "socketed physical SID.",
+                    resolve_calibration_key(cfg, be),
+                )
             return ("mahoney_ultisid", resolve_dac_curve("mahoney_ultisid"))
+        if be is not None:
+            log.warning(
+                "no DAC calibration found for %s; falling back to the 4-bit "
+                "linear DAC. Run `c64cast -u <target> --calibrate-dac` to "
+                "measure this SID for full-fidelity playback.",
+                resolve_calibration_key(cfg, be),
+            )
         return ("linear", None)
     return (name, resolve_dac_curve(name))
 

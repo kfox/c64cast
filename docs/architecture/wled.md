@@ -146,7 +146,7 @@ Recall calls `_apply_locked(preset, force_palcol=True)` so the stored palette an
 
 `state.ps` reports `_active_preset`, and `info.fs.pmt` is the presets-file mtime in ms so clients can cache and re-fetch `/presets.json`.
 
-**Storage.** `PresetStore` keeps one JSON file per device name at `paths.presets_dir()`/`wled-<slug>.json` — the canonical `<data root>/presets/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy); gitignored at the legacy repo location, with only the README tracked). It holds the WLED preset map `{"1": {...}}`, ids 1–250, with id 0 reserved empty.
+**Storage.** `PresetStore` keeps one JSON file per device name at `paths.presets_dir()`/`wled-<slug>.json` — the canonical `<data root>/presets/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)); machine/taste-specific captured data, never committed. It holds the WLED preset map `{"1": {...}}`, ids 1–250, with id 0 reserved empty. The presets/looks/loops resolvers each call `transport.warn_if_legacy_presets_orphaned()`, a one-time log heads-up for a source checkout that still has presets at the old repo `presets/` dir (now unread) — this replaced the old `--doctor` migration nudge.
 
 Loads are tolerant — missing or corrupt yields empty. Writes are atomic: a temp file in the same dir, `fsync`, then `os.replace`. So it survives restarts like real WLED. The path is injectable so tests can point it at a tempdir.
 

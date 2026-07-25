@@ -105,11 +105,30 @@ def controllers_dir() -> Path:
 def legacy_data_root() -> Path | None:
     """The old repo-checkout data anchor (the package's parent directory),
     but only when it actually looks like the source checkout (a
-    ``pyproject.toml`` sits there). Used *solely* by ``--doctor`` to detect
-    calibration/preset files left at the old location and print the exact
-    ``mv`` commands — there is no implicit migration. Returns None for an
-    installed package (no repo checkout to migrate from)."""
+    ``pyproject.toml`` sits there). Used *solely* by :func:`legacy_presets_dir`
+    to detect preset files left at the old location for a one-time migration
+    heads-up — there is no implicit migration. Returns None for an installed
+    package (no repo checkout to migrate from)."""
     repo_root = Path(__file__).resolve().parent.parent
     if (repo_root / "pyproject.toml").is_file():
         return repo_root
     return None
+
+
+def legacy_presets_dir() -> Path | None:
+    """The old repo-checkout ``presets/`` dir when it still holds orphaned
+    preset files (``*.json``) *and* the canonical :func:`presets_dir` does not
+    yet exist — i.e. a source checkout predating the canonical data dir that
+    was never migrated. Used solely to emit a one-time heads-up
+    (:func:`c64cast.transport.warn_if_legacy_presets_orphaned`); there is no
+    implicit migration. Returns None for an installed package, a clean
+    checkout, or once the canonical dir exists (already migrated)."""
+    root = legacy_data_root()
+    if root is None:
+        return None
+    legacy = root / "presets"
+    if not legacy.is_dir() or not any(legacy.rglob("*.json")):
+        return None
+    if presets_dir().exists():
+        return None
+    return legacy

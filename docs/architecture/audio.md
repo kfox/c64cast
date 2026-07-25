@@ -165,13 +165,15 @@ A real U64 can carry two physical SID sockets, each potentially a different chip
 
 #### The calibration file
 
-It lives under `paths.calibration_dir()` — the canonical `<data root>/calibration/dac/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)); gitignored at the legacy repo location. Writes go through `transport.atomic_write_text`.
+It lives under `paths.calibration_dir()` — the canonical `<data root>/calibration/dac/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)). It is machine-specific captured data, never committed; a `.gitignore` entry only guards against an accidental commit if a dev points `$C64CAST_DATA_DIR` at the checkout. Writes go through `transport.atomic_write_text`.
 
 Schema 2 holds one 256-entry sidtable per measured SID, keyed `"1"`/`"2"` by socket number, or `"default"` for the single-measurement fallback, plus a `"device"` provenance block.
 
 At playback, `load_calibrated_table` picks the entry matching whichever socket is *currently* live-mapped to `$D400` — `_active_socket_at_d400` does a live `SID Addressing` / `SID Sockets Configuration` read. That is what stops a calibrated physical-chip table from being misapplied when an UltiSID core actually owns `$D400`. With no live backend, or when the file has no socket-keyed entries, it falls back to the `"default"` entry, or to the lone entry if there is exactly one.
 
 Resolution: `resolve_dac_curve_for_backend(cfg, be=...)` maps `"auto"` to the applicable calibrated table if present, else `mahoney_ultisid` on the Ultimate, else `linear`. It yields to an explicit `digi_boost` by staying linear. `"calibrated"` forces the table and raises if it is absent.
+
+When `"auto"` goes looking and finds no calibration on a **live** run (`be` is a reachable backend — not an offline `--doctor` pass, which reports separately and can't even confirm the identity key), it logs a helpful, actionable line so a missing calibration is never a silent fidelity downgrade: `info` on the Ultimate (the baked `mahoney_ultisid` table is a correct default; the line just points at `--calibrate-dac` for a socketed physical SID), `warning` on any other backend (the 4-bit `linear` fallback is a real downgrade). This replaced the old `--doctor` "move your files from the repo `calibration/` dir" migration nudge — there is no repo calibration location any more.
 
 #### How `--doctor` reports calibration
 

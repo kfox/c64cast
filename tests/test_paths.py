@@ -15,6 +15,7 @@ carry the coverage everywhere else.
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -116,6 +117,45 @@ class LegacyDataRootTest(unittest.TestCase):
         fake_pkg_file = Path("/opt/site-packages/c64cast/paths.py")
         with mock.patch.object(paths, "__file__", str(fake_pkg_file)):
             self.assertIsNone(paths.legacy_data_root())
+
+
+class LegacyPresetsDirTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _make_orphans(self) -> Path:
+        legacy = Path(self._tmp.name) / "repo"
+        (legacy / "presets").mkdir(parents=True)
+        (legacy / "presets" / "wled-x.json").write_text("{}")
+        return legacy
+
+    def test_returns_legacy_dir_when_orphaned_and_canonical_absent(self):
+        legacy = self._make_orphans()
+        data = str(Path(self._tmp.name) / "data")  # canonical does not exist
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=legacy):
+                self.assertEqual(paths.legacy_presets_dir(), legacy / "presets")
+
+    def test_none_when_canonical_exists(self):
+        legacy = self._make_orphans()
+        data = Path(self._tmp.name) / "data"
+        (data / "presets").mkdir(parents=True)  # already migrated
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": str(data)}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=legacy):
+                self.assertIsNone(paths.legacy_presets_dir())
+
+    def test_none_when_no_json_files(self):
+        legacy = Path(self._tmp.name) / "repo"
+        (legacy / "presets").mkdir(parents=True)  # dir exists but empty
+        data = str(Path(self._tmp.name) / "data")
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=legacy):
+                self.assertIsNone(paths.legacy_presets_dir())
+
+    def test_none_for_installed_package(self):
+        with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
+            self.assertIsNone(paths.legacy_presets_dir())
 
 
 if __name__ == "__main__":

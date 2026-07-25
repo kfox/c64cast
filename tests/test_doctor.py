@@ -1243,9 +1243,11 @@ class MachineSettingsProbeTest(unittest.TestCase):
 
 
 class DataDirsProbeTest(unittest.TestCase):
-    """_probe_data_dirs — reports the resolved data root and warns (with the
-    exact mv) about calibration/preset files left at the legacy repo
-    location."""
+    """_probe_data_dirs — reports the resolved data root + controllers dir, and
+    nothing else. There is no legacy-repo migration nudge any more: DAC
+    calibration is surfaced at curve resolution (see MissingCalibrationLogTest
+    in test_dac_calibration) and orphaned presets at preset-store load (see
+    LegacyPresetsWarnTest in test_transport)."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1254,40 +1256,23 @@ class DataDirsProbeTest(unittest.TestCase):
     def test_reports_data_root(self):
         data = os.path.join(self._tmp.name, "data")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            # No legacy checkout in play (patch it to None) so only the resolved
-            # data-dir + controllers-dir lines are asserted here.
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
-                diags = doctor._probe_data_dirs()
+            diags = doctor._probe_data_dirs()
         self.assertEqual(len(diags), 2)
         self.assertTrue(all(d.level == "ok" for d in diags))
         subjects = {d.subject for d in diags}
         self.assertEqual(subjects, {"data dir", "controllers dir"})
         self.assertTrue(all(data in d.message for d in diags))
 
-    def test_legacy_files_warn_with_mv(self):
+    def test_never_warns_about_legacy_repo_files(self):
+        # Even with stale calibration AND preset files at the legacy repo
+        # location, the doctor probe stays silent (both are surfaced at use
+        # time now, not here).
         legacy = os.path.join(self._tmp.name, "repo")
         data = os.path.join(self._tmp.name, "data")
-        cal = os.path.join(legacy, "calibration", "dac")
-        os.makedirs(cal)
-        with open(os.path.join(cal, "unit.json"), "w") as f:
-            f.write("{}")
-        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
-                diags = doctor._probe_data_dirs()
-        warns = [d for d in diags if d.level == "warn"]
-        self.assertEqual(len(warns), 1)
-        self.assertIn("calibration", warns[0].subject)
-        self.assertIsNotNone(warns[0].hint)
-        self.assertIn("mv", warns[0].hint or "")
-
-    def test_no_warn_when_canonical_already_present(self):
-        legacy = os.path.join(self._tmp.name, "repo")
-        data = os.path.join(self._tmp.name, "data")
-        # Files at both legacy AND canonical → already migrated, no warning.
-        for base in (legacy, data):
-            cal = os.path.join(base, "calibration", "dac")
-            os.makedirs(cal)
-            with open(os.path.join(cal, "unit.json"), "w") as f:
+        for sub in (("calibration", "dac"), ("presets",)):
+            d = os.path.join(legacy, *sub)
+            os.makedirs(d)
+            with open(os.path.join(d, "x.json"), "w") as f:
                 f.write("{}")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
             with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
