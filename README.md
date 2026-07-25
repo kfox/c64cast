@@ -1,4 +1,4 @@
-<img width="525" height="140" alt="c64cast Logo" src="assets/logo.png" />
+<img width="800" height="400" alt="c64cast Logo" src="assets/logo.png" />
 
 # c64cast
 
