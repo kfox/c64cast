@@ -74,7 +74,7 @@ jobs:
 
       - name: Install runtime + dev deps
         # Skip the [all] extras here — most pull in heavy native libs
-        # (PyAV, pygame, sounddevice) that aren't needed for the
+        # (PyAV, sounddevice) that aren't needed for the
         # unittest suite, which mocks all hardware paths. Add specific
         # extras here if you start testing them.
         # `midi` (mido + python-rtmidi) IS included: the MidiScene suite is

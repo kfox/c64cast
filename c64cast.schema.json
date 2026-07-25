@@ -497,12 +497,12 @@
     },
     "preview": {
       "type": "object",
-      "description": "Local pygame mirror window (extra).",
+      "description": "Local mirror window of the C64 display.",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Open a local pygame window mirroring the U64 display (requires the 'preview' extra).",
+          "description": "Open a local window mirroring the U64 display (needs a desktop session; no extra required).",
           "default": false
         },
         "fps": {

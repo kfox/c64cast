@@ -1536,14 +1536,15 @@ class DebugCfg:
 
 @dataclass
 class PreviewCfg:
-    """Local pygame window mirroring what the U64 displays. Off by default
-    since it requires the `pygame` optional dep."""
+    """Local window mirroring what the U64 displays, drawn with cv2 (a hard
+    dep — no extra needed). Off by default: it wants a desktop session, and
+    it costs a host-side re-render of every frame."""
 
     enabled: bool = field(
         default=False,
         metadata={
-            "help": "Open a local pygame window mirroring the U64 display "
-            "(requires the 'preview' extra)."
+            "help": "Open a local window mirroring the U64 display "
+            "(needs a desktop session; no extra required)."
         },
     )
     fps: int = field(default=30, metadata={"help": "Preview window refresh rate."})

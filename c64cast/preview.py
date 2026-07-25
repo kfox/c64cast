@@ -1,12 +1,23 @@
 """Local preview window + stream recorder.
 
-PreviewWindow opens a pygame window that mirrors whatever the U64 is
-displaying (using the Framebuffer's reconstruction). StreamRecorder
-captures the same framebuffer to a video file via cv2.VideoWriter.
+PreviewWindow mirrors whatever the U64 is displaying in a desktop window
+(using the Framebuffer's reconstruction). StreamRecorder captures the
+same framebuffer to a video file via cv2.VideoWriter.
 
-Both sit on top of `Framebuffer.render()`, which is the heavy lift.
-This module is mostly orchestration: a thread that periodically asks
-for a render and pumps it into the consumer.
+Both sit on top of `Framebuffer.render()`, which is the heavy lift; this
+module is mostly orchestration. Both use cv2 — a hard dependency — so
+neither needs an optional extra.
+
+**PreviewWindow must be driven from the process's main thread.** It is
+deliberately *not* threaded like StreamRecorder is: cv2's HighGUI (and
+SDL, and every other desktop toolkit) may only create and service a
+window on the main thread, which on macOS is a hard Cocoa requirement —
+an off-thread `namedWindow` raises "Unknown C++ exception from OpenCV
+code" straight out of the first call. Every playlist already runs on its
+own worker thread (`cli._run_playlists`), leaving the main thread blocked
+in `join()`, so the main thread is both the only legal place to pump a
+window and the one with nothing else to do. Hence the open/pump/close
+shape: `cli._pump_previews_until_done` owns the lifecycle.
 """
 
 from __future__ import annotations
@@ -15,7 +26,6 @@ import contextlib
 import logging
 import threading
 import time
-from typing import Any
 
 import cv2
 
@@ -23,21 +33,15 @@ from .framebuffer import Framebuffer
 
 log = logging.getLogger(__name__)
 
-# Typed as Any so Pyright doesn't flag every pygame.XXX call as accessing
-# attributes of None — the PYGAME_AVAILABLE flag is the runtime guard.
-try:
-    import pygame as _pygame
-
-    pygame: Any = _pygame
-    PYGAME_AVAILABLE = True
-except ImportError:
-    pygame = None
-    PYGAME_AVAILABLE = False
-
 
 class PreviewWindow:
-    """A pygame window mirroring the U64 display. Runs an internal thread
-    that re-renders the framebuffer at `fps` and blits to the window."""
+    """A window mirroring the U64 display, drawn with cv2's HighGUI.
+
+    Not self-driving: `open()`, `pump()` (repeatedly, at least as often as
+    `fps`), and `close()` must all be called from the main thread — see the
+    module docstring for why. `pump()` re-renders the framebuffer no faster
+    than `fps` and services the window's event loop on every call.
+    """
 
     DEFAULT_SCALE = 3
 
@@ -48,53 +52,82 @@ class PreviewWindow:
         scale: int = DEFAULT_SCALE,
         title: str = "c64cast preview",
     ):
-        if not PYGAME_AVAILABLE:
-            raise RuntimeError("preview requires pygame: pip install c64cast[preview]")
         self.fb = framebuffer
         self.fps = max(1, int(fps))
         self.scale = max(1, int(scale))
         self.title = title
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._screen = None
+        self._open = False
+        self._next_draw = 0.0
 
-    def start(self):
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="preview-window")
-        self._thread.start()
+    @property
+    def is_open(self) -> bool:
+        """False before `open()`, after `close()`, once the user has closed
+        the window, or after a draw failure disabled it."""
+        return self._open
 
-    def stop(self):
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
-            self._thread = None
-
-    def _loop(self):
+    def open(self) -> None:
+        """Create the window. WINDOW_AUTOSIZE (not WINDOW_NORMAL) so the
+        window tracks the size of the frame we hand it: we upscale by an
+        integer factor with INTER_NEAREST ourselves, which keeps C64 pixels
+        crisp instead of letting HighGUI interpolate them."""
+        if self._open:
+            return
         try:
-            pygame.init()
-            w, h = 320 * self.scale, 200 * self.scale
-            self._screen = pygame.display.set_mode((w, h))
-            pygame.display.set_caption(self.title)
-            clock = pygame.time.Clock()
-            while not self._stop.is_set():
-                # Drain events so the window stays responsive (closing the
-                # window only stops the thread; the main session continues).
-                for evt in pygame.event.get():
-                    if evt.type == pygame.QUIT:
-                        self._stop.set()
+            cv2.namedWindow(self.title, cv2.WINDOW_AUTOSIZE)
+        except Exception as e:
+            # Most likely an opencv build with no GUI support (headless
+            # wheel, no display). Not fatal — the session runs without it.
+            log.error("preview disabled: cannot open a window: %s", e)
+            return
+        self._open = True
+        self._next_draw = 0.0
+
+    def pump(self) -> None:
+        """Redraw if the frame deadline has arrived, then service the window's
+        event loop. Cheap to over-call; a no-op once the window is gone."""
+        if not self._open:
+            return
+        try:
+            now = time.monotonic()
+            if now >= self._next_draw:
                 bgr = self.fb.render()
-                # pygame wants RGB axis order, surfarray expects (W, H, 3).
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                surf = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
-                surf = pygame.transform.scale(surf, (w, h))
-                self._screen.blit(surf, (0, 0))
-                pygame.display.flip()
-                clock.tick(self.fps)
+                if self.scale != 1:
+                    w, h = 320 * self.scale, 200 * self.scale
+                    bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_NEAREST)
+                cv2.imshow(self.title, bgr)
+                self._next_draw = now + 1.0 / self.fps
+            # waitKey is what actually pumps HighGUI's event loop — without it
+            # the window never paints and the OS marks it unresponsive. The 1 ms
+            # wait also keeps the caller's polling loop off a busy-spin.
+            cv2.waitKey(1)
         except Exception:
-            log.exception("preview window crashed")
-        finally:
-            with contextlib.suppress(Exception):
-                pygame.quit()
+            # We're on the main thread now, so an exception here would take the
+            # whole session down with it. A dead preview must not do that.
+            log.exception("preview window failed; disabling it")
+            self.close()
+            return
+        if self._user_closed():
+            log.info("preview window closed; session continues")
+            self.close()
+
+    def _user_closed(self) -> bool:
+        """True once the window has been dismissed via its close button.
+        HighGUI has no event queue we can read, so we poll its visibility."""
+        try:
+            return cv2.getWindowProperty(self.title, cv2.WND_PROP_VISIBLE) < 1
+        except Exception:
+            return True
+
+    def close(self) -> None:
+        """Destroy the window. Idempotent, and safe if `open()` never ran."""
+        if not self._open:
+            return
+        self._open = False
+        with contextlib.suppress(Exception):
+            cv2.destroyWindow(self.title)
+            # destroyWindow only queues the teardown; HighGUI needs one more
+            # event-loop turn to actually retire the window.
+            cv2.waitKey(1)
 
 
 class StreamRecorder:

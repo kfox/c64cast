@@ -42,9 +42,12 @@ dependencies = [
 mic = ["sounddevice==0.5.5"]
 # Video playback uses PyAV for container demux + audio resampling.
 video = ["av==18.0.0"]
-# Local preview window + stream recording (preview uses pygame, recording
-# uses cv2's VideoWriter which ships in opencv-python).
-preview = ["pygame==2.6.1"]
+# NOTE: there is deliberately no `preview` extra. The local preview window
+# ([preview] enabled) and stream recording ([recording] enabled) both draw on
+# cv2 — HighGUI for the window, VideoWriter for the file — and opencv-python is
+# a hard dep, so both features are always available. The extra used to carry
+# pygame purely as the window backend; it bought nothing cv2 didn't already
+# provide, and its SDL window couldn't be created off the main thread anyway.
 # FastAPI-based HTTP control plane (pause/resume/skip/reload).
 control = ["fastapi==0.139.2", "uvicorn==0.51.0"]
 # OBS Studio status overlay (websocket v5).
@@ -90,7 +93,6 @@ wled = ["zeroconf==0.150.0", "fastapi==0.139.2", "uvicorn==0.51.0", "websockets=
 all = [
     "sounddevice==0.5.5",
     "av==18.0.0",
-    "pygame==2.6.1",
     "fastapi==0.139.2",
     "uvicorn==0.51.0",
     "websockets==16.1.1",
@@ -217,7 +219,7 @@ follow_imports = "silent"
 
 [[tool.mypy.overrides]]
 # Third-party libs without type stubs.
-module = ["sounddevice", "av", "av.*", "pygame", "pygame.*",
+module = ["sounddevice", "av", "av.*",
           "uvicorn", "obsws_python", "mido", "py65", "py65.*",
           "serial", "serial.*"]
 ignore_missing_imports = true

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from . import (
@@ -950,13 +951,20 @@ def build_stack(
         api.add_write_listener(framebuffer.on_write)
     if cfg.preview.enabled:
         assert framebuffer is not None
-        try:
-            from .preview import PreviewWindow as _PW
+        from .preview import PreviewWindow as _PW
 
-            preview_window = _PW(framebuffer, fps=cfg.preview.fps, scale=cfg.preview.scale)
-            preview_window.start()
-        except RuntimeError as e:
-            log.error("preview disabled: %s", e)
+        # Constructed here but not opened: the window has to be created and
+        # serviced on the main thread (see preview.py), which happens in
+        # _pump_previews_until_done once the playlist threads are running.
+        # HighGUI keys windows by title, so an ensemble needs one title per
+        # system to get one window per system rather than N systems fighting
+        # over a single window.
+        preview_window = _PW(
+            framebuffer,
+            fps=cfg.preview.fps,
+            scale=cfg.preview.scale,
+            title=f"c64cast preview - {name}" if is_ensemble else "c64cast preview",
+        )
     if cfg.recording.enabled:
         assert framebuffer is not None
         try:
@@ -1060,7 +1068,10 @@ def teardown_stack(stack: SystemStack) -> None:
     from . import doctor as _doctor
 
     for label, fn in (
-        ("preview shutdown", lambda: stack.preview_window.stop() if stack.preview_window else None),
+        (
+            "preview shutdown",
+            lambda: stack.preview_window.close() if stack.preview_window else None,
+        ),
         ("recording stop", lambda: stack.recorder.stop() if stack.recorder else None),
         ("audio shutdown", lambda: stack.audio.close() if stack.audio else None),
         (
@@ -1090,8 +1101,35 @@ _PER_SYSTEM_CLI_FLAGS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _pump_previews_until_done(
+    threads: Sequence[threading.Thread], previews: Sequence[PreviewWindow]
+) -> None:
+    """Drive the preview window(s) from the main thread until every playlist
+    thread has finished.
+
+    The windows can only live here: HighGUI must create and service a window
+    on the main thread (a hard requirement on macOS), and with every playlist
+    on a worker thread the main thread is otherwise just parked in `join()`.
+    `pump()` blocks ~1 ms in `waitKey` servicing events, which paces this loop
+    without a busy-spin.
+
+    Closing the last window doesn't stop the show — we fall through to a plain
+    blocking join and playback carries on headless.
+    """
+    for p in previews:
+        p.open()
+    while any(t.is_alive() for t in threads):
+        for p in previews:
+            p.pump()
+        if not any(p.is_open for p in previews):
+            break
+    for t in threads:
+        t.join()
+
+
 def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> None:
-    """Run every stack's playlist on its own worker thread. Block on join.
+    """Run every stack's playlist on its own worker thread. Block on join
+    (pumping any preview windows on the way — see _pump_previews_until_done).
     Ctrl+C in the main thread sets stop_event so every playlist exits its
     run loop on the next iteration; each thread gets up to 5s to drain
     before we move on and log it as stuck."""
@@ -1101,9 +1139,13 @@ def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> No
     ]
     for t in threads:
         t.start()
+    previews = [s.preview_window for s in stacks if s.preview_window is not None]
     try:
-        for t in threads:
-            t.join()
+        if previews:
+            _pump_previews_until_done(threads, previews)
+        else:
+            for t in threads:
+                t.join()
     except KeyboardInterrupt:
         log.info("interrupted; stopping %d system(s)", len(stacks))
         stop_event.set()

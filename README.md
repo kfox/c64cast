@@ -106,8 +106,8 @@ full reference.
 **Quick playback** — skip the config file entirely and pass media straight
 on the command line: `c64cast clip.mp4 tune.sid pics/` plays each in turn.
 
-**Preview + recording** — an optional pygame mirror of what the C64 is
-showing, plus cv2-based recording to MP4.
+**Preview + recording** — an optional local window mirroring what the C64 is
+showing, plus recording to MP4. Both are cv2-based, so neither needs an extra.
 
 ## Quick start
 

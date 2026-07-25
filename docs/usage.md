@@ -80,7 +80,6 @@ Optional-dep groups in [pyproject.toml](../pyproject.toml):
 |---------------|---------------------------------------|--------------------------------------------------------|
 | `mic`         | `sounddevice`                         | Live microphone input (the SID DAC streaming path)     |
 | `video` | `av` (PyAV)                           | `video` scenes — plays MP4/MKV/etc. through SID   |
-| `preview`     | `pygame`                              | Local preview window mirroring the U64 + recording     |
 | `control`     | `fastapi`, `uvicorn`                  | HTTP control plane (pause/resume/skip/reload)          |
 | `obs`         | `obsws-python`                        | `obs_status` overlay — polls OBS WebSocket v5          |
 | `midi`        | `mido`, `python-rtmidi`               | `midi` + `asid` scenes, MIDI control surface — MIDI/ASID input → SID + scope |
@@ -357,8 +356,8 @@ What it surfaces:
   registered subclass claims; ensemble conductors with no same-name
   follower in every other system (warn-level: the Playlist will fall
   back to the conductor's cfg, but rarely by design).
-* **extras** — per-extra `[mic, video, preview, control, obs,
-  midi, logging]` install status; warn rows include the exact
+* **extras** — per-extra `[mic, video, control, obs, midi, logging]`
+  install status; warn rows include the exact
   `pip install c64cast[<name>]` command.
 * **connectivity** — per-system DMA + REST reach to the Ultimate 64. The
   DMA-service-disabled error includes the F2-menu hint.
@@ -598,11 +597,20 @@ python -m c64cast --config one-video.toml --no-loop
 
 ```toml
 [preview]
-enabled = false                     # requires the `preview` extra
+enabled = false                     # cv2 HighGUI window; uses opencv-python (already a hard dep)
 fps = 30
 scale = 3                           # window pixels per C64 pixel
 charset_path = "assets/roms/characters.901225-01.bin"
 ```
+
+The window is drawn by cv2's HighGUI and pumped from the process's main
+thread, which is where a desktop window legally lives (on macOS, strictly
+so). It re-renders the host-side [`Framebuffer`](../c64cast/framebuffer.py)
+reconstruction of C64 memory rather than capturing HDMI, so it inherits that
+model's limits — see [caveats](caveats.md#preview-window-fidelity--limits).
+Scaling is integer + nearest-neighbour, so C64 pixels stay crisp. Closing the
+window doesn't stop the session; playback continues without it. In ensemble
+mode each system gets its own titled window.
 
 ### `[recording]`
 

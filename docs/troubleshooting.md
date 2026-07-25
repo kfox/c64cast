@@ -119,11 +119,27 @@ Two known causes:
    follows API writes but doesn't model bank/mode switches as
    precisely as the real VIC. The next full frame paint corrects it.
 
+### "`[preview] enabled = true` but no window appears"
+
+Check the log for `preview disabled: cannot open a window`. That means the
+installed opencv has no GUI support — the usual cause is a headless wheel
+(`opencv-python-headless`, often pulled in transitively) shadowing
+`opencv-python`, or running with no desktop session at all (ssh without X,
+a container). `uv sync --all-extras` installs the GUI build; verify with:
+
+```bash
+uv run python -c "import cv2; cv2.namedWindow('t'); cv2.destroyWindow('t'); print('GUI OK')"
+```
+
+Note the window is drawn by the main thread while the playlist renders on a
+worker thread, so a wedged playlist leaves the window up but frozen.
+
 ### "Preview window scale is too small / too big"
 
 `[preview] scale = 3` → window is 3× the C64's 320×200. Drop to 2 for
-a smaller window, raise to 4 for a giant one. The preview uses pygame
-at integer scaling so non-integer values would alias badly.
+a smaller window, raise to 4 for a giant one. Scaling is integer +
+nearest-neighbour so C64 pixels stay square and crisp; non-integer
+values would alias badly, so the field is an int.
 
 ## Playlist + control
 
@@ -251,11 +267,11 @@ Background fetch failed. Reasons:
 
 ## Installation / Setup
 
-### "pip install fails: error compiling sounddevice / PyAV / pygame"
+### "pip install fails: error compiling sounddevice / PyAV"
 
-These have system-level dependencies (portaudio, ffmpeg headers, SDL2).
-On macOS: `brew install portaudio ffmpeg sdl2`. On Debian/Ubuntu:
-`apt install portaudio19-dev libavformat-dev libsdl2-dev`. Then
+These have system-level dependencies (portaudio, ffmpeg headers).
+On macOS: `brew install portaudio ffmpeg`. On Debian/Ubuntu:
+`apt install portaudio19-dev libavformat-dev`. Then
 retry the pip install.
 
 If you don't need a specific feature, drop the corresponding extra:
