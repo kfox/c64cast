@@ -10,6 +10,7 @@ reconstruction. No real hardware (the capture path is not exercised here)."""
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -135,6 +136,36 @@ class PersistenceTest(unittest.TestCase):
         self.assertTrue(path.exists())
         got = dc.load_calibrated_table(cfg)
         self.assertEqual(got, bytes(256))
+
+    def test_raw_levels_persisted_when_present(self):
+        cfg = _u64_cfg()
+        key = dc.resolve_calibration_key(cfg)
+        raw = [(c, c / 300.0, abs(c - 15) / 300.0) for c in range(256)]
+        res = dc.CalibrationResult(list(range(256)), {}, "6581", raw)
+        path = dc.save_calibration(cfg, key, {"default": res}, {})
+        entry = json.loads(path.read_text())["sids"]["default"]
+        self.assertEqual(len(entry["raw_levels"]), 256)
+        self.assertEqual(entry["raw_levels"][1], [1, round(1 / 300.0, 8), round(14 / 300.0, 8)])
+
+    def test_raw_levels_omitted_when_absent_and_file_still_loads(self):
+        # raw_levels is additive under the same schema: a result carrying none
+        # writes the pre-existing key set, and readers only need `sidtable`.
+        cfg = _u64_cfg()
+        key = dc.resolve_calibration_key(cfg)
+        path = dc.save_calibration(cfg, key, {"default": _result(0)}, {})
+        entry = json.loads(path.read_text())["sids"]["default"]
+        self.assertNotIn("raw_levels", entry)
+        self.assertEqual(dc.load_calibrated_table(cfg), bytes(256))
+
+    def test_load_ignores_raw_levels(self):
+        # A file written by a newer run stays loadable by the table reader.
+        cfg = _u64_cfg()
+        key = dc.resolve_calibration_key(cfg)
+        raw = [(c, 0.0, 0.0) for c in range(256)]
+        dc.save_calibration(
+            cfg, key, {"default": dc.CalibrationResult(list(range(256)), {}, None, raw)}, {}
+        )
+        self.assertEqual(dc.load_calibrated_table(cfg), bytes(range(256)))
 
     def test_load_missing_returns_none(self):
         self.assertIsNone(dc.load_calibrated_table(_u64_cfg("nope.lan")))
