@@ -298,6 +298,59 @@ class ResolveCurveTest(unittest.TestCase):
         self.assertEqual(table, MAHONEY_ULTISID)
 
 
+class MissingCalibrationLogTest(unittest.TestCase):
+    """A live "auto" resolution that finds no calibration logs an actionable
+    line (this replaced the old --doctor repo-location migration nudge). It
+    stays silent for an offline resolution (be=None) — --doctor reports that
+    case separately and can't even confirm the identity key."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def test_ultimate_live_no_cal_logs_info(self):
+        cfg = _u64_cfg()
+        with self.assertLogs("c64cast.dac_calibration", level="INFO") as cm:
+            label, table = dc.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+        self.assertEqual(label, "mahoney_ultisid")
+        self.assertEqual(table, MAHONEY_ULTISID)
+        joined = "\n".join(cm.output)
+        self.assertIn("no per-unit DAC calibration", joined)
+        self.assertIn("--calibrate-dac", joined)
+
+    def test_teensyrom_live_no_cal_logs_warning(self):
+        cfg = _tr_serial_cfg()
+        with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
+            with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
+                label, table = dc.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+        self.assertEqual(label, "linear")
+        self.assertIsNone(table)
+        joined = "\n".join(cm.output)
+        self.assertIn("no DAC calibration found", joined)
+        self.assertIn("--calibrate-dac", joined)
+
+    def test_offline_no_cal_is_silent(self):
+        # be=None → no log (assertNoLogs raises if anything is emitted).
+        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
+            dc.resolve_dac_curve_for_backend(_u64_cfg())
+        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
+            dc.resolve_dac_curve_for_backend(_tr_serial_cfg())
+
+    def test_live_calibration_present_is_silent(self):
+        # A hit doesn't warn.
+        cfg = _u64_cfg()
+        key = dc.resolve_calibration_key(cfg)
+        dc.save_calibration(cfg, key, {"default": _result(0)}, {})
+        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
+            label, _ = dc.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+        self.assertTrue(label.startswith("calibrated:"))
+
+
 class BuildSidtableTest(unittest.TestCase):
     def test_reconstruct_from_synthetic_signed_curve(self):
         # A synthetic bipolar transfer curve: L(c) known, p=|L|, q=|L-Lmax|.

@@ -272,38 +272,19 @@ def _probe_machine_settings() -> list[Diagnostic]:
 
 
 def _probe_data_dirs() -> list[Diagnostic]:
-    """Report the resolved data root (:func:`paths.data_root`) and, when
-    running from a source checkout, warn about calibration/preset files still
-    sitting at the legacy repo location with the exact ``mv`` to migrate them.
-    There is no implicit migration — the move is always the user's call."""
+    """Report the resolved data root (:func:`paths.data_root`) and controllers
+    dir — the one-stop "where does everything live". There is no legacy-repo
+    migration nudge here any more: stale files from the pre-canonical-data-dir
+    layout are surfaced at use time instead — DAC calibration by
+    ``dac_calibration.resolve_dac_curve_for_backend`` (at curve resolution),
+    orphaned presets by ``transport.warn_if_legacy_presets_orphaned`` (at
+    preset-store load)."""
     from . import paths
 
-    root = paths.data_root()
-    out = [
-        Diagnostic("ok", "environment", "data dir", str(root)),
+    return [
+        Diagnostic("ok", "environment", "data dir", str(paths.data_root())),
         Diagnostic("ok", "environment", "controllers dir", str(paths.controllers_dir())),
     ]
-
-    legacy = paths.legacy_data_root()
-    if legacy is None:
-        return out  # installed package — no repo checkout to migrate from
-    for sub in ("calibration", "presets"):
-        legacy_sub = legacy / sub
-        canonical_sub = root / sub
-        if not legacy_sub.is_dir() or not any(legacy_sub.rglob("*.json")):
-            continue
-        if canonical_sub.exists():
-            continue  # already migrated, or the data dir already points here
-        out.append(
-            Diagnostic(
-                "warn",
-                "environment",
-                f"legacy {sub}",
-                f"data files at the old repo location {legacy_sub} — not yet migrated",
-                hint=f"mkdir -p {root} && mv {legacy_sub} {root}/",
-            )
-        )
-    return out
 
 
 def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:

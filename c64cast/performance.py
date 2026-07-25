@@ -221,7 +221,9 @@ def default_look_store(name: str) -> LookStore:
     ``looks-<slug>.json`` per system name, alongside the WLED presets). Resolved
     at call time so it honors ``$C64CAST_DATA_DIR`` like every other data file."""
     from . import paths
+    from .transport import warn_if_legacy_presets_orphaned
 
+    warn_if_legacy_presets_orphaned()
     return LookStore(paths.presets_dir() / f"looks-{_slugify_name(name)}.json")
 
 

@@ -503,8 +503,41 @@ class LoopPresetStore:
 
 
 def make_loop_preset_store(filepath: str) -> LoopPresetStore:
+    warn_if_legacy_presets_orphaned()
     _, size = _video_identity(filepath)
     return LoopPresetStore(loop_preset_path(filepath), video_ref=filepath, size=size)
+
+
+# One-time heads-up when presets are stranded at the old repo `presets/` dir.
+# This replaces the removed `--doctor` migration nudge with a use-site log: it
+# fires from the preset-store resolvers (WLED / looks / loops) the first time
+# any of them runs, so a user who never touches presets never sees it. Presets
+# moved to the canonical data dir (paths.presets_dir()), so files left behind
+# in a source checkout are simply no longer read.
+_warned_legacy_presets = False
+
+
+def warn_if_legacy_presets_orphaned() -> None:
+    """Log once (at most) if a source checkout still has preset files at the
+    old repo ``presets/`` location — they are no longer read. No-op for an
+    installed package, a clean checkout, or once the presets have been moved to
+    the canonical data dir. See :func:`c64cast.paths.legacy_presets_dir`."""
+    global _warned_legacy_presets
+    if _warned_legacy_presets:
+        return
+    _warned_legacy_presets = True
+    legacy = paths.legacy_presets_dir()
+    if legacy is None:
+        return
+    canonical = paths.presets_dir()
+    log.warning(
+        "found preset files at the old repo location %s; they are no longer "
+        "read. Move them to keep them: mkdir -p %s && mv %s/* %s/",
+        legacy,
+        canonical,
+        legacy,
+        canonical,
+    )
 
 
 def slugify_port(port_name: str) -> str:

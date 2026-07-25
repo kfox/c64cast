@@ -214,9 +214,11 @@ c64cast keeps two kinds of machine-local state outside any config file:
   C64CAST_DATA_DIR="$PWD"` (e.g. in `.envrc`).
 
 `c64cast --doctor` prints both resolved locations in its ENVIRONMENT section
-(the one-stop "where does everything live"), and — if you're running from a
-source checkout with old calibration/preset files still at the legacy repo
-`calibration/`/`presets/` dirs — the exact `mv` command to migrate them.
+(the one-stop "where does everything live"). There is no repo data location any
+more; if you're running from a source checkout with old files stranded at the
+former repo `calibration/`/`presets/` dirs, you're told at use time rather than
+by `--doctor`: DAC calibration logs an actionable `--calibrate-dac` line when a
+run finds none, and the preset stores log a one-time move-them heads-up.
 
 ## Creating a config
 

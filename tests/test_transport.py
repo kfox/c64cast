@@ -19,6 +19,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import c64cast.transport as transport
 from c64cast.transport import (
     LoopPresetStore,
     TransportEvent,
@@ -27,6 +28,7 @@ from c64cast.transport import (
     loop_preset_key,
     loop_preset_path,
     make_loop_preset_store,
+    warn_if_legacy_presets_orphaned,
 )
 
 
@@ -463,6 +465,67 @@ class LoopPresetKeyTests(unittest.TestCase):
                 self.assertEqual(store.path, loop_preset_path("clip.mp4"))
                 # The store lands under the redirected data dir.
                 self.assertTrue(str(store.path).startswith(tmp))
+
+
+class LegacyPresetsWarnTest(unittest.TestCase):
+    """warn_if_legacy_presets_orphaned — one-time log heads-up when a source
+    checkout has presets stranded at the old repo `presets/` dir (unread since
+    presets moved to the canonical data dir). Replaces the removed --doctor
+    migration nudge."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        # Reset the process-wide one-shot flag so each test starts fresh.
+        transport._warned_legacy_presets = False
+        self.addCleanup(setattr, transport, "_warned_legacy_presets", False)
+
+    def _legacy_with_orphans(self) -> str:
+        legacy = os.path.join(self._tmp.name, "repo")
+        os.makedirs(os.path.join(legacy, "presets"))
+        with open(os.path.join(legacy, "presets", "wled-x.json"), "w") as f:
+            f.write("{}")
+        return legacy
+
+    def test_warns_once_when_orphaned(self):
+        legacy = self._legacy_with_orphans()
+        data = os.path.join(self._tmp.name, "data")  # canonical does NOT exist
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+                with self.assertLogs("c64cast.transport", level="WARNING") as cm:
+                    warn_if_legacy_presets_orphaned()
+                # Second call is a no-op (the one-shot flag is set) — assertLogs
+                # would fail on an empty log, so assert via assertNoLogs.
+                with self.assertNoLogs("c64cast.transport", level="WARNING"):
+                    warn_if_legacy_presets_orphaned()
+        joined = "\n".join(cm.output)
+        self.assertIn("old repo location", joined)
+        self.assertIn("mv", joined)
+
+    def test_silent_when_canonical_already_exists(self):
+        legacy = self._legacy_with_orphans()
+        data = os.path.join(self._tmp.name, "data")
+        os.makedirs(os.path.join(data, "presets"))  # already migrated
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+                with self.assertNoLogs("c64cast.transport", level="WARNING"):
+                    warn_if_legacy_presets_orphaned()
+
+    def test_silent_for_installed_package(self):
+        # No repo checkout (legacy_data_root is None) → nothing to migrate.
+        data = os.path.join(self._tmp.name, "data")
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
+                with self.assertNoLogs("c64cast.transport", level="WARNING"):
+                    warn_if_legacy_presets_orphaned()
+
+    def test_make_loop_preset_store_triggers_the_check(self):
+        legacy = self._legacy_with_orphans()
+        data = os.path.join(self._tmp.name, "data")
+        with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
+            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+                with self.assertLogs("c64cast.transport", level="WARNING"):
+                    make_loop_preset_store("clip.mp4")
 
 
 if __name__ == "__main__":
