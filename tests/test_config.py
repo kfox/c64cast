@@ -42,7 +42,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 cfg = cfgmod.load(None)
             finally:
                 os.chdir(cwd)
-        self.assertEqual(cfg.ultimate64.url, "http://ultimate-64-ii.lan")
+        self.assertEqual(cfg.ultimate64.url, "http://192.168.2.64")
         self.assertEqual(cfg.audio.enabled, True)
         self.assertEqual(cfg.scenes, [])
 
@@ -754,7 +754,7 @@ class MachineSettingsTest(unittest.TestCase):
         with self._env():
             self.assertEqual(cfgmod.load_machine_settings(), {})
             cfg = cfgmod.load(None)
-        self.assertEqual(cfg.ultimate64.url, "http://ultimate-64-ii.lan")
+        self.assertEqual(cfg.ultimate64.url, "http://192.168.2.64")
 
     def test_machine_settings_applied_in_load(self):
         self._write_settings(

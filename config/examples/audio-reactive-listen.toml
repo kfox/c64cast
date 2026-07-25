@@ -28,7 +28,7 @@
 #   python -m c64cast --config config/examples/audio-reactive-listen.toml
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"
+url = "http://192.168.2.64"
 
 [audio]
 enabled = true                        # needed for the capture subsystem (no C64 audio is produced)

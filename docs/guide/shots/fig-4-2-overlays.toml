@@ -1,0 +1,35 @@
+#:schema ../../../c64cast.schema.json
+# fig-4-2-overlays — the clock and spectrum overlays on one scene.
+#
+# spectrum_petscii needs audio to have something to draw, and it needs a
+# char-mode display. Driving it from a decoded file rather than the mic keeps
+# the shot reproducible and independent of whatever the room sounds like.
+#
+# `file` is not in the checkout (assets/ is git-ignored). Any track works —
+# prefer something with a full frequency range so all eight bands light up
+# rather than just the bass end.
+
+[audio]
+enabled = true
+
+[[scenes]]
+type = "generative"
+source = "plasma"
+display = "petscii"
+audio_source = "file"
+file = "assets/audio/KevinMacLeod_Carefree.mp3"
+name = "clock + spectrum"
+duration_s = 120.0
+
+  [[scenes.overlays]]
+  type = "clock"
+  corner = "top-right"
+  format = "%H:%M"
+  fg_color = "white"
+  bg_color = "black"
+
+  [[scenes.overlays]]
+  type = "spectrum_petscii"
+  placement = "bottom"
+  height_rows = 12
+  gain = 1.0

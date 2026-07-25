@@ -269,6 +269,10 @@ shell.
 
 ## Documentation
 
+* [docs/guide/](docs/guide/) — **the User's Guide**: a friendly,
+  read-in-order introduction that starts from nothing and builds up. Start
+  at [Quick Start](docs/guide/01-quick-start.md); `make guide` renders the
+  whole thing to a typeset PDF.
 * [docs/usage.md](docs/usage.md) — full config reference, scene/overlay
   catalog with options, suggested setups
 * [docs/caveats.md](docs/caveats.md) — known quirks (6502 emulator
@@ -381,3 +385,12 @@ targets:
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+**Third-party assets.** The User's Guide is typeset in two fonts that are
+redistributed in this repository under the [SIL Open Font
+License 1.1](https://openfontlicense.org/), not under MIT: **Jost\***
+(Copyright 2020 The Jost Project Authors) and **Inconsolata** (Copyright 2006
+The Inconsolata Project Authors). They live in
+[`docs/guide/fonts/`](docs/guide/fonts/) alongside their licence texts — see
+[that directory's README](docs/guide/fonts/README.md) for provenance and for
+what has to travel with them.

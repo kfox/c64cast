@@ -79,7 +79,7 @@ tcp_port = 2112                     # TR TCP listener port (firmware default)
 storage = "sd"                      # "sd" | "usb" — where helper PRGs upload to
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"   # bare hostname or IP works too
+url = "http://192.168.2.64"         # bare hostname or IP works too
 system = "NTSC"                     # NTSC | PAL (affects fps, frame_time, cycles)
 dma_port = 64                       # TCP port for the Ultimate DMA Service
                                     # (enable on the U64 via F2 → Network

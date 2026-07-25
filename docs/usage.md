@@ -11,14 +11,16 @@ All memory writes go over the Ultimate 64's Socket DMA service (TCP
 port 64). It is **off by default** in the firmware — enable it once
 before the first run:
 
-1. Press **F2** on the U64 to open the system menu.
-2. Navigate to **Network Settings**.
-3. Set **Ultimate DMA Service** → **Enabled**.
-4. Set **Command Interface** → **Enabled**. *Both* toggles are required:
-   the Command Interface gates the DMA command dispatcher even when the
-   listening socket is open, so with it off the connection accepts but
-   the first command times out.
-5. Save settings and reboot (or exit the menu).
+1. Open the C64U menu: press the **Multi Function Switch** upward (on an
+   Ultimate II+ cartridge, press its menu button).
+2. Press **F2** for **Advanced Settings**.
+3. Under **Network Settings**, set **Ultimate DMA Service** → **Enabled**.
+4. Under **Memory Configuration**, set **Command Interface** → **Enabled**.
+   *Both* toggles are required: the Command Interface gates the DMA command
+   dispatcher even when the listening socket is open, so with it off the
+   connection accepts but the first command times out.
+5. Press **RUN/STOP** to back out of the menus, confirming the save when
+   prompted.
 
 If a firewall sits between your host and the U64, allow inbound TCP 64.
 
@@ -437,7 +439,7 @@ Connection + machine settings for the Ultimate backend (also the source of
 
 ```toml
 [ultimate64]
-url = "http://ultimate-64-ii.lan"   # bare hostname or IP works too
+url = "http://192.168.2.64"         # bare hostname or IP works too
 system = "NTSC"                     # NTSC | PAL (affects fps, frame_time, cycles)
 dma_port = 64                       # Ultimate DMA Service TCP port
 sid_model = "auto"                  # SID Player Autoconfig: auto | 6581 | 8580 | off

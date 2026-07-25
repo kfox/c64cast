@@ -160,23 +160,24 @@ class SocketDMAClient:
         except TimeoutError as e:
             # TCP accept succeeded but the server never answered IDENTIFY.
             # Most common cause: the U64's "Command Interface" toggle is OFF
-            # (F2 → Network Settings → Command Interface → Enabled). That
-            # toggle gates the DMA command dispatcher even when the listening
-            # socket stays open. Password mismatch usually closes the socket
-            # rather than hanging, but mention it as a secondary possibility.
+            # (menu → F2 → Memory Configuration → Command Interface →
+            # Enabled). That toggle gates the DMA command dispatcher even when
+            # the listening socket stays open. Password mismatch usually closes
+            # the socket rather than hanging, but mention it as a secondary
+            # possibility.
             raise SocketDMAError(
                 "no reply to IDENTIFY from the U64 Socket DMA service. "
-                "Check that BOTH 'Ultimate DMA Service' AND 'Command "
-                "Interface' are enabled in F2 → Network Settings. If a "
-                "network password is set on the U64, also configure "
-                "dma_password."
+                "Check that 'Ultimate DMA Service' (F2 → Network Settings) "
+                "AND 'Command Interface' (F2 → Memory Configuration) are "
+                "both enabled. If a network password is set on the U64, also "
+                "configure dma_password."
             ) from e
         except OSError as e:
             raise SocketDMAError(
                 f"IDENTIFY round-trip failed: {e}. The DMA service may have "
-                "closed the connection — check F2 → Network Settings → "
-                "Ultimate DMA Service and Command Interface are both "
-                "enabled."
+                "closed the connection — check that 'Ultimate DMA Service' "
+                "(F2 → Network Settings) and 'Command Interface' (F2 → "
+                "Memory Configuration) are both enabled."
             ) from e
         return payload.decode("utf-8", errors="replace")
 

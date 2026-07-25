@@ -457,8 +457,8 @@ def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) ->
     )
     log.error("Underlying error: %s", e)
     log.error("Check, in order:")
-    log.error("  1. F2 Menu -> Network Settings -> Ultimate DMA Service -> Enabled")
-    log.error("  2. F2 Menu -> Network Settings -> Command Interface -> Enabled")
+    log.error("  1. Menu -> F2 -> Network Settings -> Ultimate DMA Service -> Enabled")
+    log.error("  2. Menu -> F2 -> Memory Configuration -> Command Interface -> Enabled")
     log.error(
         "     (both toggles must be on; the second one gates command "
         "dispatch even when the listening socket is open)"

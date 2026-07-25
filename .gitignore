@@ -74,3 +74,11 @@ assets/*/*
 # OS
 .DS_Store
 Thumbs.db
+
+# User's Guide build artifacts. The Markdown, the Typst template, the figures
+# and the OFL fonts under docs/guide/fonts/ are all tracked — the fonts are
+# committed so the PDF renders identically from a fresh checkout anywhere.
+# Only the generated .typ and the rendered PDF are ignored.
+docs/guide/*.typ
+!docs/guide/template.typ
+docs/guide/*.pdf

@@ -1,0 +1,28 @@
+#:schema ../../../c64cast.schema.json
+# fig-2-1-interstitial — the "UP NEXT" card between scenes.
+#
+# Two short scenes with a long interstitial, so the card is on screen for a
+# large fraction of the run and a sampled burst is sure to catch it. The
+# background is pinned rather than left at "random" so the shot is repeatable.
+#
+# The card shows the *next scene's name*, so only the names below matter to the
+# figure — the second scene's `file` is not in the checkout (assets/ is
+# git-ignored) and any .sid will do, or swap the scene type entirely.
+
+[interstitial]
+duration_s = 8.0
+text_color = "rainbow"
+background = "raster_bars"
+
+[[scenes]]
+type = "generative"
+source = "plasma"
+display = "mhires"
+name = "Plasma"
+duration_s = 10.0
+
+[[scenes]]
+type = "waveform"
+file = "assets/sids/C64Music/MUSICIANS/H/Hubbard_Rob/Commando.sid"
+name = "Commando"
+duration_s = 10.0

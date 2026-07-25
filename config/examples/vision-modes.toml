@@ -25,7 +25,7 @@
 #   python -m c64cast --config config/examples/vision-modes.toml
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"
+url = "http://192.168.2.64"
 
 [video]
 device = -1

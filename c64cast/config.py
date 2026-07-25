@@ -274,7 +274,7 @@ class TeensyromCfg:
 @dataclass
 class Ultimate64Cfg:
     url: str = field(
-        default="http://ultimate-64-ii.lan",
+        default="http://192.168.2.64",
         metadata={"help": "Base URL of the Ultimate 64 (REST + DMA host)."},
     )
     system: str = field(

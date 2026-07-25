@@ -1,0 +1,11 @@
+# Book-level metadata for the User's Guide PDF.
+#
+# The prose lives in the numbered *.md files; this is only the material that
+# appears on the cover and has nowhere sensible to live in Markdown.
+# scripts/build_guide.py reads it; docs/guide/template.typ styles it.
+
+[book]
+title = "c64cast"
+subtitle = "with Quick Start"
+tagline = "Turn a real Commodore 64 into a programmable display"
+logo = "img/logo-cover.png"

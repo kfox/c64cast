@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running
 
 ```bash
-python -m c64cast -u u64://ultimate-64-ii.lan -d 0
+python -m c64cast -u u64://192.168.2.64 -d 0
 # or with a config file (overrides defaults; CLI flags still win):
 python -m c64cast --config c64cast.toml
 ```

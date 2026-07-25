@@ -1,0 +1,19 @@
+#:schema ../../../c64cast.schema.json
+# fig-3-1-waveform — the three-voice SID oscilloscope.
+#
+# config/examples/scene-waveform.toml points `file` at the whole HVSC tree and
+# random-picks; a figure needs one named tune.
+#
+# `file` is not in the checkout — assets/ is git-ignored apart from its
+# READMEs, and this path is one HVSC layout among several. Point it at your own
+# copy, or at any tune that carries a pulse lead, a narrow-pulse voice and a
+# noise drum: that is what makes the three traces read as three visibly
+# different waveforms instead of three similar squiggles.
+
+[[scenes]]
+type = "waveform"
+file = "assets/sids/C64Music/MUSICIANS/H/Hubbard_Rob/Commando.sid"
+song = 0
+duration_s = 180.0
+color_mode = "per_voice"
+voice_colors = ["cyan", "yellow", "light green"]

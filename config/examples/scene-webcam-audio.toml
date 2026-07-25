@@ -16,7 +16,7 @@
 # first and set `device` below to the listed index.
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"
+url = "http://192.168.2.64"
 
 [video]
 device = -1

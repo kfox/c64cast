@@ -78,7 +78,7 @@
         "url": {
           "type": "string",
           "description": "Base URL of the Ultimate 64 (REST + DMA host).",
-          "default": "http://ultimate-64-ii.lan"
+          "default": "http://192.168.2.64"
         },
         "system": {
           "type": "string",

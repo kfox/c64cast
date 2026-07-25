@@ -22,7 +22,7 @@
 #   python -m c64cast --config config/examples/color-dither.toml
 
 [ultimate64]
-url = "http://ultimate-64-ii.lan"
+url = "http://192.168.2.64"
 
 [color]
 dither = "floyd-steinberg"    # the showcase: "ordered"/"blue_noise"/"atkinson" also selectable
