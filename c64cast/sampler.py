@@ -426,6 +426,19 @@ class UltimateAudioSampler:
         self.analysis_sink: Callable[[np.ndarray], None] | None = None
         self._analysis_sink_failed = False
 
+    @property
+    def effective_rate(self) -> float:
+        """The rate the FPGA actually clocks samples out at, in Hz.
+
+        Same contract as `AudioStreamer.effective_rate`, so a scene can read
+        either sink's real-time rate without caring which one it holds. Here
+        it is the exact (unrounded) REF/divider; `sample_rate` is that value
+        rounded to an int for the resampler. Note this class has always
+        reported the *achieved* rate rather than the request — the DAC path
+        only just caught up.
+        """
+        return self._actual_rate
+
     # ---- bring-up ---------------------------------------------------------
     def start(self, prebuffer_timeout: float = 2.0) -> None:
         """Prefill the ring with silence, prebuffer ``_prebuffer_target`` bytes

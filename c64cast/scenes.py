@@ -1393,7 +1393,7 @@ class VideoScene(Scene):
             )
             self.is_done = True
             return
-        sr = self.audio.sample_rate if self.audio else 8000
+        sr = int(round(self.audio.effective_rate)) if self.audio else 8000
         # The peak scan only matters when AVFileSource will push audio with
         # per-frame gain — i.e. the non-REU audible path. A muted scene
         # (self.audio is None) never pushes; the REU path pre-encodes audio
@@ -1566,8 +1566,11 @@ class VideoScene(Scene):
         # The REU-pump pre-encode is a DAC-streamer-only path (the sampler
         # streams 16-bit PCM through its own ring); narrow to AudioStreamer.
         assert isinstance(self.audio, AudioStreamer)
-        sr = self.audio.sample_rate
-        # Decode full audio to int16 mono at sample rate.
+        # effective_rate: the REU pump's CIA #1 latch derives from the same
+        # nominal as the NMI consumer, so it drains at the achieved rate too —
+        # pre-encoding at the requested one would play the clip off-speed.
+        sr = int(round(self.audio.effective_rate))
+        # Decode full audio to int16 mono at that rate.
         int16 = decode_audio_full(self.filepath, sr)
         if int16.size == 0:
             log.warning("video: empty audio track after decode; REU pump will play silence")

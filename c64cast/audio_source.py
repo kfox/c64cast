@@ -404,7 +404,12 @@ class AudioFileSource:
         try:
             import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
 
-            resampler = av.AudioResampler(format="s16", layout="mono", rate=self._audio.sample_rate)
+            # Resample to the rate the sink really consumes at, not the one it
+            # was asked for: content then plays at exactly real time and pitch,
+            # and the host-DMA servo starts from zero standing error. (For the
+            # sampler the two already agreed — see UltimateAudioSampler.)
+            rate = int(round(self._audio.effective_rate)) or self._audio.sample_rate
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
             a_stream = container.streams.audio[0]
             for packet in container.demux(a_stream):
                 if self._stop.is_set():

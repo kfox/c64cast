@@ -47,6 +47,27 @@ Char and light scenes hold cleanly near the ceiling — petscii video plus host-
 
 > **Not the same problem:** forcing the DAC path on **bitmap** video also shows a rate-independent tempo *stretch* — correct pitch, ≈12 % slow. That is the servo under-draining the ring under bitmap DMA load, and it is fixed by bitmap+DAC tempo compensation (see the [`video.py`](video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) notes), which pre-compresses the content. It affects neither char modes nor the default U64 sampler path.
 
+### `sample_rate` is a request; `effective_rate` is what you get
+
+The NMI is driven by CIA #2 Timer A, which counts an **integer** number of PHI2 cycles — the period is `latch + 1`. So the achievable rates are the grid `PHI2 / (latch+1)`, and `_nmi_latch_value` picks the nearest point to what was asked for. You never get exactly `sample_rate`:
+
+| Requested | System | Latch | Achieved | Error |
+| --- | --- | --- | --- | --- |
+| 8000 | NTSC | 127 | 7990.05 | −0.124 % |
+| **12000** (default) | **NTSC** | **84** | **12032.08** | **+0.267 %** |
+| 8000 | PAL | 122 | 8010.15 | +0.127 % |
+| 12000 | PAL | 81 | 12015.22 | +0.127 % |
+
+The offset itself is inaudible and does not distort: the servo adjusts the producer's *pace*, not the sample content, so nothing is duplicated or dropped — +0.267 % is a 4.6-cent pitch shift, against a 50-cent quarter tone. It is also common-mode, since video is slaved to `position_seconds()`, so A/V sync never saw it. What it did do is put a standing bias in every samples→real-time conversion, and hand the host-DMA servo a fixed error to absorb before it could start correcting for anything real.
+
+`AudioStreamer.effective_rate` exposes the achieved value, and it — not `sample_rate` — is now the timebase: producer pacing, the adaptive loop's target, `position_seconds()`, and the rate file paths resample/pre-encode content to. A decoded track therefore plays at exactly real time and pitch, and the `clock/wall` gauge that calibrates `[audio].dac_bitmap_tempo_*` reads true.
+
+Deliberately excluded: the mic capture-device open rate (some devices reject an odd rate, and a mic clock that doesn't match the C64 is what the servo is for) and the DSP filter rates (a 0.27 % shift in a corner frequency is nothing).
+
+This follows `UltimateAudioSampler`, which has always reported its divider's achieved rate rather than the request; it gained an `effective_rate` of its own so a scene can read either sink the same way.
+
+**The same quantization limits `pitch_mult_*`.** `_compensated_latch` computes `period = round((nominal+1) / mult)`, so at 12 kHz NTSC (nominal period 85) **one step is ≈1.2 %** and requests snap to it: `1.005` → +0.00 % (a no-op), `1.010` and `1.015` → both +1.19 %, `1.020` → +2.41 %. That retro-explains the old ear-tuned defaults — `pitch_mult_mhires = 1.015` measured **+1.36 %** high on hardware, tracking the quantized +1.19 %, not the +1.5 % requested. Sub-step pitch trim is not expressible through the latch; a finer correction has to come from the content side, the way `dac_bitmap_tempo_*` fixes tempo.
+
 ### Input modes
 
 The `device` argument to the `start_*` methods is an `int | str`: an int index, or a **device name substring** matched case-insensitively against the input-capable devices `sd.query_devices()` reports (the same listing `--list-devices` prints). `resolve_audio_input_device(device)` (module-level in [`audio.py`](../../c64cast/audio.py)) does the coercion at the top of `_resolve_input_device` — the audio analogue of [`camera.resolve_camera_index`](control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) for `[video].device`, minus USB `VID:PID` (PortAudio exposes none). Unlike the camera resolver it never raises: a name that matches nothing (or multiple → first wins) warns and falls back to the system default input (`-1`), matching `_resolve_input_device`'s existing forgiving contract. `-D/--audio-device` and `[audio].device` both flow through it, and `--save-settings` persists the chosen name/index.
@@ -298,7 +319,7 @@ Unaffected: the U64's default video path uses the off-bus Ultimate Audio sampler
 
 ### `position_seconds()`
 
-The audio-master clock: `(pushed - queued) / sample_rate`. The C64-side ring buffer adds ≈1 s of constant latency beyond this, which is harmless for relative sync.
+The audio-master clock: `(pushed - queued) / effective_rate`. The C64-side ring buffer adds ≈1 s of constant latency beyond this, which is harmless for relative sync.
 
 ### `flush(*, silence_output=False)` — transport resync
 

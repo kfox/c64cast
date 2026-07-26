@@ -705,11 +705,33 @@ class AudioCfg:
     # mode the content still plays ~12% SLOW at that correct pitch (the servo
     # under-drains the ring). Tempo is fixed SEPARATELY by dac_bitmap_tempo_*
     # below (time-domain pre-compression), not by these NMI-rate multipliers.
+    #
+    # THESE KNOBS ARE QUANTIZED — they look continuous and are not. The NMI
+    # period is an integer PHI2 cycle count, so _compensated_latch rounds:
+    # period = round((nominal+1) / mult). At the default 12 kHz the nominal
+    # NTSC period is 85 cycles, so ONE STEP IS ~1.2% and every request lands on
+    # that grid:
+    #
+    #     1.005 (+0.5%) -> period 85 -> +0.00%   (a no-op)
+    #     1.010 (+1.0%) -> period 84 -> +1.19%
+    #     1.015 (+1.5%) -> period 84 -> +1.19%   (same latch as 1.010)
+    #     1.020 (+2.0%) -> period 83 -> +2.41%
+    #
+    # This retro-explains the ear-tuned defaults above: 1.015 was measured
+    # +1.36% high on hardware, which tracks the QUANTIZED +1.19%, not the
+    # +1.5% that was asked for. Sub-step pitch trim is not expressible here —
+    # a finer correction has to come from the content side (resampling), the
+    # way dac_bitmap_tempo_* fixes tempo. The grid coarsens as sample_rate
+    # rises (fewer cycles per period): ~1.2% at 12 kHz, ~0.8% at 8 kHz.
+    # AudioStreamer.effective_rate is the same quantization seen at mult=1.0.
     pitch_mult_petscii: float = field(
         default=1.00,
         metadata={
             "help": "Host-DMA servo playback-rate multiplier for PETSCII mode "
             "(light char-mode load). 1.0 = none (default; U64-II NTSC is dead-on)."
+            " Quantized: the NMI period is an integer cycle count, so a "
+            "request rounds onto the latch grid (~1.2% steps at 12 kHz) — "
+            "1.005 is a no-op, 1.015 lands on +1.19%."
         },
     )
     pitch_mult_hires: float = field(
@@ -718,6 +740,9 @@ class AudioCfg:
             "help": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges "
             "modes. 1.0 = none (default; modern fps caps + REU staging leave ~0 "
             "loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts."
+            " Quantized: the NMI period is an integer cycle count, so a "
+            "request rounds onto the latch grid (~1.2% steps at 12 kHz) — "
+            "1.005 is a no-op, 1.015 lands on +1.19%."
         },
     )
     pitch_mult_mhires: float = field(
@@ -726,6 +751,9 @@ class AudioCfg:
             "help": "Host-DMA servo playback-rate multiplier for MultiHires mode. "
             "1.0 = none (default; modern fps caps + REU staging leave ~0 loss on "
             "U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts."
+            " Quantized: the NMI period is an integer cycle count, so a "
+            "request rounds onto the latch grid (~1.2% steps at 12 kHz) — "
+            "1.005 is a no-op, 1.015 lands on +1.19%."
         },
     )
     pitch_mult_mcm: float = field(
@@ -733,6 +761,9 @@ class AudioCfg:
         metadata={
             "help": "Host-DMA servo playback-rate multiplier for MCM mode "
             "(char-based, light load; U64-II NTSC: good at 1.0)."
+            " Quantized: the NMI period is an integer cycle count, so a "
+            "request rounds onto the latch grid (~1.2% steps at 12 kHz) — "
+            "1.005 is a no-op, 1.015 lands on +1.19%."
         },
     )
     pitch_mult_blank: float = field(
@@ -740,6 +771,9 @@ class AudioCfg:
         metadata={
             "help": "Host-DMA servo playback-rate multiplier for Blank mode "
             "(no video input; 1.0 = none)."
+            " Quantized: the NMI period is an integer cycle count, so a "
+            "request rounds onto the latch grid (~1.2% steps at 12 kHz) — "
+            "1.005 is a no-op, 1.015 lands on +1.19%."
         },
     )
     # ---- bitmap + $D418-DAC tempo compensation (static; per-mode) -----------
@@ -1030,7 +1064,11 @@ class SceneCfg:
             "help": "Per-scene frame-rate cap; unset = playlist default (60/50). "
             "Bitmap (hires/mhires) video/webcam/generative scenes default "
             "lower to stay under the DMA bus-halt ceiling: 20 fps while "
-            "streaming digitized audio, else half rate (30/25). "
+            "streaming digitized audio, else half rate (30/25). Generative and "
+            "webcam scenes take that 20 fps cap in CHAR modes too whenever "
+            "audio is on the 4-bit DAC — they repaint every tick (no dedup), so "
+            "the frame writes contend with the audio ring for the DMA socket. "
+            "Off-bus Ultimate Audio sampler playback keeps the high default. "
             "Waveform/midi/asid default to half rate too.",
             "apply": "live",
         },
@@ -4617,6 +4655,7 @@ def _frame_push_default_fps(
     system: str,
     *,
     off_bus_audio: bool = False,
+    always_fresh: bool = False,
 ) -> float | None:
     """Default ``target_fps`` for a frame-pushing scene that can stream the
     4-bit ``$D418`` digitized-audio DAC (video / live webcam / generative-mic).
@@ -4626,9 +4665,24 @@ def _frame_push_default_fps(
     streaming, the combined halt load tears the picture at the system rate.
     So a bitmap scene streaming digitized audio caps at **20 fps** (both NTSC
     and PAL), and a bitmap scene without it at **half** the system rate
-    (30 NTSC / 25 PAL). Char modes (petscii/blank) are cheap — a 1 KB
-    delta-cached screen — so they keep the playlist system default; this
-    returns ``None`` for them and the caller leaves ``target_fps`` unset.
+    (30 NTSC / 25 PAL).
+
+    ``always_fresh`` marks a source that renders a NEW frame every tick and so
+    has no dedup to fall back on — generative (the generator runs per tick) and
+    live webcam (every grab differs), as against ``VideoScene``, which re-pushes
+    only on a new source frame. For those, "char modes are cheap" stops holding
+    once the DAC is streaming: mcm rewrites screen + color RAM every tick, and
+    at the system rate that traffic shares the one DMA socket with the audio
+    ring writes and jitters the NMI service. Audibly: an mcm generative scene
+    with DAC audio at 60 fps is a noisy mess and is clean at 20 (HW 2026-07-25).
+    So an always-fresh scene streaming digitized audio takes the same **20 fps**
+    cap in char modes as in bitmap ones. Without the DAC there is nothing to
+    protect, and off-bus sampler audio does not contend at all — both keep the
+    playlist system default.
+
+    Otherwise char modes (petscii/mcm/blank) are cheap — a ~1 KB delta-cached
+    screen — so they keep the playlist system default; this returns ``None``
+    for them and the caller leaves ``target_fps`` unset.
 
     ``off_bus_audio`` is the Ultimate Audio FPGA PCM sampler (see sampler.py):
     audio streams straight from REU with zero SID/``$D418``/NMI/CPU, so it does
@@ -4649,10 +4703,10 @@ def _frame_push_default_fps(
     Worth revisiting the DAC/muted caps once the firmware no longer halts the
     CPU on DMA writes (see ``u64ii_firmware_build`` / ``u64_zero_halt_dma_path``).
     """
+    if has_digitized_audio and (mode.is_bitmapped or always_fresh):
+        return 20.0
     if not mode.is_bitmapped:
         return None
-    if has_digitized_audio:
-        return 20.0
     if off_bus_audio:
         return 50.0 if system.upper() == "PAL" else 60.0
     return 25.0 if system.upper() == "PAL" else 30.0
@@ -4734,7 +4788,15 @@ def build_scene(
             scene_audio = None
         scene = WebcamScene(api, scene_audio, mode, source, cfg.audio, name, color=cfg.color)
         if s.target_fps is None:
-            fps = _frame_push_default_fps(mode, scene_audio is not None, cfg.ultimate64.system)
+            # always_fresh: every camera grab differs, so there is no dedup —
+            # a char mode still repaints the whole screen each tick and, with
+            # mic audio on the DAC, contends with the ring writes.
+            fps = _frame_push_default_fps(
+                mode,
+                scene_audio is not None,
+                cfg.ultimate64.system,
+                always_fresh=True,
+            )
             if fps is not None:
                 scene.target_fps = fps
     elif s.type == "blank":
@@ -5092,11 +5154,18 @@ def build_scene(
                 # 2026-07-24). So a sampler-routed file scene keeps the muted
                 # 30/25 bitmap cap: off-bus audio, no on-bus digi, no uncap. The
                 # "none" source drives no audio, so it keeps the playlist default.
+                #
+                # That same no-dedup property (always_fresh) is why the DAC's
+                # 20 fps cap now applies in CHAR modes too, not just bitmap ones
+                # — a 60 fps mcm generative scene repaints screen + color RAM
+                # every tick over the socket the audio ring shares. Sampler-
+                # routed audio is off-bus and keeps the high default.
                 if s.target_fps is None and s.audio_source in ("mic", "file"):
                     fps = _frame_push_default_fps(
                         mode,
                         scene_audio is not None and not file_uses_sampler,
                         cfg.ultimate64.system,
+                        always_fresh=True,
                     )
                     if fps is not None:
                         scene.target_fps = fps

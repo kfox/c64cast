@@ -1578,9 +1578,48 @@ class AudioStreamer:
         latch=127 (7990 Hz, -0.12%); PAL@8kHz: latch=122 (8010 Hz, +0.13%).
         The REU pump's CIA #1 latch and the servo's feed-forward both derive
         from this so the producer/consumer ratio stays exact.
+
+        The rate that latch actually yields is `effective_rate` — read that,
+        not `sample_rate`, whenever the number means real time.
         """
         clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
         return max(1, round(clock / self.sample_rate) - 1)
+
+    @property
+    def effective_rate(self) -> float:
+        """The rate the C64 NMI consumer *actually* runs at, in Hz.
+
+        `sample_rate` is a request: it selects a CIA #2 Timer A latch, and the
+        period is an integer cycle count, so the achievable rates are the grid
+        PHI2/(latch+1) — you land on the nearest one, not on what you asked
+        for. NTSC@12kHz (the default) resolves to latch 84 = **12032.08 Hz**,
+        +0.267%; NTSC@8kHz to 7990.05, -0.124%; PAL@12kHz to 12015.22, +0.127%.
+
+        That offset is common-mode and inaudible in itself (+0.267% is 4.6
+        cents), but it is a standing bias everywhere samples are converted to
+        real time, and the host-DMA servo has to absorb it before it can start
+        correcting for actual bus-halt loss. So the timebase is this, not
+        `sample_rate`: producer pacing, the adaptive loop's target, and
+        `position_seconds()` all read it, and the file paths resample content
+        to it (a decoded track then plays at exactly real time and pitch).
+
+        Deliberately NOT included: the mic capture-device open rate (an odd
+        rate gets rejected by some devices, and the servo already handles a
+        mic clock that doesn't match) and the DSP filter rates (a 0.27% shift
+        in a corner frequency is nothing). It also ignores `pitch_mult_*` and
+        the adaptive loop — those are deliberate offsets away from nominal,
+        not corrections to it.
+
+        Mirrors `UltimateAudioSampler`, whose `sample_rate` has always been the
+        divider's achieved rate rather than the request; that class exposes
+        `effective_rate` too so scenes can read either sink the same way.
+        """
+        if not self.sample_rate:
+            # Callers treat a falsy rate as "no audio clock" (see
+            # position_seconds); _nmi_latch_value would divide by zero.
+            return 0.0
+        clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
+        return clock / (self._nmi_latch_value() + 1)
 
     def _ceiling_latch(self) -> int:
         """Smallest (fastest) CIA #2 Timer A latch the adaptive loop may use: the
@@ -1744,7 +1783,11 @@ class AudioStreamer:
             bytes_prebuffered = 0
             chunk_buf = bytearray(self.chunk_size)
             leftover = b""
-            chunk_period = self.chunk_size / self.sample_rate
+            # effective_rate, not sample_rate: the consumer eats at the rate the
+            # CIA latch actually yields, so pacing the producer to the *request*
+            # leaves the servo a standing offset to chase before it can correct
+            # for anything real.
+            chunk_period = self.chunk_size / self.effective_rate
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
             # Pace + collect deadlines. Zero until NMI starts.
             next_write_time = 0.0
@@ -1965,7 +2008,10 @@ class AudioStreamer:
             self._nmi_latch,
             nominal_latch=self._nmi_latch_value(),
             ceiling_latch=self._ceiling_latch(),
-            target_rate=float(self.sample_rate),
+            # The loop drives the measured consumer rate R toward this. R
+            # physically runs on the latch grid, so targeting the *request*
+            # would walk the latch off nominal by the quantization error.
+            target_rate=self.effective_rate,
         )
         if new_latch == self._nmi_latch:
             # No change → within deadband or clamped at the ceiling: converged.
@@ -2574,7 +2620,15 @@ class AudioStreamer:
             target=self._worker, daemon=True, name="audio-worker"
         )
         self._worker_thread.start()
-        log.info("audio: external push source → SID @ %dHz", self.sample_rate)
+        # Report the achieved rate alongside the request: they differ by the
+        # CIA latch quantization (NTSC@12k → 12032 Hz), and the achieved one is
+        # what everything downstream is actually timed against.
+        log.info(
+            "audio: external push source → SID @ %dHz requested, %.1fHz actual (%+.2f%%)",
+            self.sample_rate,
+            self.effective_rate,
+            100.0 * (self.effective_rate / self.sample_rate - 1.0) if self.sample_rate else 0.0,
+        )
 
     # ---- REU-staged playback (VideoScene) ------------------------------
     def start_for_reu_staged(
@@ -2651,11 +2705,13 @@ class AudioStreamer:
         # loud hiss at the end of the video). The pad costs ~40 KB of REU
         # for a typical 5-second tail and ensures playback decays cleanly
         # to silence after EOF until the scene tears down on video EOF.
-        eof_pad_bytes = self.sample_rate * 5
+        # Both are real-time durations of what the pump will drain, so they
+        # scale by effective_rate (the payload was encoded at it too).
+        eof_pad_bytes = round(self.effective_rate * 5)
         log.info(
             "audio: REU upload %d bytes (%.1fs of source) + %d bytes EOF pad",
             len(audio_4bit),
-            len(audio_4bit) / self.sample_rate,
+            len(audio_4bit) / self.effective_rate,
             eof_pad_bytes,
         )
         t0 = time.perf_counter()
@@ -2865,23 +2921,29 @@ class AudioStreamer:
     def position_seconds(self) -> float:
         """Approximate playback position from the consumer's perspective.
 
-        Host-DMA mode: (samples pushed - samples still queued) / sample_rate.
+        Host-DMA mode: (samples pushed - samples still queued) / effective_rate.
         REU pump mode: wall-clock seconds since the IRQ pump armed (clamped
         to the total source length so over-runs don't desync video). The C64
         ring buffer adds another ~0.5s of latency past either path, but
         that bias is constant in steady state and therefore harmless for
         relative sync.
+
+        The divisor is `effective_rate` because this is a real-time clock —
+        video is slaved to it, and the `clock/wall` gauge that calibrates
+        [audio].dac_bitmap_tempo_* reads it against wall time, so dividing by
+        the *requested* rate put a standing 0.27% (NTSC@12kHz) in both.
         """
-        if not self.sample_rate:
+        rate = self.effective_rate
+        if not rate:
             return 0.0
         if self._reu_pump_armed:
             elapsed = time.monotonic() - self._reu_pump_start_time
-            total_s = self._reu_pump_total_samples / self.sample_rate
+            total_s = self._reu_pump_total_samples / rate
             return max(0.0, min(elapsed, total_s))
         # q.qsize() now counts bytes-blobs, not samples — read the explicit
         # sample-count counter instead.
         consumed = self._pushed_count - self._queued_samples
-        return max(0.0, consumed / self.sample_rate)
+        return max(0.0, consumed / rate)
 
     def reset_position(self) -> None:
         self._pushed_count = 0

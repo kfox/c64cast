@@ -619,6 +619,13 @@ Defaults (all overridable with an explicit `target_fps`):
 
 * **Bitmap + digitized audio → 20 fps** (both NTSC and PAL). The aggressive
   cap that keeps the combined DMA load under the bus-halt ceiling.
+* **Always-fresh source + digitized audio → 20 fps in *any* mode**, char modes
+  included. `generative` and live `webcam` render a new frame every tick, so
+  unlike `video` they have nothing to dedup: a char mode still rewrites the
+  whole screen (plus colour RAM on `mcm`) every frame, over the same DMA socket
+  the audio ring uses. An `mcm` generative scene with DAC audio is a noisy mess
+  at 60 fps and clean at 20 (HW 2026-07-25). Sampler audio is off-bus and does
+  not trigger this.
 * **Bitmap, no digitized audio → half rate (30 NTSC / 25 PAL).** A muted
   bitmap video / no-mic bitmap webcam still pushes full frames, so it gets the
   same half-rate treatment as `WaveformScene`.

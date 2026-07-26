@@ -278,27 +278,27 @@
         },
         "pitch_mult_petscii": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for PETSCII mode (light char-mode load). 1.0 = none (default; U64-II NTSC is dead-on).",
+          "description": "Host-DMA servo playback-rate multiplier for PETSCII mode (light char-mode load). 1.0 = none (default; U64-II NTSC is dead-on). Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) \u2014 1.005 is a no-op, 1.015 lands on +1.19%.",
           "default": 1.0
         },
         "pitch_mult_hires": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges modes. 1.0 = none (default; modern fps caps + REU staging leave ~0 loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts.",
+          "description": "Host-DMA servo playback-rate multiplier for Hires / Hires-edges modes. 1.0 = none (default; modern fps caps + REU staging leave ~0 loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts. Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) \u2014 1.005 is a no-op, 1.015 lands on +1.19%.",
           "default": 1.0
         },
         "pitch_mult_mhires": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for MultiHires mode. 1.0 = none (default; modern fps caps + REU staging leave ~0 loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts.",
+          "description": "Host-DMA servo playback-rate multiplier for MultiHires mode. 1.0 = none (default; modern fps caps + REU staging leave ~0 loss on U64-II NTSC). Re-tune only if a platform (PAL/TR+) drifts. Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) \u2014 1.005 is a no-op, 1.015 lands on +1.19%.",
           "default": 1.0
         },
         "pitch_mult_mcm": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for MCM mode (char-based, light load; U64-II NTSC: good at 1.0).",
+          "description": "Host-DMA servo playback-rate multiplier for MCM mode (char-based, light load; U64-II NTSC: good at 1.0). Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) \u2014 1.005 is a no-op, 1.015 lands on +1.19%.",
           "default": 1.0
         },
         "pitch_mult_blank": {
           "type": "number",
-          "description": "Host-DMA servo playback-rate multiplier for Blank mode (no video input; 1.0 = none).",
+          "description": "Host-DMA servo playback-rate multiplier for Blank mode (no video input; 1.0 = none). Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) \u2014 1.005 is a no-op, 1.015 lands on +1.19%.",
           "default": 1.0
         },
         "dac_bitmap_tempo_hires": {
@@ -1298,7 +1298,7 @@
               "number",
               "null"
             ],
-            "description": "Per-scene frame-rate cap; unset = playlist default (60/50). Bitmap (hires/mhires) video/webcam/generative scenes default lower to stay under the DMA bus-halt ceiling: 20 fps while streaming digitized audio, else half rate (30/25). Waveform/midi/asid default to half rate too."
+            "description": "Per-scene frame-rate cap; unset = playlist default (60/50). Bitmap (hires/mhires) video/webcam/generative scenes default lower to stay under the DMA bus-halt ceiling: 20 fps while streaming digitized audio, else half rate (30/25). Generative and webcam scenes take that 20 fps cap in CHAR modes too whenever audio is on the 4-bit DAC \u2014 they repaint every tick (no dedup), so the frame writes contend with the audio ring for the DMA socket. Off-bus Ultimate Audio sampler playback keeps the high default. Waveform/midi/asid default to half rate too."
           },
           "audio": {
             "type": [

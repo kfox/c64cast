@@ -298,7 +298,57 @@ class WorkerBatchingTest(unittest.TestCase):
         self.assertGreaterEqual(len(writes), 3)
 
 
-class AudioFlushTests(unittest.TestCase):
+class EffectiveRateTest(unittest.TestCase):
+    """`sample_rate` is a request; `effective_rate` is what the CIA latch
+    actually yields. The NMI period is an integer PHI2 cycle count, so the
+    achievable rates form the grid PHI2/(latch+1)."""
+
+    def _at(self, rate: int, system: str) -> AudioStreamer:
+        s = _new_streamer()
+        s.sample_rate = rate
+        s.system = system
+        return s
+
+    def test_known_grid_points(self):
+        # PHI2 / (latch+1) for the latch _nmi_latch_value picks.
+        for rate, system, want in (
+            (8000, "NTSC", 1022727 / 128),  # latch 127 → 7990.05, -0.124%
+            (12000, "NTSC", 1022727 / 85),  # latch  84 → 12032.08, +0.267%
+            (8000, "PAL", 985248 / 123),  # latch 122 → 8010.15, +0.127%
+            (12000, "PAL", 985248 / 82),  # latch  81 → 12015.22, +0.127%
+        ):
+            with self.subTest(rate=rate, system=system):
+                self.assertAlmostEqual(self._at(rate, system).effective_rate, want, places=6)
+
+    def test_the_default_rate_is_not_what_was_requested(self):
+        # The whole point of the property: at the shipped default the achieved
+        # rate is 0.267% high, and reading sample_rate hides that.
+        s = self._at(12000, "NTSC")
+        self.assertNotEqual(s.effective_rate, s.sample_rate)
+        self.assertAlmostEqual(s.effective_rate / s.sample_rate - 1.0, 0.00267, places=5)
+
+    def test_is_idempotent_through_the_latch(self):
+        # Re-requesting the achieved rate must select the same latch, else the
+        # value could walk on every round trip.
+        for rate, system in ((8000, "NTSC"), (12000, "NTSC"), (12000, "PAL")):
+            with self.subTest(rate=rate, system=system):
+                once = self._at(rate, system).effective_rate
+                twice = self._at(int(round(once)), system).effective_rate
+                self.assertAlmostEqual(once, twice, places=6)
+
+    def test_zero_rate_is_safe(self):
+        # position_seconds treats a falsy rate as "no audio clock"; the
+        # property must not divide by zero getting there.
+        self.assertEqual(self._at(0, "NTSC").effective_rate, 0.0)
+
+    def test_position_seconds_uses_the_achieved_rate(self):
+        s = self._at(12000, "NTSC")
+        s._pushed_count = 12032
+        s._queued_samples = 0
+        s._reu_pump_armed = False
+        # One second of real time is 12032 consumed samples, not 12000.
+        self.assertAlmostEqual(s.position_seconds(), 1.0, places=4)
+
     """AudioStreamer.flush() (transport resync, Phase 4)."""
 
     def _seed(self, pushed: int, queued: int, blobs: list[int]) -> AudioStreamer:
