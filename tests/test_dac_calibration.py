@@ -71,6 +71,7 @@ def _simulate(
     drop_frac: float = 0.0,
     phase: float = 0.31,
     seed: int = 7,
+    sr: int = dc.CAP_SR,
 ) -> tuple[np.ndarray, np.ndarray]:
     """A synthetic Cam Link capture of the slot ring `codes` would produce, and
     the true levels it encodes.
@@ -78,7 +79,8 @@ def _simulate(
     Models everything the extraction has to survive: an NMI clock that is not a
     rational multiple of the capture rate, the AC-coupled capture path, noise, a
     capture that starts at an arbitrary ring phase, and (optionally)
-    avfoundation dropping samples so the timebase is compressed."""
+    avfoundation dropping samples so the timebase is compressed. `sr` is the
+    capture rate — not every capture device does 48 kHz."""
     rng = np.random.default_rng(seed)
     true = np.zeros(256)
     mode = rng.uniform(-1.0, 1.0, 16)
@@ -87,12 +89,12 @@ def _simulate(
         true[c] = (c & 0x0F) / 15.0 * mode[c >> 4] * 0.45  # vol 0 == silence
 
     ring = np.frombuffer(dc.build_slot_ring(codes, RING), dtype=np.uint8)
-    n = int(secs * dc.CAP_SR)
-    idx = np.floor(np.arange(n) * (NMI_TRUE / dc.CAP_SR) + phase * RING).astype(np.int64)
+    n = int(secs * sr)
+    idx = np.floor(np.arange(n) * (NMI_TRUE / sr) + phase * RING).astype(np.int64)
     v = true[ring[idx % RING]]
     if drop_frac:
         v = v[rng.random(v.size) > drop_frac]
-    a = np.exp(-2 * np.pi * fc / dc.CAP_SR)  # one-pole high-pass = AC coupling
+    a = np.exp(-2 * np.pi * fc / sr)  # one-pole high-pass = AC coupling
     y = np.empty_like(v)
     acc, prev = 0.0, v[0]
     for i in range(v.size):
@@ -496,6 +498,19 @@ class SlotRingExtractionTest(unittest.TestCase):
         self.assertLess(err, 0.01)
         self.assertGreaterEqual(got.diagnostics["passes"], 3)
 
+    def test_recovers_the_same_levels_from_a_96k_capture(self):
+        """Not every capture device does 48 kHz — the cheap HDMI→USB dongles are
+        commonly 96 kHz-only. Every timing constant in the extraction comes from
+        the `sr` it is handed, so the rate the device forces on us costs nothing
+        as long as it is threaded through instead of assumed."""
+        codes = [dc.ANCHOR_CODE, *range(40)]
+        cap, want = _simulate(codes, sr=96000)
+        got = dc.extract_slot_levels(cap, len(codes), RING, sr=96000)
+        scale = got.levels[0] / want[0]
+        err = np.abs(got.levels / scale - want).max() / np.abs(want).max()
+        self.assertLess(err, 0.01)
+        self.assertAlmostEqual(got.diagnostics["nmi_rate_implied_hz"], NMI_TRUE, delta=2.0)
+
     def test_recovers_the_true_nmi_rate_not_the_nominal_one(self):
         """A slot is 192.24 capture samples, not 192: the NMI runs at
         1022727/128 = 7990.05 Hz, not the 8000 Hz it is asked for. Tracking that
@@ -624,6 +639,94 @@ class LadderMetricsTest(unittest.TestCase):
         self.assertGreaterEqual(metrics["worst_gap_from_zero_frac"], -0.5)
         self.assertLessEqual(metrics["worst_gap_from_zero_frac"], 0.5)
         self.assertGreaterEqual(metrics["crossover_gap_frac"], 0.0)
+
+
+def _dev(name, max_in, default_sr=48000.0):
+    return {"name": name, "max_input_channels": max_in, "default_samplerate": default_sr}
+
+
+class _FakeSD:
+    """Minimal sounddevice stand-in: a device table plus a settings check that
+    accepts only the (channels, rate) combinations each device really supports."""
+
+    def __init__(self, devices, accept=None):
+        self._devices = devices
+        # {device_index: {(channels, rate), …}}; default = anything up to max_in
+        # at any rate.
+        self._accept = accept
+        self.checked: list[tuple[int, int, int]] = []
+
+    def query_devices(self, dev=None):
+        return self._devices if dev is None else self._devices[dev]
+
+    def check_input_settings(self, device: int, channels: int, samplerate: int, dtype: str):
+        self.checked.append((device, channels, samplerate))
+        if self._accept is not None:
+            ok = (channels, samplerate) in self._accept[device]
+        else:
+            ok = 1 <= channels <= self._devices[device]["max_input_channels"]
+        if not ok:
+            raise RuntimeError("Invalid number of channels [PaErrorCode -9998]")
+
+
+class ResolveCaptureFormatTest(unittest.TestCase):
+    """A capture device is not necessarily a Cam Link. Opening a mono-only input
+    with a hardcoded channels=2, or a 96 kHz-only HDMI dongle at 48 kHz, is how
+    a calibration run used to die with a raw `PortAudioError`."""
+
+    def _run(self, fake, dev=0):
+        with patch.dict("sys.modules", {"sounddevice": fake}):
+            return dc.resolve_capture_format(dev)
+
+    def test_prefers_stereo_at_the_nominal_rate(self):
+        fake = _FakeSD([_dev("Cam Link 4K", 2)])
+        self.assertEqual(self._run(fake), (2, dc.CAP_SR))
+
+    def test_falls_back_to_mono_on_a_mono_only_device(self):
+        fake = _FakeSD([_dev("Mono Capture", 1)])
+        self.assertEqual(self._run(fake), (1, dc.CAP_SR))
+        # 2 is never even probed on a device that reports a single channel.
+        self.assertEqual(fake.checked, [(0, 1, dc.CAP_SR)])
+
+    def test_falls_back_when_a_device_lies_about_its_channel_count(self):
+        """max_input_channels is what the driver advertises; PortAudio can still
+        refuse that count at the requested rate. Probe, don't trust."""
+        fake = _FakeSD([_dev("Fussy Capture", 2)], accept={0: {(1, 48000)}})
+        self.assertEqual(self._run(fake), (1, 48000))
+        self.assertEqual(fake.checked, [(0, 2, 48000), (0, 1, 48000)])
+
+    def test_96k_only_dongle_is_measured_at_96k(self):
+        """The cheap MacroSilicon HDMI→USB capture sticks are commonly 96 kHz-only.
+        extract_slot_levels takes its rate as a parameter, so this measures fine."""
+        fake = _FakeSD([_dev("USB Digital Audio", 2, 96000.0)], accept={0: {(2, 96000)}})
+        self.assertEqual(self._run(fake), (2, 96000))
+
+    def test_rate_is_preferred_over_channel_count(self):
+        """A 48 kHz mono capture beats a 96 kHz stereo one — the channel fold is
+        free, the rate change is the compromise."""
+        fake = _FakeSD([_dev("Odd Capture", 2)], accept={0: {(1, 48000), (2, 96000)}})
+        self.assertEqual(self._run(fake), (1, 48000))
+
+    def test_native_rate_is_tried_before_the_static_fallbacks(self):
+        fake = _FakeSD([_dev("Odd Rate", 1, 22050.0)], accept={0: {(1, 22050)}})
+        self.assertEqual(self._run(fake), (1, 22050))
+
+    def test_multichannel_device_captures_the_first_pair(self):
+        fake = _FakeSD([_dev("8-in Interface", 8)])
+        self.assertEqual(self._run(fake), (2, dc.CAP_SR))
+
+    def test_output_only_device_raises_actionable_error(self):
+        fake = _FakeSD([_dev("Speakers", 0), _dev("Cam Link 4K", 2)])
+        with self.assertRaises(dc.CaptureUnavailableError) as ctx:
+            self._run(fake, dev=0)
+        # The message must name a device the user can actually pass instead.
+        self.assertIn("Cam Link 4K", str(ctx.exception))
+        self.assertIn("--audio-device", str(ctx.exception))
+
+    def test_no_workable_format_raises_capture_unavailable(self):
+        fake = _FakeSD([_dev("Hostile Capture", 2)], accept={0: set()})
+        with self.assertRaises(dc.CaptureUnavailableError):
+            self._run(fake)
 
 
 if __name__ == "__main__":

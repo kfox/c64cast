@@ -176,6 +176,16 @@ Physical chips do not generalise. 6581/8580 variation is enormous chip-to-chip, 
 
 `c64cast -u <target> --calibrate-dac` (`cli` → `dac_calibration.run_calibration`) measures the connected SID's signed transfer curve, ≈50 s per socket.
 
+#### Resolving the capture format
+
+`find_capture_device` picks the device (a name match on "cam link", else `--audio-device`/the system default); `resolve_capture_format` then probes what that device will actually *open* and returns a `CaptureFormat(channels, samplerate)`.
+
+The capture used to be hardcoded to stereo at `CAP_SR` (48 kHz), which is what a Cam Link presents — and anything else died with a raw `sounddevice.PortAudioError: Invalid number of channels [PaErrorCode -9998]` out of `sd.rec`, mid-run, after the machine had already been reset and brought up. Two device classes hit that in the field: mono-only UVC inputs, and the cheap MacroSilicon-based HDMI→USB dongles, which are frequently 96 kHz-only.
+
+Neither restriction prevents a measurement. The levels are read off a single folded-to-mono channel (`rec.mean(axis=1)`, a no-op at one channel), and `extract_slot_levels` derives every timing constant from the `sr` it is handed, so a capture at any rate reconstructs the same ladder. So the resolver probes `channels ∈ (2, native, 1)` against `rate ∈ (CAP_SR, the device's default_samplerate, 96000, 44100, 32000)` with `sd.check_input_settings` — which validates without opening a stream, so a rejected combination costs nothing. **Rate is the outer loop**: a 48 kHz mono capture is preferred over a 96 kHz stereo one, since folding the channels is free while changing rate is the compromise. The device's own `default_samplerate` is tried directly after `CAP_SR` so an unusual device still lands on its native rate before the static fallbacks.
+
+A device that accepts nothing — or has no input channels at all — now raises `CaptureUnavailableError` listing every input-capable device with its channel count, which `cli` catches for a clean exit 3 instead of a traceback.
+
 #### The slot ring: reading signed levels directly
 
 The SID → capture path is AC-coupled (≈8.5 Hz measured), so a static code produces no steady signal and a level can only be read as a *change*. `build_slot_ring` fills the NMI ring with 32-sample slots alternating `[code][ref]`, `ref = $00` (master volume 0 — silence), behind a leading run of `SYNC_SLOTS` reference slots that marks where a pass begins. One ring carries 112 codes, so 256 codes take 3 rings of ~5 s each.
