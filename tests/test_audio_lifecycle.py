@@ -943,13 +943,18 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(s._queued_samples, 3)
 
     def test_position_seconds_host_dma(self):
+        # The divisor is effective_rate — the rate the CIA latch actually
+        # yields — not the requested sample_rate. At 8 kHz NTSC that is
+        # 7990.05 Hz, so 8000 consumed samples is 1.0012 s of real time, and
+        # asserting a flat 1.0 here would be asserting the old 0.12% error.
         s = _make()
         s._pushed_count = 8000
         s._queued_samples = 0
-        self.assertAlmostEqual(s.position_seconds(), 1.0, places=3)
+        self.assertAlmostEqual(s.position_seconds(), 8000 / s.effective_rate, places=6)
+        self.assertAlmostEqual(s.position_seconds(), 1.00124, places=5)
         # Still-queued samples are not yet "consumed".
         s._queued_samples = 4000
-        self.assertAlmostEqual(s.position_seconds(), 0.5, places=3)
+        self.assertAlmostEqual(s.position_seconds(), 4000 / s.effective_rate, places=6)
 
     def test_position_seconds_zero_rate(self):
         s = _make()

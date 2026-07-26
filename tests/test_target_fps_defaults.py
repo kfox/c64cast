@@ -46,6 +46,45 @@ class FramePushDefaultFpsTest(unittest.TestCase):
         self.assertIsNone(_frame_push_default_fps(_mode(False), True, "NTSC"))
         self.assertIsNone(_frame_push_default_fps(_mode(False), False, "PAL"))
 
+    def test_char_mode_with_dac_audio_caps_when_always_fresh(self):
+        # A source that repaints every tick (generative / live webcam) has no
+        # dedup, so "char modes are cheap" stops holding once the DAC is
+        # streaming: the per-tick screen+color writes share the DMA socket with
+        # the audio ring. HW 2026-07-25: mcm generative + DAC is a noisy mess at
+        # 60 fps and clean at 20.
+        self.assertEqual(
+            _frame_push_default_fps(_mode(False), True, "NTSC", always_fresh=True), 20.0
+        )
+        self.assertEqual(
+            _frame_push_default_fps(_mode(False), True, "PAL", always_fresh=True), 20.0
+        )
+
+    def test_char_mode_always_fresh_without_dac_audio_stays_uncapped(self):
+        # Nothing to protect: no digitized audio on the bus, so the frame
+        # writes have the socket to themselves.
+        self.assertIsNone(_frame_push_default_fps(_mode(False), False, "NTSC", always_fresh=True))
+        self.assertIsNone(
+            _frame_push_default_fps(
+                _mode(False), False, "NTSC", always_fresh=True, off_bus_audio=True
+            )
+        )
+
+    def test_always_fresh_does_not_change_bitmap_behaviour(self):
+        # Bitmap already capped on has_digitized_audio alone; the new flag must
+        # not perturb any of those answers.
+        for digi, off_bus, want in (
+            (True, False, 20.0),
+            (False, False, 30.0),
+            (False, True, 60.0),
+        ):
+            with self.subTest(digi=digi, off_bus=off_bus):
+                self.assertEqual(
+                    _frame_push_default_fps(
+                        _mode(True), digi, "NTSC", off_bus_audio=off_bus, always_fresh=True
+                    ),
+                    want,
+                )
+
     def test_bitmap_with_digitized_audio_is_20_both_standards(self):
         self.assertEqual(_frame_push_default_fps(_mode(True), True, "NTSC"), 20.0)
         self.assertEqual(_frame_push_default_fps(_mode(True), True, "PAL"), 20.0)
@@ -121,9 +160,17 @@ class WebcamFpsDefaultTest(_BuildSceneFpsBase):
         scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
         self.assertEqual(scene.target_fps, 30.0)
 
-    def test_char_mode_keeps_system_default(self):
-        # petscii is a char mode — left on the playlist system default.
+    def test_char_mode_with_dac_audio_takes_the_20_cap(self):
+        # petscii is a char mode, but a live webcam repaints every tick — with
+        # mic audio on the DAC those writes contend with the ring, so the 20 fps
+        # cap applies here too, not just on bitmap.
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
+        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
+        self.assertEqual(scene.target_fps, 20.0)
+
+    def test_char_mode_without_audio_keeps_system_default(self):
+        # No DAC stream → nothing to contend with → playlist system default.
+        s = cfgmod.SceneCfg(type="webcam", display="petscii", audio=False)
         scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
         self.assertIsNone(scene.target_fps)
 
@@ -208,9 +255,26 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)
 
-    def test_mic_source_char_mode_keeps_system_default(self):
+    def test_mic_source_char_mode_takes_the_20_cap(self):
+        # The generator renders a fresh frame every tick, so a char mode is not
+        # cheap for it: at 60 fps the screen+color writes share the DMA socket
+        # with the audio ring and the DAC audio degrades badly (HW 2026-07-25).
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="mic", display="petscii"
+        )
+        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        self.assertEqual(scene.target_fps, 20.0)
+
+    def test_mcm_char_mode_takes_the_20_cap(self):
+        # mcm is the case the user hit: screen + color RAM every tick.
+        s = cfgmod.SceneCfg(type="generative", source="plasma", audio_source="mic", display="mcm")
+        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        self.assertEqual(scene.target_fps, 20.0)
+
+    def test_char_mode_without_dac_audio_keeps_system_default(self):
+        # audio = false opts this scene out of the DAC → nothing to protect.
+        s = cfgmod.SceneCfg(
+            type="generative", source="plasma", audio_source="mic", display="mcm", audio=False
         )
         scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)
