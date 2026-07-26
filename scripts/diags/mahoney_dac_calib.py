@@ -2,6 +2,16 @@
 """Mahoney 8-bit ``$D418`` DAC calibration — measure the SID transfer curve for
 the full 8-bit volume/mode register and build the amplitude→code "sidtable".
 
+SUPERSEDED. The ``--signed`` two-reference measurement below is the primitive
+``--calibrate-dac`` used to ship, and it does not return consistent output
+levels: on a 6581 with a live filter path it misses the volume-0 ground truth by
+52 %, and 89 of its 256 codes violate the triangle inequality, so no set of real
+levels can explain its numbers. The table it produced measured 4.8 dB *worse*
+than no calibration at all. It has been replaced by the slot-ring primitive in
+``c64cast/dac_calibration.py`` — see ``mahoney_slot_ring_probe.py`` and the
+"What this replaced" section of docs/architecture/audio.md. This file is kept
+for the unsigned ``--probe`` sweep and as the record of what was tried.
+
 BACKGROUND. The classic c64cast digi path writes the low 4 bits of ``$D418``
 (16 volume levels). Pex 'Mahoney' Tufvesson's 2014 technique (Musik Run/Stop)
 parks all three SID voices as steady DC sources and routes voices 1+2 through

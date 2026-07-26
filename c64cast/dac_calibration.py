@@ -64,51 +64,79 @@ fallback) — see :func:`save_calibration`. At playback time,
 physical-chip table is never misapplied when ``$D400`` is actually owned by
 an UltiSID core.
 
-Measurement method (signed, AC-coupled)
----------------------------------------
-Same primitive as ``scripts/diags/mahoney_dac_calib.py --signed`` (the
-investigation tool this productionises). The SID output → Cam Link path is
-AC-coupled, so a static code produces no steady signal — we measure a
-*transition*. For each candidate ``$D418`` byte ``C`` we fill the NMI ring with
-a square wave toggling between a reference byte and ``C`` every
-:data:`TOGGLE_SAMPLES` samples (a 500 Hz tone at the 8 kHz NMI rate that tiles
-the ring exactly), capture off the Cam Link, and read the FFT amplitude at
-500 Hz = k·|L(C) − L(ref)|, the size of the output step. Measuring each code
-against ``$00`` (master-volume-0 floor → |L(C)|) *and* ``$0F`` (positive full
-scale) resolves the sign of each code's bipolar excursion; the signed levels
-give a 256-entry amplitude→code ladder. Robust to the ~12 % non-uniform
-avfoundation sample drops (a dropped sample perturbs amplitude a little, not the
-dominant frequency). Stereo capture is folded to mono by averaging, so the SID
-pan setting only scales all measurements uniformly and cancels in the
-normalised ladder — no mixer changes needed.
+Measurement method: one slot ring, signed levels read directly
+---------------------------------------------------------------
+The SID → capture path is AC-coupled (~8.5 Hz measured), so a static code
+produces no steady signal and a level can only be read as a *change*. The ring
+therefore holds ``SLOT_SAMPLES``-long slots alternating ``[code][ref]``, with
+``ref = $00`` — master volume 0, i.e. silence — behind a leading run of
+``SYNC_SLOTS`` reference slots that marks where a pass begins. See
+:func:`build_slot_ring`.
+
+Every code is then measured against the *same* baseline inside one capture, so
+its signed level comes straight off the waveform and no sign has to be inferred.
+:func:`extract_slot_levels` locates the pass boundaries, tracks the slot grid
+edge by edge, undoes the AC coupling, and differences each code slot against the
+reference slots bracketing it. A ring holds 112 codes, so 256 codes take 3 rings
+of ~5 s rather than 512 separate captures.
+
+**This replaced a two-reference scheme** that toggled each code against ``$00``
+*and* ``$0F`` at 500 Hz and took the FFT amplitude as ``|L(code) − L(ref)|``,
+inferring each sign from which of ``p + q`` or ``q − p`` came closer to ``lmax``.
+That primitive did not return consistent levels: on a 6581 whose filter path is
+alive it missed the volume-0 ground truth below by 52 %, and 89 of its 256 codes
+violated the triangle inequality ``p + q ≥ lmax`` by up to 51 % of ``lmax`` — so
+no 1-D embedding of those numbers existed and the sign inference was not
+ill-conditioned but unfounded. It was exactly reproducible (Pearson +0.9992
+against a curve measured three weeks earlier), independent of toggle frequency
+from 500 Hz down to 31.25 Hz, and reproduced within a single capture, ruling out
+noise, drift, capture gain, clipping and stereo folding. Reading levels directly
+sidesteps the whole construction; the same chip now passes the ground truth at
+1.3 %.
+
+Stereo capture is folded to mono by averaging, so the SID pan setting only
+scales all measurements uniformly and cancels in the normalised ladder — no
+mixer changes needed.
+
+Context dependence, and why every code is measured three times
+---------------------------------------------------------------
+A 6581's output for a ``$D418`` byte is not quite a function of that byte alone.
+Measured on a socketed 6581 by planting one probe code at twelve positions in an
+otherwise ordinary ring: a positive code reads **20 % lower** at the end of a
+ring pass than at its start, a negative code 2 % *higher*, and the apparent level
+correlates at |r| ≈ 0.9 with the mean level of the surrounding slots. It is in
+the raw waveform, before any processing, so it is the chip's operating point
+sliding with the accumulated signal, not a measurement artefact.
+
+Measure each code at one fixed slot and that bias is baked into the ladder,
+ordered by code, looking exactly like curve structure — the tell is that the
+volume ramp within a nibble band stops being monotone. So the whole code set is
+measured :data:`MEASURE_ROUNDS` times, each round rotating every ring's slot
+order by another fraction of a ring, and the readings are averaged: every code
+then carries the same mean context, which is a common scale factor, and the
+ladder is scale-invariant. Three rounds lands within one ladder step of a
+six-round reference (max 0.9 % of span, rms 0.2 %); one round is off by 5.2 %
+and leaves six non-monotone codes. ``context_spread_frac`` records how far a
+code moved between rounds — the honest bound on how well *any* static table can
+describe this chip.
 
 The volume-0 self-test (why a calibration can be rejected)
 ----------------------------------------------------------
-That two-reference scheme only works if ``p`` and ``q`` are genuine *distances*
-between output levels. On some chips they are not, and the failure is silent:
-the resulting ladder looks confident and plays back worse than the uncalibrated
-4-bit path.
-
-There is a ground truth already in the measurements that catches it, for free.
 The 16 codes ``$h0`` set the master volume nibble to 0, so their output level is
-identical to ``$00``'s *whatever* the upper nibble does — which means
-``q($h0) = |L($h0) − L($0F)|`` must equal ``lmax`` exactly, for every ``h``,
-with no model assumptions at all. :func:`build_sidtable_from_signed` checks
-that and refuses to emit a ladder when it fails (see
-:data:`SELFTEST_TOLERANCE`); ``run_calibration`` then persists ``raw_levels`` +
-``metrics`` for the socket but no ``sidtable``, so playback degrades to the
-baked/linear curve instead of to a wrong table.
+``$00``'s *whatever* the upper nibble does: ``L($h0)`` must measure zero, for
+every ``h``, with no model assumptions at all.
+:func:`build_sidtable_from_levels` checks that and refuses to emit a ladder when
+the worst one exceeds :data:`SELFTEST_TOLERANCE`; ``run_calibration`` then
+persists ``raw_signed_levels`` + ``metrics`` for the socket but no ``sidtable``,
+so playback degrades to the baked/linear curve instead of to a wrong table. That
+matters because the failure is otherwise silent — a badly reconstructed ladder
+looks exactly like a good one and plays back worse than no calibration at all.
 
-Measured on two socketed 6581s (2026-07-25, one U64): a chip whose filter path
-has degraded until its curve is degenerately unipolar passes at 2.4 % worst
-error, while a chip on which Mahoney genuinely works fails at 52 %. On the
-latter, 89 of 256 codes violate the triangle inequality ``p + q ≥ lmax`` by up
-to 51 % of ``lmax`` — so no 1-D embedding of those measurements exists, and the
-sign inference is not merely ill-conditioned but unfounded. The effect is
-exactly reproducible, independent of toggle frequency from 500 Hz down to
-31.25 Hz, and reproduces within a single capture, so it is a property of the
-measurement primitive rather than noise, drift, or capture gain. Fixing that
-primitive is open work; rejecting its output is not.
+On the socketed 6581 the residual is ~1 %, and it is not noise: it tracks the
+filter routing bits (LP set → ≈ 1 % of full scale, no filter → ≈ 0.1 %) and does
+not move when the plateau read window is widened from 8 to 72 samples, so it is
+the chip's filter path leaking a little DC past a volume DAC set to zero rather
+than anything the measurement is doing wrong.
 """
 
 from __future__ import annotations
@@ -116,7 +144,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -339,11 +367,14 @@ def save_calibration(
 ) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system.
 
-    ``raw_levels`` is written additively under the *same* schema version:
-    readers only ever require ``sidtable`` (see :func:`load_calibrated_table`),
-    so old files keep loading and new files stay readable by older code. A
-    version bump would orphan every calibration on disk and force a re-measure
-    for no reader-visible reason.
+    ``raw_signed_levels`` is written additively under the *same* schema
+    version: readers only ever require ``sidtable`` (see
+    :func:`load_calibrated_table`), so old files keep loading and new files stay
+    readable by older code. A version bump would orphan every calibration on
+    disk and force a re-measure for no reader-visible reason. It is a distinct
+    key from the ``raw_levels`` older files carry — those hold the two-reference
+    ``[code, p, q]`` triples of the retired primitive, which are a different
+    measurement, not a different encoding of this one.
 
     An entry whose measurement failed its self-test is written *without* a
     ``sidtable`` — same reason. ``load_calibrated_table`` already treats a
@@ -357,7 +388,7 @@ def save_calibration(
             out["sidtable"] = [int(v) & 0xFF for v in r.sidtable]
         out["metrics"] = r.metrics
         if r.raw is not None:
-            out["raw_levels"] = [[int(c), round(p, 8), round(q, 8)] for c, p, q in r.raw]
+            out["raw_signed_levels"] = [[int(c), round(v, 8)] for c, v in r.raw]
         return out
 
     path = paths.calibration_dir() / f"{key}.json"
@@ -444,19 +475,29 @@ def resolve_dac_curve_for_backend(
 # --- measurement core -------------------------------------------------------
 
 NMI_RATE = 8000  # consumer rate; well under the ~14 kHz NMI DAC handler ceiling
-TOGGLE_SAMPLES = 8  # ring holds ref for 8 samples then code for 8 → 500 Hz square
-TOGGLE_FREQ = NMI_RATE / (2 * TOGGLE_SAMPLES)  # 500 Hz
 CAP_SR = 48000  # Cam Link capture sample rate
-REF_ZERO = 0x00  # master-volume-0 floor reference
-REF_POS = 0x0F  # positive full-scale anchor (measured L($0F))
+REF_ZERO = 0x00  # master-volume-0 floor: the common baseline every level is vs.
+ANCHOR_CODE = 0x0F  # positive full scale; first pair of every ring (see below)
+
+#: NMI samples per ring slot. One slot must be long enough that its plateau is
+#: many capture samples wide (32 NMI samples ≈ 4.0 ms ≈ 192 capture samples at
+#: 48 kHz) and short enough that a useful number of codes fit one 8 KB ring.
+SLOT_SAMPLES = 32
+
+#: Leading run of ``REF_ZERO`` slots that marks the start of a ring pass. The
+#: SID output is constant across it, so the capture shows no level steps for
+#: ≈128 ms — the one feature in the waveform that cannot be confused with a
+#: code boundary. See :func:`_find_ring_anchors`.
+SYNC_SLOTS = 32
 
 #: How far the volume-0 self-test may miss before a measurement is rejected, as
-#: a fraction of ``lmax``. Codes ``$h0`` are master-volume-0, so ``q($h0)`` must
-#: equal ``lmax`` exactly — any deviation is pure measurement error against a
-#: known answer (see the module docstring). Measured worst-case on two socketed
-#: 6581s: 2.4 % on the chip the two-reference model does fit, 52 % on the one it
-#: does not. 10 % sits clear of both, and well inside the margin needed for a
-#: ladder to be worth applying at all.
+#: a fraction of ``lmax``. Codes ``$h0`` set the master volume nibble to 0, so
+#: their output level *is* ``$00``'s whatever the upper nibble does: ``L($h0)``
+#: must measure 0, for every ``h``, with no model assumptions at all. Any
+#: deviation is measurement error against a known answer, or chip leakage.
+#: A sound measurement lands around 1 % (a socketed 6581, where the residual
+#: tracks the filter routing bits — see the module docstring), and the primitive
+#: this replaced missed by 52 %, so 10 % separates the two with room to spare.
 SELFTEST_TOLERANCE = 0.10
 
 
@@ -468,13 +509,13 @@ class CalibrationResult:
     sidtable: list[int] | None
     metrics: dict[str, Any]
     detected: str | None = None  # e.g. "6581" (SID Detected Socket N), or None
-    # Raw per-code measurements (code, p, q) — p = |L(code) − L($00)|,
-    # q = |L(code) − L($0F)|. The inputs build_sidtable_from_signed folds into
-    # the ladder. Persisted so a finished calibration stays diagnosable: the
-    # sign inference and lmax both derive from these, and without them a
-    # suspect table can only be re-examined by repeating the ~6 min/socket
-    # measurement. None on results loaded from a pre-raw-levels file.
-    raw: list[tuple[int, float, float]] | None = None
+    # Raw per-code signed output levels, in capture-amplitude units relative to
+    # L($00) = 0 — the 256 numbers the ladder is folded from. Persisted so a
+    # finished calibration stays diagnosable offline: alternative ladder
+    # constructions, the self-test and every metric derive from these, and
+    # without them a suspect table can only be re-examined by re-measuring.
+    # None on results loaded from a file that predates them.
+    raw: list[tuple[int, float]] | None = None
 
 
 @dataclass(frozen=True)
@@ -484,61 +525,416 @@ class CalibrationRun:
     entries: dict[str, CalibrationResult]  # "1" / "2" / "default" -> result
 
 
-def build_toggle_ring(code: int, ref: int, ring_size: int) -> bytes:
-    """Ring toggling ref↔code every TOGGLE_SAMPLES samples (tiles exactly, so
-    the NMI loops it with no wrap glitch). Bytes are FULL 8-bit ``$D418`` values."""
-    idx = np.arange(ring_size)
-    hi = ((idx // TOGGLE_SAMPLES) % 2).astype(bool)
-    return np.where(hi, code, ref).astype(np.uint8).tobytes()
+class MeasurementError(RuntimeError):
+    """The capture doesn't contain a readable slot ring — no signal, too short,
+    or the NMI isn't running. Distinct from a measurement that read fine and
+    then failed its self-test, which is a chip/primitive result, not a rig fault."""
 
 
-def tone_amplitude(cap: np.ndarray, sr: int, freq: float) -> float:
-    """Amplitude of the ``freq`` component via a Hann-windowed FFT (peak in a
-    narrow band around freq, scaled to a physical amplitude by the window's
-    coherent gain). Comparable across captures of equal length."""
-    x = cap - cap.mean()
-    win = np.hanning(x.size)
-    spec = np.abs(np.fft.rfft(x * win))
-    f = np.fft.rfftfreq(x.size, 1.0 / sr)
-    band = (f >= freq * 0.8) & (f <= freq * 1.2)
-    idx = np.where(band)[0]
-    peak = float(spec[idx].max()) if idx.size else 0.0
-    return peak * 2.0 / win.sum()  # Hann coherent gain (sum=N/2) ×2 one-sided
+def codes_per_ring(ring_size: int) -> int:
+    """How many codes one ring can carry, *including* the leading anchor pair."""
+    return (ring_size // SLOT_SAMPLES - SYNC_SLOTS) // 2
 
 
-def build_sidtable_from_signed(
-    signed_raw: list[tuple[int, float, float]],
+def plan_code_batches(per_ring: int, total: int = 256) -> list[list[int]]:
+    """Split the codes across the fewest rings that hold them, striding rather
+    than slicing: ring ``j`` gets ``j, j+n, j+2n, …``.
+
+    Consecutive ring slots then hold codes whose *volume nibble* differs by the
+    stride, so a chip that is silent over some contiguous run of codes can never
+    put a long silent run into consecutive slots — which is what would fake a
+    sync gap for :func:`_find_ring_anchors`. Slicing 0-110 / 111-221 / 222-255
+    puts sixteen same-upper-nibble codes side by side and does exactly that."""
+    n = max(1, -(-total // per_ring))
+    return [list(range(j, total, n)) for j in range(n)]
+
+
+#: How many times the whole code set is measured, each round rotating every
+#: ring's slot order by a further ``1/MEASURE_ROUNDS`` of a ring.
+#:
+#: A 6581's output for a given ``$D418`` byte is not quite a function of that
+#: byte alone: it drifts with the *accumulated* signal since the last quiet
+#: stretch, as the parked voices' operating point slides. Measured on a socketed
+#: 6581 (see docs/architecture/audio.md): a positive code reads 20 % lower at the
+#: end of a ring pass than at the start, a negative code 2 % higher, and the
+#: apparent level correlates at |r| ≈ 0.9 with the mean level of the surrounding
+#: slots. Measure every code at one fixed position and that bias is baked into
+#: the ladder, ordered by code, looking exactly like curve structure.
+#:
+#: Rotating the slot order and averaging gives every code the same *mean*
+#: context, so the bias becomes a common scale factor — and the ladder is built
+#: from a linspace over the measured span, so a common scale factor cancels
+#: completely. The spread across rounds is kept as ``context_spread_frac``.
+MEASURE_ROUNDS = 3
+
+
+def plan_capture_rounds(
+    per_ring: int, total: int = 256, rounds: int = MEASURE_ROUNDS
+) -> list[list[list[int]]]:
+    """``rounds`` × rings × codes. Each round rotates every ring's slot order by
+    another ``1/rounds`` of the ring, so each code visits ``rounds`` evenly
+    spaced positions across the runs. See :data:`MEASURE_ROUNDS`."""
+    base = plan_code_batches(per_ring, total)
+    out = []
+    for r in range(rounds):
+        out.append([b[(r * len(b)) // rounds :] + b[: (r * len(b)) // rounds] for b in base])
+    return out
+
+
+def build_slot_ring(codes: Sequence[int], ring_size: int, *, ref: int = REF_ZERO) -> bytes:
+    """Ring holding ``SYNC_SLOTS`` reference slots followed by one
+    ``[code][ref]`` slot pair per entry of `codes`, padded out with `ref`.
+
+    Slot ``s`` occupies ring bytes ``[s·SLOT_SAMPLES, (s+1)·SLOT_SAMPLES)``, so
+    every code is bracketed by the *same* reference level on both sides. Bytes
+    are FULL 8-bit ``$D418`` values; the pattern tiles the ring exactly, so the
+    NMI handler loops it with no wrap glitch."""
+    slots = ring_size // SLOT_SAMPLES
+    if len(codes) > codes_per_ring(ring_size):
+        raise ValueError(f"{len(codes)} codes exceed the {codes_per_ring(ring_size)} a ring holds")
+    seq = [ref & 0xFF] * SYNC_SLOTS
+    for c in codes:
+        seq += [int(c) & 0xFF, ref & 0xFF]
+    seq += [ref & 0xFF] * (slots - len(seq))
+    return np.repeat(np.asarray(seq, dtype=np.uint8), SLOT_SAMPLES).tobytes()
+
+
+def _boxcar_step(x: np.ndarray, half: int) -> np.ndarray:
+    """``s[n] = mean(x[n:n+half]) − mean(x[n−half:n])`` — a matched filter for a
+    level step. ``|s|`` has a sharp triangular peak centred exactly on each
+    boundary and is flat-ish elsewhere, which is what the alignment keys off."""
+    n = x.size
+    c = np.concatenate(([0.0], np.cumsum(x)))
+    idx = np.arange(n)
+    lo = np.clip(idx - half, 0, n)
+    hi = np.clip(idx + half, 0, n)
+    before = (c[idx] - c[lo]) / np.maximum(idx - lo, 1)
+    after = (c[hi] - c[idx]) / np.maximum(hi - idx, 1)
+    return after - before
+
+
+def _peak_positions(mag: np.ndarray, min_sep: float, thresh: float) -> np.ndarray:
+    """Positions of well-separated local maxima of `mag` above `thresh`, with
+    a parabolic sub-sample refinement. Greedy non-maximum suppression: take the
+    largest remaining peak, blank ``±min_sep`` around it, repeat."""
+    cand = np.flatnonzero(mag > thresh)
+    if cand.size == 0:
+        return np.zeros(0)
+    order = cand[np.argsort(mag[cand])[::-1]]
+    taken = np.zeros(mag.size, dtype=bool)
+    sep = max(1, int(min_sep))
+    out: list[float] = []
+    for i in order:
+        if taken[i]:
+            continue
+        taken[max(0, i - sep) : i + sep + 1] = True
+        pos = float(i)
+        if 0 < i < mag.size - 1:
+            a, b, c = mag[i - 1], mag[i], mag[i + 1]
+            denom = a - 2 * b + c
+            if denom < 0:
+                pos += float(np.clip(0.5 * (a - c) / denom, -1.0, 1.0))
+        out.append(pos)
+    return np.sort(np.asarray(out))
+
+
+def _find_ring_anchors(peaks: np.ndarray, slot_p: float) -> np.ndarray:
+    """Ring-pass start positions: the edges that end a sync gap. The gap is
+    ``SYNC_SLOTS`` constant-reference slots, so it is the longest stretch of the
+    waveform with no level step in it; the edge that ends it is the
+    ``ref → ANCHOR_CODE`` transition into slot ``SYNC_SLOTS``, guaranteed full
+    scale and therefore never missed by the peak finder.
+
+    A run of codes that all happen to sit at the reference level also leaves no
+    edges, and on a chip whose Mahoney path has partly died that run can be
+    long. So the test is *relative*: a candidate must be within 25 % of the
+    longest gap seen, not merely long. Mistaking such a run for the marker
+    would offset every code by a fixed number of slots and still repeat
+    identically each pass — a wrong answer that looks perfectly stable."""
+    if peaks.size < 2:
+        return np.zeros(0)
+    gaps = np.diff(peaks)
+    floor = (SYNC_SLOTS - 8) * slot_p
+    if gaps.max() < floor:
+        return np.zeros(0)
+    return peaks[1:][gaps >= max(floor, 0.75 * float(gaps.max()))]
+
+
+def _fit_period(anchors: np.ndarray, nominal: float) -> tuple[float, float, float]:
+    """Least-squares ``anchor_k = t0 + k·period`` over the observed pass starts,
+    with ``k`` recovered from the nominal period. Returns (t0, period, rms)."""
+    k = np.round((anchors - anchors[0]) / nominal)
+    fit = np.polyfit(k, anchors, 1) if k.size > 1 else np.array([nominal, anchors[0]])
+    resid = anchors - np.polyval(fit, k)
+    return float(fit[1]), float(fit[0]), float(np.sqrt(np.mean(resid**2)))
+
+
+def _dc_restore_gain(x: np.ndarray, c: np.ndarray, windows: np.ndarray) -> float:
+    """The gain ``k`` that best undoes the capture path's AC coupling.
+
+    The SID → capture path is high-passed (measured ≈8.5 Hz, τ ≈ 19 ms), so a
+    plateau that should be flat sags visibly across one 4 ms slot and the naive
+    "level = plateau mean" is biased by whatever the previous slots did. For a
+    one-pole high-pass ``y = v − b`` with ``ḃ = y/τ``, the inverse is exactly
+    ``v = y + cumsum(y)/(τ·fs)`` — one unknown scalar.
+
+    Fit it from the data instead of trusting a nominal τ: the restored signal
+    is affine in ``k``, so the total within-plateau variance is a quadratic in
+    ``k`` with a closed-form minimum. `c` is ``cumsum(x)``; `windows` is an
+    (n, w) index array of plateau interiors, which *should* be flat."""
+    xw = x[windows]
+    cw = c[windows]
+    xw = xw - xw.mean(axis=1, keepdims=True)
+    cw = cw - cw.mean(axis=1, keepdims=True)
+    denom = float(np.sum(cw * cw))
+    if denom <= 0:
+        return 0.0
+    return -float(np.sum(xw * cw)) / denom
+
+
+@dataclass(frozen=True)
+class SlotLevels:
+    """Signed per-code output levels recovered from one slot-ring capture."""
+
+    levels: np.ndarray  # (n_codes,) mean across ring passes, ref level = 0
+    per_pass: np.ndarray  # (n_passes, n_codes) — spread here is the trust metric
+    diagnostics: dict[str, Any]
+
+
+def extract_slot_levels(
+    cap: np.ndarray,
+    n_codes: int,
+    ring_size: int,
+    *,
+    sr: int = CAP_SR,
+    nmi_rate: float = NMI_RATE,
+    guard: int = 24,
+) -> SlotLevels:
+    """Recover each code's *signed* output level, relative to the reference
+    slots, from a capture of the ring :func:`build_slot_ring` built.
+
+    Every code shares one baseline inside one capture, so a level is read
+    directly off the waveform and its sign needs no inference — that is the
+    whole point of the slot ring. The steps are:
+
+    1. **Locate the boundaries.** ``|_boxcar_step|`` peaks on every level step;
+       the peaks that follow a sync gap start a ring pass (:func:`_find_ring_anchors`).
+    2. **Track the grid.** The pass period comes from a least-squares fit across
+       the observed pass starts, and each pass then follows its own edges
+       (:func:`_track_slot_grid`) rather than stepping a nominal pitch — see
+       that function for why open-loop indexing sank two earlier attempts.
+    3. **Undo the AC coupling** (:func:`_dc_restore_gain`) so a plateau mean is
+       a level rather than a level plus the sag of whatever preceded it.
+    4. **Difference against the neighbours.** Each code slot is bracketed by
+       reference slots, so ``level = mean(code) − mean(both neighbours)/2``
+       cancels any residual slow drift locally.
+    """
+    x = np.asarray(cap, dtype=np.float64)
+    x = x - x.mean()
+    ring_slots = ring_size // SLOT_SAMPLES
+    slot_p = SLOT_SAMPLES * sr / float(nmi_rate)
+    ring_p = ring_slots * slot_p
+
+    step = _boxcar_step(x, max(2, int(round(0.4 * slot_p))))
+    mag = np.abs(step)
+    thresh = 0.15 * float(np.percentile(mag, 99.5))
+    peaks = _peak_positions(mag, 0.5 * slot_p, thresh)
+    anchors = _find_ring_anchors(peaks, slot_p)
+    if anchors.size < 2:
+        raise MeasurementError(
+            f"found {anchors.size} ring sync marker(s) in the capture, need ≥2 — "
+            "no signal, a capture shorter than two ring passes, or the NMI is not running"
+        )
+    _, ring_p, anchor_rms = _fit_period(anchors, ring_p)
+    slot_p = ring_p / ring_slots
+
+    # Code i occupies slot SYNC_SLOTS + 2i, bracketed by reference slots.
+    code_slots = SYNC_SLOTS + 2 * np.arange(n_codes)
+
+    cum = np.cumsum(x)
+    per_pass: list[np.ndarray] = []
+    pitches: list[float] = []
+    dc_gains: list[float] = []
+    for a in anchors:
+        starts, pitch = _track_slot_grid(peaks, a, slot_p, ring_slots, n_codes)
+        w = int(pitch) - 2 * guard
+        if w < 8:
+            continue
+        first = int(np.floor(starts[0])) + guard
+        last = int(np.ceil(starts[ring_slots - 1])) + guard + w
+        if first < 0 or last >= x.size:
+            continue
+        idx = np.round(starts[:ring_slots, None] + guard).astype(int) + np.arange(w)
+        k = _dc_restore_gain(x, cum, idx)
+        dc_gains.append(k)
+        pitches.append(pitch)
+        means = (x[idx] + cum[idx] * k).mean(axis=1)
+        ref_mean = 0.5 * (means[code_slots - 1] + means[code_slots + 1])
+        per_pass.append(means[code_slots] - ref_mean)
+    if not per_pass:
+        raise MeasurementError("no complete ring pass fell inside the capture window")
+
+    passes = np.vstack(per_pass)
+    levels = passes.mean(axis=0)
+    scale_ref = float(np.max(np.abs(levels))) or 1.0
+    tracked_slot_p = float(np.mean(pitches))
+    diagnostics = {
+        "passes": int(passes.shape[0]),
+        "ring_period_samples": round(ring_p, 3),
+        "slot_period_samples": round(tracked_slot_p, 4),
+        "nmi_rate_implied_hz": round(SLOT_SAMPLES * sr / tracked_slot_p, 2),
+        "anchor_fit_rms_samples": round(anchor_rms, 2),
+        # The trust metric. Every pass measures the same 256 levels, so a large
+        # spread means the grid is not landing on the same thing twice — the one
+        # symptom that distinguishes a mistracked capture from a real curve.
+        "pass_spread_frac": round(float(np.max(passes.std(axis=0))) / scale_ref, 5),
+        # The fitted AC-coupling corner, as a sanity check on the capture rig:
+        # k = 1/(τ·fs), so f_c = k·fs/2π. Expect a few Hz to a few tens of Hz.
+        "ac_coupling_hz": round(float(np.mean(dc_gains)) * sr / (2 * np.pi), 2),
+    }
+    return SlotLevels(levels=levels, per_pass=passes, diagnostics=diagnostics)
+
+
+#: Alpha-beta gains for :func:`_track_slot_grid`. Alpha smooths the ±½-sample
+#: jitter in a single edge position; beta learns a *rate* of drift, which is
+#: what keeps the tracker from lagging when the capture timebase is stretched
+#: (avfoundation dropping samples under load). A pure position tracker at these
+#: gains lags a 12 %-drop stretch by ~15 samples; with the rate term it doesn't.
+_TRACK_ALPHA = 0.5
+_TRACK_BETA = 0.1
+
+#: How far from its prediction an edge may be found before the tracker calls it
+#: a miss and coasts. Wide enough to acquire a badly stretched timebase, narrow
+#: enough that it can never latch onto the *neighbouring* boundary.
+_TRACK_CAPTURE_FRAC = 0.35
+
+
+def _track_slot_grid(
+    peaks: np.ndarray, anchor: float, slot_p: float, ring_slots: int, n_codes: int
+) -> tuple[np.ndarray, float]:
+    """Start position of every slot in one ring pass, tracked edge by edge.
+
+    This is the part two earlier attempts got wrong, so it is worth being
+    explicit about why open-loop indexing cannot work. A slot is 192.24 capture
+    samples — not an integer, and not even a fixed number, because the capture
+    clock and the C64's NMI clock are independent and avfoundation drops
+    samples under load. Stepping a nominal 192 samples per slot from the sync
+    marker walks the read window off the boundary and into the middle of a
+    sagging plateau within a fraction of a pass, which produces levels that are
+    stable across repeats (so they look trustworthy) and wrong.
+
+    So the grid follows the signal instead of predicting it: each boundary is
+    matched to the nearest detected edge, and an alpha-beta filter folds that
+    into a smoothed offset *and* a drift rate. Boundaries with no detectable
+    edge — a code whose level happens to equal the reference, and the whole
+    sync gap — coast on the current rate. Returns the slot starts plus the
+    median tracked slot length."""
+    starts = np.empty(ring_slots + 1)
+    last_edge_slot = SYNC_SLOTS + 2 * n_codes
+    off = 0.0
+    rate = 0.0
+    for s in range(SYNC_SLOTS, ring_slots + 1):
+        pred = anchor + (s - SYNC_SLOTS) * slot_p + off
+        if s < last_edge_slot and peaks.size:
+            j = int(np.searchsorted(peaks, pred))
+            near = peaks[max(0, j - 1) : j + 1]
+            if near.size:
+                d = min((p - pred for p in near), key=abs)
+                if abs(d) < _TRACK_CAPTURE_FRAC * slot_p:
+                    off += _TRACK_ALPHA * d
+                    rate += _TRACK_BETA * d
+                    pred += _TRACK_ALPHA * d
+        off += rate
+        starts[s] = pred
+    # The sync gap carries no edges to track, so extrapolate backwards from the
+    # anchor at the nominal pitch. Only the single ref slot at SYNC_SLOTS-1 is
+    # ever read (it brackets the first code), one slot from the anchor.
+    for s in range(SYNC_SLOTS - 1, -1, -1):
+        starts[s] = anchor - (SYNC_SLOTS - s) * slot_p
+    return starts, float(np.median(np.diff(starts[SYNC_SLOTS:])))
+
+
+def merge_measurements(
+    measured: Sequence[tuple[Sequence[int], SlotLevels]],
+) -> tuple[list[tuple[int, float]], dict[str, Any]]:
+    """Fold every captured ring into one 256-entry signed level table.
+
+    Two corrections, in order:
+
+    * **Anchor rescale.** Every ring leads with :data:`ANCHOR_CODE` at the same
+      slot, so each capture carries its own full-scale reading. Capture gain is
+      stable *within* a capture but not guaranteed across them, so each ring is
+      rescaled onto the mean anchor. That is what lets several rings stand in
+      for the one 256-code ring that does not fit.
+    * **Round average.** Each code is measured once per rotation
+      (:func:`plan_capture_rounds`); averaging equalises the context bias
+      described at :data:`MEASURE_ROUNDS`.
+
+    ``context_spread_frac`` — how far a code's readings move between rotations,
+    as a fraction of full scale — is the honest measure of how well a single
+    static table can describe this chip at all."""
+    anchors = np.array([m.levels[0] for _, m in measured])
+    gain = float(np.mean(anchors))
+    seen: dict[int, list[float]] = {}
+    for codes, got in measured:
+        k = gain / float(got.levels[0]) if got.levels[0] else 1.0
+        for c, v in zip(codes, got.levels[1:], strict=True):
+            seen.setdefault(int(c), []).append(float(v) * k)
+    raw = [(c, float(np.mean(seen[c]))) for c in sorted(seen)]
+    spreads = [float(np.ptp(v)) for v in seen.values() if len(v) > 1]
+    metrics = {
+        "rings": len(measured),
+        "anchor_spread_frac": round(
+            float(np.max(np.abs(anchors / gain - 1.0))) if gain else 0.0, 5
+        ),
+        "context_spread_frac": round(max(spreads) / abs(gain), 4) if spreads and gain else 0.0,
+        "context_spread_median_frac": (
+            round(float(np.median(spreads)) / abs(gain), 4) if spreads and gain else 0.0
+        ),
+    }
+    return raw, metrics
+
+
+def build_sidtable_from_levels(
+    raw: Sequence[tuple[int, float]],
 ) -> tuple[list[int] | None, dict[str, Any]]:
-    """Reconstruct signed output levels from the two-reference measurements and
-    build the 256-entry amplitude→code sidtable + quality metrics.
+    """Fold 256 measured signed output levels into the amplitude→code sidtable
+    and its quality metrics.
 
-    For each code C: p = |L(C) − L($00)| = |L(C)| (L($00)=0 at master vol 0),
-    q = |L(C) − L($0F)|. With Lmax = L($0F) the positive anchor: a positive
-    in-range code has p+q ≈ Lmax; a negative code has q−p ≈ Lmax. So the sign is
-    + when (p+q) is closer to Lmax than (q−p) is. signed level = sign·p. The
-    sidtable maps 256 uniform target levels across the measured signed span to
-    the code whose level is nearest.
+    The levels arrive signed and on one common baseline (``L($00) = 0``) — the
+    slot ring reads them straight off the waveform — so there is nothing to
+    reconstruct here: the table maps 256 uniform target levels across the
+    measured span to the code whose level is nearest.
+
+    The targets span ``[min, max]`` rather than being centred on silence, and
+    that is deliberate. What the encoder needs is *uniformity* — index ``128+k``
+    must sit ``k`` equal steps above index 128 — not that index 128 be silent:
+    the SID output is AC-coupled, so a constant offset is removed downstream and
+    only the step size reaches the listener. Measured Mahoney spans are markedly
+    asymmetric (socket 1: −0.656 to +0.461), and re-centring on zero would throw
+    away the excess negative swing for nothing. It also has to work for a chip
+    whose span is entirely one-sided — the degraded 6581 in socket 2 measures
+    −0.001 to +0.287, where the largest symmetric swing is 0.001 and a
+    zero-centred ladder collapses to noise.
 
     Returns ``(None, metrics)`` when the volume-0 self-test misses by more than
-    :data:`SELFTEST_TOLERANCE` — the whole two-reference reconstruction rests on
-    p and q being real distances, and that test proves they are not (see the
-    module docstring). Emitting a ladder anyway is the failure mode this guards:
-    it looks exactly like a good one and plays back worse than no calibration at
-    all. The metrics are returned either way, so a rejected measurement is still
-    fully diagnosable."""
-    code = np.array([c for c, _, _ in signed_raw])
-    p = np.array([pp for _, pp, _ in signed_raw])
-    q = np.array([qq for _, _, qq in signed_raw])
-    lmax = float(p[code == REF_POS][0]) if np.any(code == REF_POS) else float(p.max())
+    :data:`SELFTEST_TOLERANCE`. Codes ``$h0`` set the master volume nibble to 0,
+    so ``L($h0)`` must be 0 whatever the upper nibble does; a measurement that
+    says otherwise is wrong about levels in general, and a ladder folded from it
+    would look exactly like a good one while playing back worse than no
+    calibration at all. Metrics are returned either way, so a rejected
+    measurement stays fully diagnosable."""
+    code = np.array([c for c, _ in raw])
+    level = np.array([v for _, v in raw], dtype=np.float64)
+    lmax = (
+        float(level[code == ANCHOR_CODE][0]) if np.any(code == ANCHOR_CODE) else float(level.max())
+    )
+    scale = abs(lmax) or float(np.max(np.abs(level))) or 1.0
 
-    # Ground truth: codes $h0 are master-volume-0, so L($h0) == L($00) and
-    # q($h0) must be exactly lmax. Deviation is measurement error, full stop.
+    # Ground truth, no model assumptions: master volume 0 is silence.
     at_vol0 = (code & 0x0F) == 0
-    selftest = (q[at_vol0] / lmax - 1.0) if lmax else np.zeros(int(at_vol0.sum()))
+    selftest = level[at_vol0] / scale
     worst = float(np.max(np.abs(selftest))) if selftest.size else 0.0
-
-    sign = np.where(np.abs((p + q) - lmax) <= np.abs((q - p) - lmax), 1.0, -1.0)
-    level = sign * p  # signed output level per code, in capture-amplitude units
 
     lo, hi = float(level.min()), float(level.max())
     span = hi - lo
@@ -550,7 +946,6 @@ def build_sidtable_from_signed(
         "lmax": round(lmax, 6),
         "volume0_selftest_worst": round(worst, 4),
         "volume0_selftest": [round(float(e), 4) for e in selftest],
-        "capture_noise_floor": round(float(np.median(p[at_vol0])), 6),
         **_ladder_metrics(np.array([float(level[code == c][0]) for c in sidtable]), targets, span),
     }
     if worst > SELFTEST_TOLERANCE:
@@ -646,8 +1041,10 @@ def run_calibration(
     be: C64Backend,
     cfg: Config,
     *,
-    secs: float = 0.5,
-    settle: float = 0.2,
+    # A ring pass is ring_size/NMI_RATE ≈ 1.03 s; 4.5 s guarantees ≥3 complete
+    # passes land inside the window wherever the capture happens to start.
+    secs: float = 4.5,
+    settle: float = 0.4,
     device: int | None = None,
     log_fn: Callable[[str], None] = print,
 ) -> CalibrationRun:
@@ -706,52 +1103,52 @@ def run_calibration(
             else {"transport": "serial", "port": tr.serial_port or ""}
         )
 
-    def capture_amp(code: int, ref: int, dev: int) -> float:
-        be.write_memory_file(
-            f"{RING_BUFFER_ADDR:04X}", build_toggle_ring(code, ref, RING_BUFFER_SIZE)
-        )
+    def capture_ring(codes: Sequence[int], dev: int) -> SlotLevels:
+        be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", build_slot_ring(codes, RING_BUFFER_SIZE))
         time.sleep(settle)
         rec = sd.rec(int(secs * CAP_SR), samplerate=CAP_SR, channels=2, device=dev, dtype="float32")
         sd.wait()
         mono = rec.mean(axis=1).astype(np.float64)
-        return tone_amplitude(mono, CAP_SR, TOGGLE_FREQ)
+        return extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE)
 
     def measure_one(
         dev: int, label: str
-    ) -> tuple[list[int] | None, dict[str, Any], list[tuple[int, float, float]]]:
-        signed_raw: list[tuple[int, float, float]] = []
+    ) -> tuple[list[int] | None, dict[str, Any], list[tuple[int, float]]]:
+        rounds = plan_capture_rounds(codes_per_ring(RING_BUFFER_SIZE) - 1)
+        total = sum(len(r) for r in rounds)
         log_fn(
-            f"[calib] measuring {label}: 256 codes × 2 refs @ {TOGGLE_FREQ:.0f} Hz "
-            f"({secs:.2f}s + {settle:.2f}s each, ~{256 * 2 * (secs + settle) / 60:.0f} min)…"
+            f"[calib] measuring {label}: 256 codes × {len(rounds)} rotations = "
+            f"{total} slot rings ({secs:.1f}s each, ~{total * (secs + settle) / 60:.1f} min)…"
         )
-        for c in range(256):
-            p = capture_amp(c, REF_ZERO, dev)
-            qv = capture_amp(c, REF_POS, dev)
-            signed_raw.append((c, p, qv))
-            # Sample the progress line at volume nibble 8, NOT 0. Codes ≡ 0 mod
-            # 16 set $D418's master volume to 0, so |L| is the silence floor for
-            # every one of them — the old `c % 16 == 0` line printed 0.00000 on
-            # a perfectly healthy run and on a dead capture alike, hiding a
-            # no-signal rig for the full ~6 min. q is shown too: it anchors
-            # against $0F, so a sane run has p and q both moving.
-            if c % 16 == 8:
+        measured: list[tuple[Sequence[int], SlotLevels]] = []
+        n = 0
+        for rnd, batches in enumerate(rounds, 1):
+            for codes in batches:
+                n += 1
+                got = capture_ring([ANCHOR_CODE, *codes], dev)
+                measured.append((codes, got))
+                d = got.diagnostics
                 log_fn(
-                    f"[calib]   {label} code ${c:02X} ({c:3d}/255)  "
-                    f"|L|={p:.5f}  |L−L($0F)|={qv:.5f}"
+                    f"[calib]   {label} ring {n}/{total} (rotation {rnd}): "
+                    f"{d['passes']} passes, L($0F)={got.levels[0]:+.5f}, "
+                    f"pass spread {d['pass_spread_frac'] * 100:.2f}%"
                 )
-        sidtable, metrics = build_sidtable_from_signed(signed_raw)
+        raw, merge_metrics = merge_measurements(measured)
+        sidtable, metrics = build_sidtable_from_levels(raw)
+        metrics.update(merge_metrics)
+        metrics["capture"] = [m.diagnostics for _, m in measured]
         if sidtable is None:
             log_fn(
                 f"[calib] {label}: REJECTED — the volume-0 self-test is off by "
                 f"{metrics['volume0_selftest_worst'] * 100:.1f}% (tolerance "
                 f"{SELFTEST_TOLERANCE * 100:.0f}%). Codes $h0 set the master volume "
-                "to 0, so they must measure identical to $00; that they don't means "
-                "this chip's p/q measurements are not consistent output levels, and "
-                "any ladder folded from them would be wrong. No table written for "
-                f"{label} — playback keeps the baked/linear curve, which is better "
-                "than a bad table. The raw levels are saved for diagnosis."
+                "to 0, so they must measure as silence; that they don't means these "
+                "are not consistent output levels, and any ladder folded from them "
+                f"would be wrong. No table written for {label} — playback keeps the "
+                "baked/linear curve, which is better than a bad table. The raw "
+                "levels are saved for diagnosis."
             )
-        return sidtable, metrics, signed_raw
+        return sidtable, metrics, raw
 
     sockets_present: list[tuple[int, str]] = []
     saved_sid_config: dict[tuple[str, str], str] = {}

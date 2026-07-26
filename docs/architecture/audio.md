@@ -153,17 +153,60 @@ Only the **emulated-UltiSID** table ships baked into [c64cast/dac_curves.py](../
 
 Physical chips do not generalise. 6581/8580 variation is enormous chip-to-chip, dominated by the analog filter: two 6581s correlated only 0.74, and swapping their tables cost ≈29% RMS level error. SID replacements (ARM2SID, SwinSID, FPGASID) differ again. No baked table can serve them, hence calibration:
 
-`c64cast -u <target> --calibrate-dac` (`cli` → `dac_calibration.run_calibration`) measures the connected SID's signed transfer curve. It toggles a 500 Hz ref↔code square wave through the NMI ring, captures it off the Cam Link, and takes the FFT amplitude at 500 Hz as the output step. Measuring each code against both `$00` and `$0F` resolves the bipolar sign.
+`c64cast -u <target> --calibrate-dac` (`cli` → `dac_calibration.run_calibration`) measures the connected SID's signed transfer curve, ≈50 s per socket.
+
+#### The slot ring: reading signed levels directly
+
+The SID → capture path is AC-coupled (≈8.5 Hz measured), so a static code produces no steady signal and a level can only be read as a *change*. `build_slot_ring` fills the NMI ring with 32-sample slots alternating `[code][ref]`, `ref = $00` (master volume 0 — silence), behind a leading run of `SYNC_SLOTS` reference slots that marks where a pass begins. One ring carries 112 codes, so 256 codes take 3 rings of ~5 s each.
+
+Every code is then measured against the **same baseline inside one capture**, so its signed level comes off the waveform directly and no sign has to be inferred. `extract_slot_levels` does the rest and is pure, so it can be re-run offline against a saved capture:
+
+1. `_boxcar_step` — a matched filter for a level step; `|s|` peaks on every slot boundary.
+2. `_find_ring_anchors` — a pass starts at the edge that ends a sync gap. The test is *relative* (within 25% of the longest gap seen), because a run of codes that all sit at the reference level also leaves no edges, and on a partly-dead chip that run can be long. `plan_code_batches` strides rather than slices for the same reason: slicing 0-110 / 111-221 / 222-255 would put all sixteen codes of one upper nibble in consecutive slots.
+3. `_track_slot_grid` — **the part two earlier attempts got wrong.** A slot is 192.24 capture samples, because the NMI runs at 1022727/128 = 7990.05 Hz, not the 8000 Hz it is asked for, and avfoundation drops samples under load on top of that. Stepping a nominal pitch from the marker walks the read window off the boundary into the middle of a sagging plateau within a fraction of a pass — which yields levels that repeat perfectly across passes (so they look trustworthy) and are wrong. So the grid follows the signal: each boundary is matched to the nearest detected edge and an alpha-beta filter folds that into a smoothed offset *and* a drift rate, with edgeless boundaries coasting on the current rate. A synthetic capture with 12% of its samples dropped reads levels to 0.5% either way; with a fixed grid the same capture is off by 56%.
+4. `_dc_restore_gain` — undoes the AC coupling so a plateau mean is a level and not a level plus the sag of whatever preceded it. For a one-pole high-pass the inverse is exactly `v = y + cumsum(y)/(τ·fs)`, one unknown scalar, and the restored signal is affine in it — so the total within-plateau variance is a quadratic with a closed-form minimum. τ is fitted from the data rather than assumed; a 2- and 3-pole basis was tried on real captures and did not improve on it.
+5. Each code slot is differenced against the reference slots bracketing it, cancelling residual slow drift locally.
+
+`pass_spread_frac` is the trust metric: every pass measures the same 256 levels, so disagreement between them is the one symptom that separates a mistracked capture from a real curve. On hardware it is 0.01–0.2%.
+
+#### Why every code is measured three times
+
+A 6581's output for a `$D418` byte is not quite a function of that byte alone. Planting one probe code at twelve positions in an otherwise ordinary ring (`scripts/diags/mahoney_slot_ring_probe.py` measured this): a positive code reads **20% lower** at the end of a ring pass than at its start, a negative code 2% *higher*, and the apparent level correlates at |r| ≈ 0.9 with the mean level of the surrounding slots. It is present in the raw waveform before any processing, so it is the chip's operating point sliding with the accumulated signal, not a measurement artefact. The degraded socket-2 chip shows almost none of it (`context_spread_median_frac` 0.24% vs socket 1's 2.2%), which fits: it is the live filter path that moves.
+
+Measure each code at one fixed slot and that bias is baked into the ladder, ordered by code, looking exactly like curve structure. The tell is that the volume ramp within a nibble band stops being monotone — which it must not, since the master volume nibble scales whatever the mode bits produce. So `plan_capture_rounds` measures the whole set `MEASURE_ROUNDS` times, each round rotating every ring's slot order by another fraction of a ring, and `merge_measurements` averages. Every code then carries the same mean context, which is a common scale factor, and the ladder is scale-invariant.
+
+Three rounds was chosen against a six-round reference captured on hardware: max deviation 0.9% of span and rms 0.2% — below one ladder step — versus 5.2% and six non-monotone codes at one round. The finished 3-round measurement has **zero** non-monotone steps across all 32 nibble rows on both sockets, 512 model-free constraints.
+
+`merge_measurements` also rescales each ring onto the mean of its `ANCHOR_CODE` reading (`$0F`, first pair of every ring, always the same slot) before averaging — capture gain is stable within a capture but not guaranteed across them, and that is what lets several rings stand in for the one 256-code ring that does not fit.
 
 #### The volume-0 self-test
 
-That reconstruction is only valid if `p` and `q` are genuine *distances* between output levels, and on some chips they are not. The 16 codes `$h0` set the master volume nibble to 0, so their output level equals `$00`'s regardless of what the upper nibble does — which means `q($h0)` must come back as exactly `lmax`, for every `h`, with no model assumptions at all. `build_sidtable_from_signed` checks that first and returns `(None, metrics)` when the worst deviation exceeds `SELFTEST_TOLERANCE` (10%).
+The 16 codes `$h0` set the master volume nibble to 0, so their output level is `$00`'s regardless of what the upper nibble does: `L($h0)` must measure zero, for every `h`, with no model assumptions at all. `build_sidtable_from_levels` checks that and returns `(None, metrics)` when the worst deviation exceeds `SELFTEST_TOLERANCE` (10%).
 
-Measured on two socketed 6581s (2026-07-25, one U64): the chip whose filter path has degraded until its curve is degenerately unipolar passes at 2.4% worst error; the chip on which Mahoney genuinely works fails at **52%**. On the latter, 89 of 256 codes violate the triangle inequality `p + q ≥ lmax` by up to 51% of `lmax` — so no 1-D embedding of those numbers exists, and the sign inference is not ill-conditioned but unfounded. The effect is exactly reproducible (today's socket 1 vs the archived 2026-07-02 `chipB_curve`: Pearson +0.9992), independent of toggle frequency from 500 Hz down to 31.25 Hz, and reproduces *within a single capture* when both toggles are interleaved in one ring — so it is a property of the measurement primitive, not noise, drift, capture gain, clipping or stereo folding (all ruled out on hardware). Fixing the primitive is open work; refusing to ship its output is not, and the failure it prevents is the bad one — a wrong table looks exactly like a good one and plays back worse than no calibration at all.
+On the socketed 6581 the residual is **1.3%**, and it is not measurement error: it tracks the filter routing bits (LP set → ≈1% of full scale, no filter → ≈0.1%) and does not move when the plateau read window is widened from 8 to 72 capture samples, so it is the chip's filter path leaking a little DC past a volume DAC set to zero.
 
-`run_calibration` logs the rejection with that reasoning, still persists `raw_levels` + `metrics` for the socket, and omits only `sidtable`. `load_calibrated_table` already treats a missing table as "no calibration applies", so playback falls back to `mahoney_ultisid`/`linear` with no reader change. `cli` returns exit code **4** when no measured SID produced a usable table, so a run that measured everything and trusted nothing can't look like a success.
+`run_calibration` logs a rejection with that reasoning, still persists `raw_signed_levels` + `metrics` for the socket, and omits only `sidtable`. `load_calibrated_table` already treats a missing table as "no calibration applies", so playback falls back to `mahoney_ultisid`/`linear` with no reader change. `cli` returns exit code **4** when no measured SID produced a usable table, so a run that measured everything and trusted nothing can't look like a success.
 
-Beware of one trap when validating a candidate reconstruction offline: agreement with the baked `mahoney_ultisid` ordering is **not** a correctness signal. The 2026-07-02 finding is `emu != physical (corr -0.07)`, and the two archived physical curves score −0.21 and −0.61 against it; the only entry scoring +0.90 is the degenerate socket. High agreement with the baked table indicates a chip whose filter path is dead, not a good ladder.
+#### What this replaced, and why
+
+The previous primitive toggled each code against `$00` *and* `$0F` at 500 Hz, took the FFT amplitude at 500 Hz as `|L(code) − L(ref)|`, and inferred each sign from whether `p + q` or `q − p` came closer to `lmax`. It did not return consistent output levels. On the socket-1 chip it missed the volume-0 ground truth by **52%**, and 89 of its 256 codes violated the triangle inequality `p + q ≥ lmax` by up to 51% of `lmax` — so no 1-D embedding of those numbers existed and the sign inference was not ill-conditioned but unfounded, which is why "add a third reference and least-squares the signs" was never going to work either. It was exactly reproducible (Pearson +0.9992 against a curve measured three weeks earlier), independent of toggle frequency from 500 Hz down to 31.25 Hz, and reproduced *within a single capture* with both toggles interleaved in one ring — ruling out noise, drift, capture gain, clipping and stereo folding, all checked on hardware. Reading levels directly sidesteps the entire construction. It is also ~7× faster: ≈50 s per socket against ≈6 min.
+
+Beware of one trap when validating a candidate reconstruction offline: agreement with the baked `mahoney_ultisid` ordering is **not** a correctness signal. The 2026-07-02 finding is `emu != physical (corr -0.07)`, and the two archived physical curves score −0.21 and −0.61 against it; the only entry scoring +0.90 is the degenerate socket. High agreement with the baked table indicates a chip whose filter path is dead, not a good ladder. The slot-ring curves score −0.32 (socket 1, working) and +0.49 (socket 2, degraded) — the expected pattern.
+
+#### Measured playback A/B
+
+`scripts/diags/dac_curve_playback_ab.py` plays one test tone through the real encoder (`encode_floats_to_dac`) once per curve, captures it, and reports SNDR — the honest comparison, since the curves differ in loudness by several dB and a level-mismatched listening test reads "louder" as "better". On socket 1, at full scale:
+
+| curve | SNDR | THD | captured level |
+|---|---|---|---|
+| `linear` (4-bit) | 21.80 dB | −24.31 dB | −15.4 dBFS |
+| `mahoney_ultisid` (baked, emulated-SID) | 0.09 dB | −1.35 dB | −12.6 dBFS |
+| calibrated, previous primitive | 16.99 dB | −21.81 dB | −9.9 dBFS |
+| calibrated, slot ring | **23.85 dB** | **−24.75 dB** | −9.8 dBFS |
+
+Two things to read off it. The slot-ring table beats the 4-bit path by 2.0 dB while running 5.6 dB louder. And the previous primitive's table scores 4.8 dB *below* `linear` — a calibration that actively made playback worse, which is exactly the failure the volume-0 self-test was added to refuse.
+
+At −30 dBFS the ordering changes: the slot-ring table reproduces the tone at −38.9 dBFS (i.e. tracking the input correctly) where `linear` collapses to −73.9 dBFS because 4 bits cannot represent that level at all, but its SNDR there is 2.8 dB against the older table's 5.4 dB. That is a real consequence of the slot ring finding a *wider* true span (−0.656 to +0.461, against the old measurement's −0.394 to +0.317): the same 256 rungs spread over more range are coarser near silence. Full-scale SNDR is the figure that tracks what a listener hears, and it is limited to ≈24 dB by the chip's own context dependence rather than by the ladder, whose rms placement error is 0.37% of span.
 
 #### Identity keys
 
@@ -181,9 +224,9 @@ It lives under `paths.calibration_dir()` — the canonical `<data root>/calibrat
 
 Schema 2 holds one 256-entry sidtable per measured SID, keyed `"1"`/`"2"` by socket number, or `"default"` for the single-measurement fallback, plus a `"device"` provenance block.
 
-Each entry also carries `raw_levels` — the per-code `[code, p, q]` triples the ladder was folded from (`p = |L(code) − L($00)|`, `q = |L(code) − L($0F)|`). This is written **additively under the same schema version**: `load_calibrated_table` only ever requires `sidtable`, so pre-`raw_levels` files keep loading and new files stay readable by older code. A version bump would orphan every calibration on disk and force a ~6 min/socket re-measure for no reader-visible gain.
+Each entry also carries `raw_signed_levels` — the per-code `[code, level]` pairs the ladder was folded from. This is written **additively under the same schema version**: `load_calibrated_table` only ever requires `sidtable`, so older files keep loading and new files stay readable by older code. A version bump would orphan every calibration on disk for no reader-visible gain. It is a distinct key from the `raw_levels` older files carry — those hold the retired two-reference `[code, p, q]` triples, a different measurement rather than a different encoding of this one.
 
-It is there because a finished table is otherwise undiagnosable. Both the sign inference and `lmax` derive from these numbers, and the failure modes are silent — a table whose signs were resolved badly looks exactly like a good one. With `raw_levels` a suspect calibration can be re-examined, and alternative ladder constructions trialled, entirely offline. That is exactly how the volume-0 self-test above was found and validated: the whole diagnosis, including the triangle-inequality violations that condemn the primitive, came out of one already-captured file with no hardware attached. A rejected measurement keeps its `raw_levels` for the same reason — re-measuring costs ~6 min/socket, and the interesting failures are the rejected ones.
+It is there because a finished table is otherwise undiagnosable, and the failure modes are silent — a badly reconstructed ladder looks exactly like a good one. With the raw levels a suspect calibration can be re-examined, and alternative ladder constructions trialled, entirely offline. That is exactly how the volume-0 self-test was found and validated: the whole diagnosis, including the triangle-inequality violations that condemned the previous primitive, came out of one already-captured file with no hardware attached. A rejected measurement keeps its raw levels for the same reason — the interesting failures are the rejected ones.
 
 #### Quality metrics
 
@@ -230,7 +273,7 @@ This shapes the `$D418` DAC only — TeensyROM+ audio, and mic/webcam audio ever
 
 Old pre-multi-socket calibration files used both a different schema and a different host-based key, so there is no migration path — they are simply orphaned. Re-run `--calibrate-dac` once after upgrading.
 
-> **Follow-up:** the per-code capture is ≈256×2 measurements per SID. A time-multiplexed fast pass could cut it to ≈1–2 min.
+A file written before the slot ring keeps loading (its `sidtable` is all a reader needs) but its table came from the primitive described under "What this replaced" and measured 4.8 dB *worse* than no calibration at all on the one chip it was compared on. Re-run `--calibrate-dac` once; it now takes ≈50 s per socket.
 
 ### Host-DMA pitch compensation — now default OFF
 
