@@ -148,7 +148,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
 
 import numpy as np
@@ -475,7 +475,12 @@ def resolve_dac_curve_for_backend(
 # --- measurement core -------------------------------------------------------
 
 NMI_RATE = 8000  # consumer rate; well under the ~14 kHz NMI DAC handler ceiling
-CAP_SR = 48000  # Cam Link capture sample rate
+CAP_SR = 48000  # preferred capture rate (what a Cam Link presents)
+#: Rates to fall back to, in order, when a capture device won't do `CAP_SR`.
+#: The cheap MacroSilicon-based HDMI→USB dongles are frequently 96 kHz-only,
+#: and some UVC inputs only offer 44.1 kHz. Every consumer of a capture takes
+#: its rate as a parameter, so any of these measures correctly.
+CAP_SR_FALLBACKS = (96000, 44100, 32000)
 REF_ZERO = 0x00  # master-volume-0 floor: the common baseline every level is vs.
 ANCHOR_CODE = 0x0F  # positive full scale; first pair of every ring (see below)
 
@@ -1020,6 +1025,87 @@ class CaptureUnavailableError(RuntimeError):
     """Raised when sounddevice / a usable capture device isn't available."""
 
 
+def _input_device_list() -> str:
+    """One-line-per-device listing of every input-capable device, for error text."""
+    import sounddevice as sd
+
+    lines = [
+        f"  {i}: {d['name']} ({d['max_input_channels']} in)"
+        for i, d in enumerate(sd.query_devices())
+        if d["max_input_channels"] > 0
+    ]
+    return "\n".join(lines) or "  (none)"
+
+
+class CaptureFormat(NamedTuple):
+    """A channel count + sample rate the capture device actually accepts."""
+
+    channels: int
+    samplerate: int
+
+
+def resolve_capture_format(dev: int) -> CaptureFormat:
+    """Probe `dev` for a workable (channels, samplerate), preferring stereo at
+    :data:`CAP_SR` and widening from there.
+
+    Capture hardware is not all Cam Link. A mono-only UVC input rejects
+    ``channels=2`` with PortAudio's generic -9998 "Invalid number of channels",
+    and the cheap MacroSilicon-based HDMI→USB dongles are commonly 96 kHz-only
+    — either of which used to abort a calibration run with a raw
+    ``PortAudioError`` traceback, because the capture was hardcoded to stereo at
+    48 kHz. Neither restriction actually prevents a measurement: the levels are
+    read off one folded-to-mono channel, and every step of
+    :func:`extract_slot_levels` derives its timing from the rate it is handed.
+
+    Rate is the outer loop — a 48 kHz mono capture beats a 96 kHz stereo one,
+    since the fallback rates are the compromise and the channel fold is free.
+    The device's own ``default_samplerate`` is tried right after `CAP_SR`, ahead
+    of the static fallbacks, so an unusual device still gets its native rate.
+    ``check_input_settings`` probes without opening a stream, so a rejected
+    combination costs nothing. Mirrors ``AudioStreamer._open_input_stream``'s
+    channel fallback for the mic path.
+    """
+    import sounddevice as sd
+
+    try:
+        info = sd.query_devices(dev)
+        max_in = int(info["max_input_channels"])
+    except Exception as e:  # noqa: BLE001 — bad index / device vanished
+        raise CaptureUnavailableError(
+            f"capture device {dev} could not be queried: {e}\n"
+            f"Pick one with --audio-device N:\n{_input_device_list()}"
+        ) from e
+    name = info["name"]
+    if max_in <= 0:
+        raise CaptureUnavailableError(
+            f"capture device {dev} ({name!r}) has no input channels. "
+            f"Pick one with --audio-device N:\n{_input_device_list()}"
+        )
+
+    channel_options: list[int] = []
+    for ch in (2, max_in, 1):
+        if 1 <= ch <= max_in and ch not in channel_options:
+            channel_options.append(ch)
+
+    rate_options: list[int] = [CAP_SR]
+    for sr in (int(info.get("default_samplerate") or 0), *CAP_SR_FALLBACKS):
+        if sr > 0 and sr not in rate_options:
+            rate_options.append(sr)
+
+    for sr in rate_options:
+        for ch in channel_options:
+            try:
+                sd.check_input_settings(device=dev, channels=ch, samplerate=sr, dtype="float32")
+                return CaptureFormat(ch, sr)
+            except Exception:  # noqa: BLE001 — unsupported combination; try the next
+                log.debug("calib: device %d rejected channels=%d sr=%d", dev, ch, sr, exc_info=True)
+    raise CaptureUnavailableError(
+        f"capture device {dev} ({name!r}) accepted no combination of channels "
+        f"{channel_options} × rates {rate_options}. Pick another with "
+        f"--audio-device N:\n{_input_device_list()}"
+    )
+
+
 def _isolate_socket(be: C64Backend, socket: int) -> None:
     """Route SID Socket `socket` (1 or 2) to $D400 — the fixed address the
     NMI DAC handler's hand-assembled ``STA $D418`` reaches — and silence
@@ -1103,16 +1189,23 @@ def run_calibration(
             else {"transport": "serial", "port": tr.serial_port or ""}
         )
 
-    def capture_ring(codes: Sequence[int], dev: int) -> SlotLevels:
+    def capture_ring(codes: Sequence[int], dev: int, fmt: CaptureFormat) -> SlotLevels:
         be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", build_slot_ring(codes, RING_BUFFER_SIZE))
         time.sleep(settle)
-        rec = sd.rec(int(secs * CAP_SR), samplerate=CAP_SR, channels=2, device=dev, dtype="float32")
+        rec = sd.rec(
+            int(secs * fmt.samplerate),
+            samplerate=fmt.samplerate,
+            channels=fmt.channels,
+            device=dev,
+            dtype="float32",
+        )
         sd.wait()
+        # (N, channels) → mono; a 1-channel capture folds to itself.
         mono = rec.mean(axis=1).astype(np.float64)
-        return extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE)
+        return extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE, sr=fmt.samplerate)
 
     def measure_one(
-        dev: int, label: str
+        dev: int, fmt: CaptureFormat, label: str
     ) -> tuple[list[int] | None, dict[str, Any], list[tuple[int, float]]]:
         rounds = plan_capture_rounds(codes_per_ring(RING_BUFFER_SIZE) - 1)
         total = sum(len(r) for r in rounds)
@@ -1125,7 +1218,7 @@ def run_calibration(
         for rnd, batches in enumerate(rounds, 1):
             for codes in batches:
                 n += 1
-                got = capture_ring([ANCHOR_CODE, *codes], dev)
+                got = capture_ring([ANCHOR_CODE, *codes], dev, fmt)
                 measured.append((codes, got))
                 d = got.diagnostics
                 log_fn(
@@ -1183,7 +1276,11 @@ def run_calibration(
         sd._terminate()
         sd._initialize()
         dev = find_capture_device(device)
-        log_fn(f"[calib] capture device idx {dev}: {sd.query_devices(dev)['name']}")
+        fmt = resolve_capture_format(dev)
+        log_fn(
+            f"[calib] capture device idx {dev}: {sd.query_devices(dev)['name']} "
+            f"({fmt.channels} ch @ {fmt.samplerate} Hz)"
+        )
 
         if supports_config:
             try:
@@ -1207,14 +1304,14 @@ def run_calibration(
                     )
                     _isolate_socket(be, socket)
                     time.sleep(0.2)
-                    sidtable, metrics, raw = measure_one(dev, f"socket {socket}")
+                    sidtable, metrics, raw = measure_one(dev, fmt, f"socket {socket}")
                     entries[str(socket)] = CalibrationResult(
                         sidtable, metrics, detected or None, raw
                     )
             finally:
                 restore_sid_config(be, saved_sid_config)
         else:
-            sidtable, metrics, raw = measure_one(dev, "SID")
+            sidtable, metrics, raw = measure_one(dev, fmt, "SID")
             entries["default"] = CalibrationResult(sidtable, metrics, None, raw)
     finally:
         try:
