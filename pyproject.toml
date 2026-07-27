@@ -49,7 +49,7 @@ video = ["av==18.0.0"]
 # pygame purely as the window backend; it bought nothing cv2 didn't already
 # provide, and its SDL window couldn't be created off the main thread anyway.
 # FastAPI-based HTTP control plane (pause/resume/skip/reload).
-control = ["fastapi==0.139.2", "uvicorn==0.51.0"]
+control = ["fastapi==0.140.0", "uvicorn==0.51.0"]
 # OBS Studio status overlay (websocket v5).
 obs = ["obsws-python==1.8.0"]
 # MIDI → SID scene (live MIDI input controls SID voices).
@@ -88,12 +88,12 @@ yt = ["yt-dlp>=2026.7.4"]
 # fail and clients report the device offline even though the JSON REST API
 # works fine. Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
 # this.
-wled = ["zeroconf==0.150.0", "fastapi==0.139.2", "uvicorn==0.51.0", "websockets==16.1.1"]
+wled = ["zeroconf==0.150.0", "fastapi==0.140.0", "uvicorn==0.51.0", "websockets==16.1.1"]
 # Everything optional, for users who want the full experience.
 all = [
     "sounddevice==0.5.5",
     "av==18.0.0",
-    "fastapi==0.139.2",
+    "fastapi==0.140.0",
     "uvicorn==0.51.0",
     "websockets==16.1.1",
     "obsws-python==1.8.0",
@@ -113,7 +113,7 @@ all = [
 # workflow (`uv sync --all-extras`) rather than `pip install -e .[dev]` —
 # groups are not extras and can't be requested through `.[...]` syntax.
 dev = [
-    "ruff==0.15.22",
+    "ruff==0.16.0",
     "coverage==7.15.2",
     "mypy==2.3.0",
     "types-requests==2.33.0.20260712",
