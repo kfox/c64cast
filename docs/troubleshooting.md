@@ -37,6 +37,17 @@ picture and the knobs that actually help:
   `$D418` technique — ≈6-7 effective bits, not 4 — and `--calibrate-dac`
   extends that to a physical SID. Only an uncalibrated physical/unknown chip
   falls back to the classic 4-bit linear path.
+- **`--calibrate-dac` says "capture device N is not carrying the calibration
+  ring"** (exit 3). It recorded from an input that doesn't have the C64's audio
+  on it — by far the most common cause is the auto-picked device being the
+  machine's own microphone, which records room noise and measures like a dead
+  chip. The message lists every input; pass the right one with
+  `--audio-device N` (index or name substring). The capture has to be the input
+  the C64's audio actually arrives on: an HDMI capture stick, a Cam Link, or a
+  line-in fed from the AV port. If the device *is* right, check that HDMI audio
+  is enabled and the input gain isn't at zero. A warning line earlier in the run
+  ("doesn't look like a video-capture input") flags the same thing before the
+  measuring starts.
 - **`--calibrate-dac` says "REJECTED — the volume-0 self-test is off by N%"**
   (and exits 4 if every SID failed). The measurement came back internally
   inconsistent: codes `$h0` set the master volume to 0, so they *must* measure

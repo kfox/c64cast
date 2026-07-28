@@ -505,6 +505,31 @@ SYNC_SLOTS = 32
 #: this replaced missed by 52 %, so 10 % separates the two with room to spare.
 SELFTEST_TOLERANCE = 0.10
 
+#: Peak capture amplitude (of float32 full scale) below which the input simply
+#: isn't carrying the SID. A ring drives the SID between full-scale codes and
+#: silence, so *any* correctly routed capture sees far more than this; below it,
+#: re-recording is pointless and only the rig can be at fault.
+SILENT_CAPTURE_PEAK = 0.002
+
+#: How far ``pass_spread_frac`` may go before a captured ring is refused rather
+#: than merged. Every pass of one capture measures the same levels, so on
+#: hardware the spread is 0.01–0.2 % — two orders of magnitude below this gate.
+#: A capture of something that isn't the ring (a laptop microphone picking up
+#: room noise is the one seen in the field) still yields *numbers*: the peak
+#: finder locks onto noise, a couple of "sync markers" turn up, and the levels
+#: come back near zero with the passes disagreeing by ~100 %. Ungated, those
+#: numbers merged into the table and the run only fell over later — at whichever
+#: ring happened to find fewer than two markers, with a traceback and 30 s of
+#: measuring already spent. Gating each ring on the metric that already exists
+#: to answer this question turns that into an immediate, actionable failure.
+RING_TRUST_MAX_SPREAD = 0.10
+
+#: Captures per ring before giving up. A retry costs one settle + one capture
+#: window (~5 s) and rescues a ring spoiled by a transient — a USB hiccup, a
+#: host stall long enough to break the grid tracking — without letting a
+#: genuinely wrong rig grind through the whole 9-ring run.
+RING_ATTEMPTS = 2
+
 
 @dataclass(frozen=True)
 class CalibrationResult:
@@ -748,7 +773,7 @@ def extract_slot_levels(
     if anchors.size < 2:
         raise MeasurementError(
             f"found {anchors.size} ring sync marker(s) in the capture, need ≥2 — "
-            "no signal, a capture shorter than two ring passes, or the NMI is not running"
+            "it holds no readable ring pass"
         )
     _, ring_p, anchor_rms = _fit_period(anchors, ring_p)
     slot_p = ring_p / ring_slots
@@ -798,6 +823,35 @@ def extract_slot_levels(
         "ac_coupling_hz": round(float(np.mean(dc_gains)) * sr / (2 * np.pi), 2),
     }
     return SlotLevels(levels=levels, per_pass=passes, diagnostics=diagnostics)
+
+
+def read_ring_capture(
+    cap: np.ndarray, n_codes: int, ring_size: int, *, sr: int = CAP_SR
+) -> SlotLevels:
+    """:func:`extract_slot_levels` behind the two gates that decide whether the
+    capture is of the ring *at all*, rather than of something else entirely.
+
+    The extraction is a reader: handed a waveform it reports what it found, and
+    it can only refuse what it cannot parse. But a recording of the wrong input
+    parses fine — the peak finder locks onto noise, a sync gap or two turns up,
+    and levels come back near zero with the passes contradicting each other. So
+    the judgement about whether a *recording* is usable lives here, where it can
+    be applied to every ring before its numbers reach the table.
+
+    Raises :class:`MeasurementError` whose message is a phrase, for
+    :func:`_capture_fault_message` to finish with the device and the advice.
+    """
+    peak = float(np.max(np.abs(cap))) if cap.size else 0.0
+    if peak < SILENT_CAPTURE_PEAK:
+        raise MeasurementError("it recorded silence")
+    got = extract_slot_levels(cap, n_codes, ring_size, sr=sr)
+    spread = float(got.diagnostics["pass_spread_frac"])
+    if spread > RING_TRUST_MAX_SPREAD:
+        raise MeasurementError(
+            f"its ring passes disagree by {spread * 100:.1f}%, where hardware "
+            "reads 0.01–0.2% — the levels in it are noise"
+        )
+    return got
 
 
 #: Alpha-beta gains for :func:`_track_slot_grid`. Alpha smooths the ±½-sample
@@ -1007,16 +1061,50 @@ def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> d
     }
 
 
+#: Name fragments that identify an input as video-capture hardware, most
+#: specific first. The measurement needs the input the C64's audio arrives on,
+#: which is essentially always an HDMI capture device — but only the author's
+#: Cam Link used to be recognised, so every other rig silently fell through to
+#: the *system default input*. On Windows that is the on-board microphone, which
+#: records room noise and measures like a dead chip (see
+#: :data:`RING_TRUST_MAX_SPREAD`). These cover the common sticks: Elgato, the
+#: MacroSilicon-based HDMI→USB dongles ("USB Video", "USB3.0 HD Video Capture"),
+#: and anything self-describing as a capture/HDMI input.
+CAPTURE_NAME_HINTS = (
+    "cam link",
+    "elgato",
+    "hdmi",
+    "capture",
+    "macrosilicon",
+    "usb video",
+    "av to usb",
+)
+
+
+def looks_like_capture_input(name: str) -> bool:
+    """Whether an input device's name identifies it as video-capture hardware.
+    Used to pick one automatically, and to warn when the fallback lands on
+    something that is probably a microphone."""
+    low = name.lower()
+    return any(h in low for h in CAPTURE_NAME_HINTS)
+
+
 def find_capture_device(preferred: int | None) -> int:
-    """Resolve the Cam Link (or explicit) capture device index. Searches device
-    names for 'cam link' with an input channel; falls back to ``preferred`` or 0."""
+    """Resolve the capture device index: `preferred` if given, else the first
+    input-capable device whose name looks like video-capture hardware
+    (:data:`CAPTURE_NAME_HINTS`, in order), else the system default input.
+
+    The hints are tried in order rather than scanning devices once, so a rig
+    with both a Cam Link and some other HDMI input still picks the Cam Link."""
     import sounddevice as sd
 
     if preferred is not None:
         return preferred
-    for i, dev in enumerate(sd.query_devices()):
-        if "cam link" in dev["name"].lower() and dev["max_input_channels"] > 0:
-            return i
+    devices = list(sd.query_devices())
+    for hint in CAPTURE_NAME_HINTS:
+        for i, dev in enumerate(devices):
+            if hint in str(dev["name"]).lower() and dev["max_input_channels"] > 0:
+                return i
     default_in = sd.default.device[0]
     return int(default_in) if default_in is not None and default_in >= 0 else 0
 
@@ -1035,6 +1123,35 @@ def _input_device_list() -> str:
         if d["max_input_channels"] > 0
     ]
     return "\n".join(lines) or "  (none)"
+
+
+def _capture_fault_message(dev: int, reason: str, peak: float) -> str:
+    """The message a capture that doesn't contain the slot ring fails with.
+
+    Everything upstream of this can only say *what* it saw — "found 1 ring sync
+    marker", "the passes disagree by 100 %" — and that reads like a bug in the
+    measurement when it is almost always the rig. So the failure names the
+    device it recorded from, states how loud that recording was, and lists the
+    inputs to pick from instead."""
+    import sounddevice as sd
+
+    try:
+        name = str(sd.query_devices(dev)["name"])
+    except Exception:  # noqa: BLE001 — the name is decoration; the advice isn't
+        name = "?"
+    return (
+        f"capture device {dev} ({name!r}) is not carrying the calibration ring "
+        f"(peak {peak:.5f} of full scale): {reason}.\nLikely causes, in order:\n"
+        "  • it is the wrong input. An on-board microphone records room noise, "
+        "which measures exactly like this — the capture has to be the input the "
+        "C64's audio actually arrives on (HDMI capture stick, Cam Link, or a "
+        "line-in fed from the AV port).\n"
+        "  • the C64's audio isn't reaching it — HDMI audio off, the cable in "
+        "the wrong jack, or the input's gain at zero.\n"
+        "  • the NMI DAC never came up on the C64. Re-run with -v and check the "
+        "bring-up lines.\n"
+        f"Pick the input with --audio-device N:\n{_input_device_list()}"
+    )
 
 
 class CaptureFormat(NamedTuple):
@@ -1190,19 +1307,38 @@ def run_calibration(
         )
 
     def capture_ring(codes: Sequence[int], dev: int, fmt: CaptureFormat) -> SlotLevels:
+        """Record one ring and read its levels, retrying a spoiled capture.
+
+        The ring is written once; only the recording repeats
+        (:data:`RING_ATTEMPTS`), so a ring spoiled by a transient costs one
+        capture window rather than the run. :func:`read_ring_capture` decides
+        what counts as usable; a rig that never produces one fails here with the
+        device named, instead of merging noise into the table and falling over
+        at whichever later ring happens to be unreadable.
+        """
         be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", build_slot_ring(codes, RING_BUFFER_SIZE))
-        time.sleep(settle)
-        rec = sd.rec(
-            int(secs * fmt.samplerate),
-            samplerate=fmt.samplerate,
-            channels=fmt.channels,
-            device=dev,
-            dtype="float32",
-        )
-        sd.wait()
-        # (N, channels) → mono; a 1-channel capture folds to itself.
-        mono = rec.mean(axis=1).astype(np.float64)
-        return extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE, sr=fmt.samplerate)
+        reason = "no capture was taken"
+        peak = 0.0
+        for attempt in range(1, RING_ATTEMPTS + 1):
+            time.sleep(settle)
+            rec = sd.rec(
+                int(secs * fmt.samplerate),
+                samplerate=fmt.samplerate,
+                channels=fmt.channels,
+                device=dev,
+                dtype="float32",
+            )
+            sd.wait()
+            # (N, channels) → mono; a 1-channel capture folds to itself.
+            mono = rec.mean(axis=1).astype(np.float64)
+            peak = float(np.max(np.abs(mono))) if mono.size else 0.0
+            try:
+                return read_ring_capture(mono, len(codes), RING_BUFFER_SIZE, sr=fmt.samplerate)
+            except MeasurementError as e:
+                reason = str(e)
+            if attempt < RING_ATTEMPTS:
+                log_fn(f"[calib]   unusable capture ({reason}) — retrying")
+        raise MeasurementError(_capture_fault_message(dev, reason, peak))
 
     def measure_one(
         dev: int, fmt: CaptureFormat, label: str
@@ -1277,10 +1413,21 @@ def run_calibration(
         sd._initialize()
         dev = find_capture_device(device)
         fmt = resolve_capture_format(dev)
+        dev_name = str(sd.query_devices(dev)["name"])
         log_fn(
-            f"[calib] capture device idx {dev}: {sd.query_devices(dev)['name']} "
+            f"[calib] capture device idx {dev}: {dev_name} "
             f"({fmt.channels} ch @ {fmt.samplerate} Hz)"
         )
+        # An auto-pick that matched nothing landed on the system default input,
+        # which on a laptop is the built-in microphone — it will record room
+        # noise for ~50 s and fail. Say so now, while the run is 5 s old.
+        if device is None and not looks_like_capture_input(dev_name):
+            log_fn(
+                f"[calib] warning: {dev_name!r} doesn't look like a video-capture "
+                "input — this is the system default, picked because no capture "
+                "device was recognised. If the C64's audio doesn't arrive on it, "
+                f"stop now and pick with --audio-device N:\n{_input_device_list()}"
+            )
 
         if supports_config:
             try:

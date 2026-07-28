@@ -176,9 +176,15 @@ Physical chips do not generalise. 6581/8580 variation is enormous chip-to-chip, 
 
 `c64cast -u <target> --calibrate-dac` (`cli` → `dac_calibration.run_calibration`) measures the connected SID's signed transfer curve, ≈50 s per socket.
 
+#### Picking the capture device
+
+`find_capture_device` resolves it: `--audio-device` if given, else the first input-capable device whose name matches `CAPTURE_NAME_HINTS` (`"cam link"`, `"elgato"`, `"hdmi"`, `"capture"`, `"macrosilicon"`, `"usb video"`, `"av to usb"` — tried in that order, so a rig with both a Cam Link and another HDMI input still picks the Cam Link), else the system default input.
+
+The hint list has to be broad because the fallback is a bad one: the system default input is the on-board microphone on most machines, and a calibration measured off room noise fails in the expensive way (below) rather than the obvious one. So when that fallback does fire, `run_calibration` warns immediately — `looks_like_capture_input` is false for the chosen name, so the log carries the warning and the input list while the run is 5 s old rather than 50.
+
 #### Resolving the capture format
 
-`find_capture_device` picks the device (a name match on "cam link", else `--audio-device`/the system default); `resolve_capture_format` then probes what that device will actually *open* and returns a `CaptureFormat(channels, samplerate)`.
+`resolve_capture_format` then probes what the chosen device will actually *open* and returns a `CaptureFormat(channels, samplerate)`.
 
 The capture used to be hardcoded to stereo at `CAP_SR` (48 kHz), which is what a Cam Link presents — and anything else died with a raw `sounddevice.PortAudioError: Invalid number of channels [PaErrorCode -9998]` out of `sd.rec`, mid-run, after the machine had already been reset and brought up. Two device classes hit that in the field: mono-only UVC inputs, and the cheap MacroSilicon-based HDMI→USB dongles, which are frequently 96 kHz-only.
 
@@ -199,6 +205,17 @@ Every code is then measured against the **same baseline inside one capture**, so
 5. Each code slot is differenced against the reference slots bracketing it, cancelling residual slow drift locally.
 
 `pass_spread_frac` is the trust metric: every pass measures the same 256 levels, so disagreement between them is the one symptom that separates a mistracked capture from a real curve. On hardware it is 0.01–0.2%.
+
+#### Refusing a capture that isn't of the ring
+
+`extract_slot_levels` is a *reader*: handed a waveform it reports what it found, and it can only refuse what it cannot parse. But a recording of the **wrong input** parses fine — the peak finder locks onto noise, a sync gap or two turns up, and levels come back near zero with the passes contradicting each other at a `pass_spread_frac` near 100%. Those are numbers, so ungated they reach the table, and the run survives until some later ring happens to yield fewer than two sync markers: a failure both far from its cause and 30 s of measuring too late.
+
+So `read_ring_capture` wraps the extraction in the two judgements that belong to whoever chose the recording, and every ring goes through it:
+
+* **peak < `SILENT_CAPTURE_PEAK`** (0.002 of full scale) — the ring swings the SID between full-scale codes and silence, so any correctly routed input sees far more than this.
+* **`pass_spread_frac` > `RING_TRUST_MAX_SPREAD`** (10%) — two orders of magnitude above what hardware reads, so this only fires on levels that are noise.
+
+`capture_ring` writes the ring once and re-records up to `RING_ATTEMPTS` (2) times, so a ring spoiled by a transient costs one capture window instead of the run; a rig that never produces a usable one then fails with `_capture_fault_message`, which names the device it recorded from, how loud that recording was, the three things that cause it (wrong input / audio not routed / NMI never came up), and the input list to pick from. `cli` catches `MeasurementError` alongside `CaptureUnavailableError` for a clean **exit 3** — an unmeasurable rig is a setup problem, not a bug, and neither should traceback.
 
 #### Why every code is measured three times
 
