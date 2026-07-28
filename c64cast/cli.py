@@ -1560,7 +1560,10 @@ def main(argv=None) -> int:
             run = dac_calibration.run_calibration(
                 be, cfg, device=dev, log_fn=lambda m: log.info("%s", m)
             )
-        except dac_calibration.CaptureUnavailableError as e:
+        # A rig that can't be measured (no capture device, or a capture that
+        # doesn't contain the ring) is a user-fixable setup problem, not a bug —
+        # both carry actionable text, so print it and exit rather than traceback.
+        except (dac_calibration.CaptureUnavailableError, dac_calibration.MeasurementError) as e:
             log.error("%s", e)
             return 3
         finally:

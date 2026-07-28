@@ -16,6 +16,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -547,6 +548,60 @@ class SlotRingExtractionTest(unittest.TestCase):
             dc.extract_slot_levels(np.zeros(4 * dc.CAP_SR), 40, RING)
 
 
+class RingCaptureGateTest(unittest.TestCase):
+    """A recording of the *wrong input* still parses. Reported from the field on
+    a Windows rig whose capture auto-picked the on-board microphone: ring 1 read
+    "2 passes, L($0F)=-0.00001, pass spread 100.08%" — numbers, from room noise —
+    and the run then died on ring 2 with a raw traceback, 30 s in. Whether a
+    recording is of the ring is decided per ring, before its levels go anywhere."""
+
+    def test_a_real_capture_passes_the_gate(self):
+        codes = [dc.ANCHOR_CODE, *range(40)]
+        cap, want = _simulate(codes)
+        got = dc.read_ring_capture(cap, len(codes), RING)
+        scale = got.levels[0] / want[0]
+        self.assertLess(np.abs(got.levels / scale - want).max() / np.abs(want).max(), 0.01)
+
+    def test_silence_is_refused_before_anything_is_extracted(self):
+        with self.assertRaises(dc.MeasurementError) as ctx:
+            dc.read_ring_capture(np.zeros(4 * dc.CAP_SR), 40, RING)
+        self.assertIn("silence", str(ctx.exception))
+
+    def test_a_capture_that_is_mostly_noise_is_refused(self):
+        """The reported failure verbatim: enough noise on top of the ring that
+        only one sync marker survives. It used to escape as a traceback."""
+        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)], noise=0.1)
+        with self.assertRaises(dc.MeasurementError):
+            dc.read_ring_capture(cap, 41, RING)
+
+    def test_levels_the_passes_disagree_about_are_refused(self):
+        """The subtler half: the extraction found a grid and returned levels,
+        but the passes contradict each other, so the levels are noise. Hardware
+        reads 0.01-0.2% here, so anything near 100% must not reach the table."""
+        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)])
+        bad = dc.SlotLevels(
+            levels=np.full(41, 1e-5),
+            per_pass=np.zeros((2, 41)),
+            diagnostics={"pass_spread_frac": 1.0008, "passes": 2},
+        )
+        with patch.object(dc, "extract_slot_levels", return_value=bad):
+            with self.assertRaises(dc.MeasurementError) as ctx:
+                dc.read_ring_capture(cap, 41, RING)
+        self.assertIn("100.1%", str(ctx.exception))
+
+    def test_the_failure_names_the_device_and_the_alternatives(self):
+        """Every reason above reads like a bug in the measurement; it is almost
+        always the rig. The message the user sees has to say which input was
+        recorded from, and which ones they could pick instead."""
+        fake = _FakeSD([_dev("Microphone (2- Realtek(R) Audio", 2), _dev("Cam Link 4K", 2)])
+        with patch.dict("sys.modules", {"sounddevice": fake}):
+            msg = dc._capture_fault_message(0, "it recorded silence", 1e-5)
+        self.assertIn("Realtek", msg)
+        self.assertIn("microphone", msg)
+        self.assertIn("Cam Link 4K", msg)
+        self.assertIn("--audio-device", msg)
+
+
 class MergeMeasurementsTest(unittest.TestCase):
     def test_rings_are_rescaled_onto_the_common_anchor(self):
         # Two rings whose capture gain differs by 2x must still merge to one
@@ -649,8 +704,10 @@ class _FakeSD:
     """Minimal sounddevice stand-in: a device table plus a settings check that
     accepts only the (channels, rate) combinations each device really supports."""
 
-    def __init__(self, devices, accept=None):
+    def __init__(self, devices, accept=None, default_input=0):
         self._devices = devices
+        # sd.default.device is (input, output); -1 means "none".
+        self.default = SimpleNamespace(device=(default_input, -1))
         # {device_index: {(channels, rate), …}}; default = anything up to max_in
         # at any rate.
         self._accept = accept
@@ -727,6 +784,42 @@ class ResolveCaptureFormatTest(unittest.TestCase):
         fake = _FakeSD([_dev("Hostile Capture", 2)], accept={0: set()})
         with self.assertRaises(dc.CaptureUnavailableError):
             self._run(fake)
+
+
+class FindCaptureDeviceTest(unittest.TestCase):
+    """Only "cam link" used to be recognised, so every other rig fell through to
+    the system default input — on Windows the on-board microphone, which records
+    room noise for the whole run and measures like a dead chip."""
+
+    def _run(self, fake, preferred=None):
+        with patch.dict("sys.modules", {"sounddevice": fake}):
+            return dc.find_capture_device(preferred)
+
+    def test_an_explicit_device_is_used_as_given(self):
+        fake = _FakeSD([_dev("Microphone (Realtek)", 2), _dev("Cam Link 4K", 2)])
+        self.assertEqual(self._run(fake, preferred=0), 0)
+
+    def test_an_hdmi_stick_is_picked_over_the_default_microphone(self):
+        fake = _FakeSD(
+            [_dev("Microphone (2- Realtek(R) Audio", 2), _dev("USB3.0 HD Video Capture", 2)],
+            default_input=0,
+        )
+        self.assertEqual(self._run(fake), 1)
+
+    def test_a_cam_link_wins_over_another_capture_input(self):
+        fake = _FakeSD([_dev("USB Video", 2), _dev("Cam Link 4K", 2)])
+        self.assertEqual(self._run(fake), 1)
+
+    def test_an_output_only_capture_device_is_skipped(self):
+        fake = _FakeSD([_dev("HDMI Output", 0), _dev("HDMI Capture", 2)])
+        self.assertEqual(self._run(fake), 1)
+
+    def test_falls_back_to_the_system_default_when_nothing_is_recognised(self):
+        fake = _FakeSD([_dev("Speakers", 0), _dev("Line In", 2)], default_input=1)
+        self.assertEqual(self._run(fake), 1)
+        # …and that fallback is exactly what run_calibration warns about.
+        self.assertFalse(dc.looks_like_capture_input("Line In"))
+        self.assertTrue(dc.looks_like_capture_input("Cam Link 4K"))
 
 
 if __name__ == "__main__":
