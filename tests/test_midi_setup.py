@@ -16,6 +16,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from _fakes import FrozenClock
+
 from c64cast import config as cfgmod
 from c64cast import introspect, midi_setup
 from c64cast import midi_control as mc
@@ -384,7 +386,7 @@ class _OsdPlaylist:
 class OsdPositionDispatchTests(unittest.TestCase):
     def _dispatch_osd(self, listener, pl, at):
         mapping = mc._CCMapping(kind="cc", number=80, action="osd.position")
-        with mock.patch.object(mc.time, "monotonic", return_value=at):
+        with mock.patch.object(mc, "time", FrozenClock(at, "monotonic")):
             listener._apply(pl, mapping, 127, True)
 
     def test_double_tap_timing(self):

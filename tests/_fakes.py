@@ -197,3 +197,38 @@ class FakeAPI:
 
     def flush(self, timeout=5.0):
         pass
+
+
+class FrozenClock:
+    """A stand-in for the stdlib ``time`` module with one function pinned.
+
+    Bind it over a **module's own** ``time`` name::
+
+        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
+            ...                       # scenes.time.time() == 10.0
+
+    and never over an attribute of the stdlib module itself
+    (``mock.patch.object(scenes.time, "time", return_value=10.0)``). The
+    latter rebinds ``time.time`` for the entire process, so every thread in
+    the suite reads the frozen value too — and the suite leaves worker
+    threads running. A worker measuring an interval against a clock that
+    never advances, or that jumps decades when the patch lifts, is a flake
+    with no connection to the test that caused it. The same aliasing already
+    broke the preview pump tests under ``make coverage``, where every module
+    shares one process.
+
+    Any attribute other than the pinned one delegates to the real module, so
+    code that also calls ``time.monotonic()`` or ``time.sleep()`` while the
+    fake is installed keeps working.
+    """
+
+    def __init__(self, now: float, attr: str = "time") -> None:
+        self._now = float(now)
+        self._attr = attr
+
+    def __getattr__(self, name: str):
+        # Only reached for names not on the instance, so `_now`/`_attr` never
+        # route back through here.
+        if name == self._attr:
+            return lambda: self._now
+        return getattr(time, name)
