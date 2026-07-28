@@ -14,6 +14,7 @@ opencv, a render blowup, the user closing the window — may propagate, because
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -42,6 +43,21 @@ def _fake_fb() -> MagicMock:
     fb = MagicMock()
     fb.render.return_value = np.zeros((200, 320, 3), dtype=np.uint8)
     return fb
+
+
+def _fake_clock(*ticks: float) -> SimpleNamespace:
+    """A `time` stand-in for the preview module, handing out `ticks` in order.
+
+    Bind this over `preview_mod.time` — the *name* inside preview — and never
+    over `time.monotonic` itself. Patching an attribute of the stdlib module
+    rebinds it for the entire process, threads included, and the suite leaves
+    feature workers running that call `time.monotonic()` hundreds of times a
+    second. One of those landing between two `pump()` calls empties the tick
+    list early; the `StopIteration` is then swallowed by `pump()`'s catch-all,
+    which disables the window and leaves the draw count one short. That only
+    happens when every module shares one process — `make coverage`, not
+    `make test`, which forks per module."""
+    return SimpleNamespace(monotonic=iter(ticks).__next__)
 
 
 class PreviewWindowOpenTest(unittest.TestCase):
@@ -118,7 +134,7 @@ class PreviewWindowPumpTest(unittest.TestCase):
         fb = _fake_fb()
         with (
             patch.object(preview_mod, "cv2", cv2),
-            patch.object(preview_mod.time, "monotonic", side_effect=[100.0, 100.001]),
+            patch.object(preview_mod, "time", _fake_clock(100.0, 100.001)),
         ):
             win = PreviewWindow(fb, fps=30)
             win.open()
@@ -134,7 +150,7 @@ class PreviewWindowPumpTest(unittest.TestCase):
         with (
             patch.object(preview_mod, "cv2", cv2),
             # 1/30 s apart, so the second pump is due.
-            patch.object(preview_mod.time, "monotonic", side_effect=[100.0, 100.5]),
+            patch.object(preview_mod, "time", _fake_clock(100.0, 100.5)),
         ):
             win = PreviewWindow(fb, fps=30)
             win.open()
