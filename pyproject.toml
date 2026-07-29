@@ -5,43 +5,95 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "c64cast"
 version = "0.1.0"
-description = "C64 AV streamer (Ultimate 64 platform)"
+# `description` and `keywords` mirror the GitHub repo's About blurb and topics.
+# The About field is the source of truth — it is what people see first — so if
+# either is reworded, change it there and here in the same commit. The blurb is
+# longer than a typical PyPI summary and gets truncated in search listings;
+# keeping one blurb in two places is worth more than the trim.
+description = "Turn a real Commodore 64 into a programmable display + audio device via Ultimate 64 or TeensyROM+ — video, SID-music scopes, webcam, MIDI/ASID synth, WLED, generative visuals, overlays, playlists."
+readme = "README.md"
 requires-python = ">=3.11"   # tomllib is stdlib
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "Kelly Fox" },
+    # The noreply address already in the git history — keeps a personal
+    # address out of published package metadata.
+    { name = "Kelly Fox", email = "kfox@users.noreply.github.com" },
 ]
-keywords = ["commodore-64", "ultimate-64", "demoscene", "streaming", "sid"]
+keywords = [
+    "6502",
+    "c64",
+    "commodore-64",
+    "demoscene",
+    "petscii",
+    "retrocomputing",
+    "sid",
+    "streaming",
+    "teensyrom",
+    "ultimate-64",
+    "vic-ii",
+    "wled",
+]
+# Windows is deliberately absent: the code intends to support it (tr://COM3,
+# USB VID/PID detection) but the full pipeline has never been verified there.
+# Add it when a Windows CI job exists. macOS IS claimed here — it is the primary
+# development platform — but CI is ubuntu-only today, so a macOS job is owed
+# before the first release actually goes out.
+#
+# There is no "License :: OSI Approved :: MIT License" classifier on purpose —
+# PEP 639 license expressions supersede license classifiers, and setuptools
+# hard-errors if both are present.
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
+    "Environment :: MacOS X",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: Artistic Software",
+    "Topic :: Multimedia :: Sound/Audio",
     "Topic :: Multimedia :: Video :: Display",
+    "Typing :: Typed",
 ]
 
+# DEPENDENCY PINNING POLICY. Everything here is a *bounded range*, never `==`.
+# Published metadata is a constraint on the user's environment: an exact pin
+# makes `pip install c64cast` conflict with any env that already has numpy or
+# opencv, which is most of them. Reproducibility comes from `uv.lock`, which
+# still pins exact versions — so CI, `uv sync`, and the dev environment are
+# byte-identical to before; only what we publish loosens.
+#
+# The shape is `>=known-good,<next-breaking`. The floor is the version we
+# actually test against (so nobody resolves to something older than what CI
+# proved works); the ceiling is the next release allowed to break us. For 1.0+
+# projects that is the next major. For 0.x projects it depends on the project:
+# ones that break in minors (sounddevice, mediapipe) get the next minor, while
+# widely co-installed ones that don't (fastapi, uvicorn, zeroconf) get `<1` so
+# we aren't the package that makes a user's env unsolvable.
+#
 # Hard dependencies — without these the package won't import.
 # py65 is hard because the built-in WaveformScene depends on it for
 # host-side SID register-state tracking (the U64's SID is real
 # hardware: writes only, reads return 0, so we run a parallel py65
 # 6502 to recover live $D4xx state). Pure Python, no C extension.
 dependencies = [
-    "numpy==2.4.6",
-    "opencv-python==5.0.0.93",
-    "py65==1.2.0",
-    "requests==2.34.2",
+    "numpy>=2.4.6,<3",
+    "opencv-python>=5.0.0.93,<6",
+    "py65>=1.2.0,<2",
+    "requests>=2.34.2,<3",
 ]
 
 [project.optional-dependencies]
 # Mic capture (the 4-bit SID DAC streaming path).
-mic = ["sounddevice==0.5.5"]
+mic = ["sounddevice>=0.5.5,<0.6"]
 # Video playback uses PyAV for container demux + audio resampling.
-video = ["av==18.0.0"]
+video = ["av>=18.0.0,<19"]
 # NOTE: there is deliberately no `preview` extra. The local preview window
 # ([preview] enabled) and stream recording ([recording] enabled) both draw on
 # cv2 — HighGUI for the window, VideoWriter for the file — and opencv-python is
@@ -49,36 +101,38 @@ video = ["av==18.0.0"]
 # pygame purely as the window backend; it bought nothing cv2 didn't already
 # provide, and its SDL window couldn't be created off the main thread anyway.
 # FastAPI-based HTTP control plane (pause/resume/skip/reload).
-control = ["fastapi==0.140.0", "uvicorn==0.51.0"]
+control = ["fastapi>=0.140.0,<1", "uvicorn>=0.51.0,<1"]
 # OBS Studio status overlay (websocket v5).
-obs = ["obsws-python==1.8.0"]
+obs = ["obsws-python>=1.8.0,<2"]
 # MIDI → SID scene (live MIDI input controls SID voices).
-midi = ["mido==1.3.3", "python-rtmidi==1.5.8"]
+midi = ["mido>=1.3.3,<2", "python-rtmidi>=1.5.8,<2"]
 # Pretty terminal logging (colored levels + timestamps). Falls back to
 # plain logging.StreamHandler when not installed.
-logging = ["rich==15.0.0"]
+logging = ["rich>=15.0.0,<16"]
 # TeensyROM+ hardware backend over USB serial (pyserial). The raw-TCP
 # transport (port 2112) needs no extra dependency.
-tr = ["pyserial==3.5"]
+tr = ["pyserial>=3.5,<4"]
 # Camera-as-input: webcam hand-gesture control (MediaPipe HandLandmarker).
 # opencv/numpy are already hard deps; only mediapipe is extra. Needs a
 # separately-downloaded .task model (see assets/models/README.md).
-vision = ["mediapipe==0.10.35"]
+vision = ["mediapipe>=0.10.35,<0.11"]
 # Interactive config builder (`c64cast --init`). questionary pulls in
 # prompt_toolkit; both are small pure-Python deps.
-wizard = ["questionary==2.1.1"]
+wizard = ["questionary>=2.1.1,<3"]
 # Select a webcam by name / USB VID:PID instead of a fragile cv2 index, and
 # enrich `--list-devices` with camera names + VID:PID + the correct backend
 # index. opencv/numpy are already hard deps; only the enumeration helper is
 # extra. Integer indices keep working with this absent.
-camera = ["cv2-enumerate-cameras==1.3.3"]
+camera = ["cv2-enumerate-cameras>=1.3.3,<2"]
 # URL playback for quick-playback mode (positional MEDIA args). yt-dlp resolves
 # YouTube and other streaming sites to a directly-playable stream URL;
 # direct media URLs play without it (PyAV opens http(s) natively).
-# NOT hard-pinned on purpose: yt-dlp is network-facing and its site extractors
-# break constantly, so security + functionality both depend on running a recent
-# release. Floor is raised to the current known-good version to block a
-# downgrade; the ceiling stays open so `uv lock` can pull fixes forward.
+# The one dependency with NO ceiling, deliberately: yt-dlp is network-facing
+# and its site extractors break constantly, so security + functionality both
+# depend on running a recent release. Its CalVer versioning has no "next
+# breaking" number to bound against anyway. Floor is raised to the current
+# known-good version to block a downgrade; the open ceiling lets `uv lock` pull
+# fixes forward.
 yt = ["yt-dlp>=2026.7.4"]
 # WLED bridge Mode 1 (virtual WLED device / control surface): mDNS discovery
 # (zeroconf) + the WLED JSON HTTP/WS API (fastapi + uvicorn, shared with the
@@ -88,24 +142,31 @@ yt = ["yt-dlp>=2026.7.4"]
 # fail and clients report the device offline even though the JSON REST API
 # works fine. Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
 # this.
-wled = ["zeroconf==0.150.0", "fastapi==0.140.0", "uvicorn==0.51.0", "websockets==16.1.1"]
-# Everything optional, for users who want the full experience.
+wled = [
+    "zeroconf>=0.150.0,<1",
+    "fastapi>=0.140.0,<1",
+    "uvicorn>=0.51.0,<1",
+    "websockets>=16.1.1,<17",
+]
+# Everything optional, for users who want the full experience. Hand-maintained,
+# so it must stay exactly the union of every other extra above —
+# tests/test_packaging_metadata.py enforces that so it cannot silently drift.
 all = [
-    "sounddevice==0.5.5",
-    "av==18.0.0",
-    "fastapi==0.140.0",
-    "uvicorn==0.51.0",
-    "websockets==16.1.1",
-    "obsws-python==1.8.0",
-    "mido==1.3.3",
-    "python-rtmidi==1.5.8",
-    "rich==15.0.0",
-    "pyserial==3.5",
-    "mediapipe==0.10.35",
-    "questionary==2.1.1",
-    "yt-dlp>=2026.7.4",  # floating on purpose — see the `yt` extra above
-    "zeroconf==0.150.0",
-    "cv2-enumerate-cameras==1.3.3",
+    "av>=18.0.0,<19",
+    "cv2-enumerate-cameras>=1.3.3,<2",
+    "fastapi>=0.140.0,<1",
+    "mediapipe>=0.10.35,<0.11",
+    "mido>=1.3.3,<2",
+    "obsws-python>=1.8.0,<2",
+    "pyserial>=3.5,<4",
+    "python-rtmidi>=1.5.8,<2",
+    "questionary>=2.1.1,<3",
+    "rich>=15.0.0,<16",
+    "sounddevice>=0.5.5,<0.6",
+    "uvicorn>=0.51.0,<1",
+    "websockets>=16.1.1,<17",
+    "yt-dlp>=2026.7.4",  # no ceiling on purpose — see the `yt` extra above
+    "zeroconf>=0.150.0,<1",
 ]
 [dependency-groups]
 # Dev tools — not published to PyPI. Installed by default via
@@ -149,10 +210,22 @@ c64cast = "c64cast.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/kfox/c64cast"
+Documentation = "https://kfox.github.io/c64cast/"
+Source = "https://github.com/kfox/c64cast"
+Issues = "https://github.com/kfox/c64cast/issues"
+Changelog = "https://github.com/kfox/c64cast/blob/main/CHANGELOG.md"
+Videos = "https://www.youtube.com/@c64cast"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["c64cast*"]
+
+# The wheel ships only .py files unless files are listed here. `py.typed` is the
+# PEP 561 marker that tells type checkers our annotations are real — without it
+# consumers see an untyped package, even though we run `mypy --strict` on the
+# state-bearing modules and pyright across the tree.
+[tool.setuptools.package-data]
+c64cast = ["py.typed"]
 
 # --- ruff ------------------------------------------------------------------
 [tool.ruff]

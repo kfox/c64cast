@@ -92,6 +92,24 @@ _HARD_DEPS: tuple[tuple[str, str], ...] = (
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _running_from_checkout() -> bool:
+    """True when the package is being run out of its own source tree.
+
+    For a pip/uv-installed package ``_REPO_ROOT`` is ``site-packages``, which
+    has no ``pyproject.toml`` — so the dev-environment probes below (project
+    .venv, uv.lock drift) have nothing to check and every answer they give is
+    noise. Worse than noise, in the uv.lock case: ``uv lock --check`` exits
+    nonzero for "no project found" exactly as it does for real drift, so an
+    installed user was told their lockfile had drifted from a pyproject.toml
+    they don't have.
+
+    Same "a pyproject.toml here means a source checkout" test that
+    :func:`paths.legacy_data_root` uses, kept local because ``paths`` is
+    deliberately import-free at the bottom of the dependency graph.
+    """
+    return (_REPO_ROOT / "pyproject.toml").is_file()
+
+
 def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[Diagnostic]:
     """Run every config + environment check and collect the results.
 
@@ -146,10 +164,21 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
 def _probe_environment() -> list[Diagnostic]:
     """Catch the dev-environment failure that costs the most time: the active
     interpreter isn't the synced project env, so a hard dependency (cv2, …)
-    won't import. Reports the interpreter, asserts every hard dep imports, and
-    best-effort checks uv.lock vs pyproject.toml. Offline; runs in every doctor
-    invocation (including `--skip-probe`)."""
+    won't import. Reports the c64cast version and the interpreter, asserts
+    every hard dep imports, and best-effort checks uv.lock vs pyproject.toml.
+    Offline; runs in every doctor invocation (including `--skip-probe`)."""
     out: list[Diagnostic] = []
+
+    # First line of any bug report. `__version__` reads installed metadata and
+    # falls back to "0+unknown" in a source checkout that was never installed —
+    # say so plainly rather than showing a bare sentinel nobody can interpret.
+    from . import __version__
+
+    if __version__ == "0+unknown":
+        detail = f"{__version__} (not installed — running from a source checkout)"
+    else:
+        detail = __version__
+    out.append(Diagnostic("ok", "environment", "c64cast version", detail))
 
     # Active interpreter vs the project .venv. Only flag a mismatch when a
     # project .venv actually exists — a pip-installed package legitimately runs
@@ -195,14 +224,16 @@ def _probe_environment() -> list[Diagnostic]:
         else:
             out.append(Diagnostic("ok", "environment", module, "importable"))
 
-    out.extend(_probe_uv_lock())
+    if _running_from_checkout():
+        out.extend(_probe_uv_lock())
     return out
 
 
 def _probe_uv_lock() -> list[Diagnostic]:
     """Best-effort `uv lock --check` — warns when uv.lock has drifted from
     pyproject.toml (CI installs `--frozen`, so drift breaks CI). Skips cleanly
-    when the uv CLI isn't on PATH."""
+    when the uv CLI isn't on PATH. Only called from a source checkout — see
+    :func:`_running_from_checkout`."""
     if shutil.which("uv") is None:
         return [Diagnostic("ok", "environment", "uv.lock", "skipped (uv not on PATH)")]
     try:
