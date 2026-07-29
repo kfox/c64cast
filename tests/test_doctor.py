@@ -204,6 +204,24 @@ class ExtrasProbeTest(unittest.TestCase):
         self.assertEqual(video_diags[0].level, "warn")
         self.assertEqual(video_diags[0].hint, "uv sync --all-extras")
 
+    def test_missing_extra_hint_suits_an_installed_package(self):
+        # `uv sync` is meaningless without a project to sync: someone who
+        # pip-installed needs the pip incantation, naming the extra. Every
+        # extra is installed in the dev env, so force one missing.
+        real = doctor.importlib.util.find_spec
+
+        def fake(name, *a, **kw):
+            return None if name == "av" else real(name)
+
+        with mock.patch.object(doctor, "_running_from_checkout", return_value=False):
+            with mock.patch.object(doctor.importlib.util, "find_spec", side_effect=fake):
+                diags = doctor._probe_extras()
+        missing = [d for d in diags if d.level == "warn"]
+        self.assertTrue(missing, "expected the faked-missing extra to warn")
+        for d in missing:
+            with self.subTest(extra=d.subject):
+                self.assertEqual(d.hint, f'pip install "c64cast[{d.subject}]" (or [all])')
+
     def test_camera_extra_is_probed(self):
         # The camera extra (cv2-enumerate-cameras) must appear in the extras
         # report — present-or-warn, either level is fine.

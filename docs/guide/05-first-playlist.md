@@ -42,8 +42,8 @@ precisely, and keeping it.
 ## Your First Configuration File
 
 A c64cast configuration is a TOML file: plain text, grouped into sections
-inside square brackets. The repository ships the smallest useful one at
-[`config/examples/hello.toml`](https://github.com/kfox/c64cast/blob/main/config/examples/hello.toml).
+inside square brackets. c64cast ships the smallest useful one as the demo
+called [`hello`](https://github.com/kfox/c64cast/blob/main/c64cast/examples/hello.toml).
 Here it is, with the comments removed:
 
 ```toml
@@ -69,12 +69,15 @@ background = 6
   ]
 ```
 
-Copy it somewhere of your own and run it:
+Copy it somewhere of your own and run it. The demos live inside c64cast
+itself rather than in a folder you can browse, so ask it for the copy:
 
 ```bash
-cp config/examples/hello.toml my-first.toml
+python -m c64cast --print-example hello > my-first.toml
 python -m c64cast --config my-first.toml
 ```
+
+(`python -m c64cast --list-examples` shows every demo it can print or run.)
 
 Now change something. Set `background` to `2` and the screen turns red. Add
 another line to `messages`. Change `speed_cells_per_s` to `4.0` and watch the
@@ -220,7 +223,7 @@ If your text editor understands TOML schemas, c64cast can drive its
 autocompletion. Put this on the first line of your configuration file:
 
 ```toml
-#:schema https://raw.githubusercontent.com/kfox/c64cast/main/c64cast.schema.json
+#:schema https://raw.githubusercontent.com/kfox/c64cast/main/c64cast/data/c64cast.schema.json
 ```
 
 Editors with a TOML extension will then suggest valid settings as you type,

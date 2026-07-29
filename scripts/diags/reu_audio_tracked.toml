@@ -1,4 +1,4 @@
-#:schema ../../c64cast.schema.json
+#:schema ../../c64cast/data/c64cast.schema.json
 # Diag config: REU-staged audio pump, TRACKED path (mhires bank-swap video).
 #
 # Display = mhires + use_reu_staged routes video through the REU double-buffer

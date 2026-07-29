@@ -13,17 +13,17 @@ actually made with, see [`../shots/README.md`](../shots/README.md).
 
 | Figure | Shows | Capture from |
 |---|---|---|
-| `fig-qs-1-hello.png` | Hello World Scroller | `python -m c64cast --config config/examples/hello.toml` |
-| `fig-qs-2-video.png` | Video In Multicolour Hi-Res | `python -m c64cast clip.mp4` |
-| `fig-ft-1-slideshow.png` | Slideshow Of Still Images | `python -m c64cast assets/pictures/` |
-| `fig-1-1-doctor.png` | Doctor Output (Terminal) | `python -m c64cast --doctor --skip-probe` |
-| `fig-2-1-interstitial.png` | Up Next Interstitial | `python -m c64cast --config config/c64cast.example.toml` |
-| `fig-2-2-wizard.png` | The --Init Wizard (Terminal) | `python -m c64cast --init` |
-| `fig-3-1-waveform.png` | Sid Oscilloscope, Three Voices | `python -m c64cast --config config/examples/scene-waveform.toml` |
-| `fig-3-2-generative.png` | Generative Plasma | `python -m c64cast --config config/examples/scene-generative-plasma.toml` |
-| `fig-3-3-webcam.png` | Live Webcam As Petscii | `python -m c64cast --config config/examples/scene-webcam-petscii.toml` |
+| `fig-qs-1-hello.png` | Hello World Scroller | `c64cast --config example:hello` |
+| `fig-qs-2-video.png` | Video In Multicolour Hi-Res | `c64cast clip.mp4` |
+| `fig-ft-1-slideshow.png` | Slideshow Of Still Images | `c64cast assets/pictures/` |
+| `fig-1-1-doctor.png` | Doctor Output (Terminal) | `c64cast --doctor --skip-probe` |
+| `fig-2-1-interstitial.png` | Up Next Interstitial | `c64cast --config example:c64cast.example` |
+| `fig-2-2-wizard.png` | The --Init Wizard (Terminal) | `c64cast --init` |
+| `fig-3-1-waveform.png` | Sid Oscilloscope, Three Voices | `c64cast --config example:scene-waveform` |
+| `fig-3-2-generative.png` | Generative Plasma | `c64cast --config example:scene-generative-plasma` |
+| `fig-3-3-webcam.png` | Live Webcam As Petscii | `c64cast --config example:scene-webcam-petscii` |
 | `fig-4-1-modes.png` | The Same Frame In Four Modes | `one capture per [video].mode: petscii, mcm, hires, mhires` |
-| `fig-4-2-overlays.png` | Clock And Spectrum Overlays | `python -m c64cast --config config/examples/overlay-clock.toml` |
+| `fig-4-2-overlays.png` | Clock And Spectrum Overlays | `c64cast --config example:overlay-clock` |
 
 `logo-cover.png` comes from `assets/logo.png` by the same script,
 which checks that the logo still carries the transparency the blue

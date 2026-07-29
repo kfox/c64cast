@@ -31,21 +31,22 @@ scenes and overlays.
 
 | I want to…                          | Try                                                       | Reference |
 |-------------------------------------|-----------------------------------------------------------|-----------|
-| Play a video (or YouTube URL)       | `c64cast clip.mp4` · [`scene-video.toml`](config/examples/scene-video.toml) | [Quick playback](docs/usage.md#quick-playback-positional-media-args) |
-| Show a live webcam as C64 art       | [`scene-webcam-petscii.toml`](config/examples/scene-webcam-petscii.toml)    | [Scenes](docs/usage.md#scenes) |
-| Visualize a SID tune (oscilloscope) | [`scene-waveform.toml`](config/examples/scene-waveform.toml)                | [Scenes](docs/usage.md#scenes) |
-| Play a SID from a MIDI keyboard     | [`scene-midi.toml`](config/examples/scene-midi.toml)                       | [Scenes](docs/usage.md#scenes) |
-| Stream from DeepSID / SIDFactory II | [`scene-asid.toml`](config/examples/scene-asid.toml)                       | [Scenes](docs/usage.md#scenes) |
-| Slideshow of images                 | [`scene-slideshow.toml`](config/examples/scene-slideshow.toml)             | [Scenes](docs/usage.md#scenes) |
-| Generative / music-reactive visuals | [`scene-generative-plasma.toml`](config/examples/scene-generative-plasma.toml) | [Scenes](docs/usage.md#scenes) |
-| Run a native `.prg`/`.crt` game or demo | [`scene-launcher.toml`](config/examples/scene-launcher.toml)           | [Scenes](docs/usage.md#scenes) |
-| An info board (clock/weather/RSS)   | [`overlay-clock.toml`](config/examples/overlay-clock.toml)                 | [Overlays](docs/usage.md#overlays) |
-| Drive multiple C64s as one video wall | [`ensemble/master.toml`](config/examples/ensemble/master.toml)          | [Ensemble mode](docs/usage.md#ensemble-mode-multi-system) |
-| Make the C64 a WLED LED matrix       | [`scene-wled.toml`](config/examples/scene-wled.toml)                       | [WLED bridge](docs/usage.md#wled-bridge) |
-| Control c64cast from the WLED app    | [`wled-control.toml`](config/examples/wled-control.toml)                   | [WLED bridge](docs/usage.md#wled-bridge) |
+| Play a video (or YouTube URL)       | `c64cast clip.mp4` · [`scene-video.toml`](c64cast/examples/scene-video.toml) | [Quick playback](docs/usage.md#quick-playback-positional-media-args) |
+| Show a live webcam as C64 art       | [`scene-webcam-petscii.toml`](c64cast/examples/scene-webcam-petscii.toml)    | [Scenes](docs/usage.md#scenes) |
+| Visualize a SID tune (oscilloscope) | [`scene-waveform.toml`](c64cast/examples/scene-waveform.toml)                | [Scenes](docs/usage.md#scenes) |
+| Play a SID from a MIDI keyboard     | [`scene-midi.toml`](c64cast/examples/scene-midi.toml)                       | [Scenes](docs/usage.md#scenes) |
+| Stream from DeepSID / SIDFactory II | [`scene-asid.toml`](c64cast/examples/scene-asid.toml)                       | [Scenes](docs/usage.md#scenes) |
+| Slideshow of images                 | [`scene-slideshow.toml`](c64cast/examples/scene-slideshow.toml)             | [Scenes](docs/usage.md#scenes) |
+| Generative / music-reactive visuals | [`scene-generative-plasma.toml`](c64cast/examples/scene-generative-plasma.toml) | [Scenes](docs/usage.md#scenes) |
+| Run a native `.prg`/`.crt` game or demo | [`scene-launcher.toml`](c64cast/examples/scene-launcher.toml)           | [Scenes](docs/usage.md#scenes) |
+| An info board (clock/weather/RSS)   | [`overlay-clock.toml`](c64cast/examples/overlay-clock.toml)                 | [Overlays](docs/usage.md#overlays) |
+| Drive multiple C64s as one video wall | [`ensemble/master.toml`](c64cast/examples/ensemble/master.toml)          | [Ensemble mode](docs/usage.md#ensemble-mode-multi-system) |
+| Make the C64 a WLED LED matrix       | [`scene-wled.toml`](c64cast/examples/scene-wled.toml)                       | [WLED bridge](docs/usage.md#wled-bridge) |
+| Control c64cast from the WLED app    | [`wled-control.toml`](c64cast/examples/wled-control.toml)                   | [WLED bridge](docs/usage.md#wled-bridge) |
 
-See [`config/examples/README.md`](config/examples/README.md) for the
-full demo index (one TOML per scene type and per overlay).
+Every one of those is a packaged demo: run it with `c64cast --config
+example:<name>`, or list them all with `c64cast --list-examples` (one demo per
+scene type and per overlay).
 
 ## Features
 
@@ -128,10 +129,10 @@ uv sync --all-extras
 # "Hello world": scrolls big text across a solid canvas. Requires a
 # reachable U64/TR+ — no webcam, mic, SID, or video files. Edit the URL at the
 # top of the file to point at your U64/TR+, then run it. Ctrl-C to exit.
-python -m c64cast --config config/examples/hello.toml
+c64cast --config example:hello
 
 # Override the connection target without editing the file:
-python -m c64cast --config config/examples/hello.toml -u u64://192.168.1.64
+c64cast --config example:hello -u u64://192.168.1.64
 ```
 
 `-u/--url` is a scheme-aware target that picks the backend + endpoint:
@@ -144,8 +145,8 @@ fallback.
 
 ```bash
 # Try a single feature in isolation — one TOML per scene type / overlay:
-python -m c64cast --config config/examples/scene-webcam-petscii.toml
-python -m c64cast --config config/examples/overlay-clock.toml
+c64cast --config example:scene-webcam-petscii
+c64cast --config example:overlay-clock
 
 # Build your own config the easy way — the interactive wizard walks you
 # through either a single scene or a multi-scene playlist (with the "UP NEXT"
@@ -153,9 +154,9 @@ python -m c64cast --config config/examples/overlay-clock.toml
 # (needs the 'wizard' extra; auto-loaded when no --config is given):
 python -m c64cast --init
 
-# ...or by hand: config/c64cast.example.toml is a fully-annotated
-# reference exercising every scene + overlay; copy the bits you want.
-cp config/c64cast.example.toml c64cast.toml && $EDITOR c64cast.toml
+# ...or by hand: the `c64cast.example` demo is a fully-annotated reference
+# exercising every scene + overlay; copy the bits you want.
+c64cast --print-example c64cast.example > c64cast.toml && $EDITOR c64cast.toml
 python -m c64cast
 
 # Validate any config + check which optional extras are installed without
@@ -163,9 +164,12 @@ python -m c64cast
 python -m c64cast --doctor --config c64cast.toml --skip-probe
 ```
 
-Each file in [`config/examples/`](config/examples/) is a runnable
-single-scene demo. See [`config/examples/README.md`](config/examples/README.md)
-for the file index.
+Each demo is a runnable single-scene config, and they ship **inside the
+package** — so `example:NAME` works the same from a checkout, a `pip install`,
+or `uvx`. `c64cast --list-examples` prints the whole set with one-line
+summaries; `--print-example NAME` copies one out to edit. See
+[`c64cast/examples/README.md`](c64cast/examples/README.md) for the narrative
+version.
 
 `python -m c64cast -h` lists every CLI flag grouped by section
 (`connection`, `quick playback`, `video input`, `audio`, `vision input`,
@@ -199,7 +203,7 @@ context where direnv hasn't activated `.venv` (cron, systemd, an ssh
 one-liner):
 
 ```bash
-scripts/c64cast.sh --config config/examples/hello.toml
+scripts/c64cast.sh --config example:hello
 scripts/c64cast.sh --doctor --skip-probe
 ```
 
@@ -221,6 +225,7 @@ python -m c64cast --init                    # needs the 'wizard' extra
 python -m c64cast --list-scenes             # scene types
 python -m c64cast --list-overlays           # overlays + their restrictions
 python -m c64cast --list-modes              # display modes
+python -m c64cast --list-examples           # the packaged demo configs
 python -m c64cast --describe overlay:clock  # full reference for one thing
 python -m c64cast --compat                  # overlay × display-mode matrix
 python -m c64cast --print-schema            # JSON Schema for editor autocomplete
@@ -231,9 +236,9 @@ python -m c64cast --doctor --config c64cast.toml --skip-probe
 
 The discovery output and the JSON schema are generated from the same field
 metadata the loader runs on, so they can't drift from the code.
-[`config/c64cast.example.toml`](config/c64cast.example.toml) is the fully-annotated
-reference; see [docs/usage.md](docs/usage.md) for the complete config
-walkthrough.
+[`c64cast.example`](c64cast/examples/c64cast.example.toml) (`--print-example
+c64cast.example`) is the fully-annotated reference; see
+[docs/usage.md](docs/usage.md) for the complete config walkthrough.
 
 ## Live controls
 
@@ -355,7 +360,7 @@ targets:
   typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)
   doctor     offline env + config diagnostics (desynced .venv, drift)
   bench      scripts/bench.py — async write pipeline
-  schema     regenerate c64cast.schema.json from the config metadata
+  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata
   check      lint + typecheck + test
   clean      remove build artifacts
 ```

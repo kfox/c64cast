@@ -9,6 +9,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`ensemble.py` — audio slot coordination](#ensemblepy--audio-slot-coordination)
 * [`orchestrator.py` + `orchestrators/` — cross-ensemble scene coordination](#orchestratorpy--orchestrators--cross-ensemble-scene-coordination)
 * [`paths.py`](#pathspy)
+  * [Packaged resources — `example:NAME`](#packaged-resources--examplename)
 * [`config.py`](#configpy)
 * [`cli.py`](#clipy)
 * [`recording_metadata.py` — per-scene SCENE_CONFIG_JSON logging](#recording_metadatapy--per-scene-scene_config_json-logging)
@@ -57,6 +58,25 @@ The single source of truth for **where machine-local files live**, so the app wo
 Config base is `%APPDATA%` on Windows, else `$XDG_CONFIG_HOME`, else `~/.config`. Data base is `%LOCALAPPDATA%`, else `$XDG_DATA_HOME`, else `~/.local/share`.
 
 **`legacy_data_root()`** returns the old repo anchor **only** when a `pyproject.toml` sits there — that is, a source checkout rather than an installed package. It is consumed solely by `doctor._probe_data_dirs` to print `mv` migration hints. There is no implicit migration.
+
+### Packaged resources — `example:NAME`
+
+The same module also answers "where do the files we *ship* live", for the two trees that had to move **under** the package so setuptools could put them in the wheel (`[tool.setuptools.package-data]`): `c64cast/examples/*.toml` (+ `examples/ensemble/`) and `c64cast/data/c64cast.schema.json`. Before that they sat at `config/examples/` and the repo root, i.e. nowhere an installed user could reach — which broke the entire documented onboarding path (`--config config/examples/hello.toml`) for anyone without a checkout.
+
+| Call | Resolves to |
+| --- | --- |
+| `examples_dir()` | `<package>/examples` |
+| `packaged_schema_path()` | `<package>/data/c64cast.schema.json` |
+| `example_config_paths()` | Every packaged config: top-level demos sorted, then sub-directory ones (`ensemble/`) |
+| `example_name(path)` | The `example:` name — path relative to `examples_dir()`, suffix dropped (`hello`, `ensemble/master`) |
+| `resolve_example(name)` | That name back to a path; `ValueError` with `difflib` suggestions otherwise |
+| `resolve_config_spec(spec)` | `example:NAME` → real path; anything else (incl. `None`) passes through |
+
+**Why a real filesystem path, not a `Traversable`.** `_package_dir()` goes through `importlib.resources.files("c64cast")` so any loader answers, but then *insists* the result is a `pathlib.Path` and raises otherwise. Two reasons: a config is handed to `open()`, and an ensemble master resolves its per-system files relative to **its own directory**, which a read-only `Traversable` cannot express. Every install shape c64cast supports unpacks to real files; a zipimport does not, and the explicit error beats a later `TypeError` from `open()`.
+
+**One hook.** `cli._resolve_configs` calls `resolve_config_spec(args.config)` on its first line, so the prefix is gone before anything reads the value. The loader, the ensemble per-system resolver, `--doctor`, the SIGHUP reload and the live-tune write-back therefore need no knowledge of it. A bad name is a *usage* error (exit 2 via `main`'s `ValueError` handler), not a `ConfigError` — nothing was wrong with a config, the name just didn't exist.
+
+**The two discovery commands** live with the other config-free ones in `run_introspection`. `--list-examples` renders `introspect.render_list_examples()`, which *generates* the index by reading each file's own leading comment paragraph (first sentence, `Single-scene demo:` prefix and `(see <URL>)` citations stripped) — the hand-kept Markdown table it replaced had drifted about 15 files behind, and a generated one cannot. It tags demos whose **scene** `file` points at `assets/` as needing user media; an overlay's `file` (the `logo` one) is deliberately not counted, because that overlay draws a placeholder when the file is missing and the demo runs as shipped. `--print-example NAME` writes one to stdout, which is the supported way to get an editable copy — the packaged original lives inside the install and is not meant to be edited in place. That is also why `wizard.schema_directive_for` now resolves against `packaged_schema_path()` (relative while the schema is near the output file, absolute for a user-level install) rather than hunting for a repo-root schema that no longer exists.
 
 ## `config.py`
 

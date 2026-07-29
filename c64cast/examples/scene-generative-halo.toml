@@ -1,0 +1,28 @@
+#:schema ../data/c64cast.schema.json
+# Single-scene demo: several soft-edged halos drifting on independent orbits,
+# additively blended (bright where they overlap), rendered as a multicolor
+# bitmap.
+#
+# xscreensaver's halo.c never clears its canvas, letting circles pile up into
+# a glowing trail; this version stays a pure function of scene-time by
+# redrawing each halo at a few trailing time-lags with decreasing brightness
+# every frame, rather than accumulating pixels across frames.
+#
+# Reactive: overall loudness (`level`) grows every halo's radius, and a
+# transient (`onset`) flashes in an extra halo at frame-center.
+#
+# Run:
+#   c64cast --config example:scene-generative-halo
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Halo (mhires)"
+source = "halo"
+display = "mhires"
+duration_s = 30.0

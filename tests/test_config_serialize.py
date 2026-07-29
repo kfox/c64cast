@@ -8,7 +8,6 @@ overlay, and scene type the project actually uses against a real TOML parse.
 
 from __future__ import annotations
 
-import glob
 import os
 import tempfile
 import tomllib
@@ -18,9 +17,7 @@ from _fakes import MachineSettingsIsolation
 
 from c64cast import config as cfgmod
 from c64cast import config_serialize as ser
-
-_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_EXAMPLES_DIR = os.path.join(_REPO, "config", "examples")
+from c64cast import paths
 
 # The round-trip contract load(dumps(cfg)) == cfg must hold independent of any
 # real machine-settings file on the dev's machine (config.load applies that
@@ -66,13 +63,13 @@ class RoundTripCorpusTest(unittest.TestCase):
     """Every top-level example config must survive load → dumps → load."""
 
     def test_examples_round_trip(self):
-        examples = sorted(glob.glob(os.path.join(_EXAMPLES_DIR, "*.toml")))
+        examples = paths.example_config_paths()
         self.assertTrue(examples, "no example configs found")
         for path in examples:
-            with self.subTest(example=os.path.basename(path)):
-                original = cfgmod.load(path)
-                # Skip ensemble masters (not serializable; none at top level
-                # today, but guard in case one is added).
+            with self.subTest(example=paths.example_name(path)):
+                original = cfgmod.load(str(path))
+                # Skip ensemble masters (not serializable; the packaged
+                # `ensemble/` demo is one).
                 if original.ensemble is not None:
                     continue
                 self.assertEqual(_reload(original), original)
@@ -169,7 +166,7 @@ class BehaviorTest(unittest.TestCase):
     def test_schema_directive_first_line(self):
         cfg = cfgmod.Config()
         first = ser.dumps(cfg).splitlines()[0]
-        self.assertEqual(first, "#:schema ./c64cast.schema.json")
+        self.assertEqual(first, f"#:schema {ser.DEFAULT_SCHEMA_PATH}")
 
     def test_schema_directive_omittable(self):
         cfg = cfgmod.Config()
@@ -178,8 +175,8 @@ class BehaviorTest(unittest.TestCase):
 
     def test_custom_schema_path(self):
         cfg = cfgmod.Config()
-        text = ser.dumps(cfg, schema_path="../../c64cast.schema.json")
-        self.assertEqual(text.splitlines()[0], "#:schema ../../c64cast.schema.json")
+        text = ser.dumps(cfg, schema_path="../data/c64cast.schema.json")
+        self.assertEqual(text.splitlines()[0], "#:schema ../data/c64cast.schema.json")
 
     def test_minimal_omits_defaults(self):
         cfg = cfgmod.Config()

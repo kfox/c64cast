@@ -14,6 +14,10 @@ non-editable install). Two roots, each with an explicit env override:
     `%LOCALAPPDATA%\\c64cast\\` on Windows, else `$XDG_DATA_HOME/c64cast` or
     `~/.local/share/c64cast`. `$C64CAST_DATA_DIR` overrides it.
 
+Plus one read-only root that is *shipped* rather than machine-local:
+`examples_dir()` → the packaged example configs (`c64cast/examples/`), which
+`--config example:NAME` resolves against. See `resolve_config_spec`.
+
 Everything is a **function**, not a module constant: the env overrides are
 read late (each call) so tests can point them at a tmp dir with a plain
 ``mock.patch.dict(os.environ, ...)``, and every call site is a cold path
@@ -100,6 +104,105 @@ def controllers_dir() -> Path:
     """Directory holding MIDI controller profiles written by ``--midi-setup``
     (``<data root>/controllers``; one ``<port-slug>.json`` per controller)."""
     return data_root() / "controllers"
+
+
+# ---------------------------------------------------------------------------
+# Packaged (read-only) resources
+# ---------------------------------------------------------------------------
+
+EXAMPLE_PREFIX = "example:"
+
+
+def _package_dir() -> Path:
+    """The installed ``c64cast`` package directory.
+
+    Resolved through :mod:`importlib.resources` so whichever loader imported
+    the package answers, but required to be a **real filesystem path**: a
+    packaged config is handed to ``open()``, and an ensemble master names its
+    per-system files relative to its own directory, so a ``Traversable`` that
+    only offers ``read_text()`` could not run one. Every install shape c64cast
+    supports (wheel, editable, source checkout) unpacks to real files; a
+    zipimport would not, hence the explicit error rather than a later
+    ``TypeError`` from ``open()``."""
+    from importlib.resources import files
+
+    res = files("c64cast")
+    if not isinstance(res, Path):
+        raise RuntimeError(
+            "c64cast's packaged data files are not available as real files "
+            f"({type(res).__name__}) — c64cast cannot run from a zipped "
+            "distribution. Install it normally (pip/uv) and retry."
+        )
+    return res
+
+
+def examples_dir() -> Path:
+    """Directory holding the example configs that ship *inside* the package
+    (``c64cast/examples/``, plus its ``ensemble/`` sub-directory), so
+    ``--config example:NAME`` works with no checkout. See :func:`_package_dir`
+    for why it must be a real path."""
+    return _package_dir() / "examples"
+
+
+def packaged_schema_path() -> Path:
+    """The committed JSON Schema, which ships inside the package
+    (``c64cast/data/c64cast.schema.json``) because every example config's
+    first-line ``#:schema ../data/…`` directive resolves against it — from a
+    checkout and from an install alike. Regenerate with ``make schema``."""
+    return _package_dir() / "data" / "c64cast.schema.json"
+
+
+def example_config_paths() -> list[Path]:
+    """Every packaged example config: the single-file demos first, then the
+    multi-file ones in sub-directories (``ensemble/``), each sorted by name."""
+    root = examples_dir()
+    return sorted(root.glob("*.toml")) + sorted(root.glob("*/*.toml"))
+
+
+def example_name(path: Path) -> str:
+    """The ``example:`` name of a packaged config — its path relative to
+    :func:`examples_dir` without the suffix (``hello``, ``ensemble/master``)."""
+    return path.relative_to(examples_dir()).with_suffix("").as_posix()
+
+
+def resolve_example(name: str) -> Path:
+    """Filesystem path of the packaged example config called ``name`` (with or
+    without a trailing ``.toml``; ``ensemble/master`` selects a sub-directory
+    demo).
+
+    Raises ``ValueError`` — a *usage* error, not a config error — listing the
+    closest matches when nothing matches, and for a name that escapes
+    :func:`examples_dir` (``example:`` names a shipped file; anything else is
+    an ordinary path and should be passed as one)."""
+    import difflib
+
+    stem = name[: -len(".toml")] if name.endswith(".toml") else name
+    root = examples_dir()
+    candidate = root / f"{stem}.toml"
+    escapes = not candidate.resolve().is_relative_to(root.resolve())
+    if escapes or not candidate.is_file():
+        known = [example_name(p) for p in example_config_paths()]
+        near = difflib.get_close_matches(stem, known, n=3)
+        hint = f" Did you mean: {', '.join(near)}?" if near else ""
+        raise ValueError(
+            f"no packaged example config named {stem!r}.{hint} "
+            "Run `--list-examples` to see them all, or pass a path to your "
+            "own file instead of an `example:` name."
+        )
+    return candidate
+
+
+def resolve_config_spec(spec: str | None) -> str | None:
+    """Map a ``--config`` value to something ``open()`` accepts: an
+    ``example:NAME`` reference becomes the packaged demo's path, anything else
+    (including ``None`` — "no ``--config`` given") passes through untouched.
+
+    One hook so every downstream consumer of the config path — the loader, the
+    ensemble per-system resolver, ``--doctor``, the live-tune write-back —
+    sees a real path and needs no knowledge of the prefix."""
+    if spec is None or not spec.startswith(EXAMPLE_PREFIX):
+        return spec
+    return str(resolve_example(spec[len(EXAMPLE_PREFIX) :]))
 
 
 def legacy_data_root() -> Path | None:

@@ -241,7 +241,7 @@ Three ways to get a working `c64cast.toml`, easiest first:
      the ones compatible with your chosen display are offered), and the
      essential globals (U64 URL, NTSC/PAL, audio). The result runs in
      single-scene loop mode — the same shape as every file in
-     `config/examples/`.
+     `c64cast/examples/`.
    * **Multi-scene playlist** — choose audio once for the whole playlist, then
      add / remove / reorder scenes in a small management loop (each scene is
      questioned exactly like the single-scene flow, with a per-scene "mute
@@ -261,16 +261,19 @@ Three ways to get a working `c64cast.toml`, easiest first:
 2. **Copy the annotated reference** and edit it:
 
    ```bash
-   cp config/c64cast.example.toml c64cast.toml && $EDITOR c64cast.toml
+   c64cast --print-example c64cast.example > c64cast.toml && $EDITOR c64cast.toml
    ```
 
    `c64cast.example.toml` documents every section and field inline.
 
-3. **Start from a feature demo** in `config/examples/` (one per scene type
-   and per overlay) and tweak:
+3. **Start from a feature demo** (one per scene type and per overlay) and
+   tweak. The demos ship inside the package, so they are addressed by name
+   rather than by path:
 
    ```bash
-   python -m c64cast --config config/examples/scene-waveform.toml
+   c64cast --list-examples                 # every demo + a one-line summary
+   c64cast --config example:scene-waveform # run one as-is
+   c64cast --print-example scene-waveform > c64cast.toml   # ...or copy it out
    ```
 
 Whichever you pick, validate it with `--doctor` (below) before going live.
@@ -287,6 +290,7 @@ go stale.
 python -m c64cast --list-scenes        # the 10 scene types
 python -m c64cast --list-overlays      # the 12 overlays + their restrictions
 python -m c64cast --list-modes         # the display modes
+python -m c64cast --list-examples      # the packaged demo configs
 
 # Full reference for one thing — options, types, defaults, valid values:
 python -m c64cast --describe overlay:clock
@@ -307,19 +311,22 @@ python -m c64cast --suggest-palette assets/videos/Batman.mkv
 ### Editor autocomplete (JSON schema)
 
 `python -m c64cast --print-schema` emits a JSON Schema for the whole TOML.
-The repo ships a committed copy at
-[`c64cast.schema.json`](../c64cast.schema.json); point a TOML-aware
-editor at it with a directive on the **first line** of your config:
+A committed copy ships *inside the package* at
+[`c64cast/data/c64cast.schema.json`](../c64cast/data/c64cast.schema.json), so
+it is on disk after any install; point a TOML-aware editor at it with a
+directive on the **first line** of your config:
 
 ```toml
-#:schema ./c64cast.schema.json
+#:schema /path/to/site-packages/c64cast/data/c64cast.schema.json
+# ...or, with no install to point at:
+#:schema https://raw.githubusercontent.com/kfox/c64cast/main/c64cast/data/c64cast.schema.json
 ```
 
-With Taplo (the VS Code "Even Better TOML" / JetBrains TOML plugins) you
-then get key + value completion, hover docs, inline defaults, and red
-squiggles on typos and bad enum values **as you type**. Every config in
-`config/examples/` and `c64cast.example.toml` already carries the
-directive (adjust the relative path for where your config lives). Maintainers
+`--init` writes the right directive for you. With Taplo (the VS Code "Even
+Better TOML" / JetBrains TOML plugins) you then get key + value completion,
+hover docs, inline defaults, and red squiggles on typos and bad enum values
+**as you type**. Every packaged example carries the directive (as
+`../data/c64cast.schema.json`, relative to its own location). Maintainers
 regenerate the committed schema with `make schema` after changing any config
 field; CI fails if it drifts.
 
@@ -338,7 +345,7 @@ python -m c64cast --doctor --config c64cast.toml
 python -m c64cast --doctor --config c64cast.toml --skip-probe
 
 # Works on ensemble configs too — each system is validated independently
-python -m c64cast --doctor --config config/examples/ensemble/master.toml
+c64cast --doctor --config example:ensemble/master
 ```
 
 Doctor never aborts on the first error: a bad scene 1 won't hide a bad
@@ -364,27 +371,30 @@ What it surfaces:
 
 ## Example configs
 
+The demos ship **inside the package**, so they work identically from a source
+checkout, a `pip install`, or `uvx` — addressed by name with an `example:`
+prefix rather than by path:
+
+```bash
+c64cast --list-examples                    # names + one-line summaries
+c64cast --config example:hello             # run one
+c64cast --print-example hello > my.toml    # copy one out to edit
+```
+
 The recommended first run is
-[`config/examples/hello.toml`](../config/examples/hello.toml) — a big-text
-scroller on a solid canvas that needs **nothing but a reachable U64** (no
-webcam, mic, SID, or video files, no optional extras). Edit the
-`[ultimate64].url` at the top and run it:
+[`hello`](../c64cast/examples/hello.toml) — a big-text scroller on a solid
+canvas that needs **nothing but a reachable U64** (no webcam, mic, SID, or
+video files, no optional extras):
 
 ```bash
-python -m c64cast --config config/examples/hello.toml
+c64cast --config example:hello -u u64://YOUR-U64
 ```
 
-The annotated [`c64cast.example.toml`](../config/c64cast.example.toml) is a
-heavily-annotated reference that exercises every scene type and overlay
-in one file — useful as documentation but unwieldy as a starting point.
-
-For runnable single-feature demos, see
-[`config/examples/`](../config/examples/) — one TOML per scene type and
-per overlay. Pick the one you want to see and run it:
-
-```bash
-python -m c64cast --config config/examples/overlay-clock.toml
-```
+There is one demo per scene type and per overlay; `--list-examples` tags the
+handful that need media you supply (`assets/`). The annotated
+[`c64cast.example`](../c64cast/examples/c64cast.example.toml) exercises every
+scene type and overlay in one file — useful as documentation but unwieldy as a
+starting point.
 
 Each demo runs in **single-scene mode** (see below): no interstitial, no
 CTRL skip, the one scene loops until you Ctrl+C.
@@ -415,7 +425,7 @@ from `len(scenes) == 1`):
 
 Discovery: `--config PATH` wins; else `./c64cast.toml` is loaded if it
 exists; else built-in defaults apply. See
-[c64cast.example.toml](../config/c64cast.example.toml) for a fully-annotated
+[c64cast.example.toml](../c64cast/examples/c64cast.example.toml) for a fully-annotated
 reference; the sections below summarize each.
 
 ### `[hardware]`
@@ -1299,7 +1309,7 @@ dither, color_match, `effect` all apply). No audio, no SID.
 * No sender on hand? Drive it with
   [`scripts/diags/wled_pixel_sender.py`](../scripts/diags/wled_pixel_sender.py).
 
-See [`scene-wled.toml`](../config/examples/scene-wled.toml) for a
+See [`scene-wled.toml`](../c64cast/examples/scene-wled.toml) for a
 runnable demo.
 
 ## Overlays
@@ -1513,10 +1523,10 @@ across the wall.
 Run with:
 
 ```bash
-python -m c64cast --config config/examples/ensemble/master.toml
+c64cast --config example:ensemble/master
 ```
 
-See [`config/examples/ensemble/`](../config/examples/ensemble/) for a
+See [`c64cast/examples/ensemble/`](../c64cast/examples/ensemble/) for a
 working three-system example.
 
 ### Master-defaults cascade
@@ -1782,7 +1792,7 @@ the current scene, and streams live state over the same `/ws` WebSocket
 real WLED clients use. In ensemble mode, one WLED segment is exposed per
 system (segment *i* ↔ the *i*-th system).
 
-See [`wled-control.toml`](../config/examples/wled-control.toml) for a
+See [`wled-control.toml`](../c64cast/examples/wled-control.toml) for a
 runnable multi-scene demo covering every control.
 
 ### Mode 2 — pixel sink (`wled` scene)

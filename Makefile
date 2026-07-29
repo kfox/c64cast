@@ -53,7 +53,7 @@ help:
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
 	@echo "  doctor     offline env + config diagnostics (desynced .venv, drift)"
 	@echo "  bench      scripts/bench.py — async write pipeline"
-	@echo "  schema     regenerate c64cast.schema.json from the config metadata"
+	@echo "  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata"
 	@echo "  guide      render docs/guide/*.md to the User's Guide PDF (needs typst)"
 	@echo "  guide-figures  redraw the guide's placeholder figures"
 	@echo "  check      lint + typecheck + test"
@@ -92,11 +92,13 @@ doctor: $(SYNC)
 bench:
 	$(PY) scripts/bench.py
 
-# Regenerate the committed JSON schema. tests/test_schema.py fails if the
-# committed file drifts from this output, so run this after changing any
-# config dataclass field or overlay constructor.
+# Regenerate the committed JSON schema. It lives under the package (and so
+# ships in the wheel) because every example config's `#:schema ../data/…`
+# directive resolves against it, in a checkout and in an install alike.
+# tests/test_schema.py fails if the committed file drifts from this output, so
+# run this after changing any config dataclass field or overlay constructor.
 schema:
-	$(PY) -m c64cast --print-schema > c64cast.schema.json
+	$(PY) -m c64cast --print-schema > c64cast/data/c64cast.schema.json
 
 # Redraw the guide's placeholder figures. Real captures saved over the same
 # filenames are detected and left alone; see the script's --force-all escape.

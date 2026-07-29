@@ -1,0 +1,30 @@
+#:schema ../data/c64cast.schema.json
+# Single-scene demo: PETSCII webcam + network overlay.
+#
+# Shows local IP / hostname / U64 ping latency in a corner. Resolved
+# in a background thread so the render loop never blocks on DNS or
+# socket I/O. `items` controls which of the three rows show up.
+#
+# Run:
+#   c64cast --config example:overlay-network
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[video]
+device = -1
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "network demo"
+
+  [[scenes.overlays]]
+  type = "network"
+  items = ["ip", "hostname", "ping"]   # any subset of these three
+  corner = "bottom-left"
+  fg_color = "light gray"
+  refresh_s = 5.0

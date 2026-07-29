@@ -58,8 +58,7 @@ c64cast once. With DHCP disabled the firmware's own default is
 thing c64cast does. It needs no video files, no microphone and no webcam:
 
 ```bash
-python -m c64cast -u u64://192.168.2.64 \
-    --config config/examples/hello.toml
+python -m c64cast -u u64://192.168.2.64 --config example:hello
 ```
 
 Substitute your own address. Within a second or two the Commodore's screen

@@ -158,5 +158,66 @@ class LegacyPresetsDirTest(unittest.TestCase):
             self.assertIsNone(paths.legacy_presets_dir())
 
 
+class PackagedResourcesTest(unittest.TestCase):
+    """The shipped example configs + JSON schema, and the `example:` resolver."""
+
+    def test_examples_and_schema_are_real_files_under_the_package(self):
+        pkg = Path(paths.__file__).resolve().parent
+        self.assertEqual(paths.examples_dir().resolve(), pkg / "examples")
+        self.assertEqual(
+            paths.packaged_schema_path().resolve(), pkg / "data" / "c64cast.schema.json"
+        )
+        self.assertTrue(paths.packaged_schema_path().is_file())
+
+    def test_example_config_paths_finds_the_demos_and_the_subdirectory_ones(self):
+        names = [paths.example_name(p) for p in paths.example_config_paths()]
+        self.assertIn("hello", names)
+        self.assertIn("c64cast.example", names)
+        self.assertIn("ensemble/master", names)
+        # Single-file demos are listed before the sub-directory ones.
+        self.assertLess(names.index("hello"), names.index("ensemble/master"))
+        self.assertEqual(len(names), len(set(names)), "duplicate example names")
+
+    def test_every_packaged_example_carries_the_schema_directive(self):
+        # A relative `#:schema` that doesn't resolve from the file's own
+        # directory silently kills editor autocomplete for that demo.
+        for path in paths.example_config_paths():
+            with self.subTest(example=paths.example_name(path)):
+                first = path.read_text(encoding="utf-8").splitlines()[0]
+                self.assertTrue(first.startswith("#:schema "), first)
+                target = (path.parent / first.removeprefix("#:schema ").strip()).resolve()
+                self.assertEqual(target, paths.packaged_schema_path().resolve())
+
+    def test_resolve_example_accepts_a_bare_name_and_a_toml_suffix(self):
+        expected = paths.examples_dir() / "hello.toml"
+        self.assertEqual(paths.resolve_example("hello"), expected)
+        self.assertEqual(paths.resolve_example("hello.toml"), expected)
+
+    def test_resolve_example_reaches_a_subdirectory_demo(self):
+        self.assertEqual(
+            paths.resolve_example("ensemble/master"),
+            paths.examples_dir() / "ensemble" / "master.toml",
+        )
+
+    def test_unknown_name_raises_with_a_close_match(self):
+        with self.assertRaises(ValueError) as ctx:
+            paths.resolve_example("helo")
+        self.assertIn("hello", str(ctx.exception))
+
+    def test_traversal_out_of_the_examples_dir_is_refused(self):
+        with self.assertRaises(ValueError):
+            paths.resolve_example("../../pyproject")
+
+    def test_resolve_config_spec_passes_through_everything_else(self):
+        self.assertIsNone(paths.resolve_config_spec(None))
+        self.assertEqual(paths.resolve_config_spec("my.toml"), "my.toml")
+        self.assertEqual(paths.resolve_config_spec("/abs/example.toml"), "/abs/example.toml")
+
+    def test_resolve_config_spec_expands_the_example_prefix(self):
+        self.assertEqual(
+            paths.resolve_config_spec("example:hello"), str(paths.examples_dir() / "hello.toml")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

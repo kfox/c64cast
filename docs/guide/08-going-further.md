@@ -33,7 +33,7 @@ duration_s = 3.0
 ```
 
 ```bash
-python -m c64cast --config config/examples/ensemble/master.toml
+python -m c64cast --config example:ensemble/master
 ```
 
 Two things are worth knowing before you build one.
@@ -169,8 +169,9 @@ You have reached the end of the guided part. From here:
 
 - [**`docs/usage.md`**](https://github.com/kfox/c64cast/blob/main/docs/usage.md)
   is the complete reference for every setting.
-- [**`config/examples/`**](https://github.com/kfox/c64cast/tree/main/config/examples)
-  holds a runnable demonstration of every scene and every overlay.
+- **`python -m c64cast --list-examples`** lists the runnable demonstration of
+  every scene and every overlay that ships inside c64cast (browsable
+  [on GitHub](https://github.com/kfox/c64cast/tree/main/c64cast/examples)).
 - [**`docs/architecture.md`**](https://github.com/kfox/c64cast/blob/main/docs/architecture.md)
   explains how it all works inside, and why certain things are the way they
   are.

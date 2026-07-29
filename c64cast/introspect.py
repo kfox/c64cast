@@ -27,11 +27,16 @@ asserting that table stays in sync with the real `modes.py` classes.
 from __future__ import annotations
 
 import inspect
+import re
+import textwrap
+import tomllib
 from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any
 
 from . import config as cfgmod
 from . import overlays as ovmod
+from . import paths as pathsmod
 
 # ---------------------------------------------------------------------------
 # Model
@@ -703,6 +708,112 @@ def render_describe(name: str) -> str:
         )
     _, ent, renderer = matches[0]
     return renderer(ent)  # type: ignore[operator]
+
+
+# ---------------------------------------------------------------------------
+# Packaged example configs
+# ---------------------------------------------------------------------------
+#
+# `--list-examples` reads the shipped files rather than a hand-kept table, for
+# the same reason the rest of this module reads config metadata: the old
+# Markdown index in examples/README.md had drifted ~15 files behind. A
+# generated index cannot.
+
+_SUMMARY_MAX = 150
+
+
+def example_summary(path: Path) -> str:
+    """One-line summary of an example config, read from its own header: the
+    leading comment paragraph (skipping the `#:schema` directive, stopping at
+    the first blank comment line), first sentence only.
+
+    The `Single-scene demo:` prefix nearly every file opens with is dropped —
+    it is true of all but a handful and repeating it 45 times crowds out the
+    part that differs. So are the `(see <upstream URL>)` citations the
+    WLED-effect ports carry: provenance belongs in the file, not in an index."""
+    para: list[str] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("#:schema"):
+                continue
+            if not stripped.startswith("#"):
+                break
+            body = stripped[1:].strip()
+            if not body:
+                break
+            para.append(body)
+    text = re.sub(r"\s+", " ", " ".join(para))
+    text = re.sub(r"\s*\(see [^)]*\)", "", text)
+    # First sentence. A period only ends one when whitespace follows, which
+    # spares `FX.cpp` and `docs/usage.md` mid-sentence.
+    if match := re.search(r"\.(?=\s)", text):
+        text = text[: match.end()]
+    text = re.sub(r"^Single-scene demo(?: of|:)\s*", "", text)
+    # A few files open with one very long sentence; hold every entry to about
+    # two terminal lines so the list stays scannable.
+    if len(text) > _SUMMARY_MAX:
+        text = text[:_SUMMARY_MAX].rsplit(" ", 1)[0] + " …"
+    return text
+
+
+def example_needs_media(path: Path) -> bool:
+    """True when a *scene* in this example sources from `assets/` — the
+    directory that ships empty (user media, unclear licensing), so the demo
+    needs a file dropped in or its `file =` repointed before it will run.
+
+    Only a scene's own `file` counts. An overlay's (the `logo` one) falls back
+    to a drawn placeholder when the file is missing, so those demos run as
+    shipped and must not be tagged."""
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    scenes = raw.get("scenes")
+    if not isinstance(scenes, list):
+        return False
+    return any(
+        isinstance(sc, dict)
+        and isinstance(spec := sc.get("file"), str)
+        and spec.startswith("assets/")
+        for sc in scenes
+    )
+
+
+def _example_display_order(paths: list[Path]) -> list[Path]:
+    """`hello` first (the documented first run), then the annotated reference,
+    then everything else in `paths` order."""
+    lead = ["hello", "c64cast.example"]
+    ranked = {name: i for i, name in enumerate(lead)}
+    return sorted(paths, key=lambda p: (ranked.get(pathsmod.example_name(p), len(lead)),))
+
+
+def render_list_examples() -> str:
+    """Render the packaged example configs — name, then the summary from each
+    file's own header. Names are what `--config example:<name>` takes."""
+    paths = _example_display_order(pathsmod.example_config_paths())
+    names = [pathsmod.example_name(p) for p in paths]
+    name_w = max((len(n) for n in names), default=8)
+    lines = [
+        "Example configs shipped with c64cast (each a runnable single-scene demo unless noted):",
+        "",
+    ]
+    for path, name in zip(paths, names, strict=True):
+        tag = " [needs your own media]" if example_needs_media(path) else ""
+        summary = example_summary(path) + tag
+        # Don't break on hyphens: several summaries carry upstream URLs.
+        wrapped = textwrap.wrap(
+            summary, width=max(40, 98 - name_w - 4), break_on_hyphens=False
+        ) or [""]
+        lines.append(f"  {name:<{name_w}}  {wrapped[0]}")
+        lines += [" " * (name_w + 4) + cont for cont in wrapped[1:]]
+    lines += [
+        "",
+        "Run one:   c64cast --config example:<name>",
+        "Copy one:  c64cast --print-example <name> > c64cast.toml",
+    ]
+    return "\n".join(lines)
 
 
 def render_compat() -> str:

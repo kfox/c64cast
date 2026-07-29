@@ -1,0 +1,32 @@
+#:schema ../data/c64cast.schema.json
+# Single-scene demo: PETSCII webcam + logo overlay.
+#
+# Renders a multi-line PETSCII art block from a .txt file at a chosen
+# corner (or explicit row+col). If the file is missing, the overlay
+# draws a labelled placeholder box rather than crashing — handy for
+# testing positioning before you've authored your art.
+#
+# Drop your ASCII art into assets/logos/yours.txt to see it appear.
+#
+# Run:
+#   c64cast --config example:overlay-logo
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[video]
+device = -1
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "logo demo"
+
+  [[scenes.overlays]]
+  type = "logo"
+  file = "assets/logos/yours.txt"   # missing file → placeholder box
+  corner = "bottom-left"
+  fg_color = "white"

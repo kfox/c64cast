@@ -1,0 +1,51 @@
+#:schema ../data/c64cast.schema.json
+# Single-scene demo: the TeensyROM+ backend driving a blank canvas with a
+# scrolling-text overlay over USB serial.
+#
+# TeensyROM bring-up demo. On cycle-clean firmware (fw v0.7.2.5+) the TR reads
+# C64 memory (ReadC64Mem), so physical-keyboard control works just like the
+# Ultimate: C= pauses, CTRL skips, SHIFT cycles, SPACE opens the menu. On older
+# firmware that lacks ReadC64Mem the backend detects it at connect, disables the
+# keyboard poller, and you drive it via the HTTP control plane or webcam vision.
+#
+# Before running:
+#   1. Connect your laptop to the TR's micro-USB-B port with a plain USB DATA
+#      cable (NOT an FTDI/serial null-modem cable — that does not enumerate as
+#      the TR's CDC device). It appears as a driverless USB-CDC serial port;
+#      the baud rate is irrelevant over native USB.
+#   2. On macOS, leave serial_port unset — the TeensyROM is auto-detected by
+#      its USB serial number. On Linux/Windows, set it to your device
+#      (Linux: /dev/ttyACM0; Windows: COM3). For Ethernet instead, set
+#      transport = "tcp" + host = "<TR ip>" (enable the TCP listener + reboot
+#      the TR first).
+#
+# Run:
+#   c64cast --config example:teensyrom-blank
+#
+# First smoke test on real hardware: confirm the border colour changes — a
+# byte-swapped address would write to RAM and leave the border untouched.
+
+[hardware]
+backend = "teensyrom"
+
+[teensyrom]
+transport = "serial"
+# serial_port = "/dev/cu.usbmodem1234"  # macOS: omit to auto-detect; else set it
+storage = "sd"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "blank"
+name = "TeensyROM Hello"
+border = 6        # 0..15 palette index (6 = blue)
+background = 0    # 0..15 palette index (0 = black)
+
+  [[scenes.overlays]]
+  type = "scrolling_text"
+  row = 12
+  speed_cells_per_s = 8.0
+  messages = [
+    { text = "HELLO FROM TEENSYROM+ VIA C64CAST", color = "white" },
+  ]

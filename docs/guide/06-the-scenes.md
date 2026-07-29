@@ -13,11 +13,10 @@ You do not need to read this chapter in one sitting. Find the scene you want,
 try it, come back later for another.
 
 > [!TIP]
-> Every scene here has a ready-made demonstration in
-> [`config/examples/`](https://github.com/kfox/c64cast/tree/main/config/examples), one
-> file per scene type. Run any of them directly:
-> `python -m c64cast --config config/examples/scene-waveform.toml`. Because
-> each defines exactly one scene, it loops forever until you stop it.
+> Every scene here has a ready-made demonstration shipped inside c64cast, one
+> per scene type — `python -m c64cast --list-examples` names them all. Run any
+> of them directly: `python -m c64cast --config example:scene-waveform`.
+> Because each defines exactly one scene, it loops forever until you stop it.
 
 ## Blank
 
