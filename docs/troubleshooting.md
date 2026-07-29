@@ -86,8 +86,8 @@ a queue percentage.) Possible causes:
   rejected at load outright, so this only bites in the 12.5–13.6 kHz band.)
 - For a `video` scene stuck at `writes=4/s bytes=4KiB/s` for
   minutes after the clip should have ended, the demuxer hit EOF but the
-  video buffer never cleared — that's a known edge handled in
-  `AVFileSource.current_frame`; update to a build that includes the fix.
+  video buffer never cleared — `AVFileSource.current_frame` handles that
+  EOF edge, so a run still showing it is not on current code.
 - U64 firmware older than 3.x. Update.
 
 ### "No audio at all, mic is enabled"
@@ -98,9 +98,9 @@ a queue percentage.) Possible causes:
    everything. By default the `[dsp]` chain is ON and its downward expander
    handles the floor — lower `[dsp] expander_threshold_db` (default `-45`)
    or raise `[audio] mic_sensitivity` to test. (`[audio] noise_gate` only
-   applies when `[dsp] enabled = false`; in that legacy path, lower it from
+   applies when `[dsp] enabled = false`; on that path, lower it from
    `0.05` toward `0.01`.)
-3. `pip install -e .[mic]` — without the `mic` extra the audio path
+3. `uv sync --all-extras` — without the `mic` extra the audio path
    silently disables itself with one warning.
 
 ### "Mic capture works but I hear my own voice loud over the speakers"
@@ -195,7 +195,7 @@ read, it won't see the skip until that finishes. Worst-case wait is
 the scene's `target_fps` period (33 ms at 30 fps).
 
 If skip never works at all, you're missing the `control` extra —
-`pip install -e .[control]`. The control plane silently disables
+run `uv sync --all-extras`. The control plane silently disables
 itself with one warning if FastAPI isn't installed.
 
 Also: skip is intentionally a no-op in **single-scene mode** (when the
@@ -216,8 +216,8 @@ playlist` in the logs).
 
 ### "`video` scene type is rejected at load time"
 
-You didn't install the `video` extra
-(`pip install -e .[video]`). The loader emits "Found N video files
+You didn't install the `video` extra (`uv sync --all-extras`).
+The loader emits "Found N video files
 but PyAV is not installed; skipping videos" and continues
 without videos.
 
@@ -226,7 +226,7 @@ without videos.
 The demuxer logged `demux <url> crashed` with an `Input/output error`
 traceback out of `container.demux()`. A yt-dlp-resolved YouTube URL is a
 single `googlevideo` CDN stream that the CDN throttles and periodically
-drops mid-playback. `AVFileSource` now opens remote (`http(s)://`) inputs
+drops mid-playback. `AVFileSource` opens remote (`http(s)://`) inputs
 with FFmpeg's reconnect options, so a transient drop resumes automatically
 instead of crashing. If a stream still fails to the end, the URL may have
 expired (yt-dlp URLs carry an `expire=` timestamp) — re-run to re-resolve
@@ -289,32 +289,34 @@ Background fetch failed. Reasons:
 
 ## Installation / Setup
 
-### "pip install fails: error compiling sounddevice / PyAV"
+### "Install fails: error compiling sounddevice / PyAV"
 
 These have system-level dependencies (portaudio, ffmpeg headers).
 On macOS: `brew install portaudio ffmpeg`. On Debian/Ubuntu:
-`apt install portaudio19-dev libavformat-dev`. Then
-retry the pip install.
+`apt install portaudio19-dev libavformat-dev`. Then retry
+`uv sync --all-extras`.
 
-If you don't need a specific feature, drop the corresponding extra:
-`pip install -e .[mic]` instead of `.[all]`.
+If you don't need a specific feature, sync a narrower extra set instead
+(`uv sync --extra mic`).
 
 ### "ImportError: cannot import name 'X' from 'c64cast.overlays'"
 
 You're running against a stale install. From the repo root:
 
 ```bash
-pip install -e .[all]
+uv sync --all-extras
 ```
 
-The `-e` flag means subsequent edits are picked up live, but the
-initial install still needs to register the package.
+This installs the project into `.venv` in editable form, so subsequent
+edits are picked up live. Run the app through `uv run` (or an activated
+`.venv`) so it resolves against that environment; `uv pip install` in
+this repo targets the mise toolchain interpreter instead.
 
 ### "mypy / ruff not found"
 
 Install the dev tooling: `uv sync --all-extras` (or, without uv,
 `pip install --group dev` — `dev` is a PEP 735 dependency-group, not an
-extra, so `pip install -e .[dev]` will not find it). The pre-commit and
+extra, so `.[dev]` will never resolve it). The pre-commit and
 CI configurations assume those are present.
 
 ### "objc[NNNNN]: Class AVFFrameReceiver is implemented in both ... libavdevice ..."

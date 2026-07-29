@@ -21,10 +21,10 @@ SID. Only an uncalibrated physical/unknown chip stays on the classic 4-bit
 linear path.
 
 There's no SID filter and no anti-aliasing, but shaping isn't bare: the
-`[dsp]` chain — compressor/limiter, a downward expander that replaces the
-hard noise gate, pre-emphasis, mic AGC — is **ON by default**. `[audio]
-noise_gate` and `mic_sensitivity` are the legacy shaping knobs; `noise_gate`
-only takes effect when `[dsp] enabled = false`. Hum and hiss are still part
+`[dsp]` chain — compressor/limiter, a downward expander in place of a hard
+noise gate, pre-emphasis, mic AGC — is **ON by default**. `[audio]
+noise_gate` and `mic_sensitivity` are the pre-DSP shaping knobs;
+`noise_gate` only takes effect when `[dsp] enabled = false`. Hum and hiss are still part
 of the aesthetic.
 
 ## High-fidelity video audio: the Ultimate Audio FPGA sampler (U64)
@@ -34,8 +34,9 @@ playback. The U64 firmware exposes an "Ultimate Audio" FPGA PCM sampler at
 `$DF20-$DFFF` that plays 8/16-bit PCM (up to 48 kHz) **directly out of REU
 SDRAM** — the FPGA fetches and converts the samples itself, with **zero**
 SID / `$D418` / NMI / CPU / turbo involvement. So it sidesteps every bus-halt
-and badline problem the 4-bit DAC fights (it kept the DAC capped at ≈16 kHz and
-20 fps), and it sounds like an actual sound card instead of a digi-player.
+and badline problem the 4-bit DAC fights — the constraints that hold the DAC
+path to ≈12.5 kHz and cap digi scenes at 20 fps — and it sounds like an actual
+sound card instead of a digi-player.
 
 `[audio].backend` selects it: `"auto"` (default) uses the sampler on a capable
 U64 and falls back to the 4-bit DAC otherwise; `"dac"` forces the lo-fi DAC
@@ -159,13 +160,19 @@ play-addr page):
   `?SYNTAX ERROR IN 10` (the `SYS` line), with no music. KERNAL stays
   mapped so the `$EA31` IRQ chain still works.
 
-This replaces two earlier dead ends: an *unconditional* `$36` (broke
-Comic Bakery and Last Ninja 2), and a *per-tune-but-permanent* `$36`
-(set once, never restored — crashed tunes like Election ≈24 s in because
-they assume the `$37` resting environment between PLAY calls, and the
-`$36`/`$37` choice for "data under ROM, entry points in RAM" tunes proved
-undecidable offline). Banking per call sidesteps both. The re-INIT stub
-(SHIFT subtune cycling) carries the same per-call banking.
+Banking per call, rather than once, is what makes this work across the
+corpus. The two simpler schemes each break a real tune:
+
+* An *unconditional* `$36` breaks Comic Bakery and Last Ninja 2, which
+  read BASIC ROM as data.
+* A *per-tune-but-permanent* `$36` — set once at INIT, never restored —
+  crashes tunes like Election ≈24 s in, because they assume the `$37`
+  resting environment between PLAY calls.
+
+Nor can the choice be made once per tune offline: a tune with data under
+ROM and entry points in RAM needs both banks, and which one it needs is
+not decidable from the header. The re-INIT stub (SHIFT subtune cycling)
+carries the same per-call banking.
 
 Known limitations:
 
@@ -462,48 +469,38 @@ every command on the wire via an internal lock, and the combined write
 rate (audio ≈8/sec + render ≈30-60/sec) sits well under the ≈200/sec
 DMA ceiling.
 
-## Socket DMA replaced HTTP for writes
+## Writes go over Socket DMA, not REST
 
-The U64's REST server caps sustained writes at ≈50-70/sec because of a
-combination of `Connection: close` (every PUT pays a fresh TCP
-handshake) and server-side request serialization — see the historical
-section below for the full measurements. The fix landed in 2026-05: the
-project now sends every memory write over the **Ultimate DMA Service**
-on TCP port 64 (a persistent socket protocol; opcode `0xFF06`).
+Every memory write goes over the **Ultimate DMA Service** on TCP port
+64 — a persistent socket protocol, opcode `0xFF06`. There is no client
+write queue to tune: the TCP send buffer is the queue.
 
-Measured impact on U64 Elite II + firmware 3.x + wired LAN:
+REST is used only for the operations that have no DMA equivalent (see
+the firmware section above): `readmem`, `reset`, `run_prg`, `sidplay`,
+the startup probe. Those are low-rate and one-shot.
 
-| Transport       | Per-write latency (avg / p50 / p95) | Sustained writes/sec |
-|-----------------|-------------------------------------|----------------------|
-| HTTP (was)      | 14.0 ms / 14.8 ms / 19.9 ms         | ≈71/s                |
-| Socket DMA (is) | 5.3 ms / 5.0 ms / 6.8 ms            | ≈200/s               |
+Measured on U64 Elite II + firmware 3.x + wired LAN:
 
-The persistent socket eliminates the per-write TCP handshake. The DMA
-service is single-connection only ([socket_dma.cc](https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc)
+| Transport  | Per-write latency (avg / p50 / p95) | Sustained writes/sec |
+|------------|-------------------------------------|----------------------|
+| REST       | 14.0 ms / 14.8 ms / 19.9 ms         | ≈71/s                |
+| Socket DMA | 5.3 ms / 5.0 ms / 6.8 ms            | ≈200/s               |
+
+The persistent socket is what removes the per-write TCP handshake. The
+DMA service is single-connection only ([socket_dma.cc](https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc)
 accepts one connection at a time), so video and audio paths share a
 single `Ultimate64API` instance and let `SocketDMAClient`'s per-command
 mutex serialize them on the wire. `Ultimate64API.flush()` is
 implemented as a trailing IDENTIFY round-trip — when it returns, every
 prior DMA command on the socket has been drained by the server.
 
-REST is still used for the operations that have no DMA equivalent (see
-the firmware section above): `readmem`, `reset`, `run_prg`, `sidplay`,
-the startup probe. These are low-rate and one-shot, so the HTTP wall
-doesn't apply to them.
+### Why REST can't carry writes
 
-The CLI no longer exposes `--async-writes` / `--queue-depth` — they
-were HTTP-pipeline knobs and have no meaning under DMA. The TCP send
-buffer is the queue.
-
-## U64 HTTP throughput wall: ≈50-70 writes/sec
-
-**Resolved 2026-05** by the Socket DMA migration above; this section is
-kept as background on *why* we moved off REST for writes.
-
-The U64's REST server has two firmware-level properties that together
-cap how fast we can push state to it. Both were measured against U64
-Elite II on firmware 3.x over wired LAN in 2026-05; re-measure if a
-new firmware claims throughput improvements.
+Two firmware-level properties of the U64's REST server cap it at
+**≈50-70 writes/sec sustained**, no matter how many client threads are
+thrown at it. Both measured against U64 Elite II on firmware 3.x over
+wired LAN in 2026-05; re-measure if a firmware release claims keep-alive
+or throughput improvements.
 
 * **Every response includes `Connection: close`.** The server refuses
   HTTP keep-alive, even when explicitly asked via a request header.
@@ -520,19 +517,15 @@ new firmware claims throughput improvements.
   per request), which is the signature of a single-threaded server
   draining a FIFO.
 
-The practical ceiling is therefore **≈50-70 writes/sec sustained**
-regardless of how many client threads we throw at it. Under real
-workload (audio NMI firing, VIC raster IRQs, GIL pressure) the
-sequential floor rises from 14 ms to ≈20 ms per request, putting the
-sustainable rate at the lower end of that range.
+Under real workload (audio NMI firing, VIC raster IRQs, GIL pressure)
+the sequential floor rises from 14 ms to ≈20 ms per request, putting the
+sustainable rate at the lower end of that range. Parallelizing the
+writer cannot lift it either: a single-threaded server draining a FIFO
+turns extra workers into extra TCP setup, which is what the N=8
+measurement above shows.
 
-**Implications for design**:
+**Design rules, which DMA raises the ceiling on but does not retire**:
 
-* **Parallelizing the async write worker won't help.** This was
-  considered as a follow-up to the profiling work and ruled out — the
-  experiment is in the `Connection: close` measurement above. The
-  single-worker FIFO in [api.py](../c64cast/api.py) is the right
-  architecture for this server.
 * **Reducing write *count* is the only real lever.** `write_regs`
   coalesces N contiguous register writes into one PUT; use it
   liberally. `write_region` skips writes when the buffer is unchanged
@@ -541,17 +534,15 @@ sustainable rate at the lower end of that range.
   N small writes per frame should be a yellow flag.
 * **A scene targeting >30 fps with ≥2 writes/frame will saturate the
   pipe.** big_text at 50 fps with 1 write/frame is the canonical
-  example — it produces exactly 50 writes/s, which is the wall, so
-  every frame's enqueue blocks on the previous frame's HTTP. The
-  classic mitigation is to cap such a scene at `target_fps = 30` (or
-  redesign so per-frame state lives in U64 RAM and is consumed by a
-  raster IRQ, so Python only writes when something macro-level
-  changes).
-* **To re-measure HTTP** (e.g. to check whether a new firmware has
-  added keep-alive), temporarily revert the writes back to
-  `requests.put` and run `--profile`. Today the profile summary line is
-  `u64 dma latency: n=N avg=… p50=… p95=… max=… ms` and reports the
-  DMA path, not REST.
+  example — it produces exactly 50 writes/s, so on REST every frame's
+  enqueue blocks on the previous frame's request. The mitigation is to
+  cap such a scene at `target_fps = 30`, or redesign so per-frame state
+  lives in U64 RAM and is consumed by a raster IRQ, leaving Python to
+  write only when something macro-level changes.
+* **`--profile` reports the live transport.** The summary line is
+  `u64 dma latency: n=N avg=… p50=… p95=… max=… ms` — the DMA path, not
+  REST. Re-measuring REST means pointing the writes at `requests.put`
+  in a scratch branch; nothing in the shipped code exercises it.
 
 ## `WaveformScene` duration
 
@@ -706,7 +697,7 @@ active). Consequences worth knowing:
   instead of a bare token code. This is what makes the failure below diagnosable.
 
   > **Known issue — intermittent TR launcher upload corruption (under
-  > investigation, pre-existing).** On the TeensyROM the keyboard poller's
+  > investigation).** On the TeensyROM the keyboard poller's
   > `ReadC64Mem $028D` (and likely the launcher's own input poll) shares one
   > serial/TCP link with the launcher's `reset()` + PostFile. A poll read that
   > lands in the post-reset menu chatter (or reads a running program's state)
@@ -715,8 +706,8 @@ active). Consequences worth knowing:
   > stub lists garbage, `?SYNTAX ERROR`). It's a **race**: intermittent, but when
   > it fires the symptom is consistent. The launcher works reliably
   > single-threaded (no concurrent poll) and on the Ultimate (no shared-link
-  > poll), which is why it was never caught — the TR launcher had not been
-  > HW-exercised under the live playlist. Candidate fixes (not yet shipped):
+  > poll), so reproducing it takes a TR+ under a live playlist —
+  > nothing narrower will show it. Candidate fixes (not yet shipped):
   > make `read_segment` fully resync on any desync so no reader can poison a
   > later command; suspend the poller across the launcher's reset+upload; a
   > robust pre-upload drain. Needs a soak harness (hundreds of launch cycles) to
@@ -818,13 +809,12 @@ design, not bugs:
   the moment transport is touched, and the clock switches to a self-owned wall
   anchor). Use it if the resync splices ever misbehave on unusual
   hardware/firmware.
-- **Mute-path DAC+bitmap tempo quirk (unchanged).** On the `"mute"` path over
-  the DAC+bitmap `tempo_scale` (≈0.88) content, the wall-clock anchor runs at
+- **Mute-path DAC+bitmap tempo quirk.** On the `"mute"` path over
+  DAC+bitmap `tempo_scale` (≈0.88) content, the wall-clock anchor runs at
   1× while the video PTS timeline is scaled — so after transport is touched the
-  video plays ≈1.14× (audio is muted, so only the picture is affected). This is
-  pre-existing Phase-2 behavior, out of scope for Phase 4 ("mute reproduces
-  today bit-for-bit"), and does not occur on the default `"on"` path, whose
-  audio-anchored clock stays in the scaled domain.
+  video plays ≈1.14× (audio is muted, so only the picture is affected). It
+  does not occur on the default `"on"` path, whose audio-anchored clock stays
+  in the scaled domain.
 
 ## Video-scene border is always restored to black (`$00`), not a configured value
 
@@ -867,10 +857,10 @@ toward C64-friendly hues. Hi-res mode skips it because its monochrome-
 per-cell pipeline is already binary.
 
 `channel_boost` defaults to `[1.3, 1.2, 1.0]` (BGR): blue/green lift, red
-left neutral. The historical default cut red to `0.9`, but an A/B on real
-TRON frames showed that only raised perceptual (Lab) error and starved warm
-colors (yellow/red/purple) with no benefit to the blues it was meant to
-favor — so red is now neutral. Override per-config via `[color].channel_boost`.
+left neutral. Red is deliberately not cut: an A/B on real TRON frames showed
+a `0.9` red only raised perceptual (Lab) error and starved warm colors
+(yellow/red/purple), with no benefit to the blues the cut was meant to
+favor. Override per-config via `[color].channel_boost`.
 
 This stage is orthogonal to `palette_mode`, which only chooses the VIC-II
 per-cell slot-allocation strategy. If you tune `[color]` and only some modes
@@ -954,9 +944,9 @@ to the `/v1/runners:run_prg` endpoint at startup and on resume. The
 `GOTO 20` keeps BASIC out of the editor's direct-input mode, which is
 what keeps the kernal cursor-blink IRQ suppressed (the editor is what
 toggles `$CC`; while BASIC is busy looping, the blink never re-arms).
-Earlier code tried to write `$CC` and screen RAM directly from Python,
-but the kernal cursor IRQ at $EA87 races the write and re-paints stale
-state. **Don't go back to poking `$CC` directly** — let BASIC own it.
+**Don't poke `$CC` and screen RAM directly from Python** — the kernal
+cursor IRQ at `$EA87` races the write and re-paints stale state. Let
+BASIC own it.
 
 ## Licensing of SIDs, videos, and ROMs
 
@@ -987,8 +977,8 @@ camera that re-enumerates may shift indices between reboots.
 
 ## Optional-deps groups can silently degrade
 
-If you `pip install -e .` (no extras), the package imports fine but
-most features are disabled. Failure modes:
+Installed without extras, the package imports fine but most features
+are disabled. Failure modes:
 
 * `[audio] enabled = true` without `[mic]` extra → `AudioStreamer`
   raises `ImportError` at scene setup.
@@ -1002,7 +992,8 @@ most features are disabled. Failure modes:
 * `type = "obs_status"` overlay without `[obs]` extra → loader rejects
   the overlay with a clear `RuntimeError` at config load.
 
-If something feels missing, double-check `pip install -e .[all]`.
+If something feels missing, re-run `uv sync --all-extras` (the project
+workflow — see [usage.md](usage.md) for the plain-pip equivalent).
 
 ## Single-scene mode is automatic, not opt-in
 
