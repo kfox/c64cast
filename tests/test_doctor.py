@@ -12,6 +12,7 @@ from unittest import mock
 
 from _fakes import FakeAPI
 
+import c64cast
 from c64cast import config as cfgmod
 from c64cast import dac_calibration, doctor
 from c64cast.backend import HardwareProfile
@@ -982,8 +983,24 @@ class EnvironmentProbeTest(unittest.TestCase):
         self.assertTrue(all(d.category == "environment" for d in diags))
         subjects = {d.subject for d in diags}
         self.assertIn("interpreter", subjects)
+        self.assertIn("c64cast version", subjects)
         for dep, _ in doctor._HARD_DEPS:
             self.assertIn(dep, subjects)
+
+    def test_version_line_is_first_and_explains_the_uninstalled_sentinel(self):
+        # The version is the first thing a bug report needs, so it leads the
+        # section. "0+unknown" is meaningless on its own — say why.
+        with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
+            diags = doctor._probe_environment()
+        self.assertEqual(diags[0].subject, "c64cast version")
+        self.assertEqual(diags[0].level, "ok")
+
+        with (
+            mock.patch.object(c64cast, "__version__", "0+unknown"),
+            mock.patch.object(doctor, "_probe_uv_lock", return_value=[]),
+        ):
+            diags = doctor._probe_environment()
+        self.assertIn("source checkout", diags[0].message)
 
     def test_hard_deps_import_ok_in_synced_env(self):
         with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
@@ -1034,6 +1051,25 @@ class EnvironmentProbeTest(unittest.TestCase):
             diags = doctor._probe_uv_lock()
         self.assertEqual(diags[0].level, "warn")
         self.assertIn("out of date", diags[0].message)
+
+    def test_uv_lock_probe_is_skipped_outside_a_source_checkout(self):
+        # For a pip-installed package _REPO_ROOT is site-packages, which has no
+        # pyproject.toml. `uv lock --check` exits nonzero there for "no project
+        # found" exactly as it does for real drift, so running it told installed
+        # users their lockfile had drifted from a file they don't have.
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch.object(doctor, "_probe_uv_lock") as probe,
+        ):
+            diags = doctor._probe_environment()
+        probe.assert_not_called()
+        self.assertNotIn("uv.lock", {d.subject for d in diags})
+
+    def test_running_from_checkout_detects_the_repo(self):
+        # The repo we're testing from is, by construction, a source checkout.
+        self.assertTrue(doctor._running_from_checkout())
+        with mock.patch.object(doctor, "_REPO_ROOT", Path("/definitely/not/a/checkout")):
+            self.assertFalse(doctor._running_from_checkout())
 
     def test_environment_runs_in_validate_load_result(self):
         with mock.patch.object(doctor, "_probe_uv_lock", return_value=[]):
