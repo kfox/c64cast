@@ -1,0 +1,30 @@
+#:schema ../data/c64cast.schema.json
+# Single-scene demo: PETSCII webcam + clock overlay.
+#
+# Time/date in a corner — only rewrites cells when the formatted string
+# actually changes (so a "%H:%M" clock writes once per minute, not
+# every frame).
+#
+# Run:
+#   c64cast --config example:overlay-clock
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[video]
+device = -1
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "webcam"
+display = "petscii"
+name = "clock demo"
+
+  [[scenes.overlays]]
+  type = "clock"
+  corner = "top-right"           # top-left | top-right | bottom-left | bottom-right
+  format = "%H:%M"               # any strftime format
+  fg_color = "white"
+  bg_color = "black"

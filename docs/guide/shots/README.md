@@ -50,14 +50,14 @@ Frames land in `scripts/diags/out/guide/` (git-ignored).
 
 | Figure | Captured from | Notes |
 |---|---|---|
-| `fig-qs-1-hello.png` | `config/examples/hello.toml` | `--burst 110 --at 36.6`, then `centre hb` to pick the frame where HELLO is actually centred |
+| `fig-qs-1-hello.png` | `c64cast/examples/hello.toml` | `--burst 110 --at 36.6`, then `centre hb` to pick the frame where HELLO is actually centred |
 | `fig-qs-2-video.png` | [`fig-qs-2-video.toml`](fig-qs-2-video.toml) | `--at 10 -n 14 --spacing 0.7` |
 | `fig-ft-1-slideshow.png` | `c64cast assets/pictures/` | quick playback; `--at 9 -n 18 --spacing 2.5` and pick |
 | `fig-1-1-doctor.png` | `c64cast --doctor --skip-probe` | terminal; see below |
 | `fig-2-1-interstitial.png` | [`fig-2-1-interstitial.toml`](fig-2-1-interstitial.toml) | `--at 10 -n 24 --spacing 1.4` |
 | `fig-2-2-wizard.png` | `c64cast --init` | terminal, driven by keystrokes; see below |
 | `fig-3-1-waveform.png` | [`fig-3-1-waveform.toml`](fig-3-1-waveform.toml) | `--at 14 -n 15 --spacing 2` |
-| `fig-3-2-generative.png` | `config/examples/scene-generative-plasma.toml` | `--at 12 -n 10 --spacing 1.8` |
+| `fig-3-2-generative.png` | `c64cast/examples/scene-generative-plasma.toml` | `--at 12 -n 10 --spacing 1.8` |
 | `fig-3-3-webcam.png` | [`fig-3-3-webcam.toml`](fig-3-3-webcam.toml) | check `[video].device` first — see the config |
 | `fig-4-1-modes.png` | [`fig-4-1-modes-*.toml`](.) ×4 | four runs, then `plate`; see below |
 | `fig-4-2-overlays.png` | [`fig-4-2-overlays.toml`](fig-4-2-overlays.toml) | `--at 14 -n 12 --spacing 1.5` |

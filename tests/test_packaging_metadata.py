@@ -12,10 +12,14 @@ the wheel is on PyPI — which is exactly why it is worth asserting in the suite
   3. The `readme` key and the PEP 561 `py.typed` marker are both "invisible
      until published" blockers: no readme renders a blank PyPI page, and a
      py.typed that isn't in package-data ships a wheel type checkers ignore.
+  4. Same for the packaged examples + JSON schema: they live under the package
+     only so the wheel can carry them, and a data file no `package-data` glob
+     matches is missing for every installed user while a checkout looks fine.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import tomllib
 import unittest
@@ -143,6 +147,29 @@ class TestPublishedFiles(unittest.TestCase):
             package_data,
             "py.typed exists but isn't in package-data, so the wheel won't ship it",
         )
+
+    def test_every_packaged_data_file_is_covered_by_a_package_data_glob(self) -> None:
+        # The wheel carries only .py plus what these globs match, and nothing
+        # in CI notices a missing one: `--config example:hello` keeps working
+        # from the checkout and 404s for everyone who installed.
+        patterns = _load()["tool"]["setuptools"]["package-data"]["c64cast"]
+        pkg = os.path.join(_REPO, "c64cast")
+        shipped = [
+            os.path.relpath(os.path.join(root, name), pkg)
+            for sub in ("examples", "data")
+            for root, _dirs, files in os.walk(os.path.join(pkg, sub))
+            for name in files
+            if os.path.splitext(name)[1] in (".toml", ".json")
+        ]
+        self.assertTrue(shipped, "no packaged examples/schema found at all")
+        for rel in shipped:
+            with self.subTest(file=rel):
+                posix = rel.replace(os.sep, "/")
+                self.assertTrue(
+                    any(fnmatch.fnmatch(posix, pat) for pat in patterns),
+                    f"{posix} matches no package-data glob {patterns} — "
+                    "it would be missing from the wheel",
+                )
 
 
 if __name__ == "__main__":

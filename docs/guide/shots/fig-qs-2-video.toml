@@ -1,4 +1,4 @@
-#:schema ../../../c64cast.schema.json
+#:schema ../../../c64cast/data/c64cast.schema.json
 # fig-qs-2-video — video through the default multicolour hi-res mode.
 #
 # `start_s` seeks to a shot worth showing instead of leaving the timing to

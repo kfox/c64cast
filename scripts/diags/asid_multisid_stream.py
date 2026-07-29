@@ -24,7 +24,7 @@ Usage:
   python scripts/diags/asid_multisid_stream.py --pattern multispeed \
       --multiplier 8 --recipe --seconds 20 --port c64cast-asid-test
   # then, in another shell (set asid_port = "c64cast-asid-test" in the config):
-  scripts/c64cast.sh -u u64://192.168.2.64 --config config/examples/scene-asid.toml
+  scripts/c64cast.sh -u u64://192.168.2.64 --config example:scene-asid
 
 ASID frame format (spec https://github.com/thomasj/asid-protocol): F0 2D <cmd> <mask4>
 <msb4> <data...> F7 — cmd 0x4E = SID1, 0x50+k = SID(k+2). Register IDs per the

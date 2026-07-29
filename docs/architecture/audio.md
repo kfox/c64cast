@@ -545,7 +545,7 @@ Lifted verbatim (logic and constants) out of `SidFeatureStream`, which was the o
 
 The analyzer taps the capture callback, so `reactive = true` with `audio_source = "mic"`/`"listen"` needs `[audio].enabled` (the shared streamer owns the capture); `_validate_generative` **warns** rather than failing (`reactive` defaults True, so someone who only wanted silent generative visuals shouldn't have to opt out explicitly). Listen additionally warns on `reactive = false`, since a listen source exists only to drive the visuals — with reactivity off it opens nothing.
 
-Demo config: `config/examples/audio-reactive-input.toml`.
+Demo config: `c64cast/examples/audio-reactive-input.toml`.
 
 ## `audio_source.py` — AudioFileSource (audio-file reactive source)
 

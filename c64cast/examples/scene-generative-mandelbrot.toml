@@ -1,0 +1,34 @@
+#:schema ../data/c64cast.schema.json
+# Single-scene demo: a procedural Mandelbrot zoom rendered as a multicolor
+# bitmap.
+#
+# `t` drives an exponential zoom into a fixed "seahorse valley" point of
+# interest; the starting view already frames the whole familiar Mandelbrot
+# silhouette. float64 precision limits how far any zoom can go before it
+# collapses into per-pixel noise, so the zoom periodically resets to the
+# starting view rather than degrading — the loop is seamless in the sense
+# that it's a well-defined, endlessly repeating cycle, not a visible "snap".
+# Points strictly inside the set render black; everything else cycles hue by
+# smooth escape-time.
+#
+# Other sources: `source = "plasma"` / `"tunnel"` / `"fire"` (see the sibling
+# scene-generative-*.toml examples). Pure host-side numpy, no audio by
+# default (set `audio_source = "mic"` to layer the live mic — it won't make
+# the visuals react, just passes the mic through; see `reactive`/`audio_source
+# = "sid"` for that).
+#
+# Run:
+#   c64cast --config example:scene-generative-mandelbrot
+
+[ultimate64]
+url = "http://192.168.2.64"
+
+[playlist]
+interleave_videos = false
+
+[[scenes]]
+type = "generative"
+name = "Mandelbrot (mhires)"
+source = "mandelbrot"
+display = "mhires"
+duration_s = 30.0

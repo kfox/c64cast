@@ -851,6 +851,14 @@ def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]
 
 def _probe_extras() -> list[Diagnostic]:
     out: list[Diagnostic] = []
+    # An installed user has no project to `uv sync`; tell them to install the
+    # extra the way they installed c64cast (same reasoning as the
+    # checkout-gated .venv / uv.lock probes above).
+    hint = (
+        "uv sync --all-extras"
+        if _running_from_checkout()
+        else 'pip install "c64cast[{extra}]" (or [all])'
+    )
     for extra, module, used_for in _EXTRAS:
         try:
             spec = importlib.util.find_spec(module)
@@ -863,7 +871,7 @@ def _probe_extras() -> list[Diagnostic]:
                     category="extras",
                     subject=extra,
                     message=f"not installed (used for: {used_for})",
-                    hint="uv sync --all-extras",
+                    hint=hint.format(extra=extra),
                 )
             )
         else:

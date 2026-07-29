@@ -1,7 +1,7 @@
-#:schema ../../../c64cast.schema.json
+#:schema ../../../c64cast/data/c64cast.schema.json
 # fig-3-1-waveform — the three-voice SID oscilloscope.
 #
-# config/examples/scene-waveform.toml points `file` at the whole HVSC tree and
+# example:scene-waveform points `file` at the whole HVSC tree and
 # random-picks; a figure needs one named tune.
 #
 # `file` is not in the checkout — assets/ is git-ignored apart from its

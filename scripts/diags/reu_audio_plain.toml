@@ -1,4 +1,4 @@
-#:schema ../../c64cast.schema.json
+#:schema ../../c64cast/data/c64cast.schema.json
 # Diag config: REU-staged audio pump, PLAIN path (no bank-swap video).
 #
 # Drives start_for_reu_staged with the non-tracked REU_IRQ_HANDLER so the

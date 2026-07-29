@@ -24,6 +24,7 @@ from . import (
     __version__,
     dac_calibration,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
+    paths,
 )
 from . import config as cfgmod
 from ._native_io import silence_native_stderr
@@ -92,7 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument(
-        "--config", default=None, help="Path to TOML config (default: ./c64cast.toml if it exists)"
+        "--config",
+        default=None,
+        help="Path to TOML config, or example:NAME for a packaged demo "
+        "(see --list-examples) (default: ./c64cast.toml if it exists)",
     )
 
     p.add_argument(
@@ -256,6 +260,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--compat",
         action="store_true",
         help="Print the overlay × display-mode compatibility matrix and exit",
+    )
+    intro.add_argument(
+        "--list-examples",
+        action="store_true",
+        help="List the example configs that ship with c64cast (run one with "
+        "`--config example:NAME`) and exit",
+    )
+    intro.add_argument(
+        "--print-example",
+        metavar="NAME",
+        default=None,
+        help="Print a packaged example config to stdout and exit — redirect it "
+        "to a file to make it yours (`--print-example hello > c64cast.toml`)",
     )
     intro.add_argument(
         "--print-schema",
@@ -1246,6 +1263,22 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     if args.compat:
         print(introspect.render_compat())
         return 0
+    if args.list_examples:
+        print(introspect.render_list_examples())
+        return 0
+    if args.print_example is not None:
+        # Straight to stdout so `> c64cast.toml` makes an editable copy — the
+        # packaged original lives inside the install and isn't meant to be
+        # edited in place. A bad name must NOT exit 0: the caller is usually
+        # redirecting, and a happy exit would leave them an empty config.
+        try:
+            text = paths.resolve_example(args.print_example).read_text(encoding="utf-8")
+        except ValueError as e:
+            configure_logging(args.verbose or 0, args.log_file)
+            log.error("%s", e)
+            return 2
+        print(text, end="")
+        return 0
     if args.describe is not None:
         print(introspect.render_describe(args.describe))
         return 0
@@ -1359,13 +1392,18 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
       single-system config (no TOML on disk), one scene per argument.
       Mutually exclusive with ``--config``.
     * **Config-driven** — ``--config`` / ``./c64cast.toml`` / built-in
-      defaults, with CLI flags merged on top.
+      defaults, with CLI flags merged on top. An ``example:NAME`` target is
+      rewritten to the packaged demo's real path *here*, before anything reads
+      it, so the loader, the ensemble per-system resolver (which walks paths
+      relative to the master file), ``--doctor`` and the live-tune write-back
+      all stay prefix-unaware.
 
     The scheme-aware ``-u/--url`` target (or ``$C64CAST_URL``) is applied to the
     single system's connection fields in both single-system paths; in ensemble
     mode connection comes from the per-system TOMLs (per-system identity), so a
     CLI target there is rejected. Raises ``ConfigError`` (exit 5), or
     ``_CliUsageError`` / ``ValueError`` / ``RuntimeError`` (exit 2)."""
+    args.config = paths.resolve_config_spec(args.config)
     if args.inputs:
         if args.config:
             raise _CliUsageError(

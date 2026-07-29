@@ -1,24 +1,24 @@
 """Tests for the JSON-schema generator + committed schema file.
 
 Guards:
-  * the committed c64cast.schema.json matches a fresh `build_schema()`
-    (so `make schema` was run after a config change), and
+  * the committed c64cast/data/c64cast.schema.json matches a fresh
+    `build_schema()` (so `make schema` was run after a config change), and
   * the real example configs all validate against it (so the schema isn't
     accidentally over-strict and breaking editor autocomplete).
+
+Both the schema and the examples are read through `paths`, the same resolver
+the CLI uses, so these run against a checkout and an installed package alike.
 """
 
 from __future__ import annotations
 
-import glob
 import json
-import os
 import tomllib
 import unittest
 
-from c64cast import schema
+from c64cast import paths, schema
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_COMMITTED = os.path.join(_REPO_ROOT, "c64cast.schema.json")
+_COMMITTED = paths.packaged_schema_path()
 
 
 class SchemaBuildTest(unittest.TestCase):
@@ -27,7 +27,9 @@ class SchemaBuildTest(unittest.TestCase):
             committed = json.load(f)
         fresh = schema.build_schema()
         self.assertEqual(
-            committed, fresh, "c64cast.schema.json is stale — run `make schema` to regenerate."
+            committed,
+            fresh,
+            f"{_COMMITTED} is stale — run `make schema` to regenerate.",
         )
 
     def test_top_level_shape(self):
@@ -46,13 +48,9 @@ class SchemaValidatesExamplesTest(unittest.TestCase):
             self.skipTest("jsonschema not installed (dev dependency)")
         self.validator = Draft202012Validator(schema.build_schema())
 
-    def _configs(self):
-        yield os.path.join(_REPO_ROOT, "config", "c64cast.example.toml")
-        yield from sorted(glob.glob(os.path.join(_REPO_ROOT, "config", "examples", "*.toml")))
-
     def test_examples_validate(self):
-        for path in self._configs():
-            with self.subTest(config=os.path.relpath(path, _REPO_ROOT)):
+        for path in paths.example_config_paths():
+            with self.subTest(config=paths.example_name(path)):
                 with open(path, "rb") as f:
                     data = tomllib.load(f)
                 errors = sorted(self.validator.iter_errors(data), key=lambda e: list(e.path))

@@ -34,9 +34,14 @@ from . import introspect
 
 # Default value for the editor-schema directive written as the first line, so a
 # serialized config gets Taplo / Even-Better-TOML autocomplete just like the
-# shipped examples. Relative to the file's own location; callers writing into a
-# subdirectory pass their own (e.g. "../../c64cast.schema.json").
-DEFAULT_SCHEMA_PATH = "./c64cast.schema.json"
+# shipped examples. The schema ships *inside the package*
+# (`paths.packaged_schema_path()`), which is nowhere near an arbitrary output
+# file, so the default is the published URL — the one value that resolves from
+# any directory. `wizard.schema_directive_for` overrides it with a local path
+# whenever it can work one out, since that also works offline.
+DEFAULT_SCHEMA_PATH = (
+    "https://raw.githubusercontent.com/kfox/c64cast/main/c64cast/data/c64cast.schema.json"
+)
 
 # Never written to disk — it's a secret, supplied via the C64CAST_DMA_PASSWORD
 # env var or hand-added to a non-committed file (see docs/usage.md). Omitting it

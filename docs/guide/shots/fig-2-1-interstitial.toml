@@ -1,4 +1,4 @@
-#:schema ../../../c64cast.schema.json
+#:schema ../../../c64cast/data/c64cast.schema.json
 # fig-2-1-interstitial — the "UP NEXT" card between scenes.
 #
 # Two short scenes with a long interstitial, so the card is on screen for a

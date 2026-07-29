@@ -19,8 +19,9 @@ It counts down from launch and resets whenever a player provides input, so a
 game stays up while someone is playing and advances once the controls go quiet.
 For a self-running demo, set a long `duration_s` (and optionally `input_source =
 "none"`) so it plays for the whole window. See the `[[scenes]]` launcher block in
-[c64cast.example.toml](../../config/c64cast.example.toml) and
-[config/examples/scene-launcher.toml](../../config/examples/scene-launcher.toml).
+[c64cast.example.toml](../../c64cast/examples/c64cast.example.toml) and
+[scene-launcher.toml](../../c64cast/examples/scene-launcher.toml)
+(`c64cast --config example:scene-launcher`).
 
 Input is read off the hardware and deliberately excludes the modifier keys
 c64cast itself scans (Commodore / SHIFT / CTRL — those drive pause/skip/style).

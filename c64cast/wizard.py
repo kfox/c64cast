@@ -9,7 +9,7 @@ the loader would reject — and it can't drift from ``--describe``.
 
 Two build modes:
 
-* **Single scene** (the shape every ``config/examples/`` file uses, which the
+* **Single scene** (the shape every packaged example uses, which the
   Playlist runs in single-scene loop mode) — a scene plus its overlays and the
   essential globals (U64 URL, video system, audio).
 * **Multi-scene playlist** — several scenes in order with the "UP NEXT"
@@ -33,7 +33,7 @@ import os
 
 from . import config as cfgmod
 from . import config_serialize as ser
-from . import introspect
+from . import introspect, paths
 
 # Scene type -> (default asset dir, accepted extensions) for the file picker.
 # Mirrors the DEFAULT_*_DIR / *_EXTS constants the loader resolves against, so
@@ -262,23 +262,26 @@ def _section_field_docs(section_name: str) -> tuple[introspect.FieldDoc, ...]:
 
 
 def schema_directive_for(out_path: str) -> str:
-    """Best-effort relative path from the output file's directory to the
-    committed ``c64cast.schema.json`` (walking up from cwd), so the written
-    ``#:schema`` line points at the real schema for editor autocomplete.
-    Falls back to the serializer default when the schema isn't found."""
-    schema_name = "c64cast.schema.json"
+    """Path from the output file's directory to the JSON schema that ships
+    inside the package (:func:`paths.packaged_schema_path`), for the written
+    ``#:schema`` line that gives the new config editor autocomplete.
+
+    Relative when the schema sits *inside* the output file's own directory tree
+    — a source checkout, or a project-local ``.venv`` — because that survives
+    moving the whole tree. Absolute as soon as it would take a single ``..``: a
+    user- or system-level install turns the relative form into an unreadable
+    climb out to ``site-packages`` that also breaks the moment the config moves.
+    Falls back to the serializer default (the published URL) if the schema
+    somehow isn't on disk."""
+    schema = paths.packaged_schema_path()
+    if not schema.is_file():
+        return ser.DEFAULT_SCHEMA_PATH
     out_dir = os.path.dirname(os.path.abspath(out_path))
-    cur = os.getcwd()
-    while True:
-        candidate = os.path.join(cur, schema_name)
-        if os.path.isfile(candidate):
-            rel = os.path.relpath(candidate, out_dir)
-            # Keep "./foo" style for same-dir for readability.
-            return rel if rel.startswith(("..", os.sep)) else f".{os.sep}{rel}"
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            return ser.DEFAULT_SCHEMA_PATH
-        cur = parent
+    rel = os.path.relpath(schema, out_dir)
+    if rel.startswith(".."):
+        return str(schema)
+    # Keep "./foo" style for readability.
+    return rel if rel.startswith(os.sep) else f".{os.sep}{rel}"
 
 
 # ---------------------------------------------------------------------------

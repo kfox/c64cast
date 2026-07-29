@@ -11,24 +11,23 @@ honest with three checks:
   2. Section-field coverage: c64cast.example.toml (the kitchen-sink
      reference) documents every config-section field, minus a small,
      explicitly-justified exempt set.
-  3. Type coverage: config/examples/ ships a demo for every scene type and
+  3. Type coverage: the packaged examples ship a demo for every scene type and
      every overlay type (so a newly added type can't land undocumented).
+
+The configs are enumerated through `paths`, the same resolver `--config
+example:NAME` uses, so these checks cover exactly what ships.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import glob
-import os
 import tomllib
 import unittest
 
 from c64cast import config as cfgmod
-from c64cast import introspect
+from c64cast import introspect, paths
 
-_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_EXAMPLE = os.path.join(_REPO, "config", "c64cast.example.toml")
-_EXAMPLES_DIR = os.path.join(_REPO, "config", "examples")
+_EXAMPLE = paths.resolve_example("c64cast.example")
 
 _SECTION_DC = {
     "hardware": cfgmod.HardwareCfg,
@@ -81,8 +80,11 @@ _COVERAGE_EXEMPT = {
 
 
 def _all_configs():
-    yield _EXAMPLE
-    yield from sorted(glob.glob(os.path.join(_EXAMPLES_DIR, "*.toml")))
+    return paths.example_config_paths()
+
+
+def _name(path):
+    return paths.example_name(path)
 
 
 def _load(path):
@@ -103,7 +105,7 @@ class ForwardStrictnessTest(unittest.TestCase):
                 unknown = set(data[section]) - valid
                 self.assertFalse(
                     unknown,
-                    f"{os.path.relpath(path, _REPO)} [{section}] unknown keys: {sorted(unknown)}",
+                    f"{_name(path)} [{section}] unknown keys: {sorted(unknown)}",
                 )
 
     def test_scene_keys_are_real(self):
@@ -113,7 +115,7 @@ class ForwardStrictnessTest(unittest.TestCase):
                 unknown = set(s) - valid
                 self.assertFalse(
                     unknown,
-                    f"{os.path.relpath(path, _REPO)} [[scenes]] unknown keys: {sorted(unknown)}",
+                    f"{_name(path)} [[scenes]] unknown keys: {sorted(unknown)}",
                 )
 
     def test_clip_keys_are_real(self):
@@ -127,7 +129,7 @@ class ForwardStrictnessTest(unittest.TestCase):
             try:
                 cfgmod._validate_clips(clips)
             except ValueError as e:
-                self.fail(f"{os.path.relpath(path, _REPO)} [[performance.clips]] invalid: {e}")
+                self.fail(f"{_name(path)} [[performance.clips]] invalid: {e}")
 
     def test_overlay_keys_are_real(self):
         params = {od.name: {p.name for p in od.params} for od in introspect.overlay_docs()}
@@ -135,14 +137,11 @@ class ForwardStrictnessTest(unittest.TestCase):
             for s in _load(path).get("scenes", []):
                 for ov in s.get("overlays", []):
                     ot = ov.get("type")
-                    self.assertIn(
-                        ot, params, f"{os.path.relpath(path, _REPO)} unknown overlay type {ot!r}"
-                    )
+                    self.assertIn(ot, params, f"{_name(path)} unknown overlay type {ot!r}")
                     unknown = set(ov) - {"type"} - params[ot]
                     self.assertFalse(
                         unknown,
-                        f"{os.path.relpath(path, _REPO)} overlay {ot!r} "
-                        f"unknown keys: {sorted(unknown)}",
+                        f"{_name(path)} overlay {ot!r} unknown keys: {sorted(unknown)}",
                     )
 
 
@@ -167,7 +166,7 @@ class SectionCoverageTest(unittest.TestCase):
 class TypeCoverageTest(unittest.TestCase):
     def _examples_union(self):
         scene_types, overlay_types = set(), set()
-        for path in sorted(glob.glob(os.path.join(_EXAMPLES_DIR, "*.toml"))):
+        for path in _all_configs():
             for s in _load(path).get("scenes", []):
                 scene_types.add(s.get("type", "webcam"))
                 for ov in s.get("overlays", []):
@@ -177,12 +176,12 @@ class TypeCoverageTest(unittest.TestCase):
     def test_every_scene_type_has_a_demo(self):
         scene_types, _ = self._examples_union()
         missing = set(introspect.scene_type_names()) - scene_types
-        self.assertFalse(missing, f"no config/examples demo for scene types: {sorted(missing)}")
+        self.assertFalse(missing, f"no packaged example demo for scene types: {sorted(missing)}")
 
     def test_every_overlay_has_a_demo(self):
         _, overlay_types = self._examples_union()
         missing = set(introspect.overlay_names()) - overlay_types
-        self.assertFalse(missing, f"no config/examples demo for overlays: {sorted(missing)}")
+        self.assertFalse(missing, f"no packaged example demo for overlays: {sorted(missing)}")
 
 
 if __name__ == "__main__":
