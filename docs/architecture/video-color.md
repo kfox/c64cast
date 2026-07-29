@@ -17,9 +17,9 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 
 ### `WebcamSource` — the shared camera broker
 
-An always-on broker. A single `cv2.VideoCapture` is single-consumer (every `.read()` consumes the next device frame; concurrent reads from two threads aren't safe), so one background grab thread owns the capture, continuously reads the newest frame, and `read()` hands out an independent **copy** of the latest frame. That lets the webcam scene (when active) and the always-on vision controller (`vision.py`) share **one** physical camera with no contention — and keeps the live-webcam path low-latency (always the freshest frame, stale ones overwritten). `WebcamScene._read_frame()` is unchanged — it still calls `source.read()`. The camera is opened once per stack in `cli.py` when `needs_webcam or cfg.vision.enabled`, stored on `SystemStack.source`, released at teardown.
+An always-on broker. A single `cv2.VideoCapture` is single-consumer (every `.read()` consumes the next device frame; concurrent reads from two threads aren't safe), so one background grab thread owns the capture, continuously reads the newest frame, and `read()` hands out an independent **copy** of the latest frame. That lets the webcam scene (when active) and the always-on vision controller (`vision.py`) share **one** physical camera with no contention — and keeps the live-webcam path low-latency (always the freshest frame, stale ones overwritten). `WebcamScene._read_frame()` just calls `source.read()`. The camera is opened once per stack in `cli.py` when `needs_webcam or cfg.vision.enabled`, stored on `SystemStack.source`, released at teardown.
 
-`WebcamSource.__init__` takes `device: int | str` and resolves it through `camera.resolve_camera_index` (see the `camera.py` note below): a plain int stays a cv2 index opened with the default `CAP_ANY` (byte-identical to the historical behavior), while a **string** — a camera name substring or USB `VID:PID` — is matched against enumerated cameras and opened with the *matched backend* (`cv2.VideoCapture(index, backend)`), because the enumerated index is only valid for the apiPreference it was enumerated with. The string form is what makes a roaming USB capture stick (e.g. a Cam Link) selectable by identity instead of by a reboot-unstable index.
+`WebcamSource.__init__` takes `device: int | str` and resolves it through `camera.resolve_camera_index` (see the `camera.py` note below): a plain int stays a cv2 index opened with the default `CAP_ANY`, while a **string** — a camera name substring or USB `VID:PID` — is matched against enumerated cameras and opened with the *matched backend* (`cv2.VideoCapture(index, backend)`), because the enumerated index is only valid for the apiPreference it was enumerated with. The string form is what makes a roaming USB capture stick (e.g. a Cam Link) selectable by identity instead of by a reboot-unstable index.
 
 ### `AVFileSource` — video playback
 
@@ -35,7 +35,7 @@ Config: `decode_target_size` / `_plan_decode_size`.
 
 **The gap this closes.** The frame-selection model above is correct, but only works if the demuxer can produce frames in real time. It does not cover **supply**: when the decoder can't keep up, `current_frame` returns the newest frame it *has*, which falls progressively further behind the audio clock. Video lags and appears to drift, worst on heavy 4K clips.
 
-**Root cause.** The demux loop converted every frame to BGR at **full source resolution** (`frame.to_ndarray("bgr24")`), and only then did the display mode `cv2.resize` it down to ≤320px. For a 4K source that convert-then-downscale costs ≈40 ms/frame on the U64 host — over the ≈33 ms budget at 29.97 fps, before codec decode is even counted.
+**Why the decode size is the lever.** Converting every frame to BGR at **full source resolution** (`frame.to_ndarray("bgr24")`) and leaving the downscale to the display mode's `cv2.resize` to ≤320px costs ≈40 ms/frame for a 4K source on the U64 host — over the ≈33 ms budget at 29.97 fps, before codec decode is even counted. The pixels thrown away by the resize are paid for twice: once to convert, once to discard.
 
 **The fix.** `VideoScene` passes the display mode's `frame_target_size` — the only resolution it actually consumes — as `decode_target_size`. The demux loop plans a decode size once from the first frame (`_plan_decode_size`) and downscales **during** the yuv→bgr swscale pass, via `av.VideoFrame.reformat(w, h, "bgr24")`.
 
@@ -52,9 +52,9 @@ The same downscale applies to the one-shot color pre-scan (`_scan_video_samples`
 
 The auto_fit and force_palette pre-scan needs a representative frame sample across the *whole* source, not real-time playback.
 
-**The problem.** Decoding every frame — an earlier `if i % stride: continue` skipped only accumulation, not decode — is decode-bound and scales with file length:
+**Why not sequential decode.** Decoding every frame is decode-bound and scales with file length. Striding the loop doesn't help: an `if i % stride: continue` skips accumulation, not decode, so the cost is unchanged.
 
-| Clip | Old scan time |
+| Clip | Sequential decode |
 | --- | --- |
 | 61 s, 1080p h264 | 0.56 s |
 | 266 s, 4K AV1 | **14.6 s** |
@@ -65,7 +65,7 @@ That is a startup pause growing without bound.
 
 Keyframe-only is exactly right here: color stats are distribution-based, so a keyframe near each timestamp represents its region as well as an exact frame would. And it makes the scan roughly **constant-time regardless of length or codec**:
 
-| Clip | New scan time |
+| Clip | Seek-sampled |
 | --- | --- |
 | 61 s, 1080p h264 | ≈0.9 s |
 | 266 s, 4K AV1 | ≈3.1 s |
@@ -138,7 +138,7 @@ if self._pts_offset is None:
     self._pts_offset = pts - self._pts_anchor_target
 ```
 
-already generalizes the old always-rebase-to-zero behavior. An untouched scene's `start_s` seek is bit-for-bit unchanged, because the anchor stays `0.0`; a transport seek's first post-seek frame rebases to land exactly on `target_s`. This is the mechanism behind "the clock **is** file position once touched" — design decision 2 of the transport plan, which avoids any separate `file_offset_s` bookkeeping.
+generalizes rebase-to-zero. An untouched scene leaves the anchor at `0.0`, so its `start_s` seek rebases exactly as an unconditional rebase would; a transport seek's first post-seek frame rebases to land exactly on `target_s`. This is the mechanism behind "the clock **is** file position once touched" — design decision 2 of the transport plan, which avoids any separate `file_offset_s` bookkeeping.
 
 **`set_muted(bool)`** latches a flag that `_emit_audio` checks first. Once muted, packets are dropped before gain and noise-gate, permanently for that scene. This is the `loop_audio = "mute"` escape valve; note that nothing already queued downstream in `AudioStreamer` or `UltimateAudioSampler` is retracted.
 
@@ -148,7 +148,7 @@ already generalizes the old always-rebase-to-zero behavior. An untouched scene's
 
 The default `loop_audio = "on"` keeps audio playing across every transport splice instead of muting. Two small `AVFileSource` additions serve it.
 
-**The `_emit_audio` seek guard.** It now early-returns while `self._pending_seek is not None`. Audio decoded from the stale pre-seek read position must not reach the consumer, or it would play *after* the splice's downstream `flush()` had already retracted the queue.
+**The `_emit_audio` seek guard.** It early-returns while `self._pending_seek is not None`. Audio decoded from the stale pre-seek read position must not reach the consumer, or it would play *after* the splice's downstream `flush()` had already retracted the queue.
 
 That `_pending_seek` read is unlocked — racy, but benign. The consumer-side flush epoch closes the residual one-blob window: a chunk slipping through right as the seek lands is discarded by `AudioStreamer` / `UltimateAudioSampler`'s epoch check.
 
@@ -168,7 +168,7 @@ Each mode's `(width, height)` — the only resolution it downscales a source fra
 
 ### Bitmap engage clean-field (`engage_bitmap_mode`)
 
-The hires/mhires VIC bring-up is one shared module-level primitive, `engage_bitmap_mode(api, *, d011, d018, d016, …)`. It is called by **both** the single-buffer `HiresDisplayMode`/`MultiHiresDisplayMode` `setup()` **and** `voice_scope.VoiceScopeRenderer._apply_vic_hires_bank`, the waveform/midi oscilloscope — so the engage invariant and the VIC-register set live in exactly one place and cannot drift. They previously did: the scope was left clearing *after* its `$D011` flip.
+The hires/mhires VIC bring-up is one shared module-level primitive, `engage_bitmap_mode(api, *, d011, d018, d016, …)`. It is called by **both** the single-buffer `HiresDisplayMode`/`MultiHiresDisplayMode` `setup()` **and** `voice_scope.VoiceScopeRenderer._apply_vic_hires_bank`, the waveform/midi oscilloscope — so the engage invariant and the VIC-register set live in exactly one place and cannot drift apart. Two copies drift in one particular direction — one of them ends up clearing *after* its `$D011` flip instead of before, which is precisely the garbage field the invariant exists to prevent.
 
 **The invariant.** Zero both the `$2000` bitmap **and** screen RAM (`$0400`) *before* flipping `$D011` into bitmap mode, and write `$D018`/`$D016` first as well. The window between the mode flip and the first composed frame then shows solid black, rather than uninitialized-RAM garbage or a colour ghost of the prior scene.
 
@@ -196,7 +196,7 @@ Alongside the transient `fade_alpha`, every mode carries a `user_dim ∈ (0, 1]`
 
 * `palette.quantize_distances()` returns the full (N, 16) distance matrix via the `(x-p)²` expansion — avoids the (N, 16, 3) broadcast tensor the naive form would build.
 * `MCMDisplayMode` reuses one distance matrix across both the bg-color picker and the per-cell FG search, and vectorizes the original 8-iteration Python loop into one `argmin`.
-* `MultiHiresDisplayMode` has two render paths. The legacy global-4 path (cheap/vivid/grayscale palette modes) uses a 16-entry LUT to remap every palette index to the nearest of the 4 globally-chosen colors (in weighted BGR space) rather than zero-defaulting unused indices to bg0 — that older behavior silently bled large patches of background into the image. The new per-cell path (default `palette_mode = "percell"`) uses VIC-II MCBM's per-cell `c1`/`c2`/`c3` capacity: picks `bg0` globally, then for every 4×8 cell picks its own top-3 non-bg colors by population and resolves each of the 32 cell pixels against {bg0, c1_cell, c2_cell, c3_cell}. Frames carry up to `bg0 + 3×1000 = 3001` distinct colors instead of 4, which is what VIC-II MCBM was designed to support; the older global path was leaving most of that capacity unused.
+* `MultiHiresDisplayMode` has two render paths. The **global-4** path (cheap/vivid/grayscale palette modes) uses a 16-entry LUT to remap every palette index to the nearest of the 4 globally-chosen colors (in weighted BGR space); zero-defaulting the unused indices to bg0 instead is the cheaper option and it silently bleeds large patches of background into the image. The **per-cell** path (default `palette_mode = "percell"`) uses VIC-II MCBM's per-cell `c1`/`c2`/`c3` capacity: picks `bg0` globally, then for every 4×8 cell picks its own top-3 non-bg colors by population and resolves each of the 32 cell pixels against {bg0, c1_cell, c2_cell, c3_cell}. Frames carry up to `bg0 + 3×1000 = 3001` distinct colors instead of 4 — the capacity VIC-II MCBM was designed around, and which the global path leaves almost entirely unused.
 * `PETSCIIDisplayMode` delegates glyph + color selection to a `PetsciiStyle` from `petscii_styles.py` (see below). The default style is the original luma → 11-char ramp + per-cell quantized color; cycling via SHIFT swaps in increasingly abstract alternatives (halftone blocks, random graphics glyphs, letter rain, etc.).
 
 ### `palette_mode` — per-cell slot allocation
@@ -204,9 +204,9 @@ Alongside the transient `fade_alpha`, every mode carries a `user_dim ∈ (0, 1]`
 `MCMDisplayMode` and `MultiHiresDisplayMode` accept a `palette_mode` constructor argument (configurable per-scene via `palette_mode = "percell"|"cheap"|"vivid"|"grayscale"` in TOML, default `"percell"`):
 
 * **`"percell"`** — MultiHires only. MCM treats it as an alias for `"cheap"`, since MCM already picks its fg per cell. See the detailed breakdown below.
-* `"cheap"` — legacy global-4. HSV saturation boost (`boost_saturation`, factor 1.8) before quantization plus a `make_gray_penalty` bias added to the per-pixel distance matrix. The penalty pushes the 5 gray-axis palette entries + cyan (which sits at the pale-chromatic boundary and over-selects on warm-gray skin) far enough that borderline pixels flip to a chromatic neighbor. Top-N slot picks go through `_ema_counts` (EMA-smoothed bincount, `PALETTE_PICK_EMA_ALPHA = 0.25`) and are then sorted by palette index, so the chosen SET only flips on sustained scene changes and a stable SET always lands in a stable slot ORDER — without this the picks flickered between e.g. cyan and orange every few frames as borderline counts tied differently, rewriting screen + color RAM + bg registers and producing a visible palette flash. Still the default for MCM.
+* `"cheap"` — global-4. HSV saturation boost (`boost_saturation`, factor 1.8) before quantization plus a `make_gray_penalty` bias added to the per-pixel distance matrix. The penalty pushes the 5 gray-axis palette entries + cyan (which sits at the pale-chromatic boundary and over-selects on warm-gray skin) far enough that borderline pixels flip to a chromatic neighbor. Top-N slot picks go through `_ema_counts` (EMA-smoothed bincount, `PALETTE_PICK_EMA_ALPHA = 0.25`) and are then sorted by palette index, so the chosen SET only flips on sustained scene changes and a stable SET always lands in a stable slot ORDER — without this the picks flickered between e.g. cyan and orange every few frames as borderline counts tied differently, rewriting screen + color RAM + bg registers and producing a visible palette flash. Still the default for MCM.
 * `"vivid"` — same biases, plus the 3 (MCM) / 4 (MultiHires) global slots are picked by `pick_diverse_top_n` instead of raw frequency: the most-populated index always wins slot 0, then each subsequent slot prefers a populated entry whose hue is at least 45° away from already-chosen chromatic picks. Falls back to most-populated when no diverse candidate exists. Use when a scene keeps reducing to two-or-three near-shades.
-* `"grayscale"` — restricts every quantization decision to the 5 gray-axis palette entries (black, white, dark gray, gray, light gray). Skips the saturation boost (wasted work on gray-only output) and uses `make_gray_penalty(chromatic_strength=GRAYSCALE_CHROMATIC_PENALTY=1e10)` so every chromatic entry is dominated in the per-pixel argmin. Global slot picking is **fixed** (not adaptive) in luminance order: MHires uses `(0, 11, 12, 15)` = black, dark gray, gray, light gray (pure white is dropped for better mid-tone resolution); MCM uses bgs `(11, 12, 15)` with FG resolving to `{0, 1}` for full 5-level coverage per screen. The MHires LUT is precomputed once at `__init__`. Adaptive picking from only 5 gray entries was a perf disaster: per-frame tie-break shuffles flipped the slot order, which rebuilt the LUT, which remapped every pixel to a different slot in the 8 KB bitmap, which busted the chunked-delta cache and forced full bitmap + screen RAM + color RAM uploads every frame. Result is the same "old TV broadcast" aesthetic but at the full system frame rate (60 NTSC / 50 PAL) instead of ≈13 fps. Note that in MCM only black (0) and white (1) survive into the FG slot (color RAM bit 3 = multicolor flag steals the high bit, so FG is restricted to indices 0..7).
+* `"grayscale"` — restricts every quantization decision to the 5 gray-axis palette entries (black, white, dark gray, gray, light gray). Skips the saturation boost (wasted work on gray-only output) and uses `make_gray_penalty(chromatic_strength=GRAYSCALE_CHROMATIC_PENALTY=1e10)` so every chromatic entry is dominated in the per-pixel argmin. Global slot picking is **fixed** (not adaptive) in luminance order: MHires uses `(0, 11, 12, 15)` = black, dark gray, gray, light gray (pure white is dropped for better mid-tone resolution); MCM uses bgs `(11, 12, 15)` with FG resolving to `{0, 1}` for full 5-level coverage per screen. The MHires LUT is precomputed once at `__init__`. Adaptive picking from only 5 gray entries is a perf trap: per-frame tie-break shuffles flip the slot order, which rebuilds the LUT, which remaps every pixel to a different slot in the 8 KB bitmap, which busts the chunked-delta cache and forces full bitmap + screen RAM + color RAM uploads every frame — ≈13 fps. Pinning the order costs nothing visually and holds the same "old TV broadcast" aesthetic at the full system frame rate (60 NTSC / 50 PAL). Note that in MCM only black (0) and white (1) survive into the FG slot (color RAM bit 3 = multicolor flag steals the high bit, so FG is restricted to indices 0..7).
 
 #### How `"percell"` works
 
@@ -220,7 +220,7 @@ Picks are sorted by palette index for delta-cache stability, and bg0 is excluded
 
 **The bg0 poison-filler guard.** A cell with fewer than 3 distinct non-bg0 colors present — mostly-bg0 cells, which are the norm under a small forced palette — **pads its surplus slots with bg0**, not with an arbitrary zero-count palette index.
 
-The old padding leaked an out-of-palette color, for instance green into a `[0,4,6,14]` cast, and churned slot order frame to frame. The VIC briefly rendered that during the non-atomic screen/color/bitmap write tear, which on TeensyROM serial showed up as green-square flicker and flashing letterbox edges. bg0 in a filler slot is a harmless duplicate, since the `%00` code already reaches it.
+Padding with an arbitrary zero-count index leaks an out-of-palette color — green into a `[0,4,6,14]` cast, say — and churns slot order frame to frame. The VIC renders that briefly during the non-atomic screen/color/bitmap write tear, which on a slow transport like TeensyROM serial reads as green-square flicker and flashing letterbox edges. bg0 in a filler slot is a harmless duplicate, since the `%00` code already reaches it.
 
 **Resolving pixels.** Each of the cell's 32 pixels resolves directly against `{bg0, c1_cell, c2_cell, c3_cell}` via `take_along_axis` on the `(1000, 32, 16)` cell-shaped distance tensor. There is no LUT step, because there is no global slot remap to apply.
 
@@ -256,7 +256,7 @@ A per-pixel scan pushing each pixel's quantization error onto its yet-unvisited 
 
 **Why they are integrated differently.** Both are Python-level loops, not vectorizable across pixels, since each depends on its predecessors' diffused error. So they are a **final-step replacement** rather than a `flat`-level perturbation.
 
-`MultiHiresDisplayMode._compose_percell` and MCM's per-cell `fa` computation still pick each cell's *candidate set* — `{bg0, c1, c2, c3}` and `{bg0, bg1, bg2, fg}` respectively — exactly as before, through the existing EMA-smoothed histograms. Dithering replaces only the final per-pixel-within-cell code assignment: `d_cand.argmin` becomes `error_diffuse_cells(pixels_cell, candidates_bgr, method, strength)`. That loops over the small in-cell pixel count (32 for mhires, 4 for MCM) while staying vectorized across all 1000 cells at each step, rather than looping cell by cell.
+`MultiHiresDisplayMode._compose_percell` and MCM's per-cell `fa` computation still pick each cell's *candidate set* — `{bg0, c1, c2, c3}` and `{bg0, bg1, bg2, fg}` respectively — through the same EMA-smoothed histograms, dithering or not. Dithering replaces only the final per-pixel-within-cell code assignment: `d_cand.argmin` becomes `error_diffuse_cells(pixels_cell, candidates_bgr, method, strength)`. That loops over the small in-cell pixel count (32 for mhires, 4 for MCM) while staying vectorized across all 1000 cells at each step, rather than looping cell by cell.
 
 Hires — 2 colors, a global `bg` plus a per-8×8-cell sampled `fg` — gets the same treatment over 8×8 blocks.
 
@@ -264,7 +264,7 @@ Hires — 2 colors, a global `bg` plus a per-8×8-cell sampled `fg` — gets the
 
 That is precisely why `"auto"` never picks these for a motion scene: independently-diffused frames read as shimmer even though any single frame looks great. The ordered family's fixed pattern does not have this problem.
 
-**Coverage differences.** MCM has no separate percell-vs-global `palette_mode` branch — `fa` is computed the same way regardless — so its FS/Atkinson dithering applies unconditionally. mhires' only fires under `palette_mode = "percell"`; the legacy global-4 `_compose_global` path has no per-cell candidate structure to dither against, though it still gets the ordered-family offset for free, applied upstream in `flat`.
+**Coverage differences.** MCM has no separate percell-vs-global `palette_mode` branch — `fa` is computed the same way regardless — so its FS/Atkinson dithering applies unconditionally. mhires' only fires under `palette_mode = "percell"`; the global-4 `_compose_global` path has no per-cell candidate structure to dither against, though it still gets the ordered-family offset for free, applied upstream in `flat`.
 
 #### `"auto"` resolution
 
@@ -287,7 +287,7 @@ Implemented in `palette.py`. Selects the *color space* the nearest-palette decis
 
 The swap is fully contained in `quantize_distances_for(flat, perceptual=…)` / `quantize_flat_for`. Every downstream compose decision — per-pixel argmin, bg/fg picks, per-cell candidate resolution, error-diffusion candidate distances — operates on the returned `(N,16)` distance matrix, so the modes call those instead of the fixed pair and nothing else in the pipeline changes shape.
 
-**Perceptual swaps only the distance space, not the shaping.** `channel_boost` and `gray_penalty` still apply, and this is load-bearing. An earlier revision dropped both, on the reasoning that they were weighted-BGR crutches. Hardware A/B then showed flat desaturated regions — a pale sky — fragmenting into drab gray under the accurate-but-neutral Lab match. The gray penalty is what keeps those regions chromatic, and `channel_boost` holds the C64-friendly hues.
+**Perceptual swaps only the distance space, not the shaping.** `channel_boost` and `gray_penalty` still apply, and this is load-bearing. Dropping them as weighted-BGR crutches is the tempting move and it is wrong: hardware A/B shows flat desaturated regions — a pale sky — fragmenting into drab gray under the accurate-but-neutral Lab match. The gray penalty is what keeps those regions chromatic, and `channel_boost` holds the C64-friendly hues.
 
 The gray penalty and the percell code/quant hysteresis bonuses are all d²-space quantities, so they are scaled by `palette.PERCEPTUAL_DIST_SCALE` (≈1/3, the Lab-vs-weighted-BGR magnitude ratio for equal physical gaps). Their tuned strength therefore carries over.
 
@@ -307,7 +307,7 @@ No-op everywhere else: MCM already picks a single fg per cell by error, and the 
 
 **The four strategies:**
 
-* **`"frequency"`** — the historical behavior. The 3 most-populated non-bg0 colors, ranked on the EMA-smoothed per-cell histogram. Temporally stable.
+* **`"frequency"`** — the default. The 3 most-populated non-bg0 colors, ranked on the EMA-smoothed per-cell histogram. Temporally stable.
 * **`"luminance"`** — darkest, median, and brightest present color by `palette.PALETTE_LUMA` (a Rec.601 luma per palette entry), so a cell's full tonal span survives even when one tone dominates the count.
 * **`"contrast"`** — the two luma extremes, plus the present color whose minimum luma-distance to both extremes is largest. A farthest-point pick maximizing tonal spread.
 * **`"error-min"`** — the trio minimizing the cell's summed per-pixel reconstruction error against `{bg0,c1,c2,c3}`.
@@ -344,7 +344,7 @@ Range 0..1, default 0.25. A single dial over the mhires `percell` path's two *te
 
 | `s` | Behavior |
 | --- | --- |
-| `1.0` | Legacy values: `_ema_alpha = PERCELL_PICK_EMA_ALPHA`, full hysteresis. Most stable, ghostiest. |
+| `1.0` | Full smoothing: `_ema_alpha = PERCELL_PICK_EMA_ALPHA`, full hysteresis. Most stable, ghostiest. |
 | `0.0` | `_ema_alpha = 1.0` (new frame fully replaces count history) and both hysteresis bonuses zeroed. Tracks the source frame-exactly — no after-image, but grainy content can flicker. |
 | between | Lerps both: `_ema_alpha = 1 - s·(1-0.15)`, `hyst = base·s·penalty_scale`. |
 
@@ -358,7 +358,7 @@ Threaded `ColorCfg.motion_smoothing` → `_build_display_mode` → `MultiHiresDi
 
 Since neither buffer accounts for the ghost on its own, a combined dial is the correct control.
 
-**Why 0.25.** Picked by an on-hardware flicker/ghost A/B on the U64 — WarGames hard cuts for the after-image, grainy dark footage for flicker — as the lowest value where flicker stays acceptable. It is a large ghost reduction over the old always-on 1.0 behavior.
+**Why 0.25.** Picked by an on-hardware flicker/ghost A/B on the U64 — WarGames hard cuts for the after-image, grainy dark footage for flicker — as the lowest value where flicker stays acceptable. It is a large ghost reduction against the `1.0` row above.
 
 `validate_motion_smoothing_cfg` and `doctor._validate_motion_smoothing` bound it 0..1 and note a non-default value on the mhires percell scenes it affects. Orthogonal to `cell_strategy` (which 3 colours), `dither` (per-pixel fill), and `color_match` (distance space).
 
@@ -396,7 +396,7 @@ Any uncertainty — no REU, a failed query, `--skip-probe`, a non-REU backend �
 
 **Bitmap modes (Hires/MultiHires) — double-buffer.** Bitmap and screen are REUWRITE-staged, then DMA'd into the *off-screen* VIC bank. A C64-side raster IRQ at `$0314` flips `$DD00` at vblank for a tear-free swap — this is what eliminates the scene-cut whole-screen flashes.
 
-**Coexistence with the REU audio pump** is fine on any scene: the bank-swap installer picks a **merged** `$0314` dispatcher whose non-raster branch JMPs to the audio pump at `$C100`, servicing both IRQ sources through one hook. This is what lifted the earlier `validate_scene_cfg` mutex against `use_reu_staged + use_reu_pump`, which no longer exists.
+**Coexistence with the REU audio pump** is fine on any scene: the bank-swap installer picks a **merged** `$0314` dispatcher whose non-raster branch JMPs to the audio pump at `$C100`, servicing both IRQ sources through one hook. That merged dispatcher is why `use_reu_staged` and `use_reu_pump` need no mutual exclusion in `validate_scene_cfg`.
 
 MCM does not support staging yet.
 
@@ -460,4 +460,4 @@ Hardware-verified on the U64: a `generative plasma` run with `force_palette=8` r
 
 `Playlist.run` uses deadline-based pacing: each frame advances a `next_deadline` by `frame_time` (resolved per-scene by `_frame_time_for(scene)`). If the wall clock has fallen more than two frame_times behind the deadline, the deadline snaps forward — dropping the missed frames — instead of bursting to catch up. All built-in scenes follow the system rate except the lower-rate defaults above (bitmap frame-pushing scenes, `WaveformScene`, `MidiScene`). Animation logic that uses `current_time` keeps tracking wall-clock time correctly across dropped frames.
 
-`_crop_to_aspect()` is shared aspect-correction logic; previously inlined in three places. `_apply_aspect(img, aspect_mode)` dispatches over it: `"crop"` → `_crop_to_aspect` (center-crop to fill — what webcam/video always use and slideshow's default), `"fit"` → `_fit_to_aspect` (letterbox/pillarbox, black pad), `"stretch"` → identity (the mode's resize distorts to fill). Only `SlideshowScene` reads the `aspect_mode` config field today.
+`_crop_to_aspect()` is the shared aspect-correction primitive. `_apply_aspect(img, aspect_mode)` dispatches over it: `"crop"` → `_crop_to_aspect` (center-crop to fill — what webcam/video always use and slideshow's default), `"fit"` → `_fit_to_aspect` (letterbox/pillarbox, black pad), `"stretch"` → identity (the mode's resize distorts to fill). Only `SlideshowScene` reads the `aspect_mode` config field today.

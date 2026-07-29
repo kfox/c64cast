@@ -68,7 +68,7 @@ Module helpers `_apply_palette` and `_apply_force_colors`, both routed through `
 
 **`col`** snaps its up-to-3 `[R,G,B]` slots to nearest C64 indices via `palette.nearest_palette_index` (perceptual/Lab), builds a source-scan-free `palette.build_fixed_color_map`, and installs it live with the mode's force toggle on. It snaps the mode to `percell` — the invariant a forced palette pairs with — so a color pick shows even when grayscale was active. The scene then **posterizes to the picked colors**; a single color gets a black or white partner for contrast.
 
-**The only-when-changed guard.** `pal` and `col` map onto the *same* C64 palette, so they are mutually exclusive intents. But the WLED app re-POSTs the **full** segment, both fields, on every change. So each is applied only when it *changed* from the last-echoed value — otherwise an unchanged `col` riding along a palette pick would re-force and clobber it. This was a hardware-surfaced bug.
+**The only-when-changed guard.** `pal` and `col` map onto the *same* C64 palette, so they are mutually exclusive intents. But the WLED app re-POSTs the **full** segment, both fields, on every change. So each is applied only when it *changed* from the last-echoed value — otherwise an unchanged `col` riding along a palette pick re-forces and clobbers it.
 
 Both are silent echo-only no-ops on modes without `set_palette_mode` / `set_color_map` — hires, petscii, blank. Only MCM and MultiHires apply a forced palette.
 
@@ -89,13 +89,13 @@ Transport is event-based and the preset/echo state is lock-guarded, so `apply` i
 
 **The WS handler** sends `{state, info}` on connect, then loops on `asyncio.wait_for(receive_json, timeout=_WS_PUSH_INTERVAL_S)`. On a message it applies and broadcasts; **on timeout it pushes state to the client if it changed on its own** — a playlist auto-advance, or a queued jump landing.
 
-That proactive push matters because real WLED pushes state proactively. Without it, nothing else drives our WS, so the app's **Scene field goes stale** between the user's own actions. Hardware testing surfaced exactly this.
+That proactive push matters because real WLED pushes state proactively. Without it, nothing else drives our WS, so the app's **Scene field goes stale** between the user's own actions.
 
 **The self-served `GET /` control page** (`_INDEX_HTML`, a dependency-free fetch-driven page for third-party WebView shell apps and any browser) mirrors exactly the functional controls: power, and per-system scene select, **palette select**, a per-segment **brightness slider**, speed/intensity sliders, and a **color picker**. The DOM is built client-side from `/json`, and each segment is titled by its `seg[].n` — the system name, with a single-system run using the configurable `[wled].name`, so it is never a bare "System 1".
 
-The brightness slider was once removed as a dead power-duplicate. It is back now that `bri` is a **real screen dim** (`_apply_dim` → `user_dim`, see the [`modes.py`](video-color.md#modespy--displaymode-hierarchy) note) rather than only an echo: `bri=0` still means off (pause), and any nonzero value darkens the C64 output.
+The brightness slider earns its place because `bri` is a **real screen dim** (`_apply_dim` → `user_dim`, see the [`modes.py`](video-color.md#modespy--displaymode-hierarchy) note) and not merely an echo of power: `bri=0` means off (pause), and any nonzero value darkens the C64 output.
 
-**Serving and discovery.** `WledDeviceServer` runs the app on `control_plane.ControlServer` — the shared uvicorn-on-a-background-thread wrapper, now taking a `label` so its log line reads "WLED device …" rather than "control plane". It registers and unregisters a `ServiceInfo` for `_wled._tcp.local.`, advertising the real LAN IP via `_local_ip` (a UDP-connect trick) even when bound to `0.0.0.0`; the SRV record carries the actual port, so discovery works on a non-privileged bind. An mDNS registration failure is logged but never takes down the already-serving HTTP API.
+**Serving and discovery.** `WledDeviceServer` runs the app on `control_plane.ControlServer` — the shared uvicorn-on-a-background-thread wrapper, which takes a `label` so its log line reads "WLED device …" rather than "control plane". It registers and unregisters a `ServiceInfo` for `_wled._tcp.local.`, advertising the real LAN IP via `_local_ip` (a UDP-connect trick) even when bound to `0.0.0.0`; the SRV record carries the actual port, so discovery works on a non-privileged bind. An mDNS registration failure is logged but never takes down the already-serving HTTP API.
 
 ### Lifecycle + config
 **Startup.** `cli.main` starts it after the control plane and before the run loop, when `config.resolve_wled_listen(cfgs[0])` reports on, spanning **all** systems (`systems=[(st.name, st.playlist) …]`). The first system's `[wled].listen` governs the cluster device. It is stopped in the `finally` alongside the control plane.
@@ -108,7 +108,7 @@ The brightness slider was once removed as a dead power-duplicate. It is back now
 
 Brightness is **independent of transport**: pause/resume is the Power (`on`) toggle alone, and `bri=0` dims fully to black (`user_dim=0`) but does *not* pause.
 
-> This decoupling fixed a hardware bug. `bri=0` used to pause — and `_handle_pause` → `api.pause_idle()` resets the Ultimate to the BASIC READY banner with a flashing cursor. So nudging the brightness slider through 0 mid-transition reset the machine.
+> Coupling them is what makes brightness dangerous. `bri=0` → pause → `_handle_pause` → `api.pause_idle()` resets the Ultimate to the BASIC READY banner with a flashing cursor, so nudging the brightness slider through 0 mid-transition would reset the machine.
 
 The self-served `/` page exposes brightness as a single **master** slider driving top-level `bri` — the same field the WLED app's native brightness drives, so the two stay in sync — rather than per-segment.
 
@@ -146,7 +146,7 @@ Recall calls `_apply_locked(preset, force_palcol=True)` so the stored palette an
 
 `state.ps` reports `_active_preset`, and `info.fs.pmt` is the presets-file mtime in ms so clients can cache and re-fetch `/presets.json`.
 
-**Storage.** `PresetStore` keeps one JSON file per device name at `paths.presets_dir()`/`wled-<slug>.json` — the canonical `<data root>/presets/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)); machine/taste-specific captured data, never committed. It holds the WLED preset map `{"1": {...}}`, ids 1–250, with id 0 reserved empty. The presets/looks/loops resolvers each call `transport.warn_if_legacy_presets_orphaned()`, a one-time log heads-up for a source checkout that still has presets at the old repo `presets/` dir (now unread) — this replaced the old `--doctor` migration nudge.
+**Storage.** `PresetStore` keeps one JSON file per device name at `paths.presets_dir()`/`wled-<slug>.json` — the canonical `<data root>/presets/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)); machine/taste-specific captured data, never committed. It holds the WLED preset map `{"1": {...}}`, ids 1–250, with id 0 reserved empty. The presets/looks/loops resolvers each call `transport.warn_if_legacy_presets_orphaned()`, a one-time log heads-up for a source checkout that still has presets at the repo `presets/` dir, which nothing reads. It fires from the resolver rather than `--doctor` because only the resolver knows which store was actually looked for.
 
 Loads are tolerant — missing or corrupt yields empty. Writes are atomic: a temp file in the same dir, `fsync`, then `os.replace`. So it survives restarts like real WLED. The path is injectable so tests can point it at a tempdir.
 
@@ -155,7 +155,7 @@ Loads are tolerant — missing or corrupt yields empty. Writes are atomic: a tem
 * **The third-party app** sends `{ps:N}` with no orchestration, so recall is immediate best-effort. Same-scene recall is perfect; cross-scene sliders, `pal`, and `col` land on the *outgoing* scene and may miss, since the jump has not settled.
 * **The `/` page** sequences it client-side over WS. On Apply it POSTs `{ps:N}` and remembers each segment's target `fx`; once a WS state push shows that `fx` live, it re-fires `{ps:N}`. `fx` now matches, so `_apply_to_system` skips the guarded re-jump and simply re-applies the sliders and forces palette/color onto the now-live scene.
 
-That WS sequencing is why the `/` page's live feed moved from a 4 s poll to the `/ws` socket. A scene jump to the already-current scene is also now skipped in `_apply_to_system`, so recall never needlessly restarts a scene.
+That WS sequencing is why the `/` page's live feed rides the `/ws` socket rather than a poll: a 4 s poll cannot tell the page *when* the target `fx` went live. `_apply_to_system` also skips a scene jump to the already-current scene, so recall never needlessly restarts a scene.
 
 **Randomization-aware naming.** The default preset name (when the client sends no `n`) and the WLED effect list both use `Scene.wled_label`, which defaults to `self.name`. `WaveformScene` overrides it to a stable `"SID: random pool"` for a multi-entry pool (`len(_candidates) > 1`).
 

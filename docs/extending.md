@@ -9,8 +9,9 @@ patterns that keep the suite hardware-free. For runtime behavior see
 
 * All bytes destined for the U64 go through `Ultimate64API.write_region`
   (delta-cached, region-keyed) or `write_memory_file` (raw bulk). Never
-  open a `requests` session yourself — you'd bypass the async queue and
-  the dirty cache.
+  open a `requests` session yourself — writes go over the Socket DMA
+  service, not REST, and a side channel bypasses both the shared socket's
+  command mutex and the dirty cache.
 * Screen-code (not PETSCII) for anything that writes to $0400. Use
   `overlays.ascii_to_screen()` for the common ASCII case.
 * C64 color names come from `palette.C64_COLORS` (`"yellow"`,

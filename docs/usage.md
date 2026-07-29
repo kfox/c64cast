@@ -487,7 +487,7 @@ sampler_sample_rate = 44100         # sampler backend rate (1000..48000); CD qua
 sampler_bits = 16                   # sampler PCM depth: 8 (signed) or 16 (signed LE)
 sampler_clock_hz = 6160000          # measured effective FPGA sampler clock (A/V drift fix)
 mic_sensitivity = 1.5               # pre-DAC gain
-noise_gate = 0.05                   # legacy hard gate — only when [dsp] enabled = false
+noise_gate = 0.05                   # pre-DSP hard gate — only when [dsp] enabled = false
 ```
 
 On the Ultimate 64, `backend = "auto"` plays a video's soundtrack through the
@@ -498,7 +498,7 @@ and entirely off the C64 bus. See "High-fidelity video audio" in
 per-system `--calibrate-dac` table) and 4-bit `linear` only on an
 uncalibrated physical SID.
 
-`noise_gate` is the legacy hard gate; when the `[dsp]` chain is enabled (the
+`noise_gate` is the pre-DSP hard gate; when the `[dsp]` chain is enabled (the
 default) its downward expander supersedes it. Rate/pitch fine-tuning for the
 DAC path lives in a few more knobs — `pitch_mult_petscii` / `pitch_mult_bitmap`
 (pitch correction), `dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` (A/V
@@ -510,16 +510,16 @@ see `--describe section:audio` for all of them.
 Host-side audio DSP applied before the `$D418` DAC quantization —
 **ON by default** because the 4-bit DAC needs the help. A soft-knee
 compressor + limiter fit program dynamics into the DAC's narrow range, a
-downward expander (with hysteresis) replaces the old hard noise gate,
+downward expander (with hysteresis) stands in for a hard noise gate,
 optional pre-emphasis brightens speech, and an optional mic AGC lifts quiet
-input. Set `enabled = false` for the legacy linear encode + hard `noise_gate`.
+input. Set `enabled = false` for a plain linear encode + hard `noise_gate`.
 
 ```toml
 [dsp]
 enabled = true                      # master switch for the whole chain
 compress = true                     # soft-knee compressor + makeup gain
 limiter = true                      # brickwall ceiling (final safety stage)
-expander = true                     # downward expander; replaces the hard gate
+expander = true                     # downward expander, in place of a hard gate
 expander_threshold_db = -45.0       # attenuate below this level (dBFS)
 # pre_emphasis = 0.6                 # unset = source-aware (mic 0.7 / line 0.6); 0 = off
 agc = false                         # mic-only automatic gain (experimental)
@@ -809,17 +809,17 @@ palette_mode = "percell"              # percell (default) | cheap | vivid | gray
   index, EMA-smoothed) then for every 4×8 cell picks its own top-3
   non-`bg0` colors by population. VIC-II MCBM lets `c1`/`c2`/`c3` vary
   per-cell via screen RAM + color RAM, so a frame carries up to
-  `bg0 + 3×1000 = 3001` distinct colors instead of the global 4 the
-  older modes assumed. Webcam/video content gains substantially:
+  `bg0 + 3×1000 = 3001` distinct colors instead of a single global 4.
+  Webcam/video content gains substantially:
   cells without `bg0` stop wasting one of their 4 slots on it, and cells
   in unrelated regions of the frame stop being forced to share a 4-color
   set tuned for the dominant subject. For `mcm`, `percell` is accepted
   as an alias for `cheap` (MCM already picks the FG per cell).
-* `cheap` — legacy global-4. HSV saturation boost (×1.8) before
+* `cheap` — the global-4 path. HSV saturation boost (×1.8) before
   quantization + gray-axis penalty on the per-pixel argmin. Global color
   slots are picked by raw pixel-frequency. The effective default for `mcm`
   (which aliases `percell` to `cheap`), and useful for `mhires` only if you
-  specifically want the older look or to compare.
+  specifically want the flatter global-4 look or to compare.
 * `vivid` — global-4 with same biases as `cheap`, plus the 3 (`mcm`) /
   4 (`mhires`) slots are picked for hue-diversity rather than frequency.
   The single most-populated palette entry always wins slot 0; subsequent
