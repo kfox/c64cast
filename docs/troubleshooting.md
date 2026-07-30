@@ -299,11 +299,15 @@ meanwhile.
 
 ### "Install fails: error compiling sounddevice / PyAV"
 
-Every dependency ships wheels for macOS and Linux, so a *compile* means the
-installer couldn't match one to your platform and fell back to source. These have
-system-level dependencies (portaudio, ffmpeg headers). On macOS:
+Every dependency ships wheels for macOS, Linux and Windows, so a *compile* means
+the installer couldn't match one to your platform and fell back to source. These
+have system-level dependencies (portaudio, ffmpeg headers). On macOS:
 `brew install portaudio ffmpeg`. On Debian/Ubuntu:
 `apt install portaudio19-dev libavformat-dev`. Then retry.
+
+On Windows there is no equivalent one-liner, and you should not need one — reach
+for the narrower extra set below instead, or check that you are not on a Python
+release newer than the wheels have caught up with.
 
 If you don't need the feature, install a narrower extra set instead
 (`uv tool install 'c64cast[video]'`).

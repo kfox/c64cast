@@ -126,4 +126,13 @@ name, so such a path previously matched nothing. A `Config` still holds the
 string as written, so serialized configs keep the `~` rather than baking in an
 absolute home directory.
 
+**Windows is a supported platform.** It always worked — casting to a real
+Commodore from Windows is a routine path for one of the contributors — but the
+published metadata and the User's Guide both called it untested, because CI only
+ever ran on Linux. The test matrix now covers macOS, Linux and Windows across
+Python 3.11–3.14, so the claim is backed on both halves: the matrix for the
+host-side code, real hardware for the pipeline. The one platform difference worth
+knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
+control plane does the same thing everywhere.
+
 [Unreleased]: https://github.com/kfox/c64cast/commits/main

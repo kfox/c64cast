@@ -273,8 +273,9 @@ curl -X POST http://127.0.0.1:8765/skip
 curl -X POST http://127.0.0.1:8765/reload   # re-read config from disk
 ```
 
-Or send `SIGHUP` to the process to trigger a config reload from the
-shell.
+Or, on macOS and Linux, send `SIGHUP` to the process to trigger a config
+reload from the shell. Windows has no `SIGHUP`, so `POST /reload` above is
+the portable route.
 
 ## Documentation
 

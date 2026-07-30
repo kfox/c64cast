@@ -34,14 +34,14 @@ keywords = [
     "vic-ii",
     "wled",
 ]
-# Windows is deliberately absent, still. CI does now run the unit suite on
-# windows-latest across every supported interpreter, which is what the earlier
-# note here was waiting on — but that suite mocks every U64/TeensyROM path, so a
-# green Windows leg proves the host-side code is portable, not that the pipeline
-# works. Claiming the classifier is claiming a user can cast to a real Commodore
-# from Windows, and nobody has done that yet. Add it after a hardware run.
-# macOS is claimed and is now backed by CI legs as well as being the primary
-# development platform.
+# All three platforms are claimed, and each is backed by both a CI leg (the
+# lint-and-test matrix is ubuntu × macos × windows) and real-hardware use:
+# macOS is the primary development platform, and Windows is one contributor's
+# only platform — casting to a real Commodore from it is a routine path, not a
+# theoretical one. The CI legs and the hardware use cover different halves of
+# the claim: the matrix proves the host-side code is portable (path resolution,
+# transports, tempfile handling), since the suite mocks every U64/TeensyROM
+# path; the hardware use is what proves the pipeline itself works.
 #
 # There is no "License :: OSI Approved :: MIT License" classifier on purpose —
 # PEP 639 license expressions supersede license classifiers, and setuptools
@@ -50,9 +50,11 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

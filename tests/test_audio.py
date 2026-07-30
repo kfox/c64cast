@@ -281,17 +281,28 @@ class WorkerBatchingTest(unittest.TestCase):
 
         t = threading.Thread(target=s._worker, daemon=True)
         t.start()
-        time.sleep(0.080)  # 80 ms wall clock
+        t0 = time.monotonic()
+        time.sleep(0.080)  # nominally 80 ms of wall clock
         s.running = False
         t.join(timeout=1.0)
+        elapsed = time.monotonic() - t0
 
         writes = cast(Any, s.api).writes
-        # Paced budget: 3 prebuffer + ~10 paced (80 ms / 8 ms) = ~13. The
-        # generous cap absorbs scheduler jitter without re-admitting the
-        # unbounded-burst regression (which produced 40+ writes in this
-        # window).
+        # Budget derived from the window that actually elapsed, not the 80 ms we
+        # asked for. `time.sleep` only guarantees a floor, and a loaded CI runner
+        # stretches it — a correctly-paced worker then legitimately ships more
+        # chunks, which is how this assertion used to fail against a fixed cap of
+        # 25 on the macOS legs (25 writes is exactly right for a ~176 ms window).
+        # Expected here is 3 prebuffer + one write per chunk period; the 2x
+        # factor is the jitter allowance, and it still catches the regression,
+        # which drained at DMA speed — 4-5 writes per chunk period, not one.
+        chunk_period = s.chunk_size / s.sample_rate  # 8 ms
+        cap = 3 + 2 * max(1, round(elapsed / chunk_period))
         self.assertLess(
-            len(writes), 25, f"worker wrote {len(writes)} chunks in 80 ms — pacing regression?"
+            len(writes),
+            cap,
+            f"worker wrote {len(writes)} chunks in {elapsed * 1e3:.0f} ms "
+            f"(cap {cap}) — pacing regression?",
         )
         # Sanity: prebuffer must have fired (≥ 3 writes) so we're actually
         # exercising the paced post-prebuffer path.
