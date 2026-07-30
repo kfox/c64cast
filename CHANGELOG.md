@@ -114,6 +114,16 @@ optional dependency.
 **Documentation.** A typeset User's Guide (10 chapters, rendered to PDF with
 `make guide`), a full config reference, symptom-first troubleshooting, an
 extension guide, and per-module architecture notes covering the hardware
-constraints and the dead ends behind each design decision.
+constraints and the dead ends behind each design decision. Every install
+instruction and every missing-extra hint names `uv`; `pipx` is documented once
+as an equivalent fallback.
+
+**A leading `~` works in config-file paths.** `file`, `videos_dir`,
+`songlengths_file`, `charset_path`, `model_path`, a `logo` overlay's file, the
+recording path and `log_file` all expand `~/…` when they are used. A TOML file
+has no shell to do it, and `glob`/`os.path` treat `~` as a literal directory
+name, so such a path previously matched nothing. A `Config` still holds the
+string as written, so serialized configs keep the `~` rather than baking in an
+absolute home directory.
 
 [Unreleased]: https://github.com/kfox/c64cast/commits/main

@@ -2,7 +2,7 @@
 # Single-scene demo: the EXTREME forced-palette remap ([color].force_palette).
 #
 # Requires the `video` extra (PyAV):
-#   pip install -e .[video]
+#   uv tool install 'c64cast[video]'
 #
 # Every other [color] stage is FAITHFUL — pixels map to their nearest of the 16
 # C64 colors, so a source clustered in one gamut region (TRON = black + dark

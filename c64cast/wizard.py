@@ -736,7 +736,7 @@ def _write_and_offer_launch(
 
     launch = bool(q.confirm("Launch it now?", default=False).ask())
     if not launch:
-        print(f"Run it later with:  python -m c64cast --config {out_path}")
+        print(f"Run it later with:  c64cast --config {out_path}")
     return out_path, launch
 
 
@@ -827,8 +827,7 @@ def run_init(path_arg: str | None) -> tuple[str, bool] | None:
     q = _ensure_questionary()
     if q is None:
         print(
-            "The config wizard needs the 'wizard' extra:\n"
-            "  uv sync --extra wizard   (or: pip install c64cast[wizard])"
+            "The config wizard needs the 'wizard' extra:\n  uv tool install --force 'c64cast[all]'"
         )
         return None
 

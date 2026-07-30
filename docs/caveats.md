@@ -992,8 +992,10 @@ are disabled. Failure modes:
 * `type = "obs_status"` overlay without `[obs]` extra → loader rejects
   the overlay with a clear `RuntimeError` at config load.
 
-If something feels missing, re-run `uv sync --all-extras` (the project
-workflow — see [usage.md](usage.md) for the plain-pip equivalent).
+If something feels missing, check `c64cast --doctor`'s EXTRAS section, then
+reinstall naming every extra you want at once — extras don't accumulate:
+`uv tool install --force 'c64cast[all]'`. See
+[usage.md "Installation"](usage.md#installation).
 
 ## Single-scene mode is automatic, not opt-in
 

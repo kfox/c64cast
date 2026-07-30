@@ -40,7 +40,7 @@ every frame into the shadows + host emulators so the oscilloscope tracks all
 voices in both paths; only the SID *write* mechanism differs.
 
 Display is bitmap-only (hires), so PETSCII overlays don't apply. Requires the
-``midi`` extra (``pip install c64cast[midi]``) — ASID rides the same MIDI
+``midi`` extra (``uv tool install --force 'c64cast[all]'``) — ASID rides the same MIDI
 transport.
 """
 
@@ -145,7 +145,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         super().__init__(api, audio, None, name)
         if not MIDI_AVAILABLE:
             raise RuntimeError(
-                "AsidScene requires mido + python-rtmidi (pip install c64cast[midi])"
+                "AsidScene requires mido + python-rtmidi (uv tool install --force 'c64cast[all]')"
             )
 
         self.port_name = port

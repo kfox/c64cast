@@ -22,7 +22,7 @@ except ImportError:
 
 try:
     # TestClient also needs httpx — fastapi declares it as an optional
-    # extra, so a bare `pip install fastapi` can still leave the import
+    # extra, so installing a bare `fastapi` can still leave the import
     # failing at runtime. Catch any ImportError, not just fastapi's.
     from fastapi.testclient import TestClient
 

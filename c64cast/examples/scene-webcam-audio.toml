@@ -7,7 +7,7 @@
 # FFT on top of this same pipeline.
 #
 # Requires the `mic` extra:
-#   pip install -e .[mic]
+#   uv tool install 'c64cast[mic]'
 #
 # Run:
 #   c64cast --config example:scene-webcam-audio

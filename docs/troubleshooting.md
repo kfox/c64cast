@@ -4,7 +4,7 @@ Symptom-first index — find what you're seeing, follow the link to the
 cause. Most of these are documented in [caveats.md](caveats.md); this
 file is the "I saw X, what now?" companion.
 
-**Start here when a config won't load or run:** `python -m c64cast
+**Start here when a config won't load or run:** `c64cast
 --doctor --config your.toml` validates every scene/overlay/orchestrator,
 checks which optional install extras are present, and pings each
 system's U64 — all without starting the stream. See
@@ -92,7 +92,7 @@ a queue percentage.) Possible causes:
 
 ### "No audio at all, mic is enabled"
 
-1. `python -m c64cast --list-devices` — is your mic listed under
+1. `c64cast --list-devices` — is your mic listed under
    "Audio input devices"? If not, your OS denied microphone permission.
 2. Your mic level is low and the noise-floor cleanup is squelching
    everything. By default the `[dsp]` chain is ON and its downward expander
@@ -100,8 +100,10 @@ a queue percentage.) Possible causes:
    or raise `[audio] mic_sensitivity` to test. (`[audio] noise_gate` only
    applies when `[dsp] enabled = false`; on that path, lower it from
    `0.05` toward `0.01`.)
-3. `uv sync --all-extras` — without the `mic` extra the audio path
-   silently disables itself with one warning.
+3. You don't have the `mic` extra — without it the audio path silently
+   disables itself with one warning. `c64cast --doctor` lists every extra it
+   can see; reinstall with `uv tool install --force 'c64cast[all]'` (extras
+   don't accumulate, so name them all at once).
 
 ### "Mic capture works but I hear my own voice loud over the speakers"
 
@@ -147,10 +149,10 @@ Check the log for `preview disabled: cannot open a window`. That means the
 installed opencv has no GUI support — the usual cause is a headless wheel
 (`opencv-python-headless`, often pulled in transitively) shadowing
 `opencv-python`, or running with no desktop session at all (ssh without X,
-a container). `uv sync --all-extras` installs the GUI build; verify with:
+a container). Reinstalling so the GUI build wins usually clears it:
 
 ```bash
-uv run python -c "import cv2; cv2.namedWindow('t'); cv2.destroyWindow('t'); print('GUI OK')"
+uv tool install --force 'c64cast[all]'
 ```
 
 Note the window is drawn by the main thread while the playlist renders on a
@@ -195,8 +197,8 @@ read, it won't see the skip until that finishes. Worst-case wait is
 the scene's `target_fps` period (33 ms at 30 fps).
 
 If skip never works at all, you're missing the `control` extra —
-run `uv sync --all-extras`. The control plane silently disables
-itself with one warning if FastAPI isn't installed.
+reinstall with `uv tool install --force 'c64cast[all]'`. The control plane
+silently disables itself with one warning if FastAPI isn't installed.
 
 Also: skip is intentionally a no-op in **single-scene mode** (when the
 config defines exactly one scene). Look for `skip ignored — single-scene
@@ -216,8 +218,8 @@ playlist` in the logs).
 
 ### "`video` scene type is rejected at load time"
 
-You didn't install the `video` extra (`uv sync --all-extras`).
-The loader emits "Found N video files
+You didn't install the `video` extra (`uv tool install --force
+'c64cast[all]'`). The loader emits "Found N video files
 but PyAV is not installed; skipping videos" and continues
 without videos.
 
@@ -289,35 +291,42 @@ Background fetch failed. Reasons:
 
 ## Installation / Setup
 
+### "`c64cast: command not found`"
+
+The install worked but its directory isn't on `PATH`. `uv tool update-shell`
+then open a new shell. `uv tool run c64cast` works
+meanwhile.
+
 ### "Install fails: error compiling sounddevice / PyAV"
 
-These have system-level dependencies (portaudio, ffmpeg headers).
-On macOS: `brew install portaudio ffmpeg`. On Debian/Ubuntu:
-`apt install portaudio19-dev libavformat-dev`. Then retry
-`uv sync --all-extras`.
+Every dependency ships wheels for macOS and Linux, so a *compile* means the
+installer couldn't match one to your platform and fell back to source. These have
+system-level dependencies (portaudio, ffmpeg headers). On macOS:
+`brew install portaudio ffmpeg`. On Debian/Ubuntu:
+`apt install portaudio19-dev libavformat-dev`. Then retry.
 
-If you don't need a specific feature, sync a narrower extra set instead
-(`uv sync --extra mic`).
+If you don't need the feature, install a narrower extra set instead
+(`uv tool install 'c64cast[video]'`).
 
-### "ImportError: cannot import name 'X' from 'c64cast.overlays'"
+### "A feature says its extra is missing, but I installed it"
 
-You're running against a stale install. From the repo root:
+Extras don't accumulate: installing `c64cast[midi]` over an existing
+`c64cast[video]` leaves you with `midi` only. Name every extra you want in one
+command, and use `--force` to overwrite the existing install:
 
 ```bash
-uv sync --all-extras
+uv tool install --force 'c64cast[all]'
 ```
 
-This installs the project into `.venv` in editable form, so subsequent
-edits are picked up live. Run the app through `uv run` (or an activated
-`.venv`) so it resolves against that environment; `uv pip install` in
-this repo targets the mise toolchain interpreter instead.
+`c64cast --doctor` prints an EXTRAS section listing exactly which ones the
+running install can import.
 
-### "mypy / ruff not found"
+### "ImportError from `c64cast.overlays`, or mypy / ruff not found"
 
-Install the dev tooling: `uv sync --all-extras` (or, without uv,
-`pip install --group dev` — `dev` is a PEP 735 dependency-group, not an
-extra, so `.[dev]` will never resolve it). The pre-commit and
-CI configurations assume those are present.
+Both are development-environment symptoms — a stale editable install and
+missing dev tooling respectively. Neither can happen to an installed release.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for the checkout setup, and
+`make doctor` for its self-check.
 
 ### "objc[NNNNN]: Class AVFFrameReceiver is implemented in both ... libavdevice ..."
 

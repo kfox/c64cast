@@ -44,7 +44,7 @@ changes) — those cost real network/DMA setup time and are categorically
 wrong for a live-hit control. Only Playlist-level Events and
 ``LIVE_PARAMS``-declared single-numeric-attribute writes are exposed.
 
-Requires the `midi` extra (``pip install c64cast[midi]``).
+Requires the `midi` extra (``uv tool install --force 'c64cast[all]'``).
 """
 
 from __future__ import annotations
@@ -595,7 +595,7 @@ class MidiControlListener:
 
     def start(self) -> None:
         if mido is None:
-            raise RuntimeError("midi_control requires mido: pip install c64cast[midi]")
+            raise RuntimeError("midi_control requires mido: uv tool install --force 'c64cast[all]'")
         self._open_port()
         # Now the port name is known, layer the controller profile onto the
         # config's cc_map (shipped-defaults < profile < explicit — see
@@ -1134,7 +1134,7 @@ def build_midi_control_listener(
     feedback loop (Phase 4); the velocity->color convention comes from the matched
     controller profile's `feedback` block."""
     if not MIDI_AVAILABLE:
-        raise RuntimeError("midi_control requires mido: pip install c64cast[midi]")
+        raise RuntimeError("midi_control requires mido: uv tool install --force 'c64cast[all]'")
     return MidiControlListener(
         playlists,
         cfg.cc_map,

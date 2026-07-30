@@ -31,7 +31,7 @@ evolve on screen between MIDI events.
 Display is bitmap-only, so PETSCII overlays don't apply (overlay-compat
 rejects them against the hires mode `_validate_midi` reports).
 
-Requires the `midi` extra (``pip install c64cast[midi]``).
+Requires the `midi` extra (``uv tool install --force 'c64cast[all]'``).
 """
 
 from __future__ import annotations
@@ -263,7 +263,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         super().__init__(api, audio, None, name)
         if not MIDI_AVAILABLE:
             raise RuntimeError(
-                "MidiScene requires mido + python-rtmidi (pip install c64cast[midi])"
+                "MidiScene requires mido + python-rtmidi (uv tool install --force 'c64cast[all]')"
             )
         if waveform not in _WAVEFORM_BITS:
             raise ValueError(

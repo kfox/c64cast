@@ -286,7 +286,9 @@ class AudioFileSource:
         from .video import _av_open, _ensure_pyav
 
         if not _ensure_pyav():
-            raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
+            raise RuntimeError(
+                "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
+            )
         candidates = resolve_file_spec(self.file_spec, AUDIO_EXTS, label="audio file")
         pool = list(candidates)
         random.shuffle(pool)

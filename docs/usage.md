@@ -58,23 +58,32 @@ and the protocol source at
 
 ## Installation
 
-The repo is set up for **uv** (with mise + direnv). The canonical setup —
-creates/updates a `.venv` from `uv.lock` with every runtime extra plus the dev
-tooling group:
+c64cast installs as a self-contained command-line tool. `[all]` pulls in every
+optional feature; plain `c64cast` is a much smaller core install (see the extras
+table below).
 
 ```bash
-uv sync --all-extras
+uv tool install 'c64cast[all]'
+c64cast --version
 ```
 
-direnv activates `.venv` automatically (via `layout uv`); otherwise prefix
-commands with `uv run`. Avoid `uv pip install -e .[...]` here — mise's
-`UV_PYTHON` sends `uv pip` to the bare toolchain interpreter instead of `.venv`,
-so packages install where the app doesn't run from. Plain-pip users without uv:
-`pip install -e .[all]` for runtime extras, then `pip install --group dev` for
-the dev tools (`dev` is a PEP 735 dependency-group, not an extra, so it can't be
-requested via `.[all,dev]`).
+To run it once without installing anything:
 
-Optional-dep groups in [pyproject.toml](../pyproject.toml):
+```bash
+uvx --from 'c64cast[all]' c64cast --config example:hello -u u64://192.168.2.64
+```
+
+Extras do not accumulate across installs — name every one you want in a single
+command (`uv tool install --force 'c64cast[video,midi]'`). `c64cast --doctor`
+reports which extras it can actually see, which is the fastest way to settle
+whether one took.
+
+Working on c64cast itself needs a checkout and a locked dev environment
+instead; that setup lives in [CONTRIBUTING.md](../CONTRIBUTING.md) and is not
+required to use c64cast.
+
+Optional-dep groups in [pyproject.toml](../pyproject.toml) — install as
+`c64cast[<group>]`:
 
 | Group         | What it pulls in                      | Why you'd want it                                      |
 |---------------|---------------------------------------|--------------------------------------------------------|
@@ -91,12 +100,15 @@ Optional-dep groups in [pyproject.toml](../pyproject.toml):
 | `yt`          | `yt-dlp`                              | YouTube / streaming-site URLs in quick playback (direct media URLs work without it) |
 | `wled`        | `zeroconf`, `fastapi`, `uvicorn`, `websockets` | WLED bridge Mode 1 (virtual WLED device / control surface) |
 | `all`         | every runtime extra above             | The "give me everything" install                       |
-| `dev`         | `ruff`, `coverage`, `mypy`, `pyright` | Lint + coverage + type-check                           |
+
+The lint/type-check/test tooling is deliberately **not** an extra — it is a PEP
+735 dependency group, absent from published package metadata, so no
+`c64cast[dev]` exists to install. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## CLI
 
 ```bash
-python -m c64cast [args...]
+c64cast [args...]
 ```
 
 Run with `-h` for the grouped flag list. The flags shown there are the
@@ -152,16 +164,16 @@ scene per argument, in the order given, and **plays through once** (no loop;
 
 ```bash
 # A video, then a SID, then a slideshow of a folder of pictures:
-scripts/c64cast.sh -u u64://192.168.2.64 clip.mp4 tune.sid assets/pictures/
+c64cast -u u64://192.168.2.64 clip.mp4 tune.sid assets/pictures/
 
 # Same, but driving a TeensyROM+ over auto-detected USB serial:
-scripts/c64cast.sh -u tr:// clip.mp4 tune.sid
+c64cast -u tr:// clip.mp4 tune.sid
 
-# Direct play a YouTube URL (needs the `yt` extra: `uv sync --extra yt`):
-scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ'
+# Direct play a YouTube URL (needs the `yt` extra):
+c64cast -u u64://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ'
 
 # A URL timestamp (?t= / &start= / #t=) starts playback at that offset:
-scripts/c64cast.sh -u u64://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ?t=1m30s'
+c64cast -u u64://192.168.2.64 'https://youtu.be/dQw4w9WgXcQ?t=1m30s'
 ```
 
 Each argument is mapped to a scene type:
@@ -226,11 +238,11 @@ run finds none, and the preset stores log a one-time move-them heads-up.
 Three ways to get a working `c64cast.toml`, easiest first:
 
 1. **The interactive wizard** (`--init`) — needs the `wizard` extra
-   (`uv sync --extra wizard`, or `pip install c64cast[wizard]`):
+   (`uv tool install 'c64cast[wizard]'`):
 
    ```bash
-   python -m c64cast --init                 # writes ./c64cast.toml
-   python -m c64cast --init my-stream.toml   # writes a named file
+   c64cast --init                 # writes ./c64cast.toml
+   c64cast --init my-stream.toml   # writes a named file
    ```
 
    It first asks whether to build a **single scene** or a **multi-scene
@@ -287,30 +299,30 @@ rule is generated from the same metadata the program runs on, so it can't
 go stale.
 
 ```bash
-python -m c64cast --list-scenes        # the 10 scene types
-python -m c64cast --list-overlays      # the 12 overlays + their restrictions
-python -m c64cast --list-modes         # the display modes
-python -m c64cast --list-examples      # the packaged demo configs
+c64cast --list-scenes        # the 10 scene types
+c64cast --list-overlays      # the 12 overlays + their restrictions
+c64cast --list-modes         # the display modes
+c64cast --list-examples      # the packaged demo configs
 
 # Full reference for one thing — options, types, defaults, valid values:
-python -m c64cast --describe overlay:clock
-python -m c64cast --describe scene:waveform
-python -m c64cast --describe section:audio
-python -m c64cast --describe mode:mhires
+c64cast --describe overlay:clock
+c64cast --describe scene:waveform
+c64cast --describe section:audio
+c64cast --describe mode:mhires
 # The prefix is optional when the name is unambiguous: `--describe clock`.
 
 # Which overlay works on which display mode (✓ / ·):
-python -m c64cast --compat
+c64cast --compat
 
 # Which C64 colors best (faithfully) represent an image/video, ranked, for
 # [color].force_palette_colors:
-python -m c64cast --suggest-palette assets/pictures/skyline.jpg
-python -m c64cast --suggest-palette assets/videos/Batman.mkv
+c64cast --suggest-palette assets/pictures/skyline.jpg
+c64cast --suggest-palette assets/videos/Batman.mkv
 ```
 
 ### Editor autocomplete (JSON schema)
 
-`python -m c64cast --print-schema` emits a JSON Schema for the whole TOML.
+`c64cast --print-schema` emits a JSON Schema for the whole TOML.
 A committed copy ships *inside the package* at
 [`c64cast/data/c64cast.schema.json`](../c64cast/data/c64cast.schema.json), so
 it is on disk after any install; point a TOML-aware editor at it with a
@@ -339,10 +351,10 @@ to find out which optional install extras are missing.
 
 ```bash
 # Full check: config + extras + ping every system's U64 over DMA
-python -m c64cast --doctor --config c64cast.toml
+c64cast --doctor --config c64cast.toml
 
 # Same, but skip the U64 connectivity probe (no hardware needed)
-python -m c64cast --doctor --config c64cast.toml --skip-probe
+c64cast --doctor --config c64cast.toml --skip-probe
 
 # Works on ensemble configs too — each system is validated independently
 c64cast --doctor --config example:ensemble/master
@@ -365,14 +377,14 @@ What it surfaces:
   back to the conductor's cfg, but rarely by design).
 * **extras** — per-extra `[mic, video, control, obs, midi, logging]`
   install status; warn rows include the exact
-  `pip install c64cast[<name>]` command.
+  `uv tool install --force "c64cast[all]"` command.
 * **connectivity** — per-system DMA + REST reach to the Ultimate 64. The
   DMA-service-disabled error includes the F2-menu hint.
 
 ## Example configs
 
 The demos ship **inside the package**, so they work identically from a source
-checkout, a `pip install`, or `uvx` — addressed by name with an `example:`
+checkout, an installed wheel, or `uvx` — addressed by name with an `example:`
 prefix rather than by path:
 
 ```bash
@@ -600,7 +612,7 @@ in single-scene mode, the one scene loops back-to-back forever. Set to
 use case is "play one video and quit":
 
 ```bash
-python -m c64cast --config one-video.toml --no-loop
+c64cast --config one-video.toml --no-loop
 ```
 
 ### `[preview]`
@@ -947,7 +959,7 @@ default directory `assets/videos/`. Recognised extensions:
 **URLs** — `file =` may also be a single media URL, resolved when the config
 loads (the same path the `c64cast MEDIA…` shortcut uses): a direct link plays
 as-is (PyAV opens http(s)), and a YouTube/etc. page is resolved by yt-dlp (needs
-the `yt` extra: `uv sync --extra yt`). A `?t=`/`&start=`/`#t=` timestamp on the
+the `yt` extra: `uv tool install 'c64cast[yt]'`). A `?t=`/`&start=`/`#t=` timestamp on the
 URL fills `start_s` automatically (an explicit `start_s` wins). If the `yt`
 extra is missing, `--doctor` and config load flag it up front.
 
@@ -1069,7 +1081,7 @@ voice_colors = ["light green", "cyan", "yellow"]
 duration_s = 120.0
 ```
 
-Requires the `midi` extra (`pip install -e .[midi]`). Voices are visualized the
+Requires the `midi` extra (`uv tool install 'c64cast[midi]'`). Voices are visualized the
 same way the waveform scene does — per-voice traces colored by `voice_colors`
 (or by waveform with `color_mode = "per_waveform"`).
 
@@ -1112,7 +1124,7 @@ color_mode = "per_voice"            # per_voice | per_waveform
 duration_s = 300.0
 ```
 
-Requires the `midi` extra (`pip install -e .[midi]`) — ASID rides the same MIDI
+Requires the `midi` extra (`uv tool install 'c64cast[midi]'`) — ASID rides the same MIDI
 transport. This makes c64cast an **ASID client**: an ASID *host* (DeepSID in a
 browser, SIDFactory II, Plogue chipsynth C64, Elektron ASID-XP) streams packed
 SID register writes over MIDI SysEx, and c64cast plays them on the **real SID

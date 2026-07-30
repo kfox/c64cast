@@ -2,7 +2,7 @@
 # Single-scene demo: video file ("video") playback with audio.
 #
 # Requires the `video` extra (PyAV):
-#   pip install -e .[video]
+#   uv tool install 'c64cast[video]'
 #
 # `file =` is a comma-separated list of paths, directories, and/or
 # globs — each scene setup picks a random file from the resolved pool.

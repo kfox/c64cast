@@ -187,7 +187,7 @@ class CrossSystemOrchestrationTest(unittest.TestCase):
 
 
 class ExtrasProbeTest(unittest.TestCase):
-    def test_missing_extra_reported_with_pip_hint(self):
+    def test_missing_extra_reported_with_install_hint(self):
         # Pretend `av` is not installed; everything else stays real.
         real = doctor.importlib.util.find_spec
 
@@ -205,9 +205,10 @@ class ExtrasProbeTest(unittest.TestCase):
         self.assertEqual(video_diags[0].hint, "uv sync --all-extras")
 
     def test_missing_extra_hint_suits_an_installed_package(self):
-        # `uv sync` is meaningless without a project to sync: someone who
-        # pip-installed needs the pip incantation, naming the extra. Every
-        # extra is installed in the dev env, so force one missing.
+        # `uv sync` is meaningless without a project to sync: an installed user
+        # re-runs the tool install, and it names `[all]` because extras do not
+        # accumulate. Every extra is installed in the dev env, so force one
+        # missing.
         real = doctor.importlib.util.find_spec
 
         def fake(name, *a, **kw):
@@ -220,7 +221,7 @@ class ExtrasProbeTest(unittest.TestCase):
         self.assertTrue(missing, "expected the faked-missing extra to warn")
         for d in missing:
             with self.subTest(extra=d.subject):
-                self.assertEqual(d.hint, f'pip install "c64cast[{d.subject}]" (or [all])')
+                self.assertEqual(d.hint, 'uv tool install --force "c64cast[all]"')
 
     def test_camera_extra_is_probed(self):
         # The camera extra (cv2-enumerate-cameras) must appear in the extras
@@ -1071,7 +1072,7 @@ class EnvironmentProbeTest(unittest.TestCase):
         self.assertIn("out of date", diags[0].message)
 
     def test_uv_lock_probe_is_skipped_outside_a_source_checkout(self):
-        # For a pip-installed package _REPO_ROOT is site-packages, which has no
+        # For an installed package _REPO_ROOT is site-packages, which has no
         # pyproject.toml. `uv lock --check` exits nonzero there for "no project
         # found" exactly as it does for real drift, so running it told installed
         # users their lockfile had drifted from a file they don't have.

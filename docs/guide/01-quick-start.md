@@ -35,15 +35,13 @@ you are asked. You only ever have to do this once.
 **Step 2: Install c64cast.** On your computer, in a terminal:
 
 ```bash
-git clone https://github.com/kfox/c64cast
-cd c64cast
-uv sync --all-extras --no-dev
+uv tool install 'c64cast[all]'
 ```
 
-That last command builds a private Python environment with everything c64cast
-can use. It assumes you already have Python and `uv` on your machine. If you
-do not, see **Installing c64cast** in Chapter 1, which links to the
-installation instructions for both.
+That puts a `c64cast` command on your `PATH`, with everything c64cast can use
+installed alongside it. It assumes you have `uv`; if you do not, see
+**Installing c64cast** in Chapter 1, which links to its installation
+instructions and gives you an alternative if you would rather not.
 
 **Step 3: Find your Commodore.** c64cast needs to know where to send
 pictures. **Network Settings**, the same menu you were just in, shows the
@@ -58,7 +56,7 @@ c64cast once. With DHCP disabled the firmware's own default is
 thing c64cast does. It needs no video files, no microphone and no webcam:
 
 ```bash
-python -m c64cast -u u64://192.168.2.64 --config example:hello
+c64cast -u u64://192.168.2.64 --config example:hello
 ```
 
 Substitute your own address. Within a second or two the Commodore's screen
@@ -81,7 +79,7 @@ The scroller proves the connection works. Now point c64cast at an actual
 video file. Any format your machine can decode will do:
 
 ```bash
-python -m c64cast clip.mp4
+c64cast clip.mp4
 ```
 
 There is no configuration file involved. c64cast looks at what you handed
@@ -96,7 +94,7 @@ not a high-resolution display, but that's the point.
 
 > [!NOTE]
 > If nothing appears, the most likely cause is Step 1. Run
-> `python -m c64cast --doctor` and c64cast will tell you what it can and
+> `c64cast --doctor` and c64cast will tell you what it can and
 > cannot reach, in plain language. Chapter 1 covers this properly.
 
 You now have a working setup. The next few pages suggest things worth trying

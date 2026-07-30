@@ -7,7 +7,7 @@
 # stream-health info on the C64 itself.
 #
 # Requires:
-#   - The `obs` extra:  pip install -e .[obs]   (obsws-python)
+#   - The `obs` extra:  uv tool install 'c64cast[obs]'   (obsws-python)
 #   - OBS → Tools → WebSocket Server: enabled, port + (optional) password
 #     matching this config.
 #

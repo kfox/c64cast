@@ -2,7 +2,7 @@
 # Single-scene demo: PETSCII webcam + audio spectrum analyzer.
 #
 # Requires [audio] enabled = true and the `mic` extra:
-#   pip install -e .[mic]
+#   uv tool install 'c64cast[mic]'
 #
 # Reads recent audio samples from the AudioStreamer, runs an FFT, and
 # paints 8 vertical color bars (~5 cols each) into screen + color RAM.

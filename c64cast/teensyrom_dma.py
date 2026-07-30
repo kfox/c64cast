@@ -233,7 +233,7 @@ class SerialTransport(TRTransport):
         except ImportError as e:
             raise TRError(
                 "pyserial is not installed — install the 'tr' extra "
-                "(uv sync --extra tr) to use the TeensyROM serial "
+                "(uv tool install --force 'c64cast[all]') to use the TeensyROM serial "
                 "transport."
             ) from e
         try:

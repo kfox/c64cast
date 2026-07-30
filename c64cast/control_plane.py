@@ -43,7 +43,7 @@ class ControlServer:
             import uvicorn
         except ImportError as e:
             raise RuntimeError(
-                "control plane requires uvicorn: pip install c64cast[control]"
+                "control plane requires uvicorn: uv tool install --force 'c64cast[all]'"
             ) from e
         self.host = host
         self.port = port
@@ -111,7 +111,9 @@ def build_app(
     try:
         from fastapi import FastAPI, HTTPException, Query
     except ImportError as e:
-        raise RuntimeError("control plane requires fastapi: pip install c64cast[control]") from e
+        raise RuntimeError(
+            "control plane requires fastapi: uv tool install --force 'c64cast[all]'"
+        ) from e
 
     if not playlists:
         raise ValueError("control plane needs at least one playlist")

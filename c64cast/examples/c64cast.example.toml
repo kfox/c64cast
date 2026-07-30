@@ -988,7 +988,7 @@ duration_s = 45.0
   # AudioStreamer — which is what a webcam scene like this one gives it.
   # [audio] is on by default (--no-audio mutes) — the scene picks up the
   # streamer automatically unless overridden with `audio = false`.
-  # Requires the `mic` extra: `pip install -e .[mic]`.
+  # Requires the `mic` extra: `uv tool install 'c64cast[mic]'`.
   # [[scenes.overlays]]
   # type = "spectrum_petscii"
   # placement = "center"                # bottom | center | split

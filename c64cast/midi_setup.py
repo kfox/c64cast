@@ -408,17 +408,11 @@ def run_setup() -> int:
     """Drive the MIDI-learn wizard. Returns an exit code: 0 on a saved profile,
     2 on cancel / nothing learned / a missing extra."""
     if not MIDI_AVAILABLE:
-        print(
-            "--midi-setup needs the 'midi' extra:\n"
-            "  uv sync --extra midi   (or: pip install c64cast[midi])"
-        )
+        print("--midi-setup needs the 'midi' extra:\n  uv tool install --force 'c64cast[all]'")
         return 2
     q = _ensure_questionary()
     if q is None:
-        print(
-            "--midi-setup needs the 'wizard' extra:\n"
-            "  uv sync --extra wizard   (or: pip install c64cast[wizard])"
-        )
+        print("--midi-setup needs the 'wizard' extra:\n  uv tool install --force 'c64cast[all]'")
         return 2
 
     print(

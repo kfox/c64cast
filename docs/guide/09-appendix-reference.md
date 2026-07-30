@@ -27,15 +27,15 @@ version you have installed.
 when it is not:
 
 ```bash
-python -m c64cast --describe clock
-python -m c64cast --describe scene:video
-python -m c64cast --describe section:color
-python -m c64cast --describe mode:mhires
+c64cast --describe clock
+c64cast --describe scene:video
+c64cast --describe section:color
+c64cast --describe mode:mhires
 ```
 
 ## The Options You Will Actually Use
 
-`python -m c64cast -h` prints every option, grouped. The ones worth
+`c64cast -h` prints every option, grouped. The ones worth
 remembering:
 
 | Option | Does |
@@ -65,22 +65,22 @@ devices share a name.
 Start by asking what is attached:
 
 ```bash
-python -m c64cast --list-devices
+c64cast --list-devices
 ```
 
 Then use enough of the name to be unambiguous:
 
 ```bash
-python -m c64cast -d "HD Webcam" -D "Scarlett" clip.mp4
+c64cast -d "HD Webcam" -D "Scarlett" clip.mp4
 ```
 
 Name matching for cameras needs the `camera` extra, and for audio the `mic`
-extra; the `uv sync --all-extras` in Chapter 1 has already installed both.
+extra; the `[all]` install in Chapter 1 has already provided both.
 
 Best of all, do it once:
 
 ```bash
-python -m c64cast -d "HD Webcam" -D "Scarlett" --save-settings
+c64cast -d "HD Webcam" -D "Scarlett" --save-settings
 ```
 
 Now every future run picks the right devices by itself, and you can stop

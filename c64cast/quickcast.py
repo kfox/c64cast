@@ -281,8 +281,8 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
         import yt_dlp  # type: ignore[import-untyped]  # noqa: PLC0415  (lazy; optional extra)
     except ImportError as e:
         raise RuntimeError(
-            f"playing {url!r} needs yt-dlp. Install with "
-            "`uv sync --extra yt` (or `pip install c64cast[yt]`)."
+            f"playing {url!r} needs yt-dlp. Install the 'yt' extra: "
+            "`uv tool install --force 'c64cast[all]'`."
         ) from e
 
     opts = {

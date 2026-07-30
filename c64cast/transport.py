@@ -401,7 +401,7 @@ class TransportSession:
 #
 # One JSON file per video under `paths.loop_presets_dir()`
 # (<data root>/presets/loops), resolved at use time so it works from a repo
-# checkout, a pip install, or a PyPI wheel (and honors $C64CAST_DATA_DIR).
+# checkout or an installed wheel (and honors $C64CAST_DATA_DIR).
 # Keyed by a path-move-tolerant identity: local files hash on basename+size
 # (survives a move, not a content edit — the same tradeoff
 # wled_device.PresetStore already accepts for its own presets); URL-backed

@@ -2573,7 +2573,7 @@ class AudioStreamer:
         if max_in <= 0:
             raise RuntimeError(
                 f"no usable audio input device (tried {dev_name!r}). "
-                f"Run `python -m c64cast -L` to list devices "
+                f"Run `c64cast -L` to list devices "
                 f"and pick one with --audio-device N."
             )
 

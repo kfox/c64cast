@@ -5,7 +5,7 @@ few suggestions, all of which run without writing a configuration file.
 
 - **Play a folder of pictures.** Hand c64cast a directory and it becomes a
   slideshow, fitting each image to the screen and dithering it into the C64
-  palette. Try `python -m c64cast ~/Pictures/holiday/`.
+  palette. Try `c64cast ~/Pictures/holiday/`.
 
 - **Play a SID tune.** Point it at a `.sid` file and the Commodore plays it
   on its own sound chip, with a three-voice oscilloscope drawn live from the
@@ -17,13 +17,13 @@ few suggestions, all of which run without writing a configuration file.
   timestamp in it, playback starts there.
 
 - **Queue several things up.** Arguments play in order:
-  `python -m c64cast clip.mp4 tune.sid ~/Pictures/`. Between each one c64cast
+  `c64cast clip.mp4 tune.sid ~/Pictures/`. Between each one c64cast
   shows a brief "UP NEXT" card, similar to a television channel.
 
 - **Play a game.** Hand it a `.prg` or `.crt` and c64cast loads the program,
   gets out of the way and lets the Commodore be a Commodore again.
 
-- **See everything on offer.** `python -m c64cast --list-scenes` prints every
+- **See everything on offer.** `c64cast --list-scenes` prints every
   kind of thing c64cast can put on screen, and `--list-overlays` prints
   everything it can decorate them with. No hardware needed.
 
