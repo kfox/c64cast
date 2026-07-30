@@ -1,4 +1,4 @@
-<img width="800" height="400" alt="c64cast Logo" src="https://raw.githubusercontent.com/kfox/c64cast/main/assets/logo.png" />
+<img width="800" height="271" alt="c64cast Logo" src="https://raw.githubusercontent.com/kfox/c64cast/main/assets/logo.png" />
 
 # c64cast
 
