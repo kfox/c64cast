@@ -1,0 +1,118 @@
+name: Bug report
+description: Something behaves incorrectly, crashes, or renders wrong on the C64.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Nearly every c64cast bug depends on which
+        hardware, firmware, and optional dependencies are in play, so the
+        `--doctor` output below is the single most useful thing you can give us.
+
+        If this is a security issue, please **do not** file it here — see
+        [SECURITY.md](https://github.com/kfox/c64cast/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+      placeholder: |
+        Running a hires video scene, the picture is fine for ~10 seconds and
+        then the top third of the screen fills with garbage characters.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        The exact command line, and the config if you used one. A packaged demo
+        that shows the problem (`--config example:NAME`) is ideal — it means we
+        are running the same thing you are.
+      placeholder: |
+        c64cast --config example:scene-generative-plasma -u u64://192.168.2.64
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`c64cast --doctor` output"
+      description: >
+        Run `c64cast --doctor` (add `--skip-probe` if the machine is not
+        reachable right now, and `--config PATH` if the bug involves a config).
+        This reports the c64cast version, the interpreter, which optional extras
+        are installed, and the firmware versions — please paste all of it.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Which machine is c64cast driving?
+      options:
+        - Ultimate 64 Elite II
+        - Ultimate 64 Elite I
+        - Commodore 64 Ultimate
+        - Ultimate II+ cartridge
+        - TeensyROM+ in an original C64
+        - TeensyROM+ in an Ultimate/other modern C64
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: uri-scheme
+    attributes:
+      label: Connection
+      description: The `-u/--url` scheme you connect with.
+      options:
+        - "u64:// or http(s):// (Ultimate DMA Service)"
+        - "tr:// (TeensyROM+, auto-detected USB serial)"
+        - "tr:///dev/… or tr://COM… (TeensyROM+, explicit serial device)"
+        - "tr://HOST (TeensyROM+ over TCP)"
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+      description: >
+        Ultimate firmware (F1 → shown at the top) or TeensyROM+ firmware
+        version. `--doctor` reports this too, but state it here if you know a
+        specific version introduced the problem.
+      placeholder: "U64 3.12 / TR+ v0.7.2.6"
+
+  - type: input
+    id: os
+    attributes:
+      label: Host OS and Python
+      description: What c64cast itself runs on.
+      placeholder: "macOS 15.5, Python 3.13"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Re-run with `-vv` (and `--log-file run.log` for a long run) and paste
+        the relevant part — especially anything logged around the moment it went
+        wrong.
+      render: text
+
+  - type: textarea
+    id: visual
+    attributes:
+      label: What the C64 showed
+      description: >
+        For anything visual, a photo or an HDMI capture is worth more than a
+        description — a RAM dump cannot prove what the VIC-II actually drew.
+        Drag images in here.

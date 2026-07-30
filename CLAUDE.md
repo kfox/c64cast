@@ -81,6 +81,14 @@ a behavior change to a module updates its architecture section in the same chang
 
 Other docs: [usage.md](docs/usage.md), [caveats.md](docs/caveats.md),
 [troubleshooting.md](docs/troubleshooting.md), [extending.md](docs/extending.md).
+Project-level files: [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog — anything a user
+would notice gets an entry under `## [Unreleased]`, which the release bump renames to
+the version), [CONTRIBUTING.md](CONTRIBUTING.md) (the dev setup + conventions; the
+README deliberately carries **no** `git clone`/`uv sync` path so a user who just wants
+to cast a video never reads it), [SECURITY.md](SECURITY.md) (private reporting + the
+table of deliberately-unauthenticated LAN surfaces), and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). README links are **absolute** GitHub/raw
+URLs, not relative — it is the PyPI long_description, where relative paths 404.
 Per-feature demo configs live in `c64cast/examples/` — **inside the package**, so they
 ship in the wheel and are addressed by name, not path: `--config example:<name>`
 (`--list-examples` to list, `--print-example <name>` to copy one out; the playlist

@@ -1,0 +1,68 @@
+name: Feature request
+description: Suggest a new scene, overlay, display mode, control surface, or config knob.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome — c64cast exists to make a real C64 do things it was
+        never asked to do. If you are unsure whether something is a feature
+        request or a question, ask in
+        [Discussions](https://github.com/kfox/c64cast/discussions) first.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like c64cast to do?
+      description: Describe the end result, not the implementation.
+      placeholder: |
+        A scene that renders a live audio spectrogram as a scrolling multicolor
+        bitmap, so a whole track draws itself across the screen over time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What are you trying to accomplish?
+      description: >
+        The use case behind it. This matters more than it sounds like: knowing
+        whether you are running a VJ set, a shop-window display, or a demo party
+        installation usually changes what the right feature is.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - A new scene type
+        - A new overlay
+        - A display mode / the color pipeline
+        - Audio (DAC, sampler, SID)
+        - A control surface (MIDI, web, keyboard, vision)
+        - The WLED bridge
+        - Ensemble / multi-system
+        - Config, CLI, or introspection
+        - Documentation
+        - Not sure
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware you would run it on
+      description: >
+        Whether this needs an Ultimate 64, works on TeensyROM+ too, or needs
+        extra hardware (capture device, MIDI controller, LED matrix).
+      placeholder: "Ultimate 64 Elite II + a Launchpad X"
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you have tried already
+      description: >
+        Existing scenes, overlays, or config knobs that get partway there, and
+        where they fall short. `c64cast --list-scenes`, `--list-overlays`, and
+        `--describe NAME` are the quickest way to check.
