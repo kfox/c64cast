@@ -122,14 +122,8 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # nothing more. The collect loop runs `while n < chunk_size`, so each
         # whole chunk fills a window exactly and leaves the next item alone; the
         # window after the prebuffer therefore takes the 32 bytes, finds the
-        # queue empty, and closes short — which is the branch under test.
-        #
-        # This used to trickle half chunks from a feeder thread sleeping one pace
-        # period (1 ms) between them, and raced the clock to land inside a
-        # window. Windows has a coarser sleep floor than that, so the trickle
-        # arrived slower than intended and every window closed completely empty:
-        # full underruns, never a partial, and the assertion failed on all four
-        # Windows legs. Pre-loading the queue needs no timing at all.
+        # queue empty, and closes short — the branch under test, reached without
+        # depending on any sleep landing inside a 1 ms window.
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS):
             s.q.put(bytes([1] * 64))

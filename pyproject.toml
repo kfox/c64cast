@@ -34,14 +34,11 @@ keywords = [
     "vic-ii",
     "wled",
 ]
-# All three platforms are claimed, and each is backed by both a CI leg (the
-# lint-and-test matrix is ubuntu × macos × windows) and real-hardware use:
-# macOS is the primary development platform, and Windows is one contributor's
-# only platform — casting to a real Commodore from it is a routine path, not a
-# theoretical one. The CI legs and the hardware use cover different halves of
-# the claim: the matrix proves the host-side code is portable (path resolution,
-# transports, tempfile handling), since the suite mocks every U64/TeensyROM
-# path; the hardware use is what proves the pipeline itself works.
+# Each platform claimed here is backed two ways, and both halves are needed:
+# a CI leg in the lint-and-test matrix (ubuntu × macos × windows) for the
+# host-side code, since the suite mocks every U64/TeensyROM path, and regular
+# real-hardware use for the pipeline the suite cannot cover. Adding a platform
+# means adding both — keep this list and the CI matrix in sync.
 #
 # There is no "License :: OSI Approved :: MIT License" classifier on purpose —
 # PEP 639 license expressions supersede license classifiers, and setuptools

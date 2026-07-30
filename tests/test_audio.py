@@ -289,13 +289,12 @@ class WorkerBatchingTest(unittest.TestCase):
 
         writes = cast(Any, s.api).writes
         # Budget derived from the window that actually elapsed, not the 80 ms we
-        # asked for. `time.sleep` only guarantees a floor, and a loaded CI runner
-        # stretches it — a correctly-paced worker then legitimately ships more
-        # chunks, which is how this assertion used to fail against a fixed cap of
-        # 25 on the macOS legs (25 writes is exactly right for a ~176 ms window).
-        # Expected here is 3 prebuffer + one write per chunk period; the 2x
-        # factor is the jitter allowance, and it still catches the regression,
-        # which drained at DMA speed — 4-5 writes per chunk period, not one.
+        # asked for: `time.sleep` only guarantees a floor, a loaded runner
+        # stretches it, and a correctly-paced worker legitimately ships more
+        # chunks in a longer window — so a fixed cap here fails on pacing being
+        # right. Expected is 3 prebuffer + one write per chunk period; the 2x
+        # factor is jitter allowance and still catches the regression, which
+        # drained at DMA speed — 4-5 writes per chunk period, not one.
         chunk_period = s.chunk_size / s.sample_rate  # 8 ms
         cap = 3 + 2 * max(1, round(elapsed / chunk_period))
         self.assertLess(

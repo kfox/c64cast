@@ -57,18 +57,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # The full grid: every supported interpreter on every OS we claim. Linux
-      # is the historical leg and stays; macOS is the primary development
-      # platform and was previously trusted rather than checked; Windows the
-      # guide calls untested, and these legs are what start to change that.
+      # The full grid: every supported interpreter on every OS the package
+      # claims in its trove classifiers. Keep the two in sync — a platform we
+      # claim is a platform that gets a leg here.
       #
-      # What the non-Linux legs do and don't prove: the suite mocks every
-      # U64/TeensyROM path, so there is no *hardware* coverage on any runner.
-      # What they cover is the host-side code that is actually platform-
-      # sensitive — path resolution (%APPDATA%/%LOCALAPPDATA% vs XDG), the
-      # serial/socket transports, subprocess and tempfile handling. Several
-      # tests in tests/test_paths.py are gated `skipUnless(os.name == "nt")`
-      # and had never executed anywhere until the Windows legs existed.
+      # What these legs do and don't prove: the suite mocks every U64/TeensyROM
+      # path, so there is no *hardware* coverage on any runner. What they cover
+      # is the host-side code that is platform-sensitive — path resolution
+      # (%APPDATA%/%LOCALAPPDATA% vs XDG), the serial/socket transports,
+      # subprocess and tempfile handling — plus the tests gated
+      # `skipUnless(os.name == "nt")` in tests/test_paths.py, which only ever
+      # execute on the Windows legs.
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]

@@ -215,14 +215,12 @@ class _VoiceState:
     def __init__(self) -> None:
         self.note: int | None = None
         self.on: bool = False
-        # Assignment order, not a timestamp: voice stealing needs to know which
-        # voice was assigned *most recently*, which is a pure ordering question.
-        # This was `t_changed = time.time()`, and the wall clock is the wrong
-        # instrument for it — its resolution is a platform detail (coarse enough
-        # on Windows that the notes of a single chord land on the same value),
-        # and `max()` breaks a tie toward the lowest index, so the steal picked
-        # a voice that was not the newest and the sustain pad it is supposed to
-        # protect got eaten. A counter cannot tie.
+        # Assignment order, as a counter rather than a timestamp. Voice stealing
+        # asks which voice was assigned *most recently* — pure ordering, and it
+        # must be exact: `max()` breaks a tie toward the lowest index, which
+        # would steal the oldest pad voice instead of the newest. A clock cannot
+        # promise distinct values (its resolution is a platform detail, and a
+        # chord's note-ons can share one tick); a counter cannot tie.
         self.seq: int = 0
         self.velocity: int = 0
 

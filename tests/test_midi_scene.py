@@ -162,16 +162,12 @@ class VoiceAllocationTests(_MidiTestCase):
         self.assertEqual(scene._held, [60, 64, 67, 72])
 
     def test_steal_order_survives_a_zero_resolution_clock(self):
-        # Regression: voice age used to be `time.time()`, so "which voice is
-        # newest" silently depended on the platform's clock resolution. On a
-        # coarse clock a chord's three note-ons land on one value, and `max()`
-        # breaks that tie toward the lowest index — so the steal took v0, the
-        # oldest pad voice, instead of the newest. It reproduced on all four
-        # Windows CI legs and was invisible on Linux/macOS.
-        #
-        # A frozen clock is the strongest form of that condition: if allocation
-        # order is tracked by a counter rather than a timestamp, freezing time
-        # changes nothing at all.
+        # Allocation order must not depend on clock resolution — a coarse clock
+        # gives a chord's note-ons one shared value, and `max()` would then break
+        # the tie toward the lowest index and steal the oldest pad voice. A frozen
+        # clock is the strongest form of that condition: track order with a
+        # counter and freezing time changes nothing. The sibling tests cannot see
+        # this, since they run on whatever resolution the host happens to have.
         with mock.patch.object(midi_scene.time, "time", return_value=1234.5):
             scene, _ = _make_scene()
             for n in (60, 64, 67):

@@ -1783,10 +1783,10 @@ def main(argv=None) -> int:
                 log.exception("[%s] SIGHUP reload failed; keeping current playlist", st.name)
 
     signal.signal(signal.SIGTERM, _on_sigterm)
-    # Windows has no SIGHUP, so config reload is a POSIX-only feature. Looked up
-    # with getattr rather than named directly: pyright running *on* Windows
-    # checks against the Windows signal stubs, where the name genuinely does not
-    # exist, and a hasattr() guard doesn't narrow a module attribute for it.
+    # Windows has no SIGHUP, so config reload is POSIX-only (POST /reload on the
+    # control plane is the portable equivalent). Keep the getattr: naming the
+    # attribute directly fails pyright when it runs *on* Windows, where the name
+    # is absent from the signal stubs and a hasattr() guard doesn't narrow it.
     sighup = getattr(signal, "SIGHUP", None)
     if sighup is not None:
         signal.signal(sighup, _on_sighup)
