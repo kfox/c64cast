@@ -1292,11 +1292,26 @@ class ResolveFileSpecTest(unittest.TestCase):
             music = os.path.join(tmp, "Music")
             os.makedirs(music)
             expected = self._make_files(music, ["tune.sid"])
-            with mock.patch.dict(os.environ, {"HOME": tmp}):
+            home_env = {"HOME": tmp}
+            if os.name == "nt":  # pragma: no cover - Windows only
+                # ntpath.expanduser reads USERPROFILE (then HOMEDRIVE +
+                # HOMEPATH) and never looks at HOME, so patching HOME alone
+                # leaves `~` pointing at the real profile directory.
+                drive, tail = os.path.splitdrive(tmp)
+                home_env |= {"USERPROFILE": tmp, "HOMEDRIVE": drive, "HOMEPATH": tail}
+            with mock.patch.dict(os.environ, home_env):
                 for spec in ("~/Music", "~/Music/tune.sid", "~/Music/*.sid"):
                     with self.subTest(spec=spec):
                         got = cfgmod.resolve_file_spec(spec, self.EXTS, label="waveform")
-                        self.assertEqual(got, expected)
+                        # normpath because the claim under test is "the same
+                        # files", not "the same spelling": expansion keeps the
+                        # separators the spec was written with, so on Windows a
+                        # `~/Music/…` spec yields a working but mixed-separator
+                        # path that os.path.join would have spelled with `\`.
+                        self.assertEqual(
+                            [os.path.normpath(p) for p in got],
+                            [os.path.normpath(p) for p in expected],
+                        )
 
     def test_urls_are_not_treated_as_paths(self):
         # A URL passes through untouched — it must not be globbed, expanded,

@@ -277,7 +277,16 @@ def schema_directive_for(out_path: str) -> str:
     if not schema.is_file():
         return ser.DEFAULT_SCHEMA_PATH
     out_dir = os.path.dirname(os.path.abspath(out_path))
-    rel = os.path.relpath(schema, out_dir)
+    try:
+        rel = os.path.relpath(schema, out_dir)
+    except ValueError:
+        # Windows only: relpath raises when the two paths are on different
+        # drives (a config on C:, the package on D:) because there is no
+        # relative path between them to compute. Semantically that is the same
+        # answer as the "would have to climb" case below — the relative form is
+        # unusable — so give the same answer instead of propagating out of
+        # `--init` as a crash.
+        return str(schema)
     if rel.startswith(".."):
         return str(schema)
     # Keep "./foo" style for readability.
