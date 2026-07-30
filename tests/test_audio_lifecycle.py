@@ -115,34 +115,32 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertTrue(neutral_chunks, "expected NEUTRAL underrun chunks")
 
     def test_partial_underrun_pads_tail(self):
-        # Feed sub-chunk blobs slower than the pace deadline so each collect
-        # window closes with a partial chunk → NEUTRAL tail pad.
+        # A collect window that closes on a sub-chunk blob must pad the tail with
+        # NEUTRAL and count a partial (not full) underrun.
+        #
+        # Queue exactly the prebuffer as whole chunks, then one half chunk and
+        # nothing more. The collect loop runs `while n < chunk_size`, so each
+        # whole chunk fills a window exactly and leaves the next item alone; the
+        # window after the prebuffer therefore takes the 32 bytes, finds the
+        # queue empty, and closes short — the branch under test, reached without
+        # depending on any sleep landing inside a 1 ms window.
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS):
             s.q.put(bytes([1] * 64))
             s._queued_samples += 64
+        half = s.chunk_size // 2
+        s.q.put(bytes([2] * half))
+        s._queued_samples += half
 
-        stop = threading.Event()
+        _run_worker(s, until=lambda: s._partial_underruns >= 1, timeout=3.0)
 
-        def trickle() -> None:
-            # Half-chunk blobs, one per ~pace period, so a full chunk rarely
-            # assembles within a single collect window.
-            period = s.chunk_size / s.sample_rate
-            while not stop.is_set():
-                s.q.put(bytes([2] * (s.chunk_size // 2)))
-                s._queued_samples += s.chunk_size // 2
-                time.sleep(period)
-
-        feeder = threading.Thread(target=trickle, daemon=True)
-        feeder.start()
-        try:
-            _run_worker(s, until=lambda: s._partial_underruns >= 1, timeout=3.0)
-        finally:
-            stop.set()
-            feeder.join(timeout=1.0)
         self.assertGreaterEqual(
             s._partial_underruns, 1, "expected at least one partial-pad underrun"
         )
+        # The padded chunk is the half blob followed by a NEUTRAL tail.
+        writes = cast(Any, s.api).writes
+        expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
+        self.assertIn(expected, [d for _, d in writes], "partial chunk was not NEUTRAL-padded")
 
     def test_oversized_blob_carried_via_leftover(self):
         # A single blob bigger than chunk_size must split across writes through

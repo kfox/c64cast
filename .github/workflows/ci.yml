@@ -27,9 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The interpreter the hooks' own virtualenvs are built from. uv (below)
+      # only supplies the pre-commit runner itself.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
       # pre-commit/action@v3.0.1 is unmaintained (last release Feb 2024) and
       # pins actions/cache@v4 internally, which runs on the now-deprecated
       # Node 20. Run pre-commit directly and cache its hook environments with a
@@ -39,37 +44,53 @@ jobs:
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-      - run: pip install pre-commit
-      - run: pre-commit run --all-files --show-diff-on-failure --color=always
+      # `uvx pre-commit`, not `pip install pre-commit`: uv is the only installer
+      # this workflow uses, so there is one dependency resolver to reason about
+      # and one cache to warm. uv fetches the runner into its own cached tool
+      # env; the hooks' environments still live in ~/.cache/pre-commit above.
+      - run: uvx pre-commit run --all-files --show-diff-on-failure --color=always
         env:
           SKIP: pyright,unittest
 
   lint-and-test:
-    name: lint + test (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # The full grid: every supported interpreter on every OS the package
+      # claims in its trove classifiers. Keep the two in sync — a platform we
+      # claim is a platform that gets a leg here.
+      #
+      # What these legs do and don't prove: the suite mocks every U64/TeensyROM
+      # path, so there is no *hardware* coverage on any runner. What they cover
+      # is the host-side code that is platform-sensitive — path resolution
+      # (%APPDATA%/%LOCALAPPDATA% vs XDG), the serial/socket transports,
+      # subprocess and tempfile handling — plus the tests gated
+      # `skipUnless(os.name == "nt")` in tests/test_paths.py, which only ever
+      # execute on the Windows legs.
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-            python-version: ${{ matrix.python-version }}
-
-      - name: Set up uv
+      # setup-uv provisions the interpreter as well (it sets UV_PYTHON), so
+      # there is no actions/setup-python step here — a second interpreter would
+      # just be downloaded and ignored on all 12 legs.
+      - name: Set up uv + Python ${{ matrix.python-version }}
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
       - name: Install MIDI build deps (python-rtmidi)
-        # python-rtmidi has no wheel for every interpreter (e.g. cp313), so uv
-        # builds it from sdist; the meson build needs the ALSA dev headers or
-        # it errors with "Dependency alsa not found". Cheap apt install.
+        # python-rtmidi has no wheel for every interpreter (there are none past
+        # cp312), so uv builds it from sdist; the meson build needs the ALSA dev
+        # headers or it errors with "Dependency alsa not found". Cheap apt
+        # install. Linux-only: the equivalent backends elsewhere are CoreMIDI
+        # and WinMM, which ship with the runner's own SDK — nothing to install.
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Install runtime + dev deps
@@ -106,26 +127,27 @@ jobs:
         run: uv run python -m unittest_parallel -s tests -b
 
   coverage:
-    name: coverage (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: coverage (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     needs: lint-and-test
     strategy:
       fail-fast: false
       matrix:
-        # lint-and-test already runs the full suite on every supported version;
-        # coverage is version-independent (the report is identical across them),
-        # so it runs once on the primary toolchain version (matches mise.toml)
-        # and that single leg is what feeds Codecov below.
+        # Deliberately a one-leg matrix, written as a matrix so the single
+        # choice is explicit rather than implied. lint-and-test already runs the
+        # full suite on every OS × version; coverage is version- and
+        # platform-independent (the report is identical across them), so it runs
+        # once on the primary toolchain version (matches mise.toml) and that leg
+        # is what feeds Codecov below. Ubuntu specifically: the path below goes
+        # through `make coverage` -> scripts/coverage.sh, which is bash + make.
+        os: [ubuntu-latest]
         python-version: ["3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-            python-version: ${{ matrix.python-version }}
-
-      - name: Set up uv
+      # As in lint-and-test: setup-uv provisions the interpreter, so there is no
+      # separate actions/setup-python step.
+      - name: Set up uv + Python ${{ matrix.python-version }}
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true

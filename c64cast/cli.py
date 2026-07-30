@@ -1783,8 +1783,13 @@ def main(argv=None) -> int:
                 log.exception("[%s] SIGHUP reload failed; keeping current playlist", st.name)
 
     signal.signal(signal.SIGTERM, _on_sigterm)
-    if hasattr(signal, "SIGHUP"):  # Windows lacks SIGHUP
-        signal.signal(signal.SIGHUP, _on_sighup)
+    # Windows has no SIGHUP, so config reload is POSIX-only (POST /reload on the
+    # control plane is the portable equivalent). Keep the getattr: naming the
+    # attribute directly fails pyright when it runs *on* Windows, where the name
+    # is absent from the signal stubs and a hasattr() guard doesn't narrow it.
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is not None:
+        signal.signal(sighup, _on_sighup)
 
     try:
         # Optional FastAPI control plane. One server for the whole ensemble;

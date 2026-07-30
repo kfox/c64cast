@@ -210,12 +210,18 @@ def _note_to_sid_freq(midi_note: float, system: str) -> int:
 class _VoiceState:
     """Lightweight bookkeeping for one of the SID's three voices."""
 
-    __slots__ = ("note", "on", "t_changed", "velocity")
+    __slots__ = ("note", "on", "seq", "velocity")
 
     def __init__(self) -> None:
         self.note: int | None = None
         self.on: bool = False
-        self.t_changed: float = 0.0
+        # Assignment order, as a counter rather than a timestamp. Voice stealing
+        # asks which voice was assigned *most recently* — pure ordering, and it
+        # must be exact: `max()` breaks a tie toward the lowest index, which
+        # would steal the oldest pad voice instead of the newest. A clock cannot
+        # promise distinct values (its resolution is a platform detail, and a
+        # chord's note-ons can share one tick); a counter cannot tie.
+        self.seq: int = 0
         self.velocity: int = 0
 
 
@@ -390,6 +396,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._mt_held: list[list[int]] = [[] for _ in range(SID.N_VOICES)]
         self._mt_held_vel: list[dict[int, int]] = [{} for _ in range(SID.N_VOICES)]
         self._allocation_lock = threading.Lock()
+        # Monotonic assignment counter feeding `_VoiceState.seq`.
+        self._assign_seq = 0
         self._midi_port = None
         self._reader_thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -481,7 +489,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
     # ---- voice allocation: mono-melody priority over a sustain pad ----------
     # Held notes keep their voice (a stable polyphonic pad); when all three
     # voices are sounding and a new note arrives, it steals the **most-recently
-    # -started** voice (`max` t_changed) rather than the oldest. So the first
+    # -started** voice (`max` seq) rather than the oldest. So the first
     # notes you hold form a sticky pad and a later overlapping line (melody /
     # arp) cycles on the top voice, stealing itself instead of the pad. When a
     # voice frees, the most-recent still-held *suspended* note resurfaces into
@@ -508,7 +516,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
             if idx is None:
                 # All voices sounding: steal the most-recently-started one so
                 # the older/held pad voices survive.
-                idx = max(range(SID.N_VOICES), key=lambda i: self.voices[i].t_changed)
+                idx = max(range(SID.N_VOICES), key=lambda i: self.voices[i].seq)
             self._assign_voice(idx, midi_note, velocity)
         self._dirty = True
 
@@ -537,7 +545,11 @@ class MidiScene(VoiceScopeRenderer, Scene):
         v = self.voices[idx]
         v.note = note
         v.on = True
-        v.t_changed = time.time()
+        # Every caller holds `_allocation_lock`, so the bump needs no lock of
+        # its own. See `_VoiceState.seq` for why this is a counter and not a
+        # timestamp.
+        self._assign_seq += 1
+        v.seq = self._assign_seq
         v.velocity = velocity
         self._program_voice(idx, note, gate=True, velocity=velocity)
 

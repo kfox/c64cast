@@ -34,11 +34,11 @@ keywords = [
     "vic-ii",
     "wled",
 ]
-# Windows is deliberately absent: the code intends to support it (tr://COM3,
-# USB VID/PID detection) but the full pipeline has never been verified there.
-# Add it when a Windows CI job exists. macOS IS claimed here — it is the primary
-# development platform — but CI is ubuntu-only today, so a macOS job is owed
-# before the first release actually goes out.
+# Each platform claimed here is backed two ways, and both halves are needed:
+# a CI leg in the lint-and-test matrix (ubuntu × macos × windows) for the
+# host-side code, since the suite mocks every U64/TeensyROM path, and regular
+# real-hardware use for the pipeline the suite cannot cover. Adding a platform
+# means adding both — keep this list and the CI matrix in sync.
 #
 # There is no "License :: OSI Approved :: MIT License" classifier on purpose —
 # PEP 639 license expressions supersede license classifiers, and setuptools
@@ -47,9 +47,11 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

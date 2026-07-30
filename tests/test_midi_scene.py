@@ -161,6 +161,22 @@ class VoiceAllocationTests(_MidiTestCase):
         self.assertEqual([v.note for v in scene.voices], [60, 64, 72])
         self.assertEqual(scene._held, [60, 64, 67, 72])
 
+    def test_steal_order_survives_a_zero_resolution_clock(self):
+        # Allocation order must not depend on clock resolution — a coarse clock
+        # gives a chord's note-ons one shared value, and `max()` would then break
+        # the tie toward the lowest index and steal the oldest pad voice. A frozen
+        # clock is the strongest form of that condition: track order with a
+        # counter and freezing time changes nothing. The sibling tests cannot see
+        # this, since they run on whatever resolution the host happens to have.
+        with mock.patch.object(midi_scene.time, "time", return_value=1234.5):
+            scene, _ = _make_scene()
+            for n in (60, 64, 67):
+                scene._note_on(n, 100)
+            scene._note_on(72, 100)
+            # Still the newest voice (v2=67) that goes, not v0.
+            self.assertEqual([v.note for v in scene.voices], [60, 64, 72])
+            self.assertEqual({v.note for v in scene.voices if v.on}, {60, 64, 72})
+
     def test_suspended_note_resurfaces_on_release(self):
         # Hold a 3-note chord, tap a 4th (steals the newest = 67), release the
         # 4th — the suspended 67 must come back (no voice left silent).
