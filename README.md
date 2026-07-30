@@ -1,11 +1,12 @@
-<img width="800" height="400" alt="c64cast Logo" src="assets/logo.png" />
+<img width="800" height="400" alt="c64cast Logo" src="https://raw.githubusercontent.com/kfox/c64cast/main/assets/logo.png" />
 
 # c64cast
 
 [![CI](https://github.com/kfox/c64cast/actions/workflows/ci.yml/badge.svg)](https://github.com/kfox/c64cast/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/kfox/c64cast/branch/main/graph/badge.svg)](https://codecov.io/gh/kfox/c64cast)
+[![PyPI](https://img.shields.io/pypi/v/c64cast.svg)](https://pypi.org/project/c64cast/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/kfox/c64cast/blob/main/LICENSE)
 
 c64cast turns a real Commodore 64 — driven over the network through an
 [Ultimate 64](https://ultimate64.com/) or
@@ -21,32 +22,57 @@ PCM sampler. Stackable **overlays** decorate any scene with scrolling text,
 spectrum analyzers, clocks, weather, RSS, logos, and more — and **ensemble
 mode** drives a whole wall of C64s at once.
 
+## Install
+
+```bash
+uv tool install 'c64cast[all]'          # or: pipx install 'c64cast[all]'
+c64cast --config example:hello -u u64://192.168.2.64
+```
+
+That puts a `c64cast` command on your `PATH`. To try it without installing
+anything permanently:
+
+```bash
+uvx --from 'c64cast[all]' c64cast clip.mp4 -u u64://192.168.2.64
+```
+
+`[all]` pulls in every optional feature — video files and YouTube URLs, mic
+capture, MIDI, webcam gestures, the WLED bridge, the HTTP control plane, the
+config wizard. Plain `pip install c64cast` gets a much smaller core install
+(no mediapipe, no yt-dlp) that still covers every generative scene, PETSCII/
+bitmap rendering, SID playback, and overlays; add extras à la carte later
+(`pip install 'c64cast[video,midi]'`).
+
+You need a reachable [Ultimate 64 or TeensyROM+](#hardware-needed) — there is
+no emulator path for the streaming side. On the Ultimate, enable **Ultimate DMA
+Service** under **F2 → Network Settings** first; c64cast prints an actionable
+error if it can't connect.
+
 ## What do you want to do?
 
-Every row below is a runnable, single-scene demo — pass it to
-`--config` and it loops forever until you Ctrl+C. Point it at your
-hardware with `-u` (see [Quick start](#quick-start)).
-[`docs/usage.md`](docs/usage.md) documents every option for these
-scenes and overlays.
+Every row below is a runnable, single-scene demo that ships inside the
+package — pass it to `--config` and it loops forever until you Ctrl+C. Point
+it at your hardware with `-u` (see [Quick start](#quick-start)).
+[`docs/usage.md`](https://github.com/kfox/c64cast/blob/main/docs/usage.md)
+documents every option for these scenes and overlays.
 
-| I want to…                          | Try                                                       | Reference |
-|-------------------------------------|-----------------------------------------------------------|-----------|
-| Play a video (or YouTube URL)       | `c64cast clip.mp4` · [`scene-video.toml`](c64cast/examples/scene-video.toml) | [Quick playback](docs/usage.md#quick-playback-positional-media-args) |
-| Show a live webcam as C64 art       | [`scene-webcam-petscii.toml`](c64cast/examples/scene-webcam-petscii.toml)    | [Scenes](docs/usage.md#scenes) |
-| Visualize a SID tune (oscilloscope) | [`scene-waveform.toml`](c64cast/examples/scene-waveform.toml)                | [Scenes](docs/usage.md#scenes) |
-| Play a SID from a MIDI keyboard     | [`scene-midi.toml`](c64cast/examples/scene-midi.toml)                       | [Scenes](docs/usage.md#scenes) |
-| Stream from DeepSID / SIDFactory II | [`scene-asid.toml`](c64cast/examples/scene-asid.toml)                       | [Scenes](docs/usage.md#scenes) |
-| Slideshow of images                 | [`scene-slideshow.toml`](c64cast/examples/scene-slideshow.toml)             | [Scenes](docs/usage.md#scenes) |
-| Generative / music-reactive visuals | [`scene-generative-plasma.toml`](c64cast/examples/scene-generative-plasma.toml) | [Scenes](docs/usage.md#scenes) |
-| Run a native `.prg`/`.crt` game or demo | [`scene-launcher.toml`](c64cast/examples/scene-launcher.toml)           | [Scenes](docs/usage.md#scenes) |
-| An info board (clock/weather/RSS)   | [`overlay-clock.toml`](c64cast/examples/overlay-clock.toml)                 | [Overlays](docs/usage.md#overlays) |
-| Drive multiple C64s as one video wall | [`ensemble/master.toml`](c64cast/examples/ensemble/master.toml)          | [Ensemble mode](docs/usage.md#ensemble-mode-multi-system) |
-| Make the C64 a WLED LED matrix       | [`scene-wled.toml`](c64cast/examples/scene-wled.toml)                       | [WLED bridge](docs/usage.md#wled-bridge) |
-| Control c64cast from the WLED app    | [`wled-control.toml`](c64cast/examples/wled-control.toml)                   | [WLED bridge](docs/usage.md#wled-bridge) |
+| I want to…                          | Try                                                     | Reference |
+|-------------------------------------|---------------------------------------------------------|-----------|
+| Play a video (or YouTube URL)       | `c64cast clip.mp4` · `example:scene-video`              | [Quick playback](https://github.com/kfox/c64cast/blob/main/docs/usage.md#quick-playback-positional-media-args) |
+| Show a live webcam as C64 art       | `example:scene-webcam-petscii`                          | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
+| Visualize a SID tune (oscilloscope) | `example:scene-waveform`                                | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
+| Play a SID from a MIDI keyboard     | `example:scene-midi`                                    | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
+| Stream from DeepSID / SIDFactory II | `example:scene-asid`                                    | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
+| Slideshow of images                 | `example:scene-slideshow`                               | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
+| Generative / music-reactive visuals | `example:scene-generative-plasma`                       | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
+| Run a native `.prg`/`.crt` game or demo | `example:scene-launcher`                            | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
+| An info board (clock/weather/RSS)   | `example:overlay-clock`                                 | [Overlays](https://github.com/kfox/c64cast/blob/main/docs/usage.md#overlays) |
+| Drive multiple C64s as one video wall | `example:ensemble/master`                             | [Ensemble mode](https://github.com/kfox/c64cast/blob/main/docs/usage.md#ensemble-mode-multi-system) |
+| Make the C64 a WLED LED matrix       | `example:scene-wled`                                   | [WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/usage.md#wled-bridge) |
+| Control c64cast from the WLED app    | `example:wled-control`                                 | [WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/usage.md#wled-bridge) |
 
-Every one of those is a packaged demo: run it with `c64cast --config
-example:<name>`, or list them all with `c64cast --list-examples` (one demo per
-scene type and per overlay).
+Run any of them with `c64cast --config example:<name>`, or list the whole set
+with `c64cast --list-examples` (one demo per scene type and per overlay).
 
 ## Features
 
@@ -101,8 +127,9 @@ real LED matrices *from* the C64's SID with no microphone (audio-sync
 broadcast), present c64cast *as* a virtual WLED device the WLED app / Home
 Assistant can discover and control (effects ↔ scenes, sliders ↔ live params,
 presets), and turn the C64 *into* a virtual LED matrix that LedFx / xLights
-stream live pixels to. See [WLED bridge](docs/usage.md#wled-bridge) for the
-full reference.
+stream live pixels to. See
+[WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/usage.md#wled-bridge)
+for the full reference.
 
 **Quick playback** — skip the config file entirely and pass media straight
 on the command line: `c64cast clip.mp4 tune.sid pics/` plays each in turn.
@@ -113,67 +140,56 @@ showing, plus recording to MP4. Both are cv2-based, so neither needs an extra.
 ## Quick start
 
 ```bash
-git clone https://github.com/kfox/c64cast
-cd c64cast
+# "Hello world": scrolls big text across a solid canvas. Needs nothing but a
+# reachable U64/TR+ — no webcam, mic, SID, or video files. Ctrl-C to exit.
+c64cast --config example:hello -u u64://192.168.2.64
 
-# Installing [uv](https://github.com/astral-sh/uv) is recommended.
-# Optionally, use mise + direnv; direnv activates .venv for you.
-# Hard deps + every optional extra + dev tooling, into a uv-managed .venv.
-
-uv sync --all-extras
-
-# Plain-pip alternative (no uv): runtime extras only — the dev tools are a
-# PEP 735 dependency-group, installed separately:
-#   pip install -e .[all] && pip install --group dev
-
-# "Hello world": scrolls big text across a solid canvas. Requires a
-# reachable U64/TR+ — no webcam, mic, SID, or video files. Edit the URL at the
-# top of the file to point at your U64/TR+, then run it. Ctrl-C to exit.
+# Save the connection target so you never type -u again:
+c64cast -u u64://192.168.2.64 --save-settings
 c64cast --config example:hello
-
-# Override the connection target without editing the file:
-c64cast --config example:hello -u u64://192.168.1.64
 ```
 
 `-u/--url` is a scheme-aware target that picks the backend + endpoint:
 `u64://HOST` or `http(s)://HOST` (Ultimate 64 / II+), `tr://` (TeensyROM+ over
 auto-detected USB serial), `tr:///dev/cu.usbmodem*` / `tr://COM3` (a specific
 serial device), or `tr://HOST` (TeensyROM+ over TCP). `$C64CAST_URL` is the env
-fallback.
+fallback, and `--save-settings` persists it (plus the capture device and SID
+model) to `~/.config/c64cast/settings.toml`.
 
-`hello.toml` is the gentlest starting point. From there:
+`example:hello` is the gentlest starting point. From there:
 
 ```bash
-# Try a single feature in isolation — one TOML per scene type / overlay:
+# Try a single feature in isolation — one demo per scene type / overlay:
 c64cast --config example:scene-webcam-petscii
 c64cast --config example:overlay-clock
 
 # Build your own config the easy way — the interactive wizard walks you
 # through either a single scene or a multi-scene playlist (with the "UP NEXT"
 # interstitial, video interleaving, and loop control) and writes a c64cast.toml
-# (needs the 'wizard' extra; auto-loaded when no --config is given):
-python -m c64cast --init
+# (needs the 'wizard' extra, included in [all]; a ./c64cast.toml is picked up
+# automatically when no --config is given):
+c64cast --init
 
 # ...or by hand: the `c64cast.example` demo is a fully-annotated reference
-# exercising every scene + overlay; copy the bits you want.
+# exercising every scene + overlay. Copy it out and edit:
 c64cast --print-example c64cast.example > c64cast.toml && $EDITOR c64cast.toml
-python -m c64cast
+c64cast
 
 # Validate any config + check which optional extras are installed without
-# touching the U64 (skip the connectivity probe to keep it offline):
-python -m c64cast --doctor --config c64cast.toml --skip-probe
+# touching the C64 (skip the connectivity probe to keep it offline):
+c64cast --doctor --config c64cast.toml --skip-probe
 ```
 
-Each demo is a runnable single-scene config, and they ship **inside the
-package** — so `example:NAME` works the same from a checkout, a `pip install`,
-or `uvx`. `c64cast --list-examples` prints the whole set with one-line
-summaries; `--print-example NAME` copies one out to edit. See
-[`c64cast/examples/README.md`](c64cast/examples/README.md) for the narrative
-version.
+The demos ship **inside the package**, so `example:NAME` works the same from a
+`pip install`, from `uvx`, or from a git checkout.
+`c64cast --list-examples` prints the whole set with one-line summaries;
+`--print-example NAME` copies one out to edit. See
+[`c64cast/examples/README.md`](https://github.com/kfox/c64cast/blob/main/c64cast/examples/README.md)
+for the narrative version.
 
-`python -m c64cast -h` lists every CLI flag grouped by section
-(`connection`, `quick playback`, `video input`, `audio`, `vision input`,
-`playlist`, `introspection`, `debug`).
+`c64cast -h` lists every CLI flag grouped by section (`connection`,
+`quick playback`, `video input`, `audio`, `vision input`, `playlist`,
+`introspection`, `debug`).
 
 ### Quick playback (no config file)
 
@@ -183,62 +199,49 @@ Audio is on by default; `--no-audio` mutes.
 
 ```bash
 # A video, a SID tune, then a folder of pictures, on an Ultimate 64:
-python -m c64cast -u u64://192.168.1.64 clip.mp4 tune.sid assets/pictures/
+c64cast -u u64://192.168.1.64 clip.mp4 tune.sid ~/Pictures/
 
 # A clip on a TeensyROM+ over auto-detected USB serial:
-python -m c64cast -u tr:// clip.mp4
+c64cast -u tr:// clip.mp4
 
-# A YouTube URL (needs the 'yt' extra: uv sync --extra yt):
-python -m c64cast 'https://youtu.be/dQw4w9WgXcQ'
+# A YouTube URL (needs the 'yt' extra, included in [all]):
+c64cast 'https://youtu.be/dQw4w9WgXcQ'
 ```
-
-### Launcher script
-
-[`scripts/c64cast.sh`](scripts/c64cast.sh) is a thin convenience wrapper
-around `python -m c64cast`. It `cd`s to the repo root and forwards every
-argument, running through `uv run` when `uv` is on your `PATH` (so the
-project `.venv` is always used) and falling back to a bare `python`
-otherwise. Handy when invoking c64cast from another directory or from a
-context where direnv hasn't activated `.venv` (cron, systemd, an ssh
-one-liner):
-
-```bash
-scripts/c64cast.sh --config example:hello
-scripts/c64cast.sh --doctor --skip-probe
-```
-
-Anywhere this README shows `python -m c64cast ...`, `scripts/c64cast.sh ...`
-is an equivalent drop-in.
 
 ## Configuration
 
 A config is a single TOML file (`--config PATH`, else `./c64cast.toml`,
 else built-in defaults) that defines the playlist and every overridable
 option. Three ways to author one, plus tooling to discover and validate it —
-none of which needs the U64:
+none of which needs the C64:
 
 ```bash
 # Build one interactively (single scene or multi-scene playlist):
-python -m c64cast --init                    # needs the 'wizard' extra
+c64cast --init                    # needs the 'wizard' extra
 
 # Discover the config surface straight from the code (always in sync):
-python -m c64cast --list-scenes             # scene types
-python -m c64cast --list-overlays           # overlays + their restrictions
-python -m c64cast --list-modes              # display modes
-python -m c64cast --list-examples           # the packaged demo configs
-python -m c64cast --describe overlay:clock  # full reference for one thing
-python -m c64cast --compat                  # overlay × display-mode matrix
-python -m c64cast --print-schema            # JSON Schema for editor autocomplete
+c64cast --list-scenes             # scene types
+c64cast --list-overlays           # overlays + their restrictions
+c64cast --list-modes              # display modes
+c64cast --list-examples           # the packaged demo configs
+c64cast --describe overlay:clock  # full reference for one thing
+c64cast --compat                  # overlay × display-mode matrix
+c64cast --print-schema            # JSON Schema for editor autocomplete
 
 # Validate a config (and check which extras are installed) without hardware:
-python -m c64cast --doctor --config c64cast.toml --skip-probe
+c64cast --doctor --config c64cast.toml --skip-probe
 ```
 
 The discovery output and the JSON schema are generated from the same field
 metadata the loader runs on, so they can't drift from the code.
-[`c64cast.example`](c64cast/examples/c64cast.example.toml) (`--print-example
-c64cast.example`) is the fully-annotated reference; see
-[docs/usage.md](docs/usage.md) for the complete config walkthrough.
+`c64cast --print-example c64cast.example` is the fully-annotated reference; see
+[docs/usage.md](https://github.com/kfox/c64cast/blob/main/docs/usage.md) for
+the complete config walkthrough.
+
+Machine-local defaults — connection target, capture device, SID model — live in
+`~/.config/c64cast/settings.toml` and apply to every run, including quick
+playback; write them with `--save-settings`. Persisted state (DAC calibrations,
+WLED and loop presets) lives under `~/.local/share/c64cast/`.
 
 ## Live controls
 
@@ -274,23 +277,27 @@ shell.
 
 ## Documentation
 
-* [docs/guide/](docs/guide/) — **the User's Guide**: a friendly,
-  read-in-order introduction that starts from nothing and builds up. Start
-  at [Quick Start](docs/guide/01-quick-start.md); `make guide` renders the
-  whole thing to a typeset PDF.
-* [docs/usage.md](docs/usage.md) — full config reference, scene/overlay
-  catalog with options, suggested setups
-* [docs/caveats.md](docs/caveats.md) — known quirks (6502 emulator
-  scope, char ROM substitution, U64 endpoint variance, licensing of
-  SIDs / videos)
-* [docs/troubleshooting.md](docs/troubleshooting.md) — symptom-first
-  index for "I saw X, what now?"
-* [docs/extending.md](docs/extending.md) — how to add a new Scene,
-  Overlay, DisplayMode, or interstitial Background
-* [docs/architecture.md](docs/architecture.md) — per-module internals:
-  design rationale, hardware constraints, and edge-case history. Split by
-  topic area under [docs/architecture/](docs/architecture/); the index
-  routes each module to its notes
+* [docs/guide/](https://github.com/kfox/c64cast/tree/main/docs/guide) —
+  **the User's Guide**: a friendly, read-in-order introduction that starts
+  from nothing and builds up. Start at
+  [Quick Start](https://github.com/kfox/c64cast/blob/main/docs/guide/01-quick-start.md);
+  `make guide` renders the whole thing to a typeset PDF.
+* [docs/usage.md](https://github.com/kfox/c64cast/blob/main/docs/usage.md) —
+  full config reference, scene/overlay catalog with options, suggested setups
+* [docs/caveats.md](https://github.com/kfox/c64cast/blob/main/docs/caveats.md) —
+  known quirks (6502 emulator scope, char ROM substitution, U64 endpoint
+  variance, licensing of SIDs / videos)
+* [docs/troubleshooting.md](https://github.com/kfox/c64cast/blob/main/docs/troubleshooting.md) —
+  symptom-first index for "I saw X, what now?"
+* [docs/extending.md](https://github.com/kfox/c64cast/blob/main/docs/extending.md) —
+  how to add a new Scene, Overlay, DisplayMode, or interstitial Background
+* [docs/architecture.md](https://github.com/kfox/c64cast/blob/main/docs/architecture.md) —
+  per-module internals: design rationale, hardware constraints, and edge-case
+  history. Split by topic area under
+  [docs/architecture/](https://github.com/kfox/c64cast/tree/main/docs/architecture);
+  the index routes each module to its notes
+* [CHANGELOG.md](https://github.com/kfox/c64cast/blob/main/CHANGELOG.md) —
+  what changed in each release
 
 ## Hardware needed
 
@@ -331,39 +338,18 @@ playback is
 driven by a small player PRG uploaded into C64 RAM so the real 6510
 calls PLAY at IRQ time (the U64 firmware's `runners:sidplay` runner is
 deliberately avoided because it hijacks the HDMI output with its own
-UI); see [docs/caveats.md](docs/caveats.md) for the PSID-only limitation.
+UI); see
+[docs/caveats.md](https://github.com/kfox/c64cast/blob/main/docs/caveats.md)
+for the PSID-only limitation.
 
-## Development
+## Contributing
 
-An HDMI capture device (see above) is highly recommended for development.
-There are some diagnostic scripts in the [scripts/diags](scripts/diags)
-subdirectory that can make use of an attached capture device, if present.
-
-```bash
-uv sync --all-extras    # or: pip install -e .[all] && pip install --group dev
-pre-commit install      # ensure ruff + tests run before every commit
-```
-
-CI runs the same lint + tests on every push and pull request — see
-[.github/workflows/ci.yml](.github/workflows/ci.yml).
-
-There's a `Makefile` available that offers a few development targets:
-
-```bash
-⮑  make
-targets:
-  sync       uv sync --all-extras (refresh the project env)
-  lint       ruff check
-  fmt        ruff format
-  test       unittest discover (T=tests.test_foo runs just that)
-  coverage   coverage report + HTML + coverage.xml + JUnit XML
-  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)
-  doctor     offline env + config diagnostics (desynced .venv, drift)
-  bench      scripts/bench.py — async write pipeline
-  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata
-  check      lint + typecheck + test
-  clean      remove build artifacts
-```
+Bug reports, feature ideas, and pull requests are all welcome. See
+[CONTRIBUTING.md](https://github.com/kfox/c64cast/blob/main/CONTRIBUTING.md)
+for the development setup (a git checkout and `uv sync --all-extras`), the
+`make check` gate, and the conventions this repo follows. Security reports go
+through [SECURITY.md](https://github.com/kfox/c64cast/blob/main/SECURITY.md)
+rather than a public issue.
 
 ## Acknowledgments
 
@@ -389,13 +375,14 @@ targets:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/kfox/c64cast/blob/main/LICENSE).
 
 **Third-party assets.** The User's Guide is typeset in two fonts that are
 redistributed in this repository under the [SIL Open Font
 License 1.1](https://openfontlicense.org/), not under MIT: **Jost\***
 (Copyright 2020 The Jost Project Authors) and **Inconsolata** (Copyright 2006
 The Inconsolata Project Authors). They live in
-[`docs/guide/fonts/`](docs/guide/fonts/) alongside their licence texts — see
-[that directory's README](docs/guide/fonts/README.md) for provenance and for
-what has to travel with them.
+[`docs/guide/fonts/`](https://github.com/kfox/c64cast/tree/main/docs/guide/fonts)
+alongside their licence texts — see
+[that directory's README](https://github.com/kfox/c64cast/blob/main/docs/guide/fonts/README.md)
+for provenance and for what has to travel with them.

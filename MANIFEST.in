@@ -1,0 +1,13 @@
+# Extra top-level files for the source distribution.
+#
+# setuptools puts README.md (via `readme`), LICENSE (via `license-files`),
+# pyproject.toml, and everything under the package into the sdist on its own.
+# These four are project-level documents rather than package data, so they need
+# naming here or the source archive ships without them — and a source archive
+# with no changelog is the one thing people go looking for when they download
+# one. The wheel is unaffected; package data lives in
+# [tool.setuptools.package-data] instead.
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
+include CODE_OF_CONDUCT.md

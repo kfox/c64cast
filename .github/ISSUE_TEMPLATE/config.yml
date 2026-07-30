@@ -1,0 +1,22 @@
+# Issue-template chooser configuration. The two templates above cover bugs and
+# feature requests; everything else is better served by Discussions, where an
+# answer helps the next person who searches for it.
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help getting started
+    url: https://github.com/kfox/c64cast/discussions/categories/q-a
+    about: >
+      "How do I…", "is this supposed to…", "which display mode should I use" —
+      ask here. Try `c64cast --doctor --skip-probe` and
+      docs/troubleshooting.md first; they resolve most setup problems on the
+      spot.
+  - name: Show what you made
+    url: https://github.com/kfox/c64cast/discussions/categories/show-and-tell
+    about: >
+      Configs, video-wall builds, VJ rigs, photos of your C64 doing something
+      absurd. Very much encouraged.
+  - name: Security vulnerability
+    url: https://github.com/kfox/c64cast/security/advisories/new
+    about: >
+      Report privately, never as a public issue. See SECURITY.md for what to
+      include and for which network surfaces are unauthenticated by design.
