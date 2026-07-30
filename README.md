@@ -282,8 +282,9 @@ the portable route.
 * [docs/guide/](https://github.com/kfox/c64cast/tree/main/docs/guide) —
   **the User's Guide**: a friendly, read-in-order introduction that starts
   from nothing and builds up. Start at
-  [Quick Start](https://github.com/kfox/c64cast/blob/main/docs/guide/01-quick-start.md);
-  `make guide` renders the whole thing to a typeset PDF.
+  [Quick Start](https://github.com/kfox/c64cast/blob/main/docs/guide/01-quick-start.md),
+  or download the typeset PDF for your version from
+  [the latest release](https://github.com/kfox/c64cast/releases/latest).
 * [docs/usage.md](https://github.com/kfox/c64cast/blob/main/docs/usage.md) —
   full config reference, scene/overlay catalog with options, suggested setups
 * [docs/caveats.md](https://github.com/kfox/c64cast/blob/main/docs/caveats.md) —

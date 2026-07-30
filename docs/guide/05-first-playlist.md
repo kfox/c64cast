@@ -220,11 +220,20 @@ generated from the same definitions that produce `--list-scenes` and
 ## Editing With Help
 
 If your text editor understands TOML schemas, c64cast can drive its
-autocompletion. Put this on the first line of your configuration file:
+autocompletion. It needs one line at the very top of your configuration file,
+pointing at the schema — and the easiest way to get it right is to let
+`c64cast --init` write the file for you, because it fills that line in
+automatically.
+
+To add it by hand, the form is:
 
 ```toml
-#:schema https://raw.githubusercontent.com/kfox/c64cast/main/c64cast/data/c64cast.schema.json
+#:schema https://raw.githubusercontent.com/kfox/c64cast/v0.1.0/c64cast/data/c64cast.schema.json
 ```
+
+Replace `v0.1.0` with the version you are running (`c64cast --version`), so
+the editor checks your file against the settings your copy actually
+understands.
 
 Editors with a TOML extension will then suggest valid settings as you type,
 show the documentation for each, and underline anything that is not real.

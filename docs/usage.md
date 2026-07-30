@@ -330,11 +330,15 @@ directive on the **first line** of your config:
 
 ```toml
 #:schema /path/to/site-packages/c64cast/data/c64cast.schema.json
-# ...or, with no install to point at:
-#:schema https://raw.githubusercontent.com/kfox/c64cast/main/c64cast/data/c64cast.schema.json
+# ...or, with no install to point at — `vX.Y.Z` for the release you run,
+# `main` for a source checkout:
+#:schema https://raw.githubusercontent.com/kfox/c64cast/v0.1.0/c64cast/data/c64cast.schema.json
 ```
 
-`--init` writes the right directive for you. With Taplo (the VS Code "Even
+`--init` writes the right directive for you: a local path when it can work one
+out, otherwise the URL pinned to the version you are running — so the editor
+validates against the schema your install actually accepts, rather than
+whatever shape it has grown into on `main` since. With Taplo (the VS Code "Even
 Better TOML" / JetBrains TOML plugins) you then get key + value completion,
 hover docs, inline defaults, and red squiggles on typos and bad enum values
 **as you type**. Every packaged example carries the directive (as

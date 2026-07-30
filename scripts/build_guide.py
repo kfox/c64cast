@@ -50,6 +50,7 @@ from typing import NoReturn
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GUIDE_DIR = REPO_ROOT / "docs" / "guide"
 BOOK_TOML = GUIDE_DIR / "book.toml"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
 DEFAULT_OUT = GUIDE_DIR / "c64cast-users-guide.typ"
 
 CALLOUT_KINDS = ("NOTE", "TIP", "WARNING", "IMPORTANT", "CAUTION")
@@ -460,6 +461,28 @@ def typst_list(items: list[str]) -> str:
     return "(" + ", ".join(typst_string(i) for i in items) + ("," if items else "") + ")"
 
 
+def guide_version() -> str:
+    """The c64cast version this guide documents, read from `pyproject.toml`.
+
+    Deliberately NOT `importlib.metadata.version("c64cast")`: that answers
+    "what is installed in the interpreter running this script", which during a
+    release build is whatever `uv sync` last resolved and may lag the version
+    being cut. `pyproject.toml` is the single source of truth the release tag
+    is checked against, so the number on the cover is the number on the tin.
+
+    The guide only ever builds from a checkout (it reads docs/guide/*.md from
+    REPO_ROOT), so a missing pyproject is a broken tree, not a supported case.
+    """
+    try:
+        data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise GuideError(f"cannot read {PYPROJECT}: {exc}") from exc
+    version = data.get("project", {}).get("version")
+    if not isinstance(version, str) or not version:
+        raise GuideError(f"{PYPROJECT} has no [project] version")
+    return version
+
+
 def build(guide_dir: Path = GUIDE_DIR) -> str:
     book = tomllib.loads(BOOK_TOML.read_text(encoding="utf-8"))["book"]
 
@@ -484,6 +507,9 @@ def build(guide_dir: Path = GUIDE_DIR) -> str:
         f"  subtitle: {typst_string(book['subtitle'])},",
         f"  tagline: {typst_string(book['tagline'])},",
         f"  logo: {typst_string(book['logo'])},",
+        # Not in book.toml: the version is not book-level metadata somebody
+        # edits, it is whatever release this build documents.
+        f"  version: {typst_string(guide_version())},",
         ")",
         "",
         f"#colophon[\n{colophon_typst}\n]",

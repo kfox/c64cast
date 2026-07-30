@@ -12,6 +12,10 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-07-30
+
 The first public release. c64cast has been in daily use against real hardware
 since June 2026 — this is the point where it becomes installable rather than
 cloneable.
@@ -111,12 +115,20 @@ lists them all, `--print-example NAME` copies one out to edit.
 showing, and recording the same to MP4. Both are cv2-based, so neither needs an
 optional dependency.
 
-**Documentation.** A typeset User's Guide (10 chapters, rendered to PDF with
-`make guide`), a full config reference, symptom-first troubleshooting, an
-extension guide, and per-module architecture notes covering the hardware
-constraints and the dead ends behind each design decision. Every install
-instruction and every missing-extra hint names `uv`; `pipx` is documented once
-as an equivalent fallback.
+**Documentation.** A typeset User's Guide (10 chapters), a full config
+reference, symptom-first troubleshooting, an extension guide, and per-module
+architecture notes covering the hardware constraints and the dead ends behind
+each design decision. Every install instruction and every missing-extra hint
+names `uv`; `pipx` is documented once as an equivalent fallback.
+
+The guide is attached to every release as a PDF, stamped on its cover with the
+version it documents, so a downloaded copy can always be matched to the install
+it describes. `make guide` renders the same thing from a checkout.
+
+A config written by `--init` or `--save-settings` carries a `#:schema`
+directive pinned to its own release, so an editor validates it against the
+schema this version actually accepts rather than whatever is currently on
+`main`.
 
 **A leading `~` works in config-file paths.** `file`, `videos_dir`,
 `songlengths_file`, `charset_path`, `model_path`, a `logo` overlay's file, the
@@ -135,4 +147,5 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/commits/main
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kfox/c64cast/releases/tag/v0.1.0

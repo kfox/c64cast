@@ -271,7 +271,7 @@
 // Cover, half-title and colophon
 // ---------------------------------------------------------------------------
 
-#let cover(title: "", subtitle: "", tagline: "", logo: none) = page(
+#let cover(title: "", subtitle: "", tagline: "", logo: none, version: "") = page(
   fill: gradient.linear(accent.darken(22%), accent, accent.lighten(8%), angle: 90deg),
   margin: 0pt,
   header: none,
@@ -306,6 +306,19 @@
     }))
 
     place(bottom + center, dy: -1.1in, text(size: 11pt, tracking: 0.5pt)[#tagline])
+
+    // Which release this printing documents. Set below the tagline and dimmed
+    // against the gradient: a reader needs it when their copy and their install
+    // disagree, and never before that, so it should not compete with the title.
+    if version != "" {
+      place(
+        bottom + center,
+        dy: -0.72in,
+        text(size: 8.5pt, tracking: 0.8pt, fill: rgb(255, 255, 255, 190))[
+          VERSION #version
+        ],
+      )
+    }
   },
 )
 
@@ -350,9 +363,16 @@
   subtitle: "",
   tagline: "",
   logo: none,
+  version: "",
   body,
 ) = {
-  set document(title: title)
+  // The version rides in the PDF metadata as well as on the cover, so a file
+  // that has been renamed, mailed around or printed can still be identified
+  // from Get Info / `pdfinfo` without opening it to page one.
+  set document(
+    title: if version == "" { title } else { title + " User's Guide " + version },
+    keywords: ("c64cast", "Commodore 64", "user's guide", version),
+  )
 
   set page(
     width: 6.24in,
@@ -464,7 +484,7 @@
   }))
 
   // Front matter -----------------------------------------------------------
-  cover(title: title, subtitle: subtitle, tagline: tagline, logo: logo)
+  cover(title: title, subtitle: subtitle, tagline: tagline, logo: logo, version: version)
   // The cover is not a numbered page. Restart the count here so the half-title
   // is i and the colophon -- the first page to actually print a folio -- is ii.
   counter(page).update(1)
