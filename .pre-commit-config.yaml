@@ -1,13 +1,14 @@
 # Pre-commit hooks. Install with:
-#   pip install pre-commit
+#   uv tool install pre-commit
 #   pre-commit install
 #
 # Run manually against all files with:
 #   pre-commit run --all-files
 #
 # These same hooks are enforced in CI (.github/workflows/ci.yml, "pre-commit"
-# job, which skips the pyright/unittest hooks since the lint-and-test job
-# already runs them across the Python matrix).
+# job — which runs the hooks through `uvx pre-commit` and skips the
+# pyright/unittest ones, since the lint-and-test job already runs those across
+# the OS × Python matrix).
 #
 # NOTE: the ruff-pre-commit rev below pins the SAME ruff version as uv.lock
 # (and therefore `make lint` / `make fmt`). Keep the two in sync — bump this

@@ -1,0 +1,32 @@
+# Line endings. The repo is LF throughout and `.pre-commit-config.yaml` already
+# enforces that with `mixed-line-ending --fix=lf` — but that hook only runs on
+# files a contributor is committing, *after* checkout has already decided what
+# landed in the working tree. Git for Windows defaults to `core.autocrlf=true`,
+# so without this file a Windows checkout (a contributor's, or the CI runner's)
+# materializes every text file as CRLF, and the hook then rewrites them into a
+# diff nobody asked for. `text=auto eol=lf` makes the working tree LF on every
+# platform, which is also what the Windows CI legs test against.
+#
+# `text=auto` leaves Git's own binary detection in charge, so images and fonts
+# are untouched; the explicit `binary` lines below are belt-and-braces for the
+# formats where a stray "looks like text" heuristic would corrupt the file.
+* text=auto eol=lf
+
+# Vendored fonts and print-resolution guide figures — byte-for-byte upstream.
+*.ttf  binary
+*.otf  binary
+*.woff binary
+*.woff2 binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+
+# C64 payloads: SID tunes, PRGs, cartridge images, raw memory dumps. These
+# carry $0d/$0a bytes as data, not as line terminators.
+*.sid binary
+*.prg binary
+*.crt binary
+*.d64 binary
+*.bin binary

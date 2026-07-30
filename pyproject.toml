@@ -34,11 +34,14 @@ keywords = [
     "vic-ii",
     "wled",
 ]
-# Windows is deliberately absent: the code intends to support it (tr://COM3,
-# USB VID/PID detection) but the full pipeline has never been verified there.
-# Add it when a Windows CI job exists. macOS IS claimed here — it is the primary
-# development platform — but CI is ubuntu-only today, so a macOS job is owed
-# before the first release actually goes out.
+# Windows is deliberately absent, still. CI does now run the unit suite on
+# windows-latest across every supported interpreter, which is what the earlier
+# note here was waiting on — but that suite mocks every U64/TeensyROM path, so a
+# green Windows leg proves the host-side code is portable, not that the pipeline
+# works. Claiming the classifier is claiming a user can cast to a real Commodore
+# from Windows, and nobody has done that yet. Add it after a hardware run.
+# macOS is claimed and is now backed by CI legs as well as being the primary
+# development platform.
 #
 # There is no "License :: OSI Approved :: MIT License" classifier on purpose —
 # PEP 639 license expressions supersede license classifiers, and setuptools
