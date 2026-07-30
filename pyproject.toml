@@ -212,7 +212,12 @@ c64cast = "c64cast.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/kfox/c64cast"
-Documentation = "https://kfox.github.io/c64cast/"
+# The User's Guide index, which is the read-in-order documentation entry point.
+# NOT a github.io Pages site: the docs are Markdown-in-repo plus a typeset PDF
+# attached to each release, and a URL in published package metadata has to
+# resolve on the day the package is published. Repoint this if a Pages site
+# ever exists.
+Documentation = "https://github.com/kfox/c64cast/tree/main/docs/guide"
 Source = "https://github.com/kfox/c64cast"
 Issues = "https://github.com/kfox/c64cast/issues"
 Changelog = "https://github.com/kfox/c64cast/blob/main/CHANGELOG.md"

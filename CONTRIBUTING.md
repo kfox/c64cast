@@ -181,3 +181,8 @@ Removing or renaming any of those needs a deprecation warning for one minor
 release first. The Python API carries no stability promise while the version is
 `0.x` — internal modules may be reshaped freely, as long as the four surfaces
 above keep working.
+
+Cutting a release is a maintainer task and lives in
+[`RELEASING.md`](RELEASING.md). The one thing worth knowing as a contributor is
+that the `## [Unreleased]` section of the changelog becomes the release notes
+verbatim, so write an entry as the announcement it will be.
