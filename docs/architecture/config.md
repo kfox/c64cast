@@ -40,7 +40,7 @@ Two patterns share one interface. **Span** (shipped: `BigTextSpanOrchestrator`) 
 
 ## `paths.py`
 
-The single source of truth for **where machine-local files live**, so the app works identically from a repo checkout, a `pip install`, or a PyPI wheel. Repo-anchoring a data path via `Path(__file__).resolve().parent.parent` is a latent bug for any non-editable install, which is why nothing in `dac_calibration`, `transport`, or `wled_device` resolves one itself.
+The single source of truth for **where machine-local files live**, so the app works identically from a repo checkout or an installed wheel. Repo-anchoring a data path via `Path(__file__).resolve().parent.parent` is a latent bug for any non-editable install, which is why nothing in `dac_calibration`, `transport`, or `wled_device` resolves one itself.
 
 **Two structural rules.**
 

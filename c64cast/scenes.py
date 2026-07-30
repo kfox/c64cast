@@ -1379,7 +1379,7 @@ class VideoScene(Scene):
         if not _ensure_pyav():
             log.warning(
                 "PyAV unavailable; video scene cannot play %s "
-                "(install with `pip install c64cast[video]`)",
+                "(install with `uv tool install --force 'c64cast[all]'`)",
                 self.filepath,
             )
             self.is_done = True

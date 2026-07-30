@@ -64,7 +64,7 @@ classifiers = [
 
 # DEPENDENCY PINNING POLICY. Everything here is a *bounded range*, never `==`.
 # Published metadata is a constraint on the user's environment: an exact pin
-# makes `pip install c64cast` conflict with any env that already has numpy or
+# makes installing c64cast conflict with any env that already has numpy or
 # opencv, which is most of them. Reproducibility comes from `uv.lock`, which
 # still pins exact versions — so CI, `uv sync`, and the dev environment are
 # byte-identical to before; only what we publish loosens.

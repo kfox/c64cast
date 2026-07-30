@@ -631,7 +631,7 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
 
 # Where WLED presets are persisted — one JSON file per device name, under
 # `paths.presets_dir()` (<data root>/presets), resolved at use time so it works
-# from a repo checkout, a pip install, or a PyPI wheel (and honors
+# from a repo checkout or an installed wheel (and honors
 # $C64CAST_DATA_DIR). Machine/taste-specific captured data, never committed.
 
 # WLED preset ids are 1..250; id 0 is the reserved empty slot and is never stored.
@@ -1145,7 +1145,9 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
     try:
         from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
     except ImportError as e:
-        raise RuntimeError("WLED device requires fastapi: pip install c64cast[wled]") from e
+        raise RuntimeError(
+            "WLED device requires fastapi: uv tool install --force 'c64cast[all]'"
+        ) from e
 
     app = FastAPI(title="c64cast (WLED)", version=_WLED_VERSION)
     ws_clients: set[Any] = set()
@@ -1291,7 +1293,9 @@ class WledDeviceServer:
         try:
             from zeroconf import ServiceInfo, Zeroconf
         except ImportError as e:
-            raise RuntimeError("WLED device requires zeroconf: pip install c64cast[wled]") from e
+            raise RuntimeError(
+                "WLED device requires zeroconf: uv tool install --force 'c64cast[all]'"
+            ) from e
         ip = _local_ip()
         # Advertise the real LAN IP even when bound to 0.0.0.0, so discovery
         # clients get a reachable A record + the actual port via the SRV record.

@@ -25,6 +25,7 @@ import threading
 
 import numpy as np
 
+from . import paths
 from .c64 import SCREEN, VIC
 from .palette import C64_PALETTE_BGR
 
@@ -86,6 +87,7 @@ class Framebuffer:
             self.ram[SCREEN.COLOR_RAM + i] = 14
         self._lock = threading.Lock()
         if charset_path:
+            charset_path = paths.expand_user(charset_path)
             with open(charset_path, "rb") as f:
                 self.charset = f.read(2048)
             if len(self.charset) < 2048:

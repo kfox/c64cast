@@ -5,7 +5,7 @@ scene type or overlay. Use them when you want to *see* a feature in
 isolation, without comments and unrelated scenes obscuring it.
 
 They ship **inside the package**, so every demo runs the same way from a
-source checkout, a `pip install`, or a `uvx` one-liner — referenced by name
+source checkout, an installed wheel, or a `uvx` one-liner — referenced by name
 with the `example:` prefix instead of a path:
 
 ```bash

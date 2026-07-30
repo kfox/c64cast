@@ -73,7 +73,7 @@ The hand tracker is pluggable behind the `GestureRecognizer` protocol; `MediaPip
 
 ## `control_plane.py` — HTTP control plane (optional)
 
-When `[control] enabled = true` and the `control` extra is installed (`pip install c64cast[control]`), a FastAPI app runs on `127.0.0.1:8765` exposing:
+When `[control] enabled = true` and the `control` extra is installed (`uv tool install 'c64cast[control]'`), a FastAPI app runs on `127.0.0.1:8765` exposing:
 
 * `POST /pause` → `playlist.pause_event.set()`
 * `POST /resume` → `playlist.resume_event.set()`

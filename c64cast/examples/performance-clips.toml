@@ -22,7 +22,7 @@
 #   note 62  slot 3  toggle   bar   fire latch on/off
 #   note 63  slot 4  trigger  off   blank cut (instant)
 #
-# Requires the `midi` extra (`pip install -e .[midi]`) and a MIDI controller.
+# Requires the `midi` extra (`uv tool install 'c64cast[midi]'`) and a MIDI controller.
 # With no external clock the grid free-runs at [performance].bpm; tap note 48
 # to set it, or set tempo_source = "midi" to follow a DAW's clock.
 #

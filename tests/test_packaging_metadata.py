@@ -1,10 +1,10 @@
 """Drift guards for the published package metadata in pyproject.toml.
 
-Everything here fails only at `pip install` time — long after CI is green and
+Everything here fails only at install time — long after CI is green and
 the wheel is on PyPI — which is exactly why it is worth asserting in the suite:
 
   1. The `all` extra is hand-maintained and must stay the union of every other
-     extra, or a `pip install c64cast[all]` silently misses a feature.
+     extra, or a `c64cast[all]` install silently misses a feature.
   2. Published dependencies must be bounded ranges, never `==`. An exact pin in
      package metadata makes us unsolvable against any environment that already
      has numpy or opencv. (`uv.lock` keeps dev/CI exact — that's the right

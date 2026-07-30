@@ -17,7 +17,7 @@
 # and leaves the video-audio backends untouched.
 #
 # Requires:
-#   - The `midi` extra (`pip install -e .[midi]`): mido + python-rtmidi.
+#   - The `midi` extra (`uv tool install 'c64cast[midi]'`): mido + python-rtmidi.
 #     ASID rides the same MIDI transport.
 #   - An ASID host pointed at a MIDI port. On macOS, enable IAC in Audio MIDI
 #     Setup and select it as the host's ASID output; on Linux, `modprobe

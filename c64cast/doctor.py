@@ -95,7 +95,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 def _running_from_checkout() -> bool:
     """True when the package is being run out of its own source tree.
 
-    For a pip/uv-installed package ``_REPO_ROOT`` is ``site-packages``, which
+    For an installed package ``_REPO_ROOT`` is ``site-packages``, which
     has no ``pyproject.toml`` — so the dev-environment probes below (project
     .venv, uv.lock drift) have nothing to check and every answer they give is
     noise. Worse than noise, in the uv.lock case: ``uv lock --check`` exits
@@ -181,7 +181,7 @@ def _probe_environment() -> list[Diagnostic]:
     out.append(Diagnostic("ok", "environment", "c64cast version", detail))
 
     # Active interpreter vs the project .venv. Only flag a mismatch when a
-    # project .venv actually exists — a pip-installed package legitimately runs
+    # project .venv actually exists — an installed package legitimately runs
     # from some other prefix and has nothing to compare against.
     venv = _REPO_ROOT / ".venv"
     if venv.exists():
@@ -851,13 +851,15 @@ def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]
 
 def _probe_extras() -> list[Diagnostic]:
     out: list[Diagnostic] = []
-    # An installed user has no project to `uv sync`; tell them to install the
-    # extra the way they installed c64cast (same reasoning as the
-    # checkout-gated .venv / uv.lock probes above).
+    # An installed user has no project to `uv sync`; they re-run the tool
+    # install (same reasoning as the checkout-gated .venv / uv.lock probes
+    # above). `[all]` rather than the one missing extra because extras do not
+    # accumulate — installing `c64cast[midi]` over `c64cast[video]` would trade
+    # one missing feature for another.
     hint = (
         "uv sync --all-extras"
         if _running_from_checkout()
-        else 'pip install "c64cast[{extra}]" (or [all])'
+        else 'uv tool install --force "c64cast[all]"'
     )
     for extra, module, used_for in _EXTRAS:
         try:
@@ -871,7 +873,7 @@ def _probe_extras() -> list[Diagnostic]:
                     category="extras",
                     subject=extra,
                     message=f"not installed (used for: {used_for})",
-                    hint=hint.format(extra=extra),
+                    hint=hint,
                 )
             )
         else:

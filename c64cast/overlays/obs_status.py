@@ -5,7 +5,7 @@ displays a short string in a screen corner. Designed for the
 streaming-director use case: at a glance you can see which OBS scene
 is live and whether the encoder is losing frames.
 
-Requires the ``obs`` extra (``pip install c64cast[obs]``). If
+Requires the ``obs`` extra (``uv tool install --force 'c64cast[all]'``). If
 obsws-python is not installed the overlay raises with a clear message
 at construction time rather than at the first frame.
 
@@ -63,7 +63,7 @@ class OBSStatusOverlay(CornerTextOverlay):
     ):
         if not OBSWS_AVAILABLE:
             raise RuntimeError(
-                "obs_status overlay requires obsws-python (pip install c64cast[obs])"
+                "obs_status overlay requires obsws-python (uv tool install --force 'c64cast[all]')"
             )
         # CornerTextOverlay handles paint-throttling internally; we set a
         # short refresh_s here so the corner-text base renders immediately

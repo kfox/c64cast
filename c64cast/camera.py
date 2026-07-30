@@ -42,9 +42,7 @@ log = logging.getLogger(__name__)
 # Link 4K). Case-insensitive.
 _VIDPID_RE = re.compile(r"^([0-9a-fA-F]{1,4}):([0-9a-fA-F]{1,4})$")
 
-_EXTRA_HINT = (
-    "install the 'camera' extra: uv sync --extra camera (or pip install 'c64cast[camera]')"
-)
+_EXTRA_HINT = "install the 'camera' extra: uv tool install --force 'c64cast[all]'"
 
 # Cache of importlib.util.find_spec — cheap, but this is hit per-resolve.
 _ENUM_AVAILABLE: bool | None = None

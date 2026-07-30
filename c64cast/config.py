@@ -3615,6 +3615,8 @@ def _load_songlengths(path: str | None) -> LengthsDB | None:
         log.info("playlist.songlengths_file not set; auto-detected HVSC database at %s", path)
     elif not path:
         return None
+    else:
+        path = paths.expand_user(path)
     if path in _songlengths_cache:
         return _songlengths_cache[path]
     try:
@@ -3829,8 +3831,8 @@ def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
         if url_needs_ytdlp(s.file.strip()) and not _ytdlp_available():
             raise ValueError(
                 f"video: {s.file!r} is a URL that needs yt-dlp to resolve, but the "
-                "`yt` extra isn't installed. Install it (`uv sync --extra yt`, or "
-                "`pip install c64cast[yt]`), or use a direct media URL / local file."
+                "`yt` extra isn't installed. Install it (`uv tool install --force 'c64cast[all]'`), "
+                "or use a direct media URL / local file."
             )
     if s.duration_s is not None:
         raise ValueError(
@@ -5488,6 +5490,7 @@ def _resolve_slideshow_display(spec: str | None) -> str:
 
 
 def _gather_videos(directory: str) -> list[str]:
+    directory = paths.expand_user(directory)
     if not os.path.isdir(directory):
         return []
     return sorted(
@@ -5536,7 +5539,14 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
         entry = raw.strip()
         if not entry:
             continue
-        if entry.lower().startswith(("http://", "https://")):
+        is_url = entry.lower().startswith(("http://", "https://"))
+        if not is_url:
+            # A TOML file has no shell to expand a leading `~/…` the way one
+            # does for a CLI argument, and glob/os.path treat `~` as a literal
+            # directory name — so this has to happen here or the entry matches
+            # nothing. URLs are kept off the path helpers entirely.
+            entry = paths.expand_user(entry)
+        if is_url:
             # A URL (e.g. a direct media link, or a yt-dlp-resolved stream URL
             # from quickcast). Pass through untouched — URLs have no meaningful
             # local extension and must not be globbed or existence-checked;

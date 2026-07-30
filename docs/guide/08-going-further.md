@@ -33,7 +33,7 @@ duration_s = 3.0
 ```
 
 ```bash
-python -m c64cast --config example:ensemble/master
+c64cast --config example:ensemble/master
 ```
 
 Two things are worth knowing before you build one.
@@ -80,7 +80,7 @@ Mapping a controller by hand means knowing both its control numbers and
 c64cast's internal names. Do not do that. Run:
 
 ```bash
-python -m c64cast --midi-setup
+c64cast --midi-setup
 ```
 
 and c64cast asks you to move each control in turn, learning your layout and
@@ -153,15 +153,17 @@ the log: the display mode, the colour settings, the hardware, and where the
 material came from, including a SID tune's real name and author from its
 file header.
 
-If you run with `--log-file`, a helper turns that record into text you can
-paste under a video:
+The record deliberately excludes your Commodore's address and any password,
+because it is designed to be published. Run with `--log-file` to keep it:
 
 ```bash
-python scripts/scene_config_to_description.py run.log
+c64cast --config my-playlist.toml --log-file run.log
 ```
 
-The record deliberately excludes your Commodore's address and any password,
-because it is designed to be published.
+Each entry is one line of JSON, so anything that reads JSON can turn it into a
+video description. The repository carries a
+[small script](https://github.com/kfox/c64cast/blob/main/scripts/scene_config_to_description.py)
+that renders one as a pasteable block, if you would rather not write your own.
 
 ## Where To Go Next
 
@@ -169,7 +171,7 @@ You have reached the end of the guided part. From here:
 
 - [**`docs/usage.md`**](https://github.com/kfox/c64cast/blob/main/docs/usage.md)
   is the complete reference for every setting.
-- **`python -m c64cast --list-examples`** lists the runnable demonstration of
+- **`c64cast --list-examples`** lists the runnable demonstration of
   every scene and every overlay that ships inside c64cast (browsable
   [on GitHub](https://github.com/kfox/c64cast/tree/main/c64cast/examples)).
 - [**`docs/architecture.md`**](https://github.com/kfox/c64cast/blob/main/docs/architecture.md)

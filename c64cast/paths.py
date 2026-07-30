@@ -1,7 +1,7 @@
 """Canonical locations for c64cast's machine-local settings + persisted data.
 
 One place that answers "where does everything live", so the app works
-identically from a repo checkout, a `pip install`, or a future PyPI wheel — no
+identically from a repo checkout or an installed wheel — no
 `Path(__file__).parent.parent` repo-anchoring (which silently breaks for any
 non-editable install). Two roots, each with an explicit env override:
 
@@ -31,6 +31,24 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+
+
+def expand_user(path: str) -> str:
+    """Expand a leading ``~`` (or ``~user``) in a *user-supplied* path.
+
+    Config files carry paths a human typed, and a human types ``~/Music/hvsc``.
+    Nothing expands that for them: a shell does it for command-line arguments,
+    but a TOML file has no shell, and both `os.path` and `glob` treat a leading
+    ``~`` as a literal directory name — so an unexpanded path silently matches
+    nothing (or raises "doesn't match expected extension" once it falls through
+    to being treated as a literal filename).
+
+    Call this where a path is **used**, not where it is loaded: a `Config` keeps
+    the string the user wrote, so `config_serialize.dumps` round-trips ``~``
+    instead of baking in an absolute home directory that stops being true on
+    the next machine (or leaks a username into a config someone shares).
+    """
+    return os.path.expanduser(path)
 
 
 def _env_path(name: str) -> Path | None:
@@ -131,7 +149,7 @@ def _package_dir() -> Path:
         raise RuntimeError(
             "c64cast's packaged data files are not available as real files "
             f"({type(res).__name__}) — c64cast cannot run from a zipped "
-            "distribution. Install it normally (pip/uv) and retry."
+            "distribution. Install it with uv and retry."
         )
     return res
 

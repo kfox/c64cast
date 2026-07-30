@@ -22,7 +22,7 @@
 # (mcm/petscii) with `spectrum_petscii` for those, or a tune loading above
 # $3F40 for this one.
 #
-# Requires the `mic` extra: `pip install -e .[mic]`.
+# Requires the `mic` extra: `uv tool install 'c64cast[mic]'`.
 #
 # Run:
 #   c64cast --config example:overlay-spectrum_bitmap

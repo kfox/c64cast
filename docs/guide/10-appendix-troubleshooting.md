@@ -8,7 +8,7 @@ Almost everything in this appendix starts the same way, so it is worth
 saying once, at the top:
 
 ```bash
-python -m c64cast --doctor
+c64cast --doctor
 ```
 
 Doctor checks your interpreter, your libraries, your optional features, your
@@ -91,15 +91,26 @@ Commodore's memory, which needs the Web Remote Control Service.
 
 ## Installation Trouble
 
-**An optional feature stays unavailable no matter what you install.** You
-almost certainly used `uv pip install`. This project sets a Python toolchain
-variable that `uv pip` honours over the project environment, so packages
-land where c64cast is not running from. Use `uv sync --all-extras --no-dev`,
-and run things with `uv run`.
+**`c64cast: command not found`.** The install succeeded but its directory is
+not on your `PATH`. Run `uv tool update-shell`, then open a new terminal.
+Until you do, `uv tool run c64cast` works regardless.
 
-**Your editor disagrees with what actually runs.** Point your editor's
-Python interpreter at `.venv/bin/python` rather than the toolchain
-interpreter.
+**A feature says it needs an extra you thought you installed.** You most
+likely installed plain `c64cast` rather than `c64cast[all]`. Installing an
+extra replaces the whole set rather than adding to it, so name every extra you
+want in one command:
+
+```bash
+uv tool install --force 'c64cast[all]'
+```
+
+`c64cast --doctor` lists which optional features it can see, which settles the
+question faster than reading the install output.
+
+**A configuration file works in one directory and not another.** A relative
+path inside it — `assets/sids` and the like — is resolved from wherever you
+launched c64cast, not from where the file is. Write such paths out in full, or
+run from the directory the material sits in. See Chapter 3.
 
 ## Getting More Detail
 

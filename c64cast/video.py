@@ -228,7 +228,9 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     in the container.
     """
     if not _ensure_pyav():
-        raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
+        raise RuntimeError(
+            "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
+        )
     container = _av_open(path)
     try:
         if not container.streams.audio:
@@ -545,7 +547,9 @@ class AVFileSource:
         tempo_scale: float = 1.0,
     ):
         if not _ensure_pyav():
-            raise RuntimeError("PyAV not installed; install with `pip install c64cast[video]`")
+            raise RuntimeError(
+                "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
+            )
 
         self.path = path
         self.target_sr = target_sample_rate

@@ -36,10 +36,13 @@ differs.
 **A display for it.** Anything the Commodore can already drive. The C64U gives
 you HDMI, which is the easiest path.
 
-**A computer to run c64cast on.** macOS, Linux or Windows. It needs Python
-and a network connection to the Commodore. It does not need to be fast; the
-heavy work is a few million small integer operations per frame, which any
-laptop made this century will manage comfortably.
+**A computer to run c64cast on.** macOS or Linux, with a network path to the
+Commodore. It does not need to be fast; the heavy work is a few million small
+integer operations per frame, which any laptop made this century will manage
+comfortably. c64cast installs as a single command and brings its own Python
+with it, so you do not need to set one up first. Windows is not yet a tested
+platform — the code intends to support it, but nobody has verified the whole
+pipeline there.
 
 ## Three Words You Will Keep Meeting
 

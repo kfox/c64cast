@@ -1284,6 +1284,26 @@ class ResolveFileSpecTest(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    def test_tilde_is_expanded(self):
+        # A TOML file has no shell to expand `~/…`, and glob/os.path treat a
+        # leading `~` as a literal directory name — so without expansion here
+        # every `file = "~/Music/…"` in a config fails to match anything.
+        with tempfile.TemporaryDirectory() as tmp:
+            music = os.path.join(tmp, "Music")
+            os.makedirs(music)
+            expected = self._make_files(music, ["tune.sid"])
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                for spec in ("~/Music", "~/Music/tune.sid", "~/Music/*.sid"):
+                    with self.subTest(spec=spec):
+                        got = cfgmod.resolve_file_spec(spec, self.EXTS, label="waveform")
+                        self.assertEqual(got, expected)
+
+    def test_urls_are_not_treated_as_paths(self):
+        # A URL passes through untouched — it must not be globbed, expanded,
+        # or existence-checked.
+        url = "https://example.com/clip.mp4"
+        self.assertEqual(cfgmod.resolve_file_spec(url, (".mp4",), label="video"), [url])
+
     def test_glob_expansion(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._make_files(tmp, ["alpha.sid", "beta.sid", "skip.txt"])

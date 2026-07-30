@@ -8,7 +8,7 @@
 # no FPGA sampler and stays on the DAC). See sampler.py + docs/caveats.md.
 #
 # Requires the `video` extra (PyAV):
-#   pip install -e .[video]
+#   uv tool install 'c64cast[video]'
 #
 # Prerequisites on the U64 (auto-provisioned live for this run when missing,
 # and restored at teardown — but you can also set them yourself in the F2 menu):

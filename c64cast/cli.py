@@ -440,7 +440,7 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
 
     if log_file:
         try:
-            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh = logging.FileHandler(paths.expand_user(log_file), encoding="utf-8")
         except OSError as e:
             # Don't let a bad --log-file path kill the run; surface and
             # continue with just the terminal handler.
@@ -553,7 +553,10 @@ def list_devices() -> int:
         return 0
 
     if not camera.camera_enumeration_available():
-        print("    (install the 'camera' extra for names + VID:PID: uv sync --extra camera)")
+        print(
+            "    (install the 'camera' extra for names + VID:PID: "
+            "uv tool install --force 'c64cast[all]')"
+        )
     if res_by_index:
         for idx in sorted(res_by_index):
             w, h = res_by_index[idx]
@@ -989,7 +992,7 @@ def build_stack(
 
             recorder = _SR(
                 framebuffer,
-                cfg.recording.path,
+                paths.expand_user(cfg.recording.path),
                 fps=cfg.recording.fps,
                 scale=cfg.recording.scale,
                 fourcc=cfg.recording.fourcc,
@@ -1584,7 +1587,7 @@ def main(argv=None) -> int:
         if not AUDIO_AVAILABLE:
             log.error(
                 "--calibrate-dac needs audio capture (sounddevice). Install the "
-                "'mic' extra: uv sync --extra mic"
+                "'mic' extra: uv tool install --force 'c64cast[all]'"
             )
             return 3
         # Resolve a name substring / index to a concrete input index (-1 → None
@@ -1646,8 +1649,8 @@ def main(argv=None) -> int:
         _coerce_reu_for_transport(cfg, midi_cfg)
         if cfg.audio.enabled and not AUDIO_AVAILABLE:
             log.error(
-                "audio enabled but sounddevice is not installed. Install "
-                "with `uv sync --extra mic` (or `pip install c64cast[mic]`), "
+                "audio enabled but sounddevice is not installed. Install the "
+                "'mic' extra (`uv tool install --force 'c64cast[all]'`), "
                 "or set [audio].enabled = false in your "
                 "config. Aborting so you don't run with broken audio for "
                 "the whole session."

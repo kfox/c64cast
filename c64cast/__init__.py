@@ -9,7 +9,7 @@ try:
     __version__ = _pkg_version("c64cast")
 except PackageNotFoundError:
     # Package not installed (running from a source checkout without
-    # `pip install -e .`). Fall back to a sentinel rather than crashing.
+    # `uv sync`). Fall back to a sentinel rather than crashing.
     __version__ = "0+unknown"
 
 __all__ = ["__version__"]

@@ -14,8 +14,8 @@ try it, come back later for another.
 
 > [!TIP]
 > Every scene here has a ready-made demonstration shipped inside c64cast, one
-> per scene type — `python -m c64cast --list-examples` names them all. Run any
-> of them directly: `python -m c64cast --config example:scene-waveform`.
+> per scene type — `c64cast --list-examples` names them all. Run any
+> of them directly: `c64cast --config example:scene-waveform`.
 > Because each defines exactly one scene, it loops forever until you stop it.
 
 ## Blank
@@ -70,6 +70,15 @@ file = "~/Pictures/*.png"                       # a pattern
 file = "~/Pictures, ~/Downloads/*.jpg"          # both
 ```
 
+> [!NOTE]
+> A `~` means your home directory, and a path that starts with one always
+> refers to the same place. A **relative** path like `assets/sids` does not: it
+> is resolved from whatever directory you run c64cast in, so the same
+> configuration file finds different material depending on where you launch it.
+> Relative paths are convenient when you keep a configuration and its media
+> together in one project folder, and a nuisance otherwise. If in doubt, write
+> the path out in full.
+
 Images are not shown in a fixed order. c64cast shuffles the pool and walks
 through it, so every picture appears once before any repeats, and none ever
 appears twice in a row.
@@ -109,7 +118,7 @@ oscilloscope drawn from the chip's registers.
 [[scenes]]
 type = "waveform"
 name = "SID Jukebox"
-file = "assets/sids"
+file = "~/Music/hvsc"
 duration_s = 180.0
 color_mode = "per_voice"
 voice_colors = ["cyan", "yellow", "light green"]
@@ -141,25 +150,34 @@ the definitive source:
 
 [hvsc.c64.org](https://www.hvsc.c64.org/)
 
-Download the archive and extract it into an `assets/sids/` directory,
-alongside the c64cast files. A `file` setting will happily point anywhere you
-like, but that particular directory is worth using: it is where c64cast looks
-by default for the song-length database described below. Then point a
+Download the archive and unpack it wherever you keep music, then point a
 waveform scene at it and let it pick:
 
 ```toml
 [[scenes]]
 type = "waveform"
 name = "SID Jukebox"
-file = "assets/sids"
+file = "~/Music/hvsc"
 ```
 
+Point `file` at the top of the collection and c64cast searches the whole tree,
+so a single scene can draw on all of it.
+
 > [!TIP]
-> Extracting the whole collection also gets you its song-length database,
-> which lists how long every tune actually runs. c64cast finds it
-> automatically under `assets/sids/`, and once it has, you can leave
-> `duration_s` off entirely and each tune will play for its real length
-> instead of being cut off at an arbitrary number of seconds.
+> Unpacking the whole collection also gets you its song-length database, which
+> lists how long every tune actually runs. Name it once and you can leave
+> `duration_s` off entirely, and each tune plays for its real length instead
+> of being cut off at an arbitrary number of seconds:
+>
+> ```toml
+> [playlist]
+> songlengths_file = "~/Music/hvsc/C64Music/DOCUMENTS/Songlengths.md5"
+> ```
+>
+> c64cast also finds the database by itself, without being told, if the
+> collection is unpacked into an `assets/sids/` folder in the directory you run
+> from — which is the arrangement to prefer if you keep a configuration file
+> and its material together in one project folder.
 
 > [!NOTE]
 > The waveform scene needs a bitmap display mode, and it needs the Web
@@ -211,7 +229,7 @@ Hand the machine over to a real Commodore program, then take it back.
 [[scenes]]
 type = "launcher"
 name = "Games"
-file = "assets/programs"
+file = "~/c64/programs"
 duration_s = 120.0
 reset_before_launch = true
 ```
@@ -241,7 +259,7 @@ duration_s = 45.0
 ![Figure 3-3. A live camera feed rendered as PETSCII characters.](img/fig-3-3-webcam.png)
 
 Choose the camera with `-d` on the command line: a number, or part of the
-camera's name, or its USB identifier. `python -m c64cast --list-devices`
+camera's name, or its USB identifier. `c64cast --list-devices`
 prints everything it can find.
 
 `display = "petscii"` builds the picture out of the Commodore's own

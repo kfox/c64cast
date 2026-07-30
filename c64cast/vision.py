@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import cv2
 import numpy as np
 
+from . import paths
 from ._native_io import silence_native_stderr
 from ._pollthread import PollThread
 
@@ -228,10 +229,10 @@ class MediaPipeHandRecognizer:
     ):
         if not _ensure_mediapipe():
             raise RuntimeError(
-                "vision controller requires mediapipe: "
-                "install with `uv sync --extra vision` "
-                "(or `pip install c64cast[vision]`)"
+                "vision controller requires mediapipe: install the 'vision' "
+                "extra (`uv tool install --force 'c64cast[all]'`)"
             )
+        model_path = paths.expand_user(model_path)
         if not os.path.exists(model_path):
             raise RuntimeError(
                 f"HandLandmarker model not found at {model_path!r}. Download it "

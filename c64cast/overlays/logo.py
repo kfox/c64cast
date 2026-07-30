@@ -17,6 +17,7 @@ import os
 
 import numpy as np
 
+from .. import paths
 from ..c64 import SCREEN
 from ..palette import C64_COLORS, resolve_color
 from ..text_surface import corner_origin as _surface_corner_origin
@@ -46,7 +47,7 @@ def _placeholder_art(missing_path: str) -> list[str]:
 
 
 def _load_art(path: str) -> list[str]:
-    with open(path, encoding="utf-8", errors="replace") as f:
+    with open(paths.expand_user(path), encoding="utf-8", errors="replace") as f:
         raw = f.read().rstrip("\n")
     lines = raw.split("\n")
     # Trim blank rows top + bottom; preserve internal spacing.

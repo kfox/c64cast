@@ -21,7 +21,7 @@
 #   CC71 → resonance             CC73/CC75/CC72 → attack/decay/release
 #
 # Requires:
-#   - The `midi` extra (`pip install -e .[midi]`): mido + python-rtmidi.
+#   - The `midi` extra (`uv tool install 'c64cast[midi]'`): mido + python-rtmidi.
 #   - A MIDI source. On macOS, enable IAC in Audio MIDI Setup; on Linux,
 #     `modprobe snd-virmidi`. Or just plug in a USB MIDI keyboard.
 #

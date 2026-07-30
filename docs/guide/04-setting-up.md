@@ -132,61 +132,72 @@ machine.
 
 ## Installing c64cast
 
-c64cast is a Python project managed with `uv`, a tool that builds an isolated
-environment from an exact, locked set of dependencies.
+c64cast is a Python program, but you do not have to think of it as one. It
+installs as a self-contained command-line tool, in its own private
+environment, and nothing it depends on lands in your system Python.
 
-You will need both of those installed first. Their own projects document this
-far better than we could, and the details change often enough that repeating
-them here would only go stale:
-
-| You need | Get it from |
-|---|---|
-| Python 3.11 or newer | [python.org/downloads](https://www.python.org/downloads/) |
-| `uv` | [docs.astral.sh/uv/getting-started/installation](https://docs.astral.sh/uv/getting-started/installation/) |
-
-Follow whichever installation method those pages recommend for your operating
-system. Many systems already have a suitable Python; you can check with
-`python3 --version`. Once both are available:
+The recommended way is [uv](https://docs.astral.sh/uv/), a single-binary tool
+that installs Python programs and, if your machine has no suitable Python,
+supplies one itself. Install `uv` by whichever method its own
+[installation page](https://docs.astral.sh/uv/getting-started/installation/)
+recommends for your operating system, then:
 
 ```bash
-git clone https://github.com/kfox/c64cast
-cd c64cast
-uv sync --all-extras --no-dev
+uv tool install 'c64cast[all]'
 ```
 
-That builds a private Python environment inside the repository, in a
-`.venv` directory, and installs c64cast and its dependencies into it. Nothing
-lands in your system Python.
-
-`--all-extras` pulls in every optional feature: video decoding, microphone
-input, MIDI, the preview window, the configuration wizard and the rest. You
-can install a narrower set later if you want a leaner environment, but while
-you are learning what c64cast does, having everything available saves a lot
-of confusion about why a feature appears to be missing.
-
-`--no-dev` leaves out the linters, type checkers and test tooling, which are
-only of interest if you intend to work on c64cast itself. Drop the flag if
-you do.
-
-Run commands either by letting `direnv` activate the environment for you, or
-by prefixing them:
+That is the whole installation. It puts a `c64cast` command on your `PATH`,
+which you can confirm:
 
 ```bash
-uv run python -m c64cast --version
+c64cast --version
 ```
 
-> [!WARNING]
-> Do not install this project with `uv pip install`. This repository sets a
-> Python toolchain variable that `uv pip` honours over the active environment,
-> so packages land somewhere other than where c64cast runs from. The symptom
-> is an optional feature that stays stubbornly unavailable no matter how many
-> times you install it. `uv sync` and `uv run` always target the project's own
-> environment and are immune.
+And if you want to try c64cast without installing anything permanently, `uv`
+will fetch it, run it once and throw it away:
 
-There is also a launcher script, `scripts/c64cast.sh`, which changes to the
-repository root and forwards everything to `python -m c64cast` through `uv`.
-Use it when you are calling c64cast from somewhere else entirely: a cron job,
-a startup service, or a one-line command over SSH.
+```bash
+uvx --from 'c64cast[all]' c64cast --config example:hello -u u64://192.168.2.64
+```
+
+### What `[all]` Means
+
+The `[all]` part asks for every optional feature: video file decoding, links
+to video sites, microphone capture, MIDI, hand gestures, the LED bridge, the
+web control service and the configuration wizard. Some of those are large, so
+plain `c64cast` without the brackets installs a much smaller core that still
+covers every generative scene, both bitmap and character rendering, SID
+playback and all the overlays.
+
+While you are finding out what c64cast does, take `[all]`. It saves a great
+deal of confusion about why a feature appears to be missing. You can always
+narrow it later, or add features one at a time:
+
+```bash
+uv tool install 'c64cast[video,midi]'
+```
+
+### Keeping It Up To Date
+
+```bash
+uv tool upgrade c64cast
+```
+
+> [!NOTE]
+> Everything in this guide is written for `uv`. If you would rather not install
+> it, [pipx](https://pipx.pypa.io/) is an equivalent fallback for anyone who
+> already has Python 3.11 or newer — `pipx install 'c64cast[all]'` to install
+> and `pipx upgrade c64cast` to update. Every other command in this guide is
+> the same either way, because both put the same `c64cast` on your `PATH`.
+
+> [!NOTE]
+> If you would like to work on c64cast itself rather than only use it, the
+> repository has a different setup — a checkout, a locked development
+> environment and the test tooling —
+> described in
+> [`CONTRIBUTING.md`](https://github.com/kfox/c64cast/blob/main/CONTRIBUTING.md).
+> You do not need any of it to use c64cast, and this guide assumes you have
+> not done it.
 
 ## Choosing Your Connection Target
 
@@ -207,8 +218,8 @@ The rarer settings ride along as query parameters, so they never need options
 of their own:
 
 ```bash
-python -m c64cast -u 'u64://192.168.2.64?dma_port=64' clip.mp4
-python -m c64cast -u 'tr:///dev/cu.usbmodem1234?baud=2000000' clip.mp4
+c64cast -u 'u64://192.168.2.64?dma_port=64' clip.mp4
+c64cast -u 'tr:///dev/cu.usbmodem1234?baud=2000000' clip.mp4
 ```
 
 If you set the `C64CAST_URL` environment variable, c64cast uses it whenever
@@ -221,19 +232,19 @@ Run any command once with `--save-settings` and c64cast writes the
 machine-specific parts of it to a settings file in your home directory:
 
 ```bash
-python -m c64cast -u u64://192.168.2.64 -d "HD Webcam" \
+c64cast -u u64://192.168.2.64 -d "HD Webcam" \
     --sid-model 8580 --save-settings
 ```
 
 That records the connection target, the webcam device and the SID model, then
 exits without running anything. `-d` and `-D` match on any part of a device's
 name, so you never have to remember which number a camera happened to get;
-`python -m c64cast --list-devices` shows what is attached. From then on, every c64cast command on this
+`c64cast --list-devices` shows what is attached. From then on, every c64cast command on this
 computer starts from those values, including the no-configuration quick
 playback from the Quick Start:
 
 ```bash
-python -m c64cast clip.mp4
+c64cast clip.mp4
 ```
 
 Settings saved this way sit underneath everything else. A configuration file
@@ -246,7 +257,7 @@ whatever else you pass.
 When something is not working, ask c64cast what it thinks is wrong:
 
 ```bash
-python -m c64cast --doctor
+c64cast --doctor
 ```
 
 Doctor checks your environment, your configuration and your hardware, and
@@ -263,7 +274,7 @@ when you are editing a configuration file and want to know whether it is
 valid:
 
 ```bash
-python -m c64cast --doctor --config my-playlist.toml --skip-probe
+c64cast --doctor --config my-playlist.toml --skip-probe
 ```
 
 > [!TIP]

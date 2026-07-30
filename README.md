@@ -38,10 +38,11 @@ uvx --from 'c64cast[all]' c64cast clip.mp4 -u u64://192.168.2.64
 
 `[all]` pulls in every optional feature — video files and YouTube URLs, mic
 capture, MIDI, webcam gestures, the WLED bridge, the HTTP control plane, the
-config wizard. Plain `pip install c64cast` gets a much smaller core install
+config wizard. Plain `uv tool install c64cast` gets a much smaller core install
 (no mediapipe, no yt-dlp) that still covers every generative scene, PETSCII/
 bitmap rendering, SID playback, and overlays; add extras à la carte later
-(`pip install 'c64cast[video,midi]'`).
+(`uv tool install 'c64cast[video,midi]'`). Extras don't accumulate, so name
+every one you want in a single command.
 
 You need a reachable [Ultimate 64 or TeensyROM+](#hardware-needed) — there is
 no emulator path for the streaming side. On the Ultimate, enable **Ultimate DMA
@@ -180,8 +181,8 @@ c64cast
 c64cast --doctor --config c64cast.toml --skip-probe
 ```
 
-The demos ship **inside the package**, so `example:NAME` works the same from a
-`pip install`, from `uvx`, or from a git checkout.
+The demos ship **inside the package**, so `example:NAME` works the same from an
+installed wheel, from `uvx`, or from a git checkout.
 `c64cast --list-examples` prints the whole set with one-line summaries;
 `--print-example NAME` copies one out to edit. See
 [`c64cast/examples/README.md`](https://github.com/kfox/c64cast/blob/main/c64cast/examples/README.md)

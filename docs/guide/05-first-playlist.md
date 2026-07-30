@@ -16,7 +16,7 @@ nothing.
 Start by understanding what you have already been doing, because the
 configuration file is only a written-down version of it.
 
-When you type `python -m c64cast clip.mp4`, c64cast looks at each argument
+When you type `c64cast clip.mp4`, c64cast looks at each argument
 and decides what kind of scene it describes. The rules are simple and based
 on the file extension:
 
@@ -33,7 +33,7 @@ Arguments play in the order you list them, once, and then c64cast exits.
 Add `--loop` if you would rather it started over.
 
 ```bash
-python -m c64cast clip.mp4 tune.sid ~/Pictures/ --loop
+c64cast clip.mp4 tune.sid ~/Pictures/ --loop
 ```
 
 Everything else in this chapter is a way of saying the same thing more
@@ -73,11 +73,11 @@ Copy it somewhere of your own and run it. The demos live inside c64cast
 itself rather than in a folder you can browse, so ask it for the copy:
 
 ```bash
-python -m c64cast --print-example hello > my-first.toml
-python -m c64cast --config my-first.toml
+c64cast --print-example hello > my-first.toml
+c64cast --config my-first.toml
 ```
 
-(`python -m c64cast --list-examples` shows every demo it can print or run.)
+(`c64cast --list-examples` shows every demo it can print or run.)
 
 Now change something. Set `background` to `2` and the screen turns red. Add
 another line to `messages`. Change `speed_cells_per_s` to `4.0` and watch the
@@ -101,7 +101,7 @@ Three fields are common to every scene, whatever its type:
 
 - **`type`** is what kind of scene it is. This one is required, and it
   decides which other fields are available. Run
-  `python -m c64cast --list-scenes` for the full list, and
+  `c64cast --list-scenes` for the full list, and
   `--describe scene:video` for everything a particular type accepts.
 
 - **`name`** is what the scene is called. It appears on the card between
@@ -177,7 +177,7 @@ The `[playlist]` section governs the running order as a whole:
 [playlist]
 loop = true
 interleave_videos = false
-videos_dir = "assets/videos"
+videos_dir = "~/Videos/interstitials"
 ```
 
 `loop` decides what happens after the last scene finishes. Left at `true`,
@@ -196,7 +196,7 @@ You do not have to write any of this by hand. c64cast ships an interactive
 builder:
 
 ```bash
-python -m c64cast --init
+c64cast --init
 ```
 
 It asks what you want to build, offers the real choices for each setting
@@ -212,7 +212,7 @@ generated from the same definitions that produce `--list-scenes` and
 
 > [!TIP]
 > Before running a configuration you have edited by hand, check it:
-> `python -m c64cast --doctor --config my-first.toml --skip-probe`. This
+> `c64cast --doctor --config my-first.toml --skip-probe`. This
 > validates the whole file without touching the Commodore, and reports
 > everything wrong with it at once rather than stopping at the first
 > mistake. Misspelled a setting? It will suggest what you probably meant.

@@ -182,7 +182,7 @@ log = logging.getLogger(__name__)
 
 # Calibration tables live under the canonical user data dir
 # (`paths.calibration_dir()` = <data root>/calibration/dac), resolved at use
-# time so the location works from a repo checkout, a pip install, or a PyPI
+# time so the location works from a repo checkout or an installed wheel, not a PyPI
 # wheel — and so `$C64CAST_DATA_DIR` (and tests) can redirect it. A calibration
 # is machine-specific captured data, not source (never committed; only guarded
 # by a .gitignore entry if a dev points $C64CAST_DATA_DIR at the checkout). See
@@ -1271,7 +1271,7 @@ def run_calibration(
     except Exception as e:  # noqa: BLE001 — optional dep
         raise CaptureUnavailableError(
             "audio capture (sounddevice) is required for --calibrate-dac. Install "
-            "the 'mic' extra: uv sync --extra mic"
+            "the 'mic' extra: uv tool install --force 'c64cast[all]'"
         ) from e
 
     from .audio import (

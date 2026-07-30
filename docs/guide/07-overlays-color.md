@@ -86,7 +86,7 @@ error-diffusion crawls unpleasantly when the picture moves.
 
 > [!TIP]
 > c64cast can recommend a palette for a specific source. Run
-> `python -m c64cast --suggest-palette photo.jpg` and it analyses the image
+> `c64cast --suggest-palette photo.jpg` and it analyses the image
 > and prints the C64 colours that represent it most faithfully, ranked. Feed
 > those to `force_palette_colors` for a deliberately restricted look.
 
@@ -139,7 +139,7 @@ rows, so keeping them at the top and bottom leaves the picture alone.
 
 ### What Is Available
 
-Run `python -m c64cast --list-overlays` for the current catalogue. At the
+Run `c64cast --list-overlays` for the current catalogue. At the
 time of writing it holds:
 
 | Overlay | Shows |
@@ -166,7 +166,7 @@ Not every overlay works on every display mode, because some paint characters
 and some paint pixels. To see the whole matrix at once:
 
 ```bash
-python -m c64cast --compat
+c64cast --compat
 ```
 
 Two rules cover almost all of it. `big_text` takes over the entire display
