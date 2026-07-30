@@ -1,21 +1,8 @@
 name: Release
 
-# Publishes a release: PyPI first, then a GitHub release carrying the same
-# artifacts plus the typeset User's Guide.
+# Triggered by a `v*` tag on main. See RELEASING.md.
 #
-# The trigger is a `v*` tag on main. Everything the release needs is already in
-# the tree by then (the version, the changelog section, the guide source), so
-# the tag is the only input — see RELEASING.md for the full sequence.
-#
-# ORDER MATTERS. PyPI is published before the GitHub release, because a PyPI
-# version cannot be replaced once uploaded — only yanked — while a GitHub
-# release can be deleted and recreated freely. If publishing fails, there is no
-# release page pointing at a package that does not exist; re-running the
-# workflow after a fix is safe.
-#
-# `workflow_dispatch` runs the same build and the same consistency checks with
-# both publish steps skipped, which is how you validate a change to this file
-# without spending a version number.
+# `workflow_dispatch` with `publish` off builds and verifies without publishing.
 
 on:
   push:
@@ -27,12 +14,9 @@ on:
         type: boolean
         default: false
 
-# Read-only by default; the two jobs that need more ask for it themselves.
 permissions:
   contents: read
 
-# Never let two releases run at once, and never cancel one in flight — a
-# half-finished publish is the one outcome worth avoiding here.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -53,9 +37,6 @@ jobs:
           enable-cache: true
           python-version: "3.14"
 
-      # The tag is the source of truth for a tag-triggered run; a manual run has
-      # no tag, so it releases whatever the tree declares. `--check` below then
-      # proves the two agree, so neither path can publish a surprise version.
       - name: Resolve the version
         id: version
         run: |
@@ -67,8 +48,6 @@ jobs:
               'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          # a/b/rc/.dev releases go out flagged, so they do not become the
-          # "Latest release" a casual visitor downloads.
           if printf '%s' "$version" | grep -Eq '(a|b|rc)[0-9]+$|\.dev[0-9]+$'; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
@@ -76,34 +55,19 @@ jobs:
           fi
           echo "releasing $version"
 
-      # The gate: pyproject, uv.lock and the changelog must all agree on this
-      # version, and the changelog section must be dated. A tag that disagrees
-      # with the tree stops here, before anything is published.
       - name: Check the tree is consistent with the tag
         run: uv run --no-project python scripts/bump_version.py --check "${{ steps.version.outputs.version }}"
 
-      # No OS matrix on purpose. The wheel is py3-none-any — pure Python, no
-      # compiled extensions — so one runner produces the artifact every platform
-      # installs. The macOS/Linux/Windows claims in the trove classifiers are
-      # backed by the test matrix in ci.yml, which is where a platform problem
-      # would actually surface; building the same universal wheel three times
-      # would prove nothing.
+      # No OS matrix: the wheel is py3-none-any, so one runner produces the
+      # artifact every platform installs. Platform coverage is ci.yml's job.
       - name: Build sdist + wheel
         run: uv build
 
       - name: Check the built metadata
-        # --strict so a README that PyPI would render with warnings fails here
-        # instead of landing as a broken project page.
         run: uvx twine check --strict dist/*
 
-      # Install the real artifact into a throwaway environment and run it. This
-      # catches the packaging mistakes that survive `uv build` and `twine check`
-      # but not first contact with a user: a missing package-data glob, an entry
-      # point that does not import.
-      #
-      # Run from outside the checkout. In the repo root an `import c64cast`
-      # can find the source tree instead of the installed wheel, and a wheel
-      # missing a file would then pass by reading the one next to it.
+      # Run from outside the checkout, where an `import c64cast` cannot reach
+      # the source tree.
       - name: Smoke-test the wheel
         run: |
           set -euo pipefail
@@ -118,9 +82,6 @@ jobs:
             exit 1
           }
 
-          # Packaged resources are the part most likely to be absent from a
-          # wheel while every test in a checkout still passes, because a
-          # checkout has them on disk either way.
           uv run --no-project --with "$wheel" c64cast --list-examples > /dev/null
           uv run --no-project --with "$wheel" c64cast --print-example hello > /dev/null
           uv run --no-project --with "$wheel" python -c "
@@ -133,85 +94,75 @@ jobs:
           "
 
       - name: Set up Typst
-        # The guide's PDF is rendered by Typst, which is a standalone binary
-        # rather than a Python package. Its two faces are committed under
-        # docs/guide/fonts/ and passed with --font-path, so the PDF this job
-        # produces is identical to a local `make guide`.
         uses: typst-community/setup-typst@63ac138db421d586de61f7f5ac3bcef6a2e6c78c # v5.1.0
 
       - name: Render the User's Guide
-        # PY overridden to skip the project sync: build_guide.py is a stdlib-only
-        # Markdown-to-Typst converter and never imports c64cast, so a docs build
-        # has no reason to install opencv and mediapipe first.
+        # build_guide.py is stdlib-only, so PY skips the project sync.
         run: make guide PY="uv run --no-project python"
 
-      # The release asset carries the version in its filename; the PDF in the
-      # tree deliberately does not, so `make guide` output and .gitignore stay
-      # simple. The cover and the PDF metadata are stamped by build_guide.py.
       - name: Name the guide for release
-        id: guide
         run: |
           set -euo pipefail
-          out="dist/c64cast-users-guide-${{ steps.version.outputs.version }}.pdf"
-          cp docs/guide/c64cast-users-guide.pdf "$out"
-          echo "path=$out" >> "$GITHUB_OUTPUT"
-          ls -l "$out"
+          cp docs/guide/c64cast-users-guide.pdf \
+            "dist/c64cast-users-guide-${{ steps.version.outputs.version }}.pdf"
+          ls -l dist/
 
       - name: Extract the changelog section for this version
         run: |
           uv run --no-project python scripts/bump_version.py \
             --notes "${{ steps.version.outputs.version }}" > release-notes.md
-          echo "--- release notes ---"
           cat release-notes.md
 
       - name: Upload the release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-artifacts
-          # The PDF is copied into dist/ above, so this one path carries the
-          # wheel, the sdist and the guide.
           path: |
             dist/
             release-notes.md
           if-no-files-found: error
 
+  # Before github-release: a PyPI version can only be yanked, never replaced,
+  # while a GitHub release can be deleted and recreated.
   publish-pypi:
     name: publish to PyPI
     needs: build
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
-    # A GitHub environment, so the PyPI trusted publisher can be scoped to it
-    # and (optionally) a required reviewer can gate the upload. The name must
-    # match the environment configured on PyPI — see RELEASING.md.
     environment:
       name: pypi
       url: https://pypi.org/project/c64cast/${{ needs.build.outputs.version }}
     permissions:
-      # Trusted publishing: the job mints a short-lived OIDC token that PyPI
-      # exchanges for an upload token. There is no API token in this repo's
-      # secrets, so there is none to leak or rotate.
       id-token: write
     steps:
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.14"
+
       - name: Download the built artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-artifacts
 
-      # The PDF and the notes travel in the same artifact but must not be
-      # uploaded to PyPI, which accepts only distributions.
       - name: Keep only the distributions
         run: |
           set -euo pipefail
           rm -f dist/*.pdf release-notes.md
           ls -l dist/
 
+      # The PyPA publish action is not an option here: it is a Docker action
+      # that resolves its image by the action ref, so it cannot be digest-pinned
+      # the way every action in this repo is. uv does the same OIDC upload, with
+      # attestations, and no container.
+      #
+      # `always`, not `automatic`: automatic falls back to looking for a token.
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2
-        # attest-build-provenance is on by default under trusted publishing,
-        # which is what puts a verifiable PEP 740 attestation next to each file
-        # on PyPI. Nothing to configure; noted so it is not "simplified" away.
-        with:
-          packages-dir: dist/
+        run: |
+          uv publish \
+            --trusted-publishing always \
+            --check-url https://pypi.org/simple/c64cast/ \
+            dist/*
 
   github-release:
     name: create the GitHub release
@@ -219,13 +170,37 @@ jobs:
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
-      # To create the release and attach files to it.
       contents: write
     steps:
       - name: Download the built artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-artifacts
+
+      # Assets are behind a collapsed control, so the notes link them directly.
+      # A `releases/latest/download/…` URL cannot serve these — the filenames
+      # carry the version.
+      - name: Compose the release notes
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v$VERSION"
+          {
+            echo "### Downloads"
+            echo
+            echo "* 📘 **[c64cast User's Guide $VERSION (PDF)]($base/c64cast-users-guide-$VERSION.pdf)**"
+            echo "  — 10 chapters, read in order, starting from nothing."
+            echo "* 📦 [\`c64cast-$VERSION-py3-none-any.whl\`]($base/c64cast-$VERSION-py3-none-any.whl)"
+            echo "  · [\`c64cast-$VERSION.tar.gz\`]($base/c64cast-$VERSION.tar.gz)"
+            echo "  — or just \`uv tool install 'c64cast[all]'\`"
+            echo "  ([PyPI](https://pypi.org/project/c64cast/$VERSION/))."
+            echo
+            echo "---"
+            echo
+            cat release-notes.md
+          } > body.md
+          cat body.md
 
       - name: Create the release
         env:
@@ -234,19 +209,14 @@ jobs:
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
           set -euo pipefail
-          # --verify-tag: refuse to invent a tag. On a manual run the tag must
-          # already exist, so a dry run that is flipped to publish cannot
-          # produce a release pointing at an unlabelled commit.
           flags=(--verify-tag)
-          # An `if`, not `[ … ] && flags+=(…)`: under `set -e` a false test as
-          # the last command of a line exits the step.
           if [ "$PRERELEASE" = "true" ]; then
             flags+=(--prerelease)
           fi
           gh release create "v$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --title "c64cast v$VERSION" \
-            --notes-file release-notes.md \
+            --notes-file body.md \
             "${flags[@]}" \
             dist/*.whl \
             dist/*.tar.gz \

@@ -218,6 +218,10 @@ Homepage = "https://github.com/kfox/c64cast"
 # resolve on the day the package is published. Repoint this if a Pages site
 # ever exists.
 Documentation = "https://github.com/kfox/c64cast/tree/main/docs/guide"
+# Deliberately `releases/latest` rather than a pinned tag: this link is read
+# from a PyPI page that may be any version's, and what a reader wants from it
+# is the current release and its User's Guide PDF.
+Releases = "https://github.com/kfox/c64cast/releases/latest"
 Source = "https://github.com/kfox/c64cast"
 Issues = "https://github.com/kfox/c64cast/issues"
 Changelog = "https://github.com/kfox/c64cast/blob/main/CHANGELOG.md"

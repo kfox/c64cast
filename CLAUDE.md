@@ -91,17 +91,12 @@ table of deliberately-unauthenticated LAN surfaces), and
 URLs, not relative — it is the PyPI long_description, where relative paths 404.
 
 **Releasing** is [RELEASING.md](RELEASING.md): `scripts/bump_version.py X.Y.Z` moves the
-one version (`[project] version` — everything else derives from it: `__version__`, the
-guide's cover, the `#:schema` URL), cuts the changelog's `## [Unreleased]` section to a
-dated one, and re-locks; then a `vX.Y.Z` tag on main triggers
-[.github/workflows/release.yml](.github/workflows/release.yml), which builds, verifies
-(`bump_version.py --check`, `twine check --strict`, and a wheel smoke-test run from
-*outside* the checkout so a missing `package-data` glob can't read the file next to it),
-publishes to PyPI via **trusted publishing** (OIDC — there is no API token in the repo),
-then creates the GitHub release with the wheel, the sdist and the version-stamped User's
-Guide PDF. PyPI goes first on purpose: a PyPI version can only be yanked, never replaced,
-while a GitHub release can be recreated. `--check`'s consistency rules and the workflow's
-own wiring are guarded by [tests/test_release.py](tests/test_release.py).
+one version (`[project] version`, which `__version__`, the guide's cover and the
+`#:schema` URL all derive from), cuts the changelog section, and re-locks; a `vX.Y.Z` tag
+on main then drives [.github/workflows/release.yml](.github/workflows/release.yml) →
+PyPI (trusted publishing, no API token in the repo) → GitHub release with the wheel, the
+sdist and the version-stamped User's Guide PDF. Guarded by
+[tests/test_release.py](tests/test_release.py).
 Per-feature demo configs live in `c64cast/examples/` — **inside the package**, so they
 ship in the wheel and are addressed by name, not path: `--config example:<name>`
 (`--list-examples` to list, `--print-example <name>` to copy one out; the playlist
