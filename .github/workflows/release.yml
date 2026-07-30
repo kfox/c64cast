@@ -138,6 +138,9 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          # Off, unlike the build job: `uv publish` installs nothing, so the
+          # post-run cache save finds no cache directory and fails the job.
+          enable-cache: false
           python-version: "3.14"
 
       - name: Download the built artifacts
