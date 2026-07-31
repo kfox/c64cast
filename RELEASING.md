@@ -103,11 +103,14 @@ a look the first time.
 **Failed before the publish step.** Nothing was uploaded. Fix the tree, move the
 tag (`git push --delete origin v0.2.0`, re-tag, push), or re-run the job.
 
-**PyPI published but the GitHub release failed.** Re-run the workflow; the
-upload skips files already on PyPI (`--check-url`). To do it by hand:
+**PyPI published but the GitHub release failed.** Re-run the workflow if the tag
+does not have to move — the upload skips files already on PyPI (`--check-url`).
+If the fix needs a new commit, do not re-tag: the tag has to keep pointing at the
+commit that built what PyPI already has. Create the release by hand from that
+run's artifacts instead (`gh run download <id> -n release-artifacts`):
 
 ```bash
-gh release create v0.2.0 --title "c64cast v0.2.0" \
+gh release create v0.2.0 --title "c64cast v0.2.0" --verify-tag \
   --notes-file <(python scripts/bump_version.py --notes 0.2.0) \
   dist/*.whl dist/*.tar.gz dist/c64cast-users-guide-0.2.0.pdf
 ```
