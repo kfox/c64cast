@@ -252,6 +252,45 @@ overrides them, and an option typed on the command line overrides that, so
 saving a default never traps you. The password is never written to the file,
 whatever else you pass.
 
+## The Character ROM
+
+Your Commodore draws text with a font baked into a chip on its board — the
+character ROM. c64cast needs a copy of it, because everything it puts on
+screen as C64 text is drawn with those glyphs: scrolling messages, the big
+demo-scene scroller, the on-screen menu, the labels on the oscilloscope, and
+the preview window on your computer.
+
+You do not have to go and find one. The first time c64cast runs against a
+machine, it reads the character ROM out of the C64 sitting in front of you and
+keeps it in your data directory. It takes about a second, it happens once per
+machine, and every run after that picks it up. Nothing is downloaded and
+nothing is shipped with c64cast — the font travels from your hardware to your
+disk and stops there.
+
+If you ever want to do it deliberately — after fitting a different character
+ROM, say — ask for it:
+
+```bash
+c64cast --dump-char-rom
+```
+
+And if c64cast cannot read from your particular setup, hand it a copy you
+already have. This needs no hardware at all:
+
+```bash
+c64cast --install-char-rom /path/to/chargen.bin
+```
+
+Both check that what they were given really is a character set before saving
+it, so a wrong file is refused rather than quietly making your text worse.
+
+> [!NOTE]
+> Until c64cast has a character ROM it falls back to a plain built-in font. Text
+> is still readable, but it is not the Commodore's font, and the graphics
+> characters come out blank. If your scrolling text ever looks blocky or wrong,
+> this is nearly always the reason — run doctor and see what it says about the
+> character ROM.
+
 ## Checking Everything with Doctor
 
 When something is not working, ask c64cast what it thinks is wrong:

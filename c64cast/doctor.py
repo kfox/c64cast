@@ -124,6 +124,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_probe_environment())
     out.extend(_probe_machine_settings())
     out.extend(_probe_data_dirs())
+    out.extend(_probe_char_rom())
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve_cfg(loaded))
@@ -314,6 +315,57 @@ def _probe_data_dirs() -> list[Diagnostic]:
     return [
         Diagnostic("ok", "environment", "data dir", str(paths.data_root())),
         Diagnostic("ok", "environment", "controllers dir", str(paths.controllers_dir())),
+    ]
+
+
+def _probe_char_rom() -> list[Diagnostic]:
+    """Report the resolved character ROM and its verdict, or its absence.
+
+    Absence is a *warning*, not an error: c64cast still runs, it just draws C64
+    text in a cv2-rendered ASCII font instead of the real thing — which is
+    exactly the "the scrolling text looks bad" report this whole path exists to
+    answer, and it is invisible unless someone says so out loud."""
+    from . import char_rom
+
+    path = char_rom.resolve()
+    if path is None:
+        return [
+            Diagnostic(
+                "warn",
+                "environment",
+                "character ROM",
+                f"not installed ({char_rom.installed_path()}) — C64 text renders "
+                "in a built-in ASCII font, not the C64 one",
+                hint=(
+                    "Connect your C64 and run `c64cast --dump-char-rom` (a plain "
+                    "run does it automatically), or `c64cast --install-char-rom PATH`."
+                ),
+            )
+        ]
+    try:
+        result = char_rom.verify(path.read_bytes())
+    except OSError as e:
+        return [
+            Diagnostic(
+                "error",
+                "environment",
+                "character ROM",
+                f"could not read {path}: {e}",
+                hint="Re-dump it with `c64cast --dump-char-rom`.",
+            )
+        ]
+    return [
+        Diagnostic(
+            "ok" if result.ok else "error",
+            "environment",
+            "character ROM",
+            f"{path} — {result.describe()}",
+            hint=(
+                None
+                if result.ok
+                else "Re-dump it with `c64cast --dump-char-rom` — this file is not a charset."
+            ),
+        )
     ]
 
 

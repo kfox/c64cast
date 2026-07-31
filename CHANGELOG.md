@@ -12,7 +12,36 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **c64cast reads the C64 character ROM off your own machine.** Every glyph
+  drawn as C64 text — the text overlays on bitmap modes (`scrolling_text`,
+  `marquee`, `corner_text`, `logo`), `big_text`, the on-C64 menu, the
+  oscilloscope's labels, the preview window and the stream recorder — comes from
+  the character ROM. Previously the only way to have one was to find a dump and
+  drop it at a working-directory-relative path in a source checkout, which meant
+  an installed c64cast could never resolve it and a user report of "the
+  scrolling text looks bad" was, in full, "there is no character ROM". Now the
+  first run against a machine reads it off the C64 and caches it at
+  `<data dir>/roms/chargen.bin`; every later run picks it up. It costs about a
+  second, once per machine, and no ROM bytes are shipped or downloaded — they
+  move from your hardware to your disk. `--dump-char-rom` re-reads on demand
+  (after swapping in a different character ROM, say), `--install-char-rom PATH`
+  installs a 2 KB or 4 KB dump you already have with no hardware involved, and
+  `[hardware].dump_char_rom = false` turns the automatic read off. `--doctor`
+  reports which ROM is in use and whether it verifies.
+
+### Changed
+
+- `[preview] charset_path` now defaults to unset, meaning "use the character ROM
+  c64cast resolved". Set it to force a specific file. A configured path that
+  doesn't exist now warns and falls back to the built-in font instead of raising
+  `FileNotFoundError` and killing the run.
+- The built-in fallback font now fills screen codes `$80-$FF` as the reverse-video
+  complement of `$00-$7F`, like the real ROM. They were blank, so with no
+  character ROM installed `big_text`'s glyph pixels, the `blocks` PETSCII style
+  and most of the PETSCII shading ramp — all of which paint `$A0` and up —
+  rendered as nothing.
 
 ## [0.1.0] - 2026-07-30
 

@@ -335,7 +335,7 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
 
 The host-side orchestration above (parse / layout / build / divider
 auto-tune / subtune re-INIT) is backend-agnostic and shared via
-`_SidPlayerBackend` in [api.py](../c64cast/api.py); only the **kick** —
+`_StubRunnerBackend` in [api.py](../c64cast/api.py); only the **kick** —
 how control reaches the player — differs per backend, behind the abstract
 `_launch_sid_player`. The Ultimate POSTs the `SYS` stub to `run_prg`
 (a synchronous soft reset that preserves RAM, then RUNs). The TeensyROM
@@ -424,18 +424,22 @@ Closing the window is not a stop signal — playback continues headless.
 
 ## Char ROM substitution
 
-`[preview] charset_path` points at the C64 character ROM
-(`characters.901225-01.bin`, 4 KB). The preview window and the
-recording path both use it to render screen-code bytes back to actual
-8×8 pixel cells.
+The C64 character ROM supplies every glyph c64cast draws as C64 text —
+the text overlays on bitmap modes, `big_text`, the on-C64 menu, the
+oscilloscope's labels, and the preview + recording renderers, which turn
+screen-code bytes back into 8×8 pixel cells.
 
-If the file is missing, `framebuffer.py` falls back to a built-in
-**8×8 ASCII font** — text is still readable but PETSCII line-art,
-shaded blocks, and inverse video look wrong (they render as the
-corresponding ASCII control codes' glyphs, which is to say "garbage").
-For an accurate preview, drop a real CHARGEN dump in
-`assets/roms/characters.901225-01.bin`; see
-[assets/roms/README.md](../assets/roms/README.md) for sources.
+c64cast reads it off your own machine on the first run and caches it at
+`~/.local/share/c64cast/roms/chargen.bin` (see
+[usage.md](usage.md#the-character-rom), and `--dump-char-rom` /
+`--install-char-rom`). Until that has happened — or on a backend that
+can't run the dump stub — `framebuffer.py` falls back to a built-in
+**8×8 ASCII font**: text stays readable, but it is not the C64 font, and
+PETSCII line-art and shaded blocks are approximations at best. That
+fallback is what "the scroller looks blocky/wrong" means in practice.
+
+Set `[preview] charset_path` (or an overlay's `charset_path`) to force a
+specific file; leave it unset to use whatever c64cast resolved.
 
 ## Ultimate 64 firmware version
 
@@ -959,11 +963,11 @@ c64cast ships **none** of the following — you provide them:
 * **Videos** (the `video` scene type) — your problem.
   If you're playing a Coca-Cola ad at VCFSW for nostalgia, fair use is
   probably defensible; on a recorded stream the publisher may disagree.
-* **CHARGEN ROM** (`characters.901225-01.bin`) — Commodore copyright.
-  Distributed widely with C64 emulators under various legal gray-area
-  arrangements; the project's stance is "you have a real C64, dump it
-  from yours." The built-in ASCII fallback exists so the codebase can
-  run without it at all.
+* **CHARGEN ROM** — Commodore copyright. c64cast ships no ROM bytes in
+  the repo, the sdist, the wheel or a release asset, and downloads none:
+  `--dump-char-rom` reads the character ROM out of the machine in front
+  of you and writes it to your own data dir. The built-in ASCII fallback
+  exists so the codebase runs without one at all.
 
 ## "Why doesn't `--list-devices` show my webcam?"
 

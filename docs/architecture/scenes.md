@@ -279,6 +279,8 @@ Stackable scene decorations. Each overlay subclasses `Overlay` and registers via
 
 **Text overlays render on bitmap modes too.** A text overlay paints through `buffers["text"]` — a `text_surface.TextSurface` the scene's `compose()` stashes — instead of poking screen/color RAM directly. The surface reports its own `cols`/`rows` and folds each run into either char screen codes (`CharTextSurface`) or bitmap glyphs (`HiresTextSurface`: 40×25, glyph + FG/BG nibble per cell; `MHiresTextSurface`: 20 double-wide cols, c1=bg / c2=fg opaque box per cell, optional `text_double_height` 16px/12-row grid). Because the glyphs fold into the in-memory buffers *before* `push()`, the text rides the same host-DMA or REU bank-swap path as the frame — unlike the `menu` overlay's post-render direct writes, which skip REU-staged bitmap scenes. The shared glyph rasterizer is `bitmap_text.py`.
 
+**Where the glyphs come from.** `bitmap_text.load_glyphs()` forwards to [`char_rom.py`](hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine), which resolves the C64 character ROM — dumping one off the machine on the first run if none is cached — and falls back to a cv2-rendered ASCII font when nothing resolves. On that fallback the text still renders but is not the C64 font, which is what "the scroller looks blocky/wrong on a bitmap mode" means in practice.
+
 Restrictions:
 
 * `REQUIRES_PETSCII = True` — the overlay paints text (screen codes + color). Accepted on any `is_petscii_compatible = True` char mode (`PETSCIIDisplayMode`, `BlankDisplayMode`). Rejects `mcm` (color RAM bit 3 reinterprets the cell as multicolor + halved horizontal resolution).

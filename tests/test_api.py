@@ -7,6 +7,7 @@ test_socket_dma.py."""
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from c64cast.api import (
@@ -35,6 +36,7 @@ from c64cast.api import (
     _SID_PATCH_SONG,
     _SID_PATCH_SPIN_HI,
     _SID_PATCH_SPIN_LO,
+    CHAR_ROM_DUMP_STUB_ADDR,
     REINIT_STUB_ADDR,
     REINIT_STUB_TEMPLATE,
     SID_PLAYER_COUNTER_OFFSET,
@@ -53,8 +55,10 @@ from c64cast.api import (
     _layout_fits,
     _play_bank_for,
     _PlayerLayout,
+    build_char_rom_dump_stub,
     parse_psid_for_player,
 )
+from c64cast.backend import BackendCapabilityError
 from c64cast.c64 import CPU, VECTORS, VIC
 from c64cast.socket_dma import SocketDMAError
 
@@ -948,6 +952,100 @@ class PutConfigItemTest(unittest.TestCase):
         self.put.return_value.raise_for_status.side_effect = requests.HTTPError("400")
         with self.assertRaises(requests.HTTPError):
             self.api.put_config_item("C64 and Cartridge Settings", "REU Size", "16 MB")
+
+
+class DumpCharRomTest(unittest.TestCase):
+    """The shared dump orchestration on the Ultimate: upload the stub, SYS it
+    via run_prg, wait for the completion flag, read the landing zone back.
+
+    The flag poll is the part worth pinning — without it the read races the
+    ~45 ms on-C64 copy, and `run_prg` returning tells us nothing about whether
+    `SYS` has finished."""
+
+    def setUp(self):
+        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.writes: list[tuple[int, bytes]] = []
+        self.api._emit = lambda addr, payload: self.writes.append((addr, bytes(payload)))  # type: ignore[method-assign]
+        patch.object(self.api, "flush").start()
+        patch.object(self.api, "run_basic_clear_loop").start()
+        self.posts: list[tuple[str, bytes]] = []
+
+        def _fake_post(url, files=None, **_):
+            self.posts.append((url, bytes(files["file"][1]) if files else b""))
+
+            class _R:
+                def raise_for_status(self):
+                    pass
+
+            return _R()
+
+        patch.object(self.api.session, "post", side_effect=_fake_post).start()
+        self.rom = bytes(range(256)) * 16  # 4096 bytes; content is irrelevant here
+        # Flag reads answer "not yet" twice, then done — proving the poll loop.
+        self.flag_reads = 0
+
+        def _fake_read(address, length, timeout=1.0):
+            if length == 1:
+                self.flag_reads += 1
+                return b"\xff" if self.flag_reads > 2 else b"\x00"
+            return self.rom
+
+        patch.object(self.api, "read_memory", side_effect=_fake_read).start()
+        patch("c64cast.api.time.sleep").start()
+        # The deadline is real wall clock, and with sleep stubbed out the
+        # never-signals case would busy-spin the full production budget.
+        patch("c64cast.api._CHAR_ROM_FLAG_TIMEOUT_S", 0.2).start()
+
+    def tearDown(self):
+        patch.stopall()
+        with patch.object(self.api.socket_dma, "close"):
+            self.api.close()
+
+    def test_uploads_the_stub_and_sys_es_it(self):
+        self.api.dump_char_rom()
+        stub_writes = [w for w in self.writes if w[0] == CHAR_ROM_DUMP_STUB_ADDR]
+        self.assertEqual(len(stub_writes), 1)
+        self.assertEqual(stub_writes[0][1], build_char_rom_dump_stub(irq_exit=False))
+        # The kick is a `10 SYS <stub addr>` PRG posted to run_prg.
+        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(self.posts[0][1], _build_basic_sys_stub(CHAR_ROM_DUMP_STUB_ADDR))
+
+    def test_waits_for_the_completion_flag_before_reading(self):
+        self.assertEqual(self.api.dump_char_rom(), self.rom)
+        self.assertEqual(self.flag_reads, 3, "must poll until the stub signals")
+
+    def test_restores_the_clear_loop_the_kick_reset(self):
+        self.api.dump_char_rom()
+        self.api.run_basic_clear_loop.assert_called_once()  # type: ignore[attr-defined]
+
+    def test_clear_loop_is_restored_even_when_the_dump_fails(self):
+        patch.object(self.api, "read_memory", return_value=None).start()
+        with self.assertRaises(RuntimeError):
+            self.api.dump_char_rom()
+        self.api.run_basic_clear_loop.assert_called_once()  # type: ignore[attr-defined]
+
+    def test_a_stub_that_never_signals_raises(self):
+        patch.object(self.api, "read_memory", return_value=b"\x00").start()
+        with self.assertRaises(RuntimeError) as ctx:
+            self.api.dump_char_rom()
+        self.assertIn("never signalled", str(ctx.exception))
+
+    def test_a_short_read_back_raises(self):
+        def _short(address, length, timeout=1.0):
+            return b"\xff" if length == 1 else b"\x00" * 100
+
+        patch.object(self.api, "read_memory", side_effect=_short).start()
+        with self.assertRaises(RuntimeError) as ctx:
+            self.api.dump_char_rom()
+        self.assertIn("100", str(ctx.exception))
+
+    def test_refused_without_read_support(self):
+        self.api.profile = replace(self.api.profile, supports_read=False)
+        with self.assertRaises(BackendCapabilityError):
+            self.api.dump_char_rom()
 
 
 if __name__ == "__main__":

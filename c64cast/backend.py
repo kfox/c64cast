@@ -320,6 +320,16 @@ class C64Backend(ABC):
     def cue_song_reinit(self, song: int, *, play_bank: int | None = None) -> None:
         raise BackendCapabilityError("cue_song_reinit")
 
+    def dump_char_rom(self, timeout: float = 10.0) -> bytes:
+        """Read the C64's character ROM off the machine and return the raw 4 KB.
+
+        Needs both `supports_read` and `supports_run_prg`: the ROM is invisible
+        to a host read (`$D000` is I/O until the *C64* clears CHAREN), so this
+        runs a copy stub on the 6510 and reads its landing zone back. See
+        :mod:`c64cast.char_rom` for what the bytes are for and
+        `api.build_char_rom_dump_stub` for the stub."""
+        raise BackendCapabilityError("dump_char_rom")
+
     def reu_write(self, reu_offset: int, data: bytes) -> None:
         raise BackendCapabilityError("reu_write")
 

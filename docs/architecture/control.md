@@ -278,7 +278,7 @@ Every frame-bearing scene draws it via `Scene._apply_osd`. `VideoScene` handles 
 
 `[midi_control].osd = bottom|top|off` is stamped onto each scene's `OsdState` in `config.build_scene`.
 
-**Text rendering.** Both `_annotate_osd` and `_annotate_frame_number` render through the shared `_blit_c64_text` compositor, which paints from the real C64 character ROM — `bitmap_text.glyphs_to_mask` over `load_glyphs()`, using the uppercase charset at `assets/roms/characters.901225-01.bin` with a builtin-charset fallback — instead of a Hershey vector font.
+**Text rendering.** Both `_annotate_osd` and `_annotate_frame_number` render through the shared `_blit_c64_text` compositor, which paints from the real C64 character ROM — `bitmap_text.glyphs_to_mask` over `load_glyphs()`, i.e. the uppercase charset [`char_rom.py`](hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) resolves (with its builtin-charset fallback) — instead of a Hershey vector font.
 
 The 8×8 glyph cells are integer nearest-neighbor upscaled so the block spans a fixed fraction of frame width (0.55 for frame numbers, 0.85 for OSD), which keeps the authentic blocky pixel edges through the downscale to C64 output. White glyphs over a `cv2.dilate` black halo read on any background.
 

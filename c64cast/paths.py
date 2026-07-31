@@ -10,7 +10,7 @@ non-editable install). Two roots, each with an explicit env override:
     `%APPDATA%\\c64cast\\` on Windows, else `$XDG_CONFIG_HOME/c64cast` or
     `~/.config/c64cast`. `$C64CAST_SETTINGS` overrides the whole path.
   * **data** — `data_root()` → the base for persisted machine-specific state
-    (DAC calibrations, WLED + loop presets). Data base dir:
+    (DAC calibrations, WLED + loop presets, the dumped character ROM). Data base dir:
     `%LOCALAPPDATA%\\c64cast\\` on Windows, else `$XDG_DATA_HOME/c64cast` or
     `~/.local/share/c64cast`. `$C64CAST_DATA_DIR` overrides it.
 
@@ -116,6 +116,15 @@ def loop_presets_dir() -> Path:
     """Directory holding per-video A/B loop presets
     (``<data root>/presets/loops``)."""
     return presets_dir() / "loops"
+
+
+def roms_dir() -> Path:
+    """Directory holding ROM images dumped off the user's own machine
+    (``<data root>/roms``; today just ``chargen.bin``, the character ROM
+    :mod:`c64cast.char_rom` reads back over DMA). Under the data root rather
+    than the package because the bytes belong to the user's hardware — nothing
+    here is ever shipped."""
+    return data_root() / "roms"
 
 
 def controllers_dir() -> Path:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 
 import numpy as np
 
@@ -65,8 +66,15 @@ def _builtin_charset() -> bytes:
             for col in range(8):
                 byte |= int(bits[row, col]) << (7 - col)
             cs[code * 8 + row] = byte
-    # Solid block at screen code 0x60 (reverse-space). Used heavily.
     cs[0x60 * 8 : 0x60 * 8 + 8] = bytes([0xFF] * 8)
+    # Screen codes $80-$FF are the reverse-video twins of $00-$7F, so mirror
+    # the real ROM and make them the bitwise complement. Without this the whole
+    # upper half is blank, and the codes c64cast leans on hardest are up there:
+    # SC_FULL_BLOCK ($A0) is what big_text paints its glyph pixels with and
+    # what the `blocks` PETSCII style fills every cell with, and the shading
+    # ramp in petscii_styles is mostly $E0-$F2. They all rendered as nothing.
+    for i in range(1024):
+        cs[1024 + i] = ~cs[i] & 0xFF
     return bytes(cs)
 
 
@@ -86,15 +94,21 @@ class Framebuffer:
         for i in range(SCREEN.N_CELLS):
             self.ram[SCREEN.COLOR_RAM + i] = 14
         self._lock = threading.Lock()
-        if charset_path:
-            charset_path = paths.expand_user(charset_path)
-            with open(charset_path, "rb") as f:
-                self.charset = f.read(2048)
-            if len(self.charset) < 2048:
-                log.warning("charset %s shorter than 2KB; padding with zeros", charset_path)
-                self.charset = self.charset.ljust(2048, b"\x00")
-        else:
-            self.charset = _builtin_charset()
+        # Resolve through char_rom so the preview shows the same glyphs the C64
+        # does (a dumped ROM under the data dir, or `charset_path` when set).
+        # A configured-but-unreadable path degrades to the builtin font with a
+        # warning: this window is a mirror, and killing the whole run over a
+        # mistyped preview path would be a spectacularly bad trade.
+        from .char_rom import load_glyphs
+
+        if charset_path and not Path(paths.expand_user(charset_path)).is_file():
+            log.warning(
+                "[preview] charset_path %s does not exist — falling back to the "
+                "built-in font. Leave it unset to use the character ROM c64cast "
+                "dumps off your C64.",
+                charset_path,
+            )
+        self.charset = load_glyphs(charset_path)
 
     def on_write(self, address: int, data: bytes):
         """Shadow a memory write. Safe to call from the API's writer thread."""

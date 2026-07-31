@@ -134,11 +134,10 @@ relaunch Terminal. OpenCV's AVFoundation backend will then enumerate.
 
 Two known causes:
 
-1. **CHARGEN ROM missing** — the preview falls back to a built-in 8×8
-   ASCII font, which renders PETSCII line-art as garbage. Drop a real
-   `characters.901225-01.bin` in `assets/roms/` (see
-   [assets/roms/README.md](../assets/roms/README.md)) and the preview
-   will match.
+1. **No character ROM yet** — the preview falls back to a built-in 8×8
+   ASCII font, which renders PETSCII line-art as garbage. See
+   ["Text or the scrolling text looks blocky or wrong"](#text-or-the-scrolling-text-looks-blocky-or-wrong)
+   below.
 2. **You changed display modes mid-frame** — the framebuffer shadow
    follows API writes but doesn't model bank/mode switches as
    precisely as the real VIC. The next full frame paint corrects it.
@@ -266,6 +265,40 @@ If the port opens but you still hear nothing: the SID master volume
 running concurrently that's stomping $D418.
 
 ## Overlays
+
+### "Text or the scrolling text looks blocky or wrong"
+
+Almost always: **c64cast has no character ROM**, so it is drawing C64 text
+with a built-in ASCII substitute font instead of the real C64 glyphs. It is
+most obvious on a bitmap display mode (`hires`/`mhires`), where every text
+overlay — `scrolling_text`, `marquee`, `corner_text`, `logo` — goes through
+that font, and on anything using PETSCII graphics characters (which the
+substitute renders as blanks).
+
+Check what's in use:
+
+```bash
+c64cast --doctor --skip-probe        # ENVIRONMENT → "character ROM"
+```
+
+If it says *not installed*, connect your C64 and let a normal run read it
+(it happens automatically on the first run), or do it explicitly:
+
+```bash
+c64cast --dump-char-rom -u u64://192.168.2.64
+```
+
+If c64cast can't read from your setup — an emulator-only rig, or a TeensyROM
+on firmware older than v0.7.2.5, which has neither `ReadC64Mem` nor the
+IRQ-enabled idle the dump needs — install a dump you already have instead:
+
+```bash
+c64cast --install-char-rom /path/to/chargen.bin
+```
+
+Both commands verify the bytes really are a charset before writing anything,
+so a bad file is refused rather than silently making things worse. See
+[usage.md](usage.md#the-character-rom).
 
 ### "Overlay paints PETSCII screen codes and only renders correctly with display = 'petscii'"
 

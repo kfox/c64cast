@@ -226,6 +226,15 @@ class HardwareCfg:
         default="ultimate",
         metadata={"help": "Hardware backend family driving the C64.", "choices": _BACKEND_CHOICES},
     )
+    dump_char_rom: bool = field(
+        default=True,
+        metadata={
+            "help": "On the first run against a machine, read its character ROM "
+            "and cache it, so C64 text renders in the real C64 font instead of a "
+            "built-in ASCII substitute. One ~1s step, never repeated; set false "
+            "to skip it entirely."
+        },
+    )
 
 
 @dataclass
@@ -1590,8 +1599,12 @@ class PreviewCfg:
         default=3, metadata={"help": "Integer pixel scale factor for the preview window."}
     )
     charset_path: str | None = field(
-        default="assets/roms/characters.901225-01.bin",
-        metadata={"help": "C64 character ROM used to render char modes in the preview."},
+        default=None,
+        metadata={
+            "help": "C64 character ROM used to render char modes in the preview. "
+            "Unset = resolve automatically (the dump c64cast takes off your own "
+            "C64 on the first run; see --dump-char-rom)."
+        },
     )
 
 
