@@ -32,16 +32,32 @@ SYNC := $(if $(CI),,sync)
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema \
         guide guide-figures
 
-# The User's Guide PDF is rendered by Typst, which is an external binary
-# rather than a Python package. Its two faces (Jost*, Inconsolata) are OFL and
-# committed under docs/guide/fonts/, so --font-path is unconditional: the PDF
-# must not change appearance based on what fonts a given machine happens to
-# have installed.
+# Books (docs/<book>/*.md + book.toml) are rendered by Typst, which is an
+# external binary rather than a Python package. The two faces (Jost*,
+# Inconsolata) are OFL and committed under docs/shared/fonts/, so --font-path
+# is unconditional: a PDF must not change appearance based on what fonts a
+# given machine happens to have installed. --root makes the leading slash in
+# the template's own paths mean the repo root.
+BOOK_FONTS  := docs/shared/fonts
+TYPST_FLAGS  = --root . --font-path $(BOOK_FONTS)
+
 GUIDE_DIR   := docs/guide
 GUIDE_TYP   := $(GUIDE_DIR)/c64cast-users-guide.typ
 GUIDE_PDF   := $(GUIDE_DIR)/c64cast-users-guide.pdf
-GUIDE_FONTS := $(GUIDE_DIR)/fonts
-TYPST_FLAGS  = --root . --font-path $(GUIDE_FONTS)
+
+# Markdown -> Typst -> PDF for one book: $(1) is its directory, $(2) the
+# artefact basename its book.toml declares. Typst is not a Python dependency,
+# so say so plainly rather than failing with "command not found".
+define render-book
+	@command -v typst >/dev/null 2>&1 || { \
+	  echo "Rendering a book needs the typst binary, which is not a Python package."; \
+	  echo "Install it with:  brew install typst"; \
+	  echo "(see https://typst.app for other platforms)"; \
+	  exit 1; }
+	$(PY) scripts/build_book.py --book-dir $(1)
+	typst compile $(TYPST_FLAGS) $(1)/$(2).typ $(1)/$(2).pdf
+	@echo "wrote $(1)/$(2).pdf"
+endef
 
 help:
 	@echo "targets:"
@@ -105,17 +121,8 @@ schema:
 guide-figures: $(SYNC)
 	$(PY) scripts/make_guide_figures.py
 
-# Markdown -> Typst -> PDF. Typst is not a Python dependency, so say so
-# plainly rather than failing with "command not found".
 guide: $(SYNC)
-	@command -v typst >/dev/null 2>&1 || { \
-	  echo "make guide needs the typst binary, which is not a Python package."; \
-	  echo "Install it with:  brew install typst"; \
-	  echo "(see https://typst.app for other platforms)"; \
-	  exit 1; }
-	$(PY) scripts/build_guide.py
-	typst compile $(TYPST_FLAGS) $(GUIDE_TYP) $(GUIDE_PDF)
-	@echo "wrote $(GUIDE_PDF)"
+	$(call render-book,$(GUIDE_DIR),c64cast-users-guide)
 
 check: lint typecheck test
 

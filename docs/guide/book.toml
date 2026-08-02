@@ -2,10 +2,15 @@
 #
 # The prose lives in the numbered *.md files; this is only the material that
 # appears on the cover and has nowhere sensible to live in Markdown.
-# scripts/build_guide.py reads it; docs/guide/template.typ styles it.
+# scripts/build_book.py reads it; docs/shared/template.typ styles it.
 
 [book]
+layout = "guide"                 # which template entry point renders it
+output = "c64cast-users-guide"   # basename of the .typ and the .pdf
 title = "c64cast"
 subtitle = "with Quick Start"
 tagline = "Turn a real Commodore 64 into a programmable display"
 logo = "img/logo-cover.png"
+# What a downloaded file calls itself in Get Info / `pdfinfo`, where the cover
+# is no help. The version is appended by the build.
+pdf_title = "c64cast User's Guide"

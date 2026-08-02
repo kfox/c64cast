@@ -1,8 +1,11 @@
-// c64cast User's Guide — the entire visual language lives in this file.
+// c64cast books — the entire visual language lives in this file.
 //
-// The guide's prose is Markdown (docs/guide/*.md). scripts/build_guide.py
+// Every book's prose is Markdown (docs/<book>/*.md). scripts/build_book.py
 // converts it to a .typ that imports this template; nothing about the *look*
 // is decided in the converter or in the prose. Tune the design here.
+//
+// Two entry points, both drawing on the same palette, faces and element
+// styling: `guide()` for a bound book, `card()` for a printable hand-out.
 //
 // The house style is modelled on the Commodore 64 Ultimate User's Guide
 // (1st Edition, October 2025). Values below were measured from that PDF
@@ -34,10 +37,10 @@
 // Fonts
 // ---------------------------------------------------------------------------
 //
-// Both faces are Open Font License and vendored in docs/guide/fonts/, which
-// `make guide` passes to Typst with --font-path. Nothing here depends on what
-// happens to be installed on the machine doing the build, so the PDF looks
-// the same from a fresh checkout on any platform.
+// Both faces are Open Font License and vendored in docs/shared/fonts/, which
+// every book build passes to Typst with --font-path. Nothing here depends on
+// what happens to be installed on the machine doing the build, so the PDF
+// looks the same from a fresh checkout on any platform.
 //
 // The original's body face, MegaGlacial, is commercial and is deliberately
 // NOT used or named here. Jost* is a free geometric sans in the Futura
@@ -355,42 +358,14 @@
 )
 
 // ---------------------------------------------------------------------------
-// Document shell
+// Element styling
+//
+// Everything below the page: how a heading, a listing, a table or a figure is
+// set. Shared by every layout, so a table in the card looks like a table in
+// the guide and the two read as one series.
 // ---------------------------------------------------------------------------
 
-#let guide(
-  title: "",
-  subtitle: "",
-  tagline: "",
-  logo: none,
-  version: "",
-  body,
-) = {
-  // The version rides in the PDF metadata as well as on the cover, so a file
-  // that has been renamed, mailed around or printed can still be identified
-  // from Get Info / `pdfinfo` without opening it to page one.
-  set document(
-    title: if version == "" { title } else { title + " User's Guide " + version },
-    keywords: ("c64cast", "Commodore 64", "user's guide", version),
-  )
-
-  set page(
-    width: 6.24in,
-    height: 9.24in,
-    margin: (left: 0.82in, right: 0.82in, top: 0.86in, bottom: 0.86in),
-    numbering: "i",
-    number-align: center,
-    footer: context {
-      let n = counter(page).get()
-      align(center, text(size: 8.5pt, weight: "bold")[
-        #numbering(numstyle.get(), ..n)
-      ])
-    },
-  )
-
-  set text(font: body-font, size: body-size, fill: ink, lang: "en", hyphenate: true)
-  set par(justify: true, leading: 0.62em, spacing: 0.85em)
-
+#let elements(body) = {
   // Headings ---------------------------------------------------------------
   // Level 1 is never used directly; chapter() draws the openers.
   show heading.where(level: 2): it => {
@@ -483,12 +458,106 @@
     text(size: 8.5pt)[#it.caption.body]
   }))
 
+  body
+}
+
+// ---------------------------------------------------------------------------
+// Document shell — the bound book
+// ---------------------------------------------------------------------------
+
+#let guide(
+  title: "",
+  subtitle: "",
+  tagline: "",
+  logo: none,
+  pdf-title: "",
+  version: "",
+  body,
+) = {
+  // The version rides in the PDF metadata as well as on the cover, so a file
+  // that has been renamed, mailed around or printed can still be identified
+  // from Get Info / `pdfinfo` without opening it to page one.
+  set document(
+    title: if version == "" { pdf-title } else { pdf-title + " " + version },
+    keywords: ("c64cast", "Commodore 64", "user's guide", version),
+  )
+
+  set page(
+    width: 6.24in,
+    height: 9.24in,
+    margin: (left: 0.82in, right: 0.82in, top: 0.86in, bottom: 0.86in),
+    numbering: "i",
+    number-align: center,
+    footer: context {
+      let n = counter(page).get()
+      align(center, text(size: 8.5pt, weight: "bold")[
+        #numbering(numstyle.get(), ..n)
+      ])
+    },
+  )
+
+  set text(font: body-font, size: body-size, fill: ink, lang: "en", hyphenate: true)
+  set par(justify: true, leading: 0.62em, spacing: 0.85em)
+  show: elements
+
   // Front matter -----------------------------------------------------------
   cover(title: title, subtitle: subtitle, tagline: tagline, logo: logo, version: version)
   // The cover is not a numbered page. Restart the count here so the half-title
   // is i and the colophon -- the first page to actually print a folio -- is ii.
   counter(page).update(1)
   half-title(title: title)
+
+  body
+}
+
+// ---------------------------------------------------------------------------
+// Document shell — the printable card
+//
+// A hand-out, not a book: no cover, no colophon, no contents, and a page that
+// comes out of whatever paper is in the tray. It is meant to live next to the
+// controller, so it is set small and tight — the reader is glancing at it
+// mid-performance, not reading it in an armchair.
+// ---------------------------------------------------------------------------
+
+// A card has no room for full-page openers, so a "chapter" is a banded
+// heading. The section list an opener would carry is redundant here: it is
+// the next inch of the same page.
+#let card-chapter(number: none, title: "", contents: ()) = block(
+  width: 100%,
+  fill: accent,
+  inset: (x: 7pt, y: 5pt),
+  above: 15pt,
+  below: 9pt,
+  text(fill: white, weight: "bold", size: 11pt, tracking: 0.4pt, upper(title)),
+)
+
+#let card(title: "", subtitle: "", pdf-title: "", version: "", body) = {
+  set document(
+    title: if version == "" { pdf-title } else { pdf-title + " " + version },
+    keywords: ("c64cast", "Commodore 64", "reference card", version),
+  )
+
+  set page(
+    paper: "us-letter",
+    margin: 0.5in,
+    numbering: none,
+    header: none,
+    // The title block is a footer rather than a header so it does not push the
+    // first table down the page, and it carries the version because a card
+    // pinned to a desk outlives the release it was printed for.
+    footer: context {
+      set text(size: 7.5pt)
+      grid(
+        columns: (1fr, auto),
+        text(weight: "bold", fill: accent)[#upper(title) — #subtitle],
+        align(right)[#version],
+      )
+    },
+  )
+
+  set text(font: body-font, size: 8.5pt, fill: ink, lang: "en", hyphenate: false)
+  set par(justify: false, leading: 0.55em, spacing: 0.7em)
+  show: elements
 
   body
 }
