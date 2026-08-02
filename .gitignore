@@ -74,10 +74,10 @@ assets/*/*
 .DS_Store
 Thumbs.db
 
-# User's Guide build artifacts. The Markdown, the Typst template, the figures
-# and the OFL fonts under docs/guide/fonts/ are all tracked — the fonts are
-# committed so the PDF renders identically from a fresh checkout anywhere.
-# Only the generated .typ and the rendered PDF are ignored.
-docs/guide/*.typ
-!docs/guide/template.typ
-docs/guide/*.pdf
+# Book build artifacts. The Markdown, the shared Typst template, the figures
+# and the OFL fonts under docs/shared/fonts/ are all tracked — the fonts are
+# committed so a PDF renders identically from a fresh checkout anywhere. Only
+# the generated .typ and the rendered PDF are ignored, and both are named for
+# the book (`output` in its book.toml), never `template.typ`.
+docs/*/c64cast-*.typ
+docs/*/c64cast-*.pdf

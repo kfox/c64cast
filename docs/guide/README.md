@@ -32,24 +32,25 @@ make guide          # -> docs/guide/c64cast-users-guide.pdf
 ```
 docs/guide/*.md          the guide (the only source)
       |
-      +--> scripts/build_guide.py  --> c64cast-users-guide.typ
+      +--> scripts/build_book.py  --> c64cast-users-guide.typ
                                           |
-      docs/guide/template.typ  ----------->+--> typst --> .pdf
+      docs/shared/template.typ  --------->+--> typst --> .pdf
 ```
 
-`build_guide.py` translates constructs; `template.typ` owns every design
-decision. Neither the prose nor the converter decides what anything looks
-like, so the whole book can be restyled by editing one file.
+`build_book.py` translates constructs; the [shared
+template](../shared/README.md) owns every design decision. Neither the prose
+nor the converter decides what anything looks like, so the whole book can be
+restyled by editing one file — and so can every other book, because they share
+it.
 
 The generated `.typ` and the `.pdf` are build artifacts and are gitignored.
-The Markdown, the template and the figures are tracked.
+The Markdown and the figures are tracked.
 
 | File | Is |
 |---|---|
 | `NN-*.md` | The chapters, in reading order |
 | `colophon.md` | The copyright and credits page |
-| `book.toml` | Cover metadata (title, subtitle, tagline, logo) |
-| `template.typ` | The entire visual language |
+| `book.toml` | Layout, artifact name, and cover metadata (title, subtitle, tagline, logo) |
 | `img/` | Figures, plus their [shot list](img/README.md) |
 
 ## Writing for it
@@ -60,7 +61,7 @@ paragraph is worse than one that fails to build. Check your source without
 rendering:
 
 ```bash
-uv run python scripts/build_guide.py --check
+uv run python scripts/build_book.py --book-dir docs/guide --check
 ```
 
 | Write | Get |
@@ -113,17 +114,18 @@ See [`img/README.md`](img/README.md) for the shot list.
 ## Fonts
 
 Both faces are [Open Font License](https://openfontlicense.org/) and live in
-`fonts/`, committed alongside their licences:
+[`../shared/fonts/`](../shared/fonts/README.md), committed alongside their
+licences:
 
 | Face | Used for | Licence |
 |---|---|---|
-| [Jost*](https://github.com/indestructible-type/Jost) | body, headings | OFL 1.1 (`fonts/OFL-Jost.txt`) |
-| [Inconsolata](https://github.com/googlefonts/Inconsolata) | code, keycaps | OFL 1.1 (`fonts/OFL-Inconsolata.txt`) |
+| [Jost*](https://github.com/indestructible-type/Jost) | body, headings | OFL 1.1 (`OFL-Jost.txt`) |
+| [Inconsolata](https://github.com/googlefonts/Inconsolata) | code, keycaps | OFL 1.1 (`OFL-Inconsolata.txt`) |
 
-`make guide` always passes `--font-path docs/guide/fonts` to Typst, so the PDF
+`make guide` always passes `--font-path docs/shared/fonts` to Typst, so the PDF
 renders identically from a fresh checkout on any platform — nothing depends on
-what happens to be installed. `template.typ` names each family with no
-fallback chain, so a build that loses the font path warns rather than quietly
+what happens to be installed. The template names each family with no fallback
+chain, so a build that loses the font path warns rather than quietly
 substituting a different face.
 
 The original book is set in MegaGlacial, which is commercial and is

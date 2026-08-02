@@ -42,6 +42,12 @@ the version and stamps it with the date.
   character ROM installed `big_text`'s glyph pixels, the `blocks` PETSCII style
   and most of the PETSCII shading ramp — all of which paint `$A0` and up —
   rendered as nothing.
+- The User's Guide build now renders *a book* rather than *the guide*, in
+  preparation for a second volume. `scripts/build_guide.py` is
+  `scripts/build_book.py --book-dir docs/<book>`, the Typst template and the
+  vendored OFL fonts moved from `docs/guide/` to `docs/shared/`, and each book's
+  `book.toml` names the layout it takes. `make guide` and the released PDF are
+  unchanged.
 
 ## [0.1.0] - 2026-07-30
 

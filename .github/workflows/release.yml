@@ -97,7 +97,7 @@ jobs:
         uses: typst-community/setup-typst@63ac138db421d586de61f7f5ac3bcef6a2e6c78c # v5.1.0
 
       - name: Render the User's Guide
-        # build_guide.py is stdlib-only, so PY skips the project sync.
+        # build_book.py is stdlib-only, so PY skips the project sync.
         run: make guide PY="uv run --no-project python"
 
       - name: Name the guide for release

@@ -1,8 +1,8 @@
 # Fonts
 
-Third-party fonts, vendored so the User's Guide PDF renders identically from a
-fresh checkout on any platform instead of depending on what happens to be
-installed. `make guide` passes this directory to Typst with `--font-path`.
+Third-party fonts, vendored so a book's PDF renders identically from a fresh
+checkout on any platform instead of depending on what happens to be installed.
+Every book build passes this directory to Typst with `--font-path`.
 
 **These files are not covered by c64cast's MIT licence.** Both are licensed
 under the [SIL Open Font License, Version 1.1](https://openfontlicense.org/),
@@ -32,4 +32,5 @@ licence and licence URL in its own `name` table as well.
   reformat.
 
 Why these two faces in particular — and why the original book's own body face
-is neither used nor shipped — is in [`../README.md`](../README.md#fonts).
+is neither used nor shipped — is in
+[the User's Guide README](../../guide/README.md#fonts).

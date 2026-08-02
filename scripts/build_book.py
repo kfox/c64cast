@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Render docs/guide/*.md into a single Typst source for the User's Guide PDF.
+"""Render one book's *.md into a single Typst source for its PDF.
 
-The Markdown in docs/guide/ is the guide's only source. It is ordinary
-GitHub-flavoured Markdown -- it renders correctly on github.com as-is, and
-nothing about the *look* of the PDF is decided here. This module only
-translates constructs; docs/guide/template.typ owns the design.
+A book is a directory under docs/ holding `NN-name.md` chapters and a
+`book.toml`; docs/guide/ is one. The Markdown is that book's only source. It
+is ordinary GitHub-flavoured Markdown -- it renders correctly on github.com
+as-is, and nothing about the *look* of the PDF is decided here. This module
+only translates constructs; docs/shared/template.typ owns the design.
 
-    python scripts/build_guide.py                 # write the .typ
-    python scripts/build_guide.py --check         # parse only, write nothing
+    python scripts/build_book.py --book-dir docs/guide            # write the .typ
+    python scripts/build_book.py --book-dir docs/guide --check    # parse only
 
 `make guide` runs this and then `typst compile`.
 
@@ -35,6 +36,9 @@ Per-file YAML front matter carries only what Markdown cannot express:
 
 The chapter's title comes from its `# H1` and the opener page's section list
 is derived from its `##` headings, so neither can drift from the prose.
+
+`book.toml` says which layout the book takes and what its artefacts are
+called; see LAYOUT_KEYS below.
 """
 
 from __future__ import annotations
@@ -48,12 +52,33 @@ from pathlib import Path
 from typing import NoReturn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GUIDE_DIR = REPO_ROOT / "docs" / "guide"
-BOOK_TOML = GUIDE_DIR / "book.toml"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
-DEFAULT_OUT = GUIDE_DIR / "c64cast-users-guide.typ"
+TEMPLATE = "/docs/shared/template.typ"
 
 CALLOUT_KINDS = ("NOTE", "TIP", "WARNING", "IMPORTANT", "CAUTION")
+
+# What each layout takes from `book.toml`, in the order the template declares
+# the parameters. A key is required if it is listed: a book that forgot its
+# cover logo should fail here rather than render a coverless PDF. Underscores
+# become hyphens, which is how Typst spells its parameter names.
+#
+# `output` (the artefact basename) and `layout` itself are consumed here and
+# never passed on; `version` is not book metadata somebody edits, so it is
+# appended by build() rather than read from the file.
+LAYOUT_KEYS = {
+    "guide": ("title", "subtitle", "tagline", "logo", "pdf_title"),
+    "card": ("title", "subtitle", "pdf_title"),
+}
+
+# The layout's chapter renderer. A card has no room for the guide's full-page
+# openers, so its "chapters" are drawn as banded headings instead.
+CHAPTER_FN = {"guide": "chapter", "card": "card-chapter"}
+
+# Keys naming a file relative to the book directory. They are rewritten to
+# root-relative paths on the way out, because Typst resolves a relative path
+# against the file the call is written in -- and these are written into the
+# shared template, which lives nowhere near the book.
+PATH_KEYS = ("logo",)
 
 # Characters that carry meaning in Typst markup and so must be escaped in any
 # run of literal prose. `-` and `.` are deliberately absent: Typst turns `--`
@@ -63,12 +88,27 @@ CALLOUT_KINDS = ("NOTE", "TIP", "WARNING", "IMPORTANT", "CAUTION")
 _TYPST_SPECIAL = set("\\#$*_`<>@[]~")
 
 
-class GuideError(Exception):
-    """A problem in the guide source. Always fatal -- never render partial prose."""
+class BookError(Exception):
+    """A problem in a book's source. Always fatal -- never render partial prose."""
 
 
 def fail(path: Path, lineno: int, message: str) -> NoReturn:
-    raise GuideError(f"{path.relative_to(REPO_ROOT)}:{lineno}: {message}")
+    raise BookError(f"{path.relative_to(REPO_ROOT)}:{lineno}: {message}")
+
+
+def root_relative(target: Path) -> str:
+    """Spell a file the way Typst reads it from anywhere: `/docs/guide/img/x.png`.
+
+    Typst resolves a relative path against the source file the call is written
+    in, and every image call is written in docs/shared/template.typ -- so a
+    book-relative `img/x.png` would be looked for next to the *template*.
+    `typst compile --root .` makes a leading slash mean the repo root, which is
+    the one anchor both the template and every book agree on.
+    """
+    try:
+        return "/" + target.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        raise BookError(f"{target} is outside the repository") from None
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +119,8 @@ def fail(path: Path, lineno: int, message: str) -> NoReturn:
 def parse_front_matter(text: str, path: Path) -> tuple[dict[str, str], str, int]:
     """Split leading `---` YAML front matter from the body.
 
-    Only `key: value` scalars are supported -- that is the whole vocabulary the
-    guide needs, and a full YAML parser would be a dependency for nothing.
+    Only `key: value` scalars are supported -- that is the whole vocabulary a
+    book needs, and a full YAML parser would be a dependency for nothing.
     Returns (fields, body, body_start_lineno).
     """
     if not text.startswith("---\n"):
@@ -309,7 +349,7 @@ class Converter:
             fail(self.path, lineno, f"figure not found: {src}")
         self.figures.append(src)
         body = convert_inline(caption, self.path, lineno)
-        out.append(f"#screenshot({typst_string(src)}, [{body}])\n")
+        out.append(f"#screenshot({typst_string(root_relative(target))}, [{body}])\n")
 
     def _code_block(self, lines: list[str], i: int, fence: re.Match[str], out: list[str]) -> int:
         lang = fence.group("lang")
@@ -449,20 +489,54 @@ def load_chapter(path: Path) -> Chapter:
     return Chapter(path=path, number=number, title=conv.title, sections=conv.sections, body=typst)
 
 
-def discover_chapters(guide_dir: Path) -> list[Path]:
+def discover_chapters(book_dir: Path) -> list[Path]:
     """Chapter files, ordered by their numeric filename prefix."""
-    paths = sorted(p for p in guide_dir.glob("*.md") if re.match(r"^\d+-", p.name))
+    paths = sorted(p for p in book_dir.glob("*.md") if re.match(r"^\d+-", p.name))
     if not paths:
-        raise GuideError(f"no NN-name.md chapter files found in {guide_dir}")
+        raise BookError(f"no NN-name.md chapter files found in {book_dir}")
     return paths
+
+
+def load_book_toml(book_dir: Path) -> dict[str, str]:
+    """The book's `[book]` table, checked against the layout it asks for.
+
+    Everything the template needs must be present here: a book that lost its
+    cover logo should fail the build rather than render a PDF with a blank
+    front, which nobody notices until it is published.
+    """
+    path = book_dir / "book.toml"
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise BookError(f"cannot read {path}: {exc}") from exc
+
+    book = data.get("book")
+    if not isinstance(book, dict):
+        raise BookError(f"{path} has no [book] table")
+    layout = book.get("layout")
+    if layout not in LAYOUT_KEYS:
+        raise BookError(f"{path}: layout must be one of {sorted(LAYOUT_KEYS)}, not {layout!r}")
+    missing = [key for key in ("output", *LAYOUT_KEYS[layout]) if not book.get(key)]
+    if missing:
+        raise BookError(f"{path}: [book] is missing {', '.join(missing)}")
+    return book
+
+
+def out_path(book_dir: Path) -> Path:
+    """Where `build()`'s Typst goes: the basename the book gives itself.
+
+    In the book rather than derived from its directory, because the file a
+    reader downloads is called `c64cast-users-guide.pdf`, not `guide.pdf`.
+    """
+    return book_dir / (load_book_toml(book_dir)["output"] + ".typ")
 
 
 def typst_list(items: list[str]) -> str:
     return "(" + ", ".join(typst_string(i) for i in items) + ("," if items else "") + ")"
 
 
-def guide_version() -> str:
-    """The c64cast version this guide documents, read from `pyproject.toml`.
+def book_version() -> str:
+    """The c64cast version this book documents, read from `pyproject.toml`.
 
     Deliberately NOT `importlib.metadata.version("c64cast")`: that answers
     "what is installed in the interpreter running this script", which during a
@@ -470,64 +544,84 @@ def guide_version() -> str:
     being cut. `pyproject.toml` is the single source of truth the release tag
     is checked against, so the number on the cover is the number on the tin.
 
-    The guide only ever builds from a checkout (it reads docs/guide/*.md from
+    A book only ever builds from a checkout (it reads docs/<book>/*.md from
     REPO_ROOT), so a missing pyproject is a broken tree, not a supported case.
     """
     try:
         data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise GuideError(f"cannot read {PYPROJECT}: {exc}") from exc
+        raise BookError(f"cannot read {PYPROJECT}: {exc}") from exc
     version = data.get("project", {}).get("version")
     if not isinstance(version, str) or not version:
-        raise GuideError(f"{PYPROJECT} has no [project] version")
+        raise BookError(f"{PYPROJECT} has no [project] version")
     return version
 
 
-def build(guide_dir: Path = GUIDE_DIR) -> str:
-    book = tomllib.loads(BOOK_TOML.read_text(encoding="utf-8"))["book"]
+def layout_call(book_dir: Path, book: dict[str, str]) -> list[str]:
+    """The `#show: <layout>.with(...)` line and its arguments."""
+    layout = book["layout"]
+    lines = [f"#show: {layout}.with("]
+    for key in LAYOUT_KEYS[layout]:
+        value = book[key]
+        if key in PATH_KEYS:
+            target = book_dir / value
+            if not target.exists():
+                raise BookError(f"{book_dir / 'book.toml'}: {key} not found: {value}")
+            value = root_relative(target)
+        lines.append(f"  {key.replace('_', '-')}: {typst_string(value)},")
+    # Not in book.toml: the version is not book-level metadata somebody edits,
+    # it is whatever release this build documents.
+    lines.append(f"  version: {typst_string(book_version())},")
+    lines.append(")")
+    return lines
 
-    chapters = [load_chapter(p) for p in discover_chapters(guide_dir)]
-    numbered = [c for c in chapters if c.number is not None]
-    if not numbered:
-        raise GuideError("the guide has no numbered chapters")
 
-    colophon = (guide_dir / "colophon.md").read_text(encoding="utf-8")
-    colophon_conv = Converter(guide_dir / "colophon.md", 1)
-    colophon_conv.title = ""  # the colophon is bare prose, no heading
-    colophon_typst = colophon_conv.convert(colophon)
+def build(book_dir: Path) -> str:
+    book = load_book_toml(book_dir)
+    layout = book["layout"]
 
+    chapters = [load_chapter(p) for p in discover_chapters(book_dir)]
+
+    source = root_relative(book_dir).lstrip("/")
     out: list[str] = [
-        "// GENERATED by scripts/build_guide.py -- do not edit.",
-        "// Source: docs/guide/*.md   Design: docs/guide/template.typ",
+        "// GENERATED by scripts/build_book.py -- do not edit.",
+        f"// Source: {source}/*.md   Design: {TEMPLATE.lstrip('/')}",
         "",
-        '#import "template.typ": *',
+        f'#import "{TEMPLATE}": *',
         "",
-        "#show: guide.with(",
-        f"  title: {typst_string(book['title'])},",
-        f"  subtitle: {typst_string(book['subtitle'])},",
-        f"  tagline: {typst_string(book['tagline'])},",
-        f"  logo: {typst_string(book['logo'])},",
-        # Not in book.toml: the version is not book-level metadata somebody
-        # edits, it is whatever release this build documents.
-        f"  version: {typst_string(guide_version())},",
-        ")",
-        "",
-        f"#colophon[\n{colophon_typst}\n]",
-        "",
-        "#frontmatter()",
-        "",
-        "#toc()",
+        *layout_call(book_dir, book),
         "",
     ]
 
+    # Only the bound book gets front matter. A card is a hand-out: it opens on
+    # its first line, and a contents page for two pages would be a joke.
+    if layout == "guide":
+        if not any(c.number is not None for c in chapters):
+            raise BookError(f"{book_dir} has no numbered chapters")
+        colophon_path = book_dir / "colophon.md"
+        try:
+            colophon = colophon_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise BookError(f"cannot read {colophon_path}: {exc}") from exc
+        colophon_conv = Converter(colophon_path, 1)
+        colophon_conv.title = ""  # the colophon is bare prose, no heading
+        out += [
+            f"#colophon[\n{colophon_conv.convert(colophon)}\n]",
+            "",
+            "#frontmatter()",
+            "",
+            "#toc()",
+            "",
+        ]
+
     seen_numbered = False
     for chapter in chapters:
-        if chapter.number is not None and not seen_numbered:
+        if layout == "guide" and chapter.number is not None and not seen_numbered:
             out += ["#mainmatter()", ""]
             seen_numbered = True
         number_arg = "none" if chapter.number is None else typst_string(chapter.number)
         out.append(
-            f"#chapter(\n"
+            f"#{CHAPTER_FN[layout]}(\n"
             f"  number: {number_arg},\n"
             f"  title: {typst_string(chapter.title)},\n"
             f"  contents: {typst_list(chapter.sections)},\n"
@@ -540,22 +634,29 @@ def build(guide_dir: Path = GUIDE_DIR) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output .typ path")
+    ap.add_argument(
+        "--book-dir",
+        type=Path,
+        required=True,
+        help="the book to render, e.g. docs/guide",
+    )
+    ap.add_argument("--out", type=Path, help="output .typ path (default: from book.toml)")
     ap.add_argument("--check", action="store_true", help="parse only; write nothing")
     args = ap.parse_args()
 
     try:
-        typst = build()
-    except GuideError as exc:
+        typst = build(args.book_dir)
+        out = args.out or out_path(args.book_dir)
+    except BookError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.check:
-        print("guide source OK")
+        print(f"{args.book_dir} source OK")
         return 0
 
-    args.out.write_text(typst, encoding="utf-8")
-    print(f"wrote {args.out.relative_to(REPO_ROOT)} ({len(typst.splitlines())} lines)")
+    out.write_text(typst, encoding="utf-8")
+    print(f"wrote {out} ({len(typst.splitlines())} lines)")
     return 0
 
 
