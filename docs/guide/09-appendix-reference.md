@@ -51,6 +51,8 @@ remembering:
 | `--skip-probe` | Run checks without touching the Commodore |
 | `--init` | Build a configuration interactively |
 | `--save-settings` | Remember this run's connection and devices |
+| `--dump-char-rom` | Re-read the character ROM from the Commodore |
+| `--install-char-rom PATH` | Use a character ROM dump you already have |
 | `-v` / `-vv` | More logging, then a great deal more |
 | `--log-file PATH` | Also write the log to a file |
 

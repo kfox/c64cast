@@ -15,7 +15,7 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     older firmware still degrades gracefully instead of NAK/timeout-ing every
     keyboard poll. Read support unlocks the `$028D` keyboard poller (physical
     pause/skip/cycle/menu control), same as the Ultimate.
-  * **run_sid_player / cue_song_reinit** ride the shared `_SidPlayerBackend`
+  * **run_sid_player / cue_song_reinit** ride the shared `_StubRunnerBackend`
     orchestration (parse / layout / build / divider auto-tune); only the kick
     differs. The TR does NOT boot the player via LaunchFile — that resets the
     C64, and its async boot/fast-LOAD raced the scope bring-up and the keyboard
@@ -29,6 +29,10 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     Requires the IRQ-enabled idle, so it's gated on `supports_read` (cycle-clean
     fw v0.7.2.5+); older firmware raises `BackendCapabilityError`. See
     `_launch_sid_player`.
+  * **dump_char_rom** rides the same shared orchestration and the same `$0314`
+    vector-swap kick, for the same reason (no reset, no boot). Also gated on
+    `supports_read`: the older spin-stub idle masks IRQs, so the swap would
+    never fire. See `_kick_char_rom_dump`.
   * **reu_write** is left on the ABC's raising default — there is no REUWRITE
     opcode. Callers gate on `profile.supports_reu`.
 
@@ -49,7 +53,7 @@ from .api import (
     ParsedPsid,
     _build_basic_sys_stub,
     _PlayerLayout,
-    _SidPlayerBackend,
+    _StubRunnerBackend,
 )
 from .backend import BackendCapabilityError, HardwareProfile
 from .c64 import VECTORS
@@ -126,7 +130,7 @@ _SCREEN_CELLS = 1000
 _SC_SPACE = 0x20
 
 
-class TeensyROMBackend(_SidPlayerBackend):
+class TeensyROMBackend(_StubRunnerBackend):
     def __init__(self, transport: TRTransport, *, profile: HardwareProfile, storage: str = "sd"):
         super().__init__()
         self.profile = profile
@@ -382,7 +386,7 @@ class TeensyROMBackend(_SidPlayerBackend):
         self._upload(data, dest)
         self.tr.launch_file(dest, self._drive)
 
-    # ---- SID player (shared orchestration via _SidPlayerBackend) ----------
+    # ---- SID player (shared orchestration via _StubRunnerBackend) ----------
     def _launch_sid_player(
         self,
         parsed: ParsedPsid,
@@ -430,6 +434,30 @@ class TeensyROMBackend(_SidPlayerBackend):
         else:
             self._start_sid_audio(layout)
         return False
+
+    def _char_rom_stub_wants_irq_exit(self) -> bool:
+        return True
+
+    def _kick_char_rom_dump(self, stub_addr: int, timeout: float) -> None:
+        """TeensyROM kick — pure DMA, no LaunchFile/reset/boot, the same
+        primitive as the SID player's start: swap `$0314/$0315` to the stub so
+        the next kernal IRQ runs it once. It executes with interrupts already
+        masked (the CPU sets I on IRQ entry), restores the vector itself, and
+        exits through `$EA31` — see the `irq_exit` tail in
+        `api.build_char_rom_dump_stub`.
+
+        Needs the IRQ-enabled idle from cycle-clean firmware: the spin-stub idle
+        on older firmware masks IRQs forever, so the vector swap would never
+        fire and the dump would silently time out. `supports_read` is the proxy
+        for that firmware (it also gates the read-back), so this refuses rather
+        than hanging."""
+        if not self.profile.supports_read:
+            raise BackendCapabilityError(
+                "dump_char_rom on TeensyROM (needs the IRQ-enabled idle from "
+                "cycle-clean firmware v0.7.2.5+)"
+            )
+        self.write_regs(f"{VECTORS.IRQ:04X}", stub_addr & 0xFF, (stub_addr >> 8) & 0xFF)
+        self.flush()
 
     def begin_sid_audio(self) -> None:
         """Release a deferred SID start (see `_launch_sid_player`). Swaps `$0314`

@@ -56,6 +56,13 @@ again if it starts leaving trails behind fast movement.
 off. Modern footage is not graded for a sixteen-colour palette and fitting
 it first matters more than any other single setting.
 
+**Text or the scrolling message looks blocky or wrong.** c64cast has no
+character ROM yet, so it is drawing with a plain built-in font instead of the
+Commodore's own. Run `c64cast --doctor --skip-probe` and look at the character
+ROM line. If it says *not installed*, connect the Commodore and run
+`c64cast --dump-char-rom`, or hand it a copy with
+`c64cast --install-char-rom PATH`.
+
 ## The Sound Is Wrong
 
 **It sounds rough, quantized, metallic.** If you are on the `$D418` DAC,

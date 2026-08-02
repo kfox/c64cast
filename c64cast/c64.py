@@ -278,6 +278,11 @@ class CPU:
     # For code/data living under the I/O window ($D000-$DFFF) that must be
     # read/written as RAM.
     PORT_IO_OUT: Final = 0x34
+    # $33 = $37 with CHAREN cleared: BASIC + KERNAL still mapped, but the
+    # CHARACTER ROM replaces I/O at $D000-$DFFF. The only way the CPU can see
+    # the charset (which is why char_rom's dump stub has to run on the C64 —
+    # a host read of $D000 gets I/O). See api.CHAR_ROM_DUMP_STUB_TEMPLATE.
+    PORT_CHARROM: Final = 0x33
 
 
 class ROM:

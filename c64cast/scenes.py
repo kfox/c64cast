@@ -180,7 +180,7 @@ def _blit_c64_text(
     buffer, so we never mutate it in place).
 
     The glyphs come from :func:`bitmap_text.load_glyphs` (the uppercase charset
-    at ``assets/roms/characters.901225-01.bin``, with a builtin fallback), so the
+    :mod:`c64cast.char_rom` resolves, with a builtin fallback), so the
     pre-quantization overlays share the same font the on-C64 renderers use. The
     8×8 cells are nearest-neighbor upscaled by an integer factor chosen so the
     block spans ~`width_frac` of the frame width regardless of source resolution

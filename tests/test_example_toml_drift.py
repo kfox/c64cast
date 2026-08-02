@@ -72,6 +72,11 @@ _COVERAGE_EXEMPT = {
     ("color", "hue_corrections"),
     ("dsp", "pre_emphasis"),
     ("audio", "dac_calibration_profile"),
+    # An unset charset_path means "use the character ROM c64cast dumped off
+    # your own C64", which is what we want every user on — so the reference
+    # documents it as a commented-out override rather than a live key that
+    # would point everyone at a file only the author has.
+    ("preview", "charset_path"),
     # cc_map_is_default is a non-persisted internal tracking flag (compare=False,
     # metadata.internal) — it's set from whether a cc_map key was authored, never
     # written to TOML. See MidiControlCfg.

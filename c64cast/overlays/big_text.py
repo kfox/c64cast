@@ -50,7 +50,6 @@ Smooth horizontal scrolling combines four pieces:
 from __future__ import annotations
 
 import logging
-import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -193,7 +192,8 @@ class BigTextOverlay(Overlay):
     HELP = "Demo-scene 8×-scaled horizontally-scrolling big text (blank/mcm only)."
     PARAM_HELP = {
         "messages": "List of message strings (or {text, color} tables) to scroll.",
-        "charset_path": "C64 character ROM used to rasterize the big glyphs.",
+        "charset_path": "C64 character ROM used to rasterize the big glyphs "
+        "(unset = the one c64cast dumped off your C64; see --dump-char-rom).",
         "row": "Vertical placement: 'top', 'middle', or 'bottom'.",
         "speed_cells_per_s": "Scroll speed in character cells per second.",
         "inter_message_pause_s": "Pause between consecutive messages.",
@@ -205,7 +205,7 @@ class BigTextOverlay(Overlay):
         self,
         messages: list,
         *,
-        charset_path: str = "assets/roms/characters.901225-01.bin",
+        charset_path: str | None = None,
         row: str = "middle",
         speed_cells_per_s: float = 8.0,
         inter_message_pause_s: float = 1.5,
@@ -301,16 +301,13 @@ class BigTextOverlay(Overlay):
     # ---- charset / glyphs --------------------------------------------------
 
     @staticmethod
-    def _load_charset(path: str) -> bytes:
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                data = f.read(2048)
-            if len(data) >= 2048:
-                return data
-            log.warning("big_text: charset %s shorter than 2KB; using builtin", path)
-        from ..framebuffer import _builtin_charset
+    def _load_charset(path: str | None) -> bytes:
+        """The 2 KB charset this scroller expands into cells. `path` overrides
+        the automatic resolution (a dumped ROM under the data dir, else the cv2
+        fallback) — see :mod:`c64cast.char_rom`."""
+        from ..char_rom import load_glyphs
 
-        return _builtin_charset()
+        return load_glyphs(path)
 
     @staticmethod
     def _scene_is_mcm(scene) -> bool:

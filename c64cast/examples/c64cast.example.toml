@@ -61,6 +61,13 @@ backend = "ultimate"                # which hardware abstraction layer drives
                                     # string (u64://HOST, tr://, tr://HOST,
                                     # tr:///dev/cu.usbmodem*), overriding these
                                     # sections; $C64CAST_URL is the env fallback.
+dump_char_rom = true                # on the first run against a machine, read
+                                    # its character ROM and cache it under the
+                                    # data dir, so C64 text renders in the real
+                                    # C64 font instead of a built-in ASCII
+                                    # substitute. One ~1s step, never repeated.
+                                    # Also available as `--dump-char-rom` (re-
+                                    # dump) and `--install-char-rom PATH`.
 
 [teensyrom]                         # only used when [hardware].backend = "teensyrom"
                                     # On cycle-clean fw (v0.7.2.5+) the TR reads
@@ -551,7 +558,11 @@ fade_duration_s = 0.4               # fade each scene up from black on entry
 enabled = false                     # cv2 HighGUI window; uses opencv-python
 fps = 30
 scale = 3                           # window pixels per C64 pixel
-charset_path = "assets/roms/characters.901225-01.bin"
+# charset_path = "/path/to/chargen.bin"
+                                    # C64 character ROM for char modes. Leave
+                                    # unset (the default) to use the one
+                                    # c64cast dumped off your own C64 — see
+                                    # [hardware].dump_char_rom.
 
 [recording]
 enabled = false                     # cv2.VideoWriter; uses opencv-python

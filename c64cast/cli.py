@@ -9,6 +9,7 @@ Every overridable option uses ``default=None`` so the merge step can tell
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import shutil
@@ -22,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from . import (
     __version__,
+    char_rom,
     dac_calibration,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
     paths,
@@ -313,6 +315,23 @@ def build_parser() -> argparse.ArgumentParser:
         "-d/--device, --sid-model, --system) into the machine-settings file "
         "($C64CAST_SETTINGS, else ~/.config/c64cast/settings.toml), then exit. "
         "Merges with any existing file; secrets are never written.",
+    )
+    intro.add_argument(
+        "--dump-char-rom",
+        action="store_true",
+        help="Read the character ROM out of the C64 you're connected to and "
+        "cache it, then exit. C64 text then renders in the real C64 font "
+        "instead of a built-in ASCII substitute. This normally happens by "
+        "itself on the first run; use the flag to re-dump (e.g. after swapping "
+        "in a different character ROM).",
+    )
+    intro.add_argument(
+        "--install-char-rom",
+        metavar="PATH",
+        default=None,
+        help="Install an existing character ROM dump (2 KB or 4 KB) from PATH "
+        "instead of reading one off the C64, then exit. For machines c64cast "
+        "can't dump from. No hardware needed.",
     )
 
     debug = p.add_argument_group("debug")
@@ -916,6 +935,13 @@ def build_stack(
     api.reset()
     time.sleep(1)
     api.run_basic_clear_loop()
+
+    # First run against this machine: read its character ROM so C64 text
+    # renders in the real C64 font. Here because the machine is idle and
+    # nothing has painted yet — the Ultimate's dump soft-resets and puts the
+    # clear loop back itself. Best-effort and never fatal; a no-op once cached.
+    char_rom.ensure_installed(api, cfg)
+
     api.disable_case_switch()
 
     # The Commodore-key poller reads $028D over the wire. A backend that can't
@@ -1388,6 +1414,67 @@ def run_save_settings(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_install_char_rom(path: str) -> int:
+    """Install an existing character-ROM dump from `path`, then exit.
+
+    Config-free and hardware-free — the fallback for a machine c64cast can't
+    dump from (an emulator-only setup, a backend without read support, an
+    exotic firmware). Returns 2 for an unreadable file or one that doesn't
+    verify as a charset: both are user-fixable input problems, and writing an
+    unverified file would poison every later run."""
+    try:
+        dest = char_rom.install(path)
+    except OSError as e:
+        log.error("--install-char-rom: could not read %s (%s)", path, e)
+        return 2
+    except ValueError as e:
+        log.error("--install-char-rom: %s (%s)", e, path)
+        return 2
+    print(f"Installed the character ROM → {dest}")
+    print(f"  {char_rom.verify(dest.read_bytes()).describe()}")
+    return 0
+
+
+def run_dump_char_rom(cfg: cfgmod.Config) -> int:
+    """Read the character ROM off the connected C64 and cache it, then exit.
+
+    Unconditional — re-dumping over an existing file is the entire point of the
+    flag (the auto path only ever fires when nothing is installed). Resets the
+    machine on the way out, like every other hardware-touching command, so it
+    isn't left parked wherever the dump stub ran."""
+    from .backend import BackendCapabilityError
+
+    be = make_backend(cfg)
+    try:
+        be.reset()
+        time.sleep(1)
+        be.run_basic_clear_loop()
+        data = char_rom.dump(be)
+    except BackendCapabilityError as e:
+        log.error(
+            "--dump-char-rom: this backend can't run the dump (%s). Install an "
+            "existing dump instead: c64cast --install-char-rom PATH",
+            e,
+        )
+        return 3
+    except (OSError, RuntimeError) as e:
+        log.error(
+            "--dump-char-rom: %s. Check the machine is powered and responsive, "
+            "or install an existing dump with --install-char-rom PATH.",
+            e,
+        )
+        return 4
+    finally:
+        with contextlib.suppress(Exception):
+            be.reset()
+        be.close()
+
+    dest = char_rom.install_data(data)
+    print(f"Dumped the character ROM from the C64 → {dest}")
+    print(f"  {char_rom.verify(data).describe()}")
+    return 0
+
+
 def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[cfgmod.Config]]:
     """Produce the per-system configs to run, from one of two front doors:
 
@@ -1533,6 +1620,12 @@ def main(argv=None) -> int:
         configure_logging(args.verbose or 0, args.log_file)
         return run_save_settings(args)
 
+    # --install-char-rom is likewise config-free: it takes a file the user
+    # already has and caches it, no hardware and no playlist involved.
+    if args.install_char_rom is not None:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_install_char_rom(args.install_char_rom)
+
     try:
         loaded, cfgs = _resolve_configs(args)
     except cfgmod.ConfigError as e:
@@ -1574,6 +1667,16 @@ def main(argv=None) -> int:
             len(cfgs[0].scenes),
             cfgs[0].hardware.backend,
         )
+
+    if args.dump_char_rom:
+        # Needs hardware, so it dispatches here (with configs resolved) rather
+        # than up with the config-free commands. Single-system operation.
+        if len(cfgs) > 1:
+            log.warning(
+                "--dump-char-rom operates on one system; dumping from the first (%s)",
+                loaded.names[0],
+            )
+        return run_dump_char_rom(cfgs[0])
 
     if args.calibrate_dac:
         # Measure the connected SID's Mahoney $D418 transfer curve + persist a

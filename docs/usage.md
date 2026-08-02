@@ -222,7 +222,8 @@ c64cast keeps two kinds of machine-local state outside any config file:
 
 - **Persisted data** — `~/.local/share/c64cast/` (`$XDG_DATA_HOME`-aware;
   `%LOCALAPPDATA%\c64cast\` on Windows; `$C64CAST_DATA_DIR` overrides). Holds DAC
-  calibration tables (`calibration/dac/`) and WLED + loop presets (`presets/`).
+  calibration tables (`calibration/dac/`), WLED + loop presets (`presets/`), and
+  the character ROM read off your C64 (`roms/chargen.bin`, see below).
   A dev who wants everything in the repo checkout can `export
   C64CAST_DATA_DIR="$PWD"` (e.g. in `.envrc`).
 
@@ -232,6 +233,36 @@ more; if you're running from a source checkout with old files stranded at the
 former repo `calibration/`/`presets/` dirs, you're told at use time rather than
 by `--doctor`: DAC calibration logs an actionable `--calibrate-dac` line when a
 run finds none, and the preset stores log a one-time move-them heads-up.
+
+## The character ROM
+
+Everything c64cast draws as C64 text — the scrolling text and other text
+overlays, the big 8×-scaled scroller, the on-screen menu, the oscilloscope's
+labels, and the preview/recording windows — is drawn with glyphs from the C64
+character ROM. Without one, c64cast substitutes a built-in ASCII font: readable,
+but not the C64 font, and PETSCII graphics characters come out blank. If your
+scroller looks wrong or blocky, that's why.
+
+**You don't have to find a ROM file.** On the first run against a machine,
+c64cast reads the character ROM out of the C64 in front of you and caches it at
+`~/.local/share/c64cast/roms/chargen.bin`. It costs about a second, happens once
+per machine, and every later run picks it up. It reads the ROM from your
+hardware onto your disk — nothing is downloaded and nothing is distributed.
+
+```bash
+c64cast --dump-char-rom -u u64://192.168.2.64   # re-read it explicitly
+c64cast --install-char-rom /path/to/chargen.bin  # use a dump you already have
+c64cast --doctor --skip-probe                    # which ROM is in use, and is it sound
+```
+
+`--dump-char-rom` re-reads unconditionally — use it after swapping in a
+different character ROM. `--install-char-rom` takes a 2 KB or 4 KB dump and needs
+no hardware; it's the fallback for a setup c64cast can't read from. Both verify
+what they get is really a charset before writing anything.
+
+To use a specific file for one run instead, set `[preview] charset_path` (or an
+overlay's `charset_path`). To skip the automatic read entirely, set
+`[hardware] dump_char_rom = false`.
 
 ## Creating a config
 
@@ -626,7 +657,7 @@ c64cast --config one-video.toml --no-loop
 enabled = false                     # cv2 HighGUI window; uses opencv-python (already a hard dep)
 fps = 30
 scale = 3                           # window pixels per C64 pixel
-charset_path = "assets/roms/characters.901225-01.bin"
+# charset_path = "/path/to/chargen.bin"   # unset = the ROM c64cast dumped off your C64
 ```
 
 The window is drawn by cv2's HighGUI and pumped from the process's main

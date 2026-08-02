@@ -1,7 +1,9 @@
 """Shared hires bitmap text rasterizer.
 
 Renders ASCII text into a VIC-II hires bitmap (320×200, 8×8 cells) by copying
-glyph bytes from the C64 character ROM. Extracted from voice_scope.py so the
+glyph bytes from the C64 character ROM (resolved by [char_rom.py](char_rom.py),
+which dumps one off the machine on first run if none is installed). Extracted
+from voice_scope.py so the
 oscilloscope's text rows and the on-C64 MenuOverlay paint glyphs the same way
 (voice_scope keeps its own row painter; it now sources `load_glyphs` /
 `ascii_to_screen_code` from here).
@@ -14,7 +16,6 @@ both the bitmap and the color row — which is what `paint_text_row` relies on."
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -31,32 +32,16 @@ BITMAP_CELL_ROW_BYTES = SCREEN.BITMAP_W  # 320 bytes span one cell-row
 SCREEN_W_CHARS = SCREEN.W_CHARS  # 40
 COLOR_NIBBLE_MASK = 0x0F
 
-# Uppercase charset ROM. Matches the [preview] charset_path default + big_text's
-# loader so all consumers expect the same 2 KB artifact.
-_CHARGEN_PATH = "assets/roms/characters.901225-01.bin"
-_GLYPHS_CACHE: bytes | None = None
-
 
 def load_glyphs() -> bytes:
-    """Load the 2 KB uppercase charset. Cached process-wide.
+    """The 2 KB uppercase charset — see :func:`c64cast.char_rom.load_glyphs`,
+    which owns resolution, caching and the cv2 fallback for every consumer.
 
-    Falls back to framebuffer._builtin_charset() (a cv2-rendered ASCII font) if
-    the ROM file is missing — keeps tests + minimal installs working, at the
-    cost of glyphs that don't quite look C64-native."""
-    global _GLYPHS_CACHE
-    if _GLYPHS_CACHE is not None:
-        return _GLYPHS_CACHE
-    if os.path.exists(_CHARGEN_PATH):
-        with open(_CHARGEN_PATH, "rb") as f:
-            data = f.read(2048)
-        if len(data) >= 2048:
-            _GLYPHS_CACHE = data
-            return _GLYPHS_CACHE
-        log.warning("bitmap_text: charset %s shorter than 2KB; using builtin", _CHARGEN_PATH)
-    from .framebuffer import _builtin_charset
+    Kept as a forwarder because the glyph consumers (`text_surface`,
+    `voice_scope`, `scenes`, the on-C64 menu) reach for it here."""
+    from .char_rom import load_glyphs as _load
 
-    _GLYPHS_CACHE = _builtin_charset()
-    return _GLYPHS_CACHE
+    return _load()
 
 
 def ascii_to_screen_code(ch: str) -> int:

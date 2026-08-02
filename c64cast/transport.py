@@ -63,19 +63,21 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def atomic_write_text(path: str | os.PathLike[str], text: str) -> None:
-    """Write `text` to `path` atomically: a temp file in the same directory,
+def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
+    """Write `data` to `path` atomically: a temp file in the same directory,
     fsync'd, then ``os.replace``d onto the target (rename is atomic within a
     filesystem), so a crash mid-write can never leave a half-written file. The
-    parent directory is created if missing. Shared by PresetStore and the
-    live-tune save-back; the loop-preset store (Phase 3) reuses it too."""
+    parent directory is created if missing.
+
+    :func:`atomic_write_text` is the UTF-8 flavour of this; the character-ROM
+    installer (:mod:`c64cast.char_rom`) is the binary caller."""
     p = os.fspath(path)
     parent = os.path.dirname(p) or "."
     os.makedirs(parent, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
@@ -83,6 +85,13 @@ def atomic_write_text(path: str | os.PathLike[str], text: str) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def atomic_write_text(path: str | os.PathLike[str], text: str) -> None:
+    """Write `text` to `path` atomically as UTF-8 (see
+    :func:`atomic_write_bytes`). Shared by PresetStore and the live-tune
+    save-back; the loop-preset store (Phase 3) reuses it too."""
+    atomic_write_bytes(path, text.encode("utf-8"))
 
 
 # Live-tune targets whose `mode.<field>` name maps back to a field of the same

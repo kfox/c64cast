@@ -18,6 +18,11 @@
             "teensyrom"
           ],
           "default": "ultimate"
+        },
+        "dump_char_rom": {
+          "type": "boolean",
+          "description": "On the first run against a machine, read its character ROM and cache it, so C64 text renders in the real C64 font instead of a built-in ASCII substitute. One ~1s step, never repeated; set false to skip it entirely.",
+          "default": true
         }
       }
     },
@@ -520,8 +525,7 @@
             "string",
             "null"
           ],
-          "description": "C64 character ROM used to render char modes in the preview.",
-          "default": "assets/roms/characters.901225-01.bin"
+          "description": "C64 character ROM used to render char modes in the preview. Unset = resolve automatically (the dump c64cast takes off your own C64 on the first run; see --dump-char-rom)."
         }
       }
     },
@@ -1441,9 +1445,11 @@
                         "description": "List of message strings (or {text, color} tables) to scroll."
                       },
                       "charset_path": {
-                        "type": "string",
-                        "description": "C64 character ROM used to rasterize the big glyphs.",
-                        "default": "assets/roms/characters.901225-01.bin"
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "C64 character ROM used to rasterize the big glyphs (unset = the one c64cast dumped off your C64; see --dump-char-rom)."
                       },
                       "row": {
                         "type": "string",

@@ -1,24 +1,36 @@
 # assets/roms/
 
-C64 ROM dumps used by the **preview window** and **stream recorder** to
-software-render what the Ultimate 64 is displaying. The Ultimate 64 itself
-does not need these — they're only for the local mirror.
+**You almost certainly don't need this directory.** c64cast reads the C64
+character ROM out of the machine you're connected to on the first run and caches
+it under your data dir — `~/.local/share/c64cast/roms/chargen.bin`
+(`$XDG_DATA_HOME`-aware; `%LOCALAPPDATA%\c64cast\roms\` on Windows;
+`$C64CAST_DATA_DIR` overrides). Nothing to find, nothing to download.
 
-## Files this directory expects
+```bash
+c64cast --dump-char-rom -u u64://192.168.2.64    # re-read it explicitly
+c64cast --install-char-rom /path/to/chargen.bin  # use a dump you already have
+c64cast --doctor --skip-probe                    # which ROM is in use, and is it sound
+```
 
-- `characters.901225-01.bin` — the 4 KB CHARGEN ROM (only the first 2 KB,
-  the uppercase/graphics charset, is currently used).
+`--install-char-rom` is the fallback for a setup c64cast can't read from (an
+emulator-only rig, or a TeensyROM on firmware older than v0.7.2.5, which has
+neither the memory read nor the IRQ-enabled idle the dump needs). It accepts a
+2 KB or 4 KB dump and needs no hardware.
 
-The default config (`[preview] charset_path`) points at
-`../assets/roms/characters.901225-01.bin` relative to the working directory.
+## What the ROM is for
 
-## Where to obtain
+Every glyph c64cast draws as C64 text: the text overlays on bitmap modes
+(`scrolling_text`, `marquee`, `corner_text`, `logo`), `big_text`'s 8×-scaled
+scroller, the on-C64 menu, the oscilloscope's labels, and the preview window +
+stream recorder, which turn screen-code bytes back into 8×8 pixel cells. Without
+one, c64cast substitutes a built-in ASCII font — readable, but not the C64 font,
+and PETSCII graphics codes come out blank. See
+[docs/usage.md](../../docs/usage.md#the-character-rom).
 
-The CHARGEN ROM ships with VICE (`C64/chargen-901225-01.bin`), with the
-Ultimate 64 firmware bundle, and with any C64 emulator. It is also dumped
-into `$D000-$DFFF` (when the VIC's character ROM is banked in) on a real
-C64.
+## This directory
 
-A built-in 8×8 ASCII charset is generated at runtime if `charset_path` is
-missing or unreadable — the preview will work but PETSCII graphics codes
-will appear as blank cells.
+A legacy location, still honoured last in the resolution order so an existing
+source checkout with a dump at `characters.901225-01.bin` keeps working. Nothing
+writes here; new dumps go to the data dir. No ROM bytes are tracked in this
+repo, and none ship in the sdist, the wheel, or a release asset — only this
+README is committed.

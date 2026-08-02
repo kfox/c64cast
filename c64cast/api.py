@@ -46,10 +46,11 @@ import requests
 
 from .backend import (
     ULTIMATE_PROFILE,
+    BackendCapabilityError,
     BufferedWriteBackend,
     HardwareProfile,
 )
-from .c64 import CIA1, CPU, ROM, U64_API, VECTORS
+from .c64 import CIA1, CPU, KERNAL, ROM, U64_API, VECTORS
 from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError
 
 __all__ = ["Ultimate64API", "SocketDMAError", "ParsedPsid", "parse_psid_for_player"]
@@ -798,16 +799,185 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
     )
 
 
-class _SidPlayerBackend(BufferedWriteBackend):
-    """SID-player orchestration shared by the Ultimate + TeensyROM backends.
+# ---------------------------------------------------------------------------
+# Character-ROM dump
+# ---------------------------------------------------------------------------
+#
+# The character ROM is not RAM: a host `read_memory($D000)` sees the I/O page
+# (VIC/SID/CIA registers), because what `$01` maps is decided on the C64, at
+# read time. So the only way to get the charset off a machine is to run code
+# ON it — bank CHAREN out, copy the ROM down into plain RAM, restore the bank,
+# and let the host read the copy back. That is this stub. Consumers:
+# [c64cast.char_rom], `--dump-char-rom`, and the first-run auto-dump.
+#
+# PLACEMENT — both addresses are load-bearing:
+#
+#  * The landing zone must be RAM that is readable UNDER DEFAULT BANKING,
+#    since `read_memory` sees whatever `$01` is at read time (i.e. $37). That
+#    rules out the $A000/$D000 underlay RAM, which needs a non-default bank to
+#    reach. $C000-$CFFF is the proven-safe high RAM the SID player already
+#    lives in — no ROM over it, and it survives `run_prg`'s soft reset
+#    (RAMTAS's memory-size scan restores every byte it probes).
+#  * The stub cannot share those 4 KB — the copy would overwrite it mid-flight
+#    — and cannot live at $0200-$03FF, because RAMTAS zeroes the cassette
+#    buffer on every reset and the Ultimate kick *is* a reset. $8100 is BASIC
+#    program RAM: far above the one-line `SYS` program run_prg loads at $0801
+#    (which creates no variables, so BASIC never grows into it), and clear of
+#    the $8004 cartridge-signature window the KERNAL checks at reset.
+#
+# COMPLETION FLAG: the last byte of the blob is uploaded as $00 and set to $FF
+# by the stub as its final act. Polling that one byte is how the host knows the
+# ~45 ms copy has finished — the alternative (sleep and hope) has no signal at
+# all on the Ultimate, whose `run_prg` POST returns once BASIC has *started*
+# the program, not once `SYS` has returned.
+CHAR_ROM_DUMP_STUB_ADDR = 0x8100
+CHAR_ROM_DUMP_DEST = 0xC000
+CHAR_ROM_SRC_PAGE = 0xD0
+CHAR_ROM_DUMP_PAGES = 16
+CHAR_ROM_DUMP_BYTES = CHAR_ROM_DUMP_PAGES * 256  # the full 4 KB CHARGEN
 
-    The host-side work — PSID parse, player-layout choice, player MC / re-INIT
-    stub build, the CIA #1 PLAY-rate divider auto-tune, and SHIFT-driven subtune
-    re-INIT (`cue_song_reinit`) — is identical across backends: it touches only
-    the buffered write path + `read_memory` + the module-level SID helpers. The
-    backends differ in exactly one step: how the BASIC SYS stub that hands
-    control to the player MC is delivered to the C64. That step is the abstract
-    `_launch_sid_player`:
+# Patch offsets into the template below.
+_CR_PATCH_SRC_HI = 14  # LDA $D000,Y operand high (self-modified per page)
+_CR_PATCH_DST_HI = 17  # STA $C000,Y operand high (self-modified per page)
+_CR_PATCH_INC_SRC_LO = 22  # INC <src_hi operand> address low
+_CR_PATCH_INC_SRC_HI = 23
+_CR_PATCH_INC_DST_LO = 25  # INC <dst_hi operand> address low
+_CR_PATCH_INC_DST_HI = 26
+_CR_PATCH_PAGES = 29  # CPX #<pages>
+_CR_PATCH_FLAG_LO = 38  # STA <flag> address low
+_CR_PATCH_FLAG_HI = 39
+
+# Common body: mask IRQs, save + switch the bank, copy 16 pages with
+# self-modified page pointers (X/Y only — no zero page, so nothing of BASIC's
+# is clobbered), restore the bank, raise the completion flag.
+_CHAR_ROM_DUMP_BODY = bytes(
+    [
+        0x78,  # 00  SEI        (the KERNAL IRQ cannot ack CIA #1 with
+        #                        I/O banked out — it would re-fire forever)
+        0xA5,
+        CPU.PORT,  # 01  LDA $01
+        0x48,  # 03  PHA        (save the caller's bank)
+        0xA9,
+        CPU.PORT_CHARROM,  # 04  LDA #$33   (CHAREN=0 → character ROM
+        #                             at $D000-$DFFF)
+        0x85,
+        CPU.PORT,  # 06  STA $01
+        0xA2,
+        0x00,  # 08  LDX #$00   (page counter)
+        # --- page loop @ 10 ------------------------------------------------
+        0xA0,
+        0x00,  # 10  LDY #$00
+        # --- byte loop @ 12 ------------------------------------------------
+        0xB9,
+        0x00,
+        0xD0,  # 12  LDA $D000,Y  (high byte patched + self-modified)
+        0x99,
+        0x00,
+        0xC0,  # 15  STA $C000,Y  (high byte patched + self-modified)
+        0xC8,  # 18  INY
+        0xD0,
+        0xF7,  # 19  BNE -9 → 12
+        0xEE,
+        0x00,
+        0x00,  # 21  INC <src page byte>   (patched)
+        0xEE,
+        0x00,
+        0x00,  # 24  INC <dst page byte>   (patched)
+        0xE8,  # 27  INX
+        0xE0,
+        0x10,  # 28  CPX #<pages>          (patched)
+        0xD0,
+        0xEA,  # 30  BNE -22 → 10
+        0x68,  # 32  PLA
+        0x85,
+        CPU.PORT,  # 33  STA $01    (restore the caller's bank)
+        0xA9,
+        0xFF,  # 35  LDA #$FF
+        0x8D,
+        0x00,
+        0x00,  # 37  STA <flag>            (patched; the host polls this)
+    ]
+)
+
+# Tail for the Ultimate kick: BASIC `SYS` called us, so re-enable IRQs and
+# return to it.
+_CHAR_ROM_DUMP_TAIL_SYS = bytes(
+    [
+        0x58,  # CLI
+        0x60,  # RTS
+    ]
+)
+
+# Tail for the TeensyROM kick: we ARE the kernal IRQ handler (reached through a
+# $0314 vector swap), so restore the vector — one run only — and exit through
+# the kernal tail, which acks CIA #1 and RTIs. No CLI: RTI restores the I flag
+# from the stacked status byte. Same shape as the SID re-INIT stub.
+_CHAR_ROM_DUMP_TAIL_IRQ = bytes(
+    [
+        0xA9,
+        KERNAL.IRQ_HANDLER & 0xFF,  # LDA #$31
+        0x8D,
+        VECTORS.IRQ & 0xFF,
+        (VECTORS.IRQ >> 8) & 0xFF,  # STA $0314
+        0xA9,
+        (KERNAL.IRQ_HANDLER >> 8) & 0xFF,  # LDA #$EA
+        0x8D,
+        (VECTORS.IRQ + 1) & 0xFF,
+        ((VECTORS.IRQ + 1) >> 8) & 0xFF,  # STA $0315
+        0x4C,
+        KERNAL.IRQ_HANDLER & 0xFF,
+        (KERNAL.IRQ_HANDLER >> 8) & 0xFF,  # JMP $EA31
+    ]
+)
+
+
+def build_char_rom_dump_stub(*, base: int = CHAR_ROM_DUMP_STUB_ADDR, irq_exit: bool) -> bytes:
+    """The character-ROM dump stub, assembled for `base`.
+
+    `irq_exit` picks the tail: False returns via `RTS` (entered from a BASIC
+    `SYS`, the Ultimate kick), True restores `$0314` and chains to `$EA31`
+    (entered as the kernal IRQ handler, the TeensyROM kick).
+
+    The returned blob is DMA'd verbatim to `base`; its **last byte is the
+    completion flag**, uploaded as $00 and set to $FF by the stub, so the flag
+    address is always `base + len(stub) - 1` (:func:`char_rom_flag_addr`).
+    """
+    stub = bytearray(_CHAR_ROM_DUMP_BODY)
+    stub[_CR_PATCH_SRC_HI] = CHAR_ROM_SRC_PAGE
+    stub[_CR_PATCH_DST_HI] = (CHAR_ROM_DUMP_DEST >> 8) & 0xFF
+    _patch_word(stub, _CR_PATCH_INC_SRC_LO, _CR_PATCH_INC_SRC_HI, base + _CR_PATCH_SRC_HI)
+    _patch_word(stub, _CR_PATCH_INC_DST_LO, _CR_PATCH_INC_DST_HI, base + _CR_PATCH_DST_HI)
+    stub[_CR_PATCH_PAGES] = CHAR_ROM_DUMP_PAGES
+    stub += _CHAR_ROM_DUMP_TAIL_IRQ if irq_exit else _CHAR_ROM_DUMP_TAIL_SYS
+    stub += b"\x00"  # completion flag, raised by the stub
+    _patch_word(stub, _CR_PATCH_FLAG_LO, _CR_PATCH_FLAG_HI, base + len(stub) - 1)
+    return bytes(stub)
+
+
+def char_rom_flag_addr(stub: bytes, base: int = CHAR_ROM_DUMP_STUB_ADDR) -> int:
+    """Address of `stub`'s completion flag byte — always its last byte."""
+    return base + len(stub) - 1
+
+
+# How long to wait for the stub's completion flag. The copy itself is ~45 ms
+# (4096 bytes × ~11 cycles at 1 MHz); the rest of the budget covers the
+# Ultimate's reset + BASIC bring-up, which `run_prg` may return ahead of.
+_CHAR_ROM_FLAG_TIMEOUT_S = 6.0
+_CHAR_ROM_FLAG_POLL_S = 0.05
+
+
+class _StubRunnerBackend(BufferedWriteBackend):
+    """On-C64 stub orchestration shared by the Ultimate + TeensyROM backends.
+
+    Two features need code running on the real 6510, and both split the same
+    way: identical host-side work, one backend-specific step that hands the
+    CPU to the uploaded stub.
+
+    **SID player.** The host-side work — PSID parse, player-layout choice,
+    player MC / re-INIT stub build, the CIA #1 PLAY-rate divider auto-tune, and
+    SHIFT-driven subtune re-INIT (`cue_song_reinit`) — touches only the
+    buffered write path + `read_memory` + the module-level SID helpers. The
+    backend-specific step is `_launch_sid_player`:
 
       * Ultimate — POST a `10 SYS <player_base>` PRG to the REST `run_prg`
         runner (a soft reset that preserves RAM, then RUN).
@@ -815,9 +985,13 @@ class _SidPlayerBackend(BufferedWriteBackend):
         trampoline (PostFile is menu-gated, so it can't upload a per-tune stub
         mid-stream; see teensyrom_api.TeensyROMBackend).
 
+    **Character-ROM dump.** `dump_char_rom` uploads the copy stub, waits on its
+    completion flag and reads the landing zone back; the backend-specific step
+    is `_kick_char_rom_dump` (run_prg vs. a `$0314` vector swap).
+
     Both real backends set `profile.supports_run_prg = True`; this mixin
     overrides the ABC's capability-gated (raising) `run_sid_player` /
-    `cue_song_reinit` with the working implementation.
+    `cue_song_reinit` / `dump_char_rom` with the working implementations.
     """
 
     def __init__(self) -> None:
@@ -866,6 +1040,73 @@ class _SidPlayerBackend(BufferedWriteBackend):
         vector-swap must precede the divider's CIA #1 read, so it can't let
         `run_sid_player` finalize before the swap)."""
         ...
+
+    @abstractmethod
+    def _kick_char_rom_dump(self, stub_addr: int, timeout: float) -> None:
+        """Hand the CPU to the already-uploaded character-ROM dump stub at
+        `stub_addr`. Returning does NOT mean the copy finished — `dump_char_rom`
+        polls the stub's completion flag for that.
+
+        The two kicks differ in whether the stub is entered as ordinary code or
+        as an interrupt handler, which is why `build_char_rom_dump_stub` takes
+        `irq_exit`: the Ultimate SYSes it from BASIC (`RTS` tail), the
+        TeensyROM swaps `$0314` to it (`JMP $EA31` tail)."""
+        ...
+
+    # ---- character-ROM dump ------------------------------------------------
+    def _char_rom_stub_wants_irq_exit(self) -> bool:
+        """True when `_kick_char_rom_dump` enters the stub as the kernal IRQ
+        handler (the TeensyROM's `$0314` swap) rather than as a BASIC `SYS`."""
+        return False
+
+    def dump_char_rom(self, timeout: float = 10.0) -> bytes:
+        """Read the C64's character ROM by running a copy stub on the machine.
+
+        Uploads the stub (see `build_char_rom_dump_stub`), kicks it via the
+        backend hook, waits for its completion flag, then reads the 4 KB landing
+        zone at `$C000` back over the ordinary read path. The flag poll is what
+        makes this deterministic: the copy takes ~45 ms of 6510 time that
+        neither kick's return tells us about.
+
+        Raises RuntimeError if the stub never signalled or the read-back failed,
+        and BackendCapabilityError if this backend can't read C64 memory.
+        Verifying that the bytes *are* a charset is `char_rom.dump`'s job.
+        """
+        if not self.profile.supports_read:
+            raise BackendCapabilityError("dump_char_rom (needs read_memory)")
+        irq_exit = self._char_rom_stub_wants_irq_exit()
+        stub = build_char_rom_dump_stub(base=CHAR_ROM_DUMP_STUB_ADDR, irq_exit=irq_exit)
+        flag_addr = char_rom_flag_addr(stub, CHAR_ROM_DUMP_STUB_ADDR)
+
+        # The landing zone overlaps regions other writers own ($C000-$C2FF is
+        # audio's NMI/REU handler area, $C300+ the SID player), so drop the
+        # delta cache: the next scene must diff against fresh state.
+        self.invalidate_cache()
+        self.write_memory_file(f"{CHAR_ROM_DUMP_STUB_ADDR:04X}", stub)
+        self.flush()
+        self._kick_char_rom_dump(CHAR_ROM_DUMP_STUB_ADDR, timeout)
+
+        deadline = time.time() + _CHAR_ROM_FLAG_TIMEOUT_S
+        while time.time() < deadline:
+            flag = self.read_memory(flag_addr, 1)
+            if flag == b"\xff":
+                break
+            time.sleep(_CHAR_ROM_FLAG_POLL_S)
+        else:
+            raise RuntimeError(
+                f"the character-ROM dump stub never signalled completion "
+                f"(flag at ${flag_addr:04X} still clear after "
+                f"{_CHAR_ROM_FLAG_TIMEOUT_S:.0f}s) — it may not have been reached"
+            )
+
+        data = self.read_memory(CHAR_ROM_DUMP_DEST, CHAR_ROM_DUMP_BYTES, timeout=timeout)
+        if data is None or len(data) != CHAR_ROM_DUMP_BYTES:
+            got = "nothing" if data is None else f"{len(data)} bytes"
+            raise RuntimeError(
+                f"could not read the dumped character ROM back from "
+                f"${CHAR_ROM_DUMP_DEST:04X} (got {got}, want {CHAR_ROM_DUMP_BYTES})"
+            )
+        return data
 
     def _write_sid_blobs(
         self, parsed: ParsedPsid, layout: _PlayerLayout, mc: bytes, reinit: bytes
@@ -1100,7 +1341,7 @@ class _SidPlayerBackend(BufferedWriteBackend):
         return divider
 
 
-class Ultimate64API(_SidPlayerBackend):
+class Ultimate64API(_StubRunnerBackend):
     def __init__(
         self,
         base_url: str,
@@ -1377,6 +1618,46 @@ class Ultimate64API(_SidPlayerBackend):
                 ) from e
             raise
         return True
+
+    def _kick_char_rom_dump(self, stub_addr: int, timeout: float) -> None:
+        """Ultimate kick: POST a `10 SYS <stub_addr>` PRG to the REST run_prg
+        runner, exactly like the SID player's. run_prg soft-resets the C64
+        (RAM preserved — RAMTAS restores every byte its memory-size scan
+        probes, which is why the stub at $8100 and the landing zone at $C000
+        both survive) and RUNs the stub, whose `SYS` calls into our copy.
+
+        The reset is also why the display is blanked first (same guard as
+        `reset()`: the VIC holds the outgoing scene's mode/bank through the
+        reset-latency window and would otherwise flash leftover bitmap RAM),
+        and why the BASIC clear loop is re-established afterwards — the caller
+        gets the machine back in the idle state it handed over."""
+        self.blank_display()
+        self.flush()
+        url = f"{self.base_url}{U64_API.RUN_PRG}"
+        try:
+            r = self.session.post(
+                url,
+                files={"file": ("chargen.prg", _build_basic_sys_stub(stub_addr))},
+                timeout=timeout,
+            )
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                raise RuntimeError(
+                    f"U64 endpoint {url} returned 404 — run_prg is "
+                    "required for the character-ROM dump."
+                ) from e
+            raise
+
+    def dump_char_rom(self, timeout: float = 10.0) -> bytes:
+        """Dump the character ROM, then put the machine back in the BASIC
+        clear loop the kick's reset knocked it out of (see
+        `_kick_char_rom_dump`). Restored even on failure — a half-dumped
+        machine sitting at a READY banner is not a state any caller wants."""
+        try:
+            return super().dump_char_rom(timeout=timeout)
+        finally:
+            self.run_basic_clear_loop()
 
     # ---- lifecycle / introspection ----------------------------------------
     def probe(self, timeout: float = 2.0) -> str | None:

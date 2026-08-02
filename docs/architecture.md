@@ -8,7 +8,7 @@ For end-user configuration see [usage.md](usage.md), for known limitations [cave
 
 ## Topic areas
 
-* **[Hardware I/O & transports](architecture/hardware-io.md)** — `api.py`, `teensyrom_dma.py`, Startup: BASIC clear-and-loop program
+* **[Hardware I/O & transports](architecture/hardware-io.md)** — `api.py`, `teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio.py`, `sampler.py`, `dsp.py`, `audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
@@ -30,6 +30,7 @@ Every module, alphabetically, and where its notes live.
 | `audio_features.py` | [Audio output](architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
 | `backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
+| `char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
 | `cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
 | Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generatorspy--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
 | `config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
