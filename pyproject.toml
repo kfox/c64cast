@@ -148,7 +148,7 @@ wled = [
     "zeroconf>=0.150.0,<1",
     "fastapi>=0.140.0,<1",
     "uvicorn>=0.51.0,<1",
-    "websockets>=16.1.1,<17",
+    "websockets>=16.1.1,<18",
 ]
 # Everything optional, for users who want the full experience. Hand-maintained,
 # so it must stay exactly the union of every other extra above —
@@ -166,7 +166,7 @@ all = [
     "rich>=15.0.0,<16",
     "sounddevice>=0.5.5,<0.6",
     "uvicorn>=0.51.0,<1",
-    "websockets>=16.1.1,<17",
+    "websockets>=16.1.1,<18",
     "yt-dlp>=2026.7.4",  # no ceiling on purpose — see the `yt` extra above
     "zeroconf>=0.150.0,<1",
 ]
