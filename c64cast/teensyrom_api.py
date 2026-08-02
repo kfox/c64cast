@@ -15,7 +15,7 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     older firmware still degrades gracefully instead of NAK/timeout-ing every
     keyboard poll. Read support unlocks the `$028D` keyboard poller (physical
     pause/skip/cycle/menu control), same as the Ultimate.
-  * **run_sid_player / cue_song_reinit** ride the shared `_StubRunnerBackend`
+  * **run_sid_player / cue_song_reinit** ride the shared `_SidPlayerMixin`
     orchestration (parse / layout / build / divider auto-tune); only the kick
     differs. The TR does NOT boot the player via LaunchFile — that resets the
     C64, and its async boot/fast-LOAD raced the scope bring-up and the keyboard
@@ -29,10 +29,10 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     Requires the IRQ-enabled idle, so it's gated on `supports_read` (cycle-clean
     fw v0.7.2.5+); older firmware raises `BackendCapabilityError`. See
     `_launch_sid_player`.
-  * **dump_char_rom** rides the same shared orchestration and the same `$0314`
-    vector-swap kick, for the same reason (no reset, no boot). Also gated on
-    `supports_read`: the older spin-stub idle masks IRQs, so the swap would
-    never fire. See `_kick_char_rom_dump`.
+  * **dump_char_rom** rides the shared `_StubRunnerBackend` orchestration and
+    the same `$0314` vector-swap kick, for the same reason (no reset, no
+    boot). Also gated on `supports_read`: the older spin-stub idle masks IRQs,
+    so the swap would never fire. See `_kick_char_rom_dump`.
   * **reu_write** is left on the ABC's raising default — there is no REUWRITE
     opcode. Callers gate on `profile.supports_reu`.
 
@@ -53,6 +53,7 @@ from .api import (
     ParsedPsid,
     _build_basic_sys_stub,
     _PlayerLayout,
+    _SidPlayerMixin,
     _StubRunnerBackend,
 )
 from .backend import BackendCapabilityError, HardwareProfile
@@ -130,7 +131,7 @@ _SCREEN_CELLS = 1000
 _SC_SPACE = 0x20
 
 
-class TeensyROMBackend(_StubRunnerBackend):
+class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
     def __init__(self, transport: TRTransport, *, profile: HardwareProfile, storage: str = "sd"):
         super().__init__()
         self.profile = profile
@@ -386,7 +387,7 @@ class TeensyROMBackend(_StubRunnerBackend):
         self._upload(data, dest)
         self.tr.launch_file(dest, self._drive)
 
-    # ---- SID player (shared orchestration via _StubRunnerBackend) ----------
+    # ---- SID player (shared orchestration via _SidPlayerMixin) -------------
     def _launch_sid_player(
         self,
         parsed: ParsedPsid,
