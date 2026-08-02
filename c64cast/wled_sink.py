@@ -211,9 +211,9 @@ class WledPixelReceiver:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            # codeql[py/bind-socket-all-network-interfaces]: intentional — this
-            # is a LAN pixel-stream receiver (DDP / WLED-realtime senders), the
-            # default host is deliberately overridable via the `host` param.
+            # Loopback-only was rejected: the senders (LedFx, xLights, a WLED
+            # controller) stream from elsewhere on the LAN, and a loopback bind
+            # succeeds, so the scene would show nothing and never report why.
             s.bind((self._host, port))
         except OSError as e:
             s.close()
