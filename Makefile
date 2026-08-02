@@ -30,7 +30,7 @@ SYNC := $(if $(CI),,sync)
 .DEFAULT_GOAL := help
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema \
-        guide guide-figures
+        guide reference books guide-figures reference-appendices
 
 # Books (docs/<book>/*.md + book.toml) are rendered by Typst, which is an
 # external binary rather than a Python package. The two faces (Jost*,
@@ -44,6 +44,10 @@ TYPST_FLAGS  = --root . --font-path $(BOOK_FONTS)
 GUIDE_DIR   := docs/guide
 GUIDE_TYP   := $(GUIDE_DIR)/c64cast-users-guide.typ
 GUIDE_PDF   := $(GUIDE_DIR)/c64cast-users-guide.pdf
+
+REF_DIR     := docs/reference
+REF_TYP     := $(REF_DIR)/c64cast-reference-guide.typ
+REF_PDF     := $(REF_DIR)/c64cast-reference-guide.pdf
 
 # Markdown -> Typst -> PDF for one book: $(1) is its directory, $(2) the
 # artefact basename its book.toml declares. Typst is not a Python dependency,
@@ -71,7 +75,10 @@ help:
 	@echo "  bench      scripts/bench.py — async write pipeline"
 	@echo "  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata"
 	@echo "  guide      render docs/guide/*.md to the User's Guide PDF (needs typst)"
+	@echo "  reference  render docs/reference/*.md to the Reference Guide PDF (needs typst)"
+	@echo "  books      render every book"
 	@echo "  guide-figures  redraw the guide's placeholder figures"
+	@echo "  reference-appendices  regenerate the reference guide's appendices A-H"
 	@echo "  check      lint + typecheck + test"
 	@echo "  clean      remove build artifacts"
 
@@ -124,11 +131,27 @@ guide-figures: $(SYNC)
 guide: $(SYNC)
 	$(call render-book,$(GUIDE_DIR),c64cast-users-guide)
 
+reference: $(SYNC)
+	$(call render-book,$(REF_DIR),c64cast-reference-guide)
+
+books: guide reference
+
+# Rewrite the Programmer's Reference Guide's generated appendices (A-H) and the
+# performance card's live-target table from the config metadata. Unlike the
+# books themselves this needs the project env, since it imports c64cast — which
+# is exactly why it is a separate script from build_book.py, and why its output
+# is committed: the release renders the PDFs with `uv run --no-project`.
+# tests/test_reference_appendices.py fails if the committed files drift from
+# this output, so run it after changing any config field, overlay, generator,
+# effect, CLI flag or example config.
+reference-appendices: $(SYNC)
+	$(PY) scripts/gen_reference_appendices.py
+
 check: lint typecheck test
 
 clean:
 	rm -rf build dist .coverage .coverage.* htmlcov coverage.xml
 	rm -rf .ruff_cache .mypy_cache .pytest_cache
-	rm -f $(GUIDE_TYP) $(GUIDE_PDF)
+	rm -f $(GUIDE_TYP) $(GUIDE_PDF) $(REF_TYP) $(REF_PDF)
 	find . -type d -name '__pycache__' -prune -exec rm -rf {} +
 	find . -type d -name '*.egg-info' -prune -exec rm -rf {} +

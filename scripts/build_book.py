@@ -66,7 +66,7 @@ CALLOUT_KINDS = ("NOTE", "TIP", "WARNING", "IMPORTANT", "CAUTION")
 # never passed on; `version` is not book metadata somebody edits, so it is
 # appended by build() rather than read from the file.
 LAYOUT_KEYS = {
-    "guide": ("title", "subtitle", "tagline", "logo", "pdf_title"),
+    "guide": ("title", "volume", "subtitle", "tagline", "logo", "pdf_title"),
     "card": ("title", "subtitle", "pdf_title"),
 }
 
@@ -85,7 +85,13 @@ PATH_KEYS = ("logo",)
 # into an en dash and `...` into an ellipsis, which is what we want in prose.
 # Command-line flags always live in backticks, where no substitution happens;
 # `check_prose` below enforces that.
-_TYPST_SPECIAL = set("\\#$*_`<>@[]~")
+#
+# `/` is here because Typst comments (`//` and `/*`) are live in markup mode
+# too: an unescaped URL in prose comments out the rest of its line, taking the
+# closing bracket of whatever content block it sits in with it. That surfaced
+# as "unclosed delimiter" pointing at a table three lines earlier. `\/` renders
+# as an ordinary slash, so prose is unaffected.
+_TYPST_SPECIAL = set("\\#$*_`<>@[]~/")
 
 
 class BookError(Exception):
@@ -141,7 +147,10 @@ def parse_front_matter(text: str, path: Path) -> tuple[dict[str, str], str, int]
         key, _, value = line.partition(":")
         fields[key.strip()] = value.strip().strip("\"'")
 
-    allowed = {"number"}
+    # `generated` marks a chapter written by scripts/gen_reference_appendices.py.
+    # The converter does nothing with it: it is there so the drift check can
+    # discover its own outputs, and so a human editing one has been warned.
+    allowed = {"number", "generated"}
     for key in fields:
         if key not in allowed:
             fail(path, 1, f"unknown front matter key {key!r} (allowed: {sorted(allowed)})")
@@ -259,6 +268,12 @@ _CALLOUT_RE = re.compile(r"^>\s*\[!(?P<kind>[A-Z]+)\]\s*$")
 _ULI_RE = re.compile(r"^(?P<indent> *)[-*]\s+(?P<text>.*)$")
 _OLI_RE = re.compile(r"^(?P<indent> *)\d+\.\s+(?P<text>.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:|-]+\|[\s:|-]*$")
+# A cell boundary is an *unescaped* pipe. GFM spells a literal one `\|`, which
+# several generated appendices need: a field of type `str | None` and config
+# help that quotes its choices as `'cc'|'note'|'pc'` both carry one, and
+# rewording them to dodge the delimiter would make the reference disagree with
+# the program it documents.
+_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 
 @dataclass
@@ -391,7 +406,12 @@ class Converter:
 
     def _table(self, lines: list[str], i: int, out: list[str]) -> int:
         def cells(row: str) -> list[str]:
-            return [c.strip() for c in row.strip().strip("|").split("|")]
+            # Unescape after splitting, and before any inline parsing, which is
+            # the order GFM specifies -- so a pipe reaches a code span as a
+            # pipe rather than as a backslash the span would print literally.
+            return [
+                c.strip().replace(r"\|", "|") for c in _CELL_SPLIT_RE.split(row.strip().strip("|"))
+            ]
 
         header = cells(lines[i])
         aligns = []

@@ -30,6 +30,17 @@ the version and stamps it with the date.
   installs a 2 KB or 4 KB dump you already have with no hardware involved, and
   `[hardware].dump_char_rom = false` turns the automatic read off. `--doctor`
   reports which ROM is in use and whether it verifies.
+- **A second book: the Programmer's Reference Guide** (`docs/reference/`), the
+  volume you open at the page you need rather than read in order. Its chapters
+  are outlines for now, but its appendices are complete and are *generated* from
+  the code by `scripts/gen_reference_appendices.py`: every configuration section
+  and field, every scene key, every overlay parameter, the overlay against
+  display-mode matrix, every generator and effect, every live-tune target, every
+  command-line flag and every packaged example. They read the same definitions
+  that answer `--describe`, `--compat` and `--print-schema`, so a table in the
+  book cannot disagree with the program. `make reference` renders it, `make
+  books` renders every book, and `make reference-appendices` rewrites the
+  generated ones — which CI checks for drift.
 
 ### Changed
 
