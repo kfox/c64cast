@@ -598,8 +598,12 @@ def build(book_dir: Path) -> str:
     if layout == "guide":
         if not any(c.number is not None for c in chapters):
             raise BookError(f"{book_dir} has no numbered chapters")
-        colophon = (book_dir / "colophon.md").read_text(encoding="utf-8")
-        colophon_conv = Converter(book_dir / "colophon.md", 1)
+        colophon_path = book_dir / "colophon.md"
+        try:
+            colophon = colophon_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise BookError(f"cannot read {colophon_path}: {exc}") from exc
+        colophon_conv = Converter(colophon_path, 1)
         colophon_conv.title = ""  # the colophon is bare prose, no heading
         out += [
             f"#colophon[\n{colophon_conv.convert(colophon)}\n]",

@@ -264,6 +264,33 @@ class LayoutTest(unittest.TestCase):
         self.assertIn("#mainmatter()", typst)
         self.assertIn("#chapter(", typst)
 
+    def test_a_guide_without_a_colophon_says_so(self):
+        # Every other book problem exits with an `error:` line. A missing
+        # colophon used to come out as a raw FileNotFoundError traceback,
+        # which the guide never hit because it has always had one -- but a
+        # second book starts life without it.
+        book_dir = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        (book_dir / "book.toml").write_text(
+            textwrap.dedent("""\
+                [book]
+                layout = "guide"
+                output = "c64cast-book"
+                title = "c64cast"
+                subtitle = "s"
+                tagline = "t"
+                logo = "logo.png"
+                pdf_title = "c64cast Book"
+            """),
+            encoding="utf-8",
+        )
+        (book_dir / "logo.png").write_bytes(b"")
+        (book_dir / "01-one.md").write_text("---\nnumber: 1\n---\n# One\n\n## Section\n\nText.\n")
+
+        with mock.patch.object(bg, "REPO_ROOT", book_dir):
+            with self.assertRaises(bg.BookError) as ctx:
+                bg.build(book_dir)
+        self.assertIn("colophon.md", str(ctx.exception))
+
     def test_the_card_layout_gets_none_of_it(self):
         book_dir = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         (book_dir / "book.toml").write_text(
