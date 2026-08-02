@@ -1,0 +1,22 @@
+# Book-level metadata for the Programmer's Reference Guide PDF.
+#
+# The prose lives in the numbered *.md files; this is only the material that
+# appears on the cover and has nowhere sensible to live in Markdown.
+# scripts/build_book.py reads it; docs/shared/template.typ styles it.
+
+[book]
+layout = "guide"                     # which template entry point renders it
+output = "c64cast-reference-guide"   # basename of the .typ and the .pdf
+title = "c64cast"
+volume = "Programmer’s Reference"   # the cover's large line: which book of the series
+subtitle = "with Complete Appendices"
+tagline = "Every scene, every knob, every register"
+# The two books share one cover mark, and it is generated into the guide's
+# own img/ by scripts/make_guide_figures.py. Pointed at rather than copied:
+# a second binary would drift the first time the logo is redrawn. Moving it to
+# docs/shared/img/ is the tidier end state — worth doing next time that script
+# is touched, which is where the generation path would have to move too.
+logo = "../guide/img/logo-cover.png"
+# What a downloaded file calls itself in Get Info / `pdfinfo`, where the cover
+# is no help. The version is appended by the build.
+pdf_title = "c64cast Programmer's Reference Guide"

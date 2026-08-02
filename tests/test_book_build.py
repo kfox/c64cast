@@ -270,17 +270,14 @@ class LayoutTest(unittest.TestCase):
         # which the guide never hit because it has always had one -- but a
         # second book starts life without it.
         book_dir = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        # Built from LAYOUT_KEYS rather than spelled out, so this stays a test
+        # about the colophon. Listing the keys by hand meant that adding a
+        # required one (`volume`, for the second book's cover) failed here
+        # instead -- on the wrong error, from a test that never mentions it.
+        keys = dict.fromkeys(bg.LAYOUT_KEYS["guide"], "x") | {"logo": "logo.png"}
+        body = "\n".join(f'{key} = "{value}"' for key, value in keys.items())
         (book_dir / "book.toml").write_text(
-            textwrap.dedent("""\
-                [book]
-                layout = "guide"
-                output = "c64cast-book"
-                title = "c64cast"
-                subtitle = "s"
-                tagline = "t"
-                logo = "logo.png"
-                pdf_title = "c64cast Book"
-            """),
+            f'[book]\nlayout = "guide"\noutput = "c64cast-book"\n{body}\n',
             encoding="utf-8",
         )
         (book_dir / "logo.png").write_bytes(b"")

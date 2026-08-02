@@ -274,7 +274,7 @@
 // Cover, half-title and colophon
 // ---------------------------------------------------------------------------
 
-#let cover(title: "", subtitle: "", tagline: "", logo: none, version: "") = page(
+#let cover(title: "", volume: "", subtitle: "", tagline: "", logo: none, version: "") = page(
   fill: gradient.linear(accent.darken(22%), accent, accent.lighten(8%), angle: 90deg),
   margin: 0pt,
   header: none,
@@ -301,9 +301,19 @@
 
     set text(fill: white)
     place(top + center, dy: 1.5in, block(width: 78%, {
+      // Nothing on a cover justifies or hyphenates. It only started to matter
+      // with a second book: "USER'S GUIDE" fits one line, and
+      // "PROGRAMMER'S REFERENCE" was spaced across the full measure and broken
+      // as "REFER-ENCE". Set here rather than around the one line, so no
+      // wrapper is introduced and the guide's cover keeps its exact geometry.
+      set par(justify: false)
+      set text(hyphenate: false)
       if logo != none { image(logo, width: 100%) }
       v(30pt)
-      text(size: 26pt, weight: "bold", tracking: 1.2pt)[USER'S GUIDE]
+      // Which volume of the series this is. From the book, not a literal: the
+      // logo carries the wordmark, and this line is the only thing on the
+      // cover that distinguishes one book from the next.
+      text(size: 26pt, weight: "bold", tracking: 1.2pt)[#upper(volume)]
       v(2pt)
       text(size: 12pt)[#subtitle]
     }))
@@ -467,6 +477,7 @@
 
 #let guide(
   title: "",
+  volume: "",
   subtitle: "",
   tagline: "",
   logo: none,
@@ -479,7 +490,9 @@
   // from Get Info / `pdfinfo` without opening it to page one.
   set document(
     title: if version == "" { pdf-title } else { pdf-title + " " + version },
-    keywords: ("c64cast", "Commodore 64", "user's guide", version),
+    // The book names itself rather than a literal: two books take this layout,
+    // and the second one is not the User's Guide.
+    keywords: ("c64cast", "Commodore 64", pdf-title, version),
   )
 
   set page(
@@ -501,7 +514,14 @@
   show: elements
 
   // Front matter -----------------------------------------------------------
-  cover(title: title, subtitle: subtitle, tagline: tagline, logo: logo, version: version)
+  cover(
+    title: title,
+    volume: volume,
+    subtitle: subtitle,
+    tagline: tagline,
+    logo: logo,
+    version: version,
+  )
   // The cover is not a numbered page. Restart the count here so the half-title
   // is i and the colophon -- the first page to actually print a folio -- is ii.
   counter(page).update(1)
