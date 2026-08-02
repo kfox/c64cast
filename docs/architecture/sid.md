@@ -52,7 +52,7 @@ The PAL/NTSC speed flag is ignored — a v1 limitation; the kernal-default CIA #
 
 ### Backend-agnostic orchestration
 
-Parse, layout, build, divider-tune, and subtune-reinit all live in `_StubRunnerBackend`. Only the *kick* differs, via the abstract `_launch_sid_player`.
+Parse, layout, build, divider-tune, and subtune-reinit all live in `_SidPlayerMixin` — a SID-only tenant each concrete backend mixes in alongside `_StubRunnerBackend` (which carries the character-ROM dump), so the two features share the shape of the split and none of the state. Only the *kick* differs, via the abstract `_launch_sid_player`.
 
 **Ultimate** — POSTs the `SYS` stub to `run_prg`.
 

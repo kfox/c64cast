@@ -335,7 +335,7 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
 
 The host-side orchestration above (parse / layout / build / divider
 auto-tune / subtune re-INIT) is backend-agnostic and shared via
-`_StubRunnerBackend` in [api.py](../c64cast/api.py); only the **kick** —
+`_SidPlayerMixin` in [api.py](../c64cast/api.py); only the **kick** —
 how control reaches the player — differs per backend, behind the abstract
 `_launch_sid_player`. The Ultimate POSTs the `SYS` stub to `run_prg`
 (a synchronous soft reset that preserves RAM, then RUNs). The TeensyROM
