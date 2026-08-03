@@ -34,6 +34,19 @@ def _read(name: str) -> str:
         return f.read()
 
 
+def _book_outputs() -> list[str]:
+    """Every book's artefact basename, from the books themselves."""
+    docs = os.path.join(_REPO, "docs")
+    names = []
+    for entry in sorted(os.listdir(docs)):
+        path = os.path.join(docs, entry, "book.toml")
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                names.append(tomllib.load(f)["book"]["output"])
+    assert names, "no docs/*/book.toml — did the books move?"
+    return names
+
+
 # Shaped like the real changelog: the preamble names the Unreleased heading
 # inline, above the heading itself.
 _CHANGELOG = """\
@@ -207,10 +220,10 @@ class TestReleaseWorkflow(unittest.TestCase):
                 bv.main([flag, "--definitely-not-a-flag", "1.2.3"])
             self.assertNotIn(f"unrecognized arguments: {flag}", err.getvalue())
 
-    def test_it_renders_the_guide_through_the_make_target(self) -> None:
-        self.assertIn("make guide", self.code)
+    def test_it_renders_the_books_through_the_make_target(self) -> None:
+        self.assertIn("make books", self.code)
         makefile = _read("Makefile")
-        self.assertRegex(makefile, r"(?m)^guide:", "the `guide` Make target is gone")
+        self.assertRegex(makefile, r"(?m)^books:", "the `books` Make target is gone")
 
     def test_publishing_happens_before_the_github_release(self) -> None:
         self.assertIn("needs: [build, publish-pypi]", self.code)
@@ -225,9 +238,13 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertNotIn("gh-action-pypi-publish", self.code)
         self.assertIn("uv publish", self.code)
 
-    def test_the_release_body_links_the_guide_and_the_package(self) -> None:
+    def test_the_release_body_links_every_book_and_the_package(self) -> None:
         self.assertIn("releases/download/v$VERSION", self.code)
-        self.assertIn("c64cast-users-guide-$VERSION.pdf", self.code)
+        # Rendering and uploading are wildcarded over docs/*/, so a book that
+        # nobody linked would ship as an asset nobody can find. The notes are
+        # hand-written, so this is the one place a new book has to be named.
+        for output in _book_outputs():
+            self.assertIn(f"{output}-$VERSION.pdf", self.code, f"{output} is not linked")
         # Versioned filenames, so a "latest" download URL cannot serve them.
         self.assertNotIn("releases/latest/download", self.code)
         self.assertIn("--notes-file body.md", self.code)
@@ -240,8 +257,9 @@ class TestReleaseWorkflow(unittest.TestCase):
                 f"{ref} is not pinned to a full commit SHA",
             )
 
-    def test_the_guide_asset_carries_the_version(self) -> None:
-        self.assertIn("c64cast-users-guide-", self.code)
+    def test_every_book_asset_carries_the_version(self) -> None:
+        for output in _book_outputs():
+            self.assertIn(f"{output}-", self.code)
 
 
 if __name__ == "__main__":

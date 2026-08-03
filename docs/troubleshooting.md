@@ -8,7 +8,7 @@ file is the "I saw X, what now?" companion.
 --doctor --config your.toml` validates every scene/overlay/orchestrator,
 checks which optional install extras are present, and pings each
 system's U64 — all without starting the stream. See
-[usage.md "Validating a config"](usage.md#validating-a-config). Most
+[the Programmer's Reference Guide, "Validation"](reference/02-config-rules.md#validation). Most
 "why won't it start" questions answer themselves from the doctor report.
 
 If your problem isn't here, run with `-vv` (debug logging) and check
@@ -298,7 +298,7 @@ c64cast --install-char-rom /path/to/chargen.bin
 
 Both commands verify the bytes really are a charset before writing anything,
 so a bad file is refused rather than silently making things worse. See
-[usage.md](usage.md#the-character-rom).
+[the User's Guide, "The Character ROM"](guide/04-setting-up.md#the-character-rom).
 
 ### "Overlay paints PETSCII screen codes and only renders correctly with display = 'petscii'"
 

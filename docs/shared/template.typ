@@ -48,19 +48,26 @@
 // bowls, near-uniform stroke. Inconsolata IS the original's mono face, and is
 // itself OFL, so that one is an exact match rather than a substitution.
 //
-// Named without fallbacks on purpose. A fallback chain would let a build that
-// forgot --font-path quietly substitute a different face and produce a PDF
-// that looks wrong in a way nobody notices; Typst instead warns that the
-// family is unknown, which is the signal you want.
-#let body-font = "Jost"
-#let mono-font = "Inconsolata"
+// Each face names the other as its only fallback, and `fallback: false` in the
+// layouts below cuts the machine's own fonts out of the chain entirely.
+// Neither vendored face covers everything: Jost has no ✓ (U+2713) and no →
+// (U+2192), and until this was pinned the glyph came from whatever happened to
+// be installed -- Appendix D's matrix was set in a heavy upright check locally
+// and a thin slanted one in CI, from the same source file. The two marks the
+// books actually lean on are now drawn (see `tick` and `rarrow`); the chain and
+// the cut-off are what stop the next stray character from going the same way.
+//
+// A glyph in neither face is then simply not drawn, which is easy to miss on a
+// 200-page proof -- so tests/test_book_fonts.py checks every character of every
+// book against these two files and fails the build instead.
+#let body-font = ("Jost", "Inconsolata")
+#let mono-font = ("Inconsolata", "Jost")
 
+// Body size per layout. The card is set smaller because it is a hand-out read
+// at a glance, not a book read in an armchair — and because everything in
+// elements() is a multiple of whichever of these its layout passes in.
 #let body-size = 10pt
-// Set to the body size, not below it, because these two faces happen to agree
-// almost exactly on x-height: Jost 0.460em, Inconsolata 0.457em. Equal nominal
-// sizes therefore look equal on the page, and code no longer reads as fine
-// print the way it did against a face with a taller lowercase.
-#let mono-size = body-size
+#let card-size = 8.5pt
 
 // ---------------------------------------------------------------------------
 // Page-numbering style, tracked so the table of contents can render each
@@ -87,6 +94,33 @@
   outset: (y: 2pt),
   text(fill: white, weight: "bold", size: 0.86em, body),
 )
+
+// The two marks the prose uses by the dozen -- ✓ in the compatibility matrix,
+// → wherever one thing becomes another -- drawn rather than typed, for the
+// same reason as the list bullet further down.
+//
+// Neither is in Jost, and the books carry 64 of the first and 20 of the
+// second. Borrowing them from Inconsolata works and is at least deterministic,
+// but its check is thin and leans to the right and its arrow is a mono glyph
+// squeezed into a 0.5em slot -- both read as foreign matter in a page of
+// geometric sans. Drawn from a stroke in `em`, they scale with whatever text
+// they sit in, take the weight of the face around them, and cannot change
+// because of what a build machine happens to have installed.
+#let _mark-stroke = (paint: ink, thickness: 0.078em, cap: "round", join: "round")
+
+// Rests on the baseline, like a capital.
+#let tick = box(width: 0.66em, height: 0.6em, baseline: 0pt, {
+  place(line(start: (4%, 52%), end: (36%, 94%), stroke: _mark-stroke))
+  place(line(start: (34%, 94%), end: (96%, 6%), stroke: _mark-stroke))
+})
+
+// Centred on the x-height, where a typeset arrow sits, rather than on the
+// baseline the box would otherwise be aligned to.
+#let rarrow = box(width: 0.95em, height: 0.44em, baseline: -0.02em, {
+  place(line(start: (2%, 50%), end: (94%, 50%), stroke: _mark-stroke))
+  place(line(start: (60%, 6%), end: (97%, 50%), stroke: _mark-stroke))
+  place(line(start: (60%, 94%), end: (97%, 50%), stroke: _mark-stroke))
+})
 
 // ---------------------------------------------------------------------------
 // Callout boxes — NOTE:, TIP:, WARNING:
@@ -128,6 +162,30 @@
 )
 
 // ---------------------------------------------------------------------------
+// Field tables
+//
+// The reference's generated appendices are mostly one shape: a thing that has
+// a name, a type and a default, and a paragraph saying what it is for. Set as
+// four columns those three facts took most of a 6.24in page and left the
+// paragraph — the only part written for a human — about a third of the
+// measure and four words to a line, one field to a page.
+//
+// So the identity is stacked into a single fixed column and the description
+// gets the rest. Fixed rather than `auto` because these tables are read as one
+// list that happens to be interrupted by section headings: an `auto` column is
+// sized to the longest entry in *its own* table, so the same reference had a
+// different left margin every second page.
+//
+// The width is set from the entries rather than to a round number: names run
+// to 19 characters at the 95th percentile, types to 14 and defaults to 15, so
+// 1.5in holds the overwhelming majority of them on one line at the mono size.
+// The handful of longer ones wrap, which is the right thing to spend on them.
+// ---------------------------------------------------------------------------
+
+#let fields-column = 1.5in
+#let fields-table(..args) = table(columns: (fields-column, 1fr), ..args)
+
+// ---------------------------------------------------------------------------
 // Chapter openers
 //
 // A numbered chapter gets the full-bleed blue page: right-aligned CHAPTER
@@ -162,6 +220,11 @@
         // Registered inside the opener page so the contents entry points at
         // the opener rather than at the first page of body copy.
         [#metadata((kind: "chapter", number: number, title: title)) <guide-toc>]
+        // What "Appendix F" in the prose jumps to. The label has to be built
+        // from the number at run time -- `<ch-F>` cannot be written literally
+        // in a function that every chapter shares -- which `label()` allows
+        // and the `<>` syntax does not.
+        [#metadata(number)#label("ch-" + number)]
         set text(fill: white)
         // A lettered number is an appendix, not a chapter.
         let label = if regex("^[0-9]") in number { "CHAPTER" } else { "APPENDIX" }
@@ -227,8 +290,8 @@
         block(above: 17pt, below: 7pt, grid(
           columns: (gutter, 1fr, folio),
           text(weight: "bold")[#d.number],
-          text(weight: "bold", upper(d.title)),
-          align(right, text(weight: "bold")[#pg]),
+          link(loc, text(weight: "bold", upper(d.title))),
+          align(right, link(loc, text(weight: "bold")[#pg])),
         ))
       } else {
         // Front-matter entries and chapter sections share an indent, with
@@ -236,12 +299,12 @@
         block(above: 5pt, below: 5pt, grid(
           columns: (gutter, 1fr, folio),
           [],
-          {
+          link(loc, {
             d.title
             h(5pt)
             box(width: 1fr, repeat[#h(3.4pt).#h(3.4pt)])
-          },
-          align(right)[#pg],
+          }),
+          align(right, link(loc)[#pg]),
         ))
       }
     }
@@ -274,7 +337,7 @@
 // Cover, half-title and colophon
 // ---------------------------------------------------------------------------
 
-#let cover(title: "", subtitle: "", tagline: "", logo: none, version: "") = page(
+#let cover(title: "", volume: "", subtitle: "", tagline: "", logo: none, version: "") = page(
   fill: gradient.linear(accent.darken(22%), accent, accent.lighten(8%), angle: 90deg),
   margin: 0pt,
   header: none,
@@ -301,9 +364,19 @@
 
     set text(fill: white)
     place(top + center, dy: 1.5in, block(width: 78%, {
+      // Nothing on a cover justifies or hyphenates. It only started to matter
+      // with a second book: "USER'S GUIDE" fits one line, and
+      // "PROGRAMMER'S REFERENCE" was spaced across the full measure and broken
+      // as "REFER-ENCE". Set here rather than around the one line, so no
+      // wrapper is introduced and the guide's cover keeps its exact geometry.
+      set par(justify: false)
+      set text(hyphenate: false)
       if logo != none { image(logo, width: 100%) }
       v(30pt)
-      text(size: 26pt, weight: "bold", tracking: 1.2pt)[USER'S GUIDE]
+      // Which volume of the series this is. From the book, not a literal: the
+      // logo carries the wordmark, and this line is the only thing on the
+      // cover that distinguishes one book from the next.
+      text(size: 26pt, weight: "bold", tracking: 1.2pt)[#upper(volume)]
       v(2pt)
       text(size: 12pt)[#subtitle]
     }))
@@ -363,9 +436,17 @@
 // Everything below the page: how a heading, a listing, a table or a figure is
 // set. Shared by every layout, so a table in the card looks like a table in
 // the guide and the two read as one series.
+//
+// Every size and gap here is a multiple of `size`, the body size its layout
+// passes in — required rather than defaulted, so a new layout cannot silently
+// inherit the book's — rather than an absolute the 10pt book happened to want: at the
+// card's 8.5pt a 12.5pt section heading shouted and a 4.5pt row inset spent a
+// column it did not have. Multiples of a parameter and not `em`, because a
+// heading's own text size is already scaled when the show rule runs, so an
+// `em` inside one compounds.
 // ---------------------------------------------------------------------------
 
-#let elements(body) = {
+#let elements(size, body) = {
   // Headings ---------------------------------------------------------------
   // Level 1 is never used directly; chapter() draws the openers.
   show heading.where(level: 2): it => {
@@ -374,10 +455,10 @@
         [#metadata((kind: "section", title: it.body)) <guide-toc>]
       }
     }
-    block(above: 18pt, below: 9pt, text(
+    block(above: 1.8 * size, below: 0.9 * size, text(
       fill: accent,
       weight: "bold",
-      size: 12.5pt,
+      size: 1.25 * size,
       tracking: 0.3pt,
       hyphenate: false,
       upper(it.body),
@@ -385,15 +466,15 @@
   }
 
   show heading.where(level: 3): it => block(
-    above: 14pt,
-    below: 7pt,
-    text(weight: "bold", size: 11.5pt, hyphenate: false, it.body),
+    above: 1.4 * size,
+    below: 0.7 * size,
+    text(weight: "bold", size: 1.15 * size, hyphenate: false, it.body),
   )
 
   show heading.where(level: 4): it => block(
-    above: 11pt,
-    below: 5pt,
-    text(weight: "bold", size: body-size, hyphenate: false, it.body),
+    above: 1.1 * size,
+    below: 0.5 * size,
+    text(weight: "bold", size: size, hyphenate: false, it.body),
   )
 
   // Code -------------------------------------------------------------------
@@ -404,20 +485,38 @@
   // Inline code is set plain, with no tint behind it -- the original sets its
   // inline literals (paths, URLs) as bare mono, and a chip per flag would
   // speckle a page that mentions a lot of them.
+  //
+  // Set slightly LARGER than the prose around it, which looks wrong written
+  // down and is right on the page. The two faces agree on x-height (Jost
+  // 0.460em, Inconsolata 0.457em) but not above it: Inconsolata's ascenders
+  // reach 0.665em against Jost's 0.780em and its caps and figures 0.623em
+  // against 0.700em. Inline code is where the two meet within a line, so the
+  // eye compares those extremes directly -- `[hardware]`, `6581` and the
+  // ascender of every `--flag` all sat visibly low against their sentence at
+  // an equal nominal size. 1.08 splits x-height parity (1.00) and cap parity
+  // (1.12) and measures right in a side-by-side print.
+  //
+  // A block listing keeps the plain body size: it has a fill and a page-wide
+  // measure of its own, so there is no adjacent Jost to be short against.
   // Relative, not absolute, so a flag quoted in a 9pt colophon scales with it.
-  show raw.where(block: false): it => text(font: mono-font, size: 1em, it)
+  show raw.where(block: false): it => text(font: mono-font, size: 1.08em, it)
 
   show raw.where(block: true): it => block(
     width: 100%,
     fill: accent-wash,
-    inset: (x: 9pt, y: 8pt),
+    inset: (x: 0.9 * size, y: 0.8 * size),
     radius: 2pt,
-    above: 11pt,
-    below: 11pt,
+    above: 1.1 * size,
+    below: 1.1 * size,
     breakable: true,
     {
       set par(justify: false, leading: 0.55em)
-      set text(font: mono-font, size: mono-size)
+      // Code is set at the body size, not below it, because these two faces
+      // happen to agree almost exactly on x-height: Jost 0.460em, Inconsolata
+      // 0.457em. Equal nominal sizes therefore look equal on the page, and
+      // code no longer reads as fine print the way it did against a face with
+      // a taller lowercase.
+      set text(font: mono-font, size: size)
       it
     },
   )
@@ -428,7 +527,11 @@
   show strong: set text(hyphenate: false)
 
   // Links ------------------------------------------------------------------
-  show link: it => text(fill: accent, it)
+  // Blue marks a link the reader can follow away from the sentence: a URL, or
+  // a cross-reference to another chapter. A link to a *location* is the
+  // contents page, where every line is a pointer already -- colouring those
+  // turns the whole page blue and tells the reader nothing.
+  show link: it => if type(it.dest) == location { it } else { text(fill: accent, it) }
 
   // Lists ------------------------------------------------------------------
   // Drawn rather than typed. Jost's • glyph is small and sits high in its em
@@ -436,26 +539,26 @@
   // circle is font-independent: same mark whatever the body face becomes, and
   // the baseline offset centres it on the x-height.
   set list(
-    indent: 10pt,
-    body-indent: 6pt,
+    indent: size,
+    body-indent: 0.6 * size,
     spacing: 0.9em,
     marker: box(baseline: -0.8pt, circle(radius: 1.5pt, fill: ink)),
   )
-  set enum(indent: 10pt, body-indent: 6pt, spacing: 0.9em)
+  set enum(indent: size, body-indent: 0.6 * size, spacing: 0.9em)
 
   // Tables — bold header, one hairline beneath it, nothing else. ------------
   set table(
     stroke: (x, y) => if y == 0 { (bottom: 0.7pt + ink) } else { none },
-    inset: (x: 0pt, y: 4.5pt),
-    column-gutter: 12pt,
+    inset: (x: 0pt, y: 0.45 * size),
+    column-gutter: 1.2 * size,
   )
   show table.cell.where(y: 0): set text(weight: "bold")
 
   // Figures ----------------------------------------------------------------
-  show figure: it => block(above: 13pt, below: 13pt, align(center, {
+  show figure: it => block(above: 1.3 * size, below: 1.3 * size, align(center, {
     it.body
     v(4pt)
-    text(size: 8.5pt)[#it.caption.body]
+    text(size: 0.85 * size)[#it.caption.body]
   }))
 
   body
@@ -467,6 +570,7 @@
 
 #let guide(
   title: "",
+  volume: "",
   subtitle: "",
   tagline: "",
   logo: none,
@@ -479,7 +583,9 @@
   // from Get Info / `pdfinfo` without opening it to page one.
   set document(
     title: if version == "" { pdf-title } else { pdf-title + " " + version },
-    keywords: ("c64cast", "Commodore 64", "user's guide", version),
+    // The book names itself rather than a literal: two books take this layout,
+    // and the second one is not the User's Guide.
+    keywords: ("c64cast", "Commodore 64", pdf-title, version),
   )
 
   set page(
@@ -496,12 +602,26 @@
     },
   )
 
-  set text(font: body-font, size: body-size, fill: ink, lang: "en", hyphenate: true)
+  set text(
+    font: body-font,
+    fallback: false,
+    size: body-size,
+    fill: ink,
+    lang: "en",
+    hyphenate: true,
+  )
   set par(justify: true, leading: 0.62em, spacing: 0.85em)
-  show: elements
+  show: elements.with(body-size)
 
   // Front matter -----------------------------------------------------------
-  cover(title: title, subtitle: subtitle, tagline: tagline, logo: logo, version: version)
+  cover(
+    title: title,
+    volume: volume,
+    subtitle: subtitle,
+    tagline: tagline,
+    logo: logo,
+    version: version,
+  )
   // The cover is not a numbered page. Restart the count here so the half-title
   // is i and the colophon -- the first page to actually print a folio -- is ii.
   counter(page).update(1)
@@ -522,14 +642,21 @@
 // A card has no room for full-page openers, so a "chapter" is a banded
 // heading. The section list an opener would carry is redundant here: it is
 // the next inch of the same page.
-#let card-chapter(number: none, title: "", contents: ()) = block(
-  width: 100%,
-  fill: accent,
-  inset: (x: 7pt, y: 5pt),
-  above: 15pt,
-  below: 9pt,
-  text(fill: white, weight: "bold", size: 11pt, tracking: 0.4pt, upper(title)),
-)
+#let card-chapter(number: none, title: "", contents: ()) = {
+  // The same cross-reference anchor a bound chapter carries, so a numbered
+  // hand-out would resolve "Appendix A" the way a book does.
+  if number != none {
+    [#metadata(number)#label("ch-" + number)]
+  }
+  block(
+    width: 100%,
+    fill: accent,
+    inset: (x: 7pt, y: 5pt),
+    above: 15pt,
+    below: 9pt,
+    text(fill: white, weight: "bold", size: 11pt, tracking: 0.4pt, upper(title)),
+  )
+}
 
 #let card(title: "", subtitle: "", pdf-title: "", version: "", body) = {
   set document(
@@ -540,6 +667,11 @@
   set page(
     paper: "us-letter",
     margin: 0.5in,
+    // Two columns, because a card is nearly all two-column tables and a key
+    // set across seven inches of letter paper is a line the eye has to travel
+    // rather than glance at. It also halves the page count, which is the
+    // difference between one sheet printed double-sided and a stapled set.
+    columns: 2,
     numbering: none,
     header: none,
     // The title block is a footer rather than a header so it does not push the
@@ -555,9 +687,16 @@
     },
   )
 
-  set text(font: body-font, size: 8.5pt, fill: ink, lang: "en", hyphenate: false)
+  set text(
+    font: body-font,
+    fallback: false,
+    size: card-size,
+    fill: ink,
+    lang: "en",
+    hyphenate: false,
+  )
   set par(justify: false, leading: 0.55em, spacing: 0.7em)
-  show: elements
+  show: elements.with(card-size)
 
   body
 }

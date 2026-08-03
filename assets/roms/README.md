@@ -25,7 +25,7 @@ scroller, the on-C64 menu, the oscilloscope's labels, and the preview window +
 stream recorder, which turn screen-code bytes back into 8×8 pixel cells. Without
 one, c64cast substitutes a built-in ASCII font — readable, but not the C64 font,
 and PETSCII graphics codes come out blank. See
-[docs/usage.md](../../docs/usage.md#the-character-rom).
+[the reference guide](../../docs/reference/06-under-the-hood.md#the-character-rom).
 
 ## This directory
 

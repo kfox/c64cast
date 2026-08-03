@@ -25,8 +25,12 @@ paragraph is worse than one that fails to build:
     ![Figure 1-1. Cap.](path)  framed figure (alone in its paragraph)
     ```lang ... ```            code block
     | a | b |                  table (GFM, with alignment row)
+    <!-- table: fields -->     the table below is a settings list; see _table
+    a<br>b                     line break inside a table cell
     - / 1.                     lists, nestable by indentation
     **bold** *italic* `code` [text](url)
+    Chapter 4 / Appendix F     a link to that opener page
+    ✓ →                        drawn marks (the body face carries neither)
 
 Per-file YAML front matter carries only what Markdown cannot express:
 
@@ -66,7 +70,7 @@ CALLOUT_KINDS = ("NOTE", "TIP", "WARNING", "IMPORTANT", "CAUTION")
 # never passed on; `version` is not book metadata somebody edits, so it is
 # appended by build() rather than read from the file.
 LAYOUT_KEYS = {
-    "guide": ("title", "subtitle", "tagline", "logo", "pdf_title"),
+    "guide": ("title", "volume", "subtitle", "tagline", "logo", "pdf_title"),
     "card": ("title", "subtitle", "pdf_title"),
 }
 
@@ -85,7 +89,13 @@ PATH_KEYS = ("logo",)
 # into an en dash and `...` into an ellipsis, which is what we want in prose.
 # Command-line flags always live in backticks, where no substitution happens;
 # `check_prose` below enforces that.
-_TYPST_SPECIAL = set("\\#$*_`<>@[]~")
+#
+# `/` is here because Typst comments (`//` and `/*`) are live in markup mode
+# too: an unescaped URL in prose comments out the rest of its line, taking the
+# closing bracket of whatever content block it sits in with it. That surfaced
+# as "unclosed delimiter" pointing at a table three lines earlier. `\/` renders
+# as an ordinary slash, so prose is unaffected.
+_TYPST_SPECIAL = set("\\#$*_`<>@[]~/")
 
 
 class BookError(Exception):
@@ -141,7 +151,10 @@ def parse_front_matter(text: str, path: Path) -> tuple[dict[str, str], str, int]
         key, _, value = line.partition(":")
         fields[key.strip()] = value.strip().strip("\"'")
 
-    allowed = {"number"}
+    # `generated` marks a chapter written by scripts/gen_reference_appendices.py.
+    # The converter does nothing with it: it is there so the drift check can
+    # discover its own outputs, and so a human editing one has been warned.
+    allowed = {"number", "generated"}
     for key in fields:
         if key not in allowed:
             fail(path, 1, f"unknown front matter key {key!r} (allowed: {sorted(allowed)})")
@@ -178,6 +191,17 @@ def typst_inline_raw(code: str) -> str:
     return f"{fence}{pad}{code}{pad}{fence}"
 
 
+# Marks the body face does not carry, which the template draws instead of
+# setting. Written as the ordinary character in the Markdown, so the same file
+# still reads correctly on github.com; see `tick` and `rarrow` in the template
+# for why they are not simply borrowed from the mono face.
+#
+# Wrapped and then closed with an empty comment because a mark lands in the
+# middle of a word as often as not: bare `#rarrow` swallowed the text after it
+# ("low→high" became the variable `rarrowhigh`), the content block stops that,
+# and the comment stops a following `(` or `[` from being read as a call on it.
+_DRAWN_MARKS = {"✓": "#[#tick]/**/", "→": "#[#rarrow]/**/"}
+
 # Ordered: the first pattern to match at a position wins. Code spans come first
 # so that markup inside them is never interpreted.
 _INLINE = re.compile(
@@ -185,11 +209,14 @@ _INLINE = re.compile(
       \\(?P<esc>[\\`*_\[\]()#+\-.!<>~{}])
     | (?P<code>`{1,3})(?P<code_body>.+?)(?P=code)
     | <kbd>(?P<kbd>.+?)</kbd>
+    | <br\s*/?>(?P<br>)
     | !\[(?P<img_alt>[^\]]*)\]\((?P<img_src>[^)]+)\)
     | \[(?P<link_text>[^\]]+)\]\((?P<link_href>[^)]+)\)
     | \*\*(?P<bold>.+?)\*\*
     | (?<![A-Za-z0-9])_(?P<em_us>[^_]+)_(?![A-Za-z0-9])
     | \*(?P<em_star>[^*]+)\*
+    | (?P<xref>(?:Chapter|Appendix)\ (?P<xref_num>[0-9]+|[A-Z]))(?![A-Za-z0-9])
+    | (?P<mark>[✓→])
     """,
     re.VERBOSE | re.DOTALL,
 )
@@ -210,7 +237,20 @@ def check_prose(text: str, path: Path, lineno: int) -> None:
         )
 
 
-def convert_inline(text: str, path: Path, lineno: int) -> str:
+def convert_inline(
+    text: str,
+    path: Path,
+    lineno: int,
+    chapters: frozenset[str] = frozenset(),
+) -> str:
+    """Translate one run of Markdown inline markup.
+
+    `chapters` is the set of chapter numbers this book has, which is what makes
+    "see Appendix F" a link rather than three words. It is threaded in rather
+    than looked up because the answer is per book, and a reference to a chapter
+    the book does not have is a hard error -- that is the check that catches a
+    renumbering the prose was not told about.
+    """
     out: list[str] = []
     pos = 0
     for m in _INLINE.finditer(text):
@@ -228,18 +268,34 @@ def convert_inline(text: str, path: Path, lineno: int) -> str:
             out.append(typst_inline_raw(m.group("code_body")))
         elif m.group("kbd") is not None:
             out.append(f"#kbd[{escape(m.group('kbd'))}]")
+        elif m.group("br") is not None:
+            # GFM's only way to break a line inside a table cell, which the
+            # generated field tables stack a name, a type and a default with.
+            out.append("#linebreak()")
         elif m.group("img_src") is not None:
             fail(path, lineno, "images must stand alone in their own paragraph")
         elif m.group("link_text") is not None:
             href = m.group("link_href")
-            label = convert_inline(m.group("link_text"), path, lineno)
+            label = convert_inline(m.group("link_text"), path, lineno, chapters)
             out.append(f"#link({typst_string(href)})[{label}]")
         elif m.group("bold") is not None:
-            out.append(f"*{convert_inline(m.group('bold'), path, lineno)}*")
+            out.append(f"*{convert_inline(m.group('bold'), path, lineno, chapters)}*")
         elif m.group("em_us") is not None:
-            out.append(f"_{convert_inline(m.group('em_us'), path, lineno)}_")
+            out.append(f"_{convert_inline(m.group('em_us'), path, lineno, chapters)}_")
         elif m.group("em_star") is not None:
-            out.append(f"_{convert_inline(m.group('em_star'), path, lineno)}_")
+            out.append(f"_{convert_inline(m.group('em_star'), path, lineno, chapters)}_")
+        elif m.group("xref") is not None:
+            number = m.group("xref_num")
+            if number not in chapters:
+                fail(
+                    path,
+                    lineno,
+                    f"{m.group('xref')!r} names a chapter this book does not have "
+                    f"(it has {', '.join(sorted(chapters))})",
+                )
+            out.append(f"#link(label({typst_string('ch-' + number)}))[{escape(m.group('xref'))}]")
+        elif m.group("mark") is not None:
+            out.append(_DRAWN_MARKS[m.group("mark")])
         pos = m.end()
 
     tail = text[pos:]
@@ -259,6 +315,13 @@ _CALLOUT_RE = re.compile(r"^>\s*\[!(?P<kind>[A-Z]+)\]\s*$")
 _ULI_RE = re.compile(r"^(?P<indent> *)[-*]\s+(?P<text>.*)$")
 _OLI_RE = re.compile(r"^(?P<indent> *)\d+\.\s+(?P<text>.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:|-]+\|[\s:|-]*$")
+_DIRECTIVE_RE = re.compile(r"^<!--\s*(?P<name>.+?)\s*-->$")
+# A cell boundary is an *unescaped* pipe. GFM spells a literal one `\|`, which
+# several generated appendices need: a field of type `str | None` and config
+# help that quotes its choices as `'cc'|'note'|'pc'` both carry one, and
+# rewording them to dodge the delimiter would make the reference disagree with
+# the program it documents.
+_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 
 
 @dataclass
@@ -273,12 +336,22 @@ class Chapter:
 class Converter:
     """Converts one chapter's Markdown body into Typst markup."""
 
-    def __init__(self, path: Path, line_offset: int) -> None:
+    def __init__(
+        self,
+        path: Path,
+        line_offset: int,
+        chapters: frozenset[str] = frozenset(),
+    ) -> None:
         self.path = path
         self.line_offset = line_offset
+        self.chapters = chapters
         self.sections: list[str] = []
         self.title: str | None = None
         self.figures: list[str] = []
+
+    def inline(self, text: str, index: int) -> str:
+        """`convert_inline` with this chapter's path, line and book bound in."""
+        return convert_inline(text, self.path, self.lineno(index), self.chapters)
 
     def lineno(self, index: int) -> int:
         return self.line_offset + index
@@ -287,9 +360,24 @@ class Converter:
         lines = body.split("\n")
         out: list[str] = []
         i = 0
+        fields_table = False
         while i < len(lines):
             line = lines[i]
             if not line.strip():
+                i += 1
+                continue
+
+            directive = _DIRECTIVE_RE.match(line.strip())
+            if directive:
+                # An HTML comment, so github.com renders nothing where it sits.
+                # The only one is `table: fields`, which says the table below is
+                # a list of settings rather than a grid of values and should be
+                # set to the width every other such table uses.
+                if directive.group("name") != "table: fields":
+                    fail(
+                        self.path, self.lineno(i), f"unknown directive {directive.group('name')!r}"
+                    )
+                fields_table = True
                 i += 1
                 continue
 
@@ -311,8 +399,11 @@ class Converter:
                 i += 1
                 continue
             if "|" in line and i + 1 < len(lines) and _TABLE_SEP_RE.match(lines[i + 1]):
-                i = self._table(lines, i, out)
+                i = self._table(lines, i, out, fields=fields_table)
+                fields_table = False
                 continue
+            if fields_table:
+                fail(self.path, self.lineno(i), "`table: fields` must be followed by a table")
             if _ULI_RE.match(line) or _OLI_RE.match(line):
                 i = self._list(lines, i, out)
                 continue
@@ -332,11 +423,13 @@ class Converter:
             return  # the opener page is emitted by the caller, from front matter
         if self.title is None:
             fail(self.path, lineno, "the first heading in a chapter must be `# Title`")
-        if level == 2:
-            self.sections.append(text)
         if level > 4:
             fail(self.path, lineno, f"heading level {level} is deeper than the design supports")
-        inline = convert_inline(text, self.path, lineno)
+        inline = self.inline(text, index)
+        if level == 2:
+            # Converted, not raw: the opener page lists these, and a section
+            # called `[hardware]` was reaching it with its backticks still on.
+            self.sections.append(inline)
         out.append(f"#heading(level: {level})[{inline}]\n")
 
     def _figure(self, m: re.Match[str], index: int, out: list[str]) -> None:
@@ -348,7 +441,7 @@ class Converter:
         if not target.exists():
             fail(self.path, lineno, f"figure not found: {src}")
         self.figures.append(src)
-        body = convert_inline(caption, self.path, lineno)
+        body = self.inline(caption, index)
         out.append(f"#screenshot({typst_string(root_relative(target))}, [{body}])\n")
 
     def _code_block(self, lines: list[str], i: int, fence: re.Match[str], out: list[str]) -> int:
@@ -382,16 +475,23 @@ class Converter:
         while i < len(lines) and lines[i].startswith(">"):
             inner.append(re.sub(r"^>\s?", "", lines[i]))
             i += 1
-        nested = Converter(self.path, self.lineno(i))
+        nested = Converter(self.path, self.lineno(i), self.chapters)
         nested.title = self.title  # inherit, so heading checks stay quiet
         body = nested.convert("\n".join(inner))
         self.figures.extend(nested.figures)
         out.append(f'#callout(kind: "{kind}")[\n{body}\n]\n')
         return i
 
-    def _table(self, lines: list[str], i: int, out: list[str]) -> int:
+    def _table(self, lines: list[str], i: int, out: list[str], *, fields: bool = False) -> int:
+        start = i
+
         def cells(row: str) -> list[str]:
-            return [c.strip() for c in row.strip().strip("|").split("|")]
+            # Unescape after splitting, and before any inline parsing, which is
+            # the order GFM specifies -- so a pipe reaches a code span as a
+            # pipe rather than as a backslash the span would print literally.
+            return [
+                c.strip().replace(r"\|", "|") for c in _CELL_SPLIT_RE.split(row.strip().strip("|"))
+            ]
 
         header = cells(lines[i])
         aligns = []
@@ -413,16 +513,23 @@ class Converter:
                     f"table row has {len(row)} cells, header has {ncols}",
                 )
 
-        def cell(text: str, lineno: int) -> str:
-            return f"[{convert_inline(text, self.path, lineno)}]"
+        if fields and ncols != 2:
+            fail(self.path, self.lineno(start), f"a fields table takes 2 columns, not {ncols}")
 
-        parts = [f"#table(\n  columns: {ncols},", f"  align: ({', '.join(aligns)},),"]
+        def cell(text: str, index: int) -> str:
+            return f"[{self.inline(text, index)}]"
+
+        # A fields table gets its widths from the template, which is where every
+        # other measurement in the book is decided; an ordinary table lets Typst
+        # size its columns to what is in them.
+        call = "#fields-table(" if fields else f"#table(\n  columns: {ncols},"
+        parts = [call, f"  align: ({', '.join(aligns)},),"]
         # A real `table.header`, not just a first row: it repeats when a table
         # splits across a page, and it stops Typst from stranding the header at
         # the foot of one page with its body at the top of the next.
-        parts.append("  table.header(" + ", ".join(cell(c, self.lineno(i)) for c in header) + "),")
-        for row in rows:
-            parts.append("  " + ", ".join(cell(c, self.lineno(i)) for c in row) + ",")
+        parts.append("  table.header(" + ", ".join(cell(c, start) for c in header) + "),")
+        for offset, row in enumerate(rows, start=start + 2):
+            parts.append("  " + ", ".join(cell(c, offset) for c in row) + ",")
         parts.append(")\n")
         out.append("\n".join(parts))
         return i
@@ -438,12 +545,12 @@ class Converter:
                 assert m is not None
                 marker = "-" if uli else "+"
                 indent = m.group("indent")
-                text = convert_inline(m.group("text"), self.path, self.lineno(i))
+                text = self.inline(m.group("text"), i)
                 block.append(f"{indent}{marker} {text}")
                 i += 1
             elif line.strip() and line.startswith((" ", "\t")):
                 # A continuation line of the previous item.
-                block.append("  " + convert_inline(line.strip(), self.path, self.lineno(i)))
+                block.append("  " + self.inline(line.strip(), i))
                 i += 1
             else:
                 break
@@ -466,7 +573,7 @@ class Converter:
             buf.append(line.strip())
             i += 1
         text = " ".join(buf)
-        out.append(convert_inline(text, self.path, self.lineno(start)) + "\n")
+        out.append(self.inline(text, start) + "\n")
         return i
 
 
@@ -475,12 +582,29 @@ class Converter:
 # ---------------------------------------------------------------------------
 
 
-def load_chapter(path: Path) -> Chapter:
+def chapter_numbers(paths: list[Path]) -> frozenset[str]:
+    """Every chapter number in a book, read from front matter alone.
+
+    A first pass over the whole book, because a cross-reference in chapter 1 can
+    name an appendix that has not been loaded yet -- and a reference to a
+    chapter that does not exist has to fail the build rather than reach the PDF
+    as a link into nowhere.
+    """
+    numbers = set()
+    for path in paths:
+        fields, _, _ = parse_front_matter(path.read_text(encoding="utf-8"), path)
+        number = fields.get("number")
+        if number is not None:
+            numbers.add(number)
+    return frozenset(numbers)
+
+
+def load_chapter(path: Path, chapters: frozenset[str] = frozenset()) -> Chapter:
     text = path.read_text(encoding="utf-8")
     fields, body, offset = parse_front_matter(text, path)
     number = fields.get("number")
 
-    conv = Converter(path, offset)
+    conv = Converter(path, offset, chapters)
     typst = conv.convert(body)
     if conv.title is None:
         fail(path, offset, "chapter has no `# Title`")
@@ -531,8 +655,14 @@ def out_path(book_dir: Path) -> Path:
     return book_dir / (load_book_toml(book_dir)["output"] + ".typ")
 
 
-def typst_list(items: list[str]) -> str:
-    return "(" + ", ".join(typst_string(i) for i in items) + ("," if items else "") + ")"
+def typst_content_list(items: list[str]) -> str:
+    """An array of Typst *content*, for a section list already converted.
+
+    Quoting these as strings would print whatever markup they carry -- which is
+    how the appendices' opener pages came to list ``` `[hardware]` ``` with the
+    backticks showing.
+    """
+    return "(" + ", ".join(f"[{i}]" for i in items) + ("," if items else "") + ")"
 
 
 def book_version() -> str:
@@ -580,7 +710,9 @@ def build(book_dir: Path) -> str:
     book = load_book_toml(book_dir)
     layout = book["layout"]
 
-    chapters = [load_chapter(p) for p in discover_chapters(book_dir)]
+    paths = discover_chapters(book_dir)
+    numbers = chapter_numbers(paths)
+    chapters = [load_chapter(p, numbers) for p in paths]
 
     source = root_relative(book_dir).lstrip("/")
     out: list[str] = [
@@ -603,7 +735,7 @@ def build(book_dir: Path) -> str:
             colophon = colophon_path.read_text(encoding="utf-8")
         except OSError as exc:
             raise BookError(f"cannot read {colophon_path}: {exc}") from exc
-        colophon_conv = Converter(colophon_path, 1)
+        colophon_conv = Converter(colophon_path, 1, numbers)
         colophon_conv.title = ""  # the colophon is bare prose, no heading
         out += [
             f"#colophon[\n{colophon_conv.convert(colophon)}\n]",
@@ -624,7 +756,7 @@ def build(book_dir: Path) -> str:
             f"#{CHAPTER_FN[layout]}(\n"
             f"  number: {number_arg},\n"
             f"  title: {typst_string(chapter.title)},\n"
-            f"  contents: {typst_list(chapter.sections)},\n"
+            f"  contents: {typst_content_list(chapter.sections)},\n"
             f")"
         )
         out += ["", chapter.body, ""]

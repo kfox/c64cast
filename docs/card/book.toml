@@ -1,0 +1,14 @@
+# Book-level metadata for the Performance Card PDF.
+#
+# The card layout has no cover, so this is only what the running footer and
+# the PDF metadata need. scripts/build_book.py reads it; docs/shared/template.typ
+# styles it.
+
+[book]
+layout = "card"                      # which template entry point renders it
+output = "c64cast-performance-card"  # basename of the .typ and the .pdf
+title = "c64cast"
+subtitle = "Performance Card"        # the footer's second half
+# What a downloaded file calls itself in Get Info / `pdfinfo`. A card has no
+# cover to read it off. The version is appended by the build.
+pdf_title = "c64cast Performance Card"

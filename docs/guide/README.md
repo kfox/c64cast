@@ -1,8 +1,8 @@
 # The c64cast User's Guide
 
 A friendly, start-from-nothing introduction to c64cast, written to be read in
-order. Where [`usage.md`](../usage.md) is a reference you consult,
-this is a guide you read.
+order. Where the [Programmer's Reference Guide](../reference/README.md) is a
+book you consult, this is one you read.
 
 Its structure and typography are an affectionate homage to the *Commodore 64
 Ultimate User's Guide* — in particular that book's method of introducing
@@ -74,10 +74,14 @@ uv run python scripts/build_book.py --book-dir docs/guide --check
 | `![Caption.](img/fig-2-1-x.png)` | A framed figure. Must be alone in its paragraph |
 | ` ```toml ` | A code block |
 | `| a | b |` | A table |
+| `<!-- table: fields -->` | The table below it is a settings list — name, type and default stacked in a fixed column, description in the rest. Invisible on github.com |
+| `a<br>b` | A line break inside a table cell |
 | `- ` / `1. ` | Lists, nestable by indentation |
 | `**bold**`, `*italic*`, `` `code` ``, `[text](url)` | As expected |
+| `Chapter 4`, `Appendix F` | A link to that chapter's opener page |
+| `✓`, `→` | Drawn marks — the body face carries neither |
 
-Two rules that are not obvious:
+Four rules that are not obvious:
 
 - **Put command-line flags in backticks.** Typst turns a bare `--` in prose
   into an en dash, so `--config` outside a code span would render wrong. The
@@ -85,6 +89,13 @@ Two rules that are not obvious:
 - **A chapter's title and its opener-page contents are derived**, from the
   `# H1` and the `##` headings respectively. Neither can drift from the
   prose because neither is written twice.
+- **A cross-reference is checked.** "Appendix F" becomes a link to that
+  opener page, and naming a chapter the book does not have fails the build —
+  which is what catches a renumbering the prose was not told about.
+- **A character outside the two vendored faces will not be drawn at all.**
+  Typst's own fallback is off, so there is no substitute and no warning;
+  `tests/test_book_fonts.py` fails instead. Two marks the books lean on, `✓`
+  and `→`, are drawn by the template rather than set.
 
 Front matter carries only the chapter number, and only numbered chapters
 need it:
@@ -124,9 +135,10 @@ licences:
 
 `make guide` always passes `--font-path docs/shared/fonts` to Typst, so the PDF
 renders identically from a fresh checkout on any platform — nothing depends on
-what happens to be installed. The template names each family with no fallback
-chain, so a build that loses the font path warns rather than quietly
-substituting a different face.
+what happens to be installed. The template names these two families and turns
+Typst's own fallback off, so a build that loses the font path fails rather than
+quietly substituting a different face, and a character in neither is caught by
+`tests/test_book_fonts.py` rather than by a reader.
 
 The original book is set in MegaGlacial, which is commercial and is
 deliberately neither used nor shipped here. Jost\* is a free geometric sans in

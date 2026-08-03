@@ -206,7 +206,7 @@ class RgbShiftEffect(FrameEffect):
     """Chromatic split: a transient slews the red and blue channels apart
     horizontally (opposite directions), an RGB-shift glitch shudder that snaps
     on the beat and relaxes as `onset` decays; loudness adds a steady split.
-    Stateless. No modulation ⇒ identity (zero separation).
+    Stateless. No modulation → identity (zero separation).
 
     `intensity` scales the whole reaction (the sx/ix live knob); 1.0 is the
     baseline. Inert without modulation, so this slider is a visible no-op on a

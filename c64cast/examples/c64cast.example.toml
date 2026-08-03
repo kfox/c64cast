@@ -20,8 +20,8 @@
 # Each per-system file is a fully standalone config (so this same file
 # could be loaded directly with `--config left.toml`). Order in the
 # `systems` array is left-to-right physically — index 0 is leftmost.
-# See `--config example:ensemble/master` + docs/usage.md "Ensemble mode"
-# for the full walkthrough.
+# See `--config example:ensemble/master`, and "The Ensemble Cascade" in
+# docs/reference/02-config-rules.md for the full walkthrough.
 #
 # [ensemble]
 # systems = [
@@ -44,8 +44,8 @@
 #                          # (a placeholder another system orchestrates onto
 #                          # this one). Mutually exclusive with orchestrate.
 #
-# See `--config example:ensemble/master` + docs/usage.md "Ensemble mode"
-# for a worked left/middle/right broadcast example.
+# See `--config example:ensemble/master`, and "The Ensemble Cascade" in
+# docs/reference/02-config-rules.md, for a worked left/middle/right example.
 
 # ===========================================================================
 # Global settings — chip / network / OS-level knobs
