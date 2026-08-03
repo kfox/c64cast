@@ -28,7 +28,7 @@ make books          # every book at once
 
 ## The generated appendices
 
-Appendices A to H are **not written by hand**. They are read out of the same
+Appendices A to I are **not written by hand**. They are read out of the same
 definitions that answer `--describe`, `--compat` and `--print-schema`, by
 [`scripts/gen_reference_appendices.py`](../../scripts/gen_reference_appendices.py):
 
@@ -42,14 +42,15 @@ definitions that answer `--describe`, `--compat` and `--print-schema`, by
 | F — Live-tune targets | `introspect.live_targets()` |
 | G — Command-line flags | the argparse parser in `cli.py` |
 | H — Example configurations | the packaged `examples/`, read through `paths` |
+| I — Optional extras | `doctor._EXTRAS` joined with `pyproject.toml` |
 
 The same pass writes the [Performance Card](../card/README.md)'s live-target
 table, which is the card's most drift-prone page.
 
 They carry `generated: true` in their front matter and are committed, so the
 release can render the PDFs without resolving the project environment. After
-changing a config field, an overlay, a generator, an effect, a CLI flag or an
-example config:
+changing a config field, an overlay, a generator, an effect, a CLI flag, an
+example config or an install extra:
 
 ```bash
 make reference-appendices

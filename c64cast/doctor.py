@@ -73,6 +73,7 @@ _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("tr", "serial", "TeensyROM serial backend"),
     ("wizard", "questionary", "--init config wizard"),
     ("yt", "yt_dlp", "cast URL playback (YouTube et al.)"),
+    ("wled", "zeroconf", "[wled].listen virtual WLED device"),
 )
 
 # Hard dependencies (top-level module, what uses it). These are declared in

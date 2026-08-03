@@ -4,7 +4,7 @@
     make reference-appendices          # rewrite them
     make reference-appendices && git diff --exit-code    # the drift guard
 
-Appendices A-H are the exhaustive tables -- every config field, every scene
+Appendices A-I are the exhaustive tables -- every config field, every scene
 key, every overlay parameter, every CLI flag. Written by hand they would be
 wrong within a release, so they are read out of the same model that already
 answers ``--describe``, ``--compat`` and ``--print-schema``:
@@ -35,11 +35,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from c64cast import cli as climod
-from c64cast import effects, generators, introspect
+from c64cast import doctor, effects, generators, introspect
 from c64cast import paths as pathsmod
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -567,6 +568,54 @@ def appendix_examples() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Appendix I -- optional install extras
+# ---------------------------------------------------------------------------
+
+
+def _extra_requirements() -> dict[str, list[str]]:
+    """`[project.optional-dependencies]`, read out of pyproject.toml.
+
+    Not out of installed metadata: a checkout that was never installed still
+    has to be able to build the book, and `importlib.metadata` would answer for
+    whatever version happens to be on the machine rather than for this tree.
+    """
+    with (REPO_ROOT / "pyproject.toml").open("rb") as f:
+        return tomllib.load(f)["project"]["optional-dependencies"]
+
+
+def appendix_extras() -> list[str]:
+    requirements = _extra_requirements()
+    # `doctor._EXTRAS` already pairs each extra with the module that has to
+    # import and a line on what it buys -- it is what `--doctor` probes with,
+    # so an appendix built from it says what the program says.
+    # tests/test_packaging_metadata.py holds it to the pyproject key set.
+    extras = sorted(doctor._EXTRAS)
+    out = front_matter(
+        "I",
+        "Optional Extras",
+        f"The {len(extras)} groups of dependency that a plain install leaves out, what "
+        "each one unlocks, the module `c64cast --doctor` imports to tell you it is "
+        "there, and the packages it brings with it.",
+    )
+    out += ["## The Extras", ""]
+    out += [
+        prose(
+            "Extras do not accumulate. Installing `c64cast[midi]` over `c64cast[video]` "
+            "leaves you with MIDI and no video, so the install worth asking for is "
+            "`c64cast[all]` — or `uv sync --all-extras` from a checkout. `c64cast "
+            "--doctor` says which of these are importable and which are missing."
+        ),
+        "",
+    ]
+    rows = []
+    for name, module, used_for in extras:
+        installs = ", ".join(code(req) for req in requirements[name])
+        rows.append([identity(code(name), code(module)), f"{cell(used_for)}. {installs}."])
+    out += fields_table("Extra", rows)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # The performance card's live-target table
 # ---------------------------------------------------------------------------
 
@@ -623,6 +672,7 @@ APPENDICES: dict[Path, Callable[[], list[str]]] = {
     REFERENCE_DIR / "25-appendix-f-live-targets.md": appendix_live_targets,
     REFERENCE_DIR / "26-appendix-g-cli-flags.md": appendix_cli,
     REFERENCE_DIR / "27-appendix-h-examples.md": appendix_examples,
+    REFERENCE_DIR / "28-appendix-i-extras.md": appendix_extras,
     CARD_DIR / "02-live-targets.md": card_live_targets,
 }
 

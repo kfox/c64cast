@@ -15,6 +15,10 @@ the wheel is on PyPI — which is exactly why it is worth asserting in the suite
   4. Same for the packaged examples + JSON schema: they live under the package
      only so the wheel can carry them, and a data file no `package-data` glob
      matches is missing for every installed user while a checkout looks fine.
+  5. `doctor._EXTRAS` is the table `--doctor` probes and Appendix I is printed
+     from. An extra missing from it is never probed and never documented —
+     which is exactly what happened to `wled`, silently, for as long as the two
+     lists were kept in sync by hand alone.
 """
 
 from __future__ import annotations
@@ -123,6 +127,21 @@ class TestDependencyBounds(unittest.TestCase):
                     "release of it breaks every c64cast install. Add one, or "
                     "add the name to _UNBOUNDED_OK with a reason.",
                 )
+
+
+class TestExtrasAreProbedAndDocumented(unittest.TestCase):
+    def test_doctor_knows_every_extra(self) -> None:
+        from c64cast.doctor import _EXTRAS
+
+        declared = set(_load()["project"]["optional-dependencies"]) - {"all"}
+        known = {name for name, _module, _used_for in _EXTRAS}
+        self.assertEqual(
+            known,
+            declared,
+            "doctor._EXTRAS drifted from [project.optional-dependencies].\n"
+            f"  declared but never probed: {sorted(declared - known) or 'none'}\n"
+            f"  probed but not declared:   {sorted(known - declared) or 'none'}",
+        )
 
 
 class TestPublishedFiles(unittest.TestCase):
