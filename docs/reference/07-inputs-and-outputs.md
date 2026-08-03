@@ -59,6 +59,47 @@ It needs a backend that can read memory — the Ultimate, or a cycle-clean
 TeensyROM+ — because SPACE is not a modifier and has to be read out of the
 kernal's keyboard buffer. Text-valued parameters are shown read-only.
 
+### Saving What a Run Changed
+
+Two surfaces can move a setting mid-show, and both can offer the change back
+to the file you launched from. They do it at different moments.
+
+The menu offers on the spot. It mutates the running configuration as you turn
+a value, and `prompt_to_save` decides whether closing it with unsaved changes
+asks you anything.
+
+The MIDI surface offers at the end. Every display-mode parameter it moves —
+the `mode.*` targets of Appendix F — is recorded as it happens, and c64cast
+offers the result once the run is over and the terminal is free. What it
+records is the net change rather than the journey, so a knob swept out and
+brought back leaves nothing behind, and a parameter tuned five times leaves
+one entry.
+
+What happens at exit depends on what the run had:
+
+| The run | At exit |
+|---|---|
+| A configuration file, on a terminal | The changes are listed and you are asked whether to save them |
+| A configuration file, with `--overwrite` | They are applied and saved, with no prompt |
+| A configuration file, with no terminal to ask on | They are listed, nothing is written, and you are told to re-run with `--overwrite` |
+| No configuration file — quick playback | There is nothing to write to, so a pasteable `[color]` block is printed instead |
+
+It runs after a normal exit and after an interrupt at the terminal alike, and
+in an ensemble each system is offered separately, tagged with its name.
+
+Only the six parameters that have a `[color]` field to land in are ever
+written: `dither_strength`, `dither_method`, `color_match`, `cell_strategy`,
+`motion_smoothing` and `auto_fit_strength`. A scene's `palette_mode`, a
+generator's `speed`, an effect's `decay` — all of them move live, and none of
+them is configuration the `[color]` section can hold, so none is offered back.
+
+> [!WARNING]
+> Saving rewrites the whole configuration file from the settings in memory,
+> not just the lines that changed. The values survive; comments, key order and
+> spacing are replaced by the serializer's own. The file it replaces is kept
+> as `<name>.bak` — one deep, so a second save's backup is the first save's
+> output rather than what you originally wrote.
+
 ## Cameras and Microphones
 
 ### Choosing a Camera

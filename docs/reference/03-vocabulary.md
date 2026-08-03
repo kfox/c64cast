@@ -82,10 +82,57 @@ comma-separated list of paths, directories and globs, re-resolved at every
 setup with one member picked at random. Each type has a default directory it
 falls back to when `file` is omitted, named in that type's entry below.
 
+## Between One Scene and the Next
+
+A multi-scene playlist does not cut from one scene to another. It shows a card
+first — the words UP NEXT over the upcoming scene's `name`, centred on an
+animated parallax background — for as long as `[interstitial]` says.
+
+```toml
+[interstitial]
+duration_s = 4.0
+text_color = "rainbow"
+background = "starfield"
+```
+
+`text_color` takes a colour, or `"rainbow"` for a colour per line, or
+`"random"` for one legible colour drawn fresh at each card. `background` is
+one of `starfield`, `petscii_bars`, `raster_bars`, `checker`, `nature`,
+`city`, `none`, or `random` for a different one each time; it scrolls in the
+rows above and below the text block and never paints over the words.
+
+The card is a PETSCII scene of its own whatever the scenes on either side of
+it are, so it costs the same between two bitmap scenes as between two
+character ones. It appears before the first scene as well as between scenes.
+
+The name it shows is the real one. A scene whose `file` is a directory makes
+its pick *before* the card is built, so a jukebox announces the tune that is
+about to play rather than the folder it came from.
+
+Three things bypass it. Single-scene mode never builds one. A jump — a MIDI
+pad, a clip launch, a control-plane request — lands on its scene directly,
+because a cue that then waits four seconds is not a cue. And a CTRL skip
+during the card ends the card and starts the scene it was announcing.
+
+Two other things happen at a scene boundary. `[playlist].fade_duration_s` is
+the fade to and from black at each end of a scene, on every mode that
+composes a frame; a CTRL skip abandons an unfinished fade rather than waiting
+for it. And `[playlist].interleave_videos` inserts a video from
+`[playlist].videos_dir` after every scene that is not itself a video, taking
+them in turn, each one rendered in `hires_edges`. It needs the `video` extra
+and a multi-scene playlist: in single-scene mode it would quietly make the
+playlist two scenes long and defeat the mode, so it is skipped with a log
+line.
+
 ## The Scene Types
 
 In alphabetical order. Every configuration here is complete: paste it into a
 file and it runs.
+
+Each type opens with the same three facts under its configuration: what it
+needs installed, where it looks for files when `file` is omitted, and which
+display modes it accepts. Appendix B is the full key-by-key table for all ten,
+and `c64cast --describe scene:NAME` prints any one of them at the terminal.
 
 ### `asid`
 
@@ -100,10 +147,13 @@ duration_s = 300.0
 color_mode = "per_voice"
 ```
 
-Needs the `midi` extra, since ASID rides the MIDI transport. Point an ASID
-host at a port c64cast can open: DeepSID in a browser, SIDFactory II, Plogue
-chipsynth C64, an Elektron with ASID-XP. On macOS enable the IAC driver in
-Audio MIDI Setup; on Linux `modprobe snd-virmidi`.
+*Needs the `midi` extra. Takes no files — the stream is the source.
+Bitmap-only: `display` is ignored.*
+
+ASID rides the MIDI transport, which is where the extra comes from. Point an
+ASID host at a port c64cast can open: DeepSID in a browser, SIDFactory II,
+Plogue chipsynth C64, an Elektron with ASID-XP. On macOS enable the IAC driver
+in Audio MIDI Setup; on Linux `modprobe snd-virmidi`.
 
 This scene has no synthesiser knobs, because ASID carries the whole tune's
 register state and c64cast is only relaying it. Multi-SID streams are honoured
@@ -131,6 +181,9 @@ border = "black"
 background = "blue"
 ```
 
+*Needs no extra. Takes no files. Always the `blank` display mode, whatever
+`display` says.*
+
 Its purpose is to be a foundation. Every overlay that works on a character
 mode works here, so blank plus `big_text` is a demo-scene title card, and
 blank plus a clock and the weather is an information board. As the only scene
@@ -153,6 +206,11 @@ reactive = true
 effects = ["trails"]
 duration_s = 90.0
 ```
+
+*Needs the `mic` extra for `audio_source = "mic"` or `"listen"` and the `video`
+extra for `"file"`; no extra otherwise. `file` defaults to `assets/sids/` for a
+`sid` source and is required for a `file` one. Display modes: `hires_edges`
+(the default), `hires`, `mhires`, `mcm`, `petscii`.*
 
 The twenty sources and eight effects are Appendix E; the pipeline they feed is
 Chapter 3. `audio_source` is what turns a pattern into a visualiser:
@@ -189,11 +247,13 @@ min_duration_s = 30.0
 reset_before_launch = true
 ```
 
+*Needs no extra. `file` defaults to `assets/programs/`. No display mode: the
+program owns the screen.*
+
 The machine is reset for a clean state, then the file is uploaded and run — a
 `.prg` loaded and run, a `.crt` started as a cartridge, chosen by extension.
 From that moment the program owns the VIC, the SID and the CIAs; c64cast stops
-painting and only watches for input. The default directory is
-`assets/programs/`.
+painting and only watches for input.
 
 > [!WARNING]
 > This scene hands the machine away, and the reset before launch discards
@@ -232,12 +292,15 @@ midi_adsr = [0, 8, 12, 8]
 midi_filter_cutoff = 1024
 ```
 
-Needs the `midi` extra. Each voice can hold its own waveform, and an entry may
-be a `+`-combination for the chip's combined waveforms. In the default
-`shared` voice mode one MIDI channel spreads across all three voices — held
-notes keep their voice, so a pad survives while a melody cycles on top. With
-`multitimbral`, channels route to fixed voices, each monophonic with
-last-note priority, and notes on unmapped channels are ignored.
+*Needs the `midi` extra. Takes no files — the keyboard is the source.
+Bitmap-only: `display` is ignored.*
+
+Each voice can hold its own waveform, and an entry may be a `+`-combination
+for the chip's combined waveforms. In the default `shared` voice mode one MIDI
+channel spreads across all three voices — held notes keep their voice, so a
+pad survives while a melody cycles on top. With `multitimbral`, channels route
+to fixed voices, each monophonic with last-note priority, and notes on
+unmapped channels are ignored.
 
 > [!NOTE]
 > On a 6581 the waveform outputs share a bus and combine by AND, and any
@@ -261,11 +324,15 @@ image_duration_s = 5.0
 aspect_mode = "crop"
 ```
 
+*Needs no extra. `file` defaults to `assets/pictures/`. Display modes:
+`mhires` (the default, and what `hires_edges` becomes here), `hires`, `mcm`,
+`petscii`, and `random`.*
+
 Two durations doing different jobs: `image_duration_s` is how long one picture
 holds, `duration_s` how long the whole scene runs. The picker shuffles and
 walks the pool, so every image appears once before any repeats and none
-appears twice in a row, including across a reshuffle. The default directory is
-`assets/pictures/`, and anything OpenCV decodes is accepted.
+appears twice in a row, including across a reshuffle. Anything OpenCV decodes
+is accepted.
 
 `aspect_mode` reconciles the image with the Commodore's 4:2.5 pixel geometry:
 `crop` centre-crops to fill and loses the edges, `fit` letterboxes the whole
@@ -290,8 +357,11 @@ file = "~/Videos/clip.mp4"
 start_s = 0.0
 ```
 
-Needs the `video` extra. The default directory is `assets/videos/`, and the
-recognised extensions are `.mp4 .avi .mkv .mov .webm .m4v`.
+*Needs the `video` extra, and the `yt` extra as well for a URL that is a page
+rather than a media file. `file` defaults to `assets/videos/`. Display modes:
+`mhires` (the default), `hires`, `hires_edges`, `mcm`, `petscii`, `blank`.*
+
+The recognised extensions are `.mp4 .avi .mkv .mov .webm .m4v`.
 
 The soundtrack is the master clock: each frame is chosen against the audio
 position rather than a timer, so the two cannot drift apart over a long clip.
@@ -329,6 +399,9 @@ time_base = "auto"
 auto_cycles = 4.0
 persistence = "short"
 ```
+
+*Needs no extra — the host-side emulator is a core dependency. `file` defaults
+to `assets/sids/`. Bitmap-only: `display` is ignored.*
 
 The tune is not emulated and streamed as audio: the tune and a small player
 program are written into the machine's memory and started, and the Commodore
@@ -368,6 +441,10 @@ style = "default"
 duration_s = 45.0
 ```
 
+*Needs no extra to run, and the `camera` extra to name a camera by name or USB
+identifier rather than by index. Takes no files. Display modes: `hires_edges`
+(the default), `hires`, `mhires`, `mcm`, `petscii`, `blank`.*
+
 Choose the camera with `-d` — an index, part of the camera's name, or its USB
 identifier — and `c64cast --list-devices` prints what it can find. Frames are
 pushed through with no delay buffer, always the newest one, because latency is
@@ -397,6 +474,9 @@ sink_width = 320
 sink_height = 200
 duration_s = 0.0
 ```
+
+*Needs no extra — the sink speaks plain UDP. Takes no files. Display modes:
+`mhires` (the default), `hires`, `hires_edges`, `mcm`, `petscii`.*
 
 A sender on the network — LedFx, xLights, Jinx!, Glediator, or another WLED
 device with sync enabled — streams frames over UDP; c64cast assembles them
