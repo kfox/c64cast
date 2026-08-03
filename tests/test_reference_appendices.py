@@ -92,7 +92,8 @@ class ConverterSafetyTest(unittest.TestCase):
     def test_every_generated_file_converts(self):
         for path in gen.APPENDICES:
             with self.subTest(file=path.name):
-                self.assertTrue(bb.load_chapter(path).title)
+                chapters = bb.chapter_numbers(bb.discover_chapters(path.parent))
+                self.assertTrue(bb.load_chapter(path, chapters).title)
 
     def test_the_reference_book_builds(self):
         self.assertIn("#show: guide.with(", bb.build(gen.REFERENCE_DIR))

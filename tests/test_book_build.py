@@ -55,9 +55,18 @@ def _chapters() -> list[Path]:
     return [p for book_dir in _BOOK_DIRS for p in bg.discover_chapters(book_dir)]
 
 
-def convert(markdown: str, path: Path | None = None) -> str:
+def _load(path: Path):
+    """One chapter, with its own book's chapter numbers in scope.
+
+    A cross-reference is checked against the book it appears in, so a chapter
+    loaded without that set would reject "see Appendix F" as naming nothing.
+    """
+    return bg.load_chapter(path, bg.chapter_numbers(bg.discover_chapters(path.parent)))
+
+
+def convert(markdown: str, path: Path | None = None, chapters: frozenset[str] | None = None) -> str:
     """Convert a chapter body, with the `# Title` line already accounted for."""
-    conv = bg.Converter(path or (_GUIDE_DIR / "99-test.md"), 1)
+    conv = bg.Converter(path or (_GUIDE_DIR / "99-test.md"), 1, chapters or frozenset())
     conv.title = "Test"
     return conv.convert(markdown)
 
@@ -107,6 +116,32 @@ class InlineConversionTest(unittest.TestCase):
         out = convert("`**not bold**`").strip()
         self.assertEqual(out, "`**not bold**`")
 
+    def test_cross_reference_becomes_a_link_to_the_opener(self):
+        out = convert("see Appendix F for the rest", chapters=frozenset({"F"})).strip()
+        self.assertEqual(out, 'see #link(label("ch-F"))[Appendix F] for the rest')
+
+    def test_cross_reference_to_a_chapter_the_book_lacks_is_rejected(self):
+        with self.assertRaises(bg.BookError) as ctx:
+            convert("see Chapter 9", chapters=frozenset({"1"}))
+        self.assertIn("does not have", str(ctx.exception))
+
+    def test_a_word_after_the_letter_is_not_a_cross_reference(self):
+        # "Appendix Reference" is a title, not a pointer at appendix R.
+        out = convert("the Appendix Reference chapter", chapters=frozenset({"R"})).strip()
+        self.assertNotIn("#link", out)
+
+    def test_cross_reference_inside_a_code_span_is_left_alone(self):
+        out = convert("`Appendix F`", chapters=frozenset({"F"})).strip()
+        self.assertEqual(out, "`Appendix F`")
+
+    def test_marks_the_body_face_lacks_are_drawn(self):
+        # Bare `#rarrow` would swallow the following word as part of its name,
+        # and a following `(` would be read as a call on it.
+        out = convert("A ✓ works; low→high; and→(so on)").strip()
+        self.assertIn("#[#tick]/**/", out)
+        self.assertIn("#[#rarrow]/**/high", out)
+        self.assertIn("#[#rarrow]/**/(so on)", out)
+
 
 class ProseGuardTest(unittest.TestCase):
     def test_double_hyphen_in_prose_is_rejected(self):
@@ -131,6 +166,14 @@ class BlockConversionTest(unittest.TestCase):
         conv.convert("# Title\n\n## One\n\n## Two\n\ntext\n")
         self.assertEqual(conv.title, "Title")
         self.assertEqual(conv.sections, ["One", "Two"])
+
+    def test_opener_page_sections_carry_their_markup(self):
+        # Appendix A's sections are literals. Quoted as strings for the opener
+        # page they arrived with their backticks showing.
+        conv = bg.Converter(_GUIDE_DIR / "99-test.md", 1)
+        conv.convert("# Title\n\n## `[hardware]`\n\ntext\n")
+        self.assertEqual(conv.sections, ["`[hardware]`"])
+        self.assertEqual(bg.typst_content_list(conv.sections), "([`[hardware]`],)")
 
     def test_callout(self):
         out = convert("> [!NOTE]\n> Careful with that.\n")
@@ -164,6 +207,31 @@ class BlockConversionTest(unittest.TestCase):
     def test_table_with_a_short_row_is_rejected(self):
         with self.assertRaises(bg.BookError):
             convert("| A | B |\n|---|---|\n| 1 |\n")
+
+    def test_fields_directive_hands_the_table_to_the_template(self):
+        # The width of a settings list is a design decision, so the converter
+        # names the template's helper instead of choosing columns itself.
+        out = convert("<!-- table: fields -->\n| A | B |\n|---|---|\n| 1 | 2 |\n")
+        self.assertIn("#fields-table(", out)
+        self.assertNotIn("columns:", out)
+
+    def test_fields_directive_requires_two_columns(self):
+        with self.assertRaises(bg.BookError) as ctx:
+            convert("<!-- table: fields -->\n| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n")
+        self.assertIn("2 columns", str(ctx.exception))
+
+    def test_fields_directive_must_be_followed_by_a_table(self):
+        with self.assertRaises(bg.BookError):
+            convert("<!-- table: fields -->\n\nordinary prose\n")
+
+    def test_unknown_directive_is_rejected(self):
+        with self.assertRaises(bg.BookError) as ctx:
+            convert("<!-- table: sideways -->\n| A | B |\n|---|---|\n| 1 | 2 |\n")
+        self.assertIn("unknown directive", str(ctx.exception))
+
+    def test_br_becomes_a_line_break(self):
+        out = convert("| A | B |\n|---|---|\n| one<br>two | 2 |\n")
+        self.assertIn("one#linebreak()two", out)
 
     def test_lists(self):
         out = convert("- one\n- two\n")
@@ -343,11 +411,11 @@ class BookSourcesTest(unittest.TestCase):
     def test_every_chapter_has_a_title(self):
         for path in _chapters():
             with self.subTest(chapter=path.name):
-                self.assertTrue(bg.load_chapter(path).title)
+                self.assertTrue(_load(path).title)
 
     def test_numbered_chapters_have_sections(self):
         for path in _chapters():
-            chapter = bg.load_chapter(path)
+            chapter = _load(path)
             if chapter.number is not None:
                 with self.subTest(chapter=path.name):
                     self.assertTrue(chapter.sections)
@@ -358,9 +426,7 @@ class BookSourcesTest(unittest.TestCase):
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):
                 numbers = [
-                    c.number
-                    for c in (bg.load_chapter(p) for p in bg.discover_chapters(book_dir))
-                    if c.number
+                    c.number for c in (_load(p) for p in bg.discover_chapters(book_dir)) if c.number
                 ]
                 self.assertEqual(len(numbers), len(set(numbers)))
                 digits = [n for n in numbers if n.isdigit()]

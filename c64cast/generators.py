@@ -265,7 +265,7 @@ class FireSource(GenerativeSource):
     of `t` (deterministic, dropped-frames-safe) rather than a stateful cellular
     sim — `render(t, None)` reproduces exactly.
 
-    Reactive (the headline): `level` raises the flames (louder ⇒ taller/hotter),
+    Reactive (the headline): `level` raises the flames (louder → taller/hotter),
     `onset` flares them on each transient. Both push more of the field toward
     the yellow/white end of COLORMAP_HOT, so the fire visibly leaps on the beat
     — the most legible music reaction after 16-colour quantization."""
@@ -481,7 +481,7 @@ class HaloSource(GenerativeSource):
     drawn at a few trailing time-lags with decreasing brightness, all as a
     pure function of `t`.
 
-    Reactive: `level` grows every halo's radius (louder ⇒ bigger blooms); a
+    Reactive: `level` grows every halo's radius (louder → bigger blooms); a
     transient (`onset`) flashes in one extra halo centered on the frame,
     invisible at rest (its weight is scaled by `onset` directly)."""
 
@@ -579,7 +579,7 @@ class EpicycleSource(GenerativeSource):
     Reactive: each of the first three arms' angular speed is retuned to track
     a SID voice's live pitch (`voice_freqs`) instead of its fixed harmonic, so
     the chain's shape visibly follows the tune; `level` scales every arm's
-    radius (louder ⇒ bigger sweep); a transient briefly flashes the whole
+    radius (louder → bigger sweep); a transient briefly flashes the whole
     frame brighter."""
 
     LIVE_PARAMS = {"speed": (0.0, 2.0)}
@@ -758,7 +758,7 @@ class HopalongSource(GenerativeSource):
 @register("rorschach")
 class RorschachSource(GenerativeSource):
     """Mirrored-symmetric ink-blot: a precomputed 2D random walk (fixed seed
-    ⇒ deterministic) cumulative-summed from Gaussian steps, progressively
+    → deterministic) cumulative-summed from Gaussian steps, progressively
     revealed as `t` advances and reflected across the vertical center line —
     xscreensaver's rorschach.c animates the same way (draw a few more walk
     points each frame); this stays a pure function of `t` by redrawing
@@ -766,7 +766,7 @@ class RorschachSource(GenerativeSource):
     frame, rather than accumulating pixels frame to frame. The reveal loops
     (grow, hold briefly at full bloom, reset) so playback never visibly ends.
 
-    Reactive: `level` scales the whole blot larger (louder ⇒ bigger ink
+    Reactive: `level` scales the whole blot larger (louder → bigger ink
     mass); a strong transient jumps the reveal forward — the "restart" flash
     xscreensaver's mirror-restart evokes, without discarding the walk."""
 
