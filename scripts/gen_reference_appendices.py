@@ -154,6 +154,63 @@ def table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
     return out + [""]
 
 
+# ---------------------------------------------------------------------------
+# The two senses of "live"
+# ---------------------------------------------------------------------------
+#
+# Two different powers wear the same word. Appendix F's targets move under a
+# MIDI knob, a pad or the web console mid-show; `apply="live"` is the metadata
+# the on-C64 menu builds its panel from (`overlays/menu.py`). One mark for both
+# would read as one power, so they are worded apart here and the introduction's
+# Notation section says which is which.
+
+# Configuration field -> the live-tune target that moves it. Keyed by
+# `(section, field)`, where the section `scenes` is a `[[scenes]]` key.
+#
+# Written out rather than matched on the bare name: `[color].dither` is
+# `mode.dither_method`, so a name match would miss it -- and it would mark
+# `[audio].dither`, which is a 4-bit DAC's noise shaping and has nothing to do
+# with the display pipeline. tests/test_reference_appendices.py resolves both
+# sides of every entry.
+_LIVE_TUNABLE: dict[tuple[str, str], str] = {
+    ("color", "auto_fit_strength"): "mode.auto_fit_strength",
+    ("color", "dither"): "mode.dither_method",
+    ("color", "dither_strength"): "mode.dither_strength",
+    ("color", "color_match"): "mode.color_match",
+    ("color", "cell_strategy"): "mode.cell_strategy",
+    ("color", "motion_smoothing"): "mode.motion_smoothing",
+    ("scenes", "palette_mode"): "mode.palette_mode",
+}
+
+
+def marks(section: str, fd: introspect.FieldDoc) -> str:
+    """The *live-tunable* and *menu-live* marks a field earns, if any.
+
+    Appended to the description rather than stacked into the identity column:
+    the identity is what a thing is called, and a mark is something it can do.
+    """
+    bits = []
+    target = _LIVE_TUNABLE.get((section, fd.name))
+    if target:
+        bits.append(f"*Live-tunable* while a show runs, as {code(target)} — Appendix F.")
+    if fd.apply == "live":
+        bits.append("*Menu-live*: the on-C64 menu offers this knob, applied to the running scene.")
+    return " ".join(bits)
+
+
+def describe(section: str, fd: introspect.FieldDoc) -> str:
+    """A field's description cell: its help, its choices, then its marks."""
+    parts = []
+    if fd.help:
+        parts.append(cell(fd.help))
+    if fd.choices:
+        parts.append("Choices: " + ", ".join(code(c) for c in fd.choices) + ".")
+    mark = marks(section, fd)
+    if mark:
+        parts.append(mark)
+    return " ".join(parts)
+
+
 def identity(*lines: str) -> str:
     """The left column of a fields table: what the thing is called, stacked.
 
@@ -223,19 +280,21 @@ def appendix_config() -> list[str]:
         "Configuration Sections",
         f"Every section of a configuration file: {len(sections)} sections and {total} "
         "fields, with the type each takes and the value it holds when you say nothing. "
-        "`c64cast --describe section:NAME` prints any one of these at the terminal.",
+        "A field a knob can move mid-show says so, and names the target Appendix F "
+        "lists it under. `c64cast --describe section:NAME` prints any one of these at "
+        "the terminal.",
     )
     for section in sections:
         out += [f"## `[{section.name}]`", ""]
         if section.help:
             out += [prose(section.help), ""]
-        rows = []
-        for fd in section.fields:
-            desc = cell(fd.help) if fd.help else ""
-            if fd.choices:
-                choices = ", ".join(code(c) for c in fd.choices)
-                desc = f"{desc} Choices: {choices}." if desc else f"Choices: {choices}."
-            rows.append([identity(code(fd.name), code(fd.type), fmt_default(fd.default)), desc])
+        rows = [
+            [
+                identity(code(fd.name), code(fd.type), fmt_default(fd.default)),
+                describe(section.name, fd),
+            ]
+            for fd in section.fields
+        ]
         out += fields_table("Field", rows)
     return out
 
@@ -259,8 +318,9 @@ def appendix_scenes() -> list[str]:
         "B",
         "Scene Types",
         f"The {len(types)} kinds of scene a `[[scenes]]` block can be, and the keys each "
-        "one reads. `c64cast --describe scene:NAME` prints any one of these at the "
-        "terminal.",
+        "one reads. A key marked *live-tunable* can be moved by a knob mid-show; one "
+        "marked *menu-live* is one the on-C64 menu can change without rebuilding the "
+        "scene. `c64cast --describe scene:NAME` prints any one of these at the terminal.",
     )
     out += ["## Keys Every Scene Takes", ""]
     out += [
@@ -273,7 +333,10 @@ def appendix_scenes() -> list[str]:
     out += fields_table(
         "Key",
         [
-            [identity(code(fd.name), code(fd.type), fmt_default(fd.default)), cell(fd.help)]
+            [
+                identity(code(fd.name), code(fd.type), fmt_default(fd.default)),
+                describe("scenes", fd),
+            ]
             for fd in common
         ],
     )
@@ -288,15 +351,14 @@ def appendix_scenes() -> list[str]:
         if sd.displays:
             modes = ", ".join(code(d) for d in sd.displays)
             out += [prose(f"Display modes: {modes}."), ""]
-        rows = []
-        for fd in sd.fields:
-            if fd.name in common_names:
-                continue
-            desc = cell(fd.help) if fd.help else ""
-            if fd.choices:
-                choices = ", ".join(code(c) for c in fd.choices)
-                desc = f"{desc} Choices: {choices}." if desc else f"Choices: {choices}."
-            rows.append([identity(code(fd.name), code(fd.type), fmt_default(fd.default)), desc])
+        rows = [
+            [
+                identity(code(fd.name), code(fd.type), fmt_default(fd.default)),
+                describe("scenes", fd),
+            ]
+            for fd in sd.fields
+            if fd.name not in common_names
+        ]
         if rows:
             out += fields_table("Key", rows)
         else:
@@ -398,17 +460,24 @@ def appendix_compat() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _live_params(cls: type) -> list[str]:
+def _live_params(holder: str, cls: type) -> list[str]:
     """What a knob can reach on this generator or effect, one per line.
 
     A line each rather than one run of commas: they share the identity column
     with the name, and a generator with four of them would otherwise set as a
     paragraph of mono in a column narrower than the paragraph.
+
+    Each is written with its holder — `source.speed`, not `speed` — because
+    that is the string a `cc_map` entry has to carry, and printing the bare
+    name made the reader translate a table into Appendix F's spelling to use
+    it.
     """
     params: dict[str, tuple[float, float]] = getattr(cls, "LIVE_PARAMS", {}) or {}
     choices: dict[str, tuple[str, ...]] = getattr(cls, "LIVE_CHOICES", {}) or {}
-    bits = [f"{code(name)} {lo:g}–{hi:g}" for name, (lo, hi) in params.items()]
-    bits += [f"{code(name)} ({len(values)} values)" for name, values in choices.items()]
+    bits = [f"{code(f'{holder}.{name}')} {lo:g}–{hi:g}" for name, (lo, hi) in params.items()]
+    bits += [
+        f"{code(f'{holder}.{name}')} ({len(values)} values)" for name, values in choices.items()
+    ]
     return bits
 
 
@@ -418,8 +487,11 @@ def appendix_generators() -> list[str]:
         "Generators and Effects",
         f"The {len(generators.REGISTRY)} procedural sources a `generative` scene can "
         f"draw from, and the {len(effects.REGISTRY)} effects that can be layered over "
-        "any scene. Each entry lists what a knob can reach while the show is "
-        "running under its name; the targets themselves are Appendix F.",
+        "any scene. Each entry lists what a knob can reach while the show is running "
+        "under its name, spelled as the `target` a `param` mapping takes — so a line "
+        "here can be copied into a `cc_map` unchanged. Appendix F is the same targets "
+        "the other way round: one row each, with every generator or effect that "
+        "declares it.",
     )
     out += ["## Generators", ""]
     out += [
@@ -433,7 +505,7 @@ def appendix_generators() -> list[str]:
         "Generator",
         [
             [
-                identity(code(name), *_live_params(cls)),
+                identity(code(name), *_live_params("source", cls)),
                 cell(first_sentence(cls.__doc__ or "")),
             ]
             for name, cls in generators.REGISTRY.items()
@@ -452,7 +524,7 @@ def appendix_generators() -> list[str]:
         "Effect",
         [
             [
-                identity(code(name), *_live_params(cls)),
+                identity(code(name), *_live_params("effect", cls)),
                 cell(first_sentence(cls.__doc__ or "")),
             ]
             for name, cls in effects.REGISTRY.items()
@@ -620,11 +692,51 @@ def appendix_extras() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+# The noun a holder's declarers are counted in, for :func:`declared_by`.
+_OWNER_NOUNS: dict[str, str] = {
+    "mode": "modes",
+    "effect": "effects",
+    "source": "generators",
+    "scene": "scenes",
+}
+
+
+def declared_by(target: introspect.LiveTargetDoc, totals: dict[str, int]) -> str:
+    """Who owns a live target, short enough for the card's column.
+
+    Appendix F prints the owners; a 3.5in column cannot — `source.speed` has
+    fourteen of them. But the fact itself is what a performer needs at the
+    console, because a target the running scene does not declare is a silent
+    no-op: a knob on `source.ring_freq` moves nothing at all unless `moire2`
+    is the generator on screen.
+
+    So the sole owner when there is one, and otherwise a count in the group's
+    own noun — `14 generators` — which is what the question actually is at that
+    point: is this knob worth a hand, or is it for one specific look.
+    """
+    if len(target.owners) == 1:
+        return code(target.owners[0])
+    if len(target.owners) == totals.get(target.holder):
+        return "all"
+    return f"{len(target.owners)} {_OWNER_NOUNS[target.holder]}"
+
+
+def _holder_totals() -> dict[str, int]:
+    """How many classes each holder has in total, so :func:`declared_by` can
+    say `all` rather than a count that happens to equal the registry."""
+    totals: dict[str, int] = {}
+    for entry in introspect._iter_live_holders():
+        holder = entry[0]
+        totals[holder] = totals.get(holder, 0) + 1
+    return totals
+
+
 def card_live_targets() -> list[str]:
     """The card's most drift-prone page, generated in the same pass as Appendix F.
 
     Deliberately not the same table: a card is read at arm's length in a dark
-    room, so it carries the target and its range and nothing else.
+    room, so it carries the target, its range and — compressed by
+    :func:`declared_by` — who declares it.
 
     The provenance line is likewise shorter than an appendix's. `generated:
     true` is what the drift check and a human editor go by; the visible line is
@@ -632,6 +744,7 @@ def card_live_targets() -> list[str]:
     what the list *is* than how it was made.
     """
     targets = introspect.live_targets()
+    totals = _holder_totals()
     out = [
         "---",
         "generated: true",
@@ -651,8 +764,8 @@ def card_live_targets() -> list[str]:
                 if t.kind == "scalar" and t.lo is not None and t.hi is not None
                 else f"{len(t.choices)} values"
             )
-            rows.append([code(t.target), span])
-        out += table(["Target", "Range"], rows)
+            rows.append([code(t.target), span, declared_by(t, totals)])
+        out += table(["Target", "Range", "Declared by"], rows)
     return out
 
 

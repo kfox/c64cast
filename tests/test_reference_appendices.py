@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
+
+from c64cast import introspect
 
 _REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -97,6 +100,91 @@ class ConverterSafetyTest(unittest.TestCase):
 
     def test_the_reference_book_builds(self):
         self.assertIn("#show: guide.with(", bb.build(gen.REFERENCE_DIR))
+
+
+class LiveMarkTest(unittest.TestCase):
+    """The two *live* marks Appendices A and B carry.
+
+    The alias map is hand-written, so both of its ends can rot independently:
+    a renamed config field leaves the mark on nothing, and a retired live
+    target leaves it pointing at a row Appendix F no longer has.
+    """
+
+    def test_every_alias_names_a_real_config_field(self):
+        by_section = {s.name: {fd.name for fd in s.fields} for s in introspect.config_sections()}
+        by_section["scenes"] = {fd.name for fd in introspect._scene_field_docs()}
+        for section, field in gen._LIVE_TUNABLE:
+            with self.subTest(field=f"{section}.{field}"):
+                self.assertIn(section, by_section)
+                self.assertIn(field, by_section[section])
+
+    def test_every_alias_names_a_real_live_target(self):
+        targets = {t.target for t in introspect.live_targets()}
+        for (section, field), target in gen._LIVE_TUNABLE.items():
+            with self.subTest(field=f"{section}.{field}"):
+                self.assertIn(target, targets)
+
+    def test_the_marks_reach_the_committed_appendices(self):
+        # [color].dither is the one that does not join by name -- it is
+        # mode.dither_method -- so it is the one worth asserting lands.
+        text = (gen.REFERENCE_DIR / "20-appendix-a-configuration.md").read_text(encoding="utf-8")
+        self.assertIn("`mode.dither_method`", text)
+        # palette_mode carries both marks, which is why they are worded apart.
+        scenes = (gen.REFERENCE_DIR / "21-appendix-b-scene-types.md").read_text(encoding="utf-8")
+        self.assertIn("*Live-tunable*", scenes)
+        self.assertIn("*Menu-live*", scenes)
+
+    def test_a_bare_name_match_would_have_marked_the_wrong_dither(self):
+        # [audio].dither is the 4-bit DAC's noise shaping and has nothing to do
+        # with the display pipeline; it must stay unmarked.
+        audio = next(s for s in introspect.config_sections() if s.name == "audio")
+        fd = next(f for f in audio.fields if f.name == "dither")
+        self.assertEqual(gen.marks("audio", fd), "")
+
+
+class DeclaredByTest(unittest.TestCase):
+    """The card's compression of Appendix F's owner list."""
+
+    def _target(self, owners, holder="source"):
+        return introspect.LiveTargetDoc(
+            target=f"{holder}.x",
+            holder=holder,
+            group="Generator",
+            kind="scalar",
+            owners=tuple(owners),
+        )
+
+    def test_a_sole_owner_is_named(self):
+        self.assertEqual(gen.declared_by(self._target(["moire2"]), {"source": 20}), "`moire2`")
+
+    def test_several_owners_are_counted_in_the_groups_noun(self):
+        owners = [f"g{i}" for i in range(14)]
+        self.assertEqual(gen.declared_by(self._target(owners), {"source": 20}), "14 generators")
+
+    def test_every_owner_is_all(self):
+        owners = [f"g{i}" for i in range(20)]
+        self.assertEqual(gen.declared_by(self._target(owners), {"source": 20}), "all")
+
+    def test_every_holder_has_a_noun(self):
+        # A new live-tune holder with no noun would raise mid-generation.
+        for holder in gen._holder_totals():
+            self.assertIn(holder, gen._OWNER_NOUNS)
+
+
+class LiveParamSpellingTest(unittest.TestCase):
+    """Appendix E writes a knob the way a `cc_map` has to spell it."""
+
+    def test_a_generator_param_carries_its_holder(self):
+        targets = {t.target for t in introspect.live_targets()}
+        text = (gen.REFERENCE_DIR / "24-appendix-e-generators-effects.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("`source.speed`", text)
+        self.assertIn("`effect.decay`", text)
+        # Whatever Appendix E prints has to be a row Appendix F has.
+        for name in re.findall(r"`((?:source|effect)\.[a-z_]+)`", text):
+            with self.subTest(target=name):
+                self.assertIn(name, targets)
 
 
 class TextEscapingTest(unittest.TestCase):

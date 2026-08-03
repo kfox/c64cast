@@ -177,6 +177,19 @@ the version and stamps it with the date.
   `c64cast[all]` rather than one extra at a time. The chapters have always named
   an extra where a feature needs one; nothing collected them. The glossary moves
   to Appendix J.
+- **The books keep the promise their notation section makes.** A setting that
+  can move while a show is running now says so where it is defined: Appendices A
+  and B mark a field *live-tunable* and name the target a knob reaches it by
+  (`[color].dither` is `mode.dither_method`, which is exactly the pairing a
+  reader could not guess), and mark it *menu-live* when the on-C64 menu carries
+  it as a knob. Appendix E writes each generator's and effect's parameters the
+  way a `cc_map` has to spell them — `source.speed`, not `speed` — so a line can
+  be copied straight into a mapping.
+- **The performance card's live-target list says who declares each target.** A
+  knob mapped to `source.ring_freq` does nothing unless `moire2` is the
+  generator on screen, and the column that says so was the one the card dropped
+  for space. It is back, compressed to fit: the sole owner where there is one,
+  otherwise a count — `14 generators`. Still two pages.
 
 ### Fixed
 

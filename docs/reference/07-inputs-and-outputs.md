@@ -55,6 +55,11 @@ cursor keys drive the menu instead. On exit with unsaved changes,
 into the configuration you launched from; `false` applies them to the running
 scene and never persists, which is what a convention stand wants.
 
+Which knobs the panel offers is a property of the key rather than of the menu:
+the ones Appendices A and B mark *menu-live* are the ones a running scene can
+take a change to in place. Everything else would need the scene rebuilt, so it
+is not in the panel.
+
 It needs a backend that can read memory — the Ultimate, or a cycle-clean
 TeensyROM+ — because SPACE is not a modifier and has to be read out of the
 kernal's keyboard buffer. Text-valued parameters are shown read-only.

@@ -68,8 +68,15 @@ number does not. Where a key takes one of a fixed set of values, the set is
 listed in full; where it takes a free string, the shape of that string is
 given by example.
 
-A parameter marked *live* can be moved while a show is running, by a MIDI
-knob, a pad, or the web console. Appendix F lists every one of them.
+Two marks say that a setting can change while a show is running, and they are
+different powers. A parameter marked *live-tunable* can be moved by a MIDI
+knob, a pad or the web console; the mark names the `holder.name` target string
+that reaches it, and Appendix F lists every one of them. A key marked
+*menu-live* is one the on-C64 menu offers as a knob, applying the change to the
+running scene; a key without the mark is not in the panel at all, because
+changing it would mean rebuilding the scene. A setting can carry both: a
+scene's `palette_mode` is on a MIDI knob as `mode.palette_mode` and is in the
+menu.
 
 A command-line flag is written as it is typed, with its leading dashes, as
 `--config`. Flags are introduced beside the behaviour they change rather than
