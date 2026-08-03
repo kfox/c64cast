@@ -11,8 +11,9 @@ in particular that book's willingness to organise by subsystem rather than by
 audience, and to print the whole table rather than a useful subset.
 
 > [!NOTE]
-> Chapters 1 to 6 are outlines at the moment; they land with the two prose
-> changes above this one in the stack. The appendices are complete.
+> Chapters 4 to 6 are outlines at the moment; they land with the prose change
+> above this one in the stack. Chapters 1 to 3 and the appendices are
+> complete.
 
 ## Reading it
 

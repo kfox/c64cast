@@ -31,8 +31,11 @@ the version and stamps it with the date.
   `[hardware].dump_char_rom = false` turns the automatic read off. `--doctor`
   reports which ROM is in use and whether it verifies.
 - **A second book: the Programmer's Reference Guide** (`docs/reference/`), the
-  volume you open at the page you need rather than read in order. Its chapters
-  are outlines for now, but its appendices are complete and are *generated* from
+  volume you open at the page you need rather than read in order. Chapters 1 to
+  3 are written — the configuration language and its precedence rules, the
+  catalogue of every scene and overlay, and the display pipeline from frame to
+  VIC-II register; chapters 4 to 6 are outlines for now. Its appendices are
+  complete and are *generated* from
   the code by `scripts/gen_reference_appendices.py`: every configuration section
   and field, every scene key, every overlay parameter, the overlay against
   display-mode matrix, every generator and effect, every live-tune target, every
