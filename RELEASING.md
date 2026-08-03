@@ -11,6 +11,8 @@ A release is one tag push;
 | `c64cast-X.Y.Z-py3-none-any.whl` | PyPI + the GitHub release |
 | `c64cast-X.Y.Z.tar.gz` | PyPI + the GitHub release |
 | `c64cast-users-guide-X.Y.Z.pdf` | the GitHub release |
+| `c64cast-reference-guide-X.Y.Z.pdf` | the GitHub release |
+| `c64cast-performance-card-X.Y.Z.pdf` | the GitHub release |
 | Release notes | the GitHub release, from that version's `CHANGELOG.md` section |
 
 ## One-time setup
@@ -53,9 +55,9 @@ python scripts/bump_version.py 0.2.0
 Moves `[project] version`, renames the changelog section and dates it, opens a
 fresh `## [Unreleased]`, fixes the link references, and re-runs `uv lock`.
 
-Nothing else needs editing — `__version__`, the `#:schema` URL and the guide's
-cover version all derive from that number. The exception is the guide's
-**edition** line in `docs/guide/colophon.md`, which is an editorial call: a
+Nothing else needs editing — `__version__`, the `#:schema` URL and every book's
+cover or footer version all derive from that number. The exception is the
+**edition** line in each bound book's `colophon.md`, which is an editorial call: a
 release with substantially rewritten chapters is a new edition, a patch release
 is not.
 
@@ -63,14 +65,14 @@ is not.
 
 ```bash
 make check
-make guide
+make books
 python scripts/bump_version.py --check 0.2.0
 ```
 
 `--check` is the same gate the workflow runs against the pushed tag.
 
 For a change to the workflow itself, run it from *Actions → Release → Run
-workflow* with **publish** off: full build, checks and guide render, no publish.
+workflow* with **publish** off: full build, checks and book renders, no publish.
 
 **4. Tag.** Once merged, from `main`:
 
@@ -82,8 +84,8 @@ git push origin v0.2.0
 
 That triggers: `--check` against the tag → build → `twine check --strict` →
 install the wheel in a clean environment outside the checkout and run it →
-render the guide → publish to PyPI → create the GitHub release with all three
-artifacts attached and linked from the notes.
+render the books → publish to PyPI → create the GitHub release with every
+artifact attached and linked from the notes.
 
 PyPI is published before the GitHub release because a PyPI version can only be
 yanked, never replaced, while a GitHub release can be recreated.
@@ -112,7 +114,7 @@ run's artifacts instead (`gh run download <id> -n release-artifacts`):
 ```bash
 gh release create v0.2.0 --title "c64cast v0.2.0" --verify-tag \
   --notes-file <(python scripts/bump_version.py --notes 0.2.0) \
-  dist/*.whl dist/*.tar.gz dist/c64cast-users-guide-0.2.0.pdf
+  dist/*.whl dist/*.tar.gz dist/*.pdf
 ```
 
 **A bad version reached PyPI.** Yank it (*Manage → Releases → Yank*) and release

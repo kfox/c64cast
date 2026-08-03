@@ -54,23 +54,24 @@ error if it can't connect.
 Every row below is a runnable, single-scene demo that ships inside the
 package — pass it to `--config` and it loops forever until you Ctrl+C. Point
 it at your hardware with `-u` (see [Quick start](#quick-start)).
-[`docs/usage.md`](https://github.com/kfox/c64cast/blob/main/docs/usage.md)
+The
+[Programmer's Reference Guide](https://github.com/kfox/c64cast/tree/main/docs/reference)
 documents every option for these scenes and overlays.
 
 | I want to…                          | Try                                                     | Reference |
 |-------------------------------------|---------------------------------------------------------|-----------|
-| Play a video (or YouTube URL)       | `c64cast clip.mp4` · `example:scene-video`              | [Quick playback](https://github.com/kfox/c64cast/blob/main/docs/usage.md#quick-playback-positional-media-args) |
-| Show a live webcam as C64 art       | `example:scene-webcam-petscii`                          | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
-| Visualize a SID tune (oscilloscope) | `example:scene-waveform`                                | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
-| Play a SID from a MIDI keyboard     | `example:scene-midi`                                    | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
-| Stream from DeepSID / SIDFactory II | `example:scene-asid`                                    | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
-| Slideshow of images                 | `example:scene-slideshow`                               | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
-| Generative / music-reactive visuals | `example:scene-generative-plasma`                       | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
-| Run a native `.prg`/`.crt` game or demo | `example:scene-launcher`                            | [Scenes](https://github.com/kfox/c64cast/blob/main/docs/usage.md#scenes) |
-| An info board (clock/weather/RSS)   | `example:overlay-clock`                                 | [Overlays](https://github.com/kfox/c64cast/blob/main/docs/usage.md#overlays) |
-| Drive multiple C64s as one video wall | `example:ensemble/master`                             | [Ensemble mode](https://github.com/kfox/c64cast/blob/main/docs/usage.md#ensemble-mode-multi-system) |
-| Make the C64 a WLED LED matrix       | `example:scene-wled`                                   | [WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/usage.md#wled-bridge) |
-| Control c64cast from the WLED app    | `example:wled-control`                                 | [WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/usage.md#wled-bridge) |
+| Play a video (or YouTube URL)       | `c64cast clip.mp4` · `example:scene-video`              | [Quick playback](https://github.com/kfox/c64cast/blob/main/docs/reference/26-appendix-g-cli-flags.md#quick-playback-with-media-args) |
+| Show a live webcam as C64 art       | `example:scene-webcam-petscii`                          | [`webcam`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#webcam) |
+| Visualize a SID tune (oscilloscope) | `example:scene-waveform`                                | [`waveform`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#waveform) |
+| Play a SID from a MIDI keyboard     | `example:scene-midi`                                    | [`midi`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#midi) |
+| Stream from DeepSID / SIDFactory II | `example:scene-asid`                                    | [`asid`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#asid) |
+| Slideshow of images                 | `example:scene-slideshow`                               | [`slideshow`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#slideshow) |
+| Generative / music-reactive visuals | `example:scene-generative-plasma`                       | [`generative`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#generative) |
+| Run a native `.prg`/`.crt` game or demo | `example:scene-launcher`                            | [`launcher`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#launcher) |
+| An info board (clock/weather/RSS)   | `example:overlay-clock`                                 | [Overlays](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#overlays) |
+| Drive multiple C64s as one video wall | `example:ensemble/master`                             | [Ensemble mode](https://github.com/kfox/c64cast/blob/main/docs/reference/02-config-rules.md#the-ensemble-cascade) |
+| Make the C64 a WLED LED matrix       | `example:scene-wled`                                   | [`wled`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#wled) |
+| Control c64cast from the WLED app    | `example:wled-control`                                 | [WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md#wled) |
 
 Run any of them with `c64cast --config example:<name>`, or list the whole set
 with `c64cast --list-examples` (one demo per scene type and per overlay).
@@ -129,7 +130,7 @@ broadcast), present c64cast *as* a virtual WLED device the WLED app / Home
 Assistant can discover and control (effects ↔ scenes, sliders ↔ live params,
 presets), and turn the C64 *into* a virtual LED matrix that LedFx / xLights
 stream live pixels to. See
-[WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/usage.md#wled-bridge)
+[WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md#wled)
 for the full reference.
 
 **Quick playback** — skip the config file entirely and pass media straight
@@ -236,8 +237,8 @@ c64cast --doctor --config c64cast.toml --skip-probe
 The discovery output and the JSON schema are generated from the same field
 metadata the loader runs on, so they can't drift from the code.
 `c64cast --print-example c64cast.example` is the fully-annotated reference; see
-[docs/usage.md](https://github.com/kfox/c64cast/blob/main/docs/usage.md) for
-the complete config walkthrough.
+[The Configuration Language](https://github.com/kfox/c64cast/blob/main/docs/reference/02-config-rules.md)
+for the complete config walkthrough.
 
 Machine-local defaults — connection target, capture device, SID model — live in
 `~/.config/c64cast/settings.toml` and apply to every run, including quick
@@ -285,8 +286,15 @@ the portable route.
   [Quick Start](https://github.com/kfox/c64cast/blob/main/docs/guide/01-quick-start.md),
   or download the typeset PDF for your version from
   [the latest release](https://github.com/kfox/c64cast/releases/latest).
-* [docs/usage.md](https://github.com/kfox/c64cast/blob/main/docs/usage.md) —
-  full config reference, scene/overlay catalog with options, suggested setups
+* [docs/reference/](https://github.com/kfox/c64cast/tree/main/docs/reference) —
+  **the Programmer's Reference Guide**: the volume you open at the page you
+  need. The rules of the configuration language, every scene and overlay, the
+  display and sound paths in full, what lands in the Commodore's memory, and
+  nine appendices generated from the code. Typeset PDF on
+  [the latest release](https://github.com/kfox/c64cast/releases/latest).
+* [docs/card/](https://github.com/kfox/c64cast/tree/main/docs/card) —
+  **the Performance Card**: two printable pages of controls, live targets and
+  clip-grid syntax for the desk beside the controller
 * [docs/caveats.md](https://github.com/kfox/c64cast/blob/main/docs/caveats.md) —
   known quirks (6502 emulator scope, char ROM substitution, U64 endpoint
   variance, licensing of SIDs / videos)

@@ -176,7 +176,7 @@ all = [
 # workflow (`uv sync --all-extras`) rather than `pip install -e .[dev]` —
 # groups are not extras and can't be requested through `.[...]` syntax.
 dev = [
-    "ruff==0.16.0",
+    "ruff==0.16.1",
     "coverage==7.15.2",
     "mypy==2.3.0",
     "types-requests==2.33.0.20260712",

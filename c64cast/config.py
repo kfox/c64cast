@@ -293,7 +293,8 @@ class Ultimate64Cfg:
             "choices": _SYSTEM_CHOICES,
         },
     )
-    # See docs/usage.md for how to enable the DMA service on the U64 itself.
+    # See docs/guide/04-setting-up.md for how to enable the DMA service on the
+    # U64 itself.
     dma_port: int = field(
         default=64,
         metadata={"help": "TCP port of the U64 Ultimate DMA Service (firmware default 64)."},
@@ -958,7 +959,7 @@ class PlaylistCfg:
             "auto-detection."
         },
     )
-    # See docs/usage.md '[playlist]' for single- vs multi-scene behavior.
+    # See docs/reference/02-config-rules.md for single- vs multi-scene behavior.
     loop: bool = field(
         default=True,
         metadata={

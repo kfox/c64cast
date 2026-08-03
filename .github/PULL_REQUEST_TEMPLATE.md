@@ -29,8 +29,8 @@ lines that didn't.
 
 - [ ] Architecture notes updated (`docs/architecture/…`) for a module whose
       behavior changed
-- [ ] User-facing docs updated (`docs/usage.md`, `caveats.md`,
-      `troubleshooting.md`, `extending.md`, the User's Guide)
+- [ ] User-facing docs updated (the User's Guide, the Reference Guide, the
+      Performance Card, `caveats.md`, `troubleshooting.md`, `extending.md`)
 - [ ] `CHANGELOG.md` entry added under `## [Unreleased]`
 - [ ] New config knob: field `help`/`choices` metadata filled in,
       `c64cast/examples/` updated, `make schema` re-run

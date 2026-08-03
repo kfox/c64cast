@@ -4,7 +4,7 @@ This is the per-module reference for the `c64cast/` tree: the design rationale, 
 
 The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules.
 
-For end-user configuration see [usage.md](usage.md), for known limitations [caveats.md](caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](extending.md).
+For end-user configuration see [the Programmer’s Reference Guide](reference/README.md), for known limitations [caveats.md](caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](extending.md).
 
 ## Topic areas
 

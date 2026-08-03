@@ -3,7 +3,8 @@
 This guide covers the four pluggable surfaces — **Overlays**, **Scenes**,
 **DisplayModes**, and interstitial **Backgrounds** — plus the testing
 patterns that keep the suite hardware-free. For runtime behavior see
-[architecture.md](architecture.md); for end-user config see [usage.md](usage.md).
+[architecture.md](architecture.md); for end-user config see
+[the Programmer's Reference Guide](reference/README.md).
 
 ## Conventions
 

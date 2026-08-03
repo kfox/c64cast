@@ -148,9 +148,12 @@ a follow-up. Concretely, when you change functionality:
   design rationale, hardware constraints, and the dead ends that the code alone
   does not show. Read the relevant section before modifying a module, and update
   it in the same PR. The index's module table routes any module to its section.
-- [`docs/usage.md`](docs/usage.md), [`caveats.md`](docs/caveats.md),
-  [`troubleshooting.md`](docs/troubleshooting.md), and
-  [`extending.md`](docs/extending.md) cover the user-facing surface.
+- The three books under [`docs/`](docs) are the user-facing surface: the
+  [User's Guide](docs/guide/README.md), the [Programmer's Reference
+  Guide](docs/reference/README.md) and the [Performance
+  Card](docs/card/README.md). [`caveats.md`](docs/caveats.md),
+  [`troubleshooting.md`](docs/troubleshooting.md) and
+  [`extending.md`](docs/extending.md) sit alongside them.
 - New config knobs, scenes, or overlays: fill in the field's `help`/`choices`
   metadata (in [`c64cast/config.py`](c64cast/config.py)) or the overlay's
   `HELP`/`PARAM_HELP`, update

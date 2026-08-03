@@ -8,6 +8,7 @@
 layout = "guide"                 # which template entry point renders it
 output = "c64cast-users-guide"   # basename of the .typ and the .pdf
 title = "c64cast"
+volume = "User’s Guide"          # the cover's large line: which book of the series
 subtitle = "with Quick Start"
 tagline = "Turn a real Commodore 64 into a programmable display"
 logo = "img/logo-cover.png"
