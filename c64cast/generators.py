@@ -1552,10 +1552,9 @@ class SoapSource(GenerativeSource):
 @register("fireworks")
 class FireworksSource(GenerativeSource):
     """WLED "Fireworks" port — the flagship of WLED's shared particle-system
-    engine (which also drives Volcano/Ballpit/Waterfall/Impact/Attractor/
+    engine, which also drives Volcano/Ballpit/Waterfall/Impact/Attractor/
     Galaxy as different emitter/gravity presets on the same primitive; only
-    the fireworks preset is ported this batch — see
-    `[[project_wled_pattern_port_candidates]]` for the deferred variants).
+    the fireworks preset is ported here.
 
     A small fixed-size particle pool (preallocated numpy arrays — position /
     velocity / age / life / hue — updated with vectorized array ops, no

@@ -81,7 +81,7 @@ c64cast --config my-first.toml
 
 Now change something. Set `background` to `2` and the screen turns red. Add
 another line to `messages`. Change `speed_cells_per_s` to `4.0` and watch the
-text crawl. Each time, stop c64cast with <kbd>Ctrl</kbd> <kbd>C</kbd> and run
+text crawl. Each time, stop c64cast with <kbd>CTRL</kbd> <kbd>C</kbd> and run
 it again. This is the fastest way to learn what the settings do, and nothing
 you can type here will harm the Commodore.
 

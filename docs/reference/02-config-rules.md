@@ -41,6 +41,7 @@ is a usage error, exits 2, and prints the closest name it knows.
 
 The packaged copy lives inside the installation and should be treated as
 read-only; `--print-example` is the supported way to get a copy you own.
+Appendix H lists every example by name, with what each one demonstrates.
 
 Naming media files directly on the command line — `c64cast clip.mp4 tune.sid`
 — builds a configuration in memory and writes nothing. It is mutually

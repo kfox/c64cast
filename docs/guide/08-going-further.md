@@ -101,9 +101,9 @@ writing the mapping out for you.
 MIDI is not the only way in.
 
 **The Commodore's own keyboard works.** With no extra configuration, the
-Commodore key pauses and resumes, <kbd>Ctrl</kbd> skips to the next scene,
-and <kbd>Shift</kbd> cycles the current scene's style. Pressing
-<kbd>Space</kbd> opens a menu on the Commodore itself for adjusting the
+Commodore key pauses and resumes, <kbd>CTRL</kbd> skips to the next scene,
+and <kbd>SHIFT</kbd> cycles the current scene's style. Pressing
+<kbd>SPACE</kbd> opens a menu on the Commodore itself for adjusting the
 running scene, which is a pleasing thing to demonstrate.
 
 **A small web service** can be enabled with the `[control]` section,

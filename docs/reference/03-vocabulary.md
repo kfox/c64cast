@@ -195,6 +195,13 @@ From that moment the program owns the VIC, the SID and the CIAs; c64cast stops
 painting and only watches for input. The default directory is
 `assets/programs/`.
 
+> [!WARNING]
+> This scene hands the machine away, and the reset before launch discards
+> whatever was in memory. The modifier keys are read out of the kernal's
+> scratch bytes, which a program that installs its own interrupt stops
+> updating — so pause and skip may not answer for as long as the program
+> holds the machine. `max_duration_s` is the ceiling that always fires.
+
 `duration_s` here is an **idle timeout**, not a runtime. It counts down from
 launch and resets on every sign of a player, so a game in use stays up while
 an untouched demo advances. `min_duration_s` is a floor before the idle timer

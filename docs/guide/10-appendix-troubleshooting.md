@@ -87,7 +87,7 @@ normal behaviour.
 
 **A scene runs past its `duration_s`.** An overlay is still busy. A
 `big_text` message part-way through its scroll defers the transition until
-it finishes. Pressing <kbd>Ctrl</kbd> always cuts through immediately.
+it finishes. Pressing <kbd>CTRL</kbd> always cuts through immediately.
 
 **A `video` scene is rejected when the file loads.** Either the `video`
 feature is not installed, or the scene has a `duration_s`, which video
