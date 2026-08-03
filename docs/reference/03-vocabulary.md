@@ -156,16 +156,14 @@ Plogue chipsynth C64, an Elektron with ASID-XP. On macOS enable the IAC driver
 in Audio MIDI Setup; on Linux `modprobe snd-virmidi`.
 
 This scene has no synthesiser knobs, because ASID carries the whole tune's
-register state and c64cast is only relaying it. Multi-SID streams are honoured
-on the Ultimate: extra chips are routed to their own addresses, preferring
-physical sockets, and the scope subdivides each voice row into one window per
-chip. `asid_multi_sid` and `asid_max_sids` gate and cap that; on a backend
-without a configuration API the extra chips downmix to the primary SID.
-`asid_buffered_player` chooses between a cycle-accurate Commodore-side ring
-player and host-side coalescing — the ring player is what keeps multispeed
-tunes' arpeggios and hard restarts intact, and `"auto"` selects it whenever
-the backend has an REU. OPL-FM (`0x60`) is the one command that is recognised
-and dropped.
+register state and c64cast is only relaying it. What it has instead is three
+keys about how that state is delivered. `asid_multi_sid` and `asid_max_sids`
+gate and cap the routing of a multi-SID stream onto extra chips, which needs
+a machine whose SID addresses c64cast can configure. `asid_buffered_player`
+chooses between the two ways of playing what arrives, and its default `"auto"`
+takes the accurate one wherever the machine can carry it. Chapter 4 has what
+those two ways are, why one of them needs expansion memory, and what the
+protocol does and does not carry.
 
 ### `blank`
 
@@ -296,11 +294,11 @@ midi_filter_cutoff = 1024
 Bitmap-only: `display` is ignored.*
 
 Each voice can hold its own waveform, and an entry may be a `+`-combination
-for the chip's combined waveforms. In the default `shared` voice mode one MIDI
-channel spreads across all three voices — held notes keep their voice, so a
-pad survives while a melody cycles on top. With `multitimbral`, channels route
-to fixed voices, each monophonic with last-note priority, and notes on
-unmapped channels are ignored.
+for the chip's combined waveforms. `midi_voice_mode` picks between the default
+`shared`, where one channel spreads across all three voices, and
+`multitimbral`, where `midi_voice_channels` pins a channel to each. Chapter 4
+has how voices are allocated and stolen under each mode, what pitch-bend and
+velocity reach, and the controller map.
 
 > [!NOTE]
 > On a 6581 the waveform outputs share a bus and combine by AND, and any

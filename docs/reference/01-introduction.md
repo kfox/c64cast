@@ -14,8 +14,12 @@ referred to from the other.
 
 Chapters 1 to 6 are prose: the rules of the configuration language, the
 vocabulary of scenes and overlays, the display pipeline from frame to VIC-II
-register, the sound path, what actually lands in the Commodore's memory, and
-everything that reaches c64cast from outside or leaves it.
+register, the sound path, the link into the Commodore's memory and what lands
+there, and everything that reaches c64cast from outside or leaves it.
+
+Chapter 7 is the exception, and is for a different reader: it is what you need
+to add a scene, an overlay, a generator or an effect to c64cast itself. Nothing
+in the first six chapters depends on it.
 
 Appendices A to H are not prose and are not written by hand. They are generated
 from the same definitions the program answers `--describe`, `--compat` and

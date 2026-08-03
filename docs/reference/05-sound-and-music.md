@@ -409,9 +409,9 @@ Two scenes drive the real SID from somewhere else entirely. Both need the
 ### ASID
 
 ASID packs SID register writes into MIDI system-exclusive messages. An ASID
-*host* — DeepSID in a browser, SIDFactory II, Plogue chipsynth C64, an Elektron
-with ASID-XP — sends the stream; the `asid` scene receives it and plays it on
-the chip. It is a new input, not a fidelity change: the protocol carries only
+*host* sends the stream and the `asid` scene receives it and plays it on the
+chip; Chapter 2's entry for that scene names the hosts and how to open a port
+for them. It is a new input, not a fidelity change: the protocol carries only
 what a SID can synthesise, never sampled audio.
 
 There are two ways to play what arrives, chosen by `asid_buffered_player`.
@@ -466,7 +466,8 @@ that starts open means a lowpass patch is neutral until you sweep it.
 
 In the default `shared` voice mode one MIDI channel spreads across all three
 voices. With `multitimbral`, `midi_voice_channels` routes channels to fixed
-voices, each monophonic, and notes on unmapped channels are ignored.
+voices, each monophonic with last-note priority, and notes on unmapped channels
+are ignored.
 
 ## Listening Back
 

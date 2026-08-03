@@ -4,7 +4,8 @@ The second volume. Where the [User's Guide](../guide/README.md) is a book you
 read in order, this is the one you open at the page you need: the rules of the
 configuration language, the vocabulary of scenes and overlays, the display and
 sound paths in full, what lands in the Commodore's memory, and exhaustive
-tables of every field, key, parameter and flag.
+tables of every field, key, parameter and flag. A closing chapter covers
+extending the program rather than configuring it.
 
 Its structure is an homage to the *Commodore 64 Programmer's Reference Guide* —
 in particular that book's willingness to organise by subsystem rather than by
