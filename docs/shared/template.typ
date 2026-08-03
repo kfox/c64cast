@@ -55,12 +55,11 @@
 #let body-font = "Jost"
 #let mono-font = "Inconsolata"
 
+// Body size per layout. The card is set smaller because it is a hand-out read
+// at a glance, not a book read in an armchair — and because everything in
+// elements() is a multiple of whichever of these its layout passes in.
 #let body-size = 10pt
-// Set to the body size, not below it, because these two faces happen to agree
-// almost exactly on x-height: Jost 0.460em, Inconsolata 0.457em. Equal nominal
-// sizes therefore look equal on the page, and code no longer reads as fine
-// print the way it did against a face with a taller lowercase.
-#let mono-size = body-size
+#let card-size = 8.5pt
 
 // ---------------------------------------------------------------------------
 // Page-numbering style, tracked so the table of contents can render each
@@ -373,9 +372,17 @@
 // Everything below the page: how a heading, a listing, a table or a figure is
 // set. Shared by every layout, so a table in the card looks like a table in
 // the guide and the two read as one series.
+//
+// Every size and gap here is a multiple of `size`, the body size its layout
+// passes in — required rather than defaulted, so a new layout cannot silently
+// inherit the book's — rather than an absolute the 10pt book happened to want: at the
+// card's 8.5pt a 12.5pt section heading shouted and a 4.5pt row inset spent a
+// column it did not have. Multiples of a parameter and not `em`, because a
+// heading's own text size is already scaled when the show rule runs, so an
+// `em` inside one compounds.
 // ---------------------------------------------------------------------------
 
-#let elements(body) = {
+#let elements(size, body) = {
   // Headings ---------------------------------------------------------------
   // Level 1 is never used directly; chapter() draws the openers.
   show heading.where(level: 2): it => {
@@ -384,10 +391,10 @@
         [#metadata((kind: "section", title: it.body)) <guide-toc>]
       }
     }
-    block(above: 18pt, below: 9pt, text(
+    block(above: 1.8 * size, below: 0.9 * size, text(
       fill: accent,
       weight: "bold",
-      size: 12.5pt,
+      size: 1.25 * size,
       tracking: 0.3pt,
       hyphenate: false,
       upper(it.body),
@@ -395,15 +402,15 @@
   }
 
   show heading.where(level: 3): it => block(
-    above: 14pt,
-    below: 7pt,
-    text(weight: "bold", size: 11.5pt, hyphenate: false, it.body),
+    above: 1.4 * size,
+    below: 0.7 * size,
+    text(weight: "bold", size: 1.15 * size, hyphenate: false, it.body),
   )
 
   show heading.where(level: 4): it => block(
-    above: 11pt,
-    below: 5pt,
-    text(weight: "bold", size: body-size, hyphenate: false, it.body),
+    above: 1.1 * size,
+    below: 0.5 * size,
+    text(weight: "bold", size: size, hyphenate: false, it.body),
   )
 
   // Code -------------------------------------------------------------------
@@ -420,14 +427,19 @@
   show raw.where(block: true): it => block(
     width: 100%,
     fill: accent-wash,
-    inset: (x: 9pt, y: 8pt),
+    inset: (x: 0.9 * size, y: 0.8 * size),
     radius: 2pt,
-    above: 11pt,
-    below: 11pt,
+    above: 1.1 * size,
+    below: 1.1 * size,
     breakable: true,
     {
       set par(justify: false, leading: 0.55em)
-      set text(font: mono-font, size: mono-size)
+      // Code is set at the body size, not below it, because these two faces
+      // happen to agree almost exactly on x-height: Jost 0.460em, Inconsolata
+      // 0.457em. Equal nominal sizes therefore look equal on the page, and
+      // code no longer reads as fine print the way it did against a face with
+      // a taller lowercase.
+      set text(font: mono-font, size: size)
       it
     },
   )
@@ -446,26 +458,26 @@
   // circle is font-independent: same mark whatever the body face becomes, and
   // the baseline offset centres it on the x-height.
   set list(
-    indent: 10pt,
-    body-indent: 6pt,
+    indent: size,
+    body-indent: 0.6 * size,
     spacing: 0.9em,
     marker: box(baseline: -0.8pt, circle(radius: 1.5pt, fill: ink)),
   )
-  set enum(indent: 10pt, body-indent: 6pt, spacing: 0.9em)
+  set enum(indent: size, body-indent: 0.6 * size, spacing: 0.9em)
 
   // Tables — bold header, one hairline beneath it, nothing else. ------------
   set table(
     stroke: (x, y) => if y == 0 { (bottom: 0.7pt + ink) } else { none },
-    inset: (x: 0pt, y: 4.5pt),
-    column-gutter: 12pt,
+    inset: (x: 0pt, y: 0.45 * size),
+    column-gutter: 1.2 * size,
   )
   show table.cell.where(y: 0): set text(weight: "bold")
 
   // Figures ----------------------------------------------------------------
-  show figure: it => block(above: 13pt, below: 13pt, align(center, {
+  show figure: it => block(above: 1.3 * size, below: 1.3 * size, align(center, {
     it.body
     v(4pt)
-    text(size: 8.5pt)[#it.caption.body]
+    text(size: 0.85 * size)[#it.caption.body]
   }))
 
   body
@@ -511,7 +523,7 @@
 
   set text(font: body-font, size: body-size, fill: ink, lang: "en", hyphenate: true)
   set par(justify: true, leading: 0.62em, spacing: 0.85em)
-  show: elements
+  show: elements.with(body-size)
 
   // Front matter -----------------------------------------------------------
   cover(
@@ -560,6 +572,11 @@
   set page(
     paper: "us-letter",
     margin: 0.5in,
+    // Two columns, because a card is nearly all two-column tables and a key
+    // set across seven inches of letter paper is a line the eye has to travel
+    // rather than glance at. It also halves the page count, which is the
+    // difference between one sheet printed double-sided and a stapled set.
+    columns: 2,
     numbering: none,
     header: none,
     // The title block is a footer rather than a header so it does not push the
@@ -575,9 +592,9 @@
     },
   )
 
-  set text(font: body-font, size: 8.5pt, fill: ink, lang: "en", hyphenate: false)
+  set text(font: body-font, size: card-size, fill: ink, lang: "en", hyphenate: false)
   set par(justify: false, leading: 0.55em, spacing: 0.7em)
-  show: elements
+  show: elements.with(card-size)
 
   body
 }

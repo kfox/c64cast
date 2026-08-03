@@ -2,7 +2,7 @@
 
 How c64cast talks to the machine: the DMA/REST client for the Ultimate, the TeensyROM serial/TCP link, and the BASIC stub the C64 runs while c64cast drives it.
 
-Part of the [architecture reference](../architecture.md). For end-user configuration see [usage.md](../usage.md), for known limitations [caveats.md](../caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](../extending.md).
+Part of the [architecture reference](../architecture.md). For end-user configuration see [the Programmer’s Reference Guide](../reference/README.md), for known limitations [caveats.md](../caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](../extending.md).
 
 **Contents**
 

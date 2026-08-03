@@ -26,7 +26,7 @@ systems = [
 duration_s = 3.0
 
 [control]
-enabled = false                     # set true to drive via HTTP, see docs/usage.md
+enabled = false                     # set true to drive via HTTP (see docs/reference/)
 
 [debug]
 verbose = 0

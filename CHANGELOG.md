@@ -44,6 +44,27 @@ the version and stamps it with the date.
   `--print-schema`, so a table in the book cannot disagree with the program.
   `make reference` renders it, `make books` renders every book, and `make
   reference-appendices` rewrites the generated ones — which CI checks for drift.
+- **A third book: the Performance Card** (`docs/card/`), two printable pages for
+  the desk beside the controller. Every control surface and what it is mapped to
+  out of the box, the pad chords and pad-light states, every live-tune target,
+  the clip-grid and tempo syntax, the console's routes, how a channel addresses
+  one Commodore of an ensemble, and the four commands worth running before the
+  doors open. `make card` renders it; its live-target table is generated
+  alongside the reference guide's appendices. It takes the `card` layout: the
+  same palette, faces and tables as the other two books, set two-up at 8.5pt
+  with no cover, contents or chapter openers.
+- The GitHub release now carries **every book**, each stamped with the version:
+  the User's Guide, the Programmer's Reference Guide and the Performance Card.
+
+### Removed
+
+- **`docs/usage.md` is gone.** Its 1,867 lines were the end-user reference
+  before there was a book to put them in; every part of it that was not already
+  duplicated by the User's Guide has been rewritten into the Programmer's
+  Reference Guide, which states the same rules from the code rather than from
+  prose that had drifted from it. Every link that pointed there now points at
+  the chapter or appendix that answers the question, and a test fails if a new
+  one appears.
 
 ### Changed
 

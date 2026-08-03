@@ -2,7 +2,8 @@
 
 Surprises, footguns, and design choices that look weird until you know
 why. Read this before you spend an evening debugging "it's almost
-working, but…". For end-user options see [usage.md](usage.md); for the
+working, but…". For end-user options see
+[the Programmer's Reference Guide](reference/README.md); for the
 architecture overview see [architecture.md](architecture.md).
 
 ## Audio is intentionally lo-fi (the 4-bit `$D418` DAC)
@@ -431,7 +432,8 @@ screen-code bytes back into 8×8 pixel cells.
 
 c64cast reads it off your own machine on the first run and caches it at
 `~/.local/share/c64cast/roms/chargen.bin` (see
-[usage.md](usage.md#the-character-rom), and `--dump-char-rom` /
+[the reference guide](reference/06-under-the-hood.md#the-character-rom),
+and `--dump-char-rom` /
 `--install-char-rom`). Until that has happened — or on a backend that
 can't run the dump stub — `framebuffer.py` falls back to a built-in
 **8×8 ASCII font**: text stays readable, but it is not the C64 font, and
@@ -999,7 +1001,7 @@ are disabled. Failure modes:
 If something feels missing, check `c64cast --doctor`'s EXTRAS section, then
 reinstall naming every extra you want at once — extras don't accumulate:
 `uv tool install --force 'c64cast[all]'`. See
-[usage.md "Installation"](usage.md#installation).
+[the User's Guide, "Installing c64cast"](guide/04-setting-up.md#installing-c64cast).
 
 ## Single-scene mode is automatic, not opt-in
 

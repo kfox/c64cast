@@ -383,6 +383,20 @@ class BookSourcesTest(unittest.TestCase):
             with self.subTest(book=book_dir.name):
                 self.assertTrue(bg.build(book_dir))
 
+    def test_the_makefile_knows_every_book(self):
+        # A book's directory and artefact basename are spelled in both its
+        # book.toml and the Makefile, which renders it and cleans up after it.
+        # The Makefile cannot read the TOML without either a Python it must not
+        # need for `clean` or a sed that fails silently, so the two spellings
+        # are held together here instead.
+        makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        for book_dir in _BOOK_DIRS:
+            with self.subTest(book=book_dir.name):
+                rel = book_dir.relative_to(_REPO_ROOT).as_posix()
+                self.assertIn(rel, makefile, f"the Makefile never names {rel}")
+                output = bg.load_book_toml(book_dir)["output"]
+                self.assertIn(output, makefile, f"the Makefile cannot render {output}")
+
 
 if __name__ == "__main__":
     unittest.main()

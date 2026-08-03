@@ -96,15 +96,21 @@ jobs:
       - name: Set up Typst
         uses: typst-community/setup-typst@63ac138db421d586de61f7f5ac3bcef6a2e6c78c # v5.1.0
 
-      - name: Render the User's Guide
-        # build_book.py is stdlib-only, so PY skips the project sync.
-        run: make guide PY="uv run --no-project python"
+      - name: Render the books
+        # build_book.py is stdlib-only, so PY skips the project sync. The
+        # generated appendices are committed for exactly this reason: nothing
+        # here may need to import c64cast.
+        run: make books PY="uv run --no-project python"
 
-      - name: Name the guide for release
+      - name: Name the books for release
+        # Every rendered PDF, whatever it is called: a new book under docs/
+        # ships the release it lands in, without editing this step.
         run: |
           set -euo pipefail
-          cp docs/guide/c64cast-users-guide.pdf \
-            "dist/c64cast-users-guide-${{ steps.version.outputs.version }}.pdf"
+          for pdf in docs/*/c64cast-*.pdf; do
+            name="$(basename "$pdf" .pdf)"
+            cp "$pdf" "dist/$name-${{ steps.version.outputs.version }}.pdf"
+          done
           ls -l dist/
 
       - name: Extract the changelog section for this version
@@ -194,6 +200,10 @@ jobs:
             echo
             echo "* 📘 **[c64cast User's Guide $VERSION (PDF)]($base/c64cast-users-guide-$VERSION.pdf)**"
             echo "  — 10 chapters, read in order, starting from nothing."
+            echo "* 📕 **[c64cast Programmer's Reference Guide $VERSION (PDF)]($base/c64cast-reference-guide-$VERSION.pdf)**"
+            echo "  — every scene, knob and register, with nine generated appendices."
+            echo "* 🎛️ [c64cast Performance Card $VERSION (PDF)]($base/c64cast-performance-card-$VERSION.pdf)"
+            echo "  — two pages for the desk next to the controller."
             echo "* 📦 [\`c64cast-$VERSION-py3-none-any.whl\`]($base/c64cast-$VERSION-py3-none-any.whl)"
             echo "  · [\`c64cast-$VERSION.tar.gz\`]($base/c64cast-$VERSION.tar.gz)"
             echo "  — or just \`uv tool install 'c64cast[all]'\`"
@@ -223,4 +233,4 @@ jobs:
             "${flags[@]}" \
             dist/*.whl \
             dist/*.tar.gz \
-            "dist/c64cast-users-guide-$VERSION.pdf"
+            dist/*.pdf

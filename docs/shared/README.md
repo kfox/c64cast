@@ -1,8 +1,9 @@
 # Shared book assets
 
 What every c64cast book is built from. A book is a directory under `docs/`
-holding its prose as numbered Markdown plus a `book.toml`;
-[`docs/guide/`](../guide/) is one.
+holding its prose as numbered Markdown plus a `book.toml`. There are three:
+the [User's Guide](../guide/README.md), the [Programmer's Reference
+Guide](../reference/README.md) and the [Performance Card](../card/README.md).
 
 | File | Is |
 |---|---|

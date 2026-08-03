@@ -2,7 +2,7 @@
 
 Playing real SID music and drawing it: the 6502 player PRG, the host-side emulator that recovers register state, and the three scenes built on the shared oscilloscope renderer.
 
-Part of the [architecture reference](../architecture.md). For end-user configuration see [usage.md](../usage.md), for known limitations [caveats.md](../caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](../extending.md).
+Part of the [architecture reference](../architecture.md). For end-user configuration see [the Programmer’s Reference Guide](../reference/README.md), for known limitations [caveats.md](../caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](../extending.md).
 
 **Contents**
 

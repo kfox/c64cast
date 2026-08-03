@@ -1,8 +1,8 @@
 # The c64cast User's Guide
 
 A friendly, start-from-nothing introduction to c64cast, written to be read in
-order. Where [`usage.md`](../usage.md) is a reference you consult,
-this is a guide you read.
+order. Where the [Programmer's Reference Guide](../reference/README.md) is a
+book you consult, this is one you read.
 
 Its structure and typography are an affectionate homage to the *Commodore 64
 Ultimate User's Guide* — in particular that book's method of introducing
