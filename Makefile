@@ -30,7 +30,7 @@ SYNC := $(if $(CI),,sync)
 .DEFAULT_GOAL := help
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema \
-        guide reference books guide-figures reference-appendices
+        guide reference card books guide-figures reference-appendices
 
 # Books (docs/<book>/*.md + book.toml) are rendered by Typst, which is an
 # external binary rather than a Python package. The two faces (Jost*,
@@ -41,13 +41,22 @@ SYNC := $(if $(CI),,sync)
 BOOK_FONTS  := docs/shared/fonts
 TYPST_FLAGS  = --root . --font-path $(BOOK_FONTS)
 
+# Each book is a directory plus the artefact basename its book.toml declares.
+# The basename is spelled in both places rather than parsed out of the TOML
+# here: `clean` has to know the filenames without running Python, and a sed
+# that silently matched nothing would render `docs/card/.pdf`. The two
+# spellings are held together by a test instead — test_book_build.py fails if
+# the Makefile does not name every book under docs/.
 GUIDE_DIR   := docs/guide
-GUIDE_TYP   := $(GUIDE_DIR)/c64cast-users-guide.typ
-GUIDE_PDF   := $(GUIDE_DIR)/c64cast-users-guide.pdf
+GUIDE_BOOK  := c64cast-users-guide
 
 REF_DIR     := docs/reference
-REF_TYP     := $(REF_DIR)/c64cast-reference-guide.typ
-REF_PDF     := $(REF_DIR)/c64cast-reference-guide.pdf
+REF_BOOK    := c64cast-reference-guide
+
+CARD_DIR    := docs/card
+CARD_BOOK   := c64cast-performance-card
+
+BOOK_ARTS   := $(GUIDE_DIR)/$(GUIDE_BOOK) $(REF_DIR)/$(REF_BOOK) $(CARD_DIR)/$(CARD_BOOK)
 
 # Markdown -> Typst -> PDF for one book: $(1) is its directory, $(2) the
 # artefact basename its book.toml declares. Typst is not a Python dependency,
@@ -76,6 +85,7 @@ help:
 	@echo "  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata"
 	@echo "  guide      render docs/guide/*.md to the User's Guide PDF (needs typst)"
 	@echo "  reference  render docs/reference/*.md to the Reference Guide PDF (needs typst)"
+	@echo "  card       render docs/card/*.md to the Performance Card PDF (needs typst)"
 	@echo "  books      render every book"
 	@echo "  guide-figures  redraw the guide's placeholder figures"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-H"
@@ -129,12 +139,15 @@ guide-figures: $(SYNC)
 	$(PY) scripts/make_guide_figures.py
 
 guide: $(SYNC)
-	$(call render-book,$(GUIDE_DIR),c64cast-users-guide)
+	$(call render-book,$(GUIDE_DIR),$(GUIDE_BOOK))
 
 reference: $(SYNC)
-	$(call render-book,$(REF_DIR),c64cast-reference-guide)
+	$(call render-book,$(REF_DIR),$(REF_BOOK))
 
-books: guide reference
+card: $(SYNC)
+	$(call render-book,$(CARD_DIR),$(CARD_BOOK))
+
+books: guide reference card
 
 # Rewrite the Programmer's Reference Guide's generated appendices (A-H) and the
 # performance card's live-target table from the config metadata. Unlike the
@@ -152,6 +165,6 @@ check: lint typecheck test
 clean:
 	rm -rf build dist .coverage .coverage.* htmlcov coverage.xml
 	rm -rf .ruff_cache .mypy_cache .pytest_cache
-	rm -f $(GUIDE_TYP) $(GUIDE_PDF) $(REF_TYP) $(REF_PDF)
+	rm -f $(addsuffix .typ,$(BOOK_ARTS)) $(addsuffix .pdf,$(BOOK_ARTS))
 	find . -type d -name '__pycache__' -prune -exec rm -rf {} +
 	find . -type d -name '*.egg-info' -prune -exec rm -rf {} +

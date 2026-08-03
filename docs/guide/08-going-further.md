@@ -90,9 +90,11 @@ writing the mapping out for you.
 > There is more here than one section can cover: a tempo and beat grid, a
 > clip-launch grid with lit pads on controllers that support it, a layerable
 > effect chain, and a web console you can open on a phone to drive the whole
-> thing from across the room.
-> [`docs/usage.md`](https://github.com/kfox/c64cast/blob/main/docs/usage.md)
-> documents each in full.
+> thing from across the room. The
+> [Programmer's Reference Guide](https://github.com/kfox/c64cast/tree/main/docs/reference)
+> documents each in full, and its
+> [Performance Card](https://github.com/kfox/c64cast/tree/main/docs/card)
+> is two printed pages of the same thing for the desk beside your controller.
 
 ## Controlling It From Other Things
 
@@ -169,8 +171,10 @@ that renders one as a pasteable block, if you would rather not write your own.
 
 You have reached the end of the guided part. From here:
 
-- [**`docs/usage.md`**](https://github.com/kfox/c64cast/blob/main/docs/usage.md)
-  is the complete reference for every setting.
+- [**The Programmer's Reference Guide**](https://github.com/kfox/c64cast/tree/main/docs/reference)
+  is the second volume: every scene, every knob and every register, with nine
+  appendices generated from the code. It is the book to open when you know what
+  you want and need to know exactly what it is called.
 - **`c64cast --list-examples`** lists the runnable demonstration of
   every scene and every overlay that ships inside c64cast (browsable
   [on GitHub](https://github.com/kfox/c64cast/tree/main/c64cast/examples)).

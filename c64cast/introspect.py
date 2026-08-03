@@ -746,7 +746,7 @@ def example_summary(path: Path) -> str:
     text = re.sub(r"\s+", " ", " ".join(para))
     text = re.sub(r"\s*\(see [^)]*\)", "", text)
     # First sentence. A period only ends one when whitespace follows, which
-    # spares `FX.cpp` and `docs/usage.md` mid-sentence.
+    # spares `FX.cpp` and `docs/caveats.md` mid-sentence.
     if match := re.search(r"\.(?=\s)", text):
         text = text[: match.end()]
     text = re.sub(r"^Single-scene demo(?: of|:)\s*", "", text)

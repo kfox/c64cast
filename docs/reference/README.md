@@ -42,6 +42,9 @@ definitions that answer `--describe`, `--compat` and `--print-schema`, by
 | G — Command-line flags | the argparse parser in `cli.py` |
 | H — Example configurations | the packaged `examples/`, read through `paths` |
 
+The same pass writes the [Performance Card](../card/README.md)'s live-target
+table, which is the card's most drift-prone page.
+
 They carry `generated: true` in their front matter and are committed, so the
 release can render the PDFs without resolving the project environment. After
 changing a config field, an overlay, a generator, an effect, a CLI flag or an
