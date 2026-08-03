@@ -56,17 +56,29 @@ def _chapters() -> list[Path]:
 
 
 def _load(path: Path):
-    """One chapter, with its own book's chapter numbers in scope.
+    """One chapter, with its own book's chapter numbers and anchors in scope.
 
-    A cross-reference is checked against the book it appears in, so a chapter
-    loaded without that set would reject "see Appendix F" as naming nothing.
+    Both are checked against the book the chapter appears in, so a chapter
+    loaded without them would reject "see Appendix F", or a link at a section
+    of the next file, as naming nothing.
     """
-    return bg.load_chapter(path, bg.chapter_numbers(bg.discover_chapters(path.parent)))
+    siblings = bg.discover_chapters(path.parent)
+    return bg.load_chapter(path, bg.chapter_numbers(siblings), bg.section_anchors(siblings))
 
 
-def convert(markdown: str, path: Path | None = None, chapters: frozenset[str] | None = None) -> str:
+def convert(
+    markdown: str,
+    path: Path | None = None,
+    chapters: frozenset[str] | None = None,
+    anchors: frozenset[str] | None = None,
+) -> str:
     """Convert a chapter body, with the `# Title` line already accounted for."""
-    conv = bg.Converter(path or (_GUIDE_DIR / "99-test.md"), 1, chapters or frozenset())
+    conv = bg.Converter(
+        path or (_GUIDE_DIR / "99-test.md"),
+        1,
+        chapters or frozenset(),
+        anchors or frozenset(),
+    )
     conv.title = "Test"
     return conv.convert(markdown)
 
@@ -165,15 +177,21 @@ class BlockConversionTest(unittest.TestCase):
         conv = bg.Converter(_GUIDE_DIR / "99-test.md", 1)
         conv.convert("# Title\n\n## One\n\n## Two\n\ntext\n")
         self.assertEqual(conv.title, "Title")
-        self.assertEqual(conv.sections, ["One", "Two"])
+        self.assertEqual(
+            conv.sections,
+            [("sec-99-test-one", "One"), ("sec-99-test-two", "Two")],
+        )
 
     def test_opener_page_sections_carry_their_markup(self):
         # Appendix A's sections are literals. Quoted as strings for the opener
         # page they arrived with their backticks showing.
         conv = bg.Converter(_GUIDE_DIR / "99-test.md", 1)
         conv.convert("# Title\n\n## `[hardware]`\n\ntext\n")
-        self.assertEqual(conv.sections, ["`[hardware]`"])
-        self.assertEqual(bg.typst_content_list(conv.sections), "([`[hardware]`],)")
+        self.assertEqual(conv.sections, [("sec-99-test-hardware", "`[hardware]`")])
+        self.assertEqual(
+            bg.typst_content_list(conv.sections),
+            '((label: "sec-99-test-hardware", title: [`[hardware]`]),)',
+        )
 
     def test_callout(self):
         out = convert("> [!NOTE]\n> Careful with that.\n")
@@ -264,6 +282,106 @@ class BlockConversionTest(unittest.TestCase):
         conv = bg.Converter(_GUIDE_DIR / "99-test.md", 1)
         with self.assertRaises(bg.BookError):
             conv.convert("A paragraph before any heading.\n")
+
+
+class SectionAnchorTest(unittest.TestCase):
+    """Section anchors have to be GitHub's, because the Markdown is the book.
+
+    A link written `04-display-pipeline.md#fades` has to resolve on github.com
+    *and* land on the right page of the PDF, so the slug rule is GitHub's rule
+    and the two are checked against the same source.
+    """
+
+    def test_slugs_follow_githubs_rule(self):
+        cases = {
+            # The em dash is not alphanumeric so it vanishes; the two spaces
+            # around it do not, and each becomes a hyphen.
+            "Which Pixel Takes Which — `dither`": "which-pixel-takes-which--dither",
+            "`big_text` Wants the Scene to Itself": "big_text-wants-the-scene-to-itself",
+            "`[hardware]`": "hardware",
+            "Overlay and Display-Mode Compatibility": "overlay-and-display-mode-compatibility",
+        }
+        for heading, slug in cases.items():
+            with self.subTest(heading=heading):
+                self.assertEqual(bg.heading_slug(heading), slug)
+
+    def test_a_repeated_heading_is_disambiguated(self):
+        slugs = bg.file_section_slugs("## Fades\n\n### Fades\n\n## Other\n")
+        self.assertEqual(slugs, ["fades", "fades-1", "other"])
+
+    def test_a_heading_inside_a_code_fence_is_not_a_section(self):
+        # A `#` comment in a TOML listing is not a heading, and the converter
+        # would not emit a label for one either.
+        slugs = bg.file_section_slugs("## Real\n\n```toml\n## Not a heading\n```\n")
+        self.assertEqual(slugs, ["real"])
+
+    def test_the_label_names_the_file_not_the_chapter_number(self):
+        # Keyed on the filename so renumbering a chapter does not silently
+        # retarget every link into it -- and so the two `## Generators`
+        # sections, in different files, stay apart.
+        self.assertEqual(
+            bg.section_label("04-display-pipeline", "fades"), "sec-04-display-pipeline-fades"
+        )
+
+    def test_subsections_are_labelled_too(self):
+        # `###` is the granularity a reader looks things up at: each scene
+        # type and each `[color]` setting is one.
+        out = convert("## Section\n\n### Sub\n")
+        self.assertIn('#label("sec-99-test-section")', out)
+        self.assertIn('#label("sec-99-test-sub")', out)
+
+    def test_a_section_link_targets_a_label_not_a_url(self):
+        # A string destination is a URL, so a relative `.md#anchor` reached the
+        # PDF as a dead link.
+        anchors = frozenset({"sec-04-display-pipeline-fades"})
+        out = convert("see [Fades](04-display-pipeline.md#fades)", anchors=anchors).strip()
+        self.assertEqual(out, 'see #link(label("sec-04-display-pipeline-fades"))[Fades]')
+
+    def test_a_bare_anchor_means_this_same_file(self):
+        anchors = frozenset({"sec-99-test-fades"})
+        out = convert("see [Fades](#fades)", anchors=anchors).strip()
+        self.assertEqual(out, 'see #link(label("sec-99-test-fades"))[Fades]')
+
+    def test_an_unresolvable_anchor_fails_the_build(self):
+        anchors = frozenset({"sec-99-test-fades"})
+        with self.assertRaises(bg.BookError) as ctx:
+            convert("see [Fades](#fadez)", anchors=anchors)
+        message = str(ctx.exception)
+        self.assertIn("names no section", message)
+        self.assertIn("sec-99-test-fades", message)  # the difflib suggestion
+
+    def test_an_ordinary_url_is_untouched(self):
+        # Every cross-document link in the books is an absolute GitHub URL, and
+        # none of them may start resolving against the anchor set.
+        out = convert("see [the repo](https://github.com/x/y#readme)").strip()
+        self.assertEqual(out, 'see #link("https://github.com/x/y#readme")[the repo]')
+
+    def test_every_label_in_a_book_is_unique(self):
+        # Typst resolves a reference by label, so two sections sharing one
+        # would silently send half the links to the wrong page.
+        for book_dir in _BOOK_DIRS:
+            with self.subTest(book=book_dir.name):
+                labels = []
+                for path in bg.discover_chapters(book_dir):
+                    _, body, _ = bg.parse_front_matter(path.read_text(encoding="utf-8"), path)
+                    labels += [bg.section_label(path.stem, s) for s in bg.file_section_slugs(body)]
+                duplicates = {label for label in labels if labels.count(label) > 1}
+                self.assertEqual(duplicates, set(), f"duplicate section labels: {duplicates}")
+
+    def test_the_pre_pass_finds_exactly_what_the_converter_emits(self):
+        # The anchor set is read from the Markdown by regex and the labels are
+        # emitted by the converter. Two readings of the same file, and a link
+        # that passes the first check and misses the second is a dead link in
+        # print -- so they are pinned to each other.
+        for book_dir in _BOOK_DIRS:
+            with self.subTest(book=book_dir.name):
+                paths = bg.discover_chapters(book_dir)
+                declared = bg.section_anchors(paths)
+                emitted = set()
+                for path in paths:
+                    body = _load(path).body
+                    emitted.update(re.findall(r'#label\("(sec-[^"]+)"\)', body))
+                self.assertEqual(emitted, set(declared))
 
 
 class FrontMatterTest(unittest.TestCase):

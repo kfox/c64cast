@@ -78,10 +78,11 @@ uv run python scripts/build_book.py --book-dir docs/guide --check
 | `a<br>b` | A line break inside a table cell |
 | `- ` / `1. ` | Lists, nestable by indentation |
 | `**bold**`, `*italic*`, `` `code` ``, `[text](url)` | As expected |
+| `[text](04-name.md#anchor)` | A link to that section — `#anchor` alone for one in the same file |
 | `Chapter 4`, `Appendix F` | A link to that chapter's opener page |
 | `✓`, `→` | Drawn marks — the body face carries neither |
 
-Four rules that are not obvious:
+Five rules that are not obvious:
 
 - **Put command-line flags in backticks.** Typst turns a bare `--` in prose
   into an en dash, so `--config` outside a code span would render wrong. The
@@ -92,6 +93,11 @@ Four rules that are not obvious:
 - **A cross-reference is checked.** "Appendix F" becomes a link to that
   opener page, and naming a chapter the book does not have fails the build —
   which is what catches a renumbering the prose was not told about.
+- **A section link is checked too**, against the anchors every `##` and `###`
+  in the book defines. The anchor is GitHub's — lowercase, punctuation
+  dropped, spaces to hyphens — because the same link has to work on
+  github.com, where the Markdown is the book. An anchor that resolves nowhere
+  fails the build and names the nearest ones it knows.
 - **A character outside the two vendored faces will not be drawn at all.**
   Typst's own fallback is off, so there is no substitute and no warning;
   `tests/test_book_fonts.py` fails instead. Two marks the books lean on, `✓`
