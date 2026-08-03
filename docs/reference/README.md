@@ -58,7 +58,18 @@ make reference-appendices
 fresh run, so a forgotten regeneration is caught in CI rather than in print.
 That test also converts each one, which is what catches help text that a
 terminal is happy with and a typesetter is not — an unbackticked `--flag`
-becomes an en dash, and a bare `|` splits a table row.
+becomes an en dash, and a bare `|` splits a table row. `tests/test_book_fonts.py`
+catches the third kind: a character the vendored faces have no glyph for, which
+Typst leaves as a gap rather than reporting. A `⇒` in a generator's docstring
+reached Appendix E that way.
+
+Most of what these appendices contain is one shape — a thing with a name, a
+type and a default, and a paragraph about it — so they are set as two columns
+rather than four: the three identifying facts stacked in a fixed-width column,
+and the description in all the measure that is left. `identity()` and
+`fields_table()` in the generator build them, and the width itself is in
+[`template.typ`](../shared/template.typ), which is where every other
+measurement in the books lives.
 
 ## How the build works
 

@@ -153,6 +153,39 @@ def table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
     return out + [""]
 
 
+def identity(*lines: str) -> str:
+    """The left column of a fields table: what the thing is called, stacked.
+
+    A name, its type and its default are three facts about one setting, not
+    three columns of a grid -- and set as three columns on a 6.24in page they
+    left the description, the only part written for a human, about a third of
+    the measure and four words to a line. Stacking them puts the width back
+    where the prose is. `<br>` is GFM's only line break inside a cell, and it
+    is what github.com renders too.
+
+    The first line is emboldened because it is the name, and a name is the only
+    thing anybody scans a reference for. Left plain, the three lines are one
+    undifferentiated block of mono and the eye has to read the type to work out
+    that it was not the name.
+    """
+    kept = [line for line in lines if line]
+    if not kept:
+        return ""
+    return "<br>".join([f"**{kept[0]}**", *kept[1:]])
+
+
+def fields_table(label: str, rows: Iterable[Sequence[str]]) -> list[str]:
+    """A two-column table: :func:`identity` on the left, prose on the right.
+
+    The directive is an HTML comment, invisible on github.com, that tells
+    `build_book.py` to hand this table the one column width every table of this
+    shape uses -- so a scene key, an overlay parameter and a CLI flag all line
+    up down the book instead of each being sized to its own longest entry.
+    """
+    body = table([label, "Description"], rows)
+    return ["<!-- table: fields -->", *body] if body else []
+
+
 def front_matter(number: str, title: str, blurb: str) -> list[str]:
     """The header every generated chapter opens with.
 
@@ -201,8 +234,8 @@ def appendix_config() -> list[str]:
             if fd.choices:
                 choices = ", ".join(code(c) for c in fd.choices)
                 desc = f"{desc} Choices: {choices}." if desc else f"Choices: {choices}."
-            rows.append([code(fd.name), code(fd.type), fmt_default(fd.default), desc])
-        out += table(["Field", "Type", "Default", "Meaning"], rows)
+            rows.append([identity(code(fd.name), code(fd.type), fmt_default(fd.default)), desc])
+        out += fields_table("Field", rows)
     return out
 
 
@@ -236,13 +269,19 @@ def appendix_scenes() -> list[str]:
         ),
         "",
     ]
-    out += table(
-        ["Key", "Type", "Default", "Meaning"],
-        [[code(fd.name), code(fd.type), fmt_default(fd.default), cell(fd.help)] for fd in common],
+    out += fields_table(
+        "Key",
+        [
+            [identity(code(fd.name), code(fd.type), fmt_default(fd.default)), cell(fd.help)]
+            for fd in common
+        ],
     )
 
     for sd in types:
-        out += [f'## `type = "{sd.name}"`', ""]
+        # The name alone. `type = "webcam"` is how it is written in a file, but
+        # as a heading it repeats the key ten times and reads as syntax where
+        # the reader is scanning for a name.
+        out += [f"## `{sd.name}`", ""]
         if sd.help:
             out += [prose(sd.help), ""]
         if sd.displays:
@@ -256,9 +295,9 @@ def appendix_scenes() -> list[str]:
             if fd.choices:
                 choices = ", ".join(code(c) for c in fd.choices)
                 desc = f"{desc} Choices: {choices}." if desc else f"Choices: {choices}."
-            rows.append([code(fd.name), code(fd.type), fmt_default(fd.default), desc])
+            rows.append([identity(code(fd.name), code(fd.type), fmt_default(fd.default)), desc])
         if rows:
-            out += table(["Key", "Type", "Default", "Meaning"], rows)
+            out += fields_table("Key", rows)
         else:
             out += [prose("No keys beyond the common ones above."), ""]
     return out
@@ -296,10 +335,17 @@ def appendix_overlays() -> list[str]:
             notes.append("only on " + ", ".join(code(m) for m in od.compatible_modes))
         if notes:
             out += [prose("Restrictions: " + "; ".join(notes) + "."), ""]
-        out += table(
-            ["Parameter", "Type", "Default", "Meaning"],
+        out += fields_table(
+            "Parameter",
             [
-                [code(p.name), code(p.type) if p.type else "", fmt_default(p.default), cell(p.help)]
+                [
+                    identity(
+                        code(p.name),
+                        code(p.type) if p.type else "",
+                        fmt_default(p.default),
+                    ),
+                    cell(p.help),
+                ]
                 for p in od.params
             ],
         )
@@ -341,8 +387,8 @@ def appendix_compat() -> list[str]:
             continue
         first_gap = next(m for m, ok in zip(modes, oks, strict=True) if not ok)
         _, why = introspect.overlay_mode_ok(ov, first_gap)
-        reasons.append([code(ov.name), cell(why)])
-    out += table(["Overlay", "Why it is unavailable"], reasons)
+        reasons.append([identity(code(ov.name)), cell(why)])
+    out += fields_table("Overlay", reasons)
     return out
 
 
@@ -351,12 +397,18 @@ def appendix_compat() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _live_params(cls: type) -> str:
+def _live_params(cls: type) -> list[str]:
+    """What a knob can reach on this generator or effect, one per line.
+
+    A line each rather than one run of commas: they share the identity column
+    with the name, and a generator with four of them would otherwise set as a
+    paragraph of mono in a column narrower than the paragraph.
+    """
     params: dict[str, tuple[float, float]] = getattr(cls, "LIVE_PARAMS", {}) or {}
     choices: dict[str, tuple[str, ...]] = getattr(cls, "LIVE_CHOICES", {}) or {}
     bits = [f"{code(name)} {lo:g}–{hi:g}" for name, (lo, hi) in params.items()]
     bits += [f"{code(name)} ({len(values)} values)" for name, values in choices.items()]
-    return ", ".join(bits) if bits else "—"
+    return bits
 
 
 def appendix_generators() -> list[str]:
@@ -365,8 +417,8 @@ def appendix_generators() -> list[str]:
         "Generators and Effects",
         f"The {len(generators.REGISTRY)} procedural sources a `generative` scene can "
         f"draw from, and the {len(effects.REGISTRY)} effects that can be layered over "
-        "any scene. The live column is what a knob can reach while the show is "
-        "running; the targets themselves are Appendix F.",
+        "any scene. Each entry lists what a knob can reach while the show is "
+        "running under its name; the targets themselves are Appendix F.",
     )
     out += ["## Generators", ""]
     out += [
@@ -376,10 +428,13 @@ def appendix_generators() -> list[str]:
         ),
         "",
     ]
-    out += table(
-        ["Name", "Live parameters", "Description"],
+    out += fields_table(
+        "Generator",
         [
-            [code(name), _live_params(cls), cell(first_sentence(cls.__doc__ or ""))]
+            [
+                identity(code(name), *_live_params(cls)),
+                cell(first_sentence(cls.__doc__ or "")),
+            ]
             for name, cls in generators.REGISTRY.items()
         ],
     )
@@ -392,10 +447,13 @@ def appendix_generators() -> list[str]:
         ),
         "",
     ]
-    out += table(
-        ["Name", "Live parameters", "Description"],
+    out += fields_table(
+        "Effect",
         [
-            [code(name), _live_params(cls), cell(first_sentence(cls.__doc__ or ""))]
+            [
+                identity(code(name), *_live_params(cls)),
+                cell(first_sentence(cls.__doc__ or "")),
+            ]
             for name, cls in effects.REGISTRY.items()
         ],
     )
@@ -461,14 +519,16 @@ def appendix_cli() -> list[str]:
             names = ", ".join(code(s) for s in action.option_strings) or code(
                 str(action.metavar or action.dest)
             )
+            # A switch takes nothing, and a second line saying so under every
+            # one of them is a column of em dashes the reader has to look past.
             if action.nargs == 0 or not action.option_strings:
-                takes = "—"
+                takes = ""
             elif action.choices:
                 takes = ", ".join(code(str(c)) for c in action.choices)
             else:
                 takes = code(str(action.metavar or action.dest.upper()))
-            rows.append([names, takes, cell(action.help or "")])
-        out += table(["Flag", "Takes", "Meaning"], rows)
+            rows.append([identity(names, takes), cell(action.help or "")])
+        out += fields_table("Flag", rows)
     return out
 
 
@@ -501,8 +561,8 @@ def appendix_examples() -> list[str]:
         summary = cell(introspect.example_summary(path))
         if introspect.example_needs_media(path):
             summary += " *(needs your own media)*"
-        rows.append([code(pathsmod.example_name(path)), summary])
-    out += table(["Name", "What it demonstrates"], rows)
+        rows.append([identity(code(pathsmod.example_name(path))), summary])
+    out += fields_table("Name", rows)
     return out
 
 

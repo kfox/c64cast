@@ -83,6 +83,33 @@ the version and stamps it with the date.
   vendored OFL fonts moved from `docs/guide/` to `docs/shared/`, and each book's
   `book.toml` names the layout it takes. `make guide` and the released PDF are
   unchanged.
+- **The reference guide's generated appendices are set as two columns instead of
+  four.** A field's name, type and default are three facts about one setting,
+  and given a column each on a 6.24in page they left the description — the only
+  part written for a human — about a third of the measure and four words to a
+  line, with a single field running most of a page. They are now stacked into
+  one fixed-width column with the description taking the rest, at the same width
+  in every such table, so a scene key, an overlay parameter and a CLI flag all
+  line up down the book. The reference is 20 pages shorter for it.
+- **Chapter and appendix cross-references are links.** "See Appendix F" in the
+  prose jumps to Appendix F, and every line of the table of contents jumps to
+  its page. A reference to a chapter the book does not have now fails the build,
+  which is what catches a renumbering the prose was not told about.
+- **The books' symbols no longer depend on the machine that built them.** Jost
+  has no ✓ and no →, and Typst was filling them from whatever was installed — so
+  the compatibility matrix was set in a heavy upright check locally and a thin
+  slanted one in CI, from the same source file. Both marks are now drawn by the
+  template, Typst's own fallback is off, and a new test fails on any character
+  the two vendored faces cannot draw. (One had already got through: a `⇒` in a
+  generator's docstring, which is in neither face and was printing as a gap.)
+- Inline code in the books is set at 1.08em rather than 1em. The two faces agree
+  on x-height but Inconsolata's ascenders and capitals run 12–17% short of
+  Jost's, which is what the eye compares when the two meet inside a line, so
+  every `[section]`, `--flag` and `6581` sat visibly low in its sentence.
+- The appendices' opener pages no longer print the backticks around a section
+  name — the section list was being quoted as a string rather than converted —
+  and Appendix B's scene types are headed by the type's name rather than by
+  `type = "webcam"` repeated ten times.
 
 ## [0.1.0] - 2026-07-30
 

@@ -18,8 +18,7 @@ read memory, and takes the cursor keys while it is open.
 
 ## Gestures
 
-`[vision].enabled`, over the shared camera. Works on any backend, including a
-TeensyROM+ that cannot read memory.
+`[vision].enabled`, over the shared camera.
 
 | Gesture | Running | With `[vision].performance` |
 |---|---|---|
@@ -52,7 +51,7 @@ profile, then your own `cc_map`.
 |---|---|
 | Show | `pause`, `resume`, `toggle_pause`, `skip`, `cycle_style`, `jump` |
 | Parameters | `param`, `fx_toggle` |
-| Video | `transport.play_pause`, `.stop`, `.loop_toggle`, `.rw`, `.ff`, `.jog`, `.record`, `loop_slot` |
+| Video | `transport.play_pause`, `transport.stop`, `transport.loop_toggle`, `transport.rw`, `transport.ff`, `transport.jog`, `transport.record`, `loop_slot` |
 | Performance | `clip_launch`, `tempo_tap`, `look_save`, `look_recall` |
 | Feedback | `osd.position` |
 

@@ -128,7 +128,7 @@ system-exclusive frame). The actions fall into five groups:
 |---|---|
 | Transport of the show | `pause`, `resume`, `toggle_pause`, `skip`, `cycle_style`, `jump` |
 | Live parameters | `param`, `fx_toggle` |
-| Transport of a video | `transport.play_pause`, `.stop`, `.loop_toggle`, `.rw`, `.ff`, `.jog`, `.record`, `loop_slot` |
+| Transport of a video | `transport.play_pause`, `transport.stop`, `transport.loop_toggle`, `transport.rw`, `transport.ff`, `transport.jog`, `transport.record`, `loop_slot` |
 | Performance | `clip_launch`, `tempo_tap`, `look_save`, `look_recall` |
 | Feedback | `osd.position` |
 
@@ -380,11 +380,9 @@ The default mapping mirrors the keyboard exactly:
 | Fast horizontal swipe | Skip | — |
 | Open hand | Cycle style | — |
 
-Because it watches a camera rather than the Commodore's memory, it works on
-**any** backend — including a TeensyROM whose firmware is too old to read
-memory, where it is the only control surface available. A frame with no hand in
-it is skipped rather than read as a released gesture, and a cooldown sits on top
-of edge detection, because hands are noisier than key bits.
+A frame with no hand in it is skipped rather than read as a released gesture,
+and a cooldown sits on top of edge detection, because hands are noisier than key
+bits.
 
 With `[vision].performance = true`, the running-state gestures are remapped to
 the clip grid: a swipe advances to the next clip, and holding a pinch or an open
