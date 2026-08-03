@@ -43,10 +43,6 @@ The packaged copy lives inside the installation and should be treated as
 read-only; `--print-example` is the supported way to get a copy you own.
 Appendix H lists every example by name, with what each one demonstrates.
 
-Naming media files directly on the command line — `c64cast clip.mp4 tune.sid`
-— builds a configuration in memory and writes nothing. It is mutually
-exclusive with `--config`, and it climbs the same ladder as a file-driven run.
-
 ### Paths Inside a File
 
 A leading `~` is expanded wherever a configuration names a file: a scene's
@@ -82,6 +78,170 @@ The schema is generated from the same field metadata as Appendix A, and it is
 strict — a section name it does not know is an error rather than an unknown
 extension. That matters, because the loader itself is not strict about section
 names; see "Validation".
+
+### Media on the Command Line
+
+Naming media directly — `c64cast clip.mp4 tune.sid` — builds a configuration
+in memory and writes nothing. It is mutually exclusive with `--config`, and it
+climbs the same ladder as a file-driven run.
+
+Each argument becomes one scene, in the order given, and the extension decides
+which kind:
+
+| Argument | Becomes | Recognised as |
+|---|---|---|
+| A video | a `video` scene | `.mp4` `.avi` `.mkv` `.mov` `.webm` `.m4v` |
+| A tune | a `waveform` scene | `.sid` |
+| An image | a `slideshow` scene | `.jpg` `.jpeg` `.png` `.bmp` `.webp` |
+| A program | a `launcher` scene | `.prg` `.crt` |
+| An audio track | a `generative` scene with `audio_source = "file"` | `.mp3` `.wav` `.flac` `.m4a` `.ogg` `.aac` `.opus` |
+| A URL | a `video` scene | an `http://` or `https://` argument |
+
+An audio track has no picture of its own, so it gets one: a plasma reacting to
+the decoded track, which is what that `generative` scene is.
+
+A directory or a glob is handed to the scene as its `file` spec rather than
+expanded, so `c64cast ~/Music/hvsc` is a jukebox that draws a fresh tune each
+time round. Everything it matches must map to one scene type; a directory
+mixing tunes and videos is an error naming both.
+
+A URL is stored as written and resolved when the scene is built — the same
+path a configuration file's `file = "https://…"` takes. A direct media link is
+opened as it stands; a page on a video site needs the `yt` extra. Any `t=`,
+`start=` or `#t=` timestamp on it is parsed offline into the scene's `start_s`,
+so a link copied at a moment starts there.
+
+The arguments play once and c64cast exits; `--loop` repeats them instead.
+
+## Naming the Hardware
+
+One string says both what kind of machine to drive and where it is. It is
+`-u/--url` on the command line, and `$C64CAST_URL` in the environment when no
+flag was given.
+
+```bash
+c64cast -u u64://192.168.2.64 --config show.toml
+c64cast -u tr:// clip.mp4
+```
+
+The scheme picks the backend; the rest is that backend's endpoint.
+
+| Target | Reaches |
+|---|---|
+| `u64://HOST[:PORT]` | A C64U, over REST and the socket DMA service |
+| `http://HOST`, `https://HOST` | The same machine, with the URL handed to the REST client verbatim |
+| `tr://` | A TeensyROM+ over USB serial, on the device it detects |
+| `tr:///dev/cu.usbmodemXYZ` | A TeensyROM+ on that serial device node |
+| `tr://COM3` | The same, spelled the way Windows spells a serial port |
+| `tr://HOST[:PORT]` | A TeensyROM+ over raw TCP, port 2112 unless you say otherwise |
+
+`http(s)` is not a guess. The C64U is the only backend that speaks HTTP at
+all, so the scheme names it as definitely as `u64://` does.
+
+The serial-versus-TCP split for `tr://` falls out of the shape of the URL: no
+host means serial, a host means TCP, and a `COM<n>` host means a Windows
+serial port rather than a machine called COM3. Serial needs the `tr` extra,
+which is the library that opens the port — and, for a bare `tr://`, the one
+that finds the board by its USB identity.
+
+An unknown scheme, or a target with no scheme at all, is a usage error
+listing the ones that exist. It exits 2, before anything is opened.
+
+### What a Target Decomposes Into
+
+A connection target is not a setting in its own right. It is parsed once and
+written into the fields that are the real store — the ones a configuration
+file sets directly, and the ones Appendix A documents:
+
+| Target | `backend` | And in that backend's section |
+|---|---|---|
+| `u64://192.168.2.64` | `ultimate` | `url = "http://192.168.2.64"` |
+| `https://c64.local` | `ultimate` | `url = "https://c64.local"` |
+| `tr://` | `teensyrom` | `transport = "serial"` |
+| `tr:///dev/cu.usbmodem1234` | `teensyrom` | `transport`, `serial_port` |
+| `tr://10.0.0.9:2113` | `teensyrom` | `transport = "tcp"`, `host`, `tcp_port` |
+
+Only what the target actually carried is written, which is why a bare `tr://`
+leaves `serial_port` alone for the auto-detect and leaves a baud rate you set
+in a file in place. The equivalent of the first row, written out:
+
+```toml
+[hardware]
+backend = "ultimate"
+
+[ultimate64]
+url = "http://192.168.2.64"
+```
+
+Neither form is more correct than the other. A file is the place for a machine
+you drive every day; the flag is the place for a machine you are driving
+today.
+
+Four knobs are rare enough to have no flag of their own and ride along as
+query parameters:
+
+| Parameter | On | Sets | Default |
+|---|---|---|---|
+| `dma_port` | a C64U target | `[ultimate64].dma_port` | `64` |
+| `tcp_port` | a TCP `tr://` | `[teensyrom].tcp_port` | `2112` |
+| `baud` | a serial `tr://` | `[teensyrom].baud` | `2000000` |
+| `storage` | any `tr://` | `[teensyrom].storage` | `"sd"` |
+
+`storage` is where the TeensyROM+ stages the helper programs c64cast uploads —
+its SD card, or a USB stick.
+
+```bash
+c64cast -u 'u64://192.168.2.64?dma_port=64'
+c64cast -u 'tr:///dev/cu.usbmodem1234?baud=2000000&storage=usb'
+```
+
+Quote the target in a shell that treats `?` or `&` as its own.
+
+In ensemble mode `-u` is rejected rather than applied to an arbitrary machine:
+a wall has several connections, and the per-system files are where each one
+belongs. `-d/--device` is refused for the same reason. See "Flags in Ensemble
+Mode".
+
+### NTSC or PAL
+
+`-s NTSC` / `-s PAL`, or `[ultimate64].system`, states which video standard
+the Commodore runs. It defaults to `NTSC`, and it lives in `[ultimate64]`
+whichever backend is in use.
+
+It is not a picture setting. It fixes the two numbers the rest of the program
+derives from: the system frame rate, 60 or 50, which every scene's default
+`target_fps` comes out of; and the CPU clock, 1022727 Hz against 985248, which
+the digitised-audio timer and the host-side SID emulator are computed against.
+Told the wrong one, c64cast asks a PAL machine for ten frames a second it will
+never show, plays digitised audio 3.8% off pitch, and runs the oscilloscope's
+emulator on a clock the real chip is not keeping — so the trace drifts against
+the music it is drawing.
+
+Like the connection, this is a property of the computer on the desk rather
+than of the show, so it belongs in machine settings; `--save-settings` writes
+it there.
+
+### The Three Network Services
+
+A C64U ships with the services c64cast needs switched off, and they are three
+separate switches with three unrelated failure modes:
+
+| Service | Without it |
+|---|---|
+| **Ultimate DMA Service**<br>Network Settings | Nothing works. Every pixel is a memory write over this socket, and the run fails at startup |
+| **Command Interface**<br>Memory Configuration | The socket opens and the run then hangs forever — the listener accepts, and no command is ever dispatched |
+| **Web Remote Control Service**<br>Network Settings | Pixels still paint. Reset, program launch, SID playback and every memory *read* — the keyboard poll, the on-C64 menu, the character-ROM dump — do not |
+
+The first two are what the startup error names, in that order, when the DMA
+socket cannot be opened; the third is the answer to a run that paints happily
+and never starts a tune. Changing any of them needs a save, and a reboot of
+the machine.
+
+On older Ultimate 64 and Ultimate II+ firmware the third has no switch of its
+own and is served alongside the web interface, so it is already on.
+
+The *User's Guide* walks the menus keypress by keypress, and is the better
+page to have open while you are in front of the machine.
 
 ## The Shape of a Value
 

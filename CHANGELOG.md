@@ -133,6 +133,28 @@ the version and stamps it with the date.
   Nothing referred to either of them before.
 - The `fireworks` generator's description no longer carries an internal note
   reference, which was published verbatim in Appendix E and in the release PDF.
+- **The reference guide can get you connected.** Chapter 1 gains "Naming the
+  Hardware": every connection-target scheme, what a target decomposes into in
+  `[hardware]`, `[ultimate64]` and `[teensyrom]`, the `dma_port` / `tcp_port` /
+  `baud` / `storage` query parameters, what `-s NTSC` / `-s PAL` actually
+  changes and why it belongs in machine settings, and a table of the three C64U
+  network services against what stops working without each. The one string that
+  picks both the backend and its endpoint had appeared only inside two example
+  commands, and the volume you open when a machine will not answer never said
+  which switch to throw.
+- Quick playback's extension-to-scene mapping is in the reference guide's prose
+  rather than only inside a help string: which argument becomes which scene,
+  what a directory or a glob does, and how a URL's timestamp becomes `start_s`.
+- **`[interstitial]` is documented** (Chapter 2) — what the card is, the styles
+  it takes, the three things that bypass it, and what else happens at a scene
+  boundary.
+- Every scene type in the reference guide's catalogue now opens with the same
+  three facts: which extra it needs, where it looks for files when `file` is
+  omitted, and which display modes it accepts.
+- **The live-tune write-back is documented** (Chapter 6): what `--overwrite`
+  does, what is offered back at exit and what is not, and a warning that saving
+  rewrites the whole configuration file from the settings in memory and keeps
+  one `.bak` deep.
 
 ## [0.1.0] - 2026-07-30
 
