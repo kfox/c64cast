@@ -97,6 +97,15 @@ the version and stamps it with the date.
   prose jumps to Appendix F, and every line of the table of contents jumps to
   its page. A reference to a chapter the book does not have now fails the build,
   which is what catches a renumbering the prose was not told about.
+- **Every section of every book can be linked at, and the chapter opener pages
+  are clickable.** The contents page already navigated; the opener page listed
+  its sections and did nothing when you pressed one. Each `##` and `###` heading
+  now carries an anchor, the opener bullets jump to the section they name, and
+  the prose can link at a *section* — `[Fades](04-display-pipeline.md#fades)` —
+  rather than only at a whole chapter, so a pointer can mean a row in a table
+  instead of a page with a big numeral on it. The anchor is GitHub's own, because
+  the Markdown is the book: the same link resolves on github.com and in the PDF.
+  One that resolves nowhere fails the build and names the nearest ones it knows.
 - **The books' symbols no longer depend on the machine that built them.** Jost
   has no ✓ and no →, and Typst was filling them from whatever was installed — so
   the compatibility matrix was set in a heavy upright check locally and a thin

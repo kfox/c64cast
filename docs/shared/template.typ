@@ -226,10 +226,12 @@
         // and the `<>` syntax does not.
         [#metadata(number)#label("ch-" + number)]
         set text(fill: white)
-        // A lettered number is an appendix, not a chapter.
-        let label = if regex("^[0-9]") in number { "CHAPTER" } else { "APPENDIX" }
+        // A lettered number is an appendix, not a chapter. Named `kind` and
+        // not `label`: the section list below calls `label()`, and a local
+        // binding of that name shadows the function for the rest of the block.
+        let kind = if regex("^[0-9]") in number { "CHAPTER" } else { "APPENDIX" }
         align(right, box({
-          text(size: 17pt, weight: "bold", tracking: 1.2pt)[#label]
+          text(size: 17pt, weight: "bold", tracking: 1.2pt)[#kind]
           h(12pt)
           text(size: 66pt, weight: "bold")[#number]
         }))
@@ -248,9 +250,19 @@
           set text(size: 10pt)
           set par(leading: 0.75em, justify: false)
           for entry in contents {
-            // Drawn, for the same reason as the body-list marker below.
+            // Each line points at its own section, the way the contents page
+            // points at its chapters.
+            //
+            // The fill is set on the link's *body* rather than around the
+            // list: the document-wide show rule wraps a label link in
+            // `text(fill: accent, ..)`, which outranks an inherited white and
+            // left every title invisible against this page. An explicit fill
+            // inside the link outranks it back.
+            //
+            // Drawn bullet, for the same reason as the body-list marker below.
             block(above: 6.5pt, below: 6.5pt)[
-              #box(baseline: -0.8pt, circle(radius: 1.5pt, fill: white)) #entry
+              #box(baseline: -0.8pt, circle(radius: 1.5pt, fill: white))
+              #link(label(entry.label), text(fill: white, entry.title))
             ]
           }
         })

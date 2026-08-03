@@ -29,6 +29,7 @@ paragraph is worse than one that fails to build:
     a<br>b                     line break inside a table cell
     - / 1.                     lists, nestable by indentation
     **bold** *italic* `code` [text](url)
+    [text](04-name.md#anchor)  a link to that section, `#anchor` for this file
     Chapter 4 / Appendix F     a link to that opener page
     ✓ →                        drawn marks (the body face carries neither)
 
@@ -48,6 +49,7 @@ called; see LAYOUT_KEYS below.
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 import sys
 import tomllib
@@ -221,6 +223,63 @@ _INLINE = re.compile(
     re.VERBOSE | re.DOTALL,
 )
 
+# A Markdown link at a section: `04-display-pipeline.md#anchor`, or bare
+# `#anchor` for one in the same file. Anything else -- an absolute URL, a link
+# at a whole file -- is left to the ordinary link branch.
+_SECTION_HREF_RE = re.compile(r"^(?P<file>\d+-[\w.-]+\.md)?#(?P<slug>[\w-]+)$")
+
+
+def heading_slug(text: str) -> str:
+    """GitHub's heading anchor for one heading's Markdown source.
+
+    Deliberately GitHub's rule and not one of our own: the Markdown *is* the
+    book, and a link written `04-display-pipeline.md#which-pixel-takes-which--dither`
+    has to work on github.com as well as in the PDF. Lowercase, drop every
+    character that is not alphanumeric, space, hyphen or underscore, then
+    spaces to hyphens -- which is why an em dash surrounded by spaces leaves
+    two hyphens behind, and why ``## `[hardware]` `` is simply `hardware`.
+    """
+    slug = text.strip().lower()
+    slug = "".join(c for c in slug if c.isalnum() or c in " -_")
+    return slug.replace(" ", "-")
+
+
+def section_label(stem: str, slug: str) -> str:
+    """The Typst label a section anchor becomes: `sec-04-display-pipeline-fades`.
+
+    Keyed on the *filename* rather than the chapter number, so renumbering a
+    chapter does not silently retarget every link into it -- and so the label
+    is a pure function of the Markdown link that names it. It also keeps the
+    two `## Generators` sections, in different files, apart.
+    """
+    return f"sec-{stem}-{slug}"
+
+
+def file_section_slugs(text: str) -> list[str]:
+    """Every `##`/`###` anchor in one file's Markdown, in order, deduped.
+
+    GitHub disambiguates a repeated heading by suffixing `-1`, `-2`, and so
+    must we, or the second `### Fades` in a file would take the first one's
+    link.
+    """
+    seen: dict[str, int] = {}
+    slugs: list[str] = []
+    fenced = False
+    for line in text.split("\n"):
+        if _FENCE_RE.match(line) or line.strip().startswith("```"):
+            fenced = not fenced
+            continue
+        m = _HEADING_RE.match(line)
+        if fenced or not m or len(m.group("hashes")) not in (2, 3):
+            # A `#` comment in a fenced TOML listing is not a section, and the
+            # converter would not emit a label for one either.
+            continue
+        slug = heading_slug(m.group("text"))
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        slugs.append(slug if count == 0 else f"{slug}-{count}")
+    return slugs
+
 
 def check_prose(text: str, path: Path, lineno: int) -> None:
     """Reject prose that Typst's markup shorthands would silently rewrite.
@@ -237,11 +296,37 @@ def check_prose(text: str, path: Path, lineno: int) -> None:
         )
 
 
+def resolve_section_href(
+    href: str,
+    path: Path,
+    lineno: int,
+    anchors: frozenset[str],
+) -> str | None:
+    """The Typst label a `file.md#anchor` link targets, or None if it is not one.
+
+    An empty file part means this same file, exactly as on github.com. An
+    anchor that resolves nowhere is a hard error rather than a link into
+    nothing -- the same bargain the chapter cross-reference makes, and the one
+    that catches a section renamed without its links.
+    """
+    m = _SECTION_HREF_RE.match(href)
+    if not m:
+        return None
+    stem = Path(m.group("file")).stem if m.group("file") else path.stem
+    label = section_label(stem, m.group("slug"))
+    if label not in anchors:
+        near = difflib.get_close_matches(label, sorted(anchors), n=3)
+        hint = f"; did you mean {', '.join(near)}?" if near else ""
+        fail(path, lineno, f"{href!r} names no section in this book{hint}")
+    return label
+
+
 def convert_inline(
     text: str,
     path: Path,
     lineno: int,
     chapters: frozenset[str] = frozenset(),
+    anchors: frozenset[str] = frozenset(),
 ) -> str:
     """Translate one run of Markdown inline markup.
 
@@ -249,7 +334,9 @@ def convert_inline(
     "see Appendix F" a link rather than three words. It is threaded in rather
     than looked up because the answer is per book, and a reference to a chapter
     the book does not have is a hard error -- that is the check that catches a
-    renumbering the prose was not told about.
+    renumbering the prose was not told about. `anchors` is the same bargain one
+    level down: every section label the book defines, so a link at a section
+    can be checked before it reaches the PDF as a dead destination.
     """
     out: list[str] = []
     pos = 0
@@ -276,14 +363,19 @@ def convert_inline(
             fail(path, lineno, "images must stand alone in their own paragraph")
         elif m.group("link_text") is not None:
             href = m.group("link_href")
-            label = convert_inline(m.group("link_text"), path, lineno, chapters)
-            out.append(f"#link({typst_string(href)})[{label}]")
+            text_ = convert_inline(m.group("link_text"), path, lineno, chapters, anchors)
+            target = resolve_section_href(href, path, lineno, anchors)
+            # A section link is spelled at a Typst *label*, not a string: a
+            # string destination is a URL, so a relative `.md#anchor` reached
+            # the PDF as a dead link. The same Markdown resolves on github.com.
+            dest = f"label({typst_string(target)})" if target else typst_string(href)
+            out.append(f"#link({dest})[{text_}]")
         elif m.group("bold") is not None:
-            out.append(f"*{convert_inline(m.group('bold'), path, lineno, chapters)}*")
+            out.append(f"*{convert_inline(m.group('bold'), path, lineno, chapters, anchors)}*")
         elif m.group("em_us") is not None:
-            out.append(f"_{convert_inline(m.group('em_us'), path, lineno, chapters)}_")
+            out.append(f"_{convert_inline(m.group('em_us'), path, lineno, chapters, anchors)}_")
         elif m.group("em_star") is not None:
-            out.append(f"_{convert_inline(m.group('em_star'), path, lineno, chapters)}_")
+            out.append(f"_{convert_inline(m.group('em_star'), path, lineno, chapters, anchors)}_")
         elif m.group("xref") is not None:
             number = m.group("xref_num")
             if number not in chapters:
@@ -329,7 +421,9 @@ class Chapter:
     path: Path
     number: str | None
     title: str
-    sections: list[str] = field(default_factory=list)
+    # (label, converted title) per `##`, so the opener page can link its bullets
+    # at the sections they name.
+    sections: list[tuple[str, str]] = field(default_factory=list)
     body: str = ""
 
 
@@ -341,17 +435,22 @@ class Converter:
         path: Path,
         line_offset: int,
         chapters: frozenset[str] = frozenset(),
+        anchors: frozenset[str] = frozenset(),
     ) -> None:
         self.path = path
         self.line_offset = line_offset
         self.chapters = chapters
-        self.sections: list[str] = []
+        self.anchors = anchors
+        self.sections: list[tuple[str, str]] = []
         self.title: str | None = None
         self.figures: list[str] = []
+        # Repeated headings are disambiguated `-1`, `-2` the way GitHub does,
+        # so the count has to run across the whole file rather than per call.
+        self._slug_counts: dict[str, int] = {}
 
     def inline(self, text: str, index: int) -> str:
         """`convert_inline` with this chapter's path, line and book bound in."""
-        return convert_inline(text, self.path, self.lineno(index), self.chapters)
+        return convert_inline(text, self.path, self.lineno(index), self.chapters, self.anchors)
 
     def lineno(self, index: int) -> int:
         return self.line_offset + index
@@ -426,11 +525,30 @@ class Converter:
         if level > 4:
             fail(self.path, lineno, f"heading level {level} is deeper than the design supports")
         inline = self.inline(text, index)
+        label = ""
+        if level in (2, 3):
+            label = section_label(self.path.stem, self._slug(text))
         if level == 2:
             # Converted, not raw: the opener page lists these, and a section
             # called `[hardware]` was reaching it with its backticks still on.
-            self.sections.append(inline)
+            self.sections.append((label, inline))
+        if label:
+            # Level 3 too: a scene type, `### Companding — `dac_curve`` and
+            # `### `sid_panning`` are all `###`, and that is the granularity a
+            # reader looks things up at.
+            #
+            # A separate metadata + label rather than a label on the heading
+            # itself, which is the pattern the chapter openers already use:
+            # proven to attach, and it renders nothing.
+            out.append(f'#metadata("sec")#label({typst_string(label)})')
         out.append(f"#heading(level: {level})[{inline}]\n")
+
+    def _slug(self, text: str) -> str:
+        """This heading's anchor, disambiguated against the ones before it."""
+        slug = heading_slug(text)
+        count = self._slug_counts.get(slug, 0)
+        self._slug_counts[slug] = count + 1
+        return slug if count == 0 else f"{slug}-{count}"
 
     def _figure(self, m: re.Match[str], index: int, out: list[str]) -> None:
         src, caption = m.group("src"), m.group("caption")
@@ -475,7 +593,7 @@ class Converter:
         while i < len(lines) and lines[i].startswith(">"):
             inner.append(re.sub(r"^>\s?", "", lines[i]))
             i += 1
-        nested = Converter(self.path, self.lineno(i), self.chapters)
+        nested = Converter(self.path, self.lineno(i), self.chapters, self.anchors)
         nested.title = self.title  # inherit, so heading checks stay quiet
         body = nested.convert("\n".join(inner))
         self.figures.extend(nested.figures)
@@ -599,12 +717,30 @@ def chapter_numbers(paths: list[Path]) -> frozenset[str]:
     return frozenset(numbers)
 
 
-def load_chapter(path: Path, chapters: frozenset[str] = frozenset()) -> Chapter:
+def section_anchors(paths: list[Path]) -> frozenset[str]:
+    """Every section label a book defines, read from its Markdown alone.
+
+    A second whole-book pass, for the same reason `chapter_numbers` is one: a
+    link in chapter 1 can name a section in an appendix that has not been
+    converted yet. Sixteen files of stdlib regex, so the cost is nothing.
+    """
+    labels: set[str] = set()
+    for path in paths:
+        _, body, _ = parse_front_matter(path.read_text(encoding="utf-8"), path)
+        labels.update(section_label(path.stem, slug) for slug in file_section_slugs(body))
+    return frozenset(labels)
+
+
+def load_chapter(
+    path: Path,
+    chapters: frozenset[str] = frozenset(),
+    anchors: frozenset[str] = frozenset(),
+) -> Chapter:
     text = path.read_text(encoding="utf-8")
     fields, body, offset = parse_front_matter(text, path)
     number = fields.get("number")
 
-    conv = Converter(path, offset, chapters)
+    conv = Converter(path, offset, chapters, anchors)
     typst = conv.convert(body)
     if conv.title is None:
         fail(path, offset, "chapter has no `# Title`")
@@ -655,14 +791,21 @@ def out_path(book_dir: Path) -> Path:
     return book_dir / (load_book_toml(book_dir)["output"] + ".typ")
 
 
-def typst_content_list(items: list[str]) -> str:
-    """An array of Typst *content*, for a section list already converted.
+def typst_content_list(items: list[tuple[str, str]]) -> str:
+    """A section list for an opener page: the anchor each entry links at, and
+    its title as Typst *content*.
 
-    Quoting these as strings would print whatever markup they carry -- which is
-    how the appendices' opener pages came to list ``` `[hardware]` ``` with the
-    backticks showing.
+    The title is content and not a string because quoting it would print
+    whatever markup it carries -- which is how the appendices' opener pages
+    came to list ``` `[hardware]` ``` with the backticks showing.
+
+    The `link()` call is left to the template rather than built here: the
+    opener page is blue, the document-wide show rule paints links in accent
+    blue, and the fill that resolves that is a design decision. This module
+    only says which section each line means.
     """
-    return "(" + ", ".join(f"[{i}]" for i in items) + ("," if items else "") + ")"
+    entries = [f"(label: {typst_string(label)}, title: [{title}])" for label, title in items]
+    return "(" + ", ".join(entries) + ("," if entries else "") + ")"
 
 
 def book_version() -> str:
@@ -712,7 +855,8 @@ def build(book_dir: Path) -> str:
 
     paths = discover_chapters(book_dir)
     numbers = chapter_numbers(paths)
-    chapters = [load_chapter(p, numbers) for p in paths]
+    anchors = section_anchors(paths)
+    chapters = [load_chapter(p, numbers, anchors) for p in paths]
 
     source = root_relative(book_dir).lstrip("/")
     out: list[str] = [
@@ -735,7 +879,7 @@ def build(book_dir: Path) -> str:
             colophon = colophon_path.read_text(encoding="utf-8")
         except OSError as exc:
             raise BookError(f"cannot read {colophon_path}: {exc}") from exc
-        colophon_conv = Converter(colophon_path, 1, numbers)
+        colophon_conv = Converter(colophon_path, 1, numbers, anchors)
         colophon_conv.title = ""  # the colophon is bare prose, no heading
         out += [
             f"#colophon[\n{colophon_conv.convert(colophon)}\n]",
