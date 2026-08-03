@@ -92,6 +92,9 @@ over a fixed set of values it selects across the set, and a pad steps through
 it. A target the running scene does not have is a silent no-op, so a whole knob
 bank can stay mapped across a mixed playlist.
 
+*Declared by*, overleaf, is who has a target — a name when only one does, else
+a count. `source.ring_freq` says `moire2`: dead until `moire2` is on screen.
+
 | Holder | Reaches |
 |---|---|
 | `source` | The generative scene's generator |
