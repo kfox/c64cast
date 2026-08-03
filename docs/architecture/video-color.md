@@ -2,7 +2,7 @@
 
 Turning arbitrary video into VIC-II output: frame sources, the display-mode hierarchy, and every stage of the color pipeline (shaping, dither, quantization, forced palettes).
 
-Part of the [architecture reference](../architecture.md). For end-user configuration see [usage.md](../usage.md), for known limitations [caveats.md](../caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](../extending.md).
+Part of the [architecture reference](../architecture.md). For end-user configuration see [the Programmer’s Reference Guide](../reference/README.md), for known limitations [caveats.md](../caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](../extending.md).
 
 **Contents**
 

@@ -30,6 +30,41 @@ the version and stamps it with the date.
   installs a 2 KB or 4 KB dump you already have with no hardware involved, and
   `[hardware].dump_char_rom = false` turns the automatic read off. `--doctor`
   reports which ROM is in use and whether it verifies.
+- **A second book: the Programmer's Reference Guide** (`docs/reference/`), the
+  volume you open at the page you need rather than read in order. Six chapters:
+  the configuration language and its precedence rules, the catalogue of every
+  scene and overlay, the display pipeline from frame to VIC-II register, the
+  sound path in both directions, what actually lands in the Commodore's memory,
+  and every input and output that reaches the show from outside. Its appendices
+  are *generated* from the code by `scripts/gen_reference_appendices.py`: every
+  configuration section and field, every scene key, every overlay parameter, the
+  overlay against display-mode matrix, every generator and effect, every
+  live-tune target, every command-line flag and every packaged example. They
+  read the same definitions that answer `--describe`, `--compat` and
+  `--print-schema`, so a table in the book cannot disagree with the program.
+  `make reference` renders it, `make books` renders every book, and `make
+  reference-appendices` rewrites the generated ones — which CI checks for drift.
+- **A third book: the Performance Card** (`docs/card/`), two printable pages for
+  the desk beside the controller. Every control surface and what it is mapped to
+  out of the box, the pad chords and pad-light states, every live-tune target,
+  the clip-grid and tempo syntax, the console's routes, how a channel addresses
+  one Commodore of an ensemble, and the four commands worth running before the
+  doors open. `make card` renders it; its live-target table is generated
+  alongside the reference guide's appendices. It takes the `card` layout: the
+  same palette, faces and tables as the other two books, set two-up at 8.5pt
+  with no cover, contents or chapter openers.
+- The GitHub release now carries **every book**, each stamped with the version:
+  the User's Guide, the Programmer's Reference Guide and the Performance Card.
+
+### Removed
+
+- **`docs/usage.md` is gone.** Its 1,867 lines were the end-user reference
+  before there was a book to put them in; every part of it that was not already
+  duplicated by the User's Guide has been rewritten into the Programmer's
+  Reference Guide, which states the same rules from the code rather than from
+  prose that had drifted from it. Every link that pointed there now points at
+  the chapter or appendix that answers the question, and a test fails if a new
+  one appears.
 
 ### Changed
 
@@ -48,6 +83,33 @@ the version and stamps it with the date.
   vendored OFL fonts moved from `docs/guide/` to `docs/shared/`, and each book's
   `book.toml` names the layout it takes. `make guide` and the released PDF are
   unchanged.
+- **The reference guide's generated appendices are set as two columns instead of
+  four.** A field's name, type and default are three facts about one setting,
+  and given a column each on a 6.24in page they left the description — the only
+  part written for a human — about a third of the measure and four words to a
+  line, with a single field running most of a page. They are now stacked into
+  one fixed-width column with the description taking the rest, at the same width
+  in every such table, so a scene key, an overlay parameter and a CLI flag all
+  line up down the book. The reference is 20 pages shorter for it.
+- **Chapter and appendix cross-references are links.** "See Appendix F" in the
+  prose jumps to Appendix F, and every line of the table of contents jumps to
+  its page. A reference to a chapter the book does not have now fails the build,
+  which is what catches a renumbering the prose was not told about.
+- **The books' symbols no longer depend on the machine that built them.** Jost
+  has no ✓ and no →, and Typst was filling them from whatever was installed — so
+  the compatibility matrix was set in a heavy upright check locally and a thin
+  slanted one in CI, from the same source file. Both marks are now drawn by the
+  template, Typst's own fallback is off, and a new test fails on any character
+  the two vendored faces cannot draw. (One had already got through: a `⇒` in a
+  generator's docstring, which is in neither face and was printing as a gap.)
+- Inline code in the books is set at 1.08em rather than 1em. The two faces agree
+  on x-height but Inconsolata's ascenders and capitals run 12–17% short of
+  Jost's, which is what the eye compares when the two meet inside a line, so
+  every `[section]`, `--flag` and `6581` sat visibly low in its sentence.
+- The appendices' opener pages no longer print the backticks around a section
+  name — the section list was being quoted as a string rather than converted —
+  and Appendix B's scene types are headed by the type's name rather than by
+  `type = "webcam"` repeated ten times.
 
 ## [0.1.0] - 2026-07-30
 

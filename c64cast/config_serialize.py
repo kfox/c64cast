@@ -45,8 +45,8 @@ def _published_schema_url(version: str) -> str:
 DEFAULT_SCHEMA_PATH = _published_schema_url(__version__)
 
 # Never written to disk — it's a secret, supplied via the C64CAST_DMA_PASSWORD
-# env var or hand-added to a non-committed file (see docs/usage.md). Omitting it
-# keeps the serializer safe to point at a checked-in path.
+# env var or hand-added to a non-committed file (see docs/reference/). Omitting
+# it keeps the serializer safe to point at a checked-in path.
 _SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
 
 # List-of-table fields that must render as [[parent.child]] blocks AFTER the
