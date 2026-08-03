@@ -155,13 +155,18 @@ socket, and a machine with two socketed chips measures each one separately.
 The file is keyed to the machine's own identity — the Ultimate's serial
 number, a TeensyROM's USB serial — so a changed address does not orphan it.
 
+> [!WARNING]
+> A run replaces this machine's existing table outright. There is no prompt
+> and no backup kept, so a re-measurement taken through a different capture
+> device or at a different input level overwrites a good table with the new
+> one. Copy the file out of the calibration directory first if the one you
+> have is worth keeping.
+
 The measurement is checked before it is kept. Sixteen of the 256 values set
 the master volume to zero and *must* therefore be silent whatever else they
 say; a table that fails that test is rejected rather than used, because a bad
-calibration is worse than none. On the one chip where all three were compared,
-the measured table beat the plain 4-bit path by 2 dB while running 5.6 dB
-louder, and a table from an earlier, discarded measurement technique scored
-4.8 dB *below* doing nothing at all.
+calibration is worse than none. On the one chip where both were compared, the
+measured table beat the plain 4-bit path by 2 dB while running 5.6 dB louder.
 
 Two more knobs sit here. `[audio].dither` adds a little triangular noise
 during encoding; it is off by default because at four bits the hiss it adds

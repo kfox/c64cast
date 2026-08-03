@@ -36,7 +36,7 @@ Set one as a `generative` scene's `source`. Every generator renders at 320×200 
 | **`dotswarm`**<br>`speed` 0–3<br>`scale` 0.2–2 | A WLED "beatsin dot swarm" port covering the shared shape of several kin effects — Black Hole, Frizzles, Sindots, Squared Swirl, Drift Rose — which all boil down to the same primitive: a handful of points, each independently orbiting via a bounded sine (`beatsin8` in WLED) at its own frequency, color-cycled and blended. |
 | **`game_of_life`**<br>`speed` 0.1–4 | WLED "Game Of Life" port: Conway's Game of Life on a coarse grid (chunky upscaled cells — reads great after C64 quantization, especially on PETSCII), with WLED's signature parent-color inheritance (a newly-born cell's hue is the mean of its live parents' hues). |
 | **`soap`**<br>`speed` 0–3<br>`scale` 0.2–3 | WLED "Soap" port: a persistent color buffer smeared/advected each tick by a slowly-rotating noise-driven flow field — the classic swirling soap-film look. |
-| **`fireworks`**<br>`speed` 0–3<br>`scale` 0.3–3 | WLED "Fireworks" port — the flagship of WLED's shared particle-system engine (which also drives Volcano/Ballpit/Waterfall/Impact/Attractor/ Galaxy as different emitter/gravity presets on the same primitive; only the fireworks preset is ported this batch — see `[[project_wled_pattern_port_candidates]]` for the deferred variants). |
+| **`fireworks`**<br>`speed` 0–3<br>`scale` 0.3–3 | WLED "Fireworks" port — the flagship of WLED's shared particle-system engine, which also drives Volcano/Ballpit/Waterfall/Impact/Attractor/ Galaxy as different emitter/gravity presets on the same primitive; only the fireworks preset is ported here. |
 
 ## Effects
 

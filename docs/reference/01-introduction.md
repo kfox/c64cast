@@ -32,8 +32,13 @@ Three things live outside this book on purpose.
 
 `docs/architecture.md` and the notes it indexes are the contributor's account
 of *why* each module is built the way it is, including the approaches that were
-tried and abandoned. This book says what the software does; that one says why.
-Read it before changing a module.
+tried and abandoned. Read it before changing a module.
+
+This book does explain itself where a default would otherwise look arbitrary,
+and it prints the measurement that settled the matter when there is one — a
+sampler clock rate, a frame budget, how much louder one companding curve is
+than another. What it leaves to `architecture.md` is the history: which other
+approaches were tried, and why they lost.
 
 `docs/caveats.md` records the hardware's own limits, which are frequently the
 real answer to "why can't it just". `docs/troubleshooting.md` is organised by
@@ -56,6 +61,11 @@ given by example.
 
 A parameter marked *live* can be moved while a show is running, by a MIDI
 knob, a pad, or the web console. Appendix F lists every one of them.
+
+A command-line flag is written as it is typed, with its leading dashes, as
+`--config`. Flags are introduced beside the behaviour they change rather than
+catalogued in the prose; Appendix G is the full list, in the groups `-h`
+prints them in.
 
 ## Where a Setting Comes From
 

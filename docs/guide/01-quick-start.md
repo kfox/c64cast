@@ -65,7 +65,7 @@ middle of it.
 
 ![The hello world scroller. If you see this, everything works.](img/fig-qs-1-hello.png)
 
-**Step 5: Stop it.** Press <kbd>Ctrl</kbd> <kbd>C</kbd> in the terminal.
+**Step 5: Stop it.** Press <kbd>CTRL</kbd> <kbd>C</kbd> in the terminal.
 c64cast puts the Commodore back the way it found it and exits.
 
 > [!TIP]

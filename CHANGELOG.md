@@ -110,6 +110,29 @@ the version and stamps it with the date.
   name — the section list was being quoted as a string rather than converted —
   and Appendix B's scene types are headed by the type's name rather than by
   `type = "webcam"` repeated ten times.
+- **The Performance Card's pad-light table had its columns labelled backwards.**
+  `Pad | State` sat over rows reading `Bright | Playing`, which is a light and
+  what it means, not a pad and its state — and the reverse of the same table in
+  the reference guide. It is now `Light | Means`. The card's gesture table also
+  lost pinch-to-resume when its "paused" column was replaced by the performance
+  column; the row carries it again.
+- **The reference guide's keyboard table lists <kbd>SPACE</kbd>**, which the card
+  already had, so the two are the same table. Key names are keycap chips in all
+  three books instead of chips in two of them and bold text in the third, and
+  they are uppercase throughout, as the keys are.
+- The reference guide's glossary defines **C64U**, **TeensyROM+** and **Extra**,
+  and its introduction stops promising that the book carries no reasoning: it
+  prints the measurement behind a default where there is one, and leaves *which
+  other approaches were tried* to `docs/architecture.md`. One passage that was
+  pure history with no decision attached is gone.
+- The reference guide warns where it should: a `launcher` scene hands the machine
+  away and can stop answering the modifier keys, and `--calibrate-dac` replaces
+  an existing table with no prompt and no backup.
+- Appendices G and H are reachable from the prose — the flag list from the
+  notation section, the example index from the section on `example:` names.
+  Nothing referred to either of them before.
+- The `fireworks` generator's description no longer carries an internal note
+  reference, which was published verbatim in Appendix E and in the release PDF.
 
 ## [0.1.0] - 2026-07-30
 

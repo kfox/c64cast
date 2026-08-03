@@ -20,13 +20,14 @@ arrives on all of them.
 The one input that comes from the Commodore itself. c64cast polls the kernal's
 keyboard scratch bytes ten times a second — which is why the BASIC program of
 Chapter 5 has to keep running underneath every scene — and reads three
-modifiers:
+modifiers, plus <kbd>SPACE</kbd> when the on-C64 menu is enabled:
 
 | Key | While running | While paused |
 |---|---|---|
-| **C=** | Pause: the scene tears down and the machine idles | Held for 3 s, resume |
-| **CTRL** | Skip to the next scene | Nothing |
-| **SHIFT** | Cycle the style of the scene, the display mode and every overlay | Nothing |
+| <kbd>C=</kbd> | Pause: the scene tears down and the machine idles | Held for 3 s, resume |
+| <kbd>CTRL</kbd> | Skip to the next scene | Nothing |
+| <kbd>SHIFT</kbd> | Cycle the style of the scene, the display mode and every overlay | Nothing |
+| <kbd>SPACE</kbd> | Open the on-C64 menu, with `[menu].enabled` | Nothing |
 
 Chords are resolved rather than combined. C= and CTRL in the same tick means
 pause, with the skip dropped; SHIFT held alongside either is ignored, because a
@@ -42,7 +43,7 @@ not opt in does nothing.
 
 ### The On-C64 Menu
 
-With `[menu].enabled`, **SPACE** on the real keyboard opens a panel of
+With `[menu].enabled`, <kbd>SPACE</kbd> on the real keyboard opens a panel of
 context-sensitive knobs for the running scene — display mode, palette mode,
 style, the scope's settings — navigated with the cursor keys and RETURN, and
 closed with SPACE again. Changes apply live, so the screen behind the panel is
