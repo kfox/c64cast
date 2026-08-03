@@ -290,7 +290,7 @@ the portable route.
   **the Programmer's Reference Guide**: the volume you open at the page you
   need. The rules of the configuration language, every scene and overlay, the
   display and sound paths in full, what lands in the Commodore's memory, and
-  nine appendices generated from the code. Typeset PDF on
+  ten appendices, nine of them generated from the code. Typeset PDF on
   [the latest release](https://github.com/kfox/c64cast/releases/latest).
 * [docs/card/](https://github.com/kfox/c64cast/tree/main/docs/card) —
   **the Performance Card**: two printable pages of controls, live targets and

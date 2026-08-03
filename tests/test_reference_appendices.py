@@ -68,12 +68,12 @@ class FreshnessTest(unittest.TestCase):
                 self.assertEqual(fields.get("generated"), "true")
 
     def test_the_appendices_cover_the_reference_book(self):
-        # A-H are generated; the introduction, the six chapters and the
+        # A-I are generated; the introduction, the seven chapters and the
         # glossary are not. If a hand-written chapter ever acquires the marker,
         # the next `make reference-appendices` would not touch it and the drift
         # guard above would silently pass on a file nobody generates.
         generated = {p for p in gen.APPENDICES if p.parent == gen.REFERENCE_DIR}
-        self.assertEqual(len(generated), 8)
+        self.assertEqual(len(generated), 9)
         for path in bb.discover_chapters(gen.REFERENCE_DIR):
             fields, _, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
             with self.subTest(chapter=path.name):

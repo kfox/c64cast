@@ -88,7 +88,7 @@ help:
 	@echo "  card       render docs/card/*.md to the Performance Card PDF (needs typst)"
 	@echo "  books      render every book"
 	@echo "  guide-figures  redraw the guide's placeholder figures"
-	@echo "  reference-appendices  regenerate the reference guide's appendices A-H"
+	@echo "  reference-appendices  regenerate the reference guide's appendices A-I"
 	@echo "  check      lint + typecheck + test"
 	@echo "  clean      remove build artifacts"
 
@@ -149,14 +149,14 @@ card: $(SYNC)
 
 books: guide reference card
 
-# Rewrite the Programmer's Reference Guide's generated appendices (A-H) and the
+# Rewrite the Programmer's Reference Guide's generated appendices (A-I) and the
 # performance card's live-target table from the config metadata. Unlike the
 # books themselves this needs the project env, since it imports c64cast — which
 # is exactly why it is a separate script from build_book.py, and why its output
 # is committed: the release renders the PDFs with `uv run --no-project`.
 # tests/test_reference_appendices.py fails if the committed files drift from
 # this output, so run it after changing any config field, overlay, generator,
-# effect, CLI flag or example config.
+# effect, CLI flag, example config or install extra.
 reference-appendices: $(SYNC)
 	$(PY) scripts/gen_reference_appendices.py
 

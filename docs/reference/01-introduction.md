@@ -21,13 +21,18 @@ Chapter 7 is the exception, and is for a different reader: it is what you need
 to add a scene, an overlay, a generator or an effect to c64cast itself. Nothing
 in the first six chapters depends on it.
 
-Appendices A to H are not prose and are not written by hand. They are generated
+Appendices A to I are not prose and are not written by hand. They are generated
 from the same definitions the program answers `--describe`, `--compat` and
 `--print-schema` from, by `scripts/gen_reference_appendices.py`, and they are
 regenerated as part of the build. A table in this book cannot disagree with the
 program it documents; if it ever does, the build is broken and says so.
 
-Appendix I is a glossary, which is hand-written because a machine has no
+The chapters name an optional install extra wherever a feature needs one —
+`video` for a video scene, `midi` for a MIDI one, `wled` for the virtual WLED
+device. Appendix I is the whole list, with what each extra unlocks and what it
+installs.
+
+Appendix J is a glossary, which is hand-written because a machine has no
 opinion about which words a reader will not know.
 
 ## What Is Not

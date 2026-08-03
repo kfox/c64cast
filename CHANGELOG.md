@@ -40,7 +40,8 @@ the version and stamps it with the date.
   are *generated* from the code by `scripts/gen_reference_appendices.py`: every
   configuration section and field, every scene key, every overlay parameter, the
   overlay against display-mode matrix, every generator and effect, every
-  live-tune target, every command-line flag and every packaged example. They
+  live-tune target, every command-line flag, every packaged example and every
+  optional install extra. They
   read the same definitions that answer `--describe`, `--compat` and
   `--print-schema`, so a table in the book cannot disagree with the program.
   `make reference` renders it, `make books` renders every book, and `make
@@ -170,6 +171,20 @@ the version and stamps it with the date.
   catalogue entries state what a *configuration* needs — the keys, the extra,
   the ports — and defer the mechanism to Chapter 4, which is the rule the
   introduction sets and was the one place the book broke it.
+- **Every optional extra is listed in one place**, as the reference guide's new
+  Appendix I: what each one unlocks, the module `--doctor` looks for, and the
+  packages it installs — with the reason the install to ask for is
+  `c64cast[all]` rather than one extra at a time. The chapters have always named
+  an extra where a feature needs one; nothing collected them. The glossary moves
+  to Appendix J.
+
+### Fixed
+
+- `--doctor` never reported the `wled` extra, so a missing `zeroconf` — the one
+  thing standing between `[wled].listen` and a WLED app that can discover the
+  virtual device — showed up as silence in the one command whose job is to say
+  what is missing. All twelve extras are now probed, and a test holds the list
+  to the extras the package actually declares.
 
 ## [0.1.0] - 2026-07-30
 
