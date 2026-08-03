@@ -2,7 +2,7 @@
 number: 6
 ---
 
-# Everything Outside
+# Inputs and Outputs
 
 A running show is not a closed loop. Keys are pressed, cameras and microphones
 feed it, controllers and phones drive it, LED fixtures react to it, a recorder

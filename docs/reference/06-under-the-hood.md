@@ -2,17 +2,16 @@
 number: 5
 ---
 
-# Inside the Machine
+# The Link and the Memory Map
 
 Everything in the previous two chapters ends with bytes arriving in a
 Commodore's memory. This chapter is about that arrival: how the bytes get
 there, where they land, how c64cast avoids sending the ones that have not
-changed, and what a frame can afford. It closes with what you need to know to
-add a scene, an overlay or a generator of your own.
+changed, and what a frame can afford.
 
 None of it is required to use c64cast. It is required to reason about why a
-scene is slow, why two features refuse to run together, and what your own code
-may safely touch.
+scene is slow, why two features refuse to run together, and what a picture
+costs before you ask for it.
 
 ## Getting Bytes In
 
@@ -314,116 +313,3 @@ In order of what they buy against what they cost:
 
 What not to give up: coalescing and the dirty cache are automatic, and any new
 code path that issues many small writes per frame is the first thing to look at.
-
-## Writing Your Own Scene
-
-A scene produces one frame of *content* per call. The playlist wraps it with
-setup, overlays, pacing and teardown, so a scene never needs to know that
-overlays exist.
-
-```python
-class MyScene(Scene):
-    def __init__(self, api, audio, display_mode, name="My scene"):
-        super().__init__(api, audio, display_mode, name)
-        self.target_fps = 30.0        # only if it can't sustain system rate
-
-    def setup(self):
-        super().setup()
-        self.display_mode.setup(self.api)
-
-    def process_frame(self, current_time: float) -> bool:
-        frame_bgr = self._produce_frame()
-        self.display_mode.render(self.api, _crop_to_aspect(frame_bgr))
-        return True                   # False means finished
-
-    def teardown(self):
-        super().teardown()
-```
-
-Then add a branch to the configuration loader's scene factory, and any fields
-the scene takes to the scene dataclass, so they round-trip through TOML.
-
-Four things to honour:
-
-- **`audio` may be `None`.** It is `None` whenever audio is off, the scene sets
-  `audio = false`, or another system in an ensemble holds the audio slot.
-- **Return `False` when finished,** or set `is_done`. The skip path sets it
-  externally; you may too.
-- **Every byte goes through the region-cached write calls.** Opening your own
-  HTTP session bypasses both the shared connection's mutex and the dirty cache,
-  and the DMA service accepts one connection.
-- **Invalidate the cache** if you change what a cached region means. A display
-  mode's setup does that for you.
-
-Set `target_fps` only when the scene genuinely cannot sustain the system rate.
-The defaults already account for the link, and a scene that pins a low rate for
-no reason simply looks worse.
-
-## Writing Your Own Overlay or Generator
-
-Both are small, and both are registered by a decorator rather than by editing a
-table.
-
-### An Overlay
-
-Three methods, plus the class attributes that declare where it may run:
-
-```python
-@register("blink")
-class BlinkOverlay(Overlay):
-    REQUIRES_PETSCII = False        # only touches $D020
-    REQUIRES_AUDIO = False
-
-    def setup(self, api, scene): ...
-    def process_frame(self, api, scene, t): ...
-    def teardown(self, api, scene): ...
-```
-
-| Attribute | Meaning |
-|---|---|
-| `REQUIRES_PETSCII` | It writes PETSCII codes to screen and colour RAM, so it needs a character mode |
-| `COMPATIBLE_MODES` | An explicit whitelist, for an overlay that is not a clean fit for that split |
-| `REQUIRES_AUDIO` | It cannot work at all without the audio streamer; refused at load when audio is off |
-| `WANTS_AUDIO` | It uses the streamer when there is one and has a fallback; never refused |
-
-Appendix D's compatibility matrix is built from those, and they are checked when
-the configuration loads rather than when the overlay would first draw.
-
-**An overlay that paints characters should not write them itself.** Setting
-`PAINTS_INTO_BUFFERS = True` and implementing `compose(buffers, scene, t)` gets
-its glyphs folded into the scene's own frame, so scene and overlays go out as
-one upload. Writing screen memory from `process_frame` instead races the scene's
-own write and flickers. A register write — a border colour, say — is the case
-where `process_frame` is the right method.
-
-Two base classes cover most of what people write: one for single-line corner
-text, which brings change detection with it, and one for a scrolling ticker.
-
-### A Generator or an Effect
-
-A generator renders 320×200 and returns it; an effect takes a frame and returns
-a frame. Both declare their live-tunable parameters as one class attribute:
-
-```python
-LIVE_PARAMS = {"speed": (0.1, 4.0), "scale": (0.5, 8.0)}
-```
-
-That line is the whole wiring. It puts the parameter in Appendix F, on a MIDI
-knob, in the web console's effect rack, and under the WLED sliders, with nothing
-else to register. A discrete choice rather than a number goes in `LIVE_CHOICES`,
-as a tuple of the values it accepts.
-
-Only declare **independent single-numeric fields** there. A live write is one
-attribute assignment, which is atomic; two fields that must change together are
-not.
-
-Two behavioural rules matter more than the code. A generator should be
-**deterministic in time** — the frame at a given moment the same frame however
-you arrived at it — because that is what makes an offline render reproducible;
-the two shipped exceptions carry real simulation state and say so. And a
-reactive generator must **fall back to its time-driven behaviour** at rest, so a
-silent scene is still the generator you asked for.
-
-`docs/extending.md` carries the working examples, the display-mode and
-interstitial-background surfaces, and the testing patterns that keep the suite
-hardware-free.

@@ -31,11 +31,12 @@ the version and stamps it with the date.
   `[hardware].dump_char_rom = false` turns the automatic read off. `--doctor`
   reports which ROM is in use and whether it verifies.
 - **A second book: the Programmer's Reference Guide** (`docs/reference/`), the
-  volume you open at the page you need rather than read in order. Six chapters:
-  the configuration language and its precedence rules, the catalogue of every
-  scene and overlay, the display pipeline from frame to VIC-II register, the
-  sound path in both directions, what actually lands in the Commodore's memory,
-  and every input and output that reaches the show from outside. Its appendices
+  volume you open at the page you need rather than read in order. Seven
+  chapters: the configuration language and its precedence rules, the catalogue
+  of every scene and overlay, the display pipeline from frame to VIC-II
+  register, the sound path in both directions, the link into the Commodore's
+  memory and what lands there, every input and output that reaches the show from
+  outside, and how to extend the program itself. Its appendices
   are *generated* from the code by `scripts/gen_reference_appendices.py`: every
   configuration section and field, every scene key, every overlay parameter, the
   overlay against display-mode matrix, every generator and effect, every
@@ -155,6 +156,20 @@ the version and stamps it with the date.
   does, what is offered back at exit and what is not, and a warning that saving
   rewrites the whole configuration file from the settings in memory and keeps
   one `.bak` deep.
+- **The reference guide's two vaguest chapter titles now say what is in them.**
+  "Inside the Machine" is *The Link and the Memory Map*, and "Everything
+  Outside" is *Inputs and Outputs* — which is what a reader scanning the
+  contents for MIDI, WLED or recording can actually find. The chapter numbers
+  are unchanged, so every cross-reference still lands where it did.
+- **Extending c64cast is its own chapter** (7) rather than the tail of the
+  memory-map chapter. Writing a scene, an overlay, a generator or an effect is
+  contributor material, and it was sitting inside a user-facing chapter after a
+  write budget. It is appended rather than inserted, so chapters 1 to 6 keep
+  their numbers.
+- ASID and the MIDI scene are no longer written out twice. Chapter 2's
+  catalogue entries state what a *configuration* needs — the keys, the extra,
+  the ports — and defer the mechanism to Chapter 4, which is the rule the
+  introduction sets and was the one place the book broke it.
 
 ## [0.1.0] - 2026-07-30
 
