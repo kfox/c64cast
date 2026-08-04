@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the Programmer's Reference Guide's appendices from the code.
+"""Generate the Programmer's Reference Guide's appendices and index from the code.
 
     make reference-appendices          # rewrite them
     make reference-appendices && git diff --exit-code    # the drift guard
@@ -9,6 +9,10 @@ key, every overlay parameter, every CLI flag. Written by hand they would be
 wrong within a release, so they are read out of the same model that already
 answers ``--describe``, ``--compat`` and ``--print-schema``:
 :mod:`c64cast.introspect`. An appendix cannot disagree with the program.
+
+The index is the same model read the other way round, crossed with the book's
+own prose: every name the program can utter, against the sections that discuss
+it. See :func:`build_index`.
 
 The output is committed Markdown, not Typst, for two reasons. The books are
 rendered to GitHub Pages from these same sources, so nothing may live only in
@@ -33,11 +37,14 @@ Adding an appendix means adding one entry to :data:`APPENDICES`.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import sys
 import tomllib
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 from c64cast import cli as climod
 from c64cast import doctor, effects, generators, introspect
@@ -46,6 +53,34 @@ from c64cast import paths as pathsmod
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE_DIR = REPO_ROOT / "docs" / "reference"
 CARD_DIR = REPO_ROOT / "docs" / "card"
+
+
+def _build_book() -> ModuleType:
+    """``scripts/build_book.py``, loaded by path.
+
+    The index writes a link per locator, and a link resolves only if the anchor
+    it names is spelled exactly the way the converter spells it. Borrowing
+    ``heading_slug`` rather than reimplementing GitHub's rule a second time is
+    what stops the two from drifting into a book full of dead links.
+
+    scripts/ is not a package, so neither ``import`` nor ``sys.path`` can be
+    relied on -- this module is loaded by path itself, from the tests. An
+    already-loaded copy is reused rather than a second one built.
+    """
+    module = sys.modules.get("build_book")
+    if module is None:
+        path = Path(__file__).resolve().with_name("build_book.py")
+        spec = importlib.util.spec_from_file_location("build_book", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # Registered before exec: @dataclass resolves annotations through
+        # sys.modules[cls.__module__], which blows up if the module isn't there.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+bb = _build_book()
 
 # A default longer than this is summarised rather than printed. Only one field
 # hits it -- [midi_control].cc_map, whose shipped default is two dozen mappings
@@ -232,15 +267,23 @@ def identity(*lines: str) -> str:
     return "<br>".join([f"**{kept[0]}**", *kept[1:]])
 
 
-def fields_table(label: str, rows: Iterable[Sequence[str]]) -> list[str]:
+def fields_table(
+    label: str,
+    rows: Iterable[Sequence[str]],
+    *,
+    description: str = "Description",
+) -> list[str]:
     """A two-column table: :func:`identity` on the left, prose on the right.
 
     The directive is an HTML comment, invisible on github.com, that tells
     `build_book.py` to hand this table the one column width every table of this
     shape uses -- so a scene key, an overlay parameter and a CLI flag all line
     up down the book instead of each being sized to its own longest entry.
+
+    The right-hand heading is a parameter only because the index's right column
+    holds locators rather than a description; every appendix takes the default.
     """
-    body = table([label, "Description"], rows)
+    body = table([label, description], rows)
     return ["<!-- table: fields -->", *body] if body else []
 
 
@@ -688,6 +731,358 @@ def appendix_extras() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# The index
+# ---------------------------------------------------------------------------
+#
+# Two halves, and both are mechanical. The terms come from the same
+# introspection the appendices are built from, so the index cannot list a
+# setting the program does not have. The locators come from the book's own
+# Markdown, so it cannot point at a section that is not there.
+
+INDEX_PATH = REFERENCE_DIR / "30-index.md"
+
+# Words that arrive in a code span looking like terms and are not: every one of
+# them is what you write on the *right* of an `=`. Left in, `auto` alone would
+# collect a locator in five chapters and mean nothing in any of them.
+_INDEX_STOP_WORDS = frozenset({"auto", "true", "false", "none", "on", "off", "random"})
+
+# Under this length a token is an abbreviation the scan cannot tell from an
+# accident -- `id`, `hz`, a short flag's single letter. `fps` sits just above.
+_MIN_TERM_LEN = 3
+
+# Locators per term. The fourth is never the one you wanted, and the column it
+# has to fit in is about three inches.
+_MAX_LOCATORS = 3
+
+
+@dataclass(frozen=True)
+class Term:
+    """One index entry.
+
+    `key` is what a code span has to say for the term to be found; `display` is
+    how the entry prints; `sort` is what it files under, which is neither --
+    `--config` files under C and ``[audio]`` under A.
+    """
+
+    key: str
+    display: str
+    sort: str
+
+
+@dataclass(frozen=True)
+class Locator:
+    """One section a term was found in, and where it ranks among the rest."""
+
+    filename: str
+    slug: str
+    title: str
+    chapter: str
+    order: tuple[int, int, int, int]
+
+    def markdown(self) -> str:
+        """The locator as a link, with the chapter it is in.
+
+        The number is inside the link text rather than beside it, so the whole
+        locator is one thing to press rather than a link with a loose tail.
+
+        Carrying it at all is not decoration: three sections in this book are
+        called some case of "MIDI", and `midi_voice_channels` is discussed in
+        all three. Without the number the reader gets `midi`, MIDI, `midi` and
+        no way to tell which is which.
+        """
+        where = f" ({self.chapter})" if self.chapter else ""
+        return f"[{locator_text(self.title)}{where}]({self.filename}#{self.slug})"
+
+
+_CODE_SPAN_SCAN_RE = re.compile(r"(?P<fence>`+)(?P<body>[^`]+)(?P=fence)")
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_LONG_FLAG_RE = re.compile(r"--[a-z][a-z0-9-]*")
+_QUALIFIED_KEY_RE = re.compile(r"\[(\w+)\]\.(\w+)")
+_SECTION_BRACKET_RE = re.compile(r"\[\w+\]")
+_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+")
+_TRAILING_NAME_RE = re.compile(r"\s+—\s+`[^`]+`$")
+_PURE_CODE_RE = re.compile(r"^`[^`]+`$")
+
+
+def mentions(text: str) -> set[str]:
+    """Every string in one line of Markdown that could be naming something.
+
+    Only what is inside a code span counts. The book writes every name it means
+    in `this face`, and matching bare prose would file the sentence "the video
+    scene plays a file" under `video`, `scene` and `file` at once.
+
+    A span is picked apart rather than matched whole because one span carries
+    several names: ``[audio].backend`` is both the qualified key and the bare
+    field, and `mode.dither_strength` is a live target and a field.
+
+    A bracketed section is taken whole and then masked out, so ``[audio].backend``
+    stops crediting the *scene* key `audio` — which is a different setting, and
+    was collecting the whole of the `[audio]` section's mentions.
+    """
+    found: set[str] = set()
+    for span in _CODE_SPAN_SCAN_RE.finditer(text):
+        body = span.group("body").strip()
+        found.add(body)
+        found.update(_LONG_FLAG_RE.findall(body))
+        for m in _QUALIFIED_KEY_RE.finditer(body):
+            found.add(f"{m.group(1)}.{m.group(2)}")
+        for m in _IDENT_RE.finditer(_SECTION_BRACKET_RE.sub(" ", body)):
+            token = m.group(0)
+            found.add(token)
+            found.add(token.rpartition(".")[2])
+    return found
+
+
+def concept(title: str) -> str:
+    """A section title as an index entry, or `""` if it should not be one.
+
+    A title that is nothing but a name -- ``### `sid_panning` `` -- is already
+    an entry under that name, and a second spelled identically would be a
+    duplicate row pointing at the same place. A title that *ends* in a
+    qualifying name -- "Companding — `dac_curve`" -- files under the concept,
+    which is the word a reader who does not yet know the key looks for.
+    """
+    text = _TRAILING_NAME_RE.sub("", title).strip()
+    return "" if not text or _PURE_CODE_RE.match(text) else text
+
+
+def sort_key(text: str) -> str:
+    """What an entry files under: the word a reader would look it up by.
+
+    Leading punctuation goes because nobody looks for `--config` under a
+    hyphen, and a leading article goes because "The Audio Slot" is an entry
+    about the audio slot.
+    """
+    return _LEADING_ARTICLE_RE.sub("", text.strip("`[]-").lower())
+
+
+def code_terms() -> dict[str, Term]:
+    """Every name the program can utter, keyed by what a code span would say.
+
+    A configuration field is entered bare, and additionally qualified when two
+    sections both have a key by that name -- which is the rule the book's own
+    Notation section states, and the only case where the qualified spelling
+    tells the reader anything. `dither` is `[color]`'s dithering and `[audio]`'s
+    noise shaping, so both are listed; `agc` belongs to `[dsp]` alone, and a
+    `dsp.agc` row would point at the same place the `agc` row does.
+
+    A name that two registries share -- a scene type and a generator called the
+    same thing -- is one entry, since one entry is what it is.
+    """
+    terms: dict[str, Term] = {}
+
+    def add(key: str, display: str | None = None) -> None:
+        if len(key) < _MIN_TERM_LEN or key.lower() in _INDEX_STOP_WORDS:
+            return
+        terms.setdefault(key, Term(key, display or code(key), sort_key(key)))
+
+    sections = introspect.config_sections()
+    shared: dict[str, int] = {}
+    for sd in sections:
+        for fd in sd.fields:
+            shared[fd.name] = shared.get(fd.name, 0) + 1
+    for sd in sections:
+        add(f"[{sd.name}]")
+        for fd in sd.fields:
+            if shared[fd.name] > 1:
+                add(f"{sd.name}.{fd.name}")
+            add(fd.name)
+    for st in introspect.scene_types():
+        add(st.name)
+        for fd in st.fields:
+            add(fd.name)
+    for od in introspect.overlay_docs():
+        add(od.name)
+        for p in od.params:
+            add(p.name)
+    for md in introspect.display_modes():
+        add(md.name)
+    for name in (*generators.REGISTRY, *effects.REGISTRY):
+        add(name)
+    for lt in introspect.live_targets():
+        add(lt.target)
+    for action in climod.build_parser()._actions:
+        for flag in action.option_strings:
+            if flag.startswith("--"):
+                add(flag)
+    return terms
+
+
+def concept_terms(paths: Sequence[Path]) -> dict[str, Term]:
+    """The book's own section titles, as entries.
+
+    Only from the numbered prose chapters. An appendix's headings are names,
+    which :func:`code_terms` already has, and the introduction's are about the
+    book rather than about c64cast -- "What Is In Here" is not something anyone
+    looks up.
+    """
+    terms: dict[str, Term] = {}
+    for path in paths:
+        fields, body, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
+        if not (fields.get("number") or "").isdigit():
+            continue
+        for title in _headings(body):
+            name = concept(title)
+            if name:
+                terms.setdefault(name, Term(name, name, sort_key(name)))
+    return terms
+
+
+def _headings(body: str) -> list[str]:
+    """The `##`/`###` titles of one file, in the order `file_section_slugs`
+    returns their slugs -- the two are zipped, so they must not diverge."""
+    titles: list[str] = []
+    fenced = False
+    for line in body.split("\n"):
+        if line.strip().startswith("```"):
+            fenced = not fenced
+            continue
+        m = bb._HEADING_RE.match(line)
+        if not fenced and m and len(m.group("hashes")) in (2, 3):
+            titles.append(m.group("text").strip())
+    return titles
+
+
+def scan(
+    paths: Sequence[Path],
+    codes: dict[str, Term],
+    concepts: dict[str, Term],
+) -> dict[str, list[Locator]]:
+    """Where each term is discussed, best first.
+
+    Best is a section *titled* with the term, because that is the one written
+    about it; then the prose chapters before the appendices, which is what
+    keeps the locator for `dither` from being its own row in Appendix A's
+    `[color]` table rather than the section explaining what dithering is for.
+    The two rules do not fight: an appendix names a term in a heading only
+    where the whole section is that term's entry, and every other appendix hit
+    is a table cell, which now sorts last.
+    """
+    hits: dict[str, dict[tuple[str, str], Locator]] = {}
+    for file_order, path in enumerate(paths):
+        fields, body, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
+        chapter = fields.get("number") or ""
+        prose_rank = 0 if chapter.isdigit() else 1
+        slugs = iter(bb.file_section_slugs(body))
+        section: tuple[str, str] | None = None
+        fenced = False
+        for lineno, line in enumerate(body.split("\n")):
+            if line.strip().startswith("```"):
+                # An example configuration names half the program. Indexing
+                # what a listing happens to contain would bury the discussion.
+                fenced = not fenced
+                continue
+            if fenced:
+                continue
+            heading = bb._HEADING_RE.match(line)
+            if heading is not None and len(heading.group("hashes")) in (2, 3):
+                in_title = True
+                section = (next(slugs), heading.group("text").strip())
+                found = mentions(section[1])
+                name = concept(section[1])
+                if name:
+                    found.add(name)
+            elif section is not None:
+                in_title = False
+                found = mentions(line)
+            else:
+                continue
+            slug, title = section
+            # Appendix A writes a field bare inside the section it belongs to,
+            # so `dither` under `## [color]` is where `color.dither` is
+            # defined. Offering the qualified spelling here is what gives the
+            # qualified entries their table locator; a slug that is not a
+            # section name forms nothing the term table will match.
+            found |= {f"{slug}.{name}" for name in found}
+            for name in found:
+                term = codes.get(name) or concepts.get(name)
+                if term is None:
+                    continue
+                order = (0 if in_title else 1, prose_rank, file_order, lineno)
+                where = hits.setdefault(term.key, {})
+                where.setdefault((path.name, slug), Locator(path.name, slug, title, chapter, order))
+    return {
+        key: sorted(found.values(), key=lambda loc: loc.order)[:_MAX_LOCATORS]
+        for key, found in hits.items()
+    }
+
+
+def locator_text(title: str) -> str:
+    """A section title, safe as the text of a Markdown link.
+
+    Brackets are dropped rather than escaped. Appendix A calls its sections
+    ``[audio]``, and both renderers stop a link's text at the first `]` -- so a
+    bracketed title reaches the page as literal text with its URL showing. The
+    brackets say nothing here that the link around them does not.
+    """
+    return title.replace("[", "").replace("]", "")
+
+
+def build_index() -> list[str]:
+    """Every name the program can utter, against the sections that discuss it.
+
+    Not an appendix: it carries no `number`, which is what makes it render as a
+    plain heading after Appendix J rather than as Appendix K.
+
+    Locators are section titles rather than page numbers. A page number is
+    reachable -- the contents page queries for them -- but it would need a
+    Typst-side helper per locator, and a title is the more useful of the two on
+    github.com, where the Markdown is the book and there are no pages.
+    """
+    paths = [p for p in bb.discover_chapters(REFERENCE_DIR) if p != INDEX_PATH]
+    codes = code_terms()
+    concepts = concept_terms(paths)
+    found = scan(paths, codes, concepts)
+
+    entries = sorted(
+        (term for term in (*codes.values(), *concepts.values()) if term.key in found),
+        key=lambda t: (t.sort, t.key),
+    )
+    out = [
+        "---",
+        "generated: true",
+        "---",
+        "",
+        "# Index",
+        "",
+        "*Generated from the code by `scripts/gen_reference_appendices.py`.",
+        "Edits here are overwritten; run `make reference-appendices`.*",
+        "",
+        prose(
+            f"Every name c64cast answers to — {len(entries)} of them — and the sections "
+            "that discuss each one, the section written about it first. Names are "
+            "listed as this book writes them: a configuration key appears bare, and "
+            "again qualified with its section where two sections share the name. An "
+            "entry in ordinary words is a section of the book by that title. The "
+            "chapter or appendix each locator is in follows it, in parentheses."
+        ),
+        "",
+    ]
+    for letter, group in _by_letter(entries):
+        out += [f"## {letter}", ""]
+        rows = [
+            [identity(term.display), ", ".join(loc.markdown() for loc in found[term.key])]
+            for term in group
+        ]
+        out += fields_table("Term", rows, description="Discussed in")
+    return out
+
+
+def _by_letter(entries: Sequence[Term]) -> list[tuple[str, list[Term]]]:
+    """The entries grouped under their initial, in order.
+
+    Anything that does not file under a letter opens the index under `#`, where
+    a printed one has always put it. Nothing lands there today; a setting named
+    for a number would go somewhere rather than vanish.
+    """
+    groups: dict[str, list[Term]] = {}
+    for term in entries:
+        initial = term.sort[:1].upper()
+        groups.setdefault(initial if initial.isalpha() else "#", []).append(term)
+    return sorted(groups.items(), key=lambda kv: (kv[0].isalpha(), kv[0]))
+
+
+# ---------------------------------------------------------------------------
 # The performance card's live-target table
 # ---------------------------------------------------------------------------
 
@@ -786,6 +1181,7 @@ APPENDICES: dict[Path, Callable[[], list[str]]] = {
     REFERENCE_DIR / "26-appendix-g-cli-flags.md": appendix_cli,
     REFERENCE_DIR / "27-appendix-h-examples.md": appendix_examples,
     REFERENCE_DIR / "28-appendix-i-extras.md": appendix_extras,
+    INDEX_PATH: build_index,
     CARD_DIR / "02-live-targets.md": card_live_targets,
 }
 

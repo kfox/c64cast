@@ -71,12 +71,12 @@ class FreshnessTest(unittest.TestCase):
                 self.assertEqual(fields.get("generated"), "true")
 
     def test_the_appendices_cover_the_reference_book(self):
-        # A-I are generated; the introduction, the seven chapters and the
-        # glossary are not. If a hand-written chapter ever acquires the marker,
-        # the next `make reference-appendices` would not touch it and the drift
-        # guard above would silently pass on a file nobody generates.
+        # A-I and the index are generated; the introduction, the seven chapters
+        # and the glossary are not. If a hand-written chapter ever acquires the
+        # marker, the next `make reference-appendices` would not touch it and
+        # the drift guard above would silently pass on a file nobody generates.
         generated = {p for p in gen.APPENDICES if p.parent == gen.REFERENCE_DIR}
-        self.assertEqual(len(generated), 9)
+        self.assertEqual(len(generated), 10)
         for path in bb.discover_chapters(gen.REFERENCE_DIR):
             fields, _, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
             with self.subTest(chapter=path.name):
@@ -95,11 +95,116 @@ class ConverterSafetyTest(unittest.TestCase):
     def test_every_generated_file_converts(self):
         for path in gen.APPENDICES:
             with self.subTest(file=path.name):
-                chapters = bb.chapter_numbers(bb.discover_chapters(path.parent))
-                self.assertTrue(bb.load_chapter(path, chapters).title)
+                paths = bb.discover_chapters(path.parent)
+                anchors = bb.section_anchors(paths)
+                # The anchors are not optional here: the index is nothing but
+                # links at sections, and the converter refuses one it cannot
+                # resolve rather than emitting a dead destination.
+                chapter = bb.load_chapter(path, bb.chapter_numbers(paths), anchors)
+                self.assertTrue(chapter.title)
 
     def test_the_reference_book_builds(self):
         self.assertIn("#show: guide.with(", bb.build(gen.REFERENCE_DIR))
+
+
+class IndexTest(unittest.TestCase):
+    """The generated index.
+
+    Freshness is the drift guard's job. What is particular to the index is that
+    it is made almost entirely of links into the rest of the book, so a section
+    renamed without a regeneration turns every locator into it stale -- and a
+    stale locator is the one failure a reader meets rather than the build.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = gen.INDEX_PATH.read_text(encoding="utf-8")
+        cls.rows = dict(re.findall(r"^\| \*\*(.+?)\*\* \| (.+?) \|$", cls.text, re.M))
+
+    def test_every_locator_names_a_section_that_exists(self):
+        anchors = bb.section_anchors(bb.discover_chapters(gen.REFERENCE_DIR))
+        links = re.findall(r"\]\((\d+-[\w.-]+\.md)#([\w-]+)\)", self.text)
+        self.assertGreater(len(links), 500, "the index lost most of its locators")
+        for filename, slug in links:
+            with self.subTest(link=f"{filename}#{slug}"):
+                self.assertIn(bb.section_label(Path(filename).stem, slug), anchors)
+
+    def test_it_is_not_an_appendix(self):
+        # No `number`, which is what makes it render after Appendix J as a
+        # plain heading instead of claiming a letter of its own.
+        fields, _, _ = bb.parse_front_matter(self.text, gen.INDEX_PATH)
+        self.assertNotIn("number", fields)
+
+    def test_it_does_not_index_itself(self):
+        self.assertNotIn(gen.INDEX_PATH.name, self.text)
+
+    def test_the_section_written_about_a_term_leads_its_entry(self):
+        # Appendix A has a row for every configuration field, so ordering by
+        # position alone would answer "where is dither explained" with the
+        # table rather than with the section that explains it.
+        self.assertTrue(
+            self.rows["`dither`"].startswith("[Which Pixel Takes Which"),
+            self.rows["`dither`"],
+        )
+
+    def test_a_section_title_is_an_entry_in_its_own_words(self):
+        # The concept entries are what let a reader look up the thing before
+        # they know what it is called.
+        for title in ("Companding", "The Audio Slot", "Fades"):
+            with self.subTest(title=title):
+                self.assertIn(title, self.rows)
+
+
+class IndexTermTest(unittest.TestCase):
+    """The pure parts of the index: what counts as a name, and where it files."""
+
+    def test_a_span_names_every_key_it_contains(self):
+        self.assertEqual(
+            gen.mentions("set `[color].dither` to `ordered`"),
+            {"[color].dither", "color.dither", "dither", "ordered"},
+        )
+
+    def test_a_bracketed_section_does_not_credit_the_bare_word(self):
+        # `audio` is a scene key. Left in, it would collect every mention of
+        # the `[audio]` section as though the two were the same setting.
+        self.assertNotIn("audio", gen.mentions("`[audio].backend`"))
+
+    def test_a_flag_is_found_inside_a_command(self):
+        self.assertIn("--save-settings", gen.mentions("run `c64cast --save-settings`"))
+
+    def test_a_title_that_is_only_a_name_is_not_a_concept(self):
+        for title in ("`sid_panning`", "`[hardware]`"):
+            with self.subTest(title=title):
+                self.assertEqual(gen.concept(title), "")
+
+    def test_a_title_qualified_by_a_name_files_under_the_concept(self):
+        self.assertEqual(gen.concept("Companding — `dac_curve`"), "Companding")
+        # Only a *trailing* name is a qualifier; an em dash joining two phrases
+        # is part of the title.
+        self.assertEqual(
+            gen.concept("Broadcast — Fixtures React to the Music"),
+            "Broadcast — Fixtures React to the Music",
+        )
+
+    def test_an_entry_files_under_the_word_it_is_looked_up_by(self):
+        self.assertEqual(gen.sort_key("--config"), "config")
+        self.assertEqual(gen.sort_key("[audio]"), "audio")
+        self.assertEqual(gen.sort_key("The Audio Slot"), "audio slot")
+
+    def test_a_value_or_an_abbreviation_is_never_a_term(self):
+        keys = gen.code_terms()
+        self.assertFalse({k.lower() for k in keys} & gen._INDEX_STOP_WORDS)
+        self.assertFalse([k for k in keys if len(k) < gen._MIN_TERM_LEN])
+
+    def test_a_field_is_qualified_only_where_two_sections_share_the_name(self):
+        keys = gen.code_terms()
+        # `dither` is [color]'s dithering and [audio]'s noise shaping.
+        self.assertIn("color.dither", keys)
+        self.assertIn("audio.dither", keys)
+        # `agc` belongs to [dsp] alone, so a `dsp.agc` row would be a second
+        # entry pointing where the `agc` one already points.
+        self.assertIn("agc", keys)
+        self.assertNotIn("dsp.agc", keys)
 
 
 class LiveMarkTest(unittest.TestCase):
