@@ -289,7 +289,16 @@ class LiveMarkTest(unittest.TestCase):
 
 
 class DeclaredByTest(unittest.TestCase):
-    """The card's compression of Appendix F's owner list."""
+    """The card's rendering of Appendix F's owner list.
+
+    Owners are taken from the live registry rather than invented, because the
+    `all but` inversion is a statement about who is *missing* -- a made-up name
+    is missing from everything and would exercise the wrong branch.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.members = list(gen._holder_members("source"))
 
     def _target(self, owners, holder="source"):
         return introspect.LiveTargetDoc(
@@ -301,20 +310,38 @@ class DeclaredByTest(unittest.TestCase):
         )
 
     def test_a_sole_owner_is_named(self):
-        self.assertEqual(gen.declared_by(self._target(["moire2"]), {"source": 20}), "`moire2`")
+        self.assertEqual(gen.declared_by(self._target(["moire2"])), "`moire2`")
 
-    def test_several_owners_are_counted_in_the_groups_noun(self):
-        owners = [f"g{i}" for i in range(14)]
-        self.assertEqual(gen.declared_by(self._target(owners), {"source": 20}), "14 generators")
+    def test_several_owners_are_spelled_out(self):
+        owners = self.members[:3]
+        self.assertEqual(
+            gen.declared_by(self._target(owners)),
+            ", ".join(f"`{name}`" for name in owners),
+        )
 
     def test_every_owner_is_all(self):
-        owners = [f"g{i}" for i in range(20)]
-        self.assertEqual(gen.declared_by(self._target(owners), {"source": 20}), "all")
+        self.assertEqual(gen.declared_by(self._target(self.members)), "all")
 
-    def test_every_holder_has_a_noun(self):
-        # A new live-tune holder with no noun would raise mid-generation.
-        for holder in gen._holder_totals():
-            self.assertIn(holder, gen._OWNER_NOUNS)
+    def test_a_near_total_list_inverts_to_its_exceptions(self):
+        left_out = self.members[:2]
+        owners = self.members[2:]
+        self.assertEqual(
+            gen.declared_by(self._target(owners)),
+            "all but " + ", ".join(f"`{name}`" for name in left_out),
+        )
+
+    def test_an_even_split_is_spelled_out_rather_than_inverted(self):
+        # Half missing is not an exception list; inverting there costs the
+        # reader a negation and saves nothing.
+        half = len(self.members) // 2
+        owners = self.members[:half]
+        self.assertNotIn("all but", gen.declared_by(self._target(owners)))
+
+    def test_every_holder_can_name_its_members(self):
+        # A new live-tune holder the member lookup cannot see would silently
+        # lose both the inversion and `all` for every target under it.
+        for target in introspect.live_targets():
+            self.assertIn(target.owners[0], gen._holder_members(target.holder))
 
 
 class LiveParamSpellingTest(unittest.TestCase):

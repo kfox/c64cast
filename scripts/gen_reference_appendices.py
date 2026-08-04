@@ -37,6 +37,7 @@ Adding an appendix means adding one entry to :data:`APPENDICES`.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import re
 import sys
@@ -1401,43 +1402,39 @@ def _by_letter(entries: Sequence[Term]) -> list[tuple[str, list[Term]]]:
 # ---------------------------------------------------------------------------
 
 
-# The noun a holder's declarers are counted in, for :func:`declared_by`.
-_OWNER_NOUNS: dict[str, str] = {
-    "mode": "modes",
-    "effect": "effects",
-    "source": "generators",
-    "scene": "scenes",
-}
+def declared_by(target: introspect.LiveTargetDoc) -> str:
+    """Who owns a live target, in the card's column.
 
+    A target the running scene does not declare is a silent no-op: a knob on
+    `source.ring_freq` moves nothing at all unless `moire2` is the generator on
+    screen. So the question at the console is a membership test against the
+    thing currently on screen, and a count — `14 generators` — cannot answer
+    it. The names can, and they fit; the column wraps.
 
-def declared_by(target: introspect.LiveTargetDoc, totals: dict[str, int]) -> str:
-    """Who owns a live target, short enough for the card's column.
-
-    Appendix F prints the owners; a 3.5in column cannot — `source.speed` has
-    fourteen of them. But the fact itself is what a performer needs at the
-    console, because a target the running scene does not declare is a silent
-    no-op: a knob on `source.ring_freq` moves nothing at all unless `moire2`
-    is the generator on screen.
-
-    So the sole owner when there is one, and otherwise a count in the group's
-    own noun — `14 generators` — which is what the question actually is at that
-    point: is this knob worth a hand, or is it for one specific look.
+    The one shape a list answers badly is a target nearly everything declares,
+    where the reader scans fourteen names to learn that the exception list is
+    six. That inverts to `all but`, and only when the exceptions are a clear
+    minority — an inversion the reader has to undo is worth a line saved, not
+    a line broken even on.
     """
+    # A holder of one — `scene` — would otherwise read `all`, which is true and
+    # useless: the name is the thing the reader is matching against the screen.
     if len(target.owners) == 1:
         return code(target.owners[0])
-    if len(target.owners) == totals.get(target.holder):
+    missing = [name for name in _holder_members(target.holder) if name not in target.owners]
+    if not missing:
         return "all"
-    return f"{len(target.owners)} {_OWNER_NOUNS[target.holder]}"
+    if len(missing) * 2 < len(target.owners):
+        return "all but " + ", ".join(code(name) for name in missing)
+    return ", ".join(code(owner) for owner in target.owners)
 
 
-def _holder_totals() -> dict[str, int]:
-    """How many classes each holder has in total, so :func:`declared_by` can
-    say `all` rather than a count that happens to equal the registry."""
-    totals: dict[str, int] = {}
-    for entry in introspect._iter_live_holders():
-        holder = entry[0]
-        totals[holder] = totals.get(holder, 0) + 1
-    return totals
+@functools.cache
+def _holder_members(holder: str) -> tuple[str, ...]:
+    """Every class registered under a holder, in registry order, so
+    :func:`declared_by` can name the ones a target leaves out — and tell a list
+    that happens to be the whole registry from one that stops short of it."""
+    return tuple(name for kind, name, _ in introspect._iter_live_holders() if kind == holder)
 
 
 def card_live_targets() -> list[str]:
@@ -1448,7 +1445,6 @@ def card_live_targets() -> list[str]:
     :func:`declared_by` — who declares it.
     """
     targets = introspect.live_targets()
-    totals = _holder_totals()
     out = [
         "---",
         "generated: true",
@@ -1469,7 +1465,7 @@ def card_live_targets() -> list[str]:
                 if t.kind == "scalar" and t.lo is not None and t.hi is not None
                 else code(f"{len(t.choices)} values")
             )
-            rows.append([code(t.target.rpartition(".")[2]), span, declared_by(t, totals)])
+            rows.append([code(t.target.rpartition(".")[2]), span, declared_by(t)])
         # The holder heads the column rather than every cell under it. Appendix
         # F can afford a sentence saying it; a card cannot afford four, and the
         # column heading is where a prefix common to the whole column belongs.

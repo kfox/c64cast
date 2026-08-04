@@ -281,8 +281,11 @@ the version and stamps it with the date.
 - **The performance card's live-target list says who declares each target.** A
   knob mapped to `source.ring_freq` does nothing unless `moire2` is the
   generator on screen, and the column that says so was the one the card dropped
-  for space. It is back, compressed to fit: the sole owner where there is one,
-  otherwise a count — `14 generators`. Still two pages.
+  for space. It is back, and it names them: the modes, effects and generators
+  that declare a target, spelled out, because the question at the console is
+  whether the thing on screen is in that list and a count — `14 generators` —
+  cannot answer it. A target nearly everything declares is written as its
+  exceptions instead (`all but fire, mandelbrot, …`). Still two pages.
 
 ### Fixed
 
