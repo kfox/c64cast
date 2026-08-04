@@ -106,6 +106,16 @@ the version and stamps it with the date.
   instead of a page with a big numeral on it. The anchor is GitHub's own, because
   the Markdown is the book: the same link resolves on github.com and in the PDF.
   One that resolves nowhere fails the build and names the nearest ones it knows.
+- **The Programmer's Reference Guide has an index**, and it is generated like
+  its appendices. Every name the program can utter goes in — configuration
+  sections and keys, command-line flags, scene types, overlays, display modes,
+  generators, effects and live-tune targets — against the sections of the book
+  that discuss it, the section written about the name first and the table it
+  appears in last. Section titles are entries too, so "Companding" and "The
+  Audio Slot" can be looked up by a reader who does not yet know which key they
+  mean. A key is listed bare, and again qualified with its section where two
+  sections share the name, which is the rule the book's own Notation section
+  states. Every locator is a link that works on github.com and in the PDF alike.
 - **The books' symbols no longer depend on the machine that built them.** Jost
   has no ✓ and no →, and Typst was filling them from whatever was installed — so
   the compatibility matrix was set in a heavy upright check locally and a thin

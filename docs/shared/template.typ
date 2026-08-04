@@ -182,8 +182,14 @@
 // The handful of longer ones wrap, which is the right thing to spend on them.
 // ---------------------------------------------------------------------------
 
+// The identity column is not justified. It holds names, which do not stretch,
+// until the index puts a section title there — and "The BASIC Program
+// Underneath" justified into 1.5in is three words with two rivers through it.
 #let fields-column = 1.5in
-#let fields-table(..args) = table(columns: (fields-column, 1fr), ..args)
+#let fields-table(..args) = {
+  show table.cell.where(x: 0): set par(justify: false)
+  table(columns: (fields-column, 1fr), ..args)
+}
 
 // ---------------------------------------------------------------------------
 // Chapter openers

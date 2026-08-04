@@ -26,10 +26,11 @@ make reference      # -> docs/reference/c64cast-reference-guide.pdf
 make books          # every book at once
 ```
 
-## The generated appendices
+## The generated appendices and index
 
-Appendices A to I are **not written by hand**. They are read out of the same
-definitions that answer `--describe`, `--compat` and `--print-schema`, by
+Appendices A to I and the index are **not written by hand**. They are read out
+of the same definitions that answer `--describe`, `--compat` and
+`--print-schema`, by
 [`scripts/gen_reference_appendices.py`](../../scripts/gen_reference_appendices.py):
 
 | Appendix | Comes from |
@@ -43,6 +44,14 @@ definitions that answer `--describe`, `--compat` and `--print-schema`, by
 | G — Command-line flags | the argparse parser in `cli.py` |
 | H — Example configurations | the packaged `examples/`, read through `paths` |
 | I — Optional extras | `doctor._EXTRAS` joined with `pyproject.toml` |
+| The index | all of the above, crossed with the book's own Markdown |
+
+The index is the only one that reads the book rather than the code. Every name
+the program can utter goes in; the locators come from scanning the committed
+chapters for that name in a code span or a heading and taking the section it
+sits in, which is why a section renamed without a regeneration shows up as a
+broken link rather than as a wrong page number. It carries no `number`, so it
+renders after Appendix J as a plain heading rather than as Appendix K.
 
 The same pass writes the [Performance Card](../card/README.md)'s live-target
 table, which is the card's most drift-prone page.

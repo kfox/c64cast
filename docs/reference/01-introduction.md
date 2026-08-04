@@ -35,6 +35,13 @@ installs.
 Appendix J is a glossary, which is hand-written because a machine has no
 opinion about which words a reader will not know.
 
+The index at the back is generated too, and from both halves at once: every
+name the program can utter, against the sections of this book that discuss it.
+A configuration key is listed bare, and again qualified with its section where
+two sections share the name. A section title in ordinary words — "Companding",
+"The Audio Slot" — is an entry in its own right, so the concept can be looked
+up by somebody who does not yet know what it is called.
+
 ## What Is Not
 
 Three things live outside this book on purpose.
