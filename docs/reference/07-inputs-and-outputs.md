@@ -312,15 +312,45 @@ With `[control].enabled` and the `control` extra, an HTTP server runs on
 | `GET /status` | The current scene and index, whether it is paused, and the link's write latency |
 | `GET /scenes` | The playlist, with each scene's duration and which one is live |
 | `POST /pause`, `/resume`, `/skip` | Exactly what the keyboard does |
-| `POST /reload` | Re-read the configuration from disk and rebuild the playlist at the next scene boundary |
+| `POST /reload` | Re-read the configuration from disk and rebuild the scenes at the next scene boundary |
 | `GET /perf` | The performance console |
 
 `/reload` is how a show is edited while it runs: save the file, post, and the new
-playlist takes effect at the next boundary rather than mid-scene.
+scenes take effect at the next boundary rather than mid-scene.
 
 Every route takes an optional `?system=` naming one system of an ensemble, or
 `all`. Omitted, a single-system run answers for its one playlist and an ensemble
 answers for every system at once.
+
+### What a Reload Re-Reads
+
+A reload rebuilds **`[[scenes]]` and `[interstitial]`**, and nothing else. The
+connection, the audio path, the capture device and the running playlist's own
+`loop` and `fade_duration_s` are all established once, at startup, from the
+threads and the link that were built out of them; re-reading those would mean
+tearing that apart mid-show, so a reload leaves them exactly as they are. To
+change one, restart.
+
+A file that fails to load leaves the running playlist untouched and logs why,
+so a typo saved mid-show costs a log line rather than the show.
+
+### Signals
+
+The same reload is available with no control plane at all, on any POSIX host:
+
+```bash
+kill -HUP $(pgrep -f c64cast)
+```
+
+`SIGHUP` re-reads every system's configuration in place, under the rule above.
+Windows has no `SIGHUP`, which is why `POST /reload` is the portable spelling of
+it. `SIGTERM` stops the run the way a normal exit does, tearing the scene down
+and putting the machine back; <kbd>CTRL</kbd> <kbd>C</kbd> still interrupts at
+the terminal.
+
+In an ensemble each system re-reads its own file independently, from the path it
+was originally loaded from. The master is not re-read, so adding or removing a
+system needs a restart.
 
 ### The Performance Console
 

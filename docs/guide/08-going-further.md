@@ -115,9 +115,11 @@ button by the door.
 feature: pinch to pause, swipe to skip, open hand to cycle. It is exactly as
 silly and as delightful as it sounds.
 
-**A hangup signal** reloads the configuration file without interrupting
-playback, which is useful for a long-running installation you want to edit
-in place.
+**A hangup signal** picks up an edited playlist without interrupting playback,
+which is useful for a long-running installation you want to change in place.
+Send it with `kill -HUP`, and the new scenes start at the next scene boundary.
+Settings that were fixed when c64cast started — the connection, the audio path,
+the camera — still need a restart.
 
 ## The LED Bridge
 

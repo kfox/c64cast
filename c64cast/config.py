@@ -489,7 +489,7 @@ class AudioCfg:
             "overrun onset under the live pipeline was measured at ~12500 Hz (identical "
             "in char and bitmap — the audio feed, not the video, is the driver). 12000 "
             "keeps margin below that. Rates past the isolated-handler ceiling are "
-            "rejected at load (see c64.nmi_rate_safety). Sampler-backend playback uses "
+            "rejected at load, and --doctor reports them. Sampler-backend playback uses "
             "[audio].sampler_sample_rate instead."
         },
     )
@@ -536,8 +536,8 @@ class AudioCfg:
             "design nominal, so nominal made sampler audio drift against video. This is a "
             "firmware property (same across U64 units), not per-unit — so it ships baked "
             "in. If a firmware update fixes the clock (or on hardware that clocks it "
-            "correctly), set 6250000. Re-measure with scripts/diags/sampler_av_align_calib.py "
-            "(prints the value). Only affects the sampler backend."
+            "correctly), set 6250000. The repository carries a diagnostic script that "
+            "re-measures it and prints the value. Only affects the sampler backend."
         },
     )
     mic_sensitivity: float = field(

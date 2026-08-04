@@ -178,7 +178,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `fade_duration_s` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [Fades (3)](04-display-pipeline.md#fades), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
+| `fade_duration_s` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [Fades (3)](04-display-pipeline.md#fades), [What a Reload Re-Reads (6)](07-inputs-and-outputs.md#what-a-reload-re-reads) |
 | `feedback_port` | [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `fft_size` | [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `fg_color` | [`callsign` (C)](22-appendix-c-overlays.md#callsign), [`clock` (C)](22-appendix-c-overlays.md#clock), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |
