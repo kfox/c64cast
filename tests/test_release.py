@@ -261,6 +261,20 @@ class TestReleaseWorkflow(unittest.TestCase):
         for output in _book_outputs():
             self.assertIn(f"{output}-", self.code)
 
+    def test_every_book_also_ships_unversioned(self) -> None:
+        # The README links each book as
+        # releases/latest/download/<output>.pdf, which only resolves while an
+        # asset is named exactly that. Drop the second copy and three published
+        # links 404 at the next release, silently.
+        self.assertIn('cp "$pdf" "dist/$name.pdf"', self.code)
+        readme = _read("README.md")
+        for output in _book_outputs():
+            self.assertIn(
+                f"releases/latest/download/{output}.pdf",
+                readme,
+                f"{output} has no evergreen link in the README",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

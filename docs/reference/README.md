@@ -17,9 +17,9 @@ The Markdown is the book. Start at
 [`01-introduction.md`](01-introduction.md); the files are numbered in reading
 order and everything renders on github.com as-is.
 
-For the typeset version, download the PDF from
-[the latest release](https://github.com/kfox/c64cast/releases/latest), or
-render it from a checkout:
+For the typeset version, download
+[the PDF](https://github.com/kfox/c64cast/releases/latest/download/c64cast-reference-guide.pdf)
+(always the newest release), or render it from a checkout:
 
 ```bash
 make reference      # -> docs/reference/c64cast-reference-guide.pdf
