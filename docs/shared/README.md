@@ -8,7 +8,7 @@ Guide](../reference/README.md) and the [Performance Card](../card/README.md).
 | File | Is |
 |---|---|
 | `template.typ` | The entire visual language — palette, faces, and one entry point per layout |
-| `fonts/` | The two OFL faces, vendored, plus their [licences](fonts/README.md) |
+| `fonts/` | The two OFL faces, vendored, plus their [licenses](fonts/README.md) |
 
 Nothing here is book-specific. A change to `template.typ` restyles every book
 at once, which is the point: they are a series, and a table in one should look

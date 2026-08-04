@@ -125,7 +125,7 @@ class BitmapStructureTest(unittest.TestCase):
 class BitmapEngageFlashTest(unittest.TestCase):
     """Single-buffer (non-REU) bring-up must clear BOTH the $2000 bitmap and
     screen RAM ($0400) BEFORE flipping $D011 into bitmap mode, so a bitmap scene
-    doesn't flash a colour ghost of the prior scene on engage. In hires a zeroed
+    doesn't flash a color ghost of the prior scene on engage. In hires a zeroed
     bitmap selects each cell's BG nibble from $0400 — stale $0400 would render a
     40×25 ghost; zeroing it forces solid black until the first frame repaints.
 
@@ -322,9 +322,9 @@ class PercellFillerSafetyTest(unittest.TestCase):
 
 
 class PercellBg0HysteresisTest(unittest.TestCase):
-    """bg0 (the %00 colour written to $D021) must not strobe when two colours
+    """bg0 (the %00 color written to $D021) must not strobe when two colors
     are near-tied for most-populated — otherwise the background + the pillarbox
-    bars flash a different colour every frame, very visible on the TR's slow,
+    bars flash a different color every frame, very visible on the TR's slow,
     non-atomic transport. bg0 stays sticky until a *sustained* dominant shift
     clears the relative margin; see modes.BG0_HYSTERESIS_MARGIN."""
 
@@ -357,7 +357,7 @@ class PercellBg0HysteresisTest(unittest.TestCase):
     def test_sustained_dominant_change_flips_bg0(self):
         mode = MultiHiresDisplayMode("percell")
         self.assertEqual(self._bg0(mode, np.zeros(32000, dtype=np.int64)), 0)
-        # An overwhelming, sustained colour change MUST still move bg0 (we damp
+        # An overwhelming, sustained color change MUST still move bg0 (we damp
         # jitter, not real cuts): a few all-blue frames clear the margin.
         all_blue = np.full(32000, 6, dtype=np.int64)
         seen = [self._bg0(mode, all_blue) for _ in range(6)]

@@ -15,7 +15,7 @@ launch = "trigger"
 quantize = "bar"
 ```
 
-| `launch` | Behaviour |
+| `launch` | Behavior |
 |---|---|
 | `trigger` | Plays through, then loops |
 | `gate` | Plays while held, restores what it interrupted |
@@ -40,7 +40,7 @@ stopped clock fires immediately, so a pad always does something.
 
 Phase is integrated from the tempo, never snapped, so it cannot jerk backward
 when a clock byte lands late, and silence freezes the `audio` grid. Launch
-quantisation, effects with `mod_source = "clock"` and the WLED broadcast under
+quantization, effects with `mod_source = "clock"` and the WLED broadcast under
 `broadcast_tempo_fallback` all consume it.
 
 ## Looks
@@ -74,7 +74,7 @@ reaches the audience's screen.
 | In | A `wled` scene | LedFx, xLights or Jinx! streams pixels to the Commodore |
 
 Listening, the mapping is a pun on WLED's own vocabulary: power is pause,
-brightness is a real screen dim, the playlist is the effect list, colour forces
+brightness is a real screen dim, the playlist is the effect list, color forces
 a palette, and speed and intensity are the scene's live parameters.
 
 ## Several Commodores

@@ -69,7 +69,7 @@ LEGACY_CHARGEN_PATH = "assets/roms/characters.901225-01.bin"
 # 2 KB uppercase half (a charset extracted from an emulator may be either).
 # Purely informational: a Swedish/Danish machine, a JiffyDOS charset or a
 # replacement font is exactly the charset that user wants us to use, so an
-# unrecognised digest is a note, never a failure.
+# unrecognized digest is a note, never a failure.
 STOCK_DIGESTS = {
     "fd0d53b8480e86163ac98998976c72cc58d5dd8eb824ed7b829774e74213b420": "901225-01 (stock, 4 KB)",
     "3cf89732b10b1d51a267f74df35f10a154108b444a3a0ec9e51ef7ddefb668a1": (
@@ -145,7 +145,7 @@ def verify(data: bytes) -> VerifyResult:
     """
     size = len(data)
     digest = hashlib.sha256(data).hexdigest()
-    note = STOCK_DIGESTS.get(digest, "unrecognised variant — a national or replacement charset?")
+    note = STOCK_DIGESTS.get(digest, "unrecognized variant — a national or replacement charset?")
 
     def bad(msg: str) -> VerifyResult:
         return VerifyResult(ok=False, size=size, sha256=digest, note=note, error=msg)

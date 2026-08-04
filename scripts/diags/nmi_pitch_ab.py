@@ -141,7 +141,7 @@ def _pitch_ratio(cap: np.ndarray, ref: np.ndarray) -> tuple[float, float]:
     r shifts capture features to r·f, i.e. +ln r along the log-f axis, so
     cap(u) ≈ ref(u − ln r). argmax of correlate(cap, ref) sits at +ln r (in grid
     steps); parabolic interpolation gives sub-bin. ratio = exp(lag · du).
-    ``sharpness`` = peak / |peak-neighbour mean| as a confidence read."""
+    ``sharpness`` = peak / |peak-neighbor mean| as a confidence read."""
     corr = np.correlate(cap, ref, mode="full")
     lags = np.arange(-(len(ref) - 1), len(cap))
     # Restrict to plausible pitch range (±6 % → the interesting window is tiny).

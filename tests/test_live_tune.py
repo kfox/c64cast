@@ -180,7 +180,7 @@ class ModeSetterTests(unittest.TestCase):
     def test_auto_fit_lerp_matches_accumulator(self):
         """The mode-side lerp of a full-strength fit must equal the value the
         ColorFitAccumulator would have baked at that strength — the refactor is
-        behaviour-preserving at every strength, not just the default."""
+        behavior-preserving at every strength, not just the default."""
         import numpy as np
 
         rng = np.random.default_rng(0)

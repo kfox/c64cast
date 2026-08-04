@@ -396,7 +396,7 @@ class HueCorrection:
     name: str = ""
 
 
-# The one C64 colour gap worth closing by default: dark blue-violets → purple.
+# The one C64 color gap worth closing by default: dark blue-violets → purple.
 DEFAULT_HUE_CORRECTIONS: tuple[HueCorrection, ...] = (
     HueCorrection(
         hue_lo_deg=240.0,

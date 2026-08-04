@@ -2,7 +2,7 @@
 # Single-scene demo: "Game Of Life" — a WLED-effect port (see
 # https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2Dgameoflife`) of
 # Conway's Game of Life on a coarse grid, with WLED's signature "parent color
-# inheritance": a newly-born cell's colour is the blend of its live parents'.
+# inheritance": a newly-born cell's color is the blend of its live parents'.
 # The board periodically reseeds a fresh random soup (standing in for WLED's
 # adaptive stagnation detection) so it never settles into a static picture.
 #

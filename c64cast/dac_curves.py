@@ -18,7 +18,7 @@ values written to the ring differ (0..255 instead of 0..15).
 A "sidtable" here is the inverse map used at encode time: ``sidtable[i]`` is the
 ``$D418`` byte whose *measured* output level is nearest the i-th of 256 uniform
 target levels spanning the SID's measured [min, max]. Index 128 is the neutral /
-mid-scale entry (silence), the DAC analogue of the linear path's centered rest
+mid-scale entry (silence), the DAC analog of the linear path's centered rest
 value.
 
 Why only the emulated (UltiSID) table ships baked
@@ -28,11 +28,11 @@ HW measurement (2026-07-02, Cam Link capture; ``scripts/diags/mahoney_dac_calib.
 * The U64's emulated **UltiSID** curve is deterministic across every unit and
   the 6581/8580 model knob does not affect the digi transfer (6581 vs 8580
   byte-identical, corr 0.99999) — so **one** baked ``mahoney_ultisid`` table
-  generalises perfectly. Its curve is all-positive (~6.4 effective bits), a
+  generalizes perfectly. Its curve is all-positive (~6.4 effective bits), a
   valid digi shape with silence at a mid-level code.
 * **Physical 6581 chips vary enormously** chip-to-chip (two chips: curve corr
   0.738; one chip's table on the other → ~29% RMS level error), dominated by the
-  analog filter. A single baked physical-6581 table cannot generalise, so
+  analog filter. A single baked physical-6581 table cannot generalize, so
   physical chips get **per-unit calibration** instead of a shipped table (a
   deferred follow-up; see the project notes / ``--calibrate-dac`` sketch).
 

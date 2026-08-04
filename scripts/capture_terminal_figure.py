@@ -77,12 +77,12 @@ ANSI = {
 }
 
 
-def colour(name: str, default: tuple[int, int, int]) -> tuple[int, int, int]:
+def color(name: str, default: tuple[int, int, int]) -> tuple[int, int, int]:
     if name in ("default", ""):
         return default
     if name in ANSI:
         return ANSI[name]
-    if len(name) == 6:  # pyte hands back bare hex for 24-bit colour
+    if len(name) == 6:  # pyte hands back bare hex for 24-bit color
         try:
             return (int(name[0:2], 16), int(name[2:4], 16), int(name[4:6], 16))
         except ValueError:
@@ -208,12 +208,12 @@ def render(screen, rows_used: int, cols: int, out: Path, size: int = 26) -> None
             cell = line[x]
             if not cell.data or cell.data == " ":
                 if cell.reverse or cell.bg != "default":
-                    bgc = colour(cell.fg if cell.reverse else cell.bg, BG)
+                    bgc = color(cell.fg if cell.reverse else cell.bg, BG)
                     px, py = pad + x * cw, bar + pad + y * ch
                     draw.rectangle([px, py, px + cw, py + ch], fill=bgc)
                 continue
-            fg = colour(cell.fg, FG)
-            bg = colour(cell.bg, BG)
+            fg = color(cell.fg, FG)
+            bg = color(cell.bg, BG)
             if cell.reverse:
                 fg, bg = bg, fg
             px, py = pad + x * cw, bar + pad + y * ch

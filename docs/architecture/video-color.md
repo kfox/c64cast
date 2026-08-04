@@ -170,9 +170,9 @@ Each mode's `(width, height)` — the only resolution it downscales a source fra
 
 The hires/mhires VIC bring-up is one shared module-level primitive, `engage_bitmap_mode(api, *, d011, d018, d016, …)`. It is called by **both** the single-buffer `HiresDisplayMode`/`MultiHiresDisplayMode` `setup()` **and** `voice_scope.VoiceScopeRenderer._apply_vic_hires_bank`, the waveform/midi oscilloscope — so the engage invariant and the VIC-register set live in exactly one place and cannot drift apart. Two copies drift in one particular direction — one of them ends up clearing *after* its `$D011` flip instead of before, which is precisely the garbage field the invariant exists to prevent.
 
-**The invariant.** Zero both the `$2000` bitmap **and** screen RAM (`$0400`) *before* flipping `$D011` into bitmap mode, and write `$D018`/`$D016` first as well. The window between the mode flip and the first composed frame then shows solid black, rather than uninitialized-RAM garbage or a colour ghost of the prior scene.
+**The invariant.** Zero both the `$2000` bitmap **and** screen RAM (`$0400`) *before* flipping `$D011` into bitmap mode, and write `$D018`/`$D016` first as well. The window between the mode flip and the first composed frame then shows solid black, rather than uninitialized-RAM garbage or a color ghost of the prior scene.
 
-**Why `$0400` too — the non-obvious part.** A zeroed bitmap makes every pixel select its cell's *background* colour. In hires, that background is the **low nibble of the `$0400` byte**, not `$D021`. So leaving stale `$0400` — say the previous interstitial's PETSCII codes — paints a 40×25 colour ghost on engage. Zeroing `$0400` pins every cell's background to black.
+**Why `$0400` too — the non-obvious part.** A zeroed bitmap makes every pixel select its cell's *background* color. In hires, that background is the **low nibble of the `$0400` byte**, not `$D021`. So leaving stale `$0400` — say the previous interstitial's PETSCII codes — paints a 40×25 color ghost on engage. Zeroing `$0400` pins every cell's background to black.
 
 **Why border and bg0 are pinned on every path.** `$D020`/`$D021` are set to `0x00` everywhere, including REU-staged mhires. The REU bank-swap IRQ only starts writing `$D021` from the first *real* swap, since the frame tracker's ready flag starts zeroed (see `_install_bank_swap_irq`). Without the setup-time write, every frame until that first swap showed whatever `$D021` the previous scene left behind — observed on hardware as a black border over a stale-blue screen. The setup write covers exactly that gap; the IRQ still owns `$D021` from the first real frame onward.
 
@@ -335,10 +335,10 @@ Range 0..1, default 0.25. A single dial over the mhires `percell` path's two *te
 
 **The two buffers:**
 
-1. The per-cell colour-count EMA (`_smoothed_cell_counts`, blended each frame with `PERCELL_PICK_EMA_ALPHA = 0.15`), which stabilizes *which* colours a cell offers.
+1. The per-cell color-count EMA (`_smoothed_cell_counts`, blended each frame with `PERCELL_PICK_EMA_ALPHA = 0.15`), which stabilizes *which* colors a cell offers.
 2. The per-pixel/per-cell decision hysteresis (`PERCELL_QUANT_HYSTERESIS_BONUS` / `PERCELL_CODE_HYSTERESIS_BONUS`, each 5000 in d²-space, further scaled by `PERCEPTUAL_DIST_SCALE` under Lab matching), which keeps a pixel on its previous palette index or bitmap code unless the new frame beats it by the bonus.
 
-**The tradeoff.** Both exist to stop per-frame colour churn reading as shimmer on noisy video. Both buy that by trading motion-tracking for stability — so on a hard shot cut they hold structure from the *previous* shot for a moment, and an outline lingers as an after-image while the buffers decay.
+**The tradeoff.** Both exist to stop per-frame color churn reading as shimmer on noisy video. Both buy that by trading motion-tracking for stability — so on a hard shot cut they hold structure from the *previous* shot for a moment, and an outline lingers as an after-image while the buffers decay.
 
 **What the dial does.** `motion_smoothing` scales both together at construction time:
 
@@ -360,7 +360,7 @@ Since neither buffer accounts for the ghost on its own, a combined dial is the c
 
 **Why 0.25.** Picked by an on-hardware flicker/ghost A/B on the U64 — WarGames hard cuts for the after-image, grainy dark footage for flicker — as the lowest value where flicker stays acceptable. It is a large ghost reduction against the `1.0` row above.
 
-`validate_motion_smoothing_cfg` and `doctor._validate_motion_smoothing` bound it 0..1 and note a non-default value on the mhires percell scenes it affects. Orthogonal to `cell_strategy` (which 3 colours), `dither` (per-pixel fill), and `color_match` (distance space).
+`validate_motion_smoothing_cfg` and `doctor._validate_motion_smoothing` bound it 0..1 and note a non-default value on the mhires percell scenes it affects. Orthogonal to `cell_strategy` (which 3 colors), `dither` (per-pixel fill), and `color_match` (distance space).
 
 ### `petscii_styles.py`
 

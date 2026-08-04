@@ -264,7 +264,7 @@ class BigTextOverlay(Overlay):
         self._scroll_frame = 0  # frames elapsed inside the active scroll
         self.start_time = 0.0
         # Ensemble / orchestration mode. None in single-system or local
-        # mode (today's behaviour); set by Playlist (for followers) or
+        # mode (today's behavior); set by Playlist (for followers) or
         # cli (for conductors) in ensemble mode at scene setup time via
         # the scene._orchestrator / scene._is_conductor stamps.
         self._orchestrator: Any = None

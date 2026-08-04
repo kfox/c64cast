@@ -6,7 +6,7 @@
 # loudness raises the fire, each note transient flares it white-hot. This is
 # entirely host-side, so it adds no U64 traffic.
 #
-# `fire` colour-maps black→red→yellow→white, a near-perfect fit for the C64
+# `fire` color-maps black→red→yellow→white, a near-perfect fit for the C64
 # palette. It renders through ANY display mode; a CHAR display (mcm here, or
 # petscii) is the robust pairing with a SID audio source (it reserves only
 # screen RAM at $0400, so the typical $1000-load HVSC tune fits — see the

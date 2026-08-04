@@ -97,7 +97,7 @@ class GenerativeSource(BaseFrameSource):
     # path, so both terms are exactly 0.0 there and the SID look is unchanged).
     # Bass drives brightness and treble drives hue, deliberately: that makes a
     # kick and a hi-hat read differently without ever desaturating, which the
-    # 16-color quantizer handles badly (a desaturated hue lands in the greys).
+    # 16-color quantizer handles badly (a desaturated hue lands in the grays).
     _BASS_VALUE_GAIN = 0.25  # extra value from low-band energy → kicks punch the brightness
     _TREBLE_HUE_GAIN = 0.10  # hue shift from high-band energy → cymbals/hats shimmer the color
 
@@ -182,7 +182,7 @@ class PlasmaSource(GenerativeSource):
             + np.sin((xs + ys) / 16.0)
             + np.sin(np.sqrt((xs - width / 2.0) ** 2 + (ys - height / 2.0) ** 2) / 8.0)
         )
-        # Normalise to ~[0,1] so `scale` maps to a predictable number of hue cycles.
+        # Normalize to ~[0,1] so `scale` maps to a predictable number of hue cycles.
         self._field = (field - field.min()) / (field.max() - field.min() + 1e-6)
 
     def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
@@ -221,7 +221,7 @@ class TunnelSource(GenerativeSource):
         dx = xs - width / 2.0
         dy = ys - height / 2.0
         r = np.sqrt(dx * dx + dy * dy) + 1e-3
-        self._depth = (width * 0.5) / r  # large near centre
+        self._depth = (width * 0.5) / r  # large near center
         self._angle = np.arctan2(dy, dx) / (2.0 * np.pi)  # -0.5..0.5
 
     def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
@@ -244,7 +244,7 @@ def _periodic_value_noise(
     comes from duplicating the first row/column of each octave's random grid
     before bilinear upsampling, so the upsampled endpoints match — a fire
     texture can then scroll past `rows` and wrap with no visible seam. Returns
-    float32 normalised to [0, 1]."""
+    float32 normalized to [0, 1]."""
     acc = np.zeros((rows, w), dtype=np.float32)
     for cy, cx, amp in octaves:
         g = rng.random((cy, cx), dtype=np.float32)
@@ -259,7 +259,7 @@ def _periodic_value_noise(
 @register("fire")
 class FireSource(GenerativeSource):
     """Rising fire: an upward-scrolling turbulence texture masked by a
-    bottom-hot vertical gradient and colour-mapped black→red→yellow→white
+    bottom-hot vertical gradient and color-mapped black→red→yellow→white
     (`cv2.COLORMAP_HOT` — a near-perfect match for the C64 palette). The
     turbulence is precomputed and *tileable*, so the scroll is a pure function
     of `t` (deterministic, dropped-frames-safe) rather than a stateful cellular
@@ -268,7 +268,7 @@ class FireSource(GenerativeSource):
     Reactive (the headline): `level` raises the flames (louder → taller/hotter),
     `onset` flares them on each transient. Both push more of the field toward
     the yellow/white end of COLORMAP_HOT, so the fire visibly leaps on the beat
-    — the most legible music reaction after 16-colour quantization."""
+    — the most legible music reaction after 16-color quantization."""
 
     # Scroll period (texture rows). The flames rise one full period per
     # period/scroll_speed seconds; a tall period keeps the motion organic.
@@ -329,7 +329,7 @@ class MandelbrotSource(GenerativeSource):
     plasma/tunnel/fire already guarantee.
 
     Iteration count is intentionally fixed regardless of zoom depth: the
-    output is quantized to a 16-colour C64 grid, so resolving filament-level
+    output is quantized to a 16-color C64 grid, so resolving filament-level
     deep-zoom detail would be invisible anyway — fixing it bounds per-frame
     cost at any zoom depth instead of growing it toward the precision limit.
     """
@@ -671,7 +671,7 @@ class HopalongSource(GenerativeSource):
     """Hopalong chaotic point-map attractor, iterated for many parallel
     starting points at once (numpy-vectorized across the batch — each *step*
     is still sequential, the map depends on the previous point) into a
-    density accumulator, colour-mapped by (log-scaled) density. A slow
+    density accumulator, color-mapped by (log-scaled) density. A slow
     sinusoidal drift of the `a` constant keeps the attractor's shape breathing
     over time without needing a fundamentally different computation per
     frame; the batch is re-run from scratch every frame (cheap: a few hundred

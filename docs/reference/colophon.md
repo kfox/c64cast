@@ -2,7 +2,7 @@
 
 Copyright © 2026 the c64cast authors. c64cast is free software, released
 under the MIT License. You may copy, modify and redistribute it, including
-this book, under the terms of that licence. The full text ships with the
+this book, under the terms of that license. The full text ships with the
 software in the file
 [`LICENSE`](https://github.com/kfox/c64cast/blob/main/LICENSE).
 

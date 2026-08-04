@@ -53,7 +53,7 @@ BITMAP_H = HW_ROWS * CELL_PX  # 200 scanlines
 _C3_SOLID = np.uint8(0xFF)
 
 CELLS_PER_BAND = HW_COLS // N_BANDS  # 5 hardware cells = 20 mhires px
-# One cell of the band is left unpainted so neighbouring bars don't fuse into a
+# One cell of the band is left unpainted so neighboring bars don't fuse into a
 # solid block along the bottom of the screen. 4 cells = 16 px of bar, 4 px gap.
 GUTTER_CELLS = 1
 BAR_CELLS = CELLS_PER_BAND - GUTTER_CELLS

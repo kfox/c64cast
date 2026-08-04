@@ -176,7 +176,7 @@ def cmd_shoot(args) -> int:
 
 
 def cmd_sheet(args) -> int:
-    """Tile a label's frames into one labelled contact sheet.
+    """Tile a label's frames into one labeled contact sheet.
 
     Reviewing a burst one full-size PNG at a time is slow and, for an agent
     reading them back, expensive; a sheet makes picking the keeper one look.
@@ -207,12 +207,12 @@ def cmd_sheet(args) -> int:
     return 0
 
 
-def cmd_centre(args) -> int:
-    """Report how far each frame's drawn content sits from screen centre.
+def cmd_center(args) -> int:
+    """Report how far each frame's drawn content sits from screen center.
 
-    For scroller figures: 'looks centred' by eye is routinely a character cell
+    For scroller figures: 'looks centered' by eye is routinely a character cell
     out, and at 12 cells/s the difference between frames is ~83 ms. Measuring
-    beats squinting. Offsets are in character cells, + meaning right of centre.
+    beats squinting. Offsets are in character cells, + meaning right of center.
     """
     import numpy as np
 
@@ -245,7 +245,7 @@ def cmd_centre(args) -> int:
 
 
 def cmd_plate(args) -> int:
-    """Compose several captures into one labelled grid (fig-4-1's four modes).
+    """Compose several captures into one labeled grid (fig-4-1's four modes).
 
     A figure that compares things needs the things named inside the image: the
     guide's captions are one line and don't enumerate panels. Labels are set in
@@ -261,7 +261,7 @@ def cmd_plate(args) -> int:
     panels = []
     for spec in args.panels:
         stem, sep, label = spec.partition("=")
-        # A trailing "=" means an unlabelled panel: some plates compare named
+        # A trailing "=" means an unlabeled panel: some plates compare named
         # things (display modes), others are just adjacent screens.
         if sep and not label:
             label = ""
@@ -272,8 +272,8 @@ def cmd_plate(args) -> int:
         panels.append((label, im.resize((panel_w, h), Image.LANCZOS)))
 
     ph = panels[0][1].height
-    labelled = any(label for label, _ in panels)
-    cell_h = ph + (label_gap + label_h if labelled else 0)
+    labeled = any(label for label, _ in panels)
+    cell_h = ph + (label_gap + label_h if labeled else 0)
     rows = (len(panels) + args.cols - 1) // args.cols
     w = margin * 2 + panel_w * args.cols + gutter * (args.cols - 1)
     h = margin * 2 + cell_h * rows + gutter * (rows - 1)
@@ -340,12 +340,12 @@ def main() -> int:
     p.add_argument("--width", type=int, default=260, help="tile width in px")
     p.set_defaults(func=cmd_sheet)
 
-    p = sub.add_parser("centre", help="rank frames by how centred their content is")
+    p = sub.add_parser("center", help="rank frames by how centered their content is")
     p.add_argument("label")
     p.add_argument("--top", type=int, default=10)
-    p.set_defaults(func=cmd_centre)
+    p.set_defaults(func=cmd_center)
 
-    p = sub.add_parser("plate", help="compose several frames into one labelled grid")
+    p = sub.add_parser("plate", help="compose several frames into one labeled grid")
     p.add_argument("figure", help="figure name, e.g. fig-4-1-modes")
     p.add_argument("panels", nargs="+", metavar="FRAME[=LABEL]", help="e.g. p-mcm_00=mcm")
     p.add_argument("--cols", type=int, default=2)

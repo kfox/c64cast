@@ -3,7 +3,7 @@
 
 A book is a directory under docs/ holding `NN-name.md` chapters and a
 `book.toml`; docs/guide/ is one. The Markdown is that book's only source. It
-is ordinary GitHub-flavoured Markdown -- it renders correctly on github.com
+is ordinary GitHub-flavored Markdown -- it renders correctly on github.com
 as-is, and nothing about the *look* of the PDF is decided here. This module
 only translates constructs; docs/shared/template.typ owns the design.
 
@@ -43,7 +43,7 @@ Per-file YAML front matter carries only what Markdown cannot express:
 The chapter's title comes from its `# H1` and the opener page's section list
 is derived from its `##` headings, so neither can drift from the prose.
 
-`book.toml` says which layout the book takes and what its artefacts are
+`book.toml` says which layout the book takes and what its artifacts are
 called; see LAYOUT_KEYS below.
 """
 
@@ -69,7 +69,7 @@ CALLOUT_KINDS = ("NOTE", "TIP", "WARNING", "IMPORTANT", "CAUTION")
 # cover logo should fail here rather than render a coverless PDF. Underscores
 # become hyphens, which is how Typst spells its parameter names.
 #
-# `output` (the artefact basename) and `layout` itself are consumed here and
+# `output` (the artifact basename) and `layout` itself are consumed here and
 # never passed on; `version` is not book metadata somebody edits, so it is
 # appended by build() rather than read from the file.
 LAYOUT_KEYS = {

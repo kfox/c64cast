@@ -5,7 +5,7 @@ would show somebody. This book does not teach it. It is the volume you open
 when you already know what you want and need to know exactly what it is called,
 what it accepts, and what it does when you say nothing at all.
 
-It is organised by subsystem, not by audience. The musician driving a SID and
+It is organized by subsystem, not by audience. The musician driving a SID and
 the VJ driving a club wall read the same chapter on sound, because it is the
 same sound path. Where a subject belongs to two chapters it is written once and
 referred to from the other.
@@ -60,7 +60,7 @@ than another. What it leaves to `architecture.md` is the history: which other
 approaches were tried, and why they lost.
 
 `docs/caveats.md` records the hardware's own limits, which are frequently the
-real answer to "why can't it just". `docs/troubleshooting.md` is organised by
+real answer to "why can't it just". `docs/troubleshooting.md` is organized by
 symptom, which is the right index when something is wrong and the wrong one
 when you are designing.
 
@@ -89,8 +89,8 @@ scene's `palette_mode` is on a MIDI knob as `mode.palette_mode` and is in the
 menu.
 
 A command-line flag is written as it is typed, with its leading dashes, as
-`--config`. Flags are introduced beside the behaviour they change rather than
-catalogued in the prose; Appendix G is the full list, in the groups `-h`
+`--config`. Flags are introduced beside the behavior they change rather than
+cataloged in the prose; Appendix G is the full list, in the groups `-h`
 prints them in.
 
 ## Where a Setting Comes From

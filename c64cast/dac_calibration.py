@@ -5,7 +5,7 @@ to the real chip instead of the baked emulated-UltiSID one.
 
 Why per-system calibration
 --------------------------
-The baked ``mahoney_ultisid`` table in :mod:`c64cast.dac_curves` generalises
+The baked ``mahoney_ultisid`` table in :mod:`c64cast.dac_curves` generalizes
 perfectly across the U64's *emulated* UltiSID (deterministic, model-knob
 irrelevant). But **physical 6581/8580 chips vary enormously** chip-to-chip
 (measured: curve correlation 0.74 between two 6581s; one chip's table on the
@@ -95,7 +95,7 @@ sidesteps the whole construction; the same chip now passes the ground truth at
 1.3 %.
 
 Stereo capture is folded to mono by averaging, so the SID pan setting only
-scales all measurements uniformly and cancels in the normalised ladder — no
+scales all measurements uniformly and cancels in the normalized ladder — no
 mixer changes needed.
 
 Context dependence, and why every code is measured three times
@@ -106,7 +106,7 @@ otherwise ordinary ring: a positive code reads **20 % lower** at the end of a
 ring pass than at its start, a negative code 2 % *higher*, and the apparent level
 correlates at |r| ≈ 0.9 with the mean level of the surrounding slots. It is in
 the raw waveform, before any processing, so it is the chip's operating point
-sliding with the accumulated signal, not a measurement artefact.
+sliding with the accumulated signal, not a measurement artifact.
 
 Measure each code at one fixed slot and that bias is baked into the ladder,
 ordered by code, looking exactly like curve structure — the tell is that the
@@ -631,7 +631,7 @@ def build_slot_ring(codes: Sequence[int], ring_size: int, *, ref: int = REF_ZERO
 
 def _boxcar_step(x: np.ndarray, half: int) -> np.ndarray:
     """``s[n] = mean(x[n:n+half]) − mean(x[n−half:n])`` — a matched filter for a
-    level step. ``|s|`` has a sharp triangular peak centred exactly on each
+    level step. ``|s|`` has a sharp triangular peak centered exactly on each
     boundary and is flat-ish elsewhere, which is what the alignment keys off."""
     n = x.size
     c = np.concatenate(([0.0], np.cumsum(x)))
@@ -755,8 +755,8 @@ def extract_slot_levels(
        that function for why open-loop indexing sank two earlier attempts.
     3. **Undo the AC coupling** (:func:`_dc_restore_gain`) so a plateau mean is
        a level rather than a level plus the sag of whatever preceded it.
-    4. **Difference against the neighbours.** Each code slot is bracketed by
-       reference slots, so ``level = mean(code) − mean(both neighbours)/2``
+    4. **Difference against the neighbors.** Each code slot is bracketed by
+       reference slots, so ``level = mean(code) − mean(both neighbors)/2``
        cancels any residual slow drift locally.
     """
     x = np.asarray(cap, dtype=np.float64)
@@ -835,7 +835,7 @@ def read_ring_capture(
     it can only refuse what it cannot parse. But a recording of the wrong input
     parses fine — the peak finder locks onto noise, a sync gap or two turns up,
     and levels come back near zero with the passes contradicting each other. So
-    the judgement about whether a *recording* is usable lives here, where it can
+    the judgment about whether a *recording* is usable lives here, where it can
     be applied to every ring before its numbers reach the table.
 
     Raises :class:`MeasurementError` whose message is a phrase, for
@@ -864,7 +864,7 @@ _TRACK_BETA = 0.1
 
 #: How far from its prediction an edge may be found before the tracker calls it
 #: a miss and coasts. Wide enough to acquire a badly stretched timebase, narrow
-#: enough that it can never latch onto the *neighbouring* boundary.
+#: enough that it can never latch onto the *neighboring* boundary.
 _TRACK_CAPTURE_FRAC = 0.35
 
 
@@ -965,7 +965,7 @@ def build_sidtable_from_levels(
     reconstruct here: the table maps 256 uniform target levels across the
     measured span to the code whose level is nearest.
 
-    The targets span ``[min, max]`` rather than being centred on silence, and
+    The targets span ``[min, max]`` rather than being centered on silence, and
     that is deliberate. What the encoder needs is *uniformity* — index ``128+k``
     must sit ``k`` equal steps above index 128 — not that index 128 be silent:
     the SID output is AC-coupled, so a constant offset is removed downstream and
@@ -974,7 +974,7 @@ def build_sidtable_from_levels(
     away the excess negative swing for nothing. It also has to work for a chip
     whose span is entirely one-sided — the degraded 6581 in socket 2 measures
     −0.001 to +0.287, where the largest symmetric swing is 0.001 and a
-    zero-centred ladder collapses to noise.
+    zero-centered ladder collapses to noise.
 
     Returns ``(None, metrics)`` when the volume-0 self-test misses by more than
     :data:`SELFTEST_TOLERANCE`. Codes ``$h0`` set the master volume nibble to 0,
@@ -1024,7 +1024,7 @@ def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> d
 
     * ``ladder_bits`` — ENOB-style: the RMS distance between each of the 256
       requested target levels and the level actually achieved, expressed as the
-      uniform quantiser that would have the same RMS error.
+      uniform quantizer that would have the same RMS error.
     * ``worst_gap_frac`` / ``worst_gap_from_zero_frac`` — the largest hole in
       the ladder, and where it sits. Position is what makes a gap benign or
       not: ~0 means it straddles silence (crossover distortion), ±0.5 means it
@@ -1064,7 +1064,7 @@ def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> d
 #: Name fragments that identify an input as video-capture hardware, most
 #: specific first. The measurement needs the input the C64's audio arrives on,
 #: which is essentially always an HDMI capture device — but only the author's
-#: Cam Link used to be recognised, so every other rig silently fell through to
+#: Cam Link used to be recognized, so every other rig silently fell through to
 #: the *system default input*. On Windows that is the on-board microphone, which
 #: records room noise and measures like a dead chip (see
 #: :data:`RING_TRUST_MAX_SPREAD`). These cover the common sticks: Elgato, the
@@ -1425,7 +1425,7 @@ def run_calibration(
             log_fn(
                 f"[calib] warning: {dev_name!r} doesn't look like a video-capture "
                 "input — this is the system default, picked because no capture "
-                "device was recognised. If the C64's audio doesn't arrive on it, "
+                "device was recognized. If the C64's audio doesn't arrive on it, "
                 f"stop now and pick with --audio-device N:\n{_input_device_list()}"
             )
 

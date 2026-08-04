@@ -35,7 +35,7 @@ def _read(name: str) -> str:
 
 
 def _book_outputs() -> list[str]:
-    """Every book's artefact basename, from the books themselves."""
+    """Every book's artifact basename, from the books themselves."""
     docs = os.path.join(_REPO, "docs")
     names = []
     for entry in sorted(os.listdir(docs)):

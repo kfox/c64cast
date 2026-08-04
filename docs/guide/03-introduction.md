@@ -6,8 +6,8 @@ and audio device, driven live from a modern machine, over a network cable.
 
 The Commodore 64 has a graphics chip called the VIC-II and a sound chip
 called the SID. Between them they can show 320×200 pixels in sixteen fixed
-colours, subject to some famously awkward rules about how many of those
-colours may appear near each other, and they can make three voices of noise.
+colors, subject to some famously awkward rules about how many of those
+colors may appear near each other, and they can make three voices of noise.
 In 1982 this was remarkable. Today it is a wonderfully specific constraint,
 and c64cast exists to feed that constraint with whatever you like: a video
 file, a webcam, a photograph, a piece of music, a live MIDI controller, or a
@@ -56,7 +56,7 @@ a SID tune with its oscilloscope, a live webcam feed. A scene knows how to
 set itself up, produce frames for a while and tear itself down.
 
 An **overlay** is a decoration stacked on top of a scene: a clock in the
-corner, a scrolling message, a spectrum analyser, the current weather. A
+corner, a scrolling message, a spectrum analyzer, the current weather. A
 scene may carry several overlays at once, and the same overlay works on many
 different kinds of scene.
 
@@ -78,7 +78,7 @@ order with several.
 simple ones.
 
 **Chapter 4** is about how a picture actually becomes a C64 picture: display
-modes, colour, dithering, and how to stack overlays on top.
+modes, color, dithering, and how to stack overlays on top.
 
 **Chapter 5** covers the ambitious end: driving several Commodores at once as
 one video wall, playing c64cast live from a MIDI controller, and connecting

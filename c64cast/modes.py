@@ -174,7 +174,7 @@ PERCELL_PICK_EMA_ALPHA = 0.15
 # oscillation. A pixel "keeps" its previous code as long as it's within
 # this bonus of the current frame's minimum-distance code. 5000 ≈ √5000
 # ≈ 71 in L2 BGR space — strong enough to suppress webcam sensor noise
-# on textured static subjects, weak enough that real colour changes still
+# on textured static subjects, weak enough that real color changes still
 # flip the code on the next frame.
 PERCELL_CODE_HYSTERESIS_BONUS = 5000.0
 
@@ -187,39 +187,39 @@ PERCELL_CODE_HYSTERESIS_BONUS = 5000.0
 # argmin pushes the cell's histogram around, top-3 picks shift and the
 # cand-changed gate disables the code hysteresis, defeating it.
 #
-# Stabilising the per-pixel argmin upstream means per-cell histograms
+# Stabilizing the per-pixel argmin upstream means per-cell histograms
 # stay stable, top-3 picks stay stable, cand stays stable, and the code
 # hysteresis stays armed — every layer benefits. Unlike input-frame EMA
 # (which smears motion as the smoothed input chases the real one), this
-# is a *decision* hysteresis: when a pixel's actual colour shifts enough
+# is a *decision* hysteresis: when a pixel's actual color shifts enough
 # that the alternative palette entry is meaningfully better, the
 # threshold is exceeded on a single frame and the new index wins
 # immediately. No motion smear, no ghosting.
 #
 # 5000 in d² space suppresses up to ~10-LSB-per-channel sensor noise
 # (which moves d² by ~3000 for a typical near-boundary pixel), while a
-# 25-LSB real colour change (d² shift ~22000) still releases on a single
+# 25-LSB real color change (d² shift ~22000) still releases on a single
 # frame. Tuned upward from the initial 2000 because residual rug-style
 # flicker (textured static subjects + ~8 LSB webcam noise) was still
 # crossing the threshold; 5000 fully suppresses it without introducing
 # any motion lag (since real motion exceeds 5000 trivially).
 PERCELL_QUANT_HYSTERESIS_BONUS = 5000.0
 
-# bg0 stickiness for the percell path. bg0 (the global %00 colour, written to
+# bg0 stickiness for the percell path. bg0 (the global %00 color, written to
 # $D021) is picked each frame as argmax of the EMA-smoothed palette counts. On
-# content where two colours are near-tied for most-populated — e.g. a mostly-
+# content where two colors are near-tied for most-populated — e.g. a mostly-
 # black frame with a bright moment, or letterboxed/pillarboxed video whose bars
 # quantize to black — the argmax flip-flops frame-to-frame, and since bg0 fills
 # every %00 pixel (background + the bars) the whole field strobes a different
-# colour for a frame. That's a single instant $D021 change, not a write tear, so
+# color for a frame. That's a single instant $D021 change, not a write tear, so
 # it's especially visible on a slow transport where the rest of the frame lags.
 #
 # Fix: make bg0 sticky. Keep the current bg0 unless a challenger's smoothed
 # count beats it by this relative margin — so bg0 still tracks a *sustained*
-# dominant-colour change (a real blue scene eventually turns the bars blue) but
+# dominant-color change (a real blue scene eventually turns the bars blue) but
 # stops flickering between near-equal dominants. If the old bg0 vanishes from the
 # frame its smoothed count → ~0 and any challenger trivially clears the margin,
-# so bg0 can never get stuck on an absent colour.
+# so bg0 can never get stuck on an absent color.
 BG0_HYSTERESIS_MARGIN = 0.25
 
 # Per-cell color-selection strategies for the mhires percell path. Each 4×8 cell
@@ -1188,9 +1188,9 @@ def _install_bank_swap_irq(
 ) -> None:
     """Bring up the bank-swap raster IRQ.
 
-    `handler_bytes` and `tracker_len` default to the hires-flavour 61-byte
+    `handler_bytes` and `tracker_len` default to the hires-flavor 61-byte
     handler + 16-byte tracker. MultiHires passes its own (83-byte handler,
-    24-byte tracker). Both flavours live at the same addresses
+    24-byte tracker). Both flavors live at the same addresses
     (BANK_SWAP_IRQ_HANDLER_ADDR, FRAME_TRACKER_ADDR) because the two
     display modes are mutually exclusive.
 
@@ -1804,14 +1804,14 @@ def engage_bitmap_mode(
     **The invariant:** zero the bitmap (``$2000``) AND screen RAM (``$0400``)
     BEFORE writing ``$D011`` bitmap-on, so the window between the mode flip and
     the first composed frame shows a clean black field — not uninitialized-RAM
-    garbage and not a colour ghost of the prior scene. A zeroed hires bitmap
-    makes every pixel select its cell's BACKGROUND colour, and in HIRES that
+    garbage and not a color ghost of the prior scene. A zeroed hires bitmap
+    makes every pixel select its cell's BACKGROUND color, and in HIRES that
     background is the LOW nibble of the cell's screen-RAM byte (NOT ``$D021``) —
-    so leaving stale ``$0400`` (e.g. the previous scene's PETSCII codes / colour
-    grid) paints a 40×25 colour ghost on engage. Zeroing ``$0400`` too forces
+    so leaving stale ``$0400`` (e.g. the previous scene's PETSCII codes / color
+    grid) paints a 40×25 color ghost on engage. Zeroing ``$0400`` too forces
     every cell's background to black. (In mhires/MCBM ``%00`` reads ``$D021``,
     set here via ``bg0``, so the screen clear is belt-and-braces there.) ``$D011``
-    is written LAST so the configured sub-bank pointers + colours are already in
+    is written LAST so the configured sub-bank pointers + colors are already in
     place when bitmap mode reveals them.
 
     Parameters thread the legitimate per-caller differences (so this stays one
@@ -1853,7 +1853,7 @@ def engage_bitmap_mode(
             bitmap_region_id, screen_region_id = clear_region_ids
             api.write_region(bitmap_base, bytes(SCREEN.BITMAP_BYTES), region_id=bitmap_region_id)
             api.write_region(screen_base, bytes(SCREEN.N_CELLS), region_id=screen_region_id)
-    # 3. Configure the sub-bank pointers ($D018/$D016) + background colours.
+    # 3. Configure the sub-bank pointers ($D018/$D016) + background colors.
     api.write_memory("d018", d018)
     api.write_memory("d016", d016)
     if border is not None:
@@ -2814,7 +2814,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
         # Temporal-smoothing knob ([color].motion_smoothing, 0..1). The percell
         # path carries two flicker-suppression buffers that trade motion-tracking
-        # for frame-to-frame stability: the per-cell colour-count EMA and the
+        # for frame-to-frame stability: the per-cell color-count EMA and the
         # per-pixel/per-cell decision hysteresis. Both cause an after-image on
         # hard cuts (an outline from the previous shot lingering as the buffers
         # decay). `motion_smoothing` scales BOTH together — 1.0 = full (legacy)
@@ -2835,7 +2835,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._cell_strategy = cell_strategy
         # Per-palette pairwise distances (no penalty — this is for the
         # "snap unused indices to their nearest of the 4 winners" remap,
-        # which is a pure color-space neighbour query, not a chromatic-
+        # which is a pure color-space neighbor query, not a chromatic-
         # preference question. Match the active metric so the remap agrees
         # with the per-pixel picks.
         self._pal_pairwise = quantize_distances_for(
@@ -2936,7 +2936,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
     @motion_smoothing.setter
     def motion_smoothing(self, value: float) -> None:
         # Re-derive the two temporal flicker-suppression buffers from the dial:
-        # the per-cell colour-count EMA weight and the per-pixel/per-cell decision
+        # the per-cell color-count EMA weight and the per-pixel/per-cell decision
         # hysteresis (the latter in d² space, so × _penalty_scale). 1.0 = full
         # (legacy) smoothing; 0.0 = none. Identical math to __init__ (which calls
         # this) so the live knob and the config path stay in lockstep.
@@ -3195,10 +3195,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
         # Per-pixel decision hysteresis on the palette index: if the
         # previous frame's choice is within PERCELL_QUANT_HYSTERESIS_BONUS
-        # of the new minimum distance, keep it. Stabilises the per-pixel
+        # of the new minimum distance, keep it. Stabilizes the per-pixel
         # argmin against sensor noise / sub-pixel-shake aliasing on
         # textured static subjects (striped rug, slatted blinds) WITHOUT
-        # smearing motion: a real colour change moves d² by far more than
+        # smearing motion: a real color change moves d² by far more than
         # the bonus, so the new index wins on a single frame.
         if self._last_quantized is not None and self._last_quantized.shape == quantized.shape:
             idx = np.arange(quantized.size)
@@ -3327,7 +3327,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             # change in any cand slot means the codes 0..3 no longer point at
             # the same palette entries they did last frame, so previous codes
             # are meaningless). Suppresses the per-pixel boundary flicker that
-            # remains after the per-cell EMA stabilises {bg0,c1,c2,c3}.
+            # remains after the per-cell EMA stabilizes {bg0,c1,c2,c3}.
             if self._last_codes is not None and self._last_cand is not None:
                 cell_unchanged = np.all(cand == self._last_cand, axis=1)  # (1000,) bool
                 if cell_unchanged.any():

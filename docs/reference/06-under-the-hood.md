@@ -29,7 +29,7 @@ they have no DMA equivalent.
 
 That split is not a preference. The Ultimate's HTTP server closes the
 connection on every response and refuses keep-alive, so each request pays a
-fresh TCP handshake, and it serialises concurrent requests internally. Measured
+fresh TCP handshake, and it serializes concurrent requests internally. Measured
 on a wired LAN:
 
 | Transport | Per-write latency (avg / p50 / p95) | Sustained |
@@ -44,7 +44,7 @@ eight TCP setups to do it. The persistent socket is the whole difference.
 The DMA service accepts **one connection at a time**. That is why the audio
 path and the render path share a single client rather than opening a socket
 each: a second connection is accepted but never answered, and it blocks the
-first for several seconds after it closes. The shared client serialises commands
+first for several seconds after it closes. The shared client serializes commands
 with a mutex, and the combined rate — audio about eight writes a second, render
 thirty to sixty — sits well under the ceiling.
 
@@ -97,16 +97,16 @@ and the kernal. What follows is what it claims, and why.
 | `$2000-$3F3F` | Bitmap, VIC bank 0 |
 | `$8400-$87E7` | Screen RAM, VIC bank 2 — double-buffered paths only |
 | `$A000-$BF3F` | Bitmap, VIC bank 2 — double-buffered paths only |
-| `$D800-$DBE7` | Colour RAM |
+| `$D800-$DBE7` | Color RAM |
 
-Character modes use screen and colour RAM. Bitmap modes use the bitmap plus
-screen RAM, where hires packs its two per-cell colours into that byte's two
-nibbles; multicolor bitmap adds colour RAM for its third.
+Character modes use screen and color RAM. Bitmap modes use the bitmap plus
+screen RAM, where hires packs its two per-cell colors into that byte's two
+nibbles; multicolor bitmap adds color RAM for its third.
 
-Colour RAM is **not** part of a VIC bank. There is one of it, and the VIC reads
+Color RAM is **not** part of a VIC bank. There is one of it, and the VIC reads
 it whichever bank is displayed — which is the one asymmetry in the
 double-buffered paths, and the reason a multicolor bitmap's third per-cell
-colour can still tear across a bank swap while the picture itself does not.
+color can still tear across a bank swap while the picture itself does not.
 
 ### Sound
 
@@ -154,7 +154,7 @@ Commodore's bus at all, and one transfer moves the bytes into main memory.
 | `$200000` | The 1 MiB sampler ring |
 | `$300000` | The ASID ring player's frame slots |
 | `$E00000` | Character-mode screen staging |
-| `$E10000` | Bitmap, screen and colour staging |
+| `$E10000` | Bitmap, screen and color staging |
 
 c64cast provisions the REU at 16 MB for a run that needs one and puts the
 original settings back at teardown. Those changes are live and never written to
@@ -221,7 +221,7 @@ Past a threshold — more than 60 % of the region differing — it abandons the 
 and sends the whole buffer, since one large write beats several scattered ones.
 
 **The cache is keyed by region, not by address.** A region is a small integer
-naming a logical buffer: the screen, colour RAM, the bitmap, one voice's strip
+naming a logical buffer: the screen, color RAM, the bitmap, one voice's strip
 of the oscilloscope, one row of the on-C64 menu, and — importantly — bank 2's
 bitmap and screen separately from bank 0's. Keying by address would be wrong in
 two ways at once. A mode switch from PETSCII to multicolor text writes different
@@ -270,11 +270,11 @@ bytes, and the ceiling is roughly 200 commands a second.
 | Character mode, static content | Almost nothing; the cache absorbs it |
 | Character mode, live video | Two regions, mostly partial |
 | Hires bitmap | 8000 bytes of bitmap plus 1000 of screen |
-| Multicolor bitmap | The same, plus 1000 of colour RAM |
+| Multicolor bitmap | The same, plus 1000 of color RAM |
 | Oscilloscope, scrolling | The strips rewritten every frame, ≈700 KB/s |
 
 That arithmetic is where the default frame-rate caps in Chapter 2 come from. A
-bitmap scene streaming digitised audio is the heaviest case in the program, and
+bitmap scene streaming digitized audio is the heaviest case in the program, and
 20 fps is where it fits.
 
 `--profile` prints what is actually happening, per scene, every ten seconds.
@@ -295,7 +295,7 @@ u64 dma latency: n=256 avg=5.1 p50=4.9 p95=7.8 max=18.4 ms
 
 `frame` is wall-clock per frame and should sit near `1 / target_fps` at steady
 state. `wait` is time asleep waiting for the next deadline — a healthy scene has
-plenty of it. `compose` is host-side quantisation and `push` is the link. When
+plenty of it. `compose` is host-side quantization and `push` is the link. When
 `wait` approaches zero and `push` dominates, you are out of budget on the wire;
 when `compose` dominates, you are out of it on the CPU, and the two have
 different answers.
@@ -315,7 +315,7 @@ In order of what they buy against what they cost:
 3. **The dither method.** The error-diffusion methods are per-pixel loops; the
    ordered family is one vectorised operation. That is a `compose` cost, not a
    `push` cost.
-4. **`cell_strategy`.** `error-min` scores twenty colour trios per cell —
+4. **`cell_strategy`.** `error-min` scores twenty color trios per cell —
    excellent for a slideshow, unnecessary for motion.
 5. **Overlays.** Each composes into the frame, and a marquee changes cells every
    frame, which keeps its region permanently dirty.

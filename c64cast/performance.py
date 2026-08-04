@@ -328,7 +328,7 @@ class PerformanceSession:
         the web console (Phase 5) reads it to render a count-in (beats remaining
         to the quantize boundary, computed against ``pl.tempo``). A GIL-atomic
         snapshot of the immutable fields of the ``_Armed`` record; ``None`` once
-        the swap lands or the arm is cancelled."""
+        the swap lands or the arm is canceled."""
         armed = self._armed
         if armed is None:
             return None

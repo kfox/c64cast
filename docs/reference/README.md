@@ -8,7 +8,7 @@ tables of every field, key, parameter and flag. A closing chapter covers
 extending the program rather than configuring it.
 
 Its structure is an homage to the *Commodore 64 Programmer's Reference Guide* —
-in particular that book's willingness to organise by subsystem rather than by
+in particular that book's willingness to organize by subsystem rather than by
 audience, and to print the whole table rather than a useful subset.
 
 ## Reading it

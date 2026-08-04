@@ -175,7 +175,7 @@ class PetsciiBarsBackground(Background):
         rows_list = list(rows)
         mid = (rows_list[0] + rows_list[-1]) / 2.0
         for y in rows_list:
-            # Speed proportional to distance from the centre row of the strip
+            # Speed proportional to distance from the center row of the strip
             # — far rows move faster.
             speed = 2.0 + 1.5 * abs(y - mid)
             phase = self.row_phase[y] + speed * t

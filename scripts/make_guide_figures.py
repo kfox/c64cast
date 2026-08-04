@@ -6,7 +6,7 @@ are grabbed off real hardware through a capture device, every figure is a
 placeholder rendered at the final size, so the page layout is already
 finished and swapping in a real capture is a pure file replacement.
 
-Each placeholder is drawn in authentic C64 palette colours and states, in the
+Each placeholder is drawn in authentic C64 palette colors and states, in the
 image itself, which capture it is standing in for -- so an unfinished figure
 is obvious in the PDF rather than silently shipping.
 
@@ -56,7 +56,7 @@ def c64(index: int) -> tuple[int, int, int]:
     return (int(b), int(g), int(r))
 
 
-# figure path -> (border colour, background colour, headline, capture recipe)
+# figure path -> (border color, background color, headline, capture recipe)
 #
 # The recipe is the command a real capture should be taken from. It is printed
 # into the placeholder AND into docs/guide/img/README.md, so the shot list
@@ -71,7 +71,7 @@ SHOT_LIST: dict[str, tuple[int, int, str, str]] = {
     "fig-qs-2-video.png": (
         0,
         0,
-        "VIDEO IN MULTICOLOUR HI-RES",
+        "VIDEO IN MULTICOLOR HI-RES",
         "c64cast clip.mp4",
     ),
     "fig-ft-1-slideshow.png": (
@@ -136,10 +136,10 @@ def _put(
     text: str,
     org: tuple[int, int],
     scale: float,
-    colour: tuple[int, int, int],
+    color: tuple[int, int, int],
     thickness: int = 2,
 ) -> None:
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thickness, cv2.LINE_AA)
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
 
 
 def _text_width(text: str, scale: float, thickness: int = 2) -> int:
@@ -154,7 +154,7 @@ def draw_placeholder(border: int, background: int, headline: str, recipe: str) -
     img[BORDER_Y : FRAME_H - BORDER_Y, BORDER_X : FRAME_W - BORDER_X] = c64(background)
 
     light = c64(1)  # white
-    dim = c64(15)  # light grey
+    dim = c64(15)  # light gray
     accent = c64(3)  # cyan
 
     # A dashed inner rule, so the placeholder reads as deliberately unfinished.
@@ -226,7 +226,7 @@ def make_cover_logo() -> None:
     if src is None:
         raise SystemExit(f"cannot read {SOURCE_LOGO}")
     if src.ndim != 3 or src.shape[2] not in (3, 4):
-        raise SystemExit(f"{SOURCE_LOGO}: expected a colour image, got shape {src.shape}")
+        raise SystemExit(f"{SOURCE_LOGO}: expected a color image, got shape {src.shape}")
     if src.shape[2] == 3:
         raise SystemExit(f"{SOURCE_LOGO} has no alpha channel; the cover needs a transparent logo.")
     if int(src[:, :, 3].min()) == 255:

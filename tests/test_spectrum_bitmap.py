@@ -28,7 +28,7 @@ from c64cast.overlays.spectrum_bitmap import (
 )
 from c64cast.scenes import Scene
 
-# A recognisable non-zero fill for the incoming frame, so "untouched" is
+# A recognizable non-zero fill for the incoming frame, so "untouched" is
 # provable rather than indistinguishable from a zeroed buffer.
 _FRAME_BITMAP = 0x1B
 _FRAME_COLOR = 0x07

@@ -15,7 +15,7 @@ were running (`c64cast --doctor` output is ideal), which network surface is
 involved, and what an attacker gains. If you have a proof of concept, attach it
 there rather than posting it publicly.
 
-Expect an acknowledgement within a week. c64cast is a hobby project maintained
+Expect an acknowledgment within a week. c64cast is a hobby project maintained
 by one person, so fixes ship on a best-effort schedule; you will be told which
 release carries the fix, and credited in the advisory and the changelog unless
 you would rather not be.

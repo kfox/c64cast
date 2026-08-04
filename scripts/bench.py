@@ -130,7 +130,7 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 80
 
     # ---- localized_delta --------------------------------------------------
     # A contiguous window changes each frame — mimics a marquee/clock/
-    # scrolling-text overlay where only a few neighbouring cells differ.
+    # scrolling-text overlay where only a few neighboring cells differ.
     api = Ultimate64API(base_url, async_writes=True, queue_depth=32)
     api.invalidate_cache()
     region = rng.integers(0, 256, size=region_bytes, dtype=np.uint8)
@@ -149,7 +149,7 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 80
     _report(api, dt, frames, region_bytes)
 
     # ---- chunked_delta ----------------------------------------------------
-    # Sparse scattered changes — what a spectrum analyser looks like (8
+    # Sparse scattered changes — what a spectrum analyzer looks like (8
     # bars updating across the row). Tests the chunked-diff path.
     api = Ultimate64API(base_url, async_writes=True, queue_depth=32)
     api.invalidate_cache()

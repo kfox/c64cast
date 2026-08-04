@@ -132,9 +132,9 @@ See [`img/README.md`](img/README.md) for the shot list.
 
 Both faces are [Open Font License](https://openfontlicense.org/) and live in
 [`../shared/fonts/`](../shared/fonts/README.md), committed alongside their
-licences:
+licenses:
 
-| Face | Used for | Licence |
+| Face | Used for | License |
 |---|---|---|
 | [Jost*](https://github.com/indestructible-type/Jost) | body, headings | OFL 1.1 (`OFL-Jost.txt`) |
 | [Inconsolata](https://github.com/googlefonts/Inconsolata) | code, keycaps | OFL 1.1 (`OFL-Inconsolata.txt`) |

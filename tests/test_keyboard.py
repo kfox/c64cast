@@ -273,9 +273,9 @@ class ShiftCycleTest(unittest.TestCase):
 
 class MenuKeyApi:
     """Serves $028D (modifiers) and the kernal keyboard buffer — NDX ($00C6)
-    + KEYD ($0277) — and consumes the buffer on a write of $00C6=0, modelling
+    + KEYD ($0277) — and consumes the buffer on a write of $00C6=0, modeling
     how the U64's CMD_KEYB / the kernal feed decoded keystrokes and how the
-    poller drains them. `inject(codes)` is the CMD_KEYB analogue. mod_seq's
+    poller drains them. `inject(codes)` is the CMD_KEYB analog. mod_seq's
     last byte loops forever."""
 
     def __init__(self, mod_seq=None):

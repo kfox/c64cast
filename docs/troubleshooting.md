@@ -161,7 +161,7 @@ worker thread, so a wedged playlist leaves the window up but frozen.
 
 `[preview] scale = 3` → window is 3× the C64's 320×200. Drop to 2 for
 a smaller window, raise to 4 for a giant one. Scaling is integer +
-nearest-neighbour so C64 pixels stay square and crisp; non-integer
+nearest-neighbor so C64 pixels stay square and crisp; non-integer
 values would alias badly, so the field is an int.
 
 ## Playlist + control

@@ -1,5 +1,5 @@
 #:schema ../../../c64cast/data/c64cast.schema.json
-# fig-qs-2-video — video through the default multicolour hi-res mode.
+# fig-qs-2-video — video through the default multicolor hi-res mode.
 #
 # `start_s` seeks to a shot worth showing instead of leaving the timing to
 # however long the app took to boot. mhires is what quick playback
@@ -8,7 +8,7 @@
 #
 # `file` is not in the checkout (assets/ is git-ignored), and `start_s` is
 # meaningless against a different clip. Substitute your own and re-seek: what
-# the figure wants is a frame with saturated colour and a recognisable subject,
+# the figure wants is a frame with saturated color and a recognizable subject,
 # since mhires is being shown off. A washed-out frame makes the mode look worse
 # than it is.
 

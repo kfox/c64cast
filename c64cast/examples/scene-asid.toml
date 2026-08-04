@@ -43,7 +43,7 @@
 # `on` forces the ring player (warns + falls back on a no-REU backend). On
 # TeensyROM / no-REU backends the coalesced path is used regardless.
 #
-# Known v1 limits: OPL-FM streams are recognised but not applied; the buffered
+# Known v1 limits: OPL-FM streams are recognized but not applied; the buffered
 # player's cycle delay is coarse, and a pathological 8-SID x 16x frame can
 # overrun the frame period. With the buffered player off, high-multispeed tunes
 # are frame-decimated to protect the DMA link.

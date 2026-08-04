@@ -20,7 +20,7 @@ try it, come back later for another.
 
 ## Blank
 
-The simplest scene. It paints a solid canvas in the colours you choose and
+The simplest scene. It paints a solid canvas in the colors you choose and
 does nothing else.
 
 ```toml
@@ -32,12 +32,12 @@ border = "black"
 background = "blue"
 ```
 
-On its own this is a coloured rectangle. Its purpose is to be a backdrop:
+On its own this is a colored rectangle. Its purpose is to be a backdrop:
 every overlay that works on character modes works here, so a blank scene
 plus a scrolling message is a title card, and a blank scene plus a clock and
 the weather is an information board. Chapter 4 covers overlays properly.
 
-Colours may be given as names or as numbers from 0 to 15. Names are matched
+Colors may be given as names or as numbers from 0 to 15. Names are matched
 loosely, so `"light green"` and `"lightgreen"` both work.
 
 ## Slideshow
@@ -99,7 +99,7 @@ Note the absence of `duration_s`. A video scene runs for exactly as long as
 the video does, and setting a duration on one is rejected rather than
 quietly ignored, because the two ideas conflict.
 
-Video is where c64cast works hardest. Each frame is decoded, scaled, colour
+Video is where c64cast works hardest. Each frame is decoded, scaled, color
 corrected and quantized into whatever the display mode allows, then written
 to the Commodore. The soundtrack is decoded in parallel and played through
 the sound chip, and the video is paced off the audio clock rather than a
@@ -137,8 +137,8 @@ Point `file` at a directory and each time the scene starts it picks a tune at
 random. Leave `duration_s` out and, if you have the SID song-length database,
 c64cast plays each tune for its actual length.
 
-`color_mode` decides what the colours mean: `per_voice` gives each voice its
-own fixed colour, and `per_waveform` colours by the waveform each voice is
+`color_mode` decides what the colors mean: `per_voice` gives each voice its
+own fixed color, and `per_waveform` colors by the waveform each voice is
 currently using, so the picture changes as the music does.
 
 ### Getting Some Tunes
@@ -205,7 +205,7 @@ is the pattern: about twenty of them, including `plasma`, `tunnel`, `fire`,
 `rgb_shift` or `blur`. The **audio source** decides whether the picture
 reacts to anything.
 
-![Figure 3-2. A plasma field, quantized to four colours per cell.](img/fig-3-2-generative.png)
+![Figure 3-2. A plasma field, quantized to four colors per cell.](img/fig-3-2-generative.png)
 
 Setting `audio_source` turns a pretty pattern into a music visualizer:
 
@@ -263,7 +263,7 @@ camera's name, or its USB identifier. `c64cast --list-devices`
 prints everything it can find.
 
 `display = "petscii"` builds the picture out of the Commodore's own
-character set, choosing a glyph by brightness and a colour by hue. It is the
+character set, choosing a glyph by brightness and a color by hue. It is the
 mode people find most charming, and it is fast, because character modes move
 far less data than bitmaps do.
 

@@ -218,7 +218,7 @@ class BackendTest(unittest.TestCase):
         t.queue_token(TOK_FW_FULL)  # consumed by connect()'s fw_check
         # __init__ probes ReadC64Mem (a 2-byte $FFFC read). Feed a successful
         # round-trip (read=True) so supports_read stays set, or a NAK
-        # (read=False) so it downgrades to the old read-free behaviour.
+        # (read=False) so it downgrades to the old read-free behavior.
         if read:
             t.queue_token(TOK_ACK)  # probe ack
             t.queue_raw(b"\xe2\xfc")  # 2 ROM bytes ($FFFC)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """HW proof for project_bitmap_engage_flash: the single-buffer hires/mhires VIC
 bring-up must clear BOTH the $2000 bitmap AND screen RAM ($0400) before flipping
-$D011 into bitmap mode, so the engage shows solid black instead of a colour
+$D011 into bitmap mode, so the engage shows solid black instead of a color
 ghost of the prior (char) scene. Both the display modes' setup() AND the
 waveform/midi voice scope's _apply_vic_hires_bank now go through the same shared
 modes.engage_bitmap_mode primitive; this probe exercises all three paths.

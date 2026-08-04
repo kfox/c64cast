@@ -671,7 +671,7 @@ class LogoTest(unittest.TestCase):
             os.unlink(path)
 
     def test_missing_file_uses_placeholder(self):
-        # Documented behaviour: missing file → placeholder render so the
+        # Documented behavior: missing file → placeholder render so the
         # example config can ship with a hint path that still works.
         from c64cast.overlays.logo import LogoOverlay
 

@@ -234,9 +234,9 @@ def arrow(
         )
 
 
-def chip(d: ImageDraw.ImageDraw, centre: tuple[float, float], r: float, label: str) -> None:
+def chip(d: ImageDraw.ImageDraw, center: tuple[float, float], r: float, label: str) -> None:
     """The numbered accent disc that leads a step or a rung."""
-    cx, cy = centre
+    cx, cy = center
     d.ellipse(_s((cx - r, cy - r, cx + r, cy + r)), fill=ACCENT)
     text(d, (cx, cy + 1), label, font("body", round(r * 1.25), "SemiBold"), PAPER, anchor="mm")
 
@@ -248,7 +248,7 @@ def rotated_text(
     f: ImageFont.FreeTypeFont,
     fill: tuple[int, int, int] = MUTED,
 ) -> None:
-    """A label set up the side of a figure, centred on `xy` after rotation."""
+    """A label set up the side of a figure, centered on `xy` after rotation."""
     w, h = round(f.getlength(s)) + 8 * SS, round(f.size * 1.6)
     strip = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     ImageDraw.Draw(strip).text((w // 2, h // 2), s, font=f, fill=fill, anchor="mm")
@@ -320,7 +320,7 @@ def fig_ladder() -> Image.Image:
 # ---------------------------------------------------------------------------
 # Figure 3-1 — one cell per display mode
 #
-# The only figure drawn in C64 colours rather than the book's: what it is about
+# The only figure drawn in C64 colors rather than the book's: what it is about
 # is which palette entry each attribute byte holds.
 # ---------------------------------------------------------------------------
 
@@ -354,7 +354,7 @@ def _draw_cell(
     d: ImageDraw.ImageDraw,
     origin: tuple[float, float],
     art: list[str],
-    colours: dict[str, tuple[int, int, int]],
+    colors: dict[str, tuple[int, int, int]],
     size: float = 288,
 ) -> None:
     """One 8x8 hardware cell blown up, each pixel outlined so the grid reads."""
@@ -365,29 +365,29 @@ def _draw_cell(
         for c, key in enumerate(row):
             d.rectangle(
                 _s((ox + c * pw, oy + r * ph, ox + (c + 1) * pw, oy + (r + 1) * ph)),
-                fill=colours[key],
+                fill=colors[key],
                 outline=(0x33, 0x33, 0x33),
                 width=1,
             )
     box(d, (ox, oy, ox + size, oy + size), fill=None, outline=INK, width=2, radius=0)
 
 
-# mode -> (subtitle, cell art, pixel colours, attribute lines)
+# mode -> (subtitle, cell art, pixel colors, attribute lines)
 _CELL_PANELS: list[tuple[str, str, list[str], dict[str, tuple[int, int, int]], list[str]]] = [
     (
         "petscii",
-        "8 × 8 pixels — one glyph from the character ROM, in one colour",
+        "8 × 8 pixels — one glyph from the character ROM, in one color",
         _GLYPH_A,
         {"0": c64(6), "1": c64(1)},
         [
             "$0400+n   the screen code — which glyph",
-            "$D800+n   the cell's colour, any of the 16",
+            "$D800+n   the cell's color, any of the 16",
             "$D021     the background, shared by the screen",
         ],
     ),
     (
         "mcm",
-        "4 × 8 double-wide pixels — 3 shared colours, 1 of its own",
+        "4 × 8 double-wide pixels — 3 shared colors, 1 of its own",
         _MCM_ART,
         {"0": c64(0), "1": c64(6), "2": c64(14), "3": c64(3)},
         [
@@ -398,24 +398,24 @@ _CELL_PANELS: list[tuple[str, str, list[str], dict[str, tuple[int, int, int]], l
     ),
     (
         "hires",
-        "8 × 8 pixels, one bit each — two colours, held in one byte's nibbles",
+        "8 × 8 pixels, one bit each — two colors, held in one byte's nibbles",
         _HIRES_ART,
         {"0": c64(0), "1": c64(1)},
         [
             "$2000+8n  eight bitmap bytes, one bit to the pixel",
-            "$0400+n   high nibble — the colour of the 1 bits",
-            "$0400+n   low nibble  — the colour of the 0 bits",
+            "$0400+n   high nibble — the color of the 1 bits",
+            "$0400+n   low nibble  — the color of the 0 bits",
         ],
     ),
     (
         "mhires",
-        "4 × 8 double-wide pixels — 1 shared colour, 3 of its own",
+        "4 × 8 double-wide pixels — 1 shared color, 3 of its own",
         _MHIRES_ART,
         {"0": c64(0), "1": c64(4), "2": c64(14), "3": c64(1)},
         [
             "$2000+8n  eight bitmap bytes, two bits to the pixel",
             "00 → $D021 (shared)   01 → $0400+n hi   10 → $0400+n lo",
-            "11 → $D800+n  the third colour, from colour RAM",
+            "11 → $D800+n  the third color, from color RAM",
         ],
     ),
 ]
@@ -432,11 +432,11 @@ def fig_cells() -> Image.Image:
     sub_f = font("body", 36)
     attr_f = font("mono", 38)
 
-    for i, (mode, subtitle, art, colours, attrs) in enumerate(_CELL_PANELS):
+    for i, (mode, subtitle, art, colors, attrs) in enumerate(_CELL_PANELS):
         py = margin + i * (row_h + gutter)
         box(d, (margin, py, WIDTH - margin, py + row_h), fill=ACCENT_WASH, outline=ACCENT_PALE)
 
-        _draw_cell(d, (margin + 24, py + 52), art, colours, CELL_ART)
+        _draw_cell(d, (margin + 24, py + 52), art, colors, CELL_ART)
 
         tx = margin + 24 + CELL_ART + 30
         room = WIDTH - margin - 24 - tx
@@ -460,7 +460,7 @@ _PIPELINE = [
     ("Fitted to the Commodore's aspect", "aspect_mode", True),
     ("The effect chain runs", "[[effects]]", True),
     ("Downscaled to the mode's grid", "display", True),
-    ("Colours are shaped", "channel_boost · hue_corrections · auto_fit", True),
+    ("Colors are shaped", "channel_boost · hue_corrections · auto_fit", True),
     ("A forced palette is applied", "force_palette · force_palette_colors", True),
     ("Dithering", "dither", True),
     ("Every pixel matched to the palette", "color_match", True),
@@ -470,8 +470,8 @@ _PIPELINE = [
     ("The buffers are pushed", "changed bytes only", False),
 ]
 
-# Step 8 is where the frame stops being a picture and becomes sixteen colours.
-_QUANTISE_STEP = 8
+# Step 8 is where the frame stops being a picture and becomes sixteen colors.
+_QUANTIZE_STEP = 8
 
 
 def fig_pipeline() -> Image.Image:
@@ -504,10 +504,10 @@ def fig_pipeline() -> Image.Image:
                 anchor="rm",
             )
 
-    split = top + (_QUANTISE_STEP - 1) * (row_h + gap) - gap / 2
+    split = top + (_QUANTIZE_STEP - 1) * (row_h + gap) - gap / 2
     for y0, y1, label in (
-        (top, split, "the frame is still full colour"),
-        (split, height - top, "sixteen colours, in the VIC's layout"),
+        (top, split, "the frame is still full color"),
+        (split, height - top, "sixteen colors, in the VIC's layout"),
     ):
         line(d, [(90, y0 + 6), (74, y0 + 6), (74, y1 - 6), (90, y1 - 6)], ACCENT_PALE, 2)
         rotated_text(img, (40, (y0 + y1) / 2), label, font("body", 34), MUTED)
@@ -601,7 +601,7 @@ def fig_audio() -> Image.Image:
 #
 # Isometric because the VIC's banks genuinely are parallel 16 KB windows over
 # one address space, and a flat map cannot say that: it has to draw either the
-# address space or the banks, and the thing worth showing is that colour RAM
+# address space or the banks, and the thing worth showing is that color RAM
 # sits in neither.
 # ---------------------------------------------------------------------------
 
@@ -627,8 +627,8 @@ def _addr_u(addr: int) -> float:
     return (addr % BANK_BYTES) / BANK_BYTES * SLAB_LEN
 
 
-def _shade(colour: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
-    return tuple(min(255, round(c * factor)) for c in colour)  # type: ignore[return-value]
+def _shade(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    return tuple(min(255, round(c * factor)) for c in color)  # type: ignore[return-value]
 
 
 def _face(
@@ -642,11 +642,11 @@ def _slab_segment(
     origin: tuple[float, float],
     u0: float,
     u1: float,
-    colour: tuple[int, int, int],
+    color: tuple[int, int, int],
     length: float = SLAB_LEN,
     depth: float = SLAB_DEPTH,
 ) -> tuple[float, float]:
-    """Colour the run of addresses u0..u1 through a slab. Returns its top centre.
+    """Color the run of addresses u0..u1 through a slab. Returns its top center.
 
     A region is a section of the bar rather than a block standing on it. Drawn
     the other way round -- an extruded block over a flat plate -- each region
@@ -659,14 +659,14 @@ def _slab_segment(
         _iso(u0, depth, SLAB_H, origin),
     ]
     front = [_iso(u0, 0, 0, origin), _iso(u1, 0, 0, origin), top[1], top[0]]
-    _face(d, front, _shade(colour, 0.74))
-    _face(d, top, colour)
+    _face(d, front, _shade(color, 0.74))
+    _face(d, top, color)
     if u0 <= 0:  # the left end cap, visible only on the first segment
         cap = [_iso(0, 0, 0, origin), _iso(0, depth, 0, origin), top[3], top[0]]
-        _face(d, cap, _shade(colour, 0.86))
+        _face(d, cap, _shade(color, 0.86))
     if u1 >= length:  # and the right one, on the last
         cap = [_iso(length, 0, 0, origin), _iso(length, depth, 0, origin), top[2], top[1]]
-        _face(d, cap, _shade(colour, 0.86))
+        _face(d, cap, _shade(color, 0.86))
     return ((top[0][0] + top[2][0]) / 2, (top[0][1] + top[2][1]) / 2)
 
 
@@ -692,13 +692,13 @@ def _slab_outline(
 
 # The book is set in one blue, so the regions are told apart by what they are
 # for rather than by hue: the picture in the accent, its double-buffered copy
-# in the pale one, everything the 6510 runs in grey.
+# in the pale one, everything the 6510 runs in gray.
 _PICTURE = ACCENT
 _SPARE = ACCENT_PALE
 _CODE = (0x77, 0x7C, 0x82)
 _SOUND = (0x3E, 0x46, 0x50)
 
-# bank -> (label, its base address, [(start, end, colour, name, address, label y
+# bank -> (label, its base address, [(start, end, color, name, address, label y
 # relative to the plate's own origin)]). The label heights are set by hand:
 # screen RAM and the BASIC program are 1 KB apart in a 16 KB bank, so their
 # natural label positions are five pixels apart.
@@ -764,14 +764,14 @@ def fig_memory() -> Image.Image:
         text(d, (edge[0] - 24, edge[1] - 22), bank, bank_f, INK, anchor="rm")
         text(d, (edge[0] - 24, edge[1] + 18), bank_addr, addr_f, MUTED, anchor="rm")
 
-        for start, end, colour, name, addr, label_y in regions:
+        for start, end, color, name, addr, label_y in regions:
             u0 = _addr_u(start)
             u1 = max(u0 + MIN_REGION, _addr_u(end))
-            centre = _slab_segment(d, origin, u0, u1, colour)
+            center = _slab_segment(d, origin, u0, u1, color)
             ly = origin[1] + label_y
             line(
                 d,
-                [centre, (ELBOW_X, centre[1]), (ELBOW_X, ly), (LABEL_X - 16, ly)],
+                [center, (ELBOW_X, center[1]), (ELBOW_X, ly), (LABEL_X - 16, ly)],
                 ACCENT_PALE,
                 1.5,
             )
@@ -779,14 +779,14 @@ def fig_memory() -> Image.Image:
             text(d, (LABEL_X, ly + 6), addr, addr_f, ACCENT, anchor="la")
         _slab_outline(d, origin)
 
-    # Colour RAM is drawn as a region with no plate under it, because that is
+    # Color RAM is drawn as a region with no plate under it, because that is
     # the fact worth drawing: there is one of it, it belongs to no bank, and
     # the VIC reads it whichever bank is displayed. Leader lines to the two
     # screen RAMs were tried and had to cross the label column to get there.
     cr = (330.0, height - 40.0)
     _slab_segment(d, cr, 0, 200, _PICTURE, length=200, depth=SLAB_DEPTH)
     _slab_outline(d, cr, length=200, depth=SLAB_DEPTH)
-    text(d, (560, height - 210), "Colour RAM", name_f, INK, anchor="ls")
+    text(d, (560, height - 210), "Color RAM", name_f, INK, anchor="ls")
     text(d, (560, height - 170), "$D800–$DBE7", addr_f, ACCENT, anchor="la")
     text(
         d,
@@ -819,7 +819,7 @@ FIGURES = {
     "fig-3-2-cells": (
         fig_cells,
         "3 · The Six Display Modes",
-        "One hardware cell per mode, with the bytes that colour it",
+        "One hardware cell per mode, with the bytes that color it",
     ),
     "fig-4-1-audio": (
         fig_audio,
@@ -848,7 +848,7 @@ def write_shot_list() -> None:
         "These are drawings rather than captures — the guide's `img/` is the",
         "other kind. They are set in the books' own two faces from",
         "`docs/shared/fonts/` and use the template's palette, except inside the",
-        "cell diagram, whose subject is which C64 colour each attribute byte",
+        "cell diagram, whose subject is which C64 color each attribute byte",
         "holds.",
         "",
         "| Figure | Chapter and section | Shows |",

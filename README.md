@@ -394,6 +394,6 @@ License 1.1](https://openfontlicense.org/), not under MIT: **Jost\***
 (Copyright 2020 The Jost Project Authors) and **Inconsolata** (Copyright 2006
 The Inconsolata Project Authors). They live in
 [`docs/shared/fonts/`](https://github.com/kfox/c64cast/tree/main/docs/shared/fonts)
-alongside their licence texts — see
+alongside their license texts — see
 [that directory's README](https://github.com/kfox/c64cast/blob/main/docs/shared/fonts/README.md)
 for provenance and for what has to travel with them.

@@ -60,7 +60,7 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`scene-generative-rorschach`** | a mirrored-symmetric ink-blot rendered as a multicolor bitmap. |
 | **`scene-generative-rotozoomer`** | "Rotozoomer" — a WLED-effect port. |
 | **`scene-generative-sid`** | a generative plasma paired with SID-file playback — the headline of the composable building blocks. |
-| **`scene-generative-soap`** | "Soap" — a WLED-effect port of a persistent colour buffer smeared/advected each tick by a slowly-rotating noise-driven flow field — the classic … |
+| **`scene-generative-soap`** | "Soap" — a WLED-effect port of a persistent color buffer smeared/advected each tick by a slowly-rotating noise-driven flow field — the classic … |
 | **`scene-launcher`** | launch a native C64 program (game or demo) on the U64 and hand the machine over to it. *(needs your own media)* |
 | **`scene-midi`** | MIDI → SID synth + oscilloscope. |
 | **`scene-slideshow`** | cycle through still images on the C64 display. *(needs your own media)* |

@@ -439,7 +439,7 @@ def run_setup() -> int:
         mappings += _bind_knobs(q, knobs)
         mappings += _learn_scene_jumps(q, port)
     except KeyboardInterrupt:
-        print("\nCancelled.")
+        print("\nCanceled.")
         return 2
     finally:
         port.close()

@@ -113,13 +113,13 @@ Three fields are common to every scene, whatever its type:
 
 Everything else depends on the type. A `slideshow` wants to know where the
 pictures are; a `waveform` wants a `.sid` file; a `blank` scene wants only
-its colours, because its whole job is to be a backdrop for overlays.
+its colors, because its whole job is to be a backdrop for overlays.
 
 ## Adding a Second Scene
 
 A playlist with one scene behaves specially: c64cast notices, drops the
 card between scenes, and simply loops that scene forever. It is the right
-behaviour for a demo, and it is what `hello.toml` relies on.
+behavior for a demo, and it is what `hello.toml` relies on.
 
 Add a second `[[scenes]]` block and the character changes entirely:
 
@@ -167,7 +167,7 @@ background = "random"
 `background` picks the animation behind the text. The choices are
 `starfield`, `petscii_bars`, `raster_bars`, `checker`, `nature`, `city`,
 `none`, and `random` to pick a different one each time. `text_color` takes
-any C64 colour name, or `rainbow` for a per-row cycle, or `random`.
+any C64 color name, or `rainbow` for a per-row cycle, or `random`.
 
 ## Looping and Duration
 

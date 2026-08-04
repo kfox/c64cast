@@ -49,7 +49,7 @@ class MyScene(Scene):
 Then add a branch to the configuration loader's scene factory, and any fields
 the scene takes to the scene dataclass, so they round-trip through TOML.
 
-Four things to honour:
+Four things to honor:
 
 - **`audio` may be `None`.** It is `None` whenever audio is off, the scene sets
   `audio = false`, or another system in an ensemble holds the audio slot.
@@ -88,7 +88,7 @@ class BlinkOverlay(Overlay):
 
 | Attribute | Meaning |
 |---|---|
-| `REQUIRES_PETSCII` | It writes PETSCII codes to screen and colour RAM, so it needs a character mode |
+| `REQUIRES_PETSCII` | It writes PETSCII codes to screen and color RAM, so it needs a character mode |
 | `COMPATIBLE_MODES` | An explicit whitelist, for an overlay that is not a clean fit for that split |
 | `REQUIRES_AUDIO` | It cannot work at all without the audio streamer; refused at load when audio is off |
 | `WANTS_AUDIO` | It uses the streamer when there is one and has a fallback; never refused |
@@ -100,7 +100,7 @@ the configuration loads rather than when the overlay would first draw.
 `PAINTS_INTO_BUFFERS = True` and implementing `compose(buffers, scene, t)` gets
 its glyphs folded into the scene's own frame, so scene and overlays go out as
 one upload. Writing screen memory from `process_frame` instead races the scene's
-own write and flickers. A register write — a border colour, say — is the case
+own write and flickers. A register write — a border color, say — is the case
 where `process_frame` is the right method.
 
 Two base classes cover most of what people write: one for single-line corner
@@ -124,11 +124,11 @@ Only declare **independent single-numeric fields** there. A live write is one
 attribute assignment, which is atomic; two fields that must change together are
 not.
 
-Two behavioural rules matter more than the code. A generator should be
+Two behavioral rules matter more than the code. A generator should be
 **deterministic in time** — the frame at a given moment the same frame however
 you arrived at it — because that is what makes an offline render reproducible;
 the two shipped exceptions carry real simulation state and say so. And a
-reactive generator must **fall back to its time-driven behaviour** at rest, so a
+reactive generator must **fall back to its time-driven behavior** at rest, so a
 silent scene is still the generator you asked for.
 
 ## Where the Working Code Is

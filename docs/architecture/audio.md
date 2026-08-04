@@ -70,7 +70,7 @@ Deliberately excluded: the mic capture-device open rate (some devices reject an 
 
 ### Input modes
 
-The `device` argument to the `start_*` methods is an `int | str`: an int index, or a **device name substring** matched case-insensitively against the input-capable devices `sd.query_devices()` reports (the same listing `--list-devices` prints). `resolve_audio_input_device(device)` (module-level in [`audio.py`](../../c64cast/audio.py)) does the coercion at the top of `_resolve_input_device` — the audio analogue of [`camera.resolve_camera_index`](control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) for `[video].device`, minus USB `VID:PID` (PortAudio exposes none). Unlike the camera resolver it never raises: a name that matches nothing (or multiple → first wins) warns and falls back to the system default input (`-1`), matching `_resolve_input_device`'s existing forgiving contract. `-D/--audio-device` and `[audio].device` both flow through it, and `--save-settings` persists the chosen name/index.
+The `device` argument to the `start_*` methods is an `int | str`: an int index, or a **device name substring** matched case-insensitively against the input-capable devices `sd.query_devices()` reports (the same listing `--list-devices` prints). `resolve_audio_input_device(device)` (module-level in [`audio.py`](../../c64cast/audio.py)) does the coercion at the top of `_resolve_input_device` — the audio analog of [`camera.resolve_camera_index`](control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) for `[video].device`, minus USB `VID:PID` (PortAudio exposes none). Unlike the camera resolver it never raises: a name that matches nothing (or multiple → first wins) warns and falls back to the system default input (`-1`), matching `_resolve_input_device`'s existing forgiving contract. `-D/--audio-device` and `[audio].device` both flow through it, and `--save-settings` persists the chosen name/index.
 
 * `start_mic(device, sens, gate)` — sounddevice capture; `mic_callback` pushes into the queue.
 * `start_for_external_source()` — no input thread; the caller (the PyAV demuxer) pushes via `push_samples(int16)`.
@@ -170,9 +170,9 @@ The mapping is a 256-entry amplitude→`$D418` table. `encode_floats_to_dac(...,
 
 Implemented in [c64cast/dac_calibration.py](../../c64cast/dac_calibration.py).
 
-Only the **emulated-UltiSID** table ships baked into [c64cast/dac_curves.py](../../c64cast/dac_curves.py). Hardware measurement (2026-07-02, Cam Link) showed the U64 FPGA UltiSID curve is deterministic across units, and that the 6581/8580 model knob is irrelevant — byte-identical output — so one table generalises.
+Only the **emulated-UltiSID** table ships baked into [c64cast/dac_curves.py](../../c64cast/dac_curves.py). Hardware measurement (2026-07-02, Cam Link) showed the U64 FPGA UltiSID curve is deterministic across units, and that the 6581/8580 model knob is irrelevant — byte-identical output — so one table generalizes.
 
-Physical chips do not generalise. 6581/8580 variation is enormous chip-to-chip, dominated by the analog filter: two 6581s correlated only 0.74, and swapping their tables cost ≈29% RMS level error. SID replacements (ARM2SID, SwinSID, FPGASID) differ again. No baked table can serve them, hence calibration:
+Physical chips do not generalize. 6581/8580 variation is enormous chip-to-chip, dominated by the analog filter: two 6581s correlated only 0.74, and swapping their tables cost ≈29% RMS level error. SID replacements (ARM2SID, SwinSID, FPGASID) differ again. No baked table can serve them, hence calibration:
 
 `c64cast -u <target> --calibrate-dac` (`cli` → `dac_calibration.run_calibration`) measures the connected SID's signed transfer curve, ≈50 s per socket.
 
@@ -202,7 +202,7 @@ Every code is then measured against the **same baseline inside one capture**, so
 2. `_find_ring_anchors` — a pass starts at the edge that ends a sync gap. The test is *relative* (within 25% of the longest gap seen), because a run of codes that all sit at the reference level also leaves no edges, and on a partly-dead chip that run can be long. `plan_code_batches` strides rather than slices for the same reason: slicing 0-110 / 111-221 / 222-255 would put all sixteen codes of one upper nibble in consecutive slots.
 3. `_track_slot_grid` — the part that has to follow the signal rather than the clock. A slot is 192.24 capture samples, because the NMI runs at 1022727/128 = 7990.05 Hz, not the 8000 Hz it is asked for, and avfoundation drops samples under load on top of that. Stepping a nominal pitch from the marker walks the read window off the boundary into the middle of a sagging plateau within a fraction of a pass — which yields levels that repeat perfectly across passes (so they look trustworthy) and are wrong. So the grid follows the signal: each boundary is matched to the nearest detected edge and an alpha-beta filter folds that into a smoothed offset *and* a drift rate, with edgeless boundaries coasting on the current rate. A synthetic capture with 12% of its samples dropped reads levels to 0.5% either way; with a fixed grid the same capture is off by 56%.
 4. `_dc_restore_gain` — undoes the AC coupling so a plateau mean is a level and not a level plus the sag of whatever preceded it. For a one-pole high-pass the inverse is exactly `v = y + cumsum(y)/(τ·fs)`, one unknown scalar, and the restored signal is affine in it — so the total within-plateau variance is a quadratic with a closed-form minimum. τ is fitted from the data rather than assumed; a 2- and 3-pole basis was tried on real captures and did not improve on it.
-5. Each code slot is differenced against the reference slots bracketing it, cancelling residual slow drift locally.
+5. Each code slot is differenced against the reference slots bracketing it, canceling residual slow drift locally.
 
 `pass_spread_frac` is the trust metric: every pass measures the same 256 levels, so disagreement between them is the one symptom that separates a mistracked capture from a real curve. On hardware it is 0.01–0.2%.
 
@@ -210,7 +210,7 @@ Every code is then measured against the **same baseline inside one capture**, so
 
 `extract_slot_levels` is a *reader*: handed a waveform it reports what it found, and it can only refuse what it cannot parse. But a recording of the **wrong input** parses fine — the peak finder locks onto noise, a sync gap or two turns up, and levels come back near zero with the passes contradicting each other at a `pass_spread_frac` near 100%. Those are numbers, so ungated they reach the table, and the run survives until some later ring happens to yield fewer than two sync markers: a failure both far from its cause and 30 s of measuring too late.
 
-So `read_ring_capture` wraps the extraction in the two judgements that belong to whoever chose the recording, and every ring goes through it:
+So `read_ring_capture` wraps the extraction in the two judgments that belong to whoever chose the recording, and every ring goes through it:
 
 * **peak < `SILENT_CAPTURE_PEAK`** (0.002 of full scale) — the ring swings the SID between full-scale codes and silence, so any correctly routed input sees far more than this.
 * **`pass_spread_frac` > `RING_TRUST_MAX_SPREAD`** (10%) — two orders of magnitude above what hardware reads, so this only fires on levels that are noise.
@@ -219,7 +219,7 @@ So `read_ring_capture` wraps the extraction in the two judgements that belong to
 
 #### Why every code is measured three times
 
-A 6581's output for a `$D418` byte is not quite a function of that byte alone. Planting one probe code at twelve positions in an otherwise ordinary ring (`scripts/diags/mahoney_slot_ring_probe.py` measured this): a positive code reads **20% lower** at the end of a ring pass than at its start, a negative code 2% *higher*, and the apparent level correlates at |r| ≈ 0.9 with the mean level of the surrounding slots. It is present in the raw waveform before any processing, so it is the chip's operating point sliding with the accumulated signal, not a measurement artefact. The degraded socket-2 chip shows almost none of it (`context_spread_median_frac` 0.24% vs socket 1's 2.2%), which fits: it is the live filter path that moves.
+A 6581's output for a `$D418` byte is not quite a function of that byte alone. Planting one probe code at twelve positions in an otherwise ordinary ring (`scripts/diags/mahoney_slot_ring_probe.py` measured this): a positive code reads **20% lower** at the end of a ring pass than at its start, a negative code 2% *higher*, and the apparent level correlates at |r| ≈ 0.9 with the mean level of the surrounding slots. It is present in the raw waveform before any processing, so it is the chip's operating point sliding with the accumulated signal, not a measurement artifact. The degraded socket-2 chip shows almost none of it (`context_spread_median_frac` 0.24% vs socket 1's 2.2%), which fits: it is the live filter path that moves.
 
 Measure each code at one fixed slot and that bias is baked into the ladder, ordered by code, looking exactly like curve structure. The tell is that the volume ramp within a nibble band stops being monotone — which it must not, since the master volume nibble scales whatever the mode bits produce. So `plan_capture_rounds` measures the whole set `MEASURE_ROUNDS` times, each round rotating every ring's slot order by another fraction of a ring, and `merge_measurements` averages. Every code then carries the same mean context, which is a common scale factor, and the ladder is scale-invariant.
 
@@ -278,7 +278,7 @@ It is there because a finished table is otherwise undiagnosable, and the failure
 
 #### Quality metrics
 
-`_ladder_metrics` reports `ladder_bits` (ENOB-style: the RMS distance between each of the 256 requested target levels and the level actually achieved, expressed as the equivalent uniform quantiser), `ladder_rms_err_frac`/`ladder_max_err_frac`, and three gap figures: `worst_gap_frac`, `worst_gap_from_zero_frac`, and `crossover_gap_frac`.
+`_ladder_metrics` reports `ladder_bits` (ENOB-style: the RMS distance between each of the 256 requested target levels and the level actually achieved, expressed as the equivalent uniform quantizer), `ladder_rms_err_frac`/`ladder_max_err_frac`, and three gap figures: `worst_gap_frac`, `worst_gap_from_zero_frac`, and `crossover_gap_frac`.
 
 Gap *position* is the point of that last pair. The same hole is crossover distortion at the zero crossing and nearly inaudible out at full scale — on the two measured sockets the worst gaps are almost the same size (4.4% vs 4.9% of span) but sit at −0.06 and +0.98 from silence respectively, which is the whole difference.
 
@@ -521,7 +521,7 @@ The spectrum overlay's tap is deliberately left alone. The two want different si
 * **`bands`** — Hann → `np.fft.rfft` → mean magnitude over log-spaced edges → `log1p` compression, clipped to [0, 1]. The band-edge function and the `log1p(mag * 100)` curve are **shared with `spectrum_petscii`** (moved here, the overlay imports them), so the bars it draws and the bands the analyzer reports describe identical frequency ranges — one definition, not two that can drift.
 * **`onset`** — spectral flux: the sum of positive per-band deltas in log magnitude against the previous frame, compared to an adaptive threshold (running median of ~1 s of flux history × `_THRESH_MULT`, plus an absolute `_FLUX_FLOOR`). The floor matters: with a median near zero, any numerical dust would read as a crossing. A separate `_SILENCE_LEVEL` guard suppresses onsets entirely below a floor level, which is what stops a silent room from growing a phantom tempo. On a crossing, `onset` latches to 1.0; otherwise it decays by `exp(-dt/0.18)` — **the same τ as `SidFeatureStream._ONSET_TAU_S`**, so a pulse looks identical to the SID path after 16-color quantization. Flux is computed on the *unclipped* log magnitudes so a loud transient isn't hidden by the [0, 1] clip the consumers see.
 * **`bpm` / `beat_phase`** — delegated to `modulation.TempoEstimator` (below). The BPM also feeds the process-wide performance beat grid when `[performance].tempo_source = "audio"`: `Playlist` forwards the active scene's `features().bpm` into its `TempoClock.audio_drive` each frame, so the detected beat drives launch quantization, `mod_source = "clock"` effects and WLED tempo (see the [`tempo.py` audio drive mode](control.md#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)).
-* **`voice_freqs` / `voice_gates`** — zeros/False. They are SID-specific with no audio-input analogue, so the two generators that read them (moire, kaleidoscope) fall back to their base geometry and react through level/onset/beat_phase/bands like everything else.
+* **`voice_freqs` / `voice_gates`** — zeros/False. They are SID-specific with no audio-input analog, so the two generators that read them (moire, kaleidoscope) fall back to their base geometry and react through level/onset/beat_phase/bands like everything else.
 
 ### `modulation.TempoEstimator` — one tempo implementation, two producers
 
@@ -529,13 +529,13 @@ Lifted verbatim (logic and constants) out of `SidFeatureStream`, which was the o
 
 `MusicModulation` also carries **`bands: tuple[float, ...] = ()`** plus `bass`/`mid`/`treble` properties that fold whatever band count the analyzer was configured for into thirds. It defaults to empty and stays empty on the SID path, which is what keeps the SID look identical whether or not bands exist: `generators._reactive_value`'s bass term and `_reactive_hue_offset`'s treble term both evaluate to exactly 0.0 there.
 
-**Why bass→brightness and treble→hue** (and not saturation): the 16-color quantizer handles a desaturated hue badly — it lands in the greys — so the spectral split rides the two axes that survive quantization. A kick punches the value, a hi-hat pattern shimmers the hue, and they read as different events.
+**Why bass→brightness and treble→hue** (and not saturation): the 16-color quantizer handles a desaturated hue badly — it lands in the grays — so the spectral split rides the two axes that survive quantization. A kick punches the value, a hi-hat pattern shimmers the hue, and they read as different events.
 
 ### The stream + tap
 
 `AnalysisTap` is a small lock-protected mono float ring with the same wrap arithmetic as `AudioStreamer._push_to_tap`/`get_recent_samples` — lifted rather than shared, because the writer here is a realtime callback on a streamer that may not exist yet (the tap outlives any single `start_mic`). `push()` is nothing but a couple of slice assignments under a short-lived lock.
 
-`AudioFeatureStream` is the `PollThread` between them, modelled directly on `SidFeatureStream`: `start()` / `stop()` / `features()`, a `_lock` around the snapshot, `features()` returning `None` before the first tick, and `_process_tick` split out so tests drive it over a hand-filled tap with no thread. The FFT runs outside the lock; only the snapshot swap takes it.
+`AudioFeatureStream` is the `PollThread` between them, modeled directly on `SidFeatureStream`: `start()` / `stop()` / `features()`, a `_lock` around the snapshot, `features()` returning `None` before the first tick, and `_process_tick` split out so tests drive it over a hand-filled tap with no thread. The FFT runs outside the lock; only the snapshot swap takes it.
 
 ### Config + wiring
 

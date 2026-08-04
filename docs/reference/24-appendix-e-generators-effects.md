@@ -24,12 +24,12 @@ A parameter below is reached live as `source.NAME` — a knob on this scene's `s
 |---|---|
 | **`plasma`**<br>`speed` `0 – 2`<br>`scale` `0.1 – 4` | Classic sine-sum plasma whose hue cycles over time. |
 | **`tunnel`**<br>`speed` `0 – 2`<br>`scale` `0.25 – 4` | Infinite-zoom tunnel: hue is driven by per-pixel depth (1/radius) and angle, scrolled over time. |
-| **`fire`**<br>`scroll_speed` `0 – 4`<br>`intensity` `0.2 – 2` | Rising fire: an upward-scrolling turbulence texture masked by a bottom-hot vertical gradient and colour-mapped black→red→yellow→white (`cv2.COLORMAP_HOT` — a near-perfect match for the C64 palette). |
+| **`fire`**<br>`scroll_speed` `0 – 4`<br>`intensity` `0.2 – 2` | Rising fire: an upward-scrolling turbulence texture masked by a bottom-hot vertical gradient and color-mapped black→red→yellow→white (`cv2.COLORMAP_HOT` — a near-perfect match for the C64 palette). |
 | **`mandelbrot`**<br>`zoom_speed` `0.02 – 1`<br>`cycle_speed` `0 – 2` | Escape-time Mandelbrot zoom. |
 | **`moire2`**<br>`ring_freq` `10 – 80`<br>`drift_speed` `0 – 2` | Two concentric-ring distance fields whose centers drift apart and together, summed into a classic moiré interference pattern (each field is `sin(distance-to-center * freq)`; xscreensaver's moire2.c gets the same beat pattern by XOR-compositing two arc bitmaps — this is the closed-form equivalent: a distance field instead of drawn arcs). |
 | **`halo`**<br>`drift_speed` `0 – 2`<br>`pulse_speed` `0 – 3` | Several soft-edged halos drifting on independent circular orbits, additively blended (bright where they overlap, no clear — matching xscreensaver's halo.c un-erased canvas). |
 | **`epicycle`**<br>`speed` `0 – 2` | Fourier epicycles: a chain of circles, each spinning around the tip of the previous, whose combined tip traces `sum_i r_i * exp(j*(w_i t + phi_i))` — a chain of rotations composes to the same vector sum regardless of framing, so this sums phasors directly rather than nesting rotations. |
-| **`hopalong`**<br>`a` `-2 – 2`<br>`drift_speed` `0 – 1` | Hopalong chaotic point-map attractor, iterated for many parallel starting points at once (numpy-vectorized across the batch — each *step* is still sequential, the map depends on the previous point) into a density accumulator, colour-mapped by (log-scaled) density. |
+| **`hopalong`**<br>`a` `-2 – 2`<br>`drift_speed` `0 – 1` | Hopalong chaotic point-map attractor, iterated for many parallel starting points at once (numpy-vectorized across the batch — each *step* is still sequential, the map depends on the previous point) into a density accumulator, color-mapped by (log-scaled) density. |
 | **`rorschach`**<br>`grow_speed` `0 – 4` | Mirrored-symmetric ink-blot: a precomputed 2D random walk (fixed seed → deterministic) cumulative-summed from Gaussian steps, progressively revealed as `t` advances and reflected across the vertical center line — xscreensaver's rorschach.c animates the same way (draw a few more walk points each frame); this stays a pure function of `t` by redrawing however much of the (fixed) walk is "revealed" by `t` from scratch each frame, rather than accumulating pixels frame to frame. |
 | **`hiphotic`**<br>`speed` `0.1 – 8`<br>`scale` `0.1 – 4` | WLED "Hiphotic" port: nested trig interference (`sin(cos(x...) + sin(y...) + a)`), reimplemented in continuous float instead of WLED's 8-bit sin8/cos8 lookup tables. |
 | **`metaballs`**<br>`speed` `0.05 – 5` | WLED "Metaballs" port: 3 moving "ball" centers blended into a classic inverse-distance metaball field. |
@@ -45,7 +45,7 @@ A parameter below is reached live as `source.NAME` — a knob on this scene's `s
 
 ## Effects
 
-Named by a scene's `effect`, or chained in order with `effects`. An effect transforms the frame after the source has drawn it and before the display mode quantises it.
+Named by a scene's `effect`, or chained in order with `effects`. An effect transforms the frame after the source has drawn it and before the display mode quantizes it.
 
 ```toml
 [[scenes]]

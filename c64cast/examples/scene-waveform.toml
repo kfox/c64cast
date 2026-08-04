@@ -1,7 +1,7 @@
 #:schema ../data/c64cast.schema.json
 # Single-scene demo: SID playback ("waveform" scene).
 #
-# Plays a .sid file on the U64's hardware SID and visualises the three
+# Plays a .sid file on the U64's hardware SID and visualizes the three
 # voices as oscilloscope traces. Requires you to supply your own .sid
 # file — HVSC (https://hvsc.c64.org) is the canonical archive.
 #

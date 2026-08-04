@@ -74,7 +74,7 @@ MMC frames have no release, so they cannot hold a chord. Map these to notes.
 
 ## Pad Lights
 
-`[performance].midi_feedback` opens an output port and colours a pad with a
+`[performance].midi_feedback` opens an output port and colors a pad with a
 note-on at its own number: Launchpad, APC, MPC and Push. Arturia's proprietary
 lighting is not driven; use the console instead.
 

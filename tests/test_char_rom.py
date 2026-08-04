@@ -173,8 +173,8 @@ class VerifyTest(unittest.TestCase):
         # A Swedish machine's charset is the one that user wants us to use.
         r = char_rom.verify(_synth_charset())
         self.assertTrue(r.ok)
-        self.assertIn("unrecognised variant", r.note)
-        self.assertIn("unrecognised variant", r.describe())
+        self.assertIn("unrecognized variant", r.note)
+        self.assertIn("unrecognized variant", r.describe())
 
     def test_known_digest_is_reported(self):
         data = _synth_charset()
@@ -573,7 +573,7 @@ class DumpCharRomCliTest(_CharRomTestCase):
         self.assertFalse(char_rom.installed_path().exists())
 
     def test_dump_failure_exits_4_and_still_closes_the_link(self):
-        be = _FakeBackend(error=RuntimeError("stub never signalled"))
+        be = _FakeBackend(error=RuntimeError("stub never signaled"))
         with mock.patch("time.sleep"):
             self.assertEqual(self._run(be)[0], 4)
         self.assertEqual(be.closes, 1)

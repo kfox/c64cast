@@ -69,7 +69,7 @@ def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
     filesystem), so a crash mid-write can never leave a half-written file. The
     parent directory is created if missing.
 
-    :func:`atomic_write_text` is the UTF-8 flavour of this; the character-ROM
+    :func:`atomic_write_text` is the UTF-8 flavor of this; the character-ROM
     installer (:mod:`c64cast.char_rom`) is the binary caller."""
     p = os.fspath(path)
     parent = os.path.dirname(p) or "."

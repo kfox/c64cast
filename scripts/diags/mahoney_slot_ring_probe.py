@@ -71,7 +71,7 @@ def merge(batches: list[tuple[list[int], dc.SlotLevels]]) -> list[tuple[int, flo
     return raw
 
 
-def summarise(raw: list[tuple[int, float]]) -> None:
+def summarize(raw: list[tuple[int, float]]) -> None:
     table, metrics = dc.build_sidtable_from_levels(raw)
     lv = np.array([v for _, v in raw])
     print("\n--- merged 256-code ladder ---")
@@ -209,7 +209,7 @@ def main() -> int:
         batches = capture_hardware(args)
     else:
         ap.error("one of --url or --replay is required")
-    summarise(merge(batches))
+    summarize(merge(batches))
     return 0
 
 

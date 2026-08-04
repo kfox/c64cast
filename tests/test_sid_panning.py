@@ -274,15 +274,15 @@ class WindowOrderTest(unittest.TestCase):
     def test_single_chip_is_identity(self):
         self.assertEqual(sp.window_order_for_pans((0,)), (0,))
 
-    def test_three_sid_default_puts_primary_chip_in_the_centre_column(self):
-        # Default [0, -3, 3]: chip 0 is the primary and sits dead centre, so it
+    def test_three_sid_default_puts_primary_chip_in_the_center_column(self):
+        # Default [0, -3, 3]: chip 0 is the primary and sits dead center, so it
         # must render in the MIDDLE column, flanked by chips 1 and 2.
         order = sp.window_order_for_pans(sp.default_pan_spread(3))
         self.assertEqual(order, (1, 0, 2))
 
-    def test_four_sid_default_puts_chips_0_and_1_closest_to_centre(self):
+    def test_four_sid_default_puts_chips_0_and_1_closest_to_center(self):
         # Default [-2, 2, -5, 5]: chips 0/1 are the important pair and sit
-        # nearest centre, so they occupy the two middle columns.
+        # nearest center, so they occupy the two middle columns.
         order = sp.window_order_for_pans(sp.default_pan_spread(4))
         self.assertEqual(order, (2, 0, 1, 3))
 
@@ -492,7 +492,7 @@ class ScenePanningFoldTest(unittest.TestCase):
 
         WaveformScene._apply_sid_panning(scene, sid_map)
 
-        # Default [0, -3, 3] ⇒ the centred primary chip renders in the middle.
+        # Default [0, -3, 3] ⇒ the centered primary chip renders in the middle.
         self.assertEqual(scene.window_order, (1, 0, 2))
 
     def test_waveform_single_sid_reads_the_live_source(self):
