@@ -105,11 +105,18 @@ jobs:
       - name: Name the books for release
         # Every rendered PDF, whatever it is called: a new book under docs/
         # ships the release it lands in, without editing this step.
+        #
+        # Each book ships twice. The version-stamped copy is what someone who
+        # downloads three releases' worth wants on disk; the unversioned one
+        # exists so `releases/latest/download/<book>.pdf` resolves, which is the
+        # only spelling of "the current PDF" that survives a release. Both are
+        # the same bytes, and the version is on the cover either way.
         run: |
           set -euo pipefail
           for pdf in docs/*/c64cast-*.pdf; do
             name="$(basename "$pdf" .pdf)"
             cp "$pdf" "dist/$name-${{ steps.version.outputs.version }}.pdf"
+            cp "$pdf" "dist/$name.pdf"
           done
           ls -l dist/
 
@@ -187,8 +194,9 @@ jobs:
           name: release-artifacts
 
       # Assets are behind a collapsed control, so the notes link them directly.
-      # A `releases/latest/download/…` URL cannot serve these — the filenames
-      # carry the version.
+      # Version-stamped URLs, not the `releases/latest/download/…` ones the
+      # README uses: these notes are the record of one release and still name
+      # its files after the next one lands.
       - name: Compose the release notes
         env:
           VERSION: ${{ needs.build.outputs.version }}

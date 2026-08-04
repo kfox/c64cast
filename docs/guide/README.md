@@ -16,10 +16,12 @@ The Markdown is the guide. Start at
 [`01-quick-start.md`](01-quick-start.md) and work forward; the files are
 numbered in reading order. Everything renders on github.com as-is.
 
-For the typeset version, download the PDF from
-[the latest release](https://github.com/kfox/c64cast/releases/latest) — it is
-stamped on the cover with the version it documents, so a saved copy can always
-be matched to an install.
+For the typeset version, download
+[the PDF](https://github.com/kfox/c64cast/releases/latest/download/c64cast-users-guide.pdf)
+— always the newest release, and stamped on the cover with the version it
+documents, so a saved copy can always be matched to an install. Older releases
+keep their own version-stamped copy on
+[their release page](https://github.com/kfox/c64cast/releases).
 
 To render it from a checkout instead:
 

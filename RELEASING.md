@@ -13,7 +13,14 @@ A release is one tag push;
 | `c64cast-users-guide-X.Y.Z.pdf` | the GitHub release |
 | `c64cast-reference-guide-X.Y.Z.pdf` | the GitHub release |
 | `c64cast-performance-card-X.Y.Z.pdf` | the GitHub release |
+| The same three PDFs again, unversioned | the GitHub release |
 | Release notes | the GitHub release, from that version's `CHANGELOG.md` section |
+
+Each book ships twice because a version-stamped filename is what you want on
+disk and an unversioned one is what a link can point at:
+`releases/latest/download/c64cast-users-guide.pdf` always serves the current
+release, which is how the README links all three. Renaming a book's PDF
+therefore breaks a published URL — the filename is part of the interface.
 
 ## One-time setup
 

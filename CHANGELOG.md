@@ -12,7 +12,29 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Every book has a permanent download link.** A release now carries each PDF
+  twice — `c64cast-users-guide-X.Y.Z.pdf` as before, and an unversioned
+  `c64cast-users-guide.pdf` — so
+  `https://github.com/kfox/c64cast/releases/latest/download/c64cast-users-guide.pdf`
+  (and the same for `c64cast-reference-guide.pdf` and
+  `c64cast-performance-card.pdf`) always serves the current release. The README
+  links all three that way; every past release keeps its version-stamped copy.
+
+### Changed
+
+- **The README is a landing page again.** It had grown a reference section for
+  each surface it introduced — the full keyboard table with its chord
+  precedence rules, nine config-discovery commands, the machine-settings
+  precedence, the SID-player rationale — all of which the books now state
+  properly, from the code. Those are cut down to what someone deciding whether
+  to install this needs, and the space goes to what was missing: the pixel
+  effect chain (four of the eight effects were listed, and the chain not at
+  all), the live performance surfaces (a clip grid, a beat grid, pad LEDs,
+  looks and the `/perf` console had no mention outside the docs list), audio
+  files as quick-playback arguments, the bitmap spectrum overlay, and the
+  character ROM your first run reads off your own machine.
 
 ## [0.2.0] - 2026-08-04
 

@@ -19,8 +19,9 @@ machine over to a native game or demo. Frames from any source are quantized
 in real time to a VIC-II display mode (PETSCII, MCM, hi-res bitmap, multicolor
 hi-res); audio plays through the SID's `$D418` DAC or the hi-fi Ultimate Audio
 PCM sampler. Stackable **overlays** decorate any scene with scrolling text,
-spectrum analyzers, clocks, weather, RSS, logos, and more — and **ensemble
-mode** drives a whole wall of C64s at once.
+spectrum analyzers, clocks, weather, RSS, logos, and more; a **performance
+layer** puts the whole show on a MIDI controller or a phone; and **ensemble
+mode** drives a wall of C64s at once.
 
 ## Install
 
@@ -51,22 +52,24 @@ error if it can't connect.
 
 ## What do you want to do?
 
-Every row below is a runnable, single-scene demo that ships inside the
-package — pass it to `--config` and it loops forever until you Ctrl+C. Point
-it at your hardware with `-u` (see [Quick start](#quick-start)).
-The
+Every row below is a runnable demo that ships inside the package — pass it to
+`--config` and it loops forever until you Ctrl+C. Point it at your hardware
+with `-u` (see [Quick start](#quick-start)). The
 [Programmer's Reference Guide](https://github.com/kfox/c64cast/tree/main/docs/reference)
 documents every option for these scenes and overlays.
 
 | I want to…                          | Try                                                     | Reference |
 |-------------------------------------|---------------------------------------------------------|-----------|
 | Play a video (or YouTube URL)       | `c64cast clip.mp4` · `example:scene-video`              | [Quick playback](https://github.com/kfox/c64cast/blob/main/docs/reference/26-appendix-g-cli-flags.md#quick-playback-with-media-args) |
+| Play an audio track with visuals that react to it | `c64cast tune.mp3`                    | [Quick playback](https://github.com/kfox/c64cast/blob/main/docs/reference/26-appendix-g-cli-flags.md#quick-playback-with-media-args) |
 | Show a live webcam as C64 art       | `example:scene-webcam-petscii`                          | [`webcam`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#webcam) |
 | Visualize a SID tune (oscilloscope) | `example:scene-waveform`                                | [`waveform`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#waveform) |
 | Play a SID from a MIDI keyboard     | `example:scene-midi`                                    | [`midi`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#midi) |
 | Stream from DeepSID / SIDFactory II | `example:scene-asid`                                    | [`asid`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#asid) |
 | Slideshow of images                 | `example:scene-slideshow`                               | [`slideshow`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#slideshow) |
 | Generative / music-reactive visuals | `example:scene-generative-plasma`                       | [`generative`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#generative) |
+| Stack pixel effects on any scene    | `example:effect-chain`                                  | [Generators + effects](https://github.com/kfox/c64cast/blob/main/docs/reference/24-appendix-e-generators-effects.md) |
+| Play the show live from a controller or a phone | `example:performance-clips`                 | [Performing](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md#performing) |
 | Run a native `.prg`/`.crt` game or demo | `example:scene-launcher`                            | [`launcher`](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#launcher) |
 | An info board (clock/weather/RSS)   | `example:overlay-clock`                                 | [Overlays](https://github.com/kfox/c64cast/blob/main/docs/reference/03-vocabulary.md#overlays) |
 | Drive multiple C64s as one video wall | `example:ensemble/master`                             | [Ensemble mode](https://github.com/kfox/c64cast/blob/main/docs/reference/02-config-rules.md#the-ensemble-cascade) |
@@ -78,50 +81,53 @@ with `c64cast --list-examples` (one demo per scene type and per overlay).
 
 ## Features
 
-**Scenes** — a TOML playlist runs any mix of these on the real C64, each
-for a set duration, with an "UP NEXT" interstitial between them:
+**Scenes** — a TOML playlist runs any mix of these on the real C64, each for a
+set duration, with an "UP NEXT" interstitial between them:
 
-* **Video** — MP4/MKV/etc. (and YouTube/other URLs via yt-dlp), soundtrack
-  and all, keyed off the audio clock so A/V can't drift.
+* **Video** — MP4/MKV/etc. (and YouTube/other URLs via yt-dlp), soundtrack and
+  all, keyed off the audio clock so A/V can't drift.
 * **Webcam** — live capture quantized to any display mode in real time.
 * **Slideshow** — still images from a directory/glob, aspect-fit.
-* **SID waveform** — plays a `.sid` natively on the C64 (via a small
-  player PRG, not the firmware's own runner) with a per-voice oscilloscope.
-  Handles multi-SID tunes — up to 8 chips using the U64's UltiSIDs.
-* **MIDI → SID** — bridge a live MIDI source (USB controller, DAW) into
-  the real SID and visualize each voice (`midi` extra).
-* **ASID client** — receive an ASID stream (DeepSID in a browser,
-  SIDFactory II, Plogue chipsynth C64, …) and play it on the real SID with
-  the same 3-voice scope (`midi` extra).
-* **Generative** — ≈20 procedural sources (plasma, tunnel, fire,
-  mandelbrot, metaballs, game of life, …), optionally music-reactive and
-  with pixel effects (trails, pulse, RGB shift, blur).
-* **Launcher** — hand the machine over to a native `.prg`/`.crt` game or
-  demo, then reclaim it.
-* **WLED matrix** — turn the C64 into a virtual LED matrix and stream live
-  pixels to it from LedFx / xLights (DDP or WLED realtime UDP); part of the
-  WLED bridge below.
+* **SID waveform** — a `.sid` playing natively on the real chip (via a small
+  player PRG, not the firmware's own runner) under a per-voice oscilloscope.
+  Multi-SID tunes too — up to 8 chips using the U64's UltiSIDs.
+* **MIDI → SID** and **ASID client** — a live MIDI source (USB controller, DAW)
+  or an ASID stream (DeepSID, SIDFactory II, Plogue chipsynth C64) played
+  through the real SID under the same scope (`midi` extra).
+* **Generative** — 20 procedural sources (plasma, tunnel, fire, mandelbrot,
+  metaballs, game of life, fireworks, soap, …), about half of them ports of
+  WLED effects, optionally music-reactive.
+* **Launcher** — hand the machine over to a native `.prg`/`.crt` game or demo,
+  then reclaim it.
+* **WLED matrix** — the C64 as a virtual LED matrix, fed live pixels by
+  LedFx / xLights (DDP or WLED realtime UDP).
 * **Blank** — a solid PETSCII canvas for title cards + overlays.
 
 **Display + audio** — six VIC-II display modes (`hires`, `hires_edges`,
-`mhires`, `petscii`, `mcm`, `blank`), each with its own vectorized
-quantizer (≈30 fps bitmap, 50/60 fps char over a LAN). Audio plays through
-the SID's lo-fi `$D418` DAC (4-bit, or ≈6-7-bit via the Mahoney companding
-technique) or, on the U64, the high-fidelity Ultimate Audio FPGA PCM sampler.
+`mhires`, `petscii`, `mcm`, `blank`), each with its own vectorized quantizer
+(≈30 fps bitmap, 50/60 fps char over a LAN). Audio plays through the SID's
+lo-fi `$D418` DAC (4-bit, or ≈6-7-bit via the Mahoney companding technique)
+or, on the U64, the high-fidelity Ultimate Audio FPGA PCM sampler.
 
 **Overlays** — stack on any compatible scene: scrolling text, marquee, RSS
-ticker, PETSCII spectrum analyzer, clock, weather, callsign, countdown,
-network info, multi-line logo, demo-scene big text, OBS Studio status.
+ticker, spectrum analyzer (PETSCII bars or pixel-resolution bitmap ones),
+clock, weather, callsign, countdown, network info, multi-line logo, demo-scene
+big text, OBS Studio status.
 
-**Ensemble mode** — one process drives **N systems at once** as a
-video wall, with cross-system orchestration (e.g. a `big_text` message
-scrolling across every screen as a single canvas).
+**Pixel effects** — eight of them (trails, pulse, RGB shift, blur, strobe,
+invert, mirror, posterize), layerable into an ordered chain on any scene that
+carries a frame. Every layer is independently tunable and bypass-toggleable
+while the show runs, and can be modulated by the music or locked to the beat
+grid.
 
-**Control surfaces** — the C64 keyboard itself (C= pauses, CTRL skips,
-SHIFT cycles the style), an on-C64 SPACE menu for live scene tweaks, webcam
-hand gestures (`vision` extra), a FastAPI control plane (`/pause`,
-`/resume`, `/skip`, `/reload`), MIDI CC control, and `SIGHUP` to reload the
-config.
+**Live performance** — a MIDI controller or a phone drives the whole show: a
+clip-launch grid quantized to a tempo, live parameter targets on the knobs,
+pad LEDs that reflect state, saved "looks" to recall a whole configuration.
+See [Live control](#live-control).
+
+**Ensemble mode** — one process drives **N systems at once** as a video wall,
+with cross-system orchestration (e.g. a `big_text` message scrolling across
+every screen as a single canvas).
 
 **WLED bridge** — interoperate with the [WLED](https://kno.wled.ge/) LED
 ecosystem in three directions, all under one `[wled]` config section: drive
@@ -132,9 +138,6 @@ presets), and turn the C64 *into* a virtual LED matrix that LedFx / xLights
 stream live pixels to. See
 [WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md#wled)
 for the full reference.
-
-**Quick playback** — skip the config file entirely and pass media straight
-on the command line: `c64cast clip.mp4 tune.sid pics/` plays each in turn.
 
 **Preview + recording** — an optional local window mirroring what the C64 is
 showing, plus recording to MP4. Both are cv2-based, so neither needs an extra.
@@ -155,39 +158,40 @@ c64cast --config example:hello
 `u64://HOST` or `http(s)://HOST` (Ultimate 64 / II+), `tr://` (TeensyROM+ over
 auto-detected USB serial), `tr:///dev/cu.usbmodem*` / `tr://COM3` (a specific
 serial device), or `tr://HOST` (TeensyROM+ over TCP). `$C64CAST_URL` is the env
-fallback, and `--save-settings` persists it (plus the capture device and SID
-model) to `~/.config/c64cast/settings.toml`.
+fallback, and `--save-settings` persists it — along with the capture device and
+SID model — to `~/.config/c64cast/settings.toml`, where it applies to every
+later run including quick playback.
 
-`example:hello` is the gentlest starting point. From there:
+The first run against a machine spends about a second reading that machine's
+**character ROM** over the wire and caching it under `~/.local/share/c64cast/`,
+so every glyph c64cast draws is your Commodore's own font rather than a
+built-in approximation. `--install-char-rom PATH` uses a dump you already have
+(no hardware needed) and `--dump-char-rom` re-reads on demand.
+
+From `example:hello`, the next steps:
 
 ```bash
 # Try a single feature in isolation — one demo per scene type / overlay:
 c64cast --config example:scene-webcam-petscii
 c64cast --config example:overlay-clock
 
-# Build your own config the easy way — the interactive wizard walks you
-# through either a single scene or a multi-scene playlist (with the "UP NEXT"
-# interstitial, video interleaving, and loop control) and writes a c64cast.toml
-# (needs the 'wizard' extra, included in [all]; a ./c64cast.toml is picked up
-# automatically when no --config is given):
+# Build your own: the wizard walks you through a single scene or a whole
+# playlist and writes a ./c64cast.toml, which later runs pick up on their own
+# (needs the 'wizard' extra, included in [all]):
 c64cast --init
 
-# ...or by hand: the `c64cast.example` demo is a fully-annotated reference
-# exercising every scene + overlay. Copy it out and edit:
+# ...or by hand, starting from the fully-annotated reference config:
 c64cast --print-example c64cast.example > c64cast.toml && $EDITOR c64cast.toml
 c64cast
 
-# Validate any config + check which optional extras are installed without
-# touching the C64 (skip the connectivity probe to keep it offline):
+# Check a config and your installed extras without touching the C64:
 c64cast --doctor --config c64cast.toml --skip-probe
 ```
 
 The demos ship **inside the package**, so `example:NAME` works the same from an
-installed wheel, from `uvx`, or from a git checkout.
-`c64cast --list-examples` prints the whole set with one-line summaries;
-`--print-example NAME` copies one out to edit. See
+installed wheel, from `uvx`, or from a git checkout —
 [`c64cast/examples/README.md`](https://github.com/kfox/c64cast/blob/main/c64cast/examples/README.md)
-for the narrative version.
+is the narrative tour of them.
 
 `c64cast -h` lists every CLI flag grouped by section (`connection`,
 `quick playback`, `video input`, `audio`, `vision input`, `playlist`,
@@ -203,6 +207,10 @@ Audio is on by default; `--no-audio` mutes.
 # A video, a SID tune, then a folder of pictures, on an Ultimate 64:
 c64cast -u u64://192.168.1.64 clip.mp4 tune.sid ~/Pictures/
 
+# An audio file: the track plays through the C64 while a generative visual
+# reacts to it.
+c64cast tune.mp3
+
 # A clip on a TeensyROM+ over auto-detected USB serial:
 c64cast -u tr:// clip.mp4
 
@@ -212,71 +220,62 @@ c64cast 'https://youtu.be/dQw4w9WgXcQ'
 
 ## Configuration
 
-A config is a single TOML file (`--config PATH`, else `./c64cast.toml`,
-else built-in defaults) that defines the playlist and every overridable
-option. Three ways to author one, plus tooling to discover and validate it —
-none of which needs the C64:
+A config is a single TOML file (`--config PATH`, else `./c64cast.toml`, else
+built-in defaults) that defines the playlist and every overridable option.
+`c64cast --init` builds one interactively, `--print-example c64cast.example`
+prints a fully-annotated one to edit, and `--doctor --skip-probe` validates the
+result without touching the C64.
 
-```bash
-# Build one interactively (single scene or multi-scene playlist):
-c64cast --init                    # needs the 'wizard' extra
-
-# Discover the config surface straight from the code (always in sync):
-c64cast --list-scenes             # scene types
-c64cast --list-overlays           # overlays + their restrictions
-c64cast --list-modes              # display modes
-c64cast --list-examples           # the packaged demo configs
-c64cast --describe overlay:clock  # full reference for one thing
-c64cast --compat                  # overlay × display-mode matrix
-c64cast --print-schema            # JSON Schema for editor autocomplete
-
-# Validate a config (and check which extras are installed) without hardware:
-c64cast --doctor --config c64cast.toml --skip-probe
-```
-
-The discovery output and the JSON schema are generated from the same field
-metadata the loader runs on, so they can't drift from the code.
-`c64cast --print-example c64cast.example` is the fully-annotated reference; see
+The whole config surface is discoverable from the command line — `--describe`,
+`--list-scenes`, `--list-overlays`, `--list-modes`, `--compat`,
+`--print-schema` (a JSON Schema for editor autocomplete) — and every one of
+those reads the same field metadata the loader runs on, so the answers can't
+drift from the code. See
 [The Configuration Language](https://github.com/kfox/c64cast/blob/main/docs/reference/02-config-rules.md)
-for the complete config walkthrough.
+for the complete walkthrough and
+[Appendix A](https://github.com/kfox/c64cast/blob/main/docs/reference/20-appendix-a-configuration.md)
+for every section and field.
 
-Machine-local defaults — connection target, capture device, SID model — live in
-`~/.config/c64cast/settings.toml` and apply to every run, including quick
-playback; write them with `--save-settings`. Persisted state (DAC calibrations,
-WLED and loop presets) lives under `~/.local/share/c64cast/`.
+## Live control
 
-## Live controls
+While the show is running, you control it from the C64's own keyboard —
+c64cast polls the kernal's keyboard scratch bytes at 10 Hz:
 
-While the stream is running, you control it from the C64 keyboard itself
-(c64cast polls `$028D`, the kernal's keyboard-modifier scratch byte, at
-10 Hz):
+| Key on the C64 | What it does                                                     |
+|----------------|------------------------------------------------------------------|
+| **C= (Commodore)** | Pause (the scene tears down and the machine idles); hold 3 s while paused to resume |
+| **CTRL**       | Skip to the next scene                                            |
+| **SHIFT**      | Cycle the style of the scene, the display mode and every overlay  |
+| **SPACE**      | Open the on-C64 menu of live knobs, with `[menu].enabled`         |
 
-| Key on the C64                             | What it does                                                                                    |
-|--------------------------------------------|-------------------------------------------------------------------------------------------------|
-| **Commodore (C=)** — tap                   | Pause: scene + overlays tear down, screen clears, audio stops                                   |
-| **Commodore (C=)** — hold 3 s while paused | Resume: re-sets-up the same scene (audio + polling threads all come back)                       |
-| **CTRL** — tap while playing               | Skip: advance to the next interstitial after the current frame                                  |
-| **SHIFT** — tap while playing              | Cycle the current scene's display style (palette mode / edge variant / waveform subtune / etc.) |
+Chords are resolved rather than combined — C= and CTRL together means pause.
 
-The C= + CTRL chord pressed on the same poll tick prefers **pause** —
-skip is suppressed. SHIFT held alongside C= or CTRL is dropped so a
-thumb resting on shift doesn't phantom-cycle the style. Cycled style
-persists across single-scene loop iterations and across pause/resume,
-but resets to the configured default on a real scene boundary
-(multi-scene transitions construct fresh display_mode instances).
+The same actions, plus a great deal more, are available off the machine:
 
-Same actions are exposed over HTTP when `[control] enabled = true`:
+* **A MIDI controller** — a clip-launch grid quantized to a beat grid (MIDI
+  clock or tap tempo), CC knobs mapped to live parameter targets, pad LEDs
+  driven from actual state, and saved *looks* that recall a scene and its whole
+  effect chain in one press (`midi` extra).
+* **A phone or laptop** — `GET /perf` on the control-plane server below serves
+  a touch console with the clip grid, an effect rack, the tempo, and the looks.
+  No app to install, and nothing it does reaches the audience's screen.
+* **Webcam gestures** — swipe to change mode, pinch to pause (`vision` extra).
+* **HTTP + signals** — with `[control] enabled = true`:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/pause
 curl -X POST http://127.0.0.1:8765/resume
 curl -X POST http://127.0.0.1:8765/skip
-curl -X POST http://127.0.0.1:8765/reload   # re-read config from disk
+curl -X POST http://127.0.0.1:8765/reload   # re-read [[scenes]] from disk
 ```
 
-Or, on macOS and Linux, send `SIGHUP` to the process to trigger a config
-reload from the shell. Windows has no `SIGHUP`, so `POST /reload` above is
-the portable route.
+On macOS and Linux, `SIGHUP` is the control-plane-free spelling of that reload.
+Windows has no `SIGHUP`, so `POST /reload` is the portable route.
+
+[Inputs and Outputs](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md)
+documents every surface in full, and the
+[Performance Card](https://github.com/kfox/c64cast/tree/main/docs/card) is the
+printable version for the desk beside the controller.
 
 ## Documentation
 
@@ -284,17 +283,18 @@ the portable route.
   **the User's Guide**: a friendly, read-in-order introduction that starts
   from nothing and builds up. Start at
   [Quick Start](https://github.com/kfox/c64cast/blob/main/docs/guide/01-quick-start.md),
-  or download the typeset PDF for your version from
-  [the latest release](https://github.com/kfox/c64cast/releases/latest).
+  or download the typeset
+  [PDF](https://github.com/kfox/c64cast/releases/latest/download/c64cast-users-guide.pdf).
 * [docs/reference/](https://github.com/kfox/c64cast/tree/main/docs/reference) —
   **the Programmer's Reference Guide**: the volume you open at the page you
   need. The rules of the configuration language, every scene and overlay, the
   display and sound paths in full, what lands in the Commodore's memory, and
-  ten appendices, nine of them generated from the code. Typeset PDF on
-  [the latest release](https://github.com/kfox/c64cast/releases/latest).
+  ten appendices, nine of them generated from the code.
+  [PDF](https://github.com/kfox/c64cast/releases/latest/download/c64cast-reference-guide.pdf).
 * [docs/card/](https://github.com/kfox/c64cast/tree/main/docs/card) —
   **the Performance Card**: two printable pages of controls, live targets and
-  clip-grid syntax for the desk beside the controller
+  clip-grid syntax for the desk beside the controller.
+  [PDF](https://github.com/kfox/c64cast/releases/latest/download/c64cast-performance-card.pdf).
 * [docs/caveats.md](https://github.com/kfox/c64cast/blob/main/docs/caveats.md) —
   known quirks (6502 emulator scope, char ROM substitution, U64 endpoint
   variance, licensing of SIDs / videos)
@@ -309,6 +309,10 @@ the portable route.
   the index routes each module to its notes
 * [CHANGELOG.md](https://github.com/kfox/c64cast/blob/main/CHANGELOG.md) —
   what changed in each release
+
+Each PDF link above always serves the newest release; every past release keeps
+its own version-stamped copy on
+[its release page](https://github.com/kfox/c64cast/releases).
 
 ## Hardware needed
 
@@ -332,8 +336,8 @@ Depending on how you use it, you'll also want some of these things:
 * A webcam (any cv2-compatible USB device) for live capture scenes.
 * A microphone for live audio; otherwise the audio path can sit
   idle or play a video's soundtrack via PyAV.
-* A MIDI controller if you want to use MIDI scenes or control
-  playlists/scenes via MIDI CC messages.
+* A MIDI controller if you want to use MIDI scenes, or to perform with the clip
+  grid and live parameter knobs.
 * An HDMI capture device if you want to capture output directly from a
   U64 or C64 equipped with a Kawari Large. Example capture devices include
   the Elgato Cam Link 4K or the Genki ShadowCast.
@@ -342,16 +346,12 @@ Depending on how you use it, you'll also want some of these things:
   any direction — none of this is required for the core streaming
   experience.
 
-There is no software emulator path for the *streaming* side — c64cast
-writes directly to U64 memory/registers over the Ultimate DMA Service
-(TCP port 64), with REST used only for the few non-DMA operations. SID
-playback is
-driven by a small player PRG uploaded into C64 RAM so the real 6510
-calls PLAY at IRQ time (the U64 firmware's `runners:sidplay` runner is
-deliberately avoided because it hijacks the HDMI output with its own
-UI); see
+There is no software emulator path for the *streaming* side: c64cast writes
+directly to C64 memory and VIC-II registers over the wire, and SID playback
+runs a small player PRG in the machine's own RAM so the real 6510 calls PLAY at
+IRQ time. See
 [docs/caveats.md](https://github.com/kfox/c64cast/blob/main/docs/caveats.md)
-for the PSID-only limitation.
+for why, and for the PSID-only limitation that follows from it.
 
 ## Contributing
 
@@ -388,7 +388,7 @@ rather than a public issue.
 
 MIT — see [LICENSE](https://github.com/kfox/c64cast/blob/main/LICENSE).
 
-**Third-party assets.** The User's Guide is typeset in two fonts that are
+**Third-party assets.** The books are typeset in two fonts that are
 redistributed in this repository under the [SIL Open Font
 License 1.1](https://openfontlicense.org/), not under MIT: **Jost\***
 (Copyright 2020 The Jost Project Authors) and **Inconsolata** (Copyright 2006
