@@ -14,7 +14,7 @@ actually made with, see [`../shots/README.md`](../shots/README.md).
 | Figure | Shows | Capture from |
 |---|---|---|
 | `fig-qs-1-hello.png` | Hello World Scroller | `c64cast --config example:hello` |
-| `fig-qs-2-video.png` | Video In Multicolour Hi-Res | `c64cast clip.mp4` |
+| `fig-qs-2-video.png` | Video In Multicolor Hi-Res | `c64cast clip.mp4` |
 | `fig-ft-1-slideshow.png` | Slideshow Of Still Images | `c64cast assets/pictures/` |
 | `fig-1-1-doctor.png` | Doctor Output (Terminal) | `c64cast --doctor --skip-probe` |
 | `fig-2-1-interstitial.png` | Up Next Interstitial | `c64cast --config example:c64cast.example` |

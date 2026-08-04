@@ -787,7 +787,7 @@ class ResolveCaptureFormatTest(unittest.TestCase):
 
 
 class FindCaptureDeviceTest(unittest.TestCase):
-    """Only "cam link" used to be recognised, so every other rig fell through to
+    """Only "cam link" used to be recognized, so every other rig fell through to
     the system default input — on Windows the on-board microphone, which records
     room noise for the whole run and measures like a dead chip."""
 
@@ -814,7 +814,7 @@ class FindCaptureDeviceTest(unittest.TestCase):
         fake = _FakeSD([_dev("HDMI Output", 0), _dev("HDMI Capture", 2)])
         self.assertEqual(self._run(fake), 1)
 
-    def test_falls_back_to_the_system_default_when_nothing_is_recognised(self):
+    def test_falls_back_to_the_system_default_when_nothing_is_recognized(self):
         fake = _FakeSD([_dev("Speakers", 0), _dev("Line In", 2)], default_input=1)
         self.assertEqual(self._run(fake), 1)
         # …and that fallback is exactly what run_calibration warns about.

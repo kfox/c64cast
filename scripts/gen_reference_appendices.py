@@ -82,7 +82,7 @@ def _build_book() -> ModuleType:
 
 bb = _build_book()
 
-# A default longer than this is summarised rather than printed. Only one field
+# A default longer than this is summarized rather than printed. Only one field
 # hits it -- [midi_control].cc_map, whose shipped default is two dozen mappings
 # and 2,500 characters. A table cell is the wrong place to read that; the
 # pointer next to it is a better answer than a wall that pushes the column out.
@@ -173,7 +173,7 @@ def first_sentence(text: str) -> str:
 
 def table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
     """A GFM table. Emitted only when it has rows -- `build_book.py` needs the
-    alignment row to recognise one at all, and a header with no body would
+    alignment row to recognize one at all, and a header with no body would
     render as a lone box.
 
     Every cell is pipe-escaped here rather than by its caller, because a pipe
@@ -500,10 +500,24 @@ def appendix_scenes() -> list[str]:
     # A field carried by every type is a property of scenes in general, not of
     # any one of them. Printing all six ten times would bury the handful of
     # keys that actually distinguish a waveform scene from a launcher.
-    common = [
-        fd for fd in types[0].fields if all(fd.name in {f.name for f in t.fields} for t in types)
-    ]
-    common_names = {fd.name for fd in common}
+    takers: dict[str, list[str]] = {}
+    for sd in types:
+        for fd in sd.fields:
+            takers.setdefault(fd.name, []).append(sd.name)
+
+    def doc(name: str) -> introspect.FieldDoc:
+        return next(fd for sd in types for fd in sd.fields if fd.name == name)
+
+    common = [fd for fd in types[0].fields if len(takers[fd.name]) == len(types)]
+    # A key that all but one type takes is a general property with an exception,
+    # and an exception is a sentence. `duration_s` is a key of nine of the ten,
+    # and printed in each of them it was sixty identical words nine times over.
+    absentee: dict[str, str] = {
+        name: next(sd.name for sd in types if sd.name not in who)
+        for name, who in takers.items()
+        if len(who) == len(types) - 1
+    }
+    common_names = {fd.name for fd in common} | set(absentee)
 
     out = front_matter(
         "B",
@@ -527,6 +541,13 @@ def appendix_scenes() -> list[str]:
     # written around this list would have to pick a `type` at random and print
     # it as though it were the general case.
     out += fields_table("Key", [[typed(fd), describe("scenes", fd)] for fd in common])
+
+    for missing in dict.fromkeys(absentee.values()):
+        names = [name for name, absent in absentee.items() if absent == missing]
+        out += [prose(f"Every type but {code(missing)} takes these as well."), ""]
+        out += fields_table(
+            "Key", [[typed(doc(name)), describe("scenes", doc(name))] for name in names]
+        )
 
     for sd in types:
         # The name alone. `type = "webcam"` is how it is written in a file, but
@@ -625,14 +646,21 @@ def appendix_compat() -> list[str]:
         ),
         "",
     ]
-    reasons = []
+    # By the rule and not by the overlay. A row each put "needs a text-capable
+    # mode (petscii/blank/hires/mhires)" on the page ten times, which is the
+    # same sentence read ten times to learn one thing; the reader who wants to
+    # know about one overlay has the matrix above.
+    reasons: dict[str, list[str]] = {}
     for ov, oks in rows:
         if all(oks):
             continue
         first_gap = next(m for m, ok in zip(modes, oks, strict=True) if not ok)
         _, why = introspect.overlay_mode_ok(ov, first_gap)
-        reasons.append([identity(code(ov.name)), cell(why)])
-    out += fields_table("Overlay", reasons)
+        reasons.setdefault(why[:1].upper() + why[1:], []).append(ov.name)
+    out += table(
+        ["Rule", "Overlays"],
+        [[why, ", ".join(code(n) for n in names)] for why, names in reasons.items()],
+    )
     return out
 
 
@@ -714,7 +742,7 @@ def appendix_generators() -> list[str]:
         prose(
             "Named by a scene's `effect`, or chained in order with `effects`. An "
             "effect transforms the frame after the source has drawn it and before "
-            "the display mode quantises it."
+            "the display mode quantizes it."
         ),
         "",
     ]
@@ -749,6 +777,12 @@ def appendix_generators() -> list[str]:
 
 
 def _live_target_rows(targets: Sequence[introspect.LiveTargetDoc]) -> list[list[str]]:
+    """One row per target, named without its holder.
+
+    The holder is the heading, as it is in Appendix E: every row of a section
+    carries the same word, and `source.` is what decides the column's width for
+    a prefix the reader has just read above the table.
+    """
     rows = []
     for t in targets:
         if t.kind == "scalar":
@@ -759,12 +793,25 @@ def _live_target_rows(targets: Sequence[introspect.LiveTargetDoc]) -> list[list[
         # proportional column in a table of mono, and Jost against Inconsolata
         # at an equal size reads as a larger word -- so `scalar` was the
         # loudest thing in a row, which is not what a reader is looking for.
-        rows.append([code(t.target), code(t.kind), span, ", ".join(code(o) for o in t.owners)])
+        name = t.target.rpartition(".")[2]
+        rows.append([code(name), code(t.kind), span, ", ".join(code(o) for o in t.owners)])
     return rows
 
 
 # The target the appendix's fragment is written around; a test resolves it.
 _SAMPLE_TARGET = "effect.decay"
+
+# What each holder is, in the words chapter 6's own holder table uses. The
+# picker group (`LiveTargetDoc.group`) is a label for a tab -- "Effect" under a
+# heading reading `effect` says nothing -- and a section that now carries half
+# of every target under it owes the reader a sentence about what it holds.
+# tests/test_reference_appendices.py checks the keys against the registries.
+_HOLDER_GLOSS: dict[str, str] = {
+    "mode": "The display mode's color pipeline",
+    "effect": "An effect in the scene's chain",
+    "source": "A generative scene's generator",
+    "scene": "The scene itself",
+}
 
 
 def appendix_live_targets() -> list[str]:
@@ -773,9 +820,10 @@ def appendix_live_targets() -> list[str]:
         "F",
         "Live-Tune Targets",
         f"The {len(targets)} parameters a MIDI knob, pad or web-console control can "
-        "move while a show is running. Each is the `target` string of a `param` "
-        "action in `[[midi_control.cc_map]]`. A knob sweeps a scalar or bucket-"
-        "selects a choice; a pad steps a choice on.",
+        "move while a show is running. Each names the `target` of a `param` action "
+        "in `[[midi_control.cc_map]]`: the holder that heads its section, a dot, and "
+        "the parameter. A knob sweeps a scalar or bucket-selects a choice; a pad "
+        "steps a choice on.",
     )
     out += ["## Mapping One", ""]
     out += snippet(
@@ -784,7 +832,7 @@ def appendix_live_targets() -> list[str]:
             ("type", '"cc"', "cc | note | pc"),
             ("number", "13", "the controller number"),
             ("action", '"param"', ""),
-            ("target", f'"{_SAMPLE_TARGET}"', "a row below"),
+            ("target", f'"{_SAMPLE_TARGET}"', "a heading and a row below"),
         ],
     )
     out += [
@@ -795,11 +843,17 @@ def appendix_live_targets() -> list[str]:
         ),
         "",
     ]
-    for group in dict.fromkeys(t.group for t in targets):
-        out += [f"## {group}", ""]
+    # Headed by the holder rather than by the group it is picked under, because
+    # the heading is now carrying the half of every target the rows no longer
+    # spell -- and `mode` is the word that has to be joined to `dither_strength`
+    # to make one. The group name is the sentence under it.
+    for holder in dict.fromkeys(t.holder for t in targets):
+        mine = [t for t in targets if t.holder == holder]
+        out += [f"## `{holder}`", ""]
+        gloss = _HOLDER_GLOSS[holder]
+        out += [prose(f"{gloss}. A row's target is {code(holder + '.')} and its name."), ""]
         out += table(
-            ["Target", "Kind", "Range or values", "Declared by"],
-            _live_target_rows([t for t in targets if t.group == group]),
+            ["Parameter", "Kind", "Range or values", "Declared by"], _live_target_rows(mine)
         )
     return out
 
@@ -1130,7 +1184,7 @@ _CONCEPTS: dict[str, str] = {
     "camera": "camera",
     "character ROM": "character ROM",
     "clip grid": "clip grid",
-    "colour RAM": "colour RAM",
+    "color RAM": "color RAM",
     "companding": "compand",
     "dirty cache": "dirty cache",
     "display mode": "display mode",
@@ -1142,7 +1196,7 @@ _CONCEPTS: dict[str, str] = {
     "microphone": "microphone",
     "oscilloscope": "oscilloscope",
     "page flip": "page flip",
-    "quantisation": "quantis",
+    "quantization": "quantiz",
     "raster interrupt": "raster interrupt",
     "screen RAM": "screen RAM",
     "single-scene mode": "single-scene mode",
@@ -1406,16 +1460,20 @@ def card_live_targets() -> list[str]:
         "",
     ]
     for group in dict.fromkeys(t.group for t in targets):
+        mine = [t for t in targets if t.group == group]
         out += [f"## {group}", ""]
         rows = []
-        for t in (x for x in targets if x.group == group):
+        for t in mine:
             span = (
                 scalar_range(t.lo, t.hi)
                 if t.kind == "scalar" and t.lo is not None and t.hi is not None
                 else code(f"{len(t.choices)} values")
             )
-            rows.append([code(t.target), span, declared_by(t, totals)])
-        out += table(["Target", "Range", "Declared by"], rows)
+            rows.append([code(t.target.rpartition(".")[2]), span, declared_by(t, totals)])
+        # The holder heads the column rather than every cell under it. Appendix
+        # F can afford a sentence saying it; a card cannot afford four, and the
+        # column heading is where a prefix common to the whole column belongs.
+        out += table([code(mine[0].holder + "."), "Range", "Declared by"], rows)
     return out
 
 

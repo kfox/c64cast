@@ -359,7 +359,7 @@ def main() -> int:
 
     # How many DISTINGUISHABLE levels? Sort amplitudes and count clusters
     # separated by more than an estimated noise floor (median abs step between
-    # neighbours in the low-amplitude region is a rough per-step resolution).
+    # neighbors in the low-amplitude region is a rough per-step resolution).
     srt = np.sort(amps)
     if srt.size > 2:
         gaps = np.diff(srt)

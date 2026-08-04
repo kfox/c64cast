@@ -38,7 +38,7 @@ dropped packet never phantom-resets a held-key timer.
 
 What SHIFT cycles is each surface's own business, and each returns a label that
 lands in one log line: the PETSCII styles rotate, a waveform scene advances to
-the next subtune, a `big_text` overlay rotates its colour. A surface that does
+the next subtune, a `big_text` overlay rotates its color. A surface that does
 not opt in does nothing.
 
 ### The On-C64 Menu
@@ -224,7 +224,7 @@ The listener works with no configuration at all. Out of the box, for a typical
 The knob bank deliberately avoids CC 1, 7 and 71–75, which are the `midi`
 scene's synth controls, in case one controller feeds both. Nothing dangerous is
 mapped by default: neither `transport.record` nor any MMC command has a default
-binding, because a default that fires Record on an unrecognised controller is a
+binding, because a default that fires Record on an unrecognized controller is a
 worse failure than one that does nothing.
 
 ### Driving a Video
@@ -243,8 +243,8 @@ loops live in a file per video under the data directory, keyed so that moving
 the file does not orphan them.
 
 By default audio keeps playing across every splice — seek, pause, loop wrap —
-and is re-synchronised rather than muted, so a loop is musical.
-`[midi_control].loop_audio = "mute"` restores the older behaviour of muting for
+and is re-synchronized rather than muted, so a loop is musical.
+`[midi_control].loop_audio = "mute"` restores the older behavior of muting for
 the rest of the scene, which is the escape valve if a splice ever misbehaves.
 
 > [!NOTE]
@@ -284,14 +284,14 @@ lights the grid's pads instead:
 | A clip that is loaded | Dim |
 | An effect layer that is on | Lit |
 
-A pad is coloured by sending a note-on at its own number with the colour in the
+A pad is colored by sending a note-on at its own number with the color in the
 velocity, which is what Novation Launchpad, Akai APC and MPC, and Ableton Push
 all do. It is not universal: Arturia controllers drive their pad lights over
 proprietary system-exclusive messages, and light nothing here. For those, the web
 console below is the intended feedback surface.
 
 The blink is generated on the host rather than asked of the controller, so it
-works on any grid, and only pads whose colour actually changed are sent — a
+works on any grid, and only pads whose color actually changed are sent — a
 static state is silent after the first paint. Every managed pad is extinguished
 at shutdown.
 
@@ -356,20 +356,20 @@ from:
 |---|---|
 | `"internal"` | The static `[performance].bpm`, re-anchored by a `tempo_tap` pad |
 | `"midi"` | An external MIDI clock — a DAW, a drum machine |
-| `"audio"` | The tempo the live-input analyser detects, on a `mic` or `listen` scene |
+| `"audio"` | The tempo the live-input analyzer detects, on a `mic` or `listen` scene |
 
 The grid's phase is integrated from the tempo rather than snapped to individual
 events, so it is monotonic and never jerks backward when a clock byte arrives
 late. In `"audio"` mode a silent input freezes the grid rather than growing a
 phantom tempo out of noise.
 
-Three things consume it: launch quantisation below, effects with `mod_source =
+Three things consume it: launch quantization below, effects with `mod_source =
 "clock"`, and — with `broadcast_tempo_fallback` — the WLED broadcast on scenes
 that have no music of their own.
 
 ### The Clip Grid
 
-A clip is a scene fired from a pad, quantised to the grid. It takes every key an
+A clip is a scene fired from a pad, quantized to the grid. It takes every key an
 ordinary scene takes, plus how it launches:
 
 ```toml
@@ -383,7 +383,7 @@ launch = "trigger"
 quantize = "bar"
 ```
 
-| `launch` | Behaviour |
+| `launch` | Behavior |
 |---|---|
 | `trigger` | Plays through, then loops |
 | `gate` | Plays while the pad is held, and restores what it interrupted on release |
@@ -396,7 +396,7 @@ quantize = "bar"
 
 Building a scene costs real setup time — opening a decoder, resolving a URL — so
 a press starts that work immediately, in the background, and the count-in to the
-quantisation boundary hides it. A stopped clock fires at once, so a pad always
+quantization boundary hides it. A stopped clock fires at once, so a pad always
 does something.
 
 A launch remembers what it interrupted, one level deep, which is what makes
@@ -489,7 +489,7 @@ The mapping is a deliberate pun on WLED's own vocabulary:
 | Brightness | A real screen dim, all the way to black |
 | Effect | The scene — the playlist is the effect list |
 | Palette | The palette mode |
-| Colour | A forced palette of the colours you pick |
+| Color | A forced palette of the colors you pick |
 | Speed / Intensity | The current scene's live parameters |
 | Presets | Save and recall the whole look |
 | One segment per system | An ensemble, in order |
@@ -498,7 +498,7 @@ Brightness is deliberately **decoupled from power**: `bri = 0` dims fully to
 black but does not pause. Coupling them would mean that nudging a slider through
 zero resets the machine.
 
-A self-served page at `/` mirrors the same controls in any browser, and greys out
+A self-served page at `/` mirrors the same controls in any browser, and grays out
 the ones the current scene cannot use — a palette selector over a hires scene,
 say, which has no palette to set. The third-party app renders a fixed control
 set that cannot be disabled remotely, so a dead control there is a silent no-op.
@@ -509,7 +509,7 @@ The third direction is the `wled` scene of Chapter 2: LedFx, xLights, Jinx! or
 another WLED device streams frames over UDP and the Commodore becomes the matrix.
 Both DDP and WLED's own realtime protocol are bound at once and detected per
 packet, and the frame goes through the ordinary display pipeline, so it dithers
-and quantises exactly like a camera would.
+and quantizes exactly like a camera would.
 
 ## Recording and Streaming
 
@@ -521,7 +521,7 @@ it sent. That is cheap and needs no capture hardware, and it has exactly the
 blind spots the method implies:
 
 - Only the modes c64cast itself draws. Sprites, raster splits, and anything a
-  running program does for itself are not modelled.
+  running program does for itself are not modeled.
 - A `launcher` scene shows nothing at all — the program draws on the Commodore
   and c64cast writes no pixels.
 - The staged and double-buffered bitmap paths show black, because those frames

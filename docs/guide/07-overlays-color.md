@@ -2,7 +2,7 @@
 number: 4
 ---
 
-# Overlays, Colour and Display
+# Overlays, Color and Display
 
 The last chapter was about *what* goes on the screen. This one is about how
 it gets there: how a modern picture becomes something a 1982 graphics chip
@@ -12,42 +12,42 @@ information on top of whatever is playing.
 ## The Six Display Modes
 
 The VIC-II can arrange its screen in several ways, and each is a different
-bargain between resolution and colour. c64cast exposes six, chosen with a
+bargain between resolution and color. c64cast exposes six, chosen with a
 scene's `display` setting.
 
 | Mode | Resolution | The trade |
 |---|---|---|
-| `mhires` | 160×200 | Four colours per 8×8 cell. Best for photographs and video |
-| `hires` | 320×200 | Full resolution, but two colours per cell |
+| `mhires` | 160×200 | Four colors per 8×8 cell. Best for photographs and video |
+| `hires` | 320×200 | Full resolution, but two colors per cell |
 | `hires_edges` | 320×200 | Outlines only, white on black. Made for live cameras |
 | `petscii` | 40×25 | Built from the Commodore's own characters |
-| `mcm` | 80×50 | Multicolour characters, using an uploaded character set |
+| `mcm` | 80×50 | Multicolor characters, using an uploaded character set |
 | `blank` | none | A solid canvas, for overlays to paint on |
 
-The important thing to understand about the C64 is that its colour limits
-are *spatial*, not global. All sixteen colours are available at once, but
+The important thing to understand about the C64 is that its color limits
+are *spatial*, not global. All sixteen colors are available at once, but
 only a few of them may appear within any one 8×8 block of pixels. Every
 choice below is really a choice about how to spend that budget.
 
 **`mhires` is the default for good reason.** Halving the horizontal
-resolution buys four colours per cell instead of two, and for photographic
+resolution buys four colors per cell instead of two, and for photographic
 material that is overwhelmingly the better trade. Use it unless you have a
 reason not to.
 
-**`hires` keeps every pixel** and spends the colour budget instead. It suits
+**`hires` keeps every pixel** and spends the color budget instead. It suits
 line art, text, diagrams and anything where a sharp edge matters more than a
 hue.
 
 **`petscii` builds the picture out of letters**, picking a character by how
-bright each cell is and a colour by its hue. The result is unmistakably a
+bright each cell is and a color by its hue. The result is unmistakably a
 Commodore, and because character modes shift far less data than bitmaps, it
 runs at the machine's full frame rate.
 
 ![Figure 4-1. One frame, rendered in four different display modes.](img/fig-4-1-modes.png)
 
-## Colour, and How It Is Chosen
+## Color, and How It Is Chosen
 
-Between the source picture and the screen sits a colour pipeline, configured
+Between the source picture and the screen sits a color pipeline, configured
 once in the `[color]` section and applied to every scene:
 
 ```toml
@@ -60,22 +60,22 @@ motion_smoothing = 0.25
 ```
 
 **`auto_fit`** stretches contrast and saturation to suit the source. Real
-footage is rarely made for a sixteen-colour palette, and letting c64cast fit
+footage is rarely made for a sixteen-color palette, and letting c64cast fit
 the material to the palette first makes a large difference. It is on by
 default.
 
-**`dither`** trades spatial noise for apparent colour. Without it, a gentle
-sky gradient becomes visible bands; with it, the eye blends neighbouring
+**`dither`** trades spatial noise for apparent color. Without it, a gentle
+sky gradient becomes visible bands; with it, the eye blends neighboring
 pixels back into the missing shades. Choices are `ordered`, `blue_noise`,
 `floyd-steinberg`, `atkinson` and `none`.
 
-**`color_match`** decides what "the nearest colour" means. `perceptual`
+**`color_match`** decides what "the nearest color" means. `perceptual`
 measures distance the way human vision does, which usually looks better;
 `rgb` is a cruder measure that is occasionally more faithful to a specific
 palette.
 
 **`motion_smoothing`** applies only to `mhires`. Because that mode picks
-four colours per cell per frame, a cell whose contents change can flicker as
+four colors per cell per frame, a cell whose contents change can flicker as
 its palette is re-chosen. Smoothing damps that at the cost of slight
 after-images. Raise it for calm footage; lower it for fast motion.
 
@@ -86,13 +86,13 @@ error-diffusion crawls unpleasantly when the picture moves.
 
 > [!TIP]
 > c64cast can recommend a palette for a specific source. Run
-> `c64cast --suggest-palette photo.jpg` and it analyses the image
-> and prints the C64 colours that represent it most faithfully, ranked. Feed
+> `c64cast --suggest-palette photo.jpg` and it analyzes the image
+> and prints the C64 colors that represent it most faithfully, ranked. Feed
 > those to `force_palette_colors` for a deliberately restricted look.
 
 ### Forcing a Palette
 
-Setting `force_palette` restricts the picture to a chosen number of colours,
+Setting `force_palette` restricts the picture to a chosen number of colors,
 or to a specific list of them:
 
 ```toml
@@ -104,7 +104,7 @@ force_palette_colors = [
 ```
 
 This is a deliberate stylistic effect rather than a fidelity improvement.
-Four cold colours make everything look like a monitor from a submarine
+Four cold colors make everything look like a monitor from a submarine
 film, and that is sometimes exactly what you want.
 
 ## Overlays
@@ -141,7 +141,7 @@ rows, so keeping them at the top and bottom leaves the picture alone.
 
 ### What Is Available
 
-Run `c64cast --list-overlays` for the current catalogue. At the
+Run `c64cast --list-overlays` for the current catalog. At the
 time of writing it holds:
 
 | Overlay | Shows |
@@ -155,12 +155,12 @@ time of writing it holds:
 | `callsign` | Fixed text in a corner, for a booth or a station ID |
 | `countdown` | Time remaining until a date you set |
 | `network` | Local address, hostname and link latency |
-| `spectrum_petscii` | An audio spectrum drawn as coloured bars |
+| `spectrum_petscii` | An audio spectrum drawn as colored bars |
 | `spectrum_bitmap` | The same, at pixel resolution, on `mhires` |
 | `logo` | A block of PETSCII art loaded from a text file |
 | `obs_status` | The current OBS Studio scene and dropped-frame count |
 
-![Figure 4-2. A slideshow carrying a clock and a spectrum analyser.](img/fig-4-2-overlays.png)
+![Figure 4-2. A slideshow carrying a clock and a spectrum analyzer.](img/fig-4-2-overlays.png)
 
 ### Which Overlays Work Where
 
@@ -173,7 +173,7 @@ c64cast --compat
 
 Two rules cover almost all of it. `big_text` takes over the entire display
 while it scrolls, driving the hardware scroll registers directly, so it must
-be the only overlay on its scene. And the spectrum analyser comes in two
+be the only overlay on its scene. And the spectrum analyzer comes in two
 versions because character modes and bitmap modes need genuinely different
 implementations: use `spectrum_petscii` on character modes and
 `spectrum_bitmap` on `mhires`.
@@ -184,7 +184,7 @@ Audio has two possible paths out of the Commodore, and they are not close in
 quality.
 
 The **`$D418` DAC** works on every machine. It abuses the SID's volume
-register as a crude digital-to-analogue converter, which is how digitized
+register as a crude digital-to-analog converter, which is how digitized
 sound was done on the C64 in period. Written the obvious way that gives four
 bits, and c64cast can still do exactly that. By default it does something
 better: it parks all three voices as steady sources and writes the whole

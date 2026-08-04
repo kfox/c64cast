@@ -1073,7 +1073,7 @@ duration_s = 45.0
   [[scenes.overlays]]
   type = "logo"
   # The example uses a path that probably doesn't exist; the overlay
-  # detects that and renders a labelled placeholder box. Drop your own
+  # detects that and renders a labeled placeholder box. Drop your own
   # ASCII art into assets/logos/ and update this path.
   file = "assets/logos/yours.txt"
   corner = "bottom-left"
@@ -1221,7 +1221,7 @@ palette_mode = "grayscale"
 # ===========================================================================
 
 # --- SID jukebox ----------------------------------------------------------
-# Plays a .sid file on the U64 and visualises the three voices.
+# Plays a .sid file on the U64 and visualizes the three voices.
 #
 # Drop SIDs into assets/sids/ (HVSC is the canonical archive: hvsc.c64.org).
 # Without a songlengths DB you must set duration_s; with one, the true

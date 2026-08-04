@@ -33,7 +33,7 @@ firmware source):
     on the wire as `CC 64`; parsing it big-endian yields 0xCC64 and makes a
     successful write look like an error.
 We therefore send big-endian and parse replies little-endian. The smoke test
-after wiring: write one byte to `$D020` and confirm the border colour changes
+after wiring: write one byte to `$D020` and confirm the border color changes
 (a byte-swapped *address* would land in RAM and leave the border untouched).
 
 The TR also emits unsolicited status text/tokens around reset + menu

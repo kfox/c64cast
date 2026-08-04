@@ -392,6 +392,12 @@ class SnippetTest(unittest.TestCase):
             self.assertIn(name, effects.REGISTRY)
         self.assertIn(gen._SAMPLE_TARGET, {t.target for t in introspect.live_targets()})
 
+    def test_every_holder_is_glossed(self):
+        # Appendix F heads a section with the bare holder and spends the gloss
+        # on saying what it is; a new one would head a section with no sentence
+        # under it, and KeyError is the friendlier way to hear about it.
+        self.assertEqual({t.holder for t in introspect.live_targets()}, set(gen._HOLDER_GLOSS))
+
     def test_every_appendix_fragment_fits_the_page(self):
         # Same measure tests/test_book_build.py holds the hand-written
         # listings to; a generated one can overrun it just as easily.
@@ -450,7 +456,7 @@ class TextEscapingTest(unittest.TestCase):
         # header with no body would render as a lone empty box.
         self.assertEqual(gen.table(["A"], []), [])
 
-    def test_an_enormous_default_is_summarised(self):
+    def test_an_enormous_default_is_summarized(self):
         # [midi_control].cc_map's default is two dozen mappings and 2,500
         # characters; printed in full it pushes the column off the page.
         self.assertEqual(gen.fmt_default(list(range(500))), "*500 shipped entries*")

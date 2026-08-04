@@ -48,7 +48,7 @@ with `--config left.toml` before asking three of them to cooperate.
 
 Settings in the master file cascade down to the individual systems, filling
 in anything they have not set for themselves. That way the interstitial
-style, the colour pipeline and the control settings are written once rather
+style, the color pipeline and the control settings are written once rather
 than three times.
 
 The real reward is coordination. c64cast can treat the whole wall as a
@@ -71,7 +71,7 @@ osd = "bottom"
 
 With a controller connected you can jump between scenes, cycle styles, pause
 and scrub video in place, set loop points and trigger them from drum pads,
-and turn knobs that adjust the colour pipeline live: dithering, palette,
+and turn knobs that adjust the color pipeline live: dithering, palette,
 motion smoothing, and any parameter of the current generator or effect. The
 `osd` setting puts a brief readout on the Commodore's screen as you turn
 something, so you can see what you are changing without looking away.
@@ -151,7 +151,7 @@ itself the LED matrix, receiving a live pixel stream from LedFx or xLights.
 ## Recording What You Made
 
 Every time a scene starts, c64cast writes a complete description of it to
-the log: the display mode, the colour settings, the hardware, and where the
+the log: the display mode, the color settings, the hardware, and where the
 material came from, including a SID tune's real name and author from its
 file header.
 

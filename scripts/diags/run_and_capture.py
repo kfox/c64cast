@@ -85,7 +85,7 @@ def main() -> int:
         "pulse times are written to <label>_flashes.json (0 = off)",
     )
     ap.add_argument(
-        "--flash-color", type=int, default=1, help="border colour for the flash pulse (0-15)"
+        "--flash-color", type=int, default=1, help="border color for the flash pulse (0-15)"
     )
     ap.add_argument(
         "--app-arg",

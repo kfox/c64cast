@@ -3,7 +3,7 @@
 A diagram is drawn once and looked at once, so the failures worth guarding are
 the silent ones: the drawing script's copy of the book's palette going stale
 against the template, and a committed PNG no longer being what the script
-draws. Neither shows up in a build -- the book renders a wrong-coloured or
+draws. Neither shows up in a build -- the book renders a wrong-colored or
 out-of-date figure perfectly happily.
 
 Pixels are deliberately not compared. Pillow's rasteriser is not stable across
@@ -49,21 +49,21 @@ md = _load_diagrams()
 class PaletteTest(unittest.TestCase):
     def test_the_palette_still_matches_the_template(self):
         # The script cannot import the Typst template, so it holds its own copy
-        # of the four colours the books are set in. A figure drawn in last
+        # of the four colors the books are set in. A figure drawn in last
         # season's blue looks fine on its own and wrong on the page.
         typ = _TEMPLATE.read_text(encoding="utf-8")
-        for name, colour in (
+        for name, color in (
             ("accent", md.ACCENT),
             ("accent-pale", md.ACCENT_PALE),
             ("accent-wash", md.ACCENT_WASH),
             ("ink", md.INK),
         ):
-            with self.subTest(colour=name):
+            with self.subTest(color=name):
                 m = re.search(rf'#let {re.escape(name)} = rgb\("#([0-9A-Fa-f]{{6}})"\)', typ)
                 self.assertIsNotNone(m, f"{_TEMPLATE.name} no longer defines {name}")
                 assert m is not None
                 expected = tuple(int(m.group(1)[i : i + 2], 16) for i in (0, 2, 4))
-                self.assertEqual(colour, expected)
+                self.assertEqual(color, expected)
 
 
 class FiguresTest(unittest.TestCase):

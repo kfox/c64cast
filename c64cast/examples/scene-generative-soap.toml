@@ -1,7 +1,7 @@
 #:schema ../data/c64cast.schema.json
 # Single-scene demo: "Soap" — a WLED-effect port (see
 # https://github.com/wled-dev/WLED wled00/FX.cpp `mode_2Dsoap`) of a
-# persistent colour buffer smeared/advected each tick by a slowly-rotating
+# persistent color buffer smeared/advected each tick by a slowly-rotating
 # noise-driven flow field — the classic swirling soap-film look. WLED derives
 # its flow from Perlin noise; this port reuses the tileable value-noise
 # helper already built for the `fire` generator instead (a documented

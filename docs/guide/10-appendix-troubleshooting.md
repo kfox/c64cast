@@ -42,7 +42,7 @@ are different operations, and only the first goes over the fast path.
 
 ## The Picture Is Wrong
 
-**Everything is one solid colour.** Usually the camera, not c64cast. Confirm
+**Everything is one solid color.** Usually the camera, not c64cast. Confirm
 the camera works elsewhere, then check `--list-devices` and pass the right
 one with `-d`.
 
@@ -53,7 +53,7 @@ one with `-d`.
 again if it starts leaving trails behind fast movement.
 
 **The picture looks washed out.** Check that `auto_fit` has not been turned
-off. Modern footage is not graded for a sixteen-colour palette and fitting
+off. Modern footage is not graded for a sixteen-color palette and fitting
 it first matters more than any other single setting.
 
 **Text or the scrolling message looks blocky or wrong.** c64cast has no
@@ -83,7 +83,7 @@ installed and that `-D` names the right device.
 **One scene loops forever and there is no card between scenes.** That is
 single-scene mode, and it is deliberate: a configuration with exactly one
 scene loops it and skips the interstitial. Add a second scene to get the
-normal behaviour.
+normal behavior.
 
 **A scene runs past its `duration_s`.** An overlay is still busy. A
 `big_text` message part-way through its scroll defers the transition until
@@ -133,5 +133,5 @@ slow computer.
 in the repository is the long version of this appendix, arranged by symptom
 and considerably more detailed.
 [`docs/caveats.md`](https://github.com/kfox/c64cast/blob/main/docs/caveats.md)
-collects the hardware behaviours that surprise people, several of which look
+collects the hardware behaviors that surprise people, several of which look
 exactly like bugs and are not.

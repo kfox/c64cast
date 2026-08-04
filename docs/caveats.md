@@ -391,7 +391,7 @@ that costs you:
 
 * **Only the modes c64cast draws** — standard text, MCM text, hires bitmap,
   multicolor bitmap. Sprites, raster splits, and anything a running C64
-  program draws for itself aren't modelled.
+  program draws for itself aren't modeled.
 * **Launcher scenes show nothing.** A `.prg`/`.crt` renders on the C64 with no
   host-side pixel writes at all, so the window (and the recording) stay blank.
 * **REU-staged bitmap scenes show black.** With `[video].use_reu_staged`
@@ -619,7 +619,7 @@ Defaults (all overridable with an explicit `target_fps`):
 * **Always-fresh source + digitized audio → 20 fps in *any* mode**, char modes
   included. `generative` and live `webcam` render a new frame every tick, so
   unlike `video` they have nothing to dedup: a char mode still rewrites the
-  whole screen (plus colour RAM on `mcm`) every frame, over the same DMA socket
+  whole screen (plus color RAM on `mcm`) every frame, over the same DMA socket
   the audio ring uses. An `mcm` generative scene with DAC audio is a noisy mess
   at 60 fps and clean at 20 (HW 2026-07-25). Sampler audio is off-bus and does
   not trigger this.

@@ -434,7 +434,7 @@ class FeedbackMap:
     """Per-controller LED velocity convention: the note velocity that lights a
     pad in each performance state, and the 0-based MIDI channel the LED note-ons
     go out on. Defaults are Launchpad-X programmer-mode palette indices (off /
-    dim-grey / yellow / green / blue); a learned controller profile overrides
+    dim-gray / yellow / green / blue); a learned controller profile overrides
     them via :func:`from_dict`."""
 
     channel: int = 0

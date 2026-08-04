@@ -20,7 +20,7 @@ version you have installed.
 | `--describe NAME` | Everything about one scene, overlay, section or mode |
 | `--compat` | The overlay against display-mode matrix |
 | `--print-schema` | The configuration schema, as JSON |
-| `--suggest-palette FILE` | The C64 colours that best represent an image |
+| `--suggest-palette FILE` | The C64 colors that best represent an image |
 | `--list-devices` | Cameras and audio devices this computer can see |
 
 `--describe` takes a bare name when it is unambiguous, and a prefixed one
@@ -120,7 +120,7 @@ paths it actually resolved, which is the quickest way to settle any doubt.
 | `[video]` | Camera selection and default display mode |
 | `[audio]` | Audio on or off, backend, sample rate |
 | `[dsp]` | Signal shaping before audio reaches the Commodore |
-| `[color]` | Dithering, palette, colour matching |
+| `[color]` | Dithering, palette, color matching |
 | `[interstitial]` | The card shown between scenes |
 | `[playlist]` | Looping, and video interleaving |
 | `[preview]` | The local mirror window |

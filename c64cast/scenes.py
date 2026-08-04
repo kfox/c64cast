@@ -80,7 +80,7 @@ _C64_ASPECT = 320 / 200
 
 # Rolling-window auto_fit: how many opening frames to fold into the online
 # ColorFitAccumulator before freezing the derived fit. The accumulator is
-# additive, so the fit converges and stabilises over this window (~2s at
+# additive, so the fit converges and stabilizes over this window (~2s at
 # 24 fps) — replacing the old blocking full-source pre-scan with a brief
 # on-screen settle and no startup pause. See VideoScene.setup.
 ONLINE_FIT_WARMUP_FRAMES = 48
@@ -788,7 +788,7 @@ class SourceScene(Scene):
         # A SID audio source kicks its player via the firmware's run_prg, which
         # re-inits the machine to text mode — clobbering the VIC mode the display
         # configured in super().setup() (which runs BEFORE the audio source). A
-        # bitmap display (mhires/hires) would then render its $0400 colour-nibble
+        # bitmap display (mhires/hires) would then render its $0400 color-nibble
         # bytes as PETSCII. Re-assert the display AFTER the player, the same order
         # WaveformScene uses. invalidate_cache first so the next frame fully
         # repaints against the player-disturbed RAM.
@@ -1230,7 +1230,7 @@ class VideoScene(Scene):
         # pause-resume (which skip prepare_next) still pick fresh.
         self._prepared = False
         # `filepath` is the currently-chosen path (set at each setup()).
-        # Initialise to the deterministic single-entry case so callers
+        # Initialize to the deterministic single-entry case so callers
         # introspecting before setup see a real path; multi-entry pools
         # overwrite this in setup().
         self.filepath = candidates[0]
@@ -1242,7 +1242,7 @@ class VideoScene(Scene):
         self.start_s = max(0.0, start_s)
         # Bitmap + $D418-DAC tempo compensation factor (1.0 = off). < 1.0 tells
         # AVFileSource to time-compress the audio by 1/tempo_scale (pitch-
-        # preserving) and scale video PTS by tempo_scale, cancelling the ~1/s
+        # preserving) and scale video PTS by tempo_scale, canceling the ~1/s
         # bitmap+DAC slowdown so content plays at real time. Resolved in
         # config.build_scene (gated to the host-DMA DAC path over bitmap modes).
         self._tempo_scale = tempo_scale

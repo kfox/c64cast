@@ -5,7 +5,7 @@ generated: true
 
 # Live-Tune Targets
 
-The 26 parameters a MIDI knob, pad or web-console control can move while a show is running. Each is the `target` string of a `param` action in `[[midi_control.cc_map]]`. A knob sweeps a scalar or bucket-selects a choice; a pad steps a choice on.
+The 26 parameters a MIDI knob, pad or web-console control can move while a show is running. Each names the `target` of a `param` action in `[[midi_control.cc_map]]`: the holder that heads its section, a dot, and the parameter. A knob sweeps a scalar or bucket-selects a choice; a pad steps a choice on.
 
 ## Mapping One
 
@@ -14,53 +14,61 @@ The 26 parameters a MIDI knob, pad or web-console control can move while a show 
 type = "cc"              # cc | note | pc
 number = 13              # the controller number
 action = "param"
-target = "effect.decay"  # a row below
+target = "effect.decay"  # a heading and a row below
 ```
 
 A target is only live while something that declares it is on screen — the *Declared by* column is that list. A knob on a target the running scene does not declare moves nothing, silently.
 
-## Color pipeline
+## `mode`
 
-| Target | Kind | Range or values | Declared by |
+The display mode's color pipeline. A row's target is `mode.` and its name.
+
+| Parameter | Kind | Range or values | Declared by |
 |---|---|---|---|
-| `mode.auto_fit_strength` | `scalar` | `0 – 1` | `petscii`, `mcm`, `mhires` |
-| `mode.color_match` | `choice` | `rgb`, `perceptual` | `petscii`, `mcm`, `hires`, `mhires` |
-| `mode.dither_strength` | `scalar` | `0 – 2` | `mcm`, `hires`, `mhires` |
-| `mode.dither_method` | `choice` | `none`, `ordered`, `blue_noise`, `floyd-steinberg`, `atkinson` | `mcm`, `hires`, `mhires` |
-| `mode.palette_mode` | `choice` | `percell`, `cheap`, `vivid`, `grayscale` | `mcm`, `mhires` |
-| `mode.motion_smoothing` | `scalar` | `0 – 1` | `mhires` |
-| `mode.cell_strategy` | `choice` | `frequency`, `luminance`, `contrast`, `error-min` | `mhires` |
+| `auto_fit_strength` | `scalar` | `0 – 1` | `petscii`, `mcm`, `mhires` |
+| `color_match` | `choice` | `rgb`, `perceptual` | `petscii`, `mcm`, `hires`, `mhires` |
+| `dither_strength` | `scalar` | `0 – 2` | `mcm`, `hires`, `mhires` |
+| `dither_method` | `choice` | `none`, `ordered`, `blue_noise`, `floyd-steinberg`, `atkinson` | `mcm`, `hires`, `mhires` |
+| `palette_mode` | `choice` | `percell`, `cheap`, `vivid`, `grayscale` | `mcm`, `mhires` |
+| `motion_smoothing` | `scalar` | `0 – 1` | `mhires` |
+| `cell_strategy` | `choice` | `frequency`, `luminance`, `contrast`, `error-min` | `mhires` |
 
-## Effect
+## `effect`
 
-| Target | Kind | Range or values | Declared by |
+An effect in the scene's chain. A row's target is `effect.` and its name.
+
+| Parameter | Kind | Range or values | Declared by |
 |---|---|---|---|
-| `effect.decay` | `scalar` | `0 – 0.96` | `trails` |
-| `effect.intensity` | `scalar` | `0 – 2.5` | `pulse`, `rgb_shift`, `blur` |
-| `effect.duty` | `scalar` | `0.05 – 1` | `strobe` |
-| `effect.rate` | `scalar` | `1 – 16` | `strobe` |
-| `effect.mix` | `scalar` | `0 – 1` | `invert` |
-| `effect.axis` | `choice` | `horizontal`, `vertical`, `quad` | `mirror` |
-| `effect.levels` | `scalar` | `2 – 32` | `posterize` |
+| `decay` | `scalar` | `0 – 0.96` | `trails` |
+| `intensity` | `scalar` | `0 – 2.5` | `pulse`, `rgb_shift`, `blur` |
+| `duty` | `scalar` | `0.05 – 1` | `strobe` |
+| `rate` | `scalar` | `1 – 16` | `strobe` |
+| `mix` | `scalar` | `0 – 1` | `invert` |
+| `axis` | `choice` | `horizontal`, `vertical`, `quad` | `mirror` |
+| `levels` | `scalar` | `2 – 32` | `posterize` |
 
-## Generator
+## `source`
 
-| Target | Kind | Range or values | Declared by |
+A generative scene's generator. A row's target is `source.` and its name.
+
+| Parameter | Kind | Range or values | Declared by |
 |---|---|---|---|
-| `source.speed` | `scalar` | `0 – 2` | `plasma`, `tunnel`, `epicycle`, `hiphotic`, `metaballs`, `rotozoomer`, `lissajous`, `dna`, `drift`, `colored_bursts`, `dotswarm`, `game_of_life`, `soap`, `fireworks` |
-| `source.scale` | `scalar` | `0.1 – 4` | `plasma`, `tunnel`, `hiphotic`, `rotozoomer`, `lissajous`, `dna`, `drift`, `colored_bursts`, `dotswarm`, `soap`, `fireworks` |
-| `source.scroll_speed` | `scalar` | `0 – 4` | `fire` |
-| `source.intensity` | `scalar` | `0.2 – 2` | `fire` |
-| `source.zoom_speed` | `scalar` | `0.02 – 1` | `mandelbrot` |
-| `source.cycle_speed` | `scalar` | `0 – 2` | `mandelbrot` |
-| `source.ring_freq` | `scalar` | `10 – 80` | `moire2` |
-| `source.drift_speed` | `scalar` | `0 – 2` | `moire2`, `halo`, `hopalong` |
-| `source.pulse_speed` | `scalar` | `0 – 3` | `halo` |
-| `source.a` | `scalar` | `-2 – 2` | `hopalong` |
-| `source.grow_speed` | `scalar` | `0 – 4` | `rorschach` |
+| `speed` | `scalar` | `0 – 2` | `plasma`, `tunnel`, `epicycle`, `hiphotic`, `metaballs`, `rotozoomer`, `lissajous`, `dna`, `drift`, `colored_bursts`, `dotswarm`, `game_of_life`, `soap`, `fireworks` |
+| `scale` | `scalar` | `0.1 – 4` | `plasma`, `tunnel`, `hiphotic`, `rotozoomer`, `lissajous`, `dna`, `drift`, `colored_bursts`, `dotswarm`, `soap`, `fireworks` |
+| `scroll_speed` | `scalar` | `0 – 4` | `fire` |
+| `intensity` | `scalar` | `0.2 – 2` | `fire` |
+| `zoom_speed` | `scalar` | `0.02 – 1` | `mandelbrot` |
+| `cycle_speed` | `scalar` | `0 – 2` | `mandelbrot` |
+| `ring_freq` | `scalar` | `10 – 80` | `moire2` |
+| `drift_speed` | `scalar` | `0 – 2` | `moire2`, `halo`, `hopalong` |
+| `pulse_speed` | `scalar` | `0 – 3` | `halo` |
+| `a` | `scalar` | `-2 – 2` | `hopalong` |
+| `grow_speed` | `scalar` | `0 – 4` | `rorschach` |
 
-## Scope
+## `scene`
 
-| Target | Kind | Range or values | Declared by |
+The scene itself. A row's target is `scene.` and its name.
+
+| Parameter | Kind | Range or values | Declared by |
 |---|---|---|---|
-| `scene.gain` | `scalar` | `0.25 – 3` | `voice_scope` |
+| `gain` | `scalar` | `0.25 – 3` | `voice_scope` |

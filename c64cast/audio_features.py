@@ -307,7 +307,7 @@ class AudioFeatureAnalyzer:
         """Build the current `MusicModulation`.
 
         `voice_freqs` / `voice_gates` are zero/False: those are SID-specific and
-        have no audio-input analogue, so the handful of generators that read them
+        have no audio-input analog, so the handful of generators that read them
         (moire, kaleidoscope) fall back to their base geometry and react through
         level / onset / beat_phase / bands like everything else."""
         return MusicModulation(

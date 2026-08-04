@@ -96,7 +96,7 @@ def parse_waveform_spec(spec: str) -> tuple[int, str]:
     (``"pulse+triangle"``) of triangle/sawtooth/pulse/noise. A combination ORs
     the selected waveform-select bits — the real SID then ANDs those waveforms
     together (the oscilloscope draws the dominant one via ``primary_waveform``).
-    The returned name is normalised to :data:`_WAVEFORM_CANONICAL_ORDER`.
+    The returned name is normalized to :data:`_WAVEFORM_CANONICAL_ORDER`.
     """
     tokens = [t.strip().lower() for t in str(spec).split("+") if t.strip()]
     if not tokens:
@@ -722,7 +722,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         base = SID.voice_base(voice_idx)
         freq = _note_to_sid_freq(midi_note, self.system)
         # Coalesce freq + pulse-width + control + ADSR (7 contiguous bytes)
-        # into a single PUT — minimises socket overhead per note event.
+        # into a single PUT — minimizes socket overhead per note event.
         wave_bits = self.voice_wave_bits[voice_idx]
         ctrl = wave_bits | (SID.GATE if gate else 0)
         a, d, _, r = self.adsr

@@ -29,7 +29,7 @@ and PETSCII graphics codes come out blank. See
 
 ## This directory
 
-A legacy location, still honoured last in the resolution order so an existing
+A legacy location, still honored last in the resolution order so an existing
 source checkout with a dump at `characters.901225-01.bin` keeps working. Nothing
 writes here; new dumps go to the data dir. No ROM bytes are tracked in this
 repo, and none ship in the sdist, the wheel, or a release asset — only this

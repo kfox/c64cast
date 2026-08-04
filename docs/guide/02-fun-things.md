@@ -27,7 +27,7 @@ few suggestions, all of which run without writing a configuration file.
   kind of thing c64cast can put on screen, and `--list-overlays` prints
   everything it can decorate them with. No hardware needed.
 
-![A directory of photographs, dithered into the sixteen C64 colours.](img/fig-ft-1-slideshow.png)
+![A directory of photographs, dithered into the sixteen C64 colors.](img/fig-ft-1-slideshow.png)
 
 And you are off. Once you have had a look around, come back here and start at
 the Introduction for a proper tour.

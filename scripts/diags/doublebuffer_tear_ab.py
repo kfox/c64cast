@@ -8,7 +8,7 @@ resolve_use_reu_staged turns the REU bank-swap off to dodge the swap shimmer,
 otherwise leaving single-buffer host-DMA that tears on cuts). This harness
 demonstrates the difference visually + quantitatively.
 
-Method: build an abrupt-cut test video (two full-screen images, swapped colours
+Method: build an abrupt-cut test video (two full-screen images, swapped colors
 top/bottom, alternating every few frames so a partial single-buffer update is a
 detectable raster split). Play it as an mhires `video` scene + a marquee overlay
 on the U64, once with double_buffer=false (single-buffer) and once with
@@ -16,7 +16,7 @@ double_buffer="auto" (→ on, because the marquee is a buffer overlay). Burst-gr
 consecutive Cam Link frames through each run, then:
 
   * classify each frame's top-third and bottom-third against the clean A/B
-    colour states (references learned from the double-buffer run, which is
+    color states (references learned from the double-buffer run, which is
     tear-free by construction) and count frames whose halves disagree or match
     neither state — a tear,
   * save a few example frames from each run for direct visual inspection.
@@ -46,9 +46,9 @@ def build_test_video(path: Path, *, fps: int = 30, seconds: int = 12, hold: int 
     """Two full-screen states, A and B, alternating every `hold` frames.
 
     A: top RED / bottom BLUE.  B: top GREEN / bottom YELLOW.  Each half carries
-    fine vertical stripes so a bitmap-vs-colour desync also shows as visible
-    noise, but the half is colour-dominant so the region classifier is robust.
-    A clean cut recolours the whole screen; a single-buffer partial update
+    fine vertical stripes so a bitmap-vs-color desync also shows as visible
+    noise, but the half is color-dominant so the region classifier is robust.
+    A clean cut recolors the whole screen; a single-buffer partial update
     leaves top and bottom in different states (the detectable tear)."""
     w, h = 640, 400
     bgr = {  # OpenCV BGR
@@ -63,7 +63,7 @@ def build_test_video(path: Path, *, fps: int = 30, seconds: int = 12, hold: int 
         img[: h // 2] = bgr[top_color]
         img[h // 2 :] = bgr[bottom_color]
         # Fine stripes (every 8 px) darken alternate columns — structure that
-        # makes a bitmap/colour desync visible without dominating the region.
+        # makes a bitmap/color desync visible without dominating the region.
         img[:, ::8] = (img[:, ::8] * 0.45).astype(np.uint8)
         return img
 

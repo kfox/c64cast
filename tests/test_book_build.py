@@ -354,7 +354,7 @@ class SectionAnchorTest(unittest.TestCase):
             bg.section_label("04-display-pipeline", "fades"), "sec-04-display-pipeline-fades"
         )
 
-    def test_subsections_are_labelled_too(self):
+    def test_subsections_are_labeled_too(self):
         # `###` is the granularity a reader looks things up at: each scene
         # type and each `[color]` setting is one.
         out = convert("## Section\n\n### Sub\n")
@@ -630,7 +630,7 @@ class BookSourcesTest(unittest.TestCase):
                     )
 
     def test_the_makefile_knows_every_book(self):
-        # A book's directory and artefact basename are spelled in both its
+        # A book's directory and artifact basename are spelled in both its
         # book.toml and the Makefile, which renders it and cleans up after it.
         # The Makefile cannot read the TOML without either a Python it must not
         # need for `clean` or a sed that fails silently, so the two spellings

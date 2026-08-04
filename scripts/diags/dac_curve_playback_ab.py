@@ -63,7 +63,7 @@ def make_tone(amp: float) -> np.ndarray:
     return amp * np.sin(2 * np.pi * TONE_CYCLES * t)
 
 
-def analyse(cap: np.ndarray, sr: int, f0: float) -> dict[str, float]:
+def analyze(cap: np.ndarray, sr: int, f0: float) -> dict[str, float]:
     """SNDR and THD of a captured single tone. The capture clock and the NMI
     clock are independent, so the tone does not land on an exact FFT bin —
     everything is measured in narrow bands around the expected frequencies."""
@@ -167,7 +167,7 @@ def main() -> int:
                     dtype="float32",
                 )
                 sd.wait()
-                m = analyse(rec.mean(axis=1).astype(np.float64), dc.CAP_SR, TONE_HZ)
+                m = analyze(rec.mean(axis=1).astype(np.float64), dc.CAP_SR, TONE_HZ)
                 print(
                     f"  {name:34s} SNDR {m['sndr_db']:6.2f} dB   THD {m['thd_db']:7.2f} dB"
                     f"   level {m['level']:.4f} ({20 * np.log10(max(m['level'], 1e-9)):+.1f} dBFS)"

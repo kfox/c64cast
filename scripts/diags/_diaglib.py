@@ -51,7 +51,7 @@ def stamped(name: str, ext: str) -> Path:
 
 #: Default longest-edge (px) for verification captures written via ``save_image``.
 #: The Cam Link grabs 1080p, but the C64 active area is only 320x200 — a frame
-#: scaled to ~960px still resolves individual glyphs / per-cell colour / tearing,
+#: scaled to ~960px still resolves individual glyphs / per-cell color / tearing,
 #: while costing a fraction of the image tokens a full 1080p PNG does when read
 #: back into an agent's context. Pixel-peeping (fine bottom-row glyph shimmer)
 #: can opt back to native with ``save_image(..., max_width=0)`` / a tool ``--full``.
@@ -193,9 +193,9 @@ def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float 
 
 
 def flash_border(url: str = U64_URL, color: int = 1, timeout: float = 2.0) -> bool:
-    """Set the VIC border colour register $D020 to `color` (0-15) over REST — the
+    """Set the VIC border color register $D020 to `color` (0-15) over REST — the
     primitive behind the border-flash A/V sync marker (see the border-flash
-    auto-memory): poke a bright colour at known wall-clock times during a capture,
+    auto-memory): poke a bright color at known wall-clock times during a capture,
     then align the visible flashes to the source to measure playback tempo / A/V
     drift. $D020 is bus-clean to poke (one byte) and visible regardless of display
     mode. Returns True on success."""

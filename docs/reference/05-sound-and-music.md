@@ -89,7 +89,7 @@ never written to the machine's flash, so a power cycle undoes them regardless.
 ### What Each Costs in Frame Rate
 
 Audio on the DAC competes with the picture for the same link and the same
-processor, so a scene streaming digitised audio caps its frame rate. Audio on
+processor, so a scene streaming digitized audio caps its frame rate. Audio on
 the sampler does not, and video keeps the full system rate. That table is in
 Chapter 2 under "Frame Rate", and it is the main practical reason the sampler
 is the default on the Ultimate.
@@ -142,8 +142,8 @@ the ring differ.
 | `"mahoney_ultisid"` | The built-in table, measured from the Ultimate's own emulated SID |
 | `"calibrated"` | Force the measured table; an error if there is none |
 
-The built-in table generalises across Ultimates because their SID is an FPGA
-core and deterministic. Physical chips do not generalise at all — two 6581s
+The built-in table generalizes across Ultimates because their SID is an FPGA
+core and deterministic. Physical chips do not generalize at all — two 6581s
 measured on the same rig correlated only 0.74, and swapping their tables cost
 29 % in level error. So a socketed chip wants its own measurement:
 
@@ -316,7 +316,7 @@ A PSID header says which SID model it was written for, and the two models
 sound substantially different. `[ultimate64].sid_model` decides what to do
 about that:
 
-| Value | Behaviour |
+| Value | Behavior |
 |---|---|
 | `"auto"` | The default. Read the header, per chip, and route each chip to hardware that matches |
 | `"6581"` / `"8580"` | Force that model for every chip, ignoring the header |
@@ -353,20 +353,20 @@ takes the default spread:
 
 | Chips | Spread |
 |---|---|
-| 1 | Centre |
+| 1 | Center |
 | 2 | Left 3, Right 3 |
-| 3 | Centre, Left 3, Right 3 |
+| 3 | Center, Left 3, Right 3 |
 | 4 | Left 2, Right 2, Left 5, Right 5 |
 
 Those are ordered by musical importance rather than as a uniform fan: with an
-odd count the primary chip sits dead centre and the others flank it. The
+odd count the primary chip sits dead center and the others flank it. The
 oscilloscope's columns follow the pans rather than the chip order, so a
 three-chip tune reads left to right on screen exactly as it sounds.
 
 There is one refusal. When chips outnumber the machine's available sources —
 a three-chip tune with no usable socket, so all three land on two cores — the
 spread would throw two chips hard left against one hard right, which
-misrepresents the tune. The default collapses to centre instead. An explicit
+misrepresents the tune. The default collapses to center instead. An explicit
 `sid_panning` still does whatever you ask.
 
 ### `sid_volume`
@@ -393,7 +393,7 @@ really there.
 Values are a dB integer, or a label. The hardware's ladder is not a uniform
 fan — `OFF`, then −42, −36, −30, −27, −24, then every step from −18 to +6 — so
 a level with no representation is rejected when the configuration loads rather
-than snapped to a neighbour.
+than snapped to a neighbor.
 
 ### Why a Spare Core Stays Mapped
 
@@ -425,7 +425,7 @@ frame — loses the frames between flushes, mangling arpeggios and hard
 restarts.
 
 The **buffered ring player** moves frame consumption onto the Commodore. Each
-frame's register writes are serialised into a slot, written into a ring in
+frame's register writes are serialized into a slot, written into a ring in
 expansion memory ahead of a computed read head, and popped one per tick by a
 handler the machine's own timer fires — reproducing the stream's own
 inter-write timing. Nothing is read back from the machine during playback. It
@@ -433,10 +433,10 @@ needs an REU, so it is Ultimate-only; `"auto"` selects it whenever there is
 one. A two-times multispeed tune measured at exactly twice the coalesced
 path's modulation rate, which is the whole point.
 
-Multi-SID streams are honoured: extra chips are routed to their own addresses,
+Multi-SID streams are honored: extra chips are routed to their own addresses,
 preferring physical sockets, and the scope subdivides each voice row into one
 window per chip. `asid_multi_sid` and `asid_max_sids` gate and cap it. The
-FM-synthesis command is recognised and dropped, there being no OPL chip
+FM-synthesis command is recognized and dropped, there being no OPL chip
 involved.
 
 ### MIDI
@@ -481,7 +481,7 @@ and nothing downstream can tell which.
 envelope and frequency, so the features come free — no extra traffic, no
 analysis.
 
-**From audio**, an analyser runs over the incoming samples. It reports:
+**From audio**, an analyzer runs over the incoming samples. It reports:
 
 | Feature | What it is |
 |---|---|
@@ -498,26 +498,26 @@ sparse material needs a push.
 
 The two differ in more than whether the Commodore makes a sound.
 
-`audio_source = "mic"` streams the input to the DAC *and* analyses it, so the
-analyser opens at the DAC's rate — it should see what the machine actually
+`audio_source = "mic"` streams the input to the DAC *and* analyzes it, so the
+analyzer opens at the DAC's rate — it should see what the machine actually
 plays. `audio_source = "listen"` sends nothing to the Commodore, which frees it
 from that rate: it captures at `[audio_features].listen_sample_rate`, 44.1 kHz
 by default, so hi-hats and cymbals above the DAC's 6 kHz ceiling exist at all
 and transients land more precisely. That is the VJ arrangement — the real music
 is on a PA, and only the picture tracks it.
 
-In both cases the analyser taps the signal *before* the processing chain.
+In both cases the analyzer taps the signal *before* the processing chain.
 Compression exists to flatten dynamics into four bits, and dynamics are exactly
 what an onset detector reads; a compressed kick barely moves the spectral flux.
 
 ### What Reads the Features
 
 Generators react through `level`, `onset`, `beat_phase` and the bands — bass
-drives brightness and treble drives hue, because a desaturated hue quantises
-into the greys and would read as nothing. The reactive effects (`pulse`,
+drives brightness and treble drives hue, because a desaturated hue quantizes
+into the grays and would read as nothing. The reactive effects (`pulse`,
 `rgb_shift`, `strobe`) take the same stream, or the beat grid instead, by
 `mod_source`. Both spectrum overlays read the scene's features first and fall
-back to analysing the audio stream, which is how they work on a SID scene where
+back to analyzing the audio stream, which is how they work on a SID scene where
 there is no audio stream at all. And with `[performance].tempo_source =
 "audio"`, the detected tempo drives the process-wide beat grid — see Chapter 6.
 
@@ -525,6 +525,6 @@ Neither producer fills the whole snapshot. A SID source reads envelopes rather
 than a spectrum, so it reports no bands, and its onsets come from note gates
 and hard restarts rather than from spectral flux. An audio source has no
 per-voice frequencies or gates to report. Each side leaves what it lacks empty,
-and the generators that read those fall back to their base behaviour rather
+and the generators that read those fall back to their base behavior rather
 than freezing — which is also why the same generator looks a little different
 driven by a tune than driven by a microphone.

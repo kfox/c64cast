@@ -1,7 +1,7 @@
 """Tests for the vision controller: gesture classification + the event-driving
 poller. No camera and no mediapipe needed — classification runs on synthetic
 landmark fixtures, and the controller is driven by a scripted fake recognizer
-(the visual analogue of test_keyboard.py's scripted `$028D` FakeApi)."""
+(the visual analog of test_keyboard.py's scripted `$028D` FakeApi)."""
 
 from __future__ import annotations
 

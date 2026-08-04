@@ -38,7 +38,7 @@ jobs:
       # pre-commit/action@v3.0.1 is unmaintained (last release Feb 2024) and
       # pins actions/cache@v4 internally, which runs on the now-deprecated
       # Node 20. Run pre-commit directly and cache its hook environments with a
-      # Node 24 actions/cache instead. SKIP mirrors the wrapper's old behaviour:
+      # Node 24 actions/cache instead. SKIP mirrors the wrapper's old behavior:
       # pyright + unittest run across the matrix in lint-and-test, not here.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -195,7 +195,7 @@ jobs:
       # Test-result upload now goes through codecov-action with
       # `report_type: test_results` (same action as the coverage upload above,
       # one step earlier with the default `coverage` type). The standalone
-      # codecov/test-results-action@v1 was deprecated in favour of this and ran
+      # codecov/test-results-action@v1 was deprecated in favor of this and ran
       # on the now-deprecated Node 20.
       - name: Upload test results to Codecov
         if: ${{ !cancelled() && matrix.python-version == '3.14' }}

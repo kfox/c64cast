@@ -127,7 +127,7 @@ class HandState:
 class GestureRecognizer(Protocol):
     """Frame → primary HandState. Returns None when no hand is detected (or the
     frame is unusable), so the controller can skip the tick — the visual
-    analogue of `CommodoreKeyPoller._read_modifiers` returning None."""
+    analog of `CommodoreKeyPoller._read_modifiers` returning None."""
 
     def process(self, frame: np.ndarray, timestamp_ms: int) -> HandState | None: ...
 
@@ -415,7 +415,7 @@ class VisionController:
 
         Returns None on no-frame / no-hand / recognizer error — the caller
         treats that as 'couldn't tell' and skips the tick (no state change),
-        the visual analogue of a failed $028D read."""
+        the visual analog of a failed $028D read."""
         frame = self.source.read()
         if frame is None:
             return None
@@ -477,7 +477,7 @@ class VisionController:
 
             if self._pause_event.is_set():
                 # PAUSED: only the pinch hold-to-resume gesture matters
-                # (mirrors keyboard.py — CTRL/SHIFT analogues are ignored).
+                # (mirrors keyboard.py — CTRL/SHIFT analogs are ignored).
                 if static == Gesture.PINCH:
                     if held_since is None:
                         held_since = now

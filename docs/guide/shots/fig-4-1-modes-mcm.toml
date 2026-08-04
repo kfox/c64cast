@@ -7,8 +7,8 @@
 #
 # `file` is not in the checkout (assets/ is git-ignored). Substituting matters
 # more here than for the other figures — the picture is doing pedagogical work.
-# Pick one with big, high-contrast shapes and saturated colour: that is what
-# keeps the subject recognisable at PETSCII's 40x25 while still giving mcm and
+# Pick one with big, high-contrast shapes and saturated color: that is what
+# keeps the subject recognizable at PETSCII's 40x25 while still giving mcm and
 # mhires something to show. Dim, detailed photographs were tried first and made
 # the petscii panel read as noise.
 

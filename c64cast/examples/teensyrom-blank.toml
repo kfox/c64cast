@@ -22,7 +22,7 @@
 # Run:
 #   c64cast --config example:teensyrom-blank
 #
-# First smoke test on real hardware: confirm the border colour changes — a
+# First smoke test on real hardware: confirm the border color changes — a
 # byte-swapped address would write to RAM and leave the border untouched.
 
 [hardware]

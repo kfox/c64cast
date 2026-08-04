@@ -19,11 +19,11 @@ This tool measures that directly, with the Cam Link as the only readback (the TR
 protocol has no read-C64-memory token):
 
   1. Connect over a transport (--tcp HOST and/or --serial PORT), FWCheck + Ping.
-  2. Border smoke test: reset -> TR menu, WriteC64Mem a few colours to $D020,
+  2. Border smoke test: reset -> TR menu, WriteC64Mem a few colors to $D020,
      and capture a frame so you can confirm the border actually changed (proves
      WriteC64Mem lands at all + a byte-swapped address would miss the border).
   3. Heartbeat: PostFile + LaunchFile a one-line BASIC program that cycles the
-     border colour forever:  10 FORA=0TO15:POKE53280,A:<delay>:NEXTA:GOTO10
+     border color forever:  10 FORA=0TO15:POKE53280,A:<delay>:NEXTA:GOTO10
      This is IRQ-driven (kernal jiffy -> the 3-byte stack push worst case),
      interpreter-fragile (a glitch -> error + READY, border stops cycling), and
      self-reporting (border cycles == alive). See _HEARTBEAT_BODY for why it
@@ -32,8 +32,8 @@ protocol has no read-C64-memory token):
      allow, for --seconds, sweeping --sizes. Small segments stress the assertion
      hand-off (many /DMA edges); large segments stress the write-timing margin
      (more bytes per burst).
-  5. Analyse the Cam Link capture for border liveness over time: while the
-     heartbeat runs the whole-frame mean colour swings hard (border cycling);
+  5. Analyze the Cam Link capture for border liveness over time: while the
+     heartbeat runs the whole-frame mean color swings hard (border cycling);
      when BASIC dies it freezes. Report time-to-death per size, or "survived".
 
 Old firmware -> heartbeat dies within seconds under hammer (small sizes worst).
@@ -43,7 +43,7 @@ Cycle-clean firmware -> heartbeat survives the full window at every size.
     scripts/diags/tr_dma_cycleclean.py --serial /dev/cu.usbmodem<XXXX>
     scripts/diags/tr_dma_cycleclean.py --tcp <TR_HOST> --serial <PORT> \
         --seconds 30 --sizes 1,256,4096
-    # both transports, 30s window, sizes 1/256/4096, capture + analyse.
+    # both transports, 30s window, sizes 1/256/4096, capture + analyze.
 
 Always resets the C64 on the way out (the standing silence-and-reset rule).
 """
@@ -96,13 +96,13 @@ def _basic_one_liner(line_no: int, body: bytes) -> bytes:
 
 
 # Border heartbeat:  10 FORA=0TO15:POKE53280,A:FORI=0TO200:NEXTI:NEXTA:GOTO10
-# The border colour is the outer FOR variable A, so it wraps 0..15 forever — an
+# The border color is the outer FOR variable A, so it wraps 0..15 forever — an
 # unbounded `A=A+1` counter would hit POKE53280,256 -> ?ILLEGAL QUANTITY ERROR
 # and self-terminate (~73 s at this loop rate), a false "death". The PEEK token
 # errors out at RUN on this machine for reasons unrelated to the DMA under test,
 # so the cycler avoids it; FOR/TO/NEXT/POKE/GOTO are all confirmed to run. The
 # inner FOR..NEXT delay steps the border a few times/sec so each captured frame
-# catches a distinct colour (a strong alive/frozen signal). Interpreter
+# catches a distinct color (a strong alive/frozen signal). Interpreter
 # fragility (live FOR stack + variables + loop) is exactly what a non-cycle-clean
 # DMA would corrupt.
 #   0x81 FOR   0xB2 =   0xA4 TO   0x97 POKE   0x82 NEXT   0x89 GOTO
@@ -135,7 +135,7 @@ HEARTBEAT_PRG = _basic_one_liner(10, _HEARTBEAT_BODY)
 
 # ---------------------------------------------------------------------------
 # Cam Link capture: a background thread that grabs frames and records only the
-# whole-frame mean colour + timestamp (cheap; the border dominates the swing).
+# whole-frame mean color + timestamp (cheap; the border dominates the swing).
 # ---------------------------------------------------------------------------
 @dataclass
 class CamSample:
@@ -199,17 +199,17 @@ class CamCapture:
         self.cap.release()
 
 
-_WINDOW_S = 1.2  # trailing window over which the border must visit >1 colour
-_MIN_ALIVE_RANGE = 8.0  # baseline colour spread below this -> heartbeat not detected
+_WINDOW_S = 1.2  # trailing window over which the border must visit >1 color
+_MIN_ALIVE_RANGE = 8.0  # baseline color spread below this -> heartbeat not detected
 
 
 def _means_in(samples: list[CamSample], t0: float, t1: float) -> list[tuple[float, tuple]]:
     return [(s.t, s.mean) for s in samples if t0 <= s.t <= t1]
 
 
-def _colour_range(means: list[tuple[float, tuple]]) -> float:
-    """Largest per-channel (max-min) spread of the frame-mean colour across a
-    set of frames. A cycling border sweeps colours -> large spread; a frozen
+def _color_range(means: list[tuple[float, tuple]]) -> float:
+    """Largest per-channel (max-min) spread of the frame-mean color across a
+    set of frames. A cycling border sweeps colors -> large spread; a frozen
     border (BASIC died, or never ran) -> ~0, modulo sensor noise."""
     if len(means) < 2:
         return 0.0
@@ -217,15 +217,15 @@ def _colour_range(means: list[tuple[float, tuple]]) -> float:
     return max(max(c) - min(c) for c in chans)
 
 
-def analyse_window(
+def analyze_window(
     samples: list[CamSample], hammer_t0: float, hammer_t1: float, baseline_t0: float
 ) -> dict:
     """Did the border heartbeat survive the hammer window?
 
-    Liveness = the border colour keeps *changing*. Because the heartbeat holds
-    each colour for several frames, frame-to-frame delta is ~0 most of the time
-    even when alive; the robust signal is the colour *spread* over a trailing
-    `_WINDOW_S` window (alive: sweeps many colours -> large spread; frozen: ~0).
+    Liveness = the border color keeps *changing*. Because the heartbeat holds
+    each color for several frames, frame-to-frame delta is ~0 most of the time
+    even when alive; the robust signal is the color *spread* over a trailing
+    `_WINDOW_S` window (alive: sweeps many colors -> large spread; frozen: ~0).
 
     The baseline window [baseline_t0, hammer_t0) sets the 'alive' spread. If the
     baseline spread is itself tiny the test is INVALID (heartbeat never ran /
@@ -234,28 +234,28 @@ def analyse_window(
     Death = the trailing-window spread collapses below threshold and stays
     collapsed to the end of the hammer window (the point of no return). Detected
     death lags the true freeze by up to ~`_WINDOW_S` (the window must flush its
-    pre-freeze colours)."""
+    pre-freeze colors)."""
     base = _means_in(samples, baseline_t0, hammer_t0)
     ham = _means_in(samples, hammer_t0, hammer_t1)
-    base_range = _colour_range(base)
+    base_range = _color_range(base)
     if not ham:
         return {"ok": False, "reason": "no frames captured in hammer window"}
     if base_range < _MIN_ALIVE_RANGE:
         return {
             "ok": False,
-            "reason": f"heartbeat not detected in baseline (colour spread "
+            "reason": f"heartbeat not detected in baseline (color spread "
             f"{base_range:.1f} < {_MIN_ALIVE_RANGE}); border not cycling / capture blind",
             "base_range": base_range,
         }
 
     thresh = max(4.0, 0.35 * base_range)
-    # Per-frame 'active' = colour spread over the trailing _WINDOW_S is alive.
+    # Per-frame 'active' = color spread over the trailing _WINDOW_S is alive.
     active: list[tuple[float, bool]] = []
     for t, _ in ham:
         win = [m for m in ham if t - _WINDOW_S <= m[0] <= t]
         if len(win) < 3:
             continue
-        active.append((t - hammer_t0, _colour_range(win) >= thresh))
+        active.append((t - hammer_t0, _color_range(win) >= thresh))
 
     death: float | None = None
     for i, (rel_t, is_active) in enumerate(active):
@@ -266,7 +266,7 @@ def analyse_window(
     return {
         "ok": True,
         "base_range": base_range,
-        "hammer_range": _colour_range(ham),
+        "hammer_range": _color_range(ham),
         "threshold": thresh,
         "survived": death is None,
         "death_rel_s": death,
@@ -350,7 +350,7 @@ def run_transport(label: str, client: TRClient, cam: CamCapture, args) -> list[d
     drive = DRIVE_SD if args.storage == "sd" else DRIVE_USB
 
     # ---- (2) border smoke test ----
-    print("  [smoke] reset -> TR menu, then write $D020 colours ...")
+    print("  [smoke] reset -> TR menu, then write $D020 colors ...")
     client.reset()
     time.sleep(args.reset_settle)
     # Drain post-reset boot chatter (the TR emits GoodSIDToken 0x9B81 / banner
@@ -391,7 +391,7 @@ def run_transport(label: str, client: TRClient, cam: CamCapture, args) -> list[d
         time.sleep(0.6)  # let the capture catch the final state
         end_frame = cam.save_frame(f"{label}_after_{size}")
 
-        verdict = analyse_window(cam.samples, h_t0, h_t1, baseline_t0)
+        verdict = analyze_window(cam.samples, h_t0, h_t1, baseline_t0)
         row = {"transport": label, "size": size, **stats, **verdict, "end_frame": end_frame}
         results.append(row)
         _print_row(row)
@@ -523,7 +523,7 @@ def _summary(results: list[dict]) -> None:
     if died and not survived:
         print(
             "NOT cycle-clean ❌  the heartbeat died under hammer in every window "
-            "(matches the old async DMA_S_StartTransfer behaviour)."
+            "(matches the old async DMA_S_StartTransfer behavior)."
         )
     elif survived and not died:
         print(

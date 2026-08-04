@@ -7,7 +7,7 @@
 // Two entry points, both drawing on the same palette, faces and element
 // styling: `guide()` for a bound book, `card()` for a printable hand-out.
 //
-// The house style is modelled on the Commodore 64 Ultimate User's Guide
+// The house style is modeled on the Commodore 64 Ultimate User's Guide
 // (1st Edition, October 2025). Values below were measured from that PDF
 // rather than guessed:
 //
@@ -29,7 +29,7 @@
 #let ink = rgb("#111111")          // body text
 #let keycap-fill = rgb("#3A3A3A")  // <kbd> chips
 
-// C64 screen colours, for `basic` listings rendered as the machine shows them.
+// C64 screen colors, for `basic` listings rendered as the machine shows them.
 #let c64-blue = rgb("#4038AB")
 #let c64-lightblue = rgb("#8078D8")
 
@@ -114,7 +114,7 @@
   place(line(start: (34%, 94%), end: (96%, 6%), stroke: _mark-stroke))
 })
 
-// Centred on the x-height, where a typeset arrow sits, rather than on the
+// Centered on the x-height, where a typeset arrow sits, rather than on the
 // baseline the box would otherwise be aligned to.
 #let rarrow = box(width: 0.95em, height: 0.44em, baseline: -0.02em, {
   place(line(start: (2%, 50%), end: (94%, 50%), stroke: _mark-stroke))
@@ -537,7 +537,7 @@
 
   // Code -------------------------------------------------------------------
   // No syntax highlighting: the original sets all of its listings in one
-  // colour, and coloured tokens read as a different book.
+  // color, and colored tokens read as a different book.
   set raw(theme: none)
 
   // Inline code is set plain, with no tint behind it -- the original sets its
@@ -587,7 +587,7 @@
   // Links ------------------------------------------------------------------
   // Blue marks a link the reader can follow away from the sentence: a URL, or
   // a cross-reference to another chapter. A link to a *location* is the
-  // contents page, where every line is a pointer already -- colouring those
+  // contents page, where every line is a pointer already -- coloring those
   // turns the whole page blue and tells the reader nothing.
   show link: it => if type(it.dest) == location { it } else { text(fill: accent, it) }
 
@@ -595,7 +595,7 @@
   // Drawn rather than typed. Jost's • glyph is small and sits high in its em
   // box, so at body size it reads as a middot floating near the cap line. A
   // circle is font-independent: same mark whatever the body face becomes, and
-  // the baseline offset centres it on the x-height.
+  // the baseline offset centers it on the x-height.
   set list(
     indent: size,
     body-indent: 0.6 * size,

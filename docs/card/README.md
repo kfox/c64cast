@@ -32,7 +32,7 @@ a card pinned to a desk outlives the release it was printed for.
 | `01-controls.md` | Every control surface, and what it is mapped to |
 | `02-live-targets.md` | **Generated** — every parameter a `param` mapping can name |
 | `03-performing.md` | Clips, tempo, looks, the console, WLED, ensembles |
-| `book.toml` | Layout, artefact name, and the footer's title |
+| `book.toml` | Layout, artifact name, and the footer's title |
 
 `02-live-targets.md` is written by
 [`scripts/gen_reference_appendices.py`](../../scripts/gen_reference_appendices.py)

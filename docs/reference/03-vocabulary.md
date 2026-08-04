@@ -6,7 +6,7 @@ number: 2
 
 Everything c64cast puts on a screen is a scene with overlays painted over it.
 There are ten kinds of scene and thirteen overlays. This chapter is the
-catalogue: what each one sources, what it requires, what it does that its
+catalog: what each one sources, what it requires, what it does that its
 parameter table cannot say, and a configuration for each that runs as written.
 
 The parameter tables themselves are Appendices B and C, and the question of
@@ -24,7 +24,7 @@ an interstitial card runs between one scene and the next.
 Six keys are common to every type — `type`, `name`, `duration_s`,
 `target_fps`, `overlays`, and the ensemble pair `orchestrate` and
 `follower_only`. Most types add `display`, and the frame-bearing ones add the
-colour and effect keys covered in Chapter 3.
+color and effect keys covered in Chapter 3.
 
 ### What Ends a Scene
 
@@ -57,7 +57,7 @@ interstitial appears.
 
 | Scene | Default cap |
 |---|---|
-| Bitmap `video` / `webcam` / `generative`, streaming digitised audio | 20 fps |
+| Bitmap `video` / `webcam` / `generative`, streaming digitized audio | 20 fps |
 | The same, muted | half system rate (30 / 25) |
 | `generative` and live `webcam` with audio on the 4-bit DAC | 20 fps *in any mode*, character modes included |
 | `waveform`, `midi`, `asid` | half system rate (30 / 25) |
@@ -85,7 +85,7 @@ falls back to when `file` is omitted, named in that type's entry below.
 ## Between One Scene and the Next
 
 A multi-scene playlist does not cut from one scene to another. It shows a card
-first — the words UP NEXT over the upcoming scene's `name`, centred on an
+first — the words UP NEXT over the upcoming scene's `name`, centered on an
 animated parallax background — for as long as `[interstitial]` says.
 
 ```toml
@@ -95,8 +95,8 @@ text_color = "rainbow"
 background = "starfield"
 ```
 
-`text_color` takes a colour, or `"rainbow"` for a colour per line, or
-`"random"` for one legible colour drawn fresh at each card. `background` is
+`text_color` takes a color, or `"rainbow"` for a color per line, or
+`"random"` for one legible color drawn fresh at each card. `background` is
 one of `starfield`, `petscii_bars`, `raster_bars`, `checker`, `nature`,
 `city`, `none`, or `random` for a different one each time; it scrolls in the
 rows above and below the text block and never paints over the words.
@@ -168,7 +168,7 @@ protocol does and does not carry.
 ### `blank`
 
 A solid canvas with no video input at all: every cell is a space in the
-background colour, until an overlay paints.
+background color, until an overlay paints.
 
 ```toml
 [[scenes]]
@@ -211,7 +211,7 @@ extra for `"file"`; no extra otherwise. `file` defaults to `assets/sids/` for a
 (the default), `hires`, `mhires`, `mcm`, `petscii`.*
 
 The twenty sources and eight effects are Appendix E; the pipeline they feed is
-Chapter 3. `audio_source` is what turns a pattern into a visualiser:
+Chapter 3. `audio_source` is what turns a pattern into a visualizer:
 
 | `audio_source` | What it does |
 |---|---|
@@ -309,7 +309,7 @@ velocity reach, and the controller map.
 
 ### `slideshow`
 
-Still images, fitted to the screen and quantised into the palette.
+Still images, fitted to the screen and quantized into the palette.
 
 ```toml
 [[scenes]]
@@ -333,7 +333,7 @@ appears twice in a row, including across a reshuffle. Anything OpenCV decodes
 is accepted.
 
 `aspect_mode` reconciles the image with the Commodore's 4:2.5 pixel geometry:
-`crop` centre-crops to fill and loses the edges, `fit` letterboxes the whole
+`crop` center-crops to fill and loses the edges, `fit` letterboxes the whole
 image onto black, `stretch` distorts to fill.
 
 Two display notes particular to this type: `display = "random"` picks a fresh
@@ -359,7 +359,7 @@ start_s = 0.0
 rather than a media file. `file` defaults to `assets/videos/`. Display modes:
 `mhires` (the default), `hires`, `hires_edges`, `mcm`, `petscii`, `blank`.*
 
-The recognised extensions are `.mp4 .avi .mkv .mov .webm .m4v`.
+The recognized extensions are `.mp4 .avi .mkv .mov .webm .m4v`.
 
 The soundtrack is the master clock: each frame is chosen against the audio
 position rather than a timer, so the two cannot drift apart over a long clip.
@@ -409,11 +409,11 @@ traffic on the link. The full account is Chapter 4.
 
 The scene is bitmap-only and ignores `display`. The default directory is
 `assets/sids/`. PSID files are accepted; RSIDs, and any file that would load
-low enough to overwrite the visualiser's bitmap, are refused at setup, and
+low enough to overwrite the visualizer's bitmap, are refused at setup, and
 with a directory pool a refused candidate is skipped and another drawn.
 
-`color_mode = "per_voice"` gives each voice a fixed colour from
-`voice_colors`; `per_waveform` colours by what each voice is currently doing,
+`color_mode = "per_voice"` gives each voice a fixed color from
+`voice_colors`; `per_waveform` colors by what each voice is currently doing,
 so the picture changes as the music does. `time_base = "wallclock"` gives one
 frame per row; `"auto"` sizes each voice's window so that `auto_cycles`
 complete cycles fit, which holds a stable waveform on screen instead of a
@@ -428,7 +428,7 @@ the scope of one is flat.
 
 ### `webcam`
 
-A live camera, quantised to the Commodore in real time.
+A live camera, quantized to the Commodore in real time.
 
 ```toml
 [[scenes]]
@@ -452,10 +452,10 @@ scene and the gesture controller, so both can run at once.
 Every display mode accepts a webcam, and the choice is the whole character of
 the scene: `petscii` builds the picture from the machine's own glyphs and is
 what people find most charming, `hires_edges` is the default and feels alive
-even when frames are stale, `mhires` carries the most colour. Chapter 3
+even when frames are stale, `mhires` carries the most color. Chapter 3
 covers the modes and the `style` field's nine PETSCII looks.
 
-The per-source adaptive colour fit does not apply here — it needs to pre-scan
+The per-source adaptive color fit does not apply here — it needs to pre-scan
 a source, and a live camera has no future to scan.
 
 ### `wled`
@@ -479,7 +479,7 @@ duration_s = 0.0
 A sender on the network — LedFx, xLights, Jinx!, Glediator, or another WLED
 device with sync enabled — streams frames over UDP; c64cast assembles them
 into an ordinary frame and hands it to the display pipeline, so it dithers and
-quantises exactly like a camera would. Both DDP (port 4048) and the WLED
+quantizes exactly like a camera would. Both DDP (port 4048) and the WLED
 realtime protocol (port 21324) are bound at once and detected per packet.
 
 `sink_width` and `sink_height` **must match** the matrix the sender is
@@ -602,7 +602,7 @@ thread every `refresh_minutes` and joined with `separator`.
 ```
 
 **`scrolling_text`** — one row cycling a list of messages, each with its own
-colour, and optionally its own pause, delay, or a `static` style that holds
+color, and optionally its own pause, delay, or a `static` style that holds
 still instead of scrolling.
 
 ```toml
@@ -618,11 +618,11 @@ still instead of scrolling.
 
 **`spectrum_bitmap`** — the audio spectrum as bars a scanline high, folded
 into the multicolor bitmap. `mhires` only, where it is the right choice: it
-has 200 levels of bar height rather than 25, and it takes only the one colour
+has 200 levels of bar height rather than 25, and it takes only the one color
 slot per cell that it needs, leaving the picture underneath its other three.
 
-**`spectrum_petscii`** — the same eight bands as coloured cells, for the
-character modes. `placement` puts the strip at the bottom, the centre, or
+**`spectrum_petscii`** — the same eight bands as colored cells, for the
+character modes. `placement` puts the strip at the bottom, the center, or
 splits it above and below.
 
 **`weather`** — temperature and conditions in a corner, polled in the
@@ -630,7 +630,7 @@ background. `open-meteo` takes `lat` and `lon`; `wttr.in` takes a `location`
 name.
 
 Both spectrum overlays read the scene's own music features first and fall back
-to analysing the audio stream, which is why they work on a SID scene where
+to analyzing the audio stream, which is why they work on a SID scene where
 there is no audio stream at all — the chip is making the sound.
 
 ### `big_text` Wants the Scene to Itself
@@ -651,7 +651,7 @@ Every refusal is one of three rules:
 
 **Text needs somewhere to put characters.** The text overlays work on
 `petscii`, `blank`, `hires` and `mhires`. They refuse `mcm`, which is the
-non-obvious one: that mode uses the high bit of colour memory to mark a cell
+non-obvious one: that mode uses the high bit of color memory to mark a cell
 as multicolor and halves the horizontal resolution, so neither a character
 glyph nor a folded bitmap glyph lands where it should.
 
@@ -662,11 +662,11 @@ on a PETSCII scene it would stomp the live frame's own glyphs.
 **Some overlays need sound to exist.** The spectrum pair will build without
 it, and simply paint nothing.
 
-When a combination is refused, there is nearly always a neighbour that works:
+When a combination is refused, there is nearly always a neighbor that works:
 
 | You wanted | Do this instead |
 |---|---|
-| A clock over an `mcm` scene | Use `mhires` for a comparable colour budget, or `petscii` |
+| A clock over an `mcm` scene | Use `mhires` for a comparable color budget, or `petscii` |
 | A spectrum over `mhires` | `spectrum_bitmap` — the same overlay, native to that mode |
 | `big_text` and a clock together | Two scenes, one each |
 | A spectrum over a video | `mhires` with `spectrum_bitmap`, or a `petscii` video with `spectrum_petscii` |

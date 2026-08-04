@@ -53,9 +53,9 @@ _PANEL_COL = 1
 _PANEL_WIDTH = 38  # cells; _PANEL_COL + _PANEL_WIDTH must be <= 40
 _PANEL_BG = 6  # blue backdrop (bitmap only; char mode shows the scene bg)
 _FG_TITLE = 7  # yellow
-_FG_TEXT = 15  # light grey
+_FG_TEXT = 15  # light gray
 _FG_SEL = 1  # white (selected row)
-_FG_DIM = 11  # dark grey (hints/header)
+_FG_DIM = 11  # dark gray (hints/header)
 
 
 def can_show_menu(scene: Scene) -> bool:

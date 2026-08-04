@@ -53,7 +53,7 @@ over. Selected by the scheme of a connection target.
 Six of them; see Appendix D for what each will accept.
 
 **Effect** — a transformation applied to a frame after its source has drawn it
-and before the display mode quantises it. Several may be chained.
+and before the display mode quantizes it. Several may be chained.
 
 **Ensemble** — several Commodores driven from one run, each with its own
 configuration, gathered by a master file.

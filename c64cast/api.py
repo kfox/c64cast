@@ -1317,7 +1317,7 @@ class _StubRunnerBackend(BufferedWriteBackend):
         makes this deterministic: the copy takes ~45 ms of 6510 time that
         neither kick's return tells us about.
 
-        Raises RuntimeError if the stub never signalled or the read-back failed,
+        Raises RuntimeError if the stub never signaled or the read-back failed,
         and BackendCapabilityError if this backend can't read C64 memory.
         Verifying that the bytes *are* a charset is `char_rom.dump`'s job.
         """
@@ -1343,7 +1343,7 @@ class _StubRunnerBackend(BufferedWriteBackend):
             time.sleep(_CHAR_ROM_FLAG_POLL_S)
         else:
             raise RuntimeError(
-                f"the character-ROM dump stub never signalled completion "
+                f"the character-ROM dump stub never signaled completion "
                 f"(flag at ${flag_addr:04X} still clear after "
                 f"{_CHAR_ROM_FLAG_TIMEOUT_S:.0f}s) — it may not have been reached"
             )

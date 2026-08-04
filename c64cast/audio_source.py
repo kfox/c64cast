@@ -492,7 +492,7 @@ class SidFileAudioSource:
     wants_audio_lock = True
     # run_sid_player kicks the player via the firmware's run_prg, which re-inits
     # the machine to text mode — so SourceScene must re-assert the display mode
-    # after setup() (a bitmap display would otherwise render its $0400 colour
+    # after setup() (a bitmap display would otherwise render its $0400 color
     # nibbles as PETSCII; see SourceScene.setup).
     resets_display = True
 

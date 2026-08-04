@@ -69,7 +69,7 @@ class FramePushDefaultFpsTest(unittest.TestCase):
             )
         )
 
-    def test_always_fresh_does_not_change_bitmap_behaviour(self):
+    def test_always_fresh_does_not_change_bitmap_behavior(self):
         # Bitmap already capped on has_digitized_audio alone; the new flag must
         # not perturb any of those answers.
         for digi, off_bus, want in (

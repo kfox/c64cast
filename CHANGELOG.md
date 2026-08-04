@@ -32,7 +32,7 @@ the version and stamps it with the date.
   reports which ROM is in use and whether it verifies.
 - **A second book: the Programmer's Reference Guide** (`docs/reference/`), the
   volume you open at the page you need rather than read in order. Seven
-  chapters: the configuration language and its precedence rules, the catalogue
+  chapters: the configuration language and its precedence rules, the catalog
   of every scene and overlay, the display pipeline from frame to VIC-II
   register, the sound path in both directions, the link into the Commodore's
   memory and what lands there, every input and output that reaches the show from
@@ -136,12 +136,12 @@ the version and stamps it with the date.
   were already sorted.
 - **A field's type and default say which is which.** The two lines under a name
   in every appendix table were bare — `str` over `'serial'` — and only obvious
-  to somebody who already knew. They are now labelled *Type:* and *Default:*.
+  to somebody who already knew. They are now labeled *Type:* and *Default:*.
 - **The PDF navigates in the numbers it prints.** Page labels — what a reader's
   thumbnail strip and page-number box show — were lowercase roman from the cover
   to the index, on a book whose body is numbered in arabic, so "page 84" and
   page 84 were different pages. The switch at the start of the body now reaches
-  the whole document, and a chapter opener is labelled instead of leaving a gap
+  the whole document, and a chapter opener is labeled instead of leaving a gap
   in the strip. Both books.
 - **Reference tables read better.** No table cell justifies any more: Appendix
   F's "Declared by" lists fourteen generator names down a 1.6in column, and
@@ -152,6 +152,23 @@ the version and stamps it with the date.
   every one of fifty lines — the holder is stated once above each table — and
   index entries are no longer emboldened, which was setting one column in two
   faces at two apparent sizes.
+- **Four more tables say a repeated name once.** Appendix D's rule table gave
+  every refused overlay a row, and ten of the thirteen rows read "needs a
+  text-capable mode (petscii/blank/hires/mhires)" — the same sentence read ten
+  times to learn one thing. It is by the rule now, four rows for the three
+  rules, and the appendix fits the page its matrix is on. Appendix B printed
+  `duration_s`'s sixty-word description under nine of its ten scene types; it
+  sits with the keys every scene takes, over a line naming `video` as the
+  exception. Appendix F and the Performance Card drop the holder from every
+  live-target row the way Appendix E did — Appendix F heads each section with
+  the holder itself (`mode`, `effect`, `source`, `scene`) and says what it
+  holds, the card puts it in the column heading.
+- **The books, and the code, are spelled in American English.** `colour`,
+  `behaviour`, `quantise`, `analyser`, `centre`, `catalogue`, `licence` and the
+  rest. The program has always named itself in American English — `color_match`,
+  `grayscale`, `palette_mode` — so the prose was disagreeing with the keys it
+  was telling the reader to type, sometimes in the same sentence. The `grey` /
+  `gray` color alias is untouched: both still resolve.
 - **The books no longer talk about their own build.** "Generated from the code by
   `scripts/gen_reference_appendices.py`. Edits here are overwritten" opened every
   appendix and the index; the glossary explained that it was hand-written
@@ -167,10 +184,10 @@ the version and stamps it with the date.
   five things in it that are spatial and were being carried entirely by prose:
   the precedence ladder with the extra rung an ensemble inserts, the twelve-step
   display pipeline with the setting that enters at each step, one hardware cell
-  in each of the four picture modes with the bytes that colour it, the DAC path
+  in each of the four picture modes with the bytes that color it, the DAC path
   against the sampler path with what each costs the 6510, and the 64 KB during a
   bitmap scene — the VIC's banks drawn as what they are, four 16 KB windows on
-  one memory, with colour RAM outside all of them. They are drawn by
+  one memory, with color RAM outside all of them. They are drawn by
   `scripts/make_reference_diagrams.py` in the books' own faces and palette, and
   committed; `make reference-figures` redraws them.
 - **The books' symbols no longer depend on the machine that built them.** Jost
@@ -188,7 +205,7 @@ the version and stamps it with the date.
   name — the section list was being quoted as a string rather than converted —
   and Appendix B's scene types are headed by the type's name rather than by
   `type = "webcam"` repeated ten times.
-- **The Performance Card's pad-light table had its columns labelled backwards.**
+- **The Performance Card's pad-light table had its columns labeled backwards.**
   `Pad | State` sat over rows reading `Bright | Playing`, which is a light and
   what it means, not a pad and its state — and the reverse of the same table in
   the reference guide. It is now `Light | Means`. The card's gesture table also
@@ -226,7 +243,7 @@ the version and stamps it with the date.
 - **`[interstitial]` is documented** (Chapter 2) — what the card is, the styles
   it takes, the three things that bypass it, and what else happens at a scene
   boundary.
-- Every scene type in the reference guide's catalogue now opens with the same
+- Every scene type in the reference guide's catalog now opens with the same
   three facts: which extra it needs, where it looks for files when `file` is
   omitted, and which display modes it accepts.
 - **The live-tune write-back is documented** (Chapter 6): what `--overwrite`
@@ -244,7 +261,7 @@ the version and stamps it with the date.
   write budget. It is appended rather than inserted, so chapters 1 to 6 keep
   their numbers.
 - ASID and the MIDI scene are no longer written out twice. Chapter 2's
-  catalogue entries state what a *configuration* needs — the keys, the extra,
+  catalog entries state what a *configuration* needs — the keys, the extra,
   the ports — and defer the mechanism to Chapter 4, which is the rule the
   introduction sets and was the one place the book broke it.
 - **Every optional extra is listed in one place**, as the reference guide's new

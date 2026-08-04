@@ -779,9 +779,9 @@ class DisplayModePaletteTest(unittest.TestCase):
         # boundary used to flip code every frame as sensor noise nudged
         # them across. With hysteresis, the previous code "sticks" unless
         # an alternative is meaningfully better. Build a frame whose first
-        # render quantises to a stable {bg0, c1, c2, c3} set, then perturb
+        # render quantizes to a stable {bg0, c1, c2, c3} set, then perturb
         # a handful of pixels by a tiny BGR delta — the bitmap output
-        # should be byte-identical, demonstrating the sticky behaviour.
+        # should be byte-identical, demonstrating the sticky behavior.
         from _fakes import FakeAPI
 
         from c64cast.modes import MultiHiresDisplayMode

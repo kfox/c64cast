@@ -50,7 +50,7 @@ Frames land in `scripts/diags/out/guide/` (git-ignored).
 
 | Figure | Captured from | Notes |
 |---|---|---|
-| `fig-qs-1-hello.png` | `c64cast/examples/hello.toml` | `--burst 110 --at 36.6`, then `centre hb` to pick the frame where HELLO is actually centred |
+| `fig-qs-1-hello.png` | `c64cast/examples/hello.toml` | `--burst 110 --at 36.6`, then `center hb` to pick the frame where HELLO is actually centered |
 | `fig-qs-2-video.png` | [`fig-qs-2-video.toml`](fig-qs-2-video.toml) | `--at 10 -n 14 --spacing 0.7` |
 | `fig-ft-1-slideshow.png` | `c64cast assets/pictures/` | quick playback; `--at 9 -n 18 --spacing 2.5` and pick |
 | `fig-1-1-doctor.png` | `c64cast --doctor --skip-probe` | terminal; see below |
@@ -64,7 +64,7 @@ Frames land in `scripts/diags/out/guide/` (git-ignored).
 
 ### The four-mode plate
 
-One run per mode, then compose the panels into a labelled grid:
+One run per mode, then compose the panels into a labeled grid:
 
 ```bash
 for m in petscii mcm hires mhires; do

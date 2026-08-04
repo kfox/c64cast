@@ -11,7 +11,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `a` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `a` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `agc` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `agc_max_gain_db` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `agc_noise_floor_db` | [Shaping the Signal (4)](05-sound-and-music.md#shaping-the-signal), [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
@@ -32,9 +32,9 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `auto_cycles` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `auto_fit` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` | [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`color` (A)](20-appendix-a-configuration.md#color) |
-| `auto_fit_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [Color pipeline (F)](25-appendix-f-live-targets.md#color-pipeline) |
+| `auto_fit_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `auto_reu` | [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
-| `axis` (effect) | [Effect (F)](25-appendix-f-live-targets.md#effect) |
+| `axis` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 
 ## B
 
@@ -69,8 +69,8 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `callsign` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`callsign` (C)](22-appendix-c-overlays.md#callsign), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | camera | [Validation (1)](02-config-rules.md#validation), [Cameras and Microphones (6)](07-inputs-and-outputs.md#cameras-and-microphones), [Choosing a Camera (6)](07-inputs-and-outputs.md#choosing-a-camera) |
 | `cc_map` | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [Learning a Controller (6)](07-inputs-and-outputs.md#learning-a-controller), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
-| `cell_strategy` | [Which Colours — `cell_strategy` (3)](04-display-pipeline.md#which-colours--cell_strategy), [What to Give Up First (5)](06-under-the-hood.md#what-to-give-up-first), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
-| `cell_strategy` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [Color pipeline (F)](25-appendix-f-live-targets.md#color-pipeline) |
+| `cell_strategy` | [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [What to Give Up First (5)](06-under-the-hood.md#what-to-give-up-first), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
+| `cell_strategy` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `channel_boost` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [`color` (A)](20-appendix-a-configuration.md#color) |
 | character ROM | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Three Network Services (1)](02-config-rules.md#the-three-network-services), [The Character ROM (5)](06-under-the-hood.md#the-character-rom) |
 | `charset_path` | [`preview` (A)](20-appendix-a-configuration.md#preview), [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
@@ -80,11 +80,11 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `clock_port` | [Clock (6)](07-inputs-and-outputs.md#clock), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `col` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`logo` (C)](22-appendix-c-overlays.md#logo) |
 | `[color]` | [Machine Settings (1)](02-config-rules.md#machine-settings), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`color` (A)](20-appendix-a-configuration.md#color) |
+| color RAM | [The Picture (5)](06-under-the-hood.md#the-picture), [Regions and the Dirty Model (5)](06-under-the-hood.md#regions-and-the-dirty-model), [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
 | `color_match` | [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
-| `color_match` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [Color pipeline (F)](25-appendix-f-live-targets.md#color-pipeline) |
+| `color_match` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `color_mode` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
-| `colored_bursts` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
-| colour RAM | [The Picture (5)](06-under-the-hood.md#the-picture), [Regions and the Dirty Model (5)](06-under-the-hood.md#regions-and-the-dirty-model), [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
+| `colored_bursts` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `comp_attack_ms` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `comp_knee_db` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `comp_makeup_auto` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
@@ -100,7 +100,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `controller_profile` | [Learning a Controller (6)](07-inputs-and-outputs.md#learning-a-controller), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `corner` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`callsign` (C)](22-appendix-c-overlays.md#callsign), [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `countdown` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`countdown` (C)](22-appendix-c-overlays.md#countdown), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
-| `cycle_speed` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `cycle_speed` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 
 ## D
 
@@ -114,7 +114,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `dac_curve` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `date_format` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `[debug]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`debug` (A)](20-appendix-a-configuration.md#debug) |
-| `decay` (effect) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [Effect (F)](25-appendix-f-live-targets.md#effect), [The Software (J)](29-appendix-j-glossary.md#the-software) |
+| `decay` (effect) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [`effect` (F)](25-appendix-f-live-targets.md#effect), [The Software (J)](29-appendix-j-glossary.md#the-software) |
 | `--describe` | [What Is In Here](01-introduction.md#what-is-in-here), [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [The Scene Types (2)](03-vocabulary.md#the-scene-types) |
 | `--device` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Flags in Ensemble Mode (1)](02-config-rules.md#flags-in-ensemble-mode) |
 | `device` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Machine Settings (1)](02-config-rules.md#machine-settings), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings) |
@@ -128,33 +128,33 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `dither` | [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither), [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve) |
 | `dither` (audio) | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `dither` (color) | [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [`color` (A)](20-appendix-a-configuration.md#color) |
-| `dither_method` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [Color pipeline (F)](25-appendix-f-live-targets.md#color-pipeline) |
+| `dither_method` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `dither_strength` | [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
-| `dither_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [Color pipeline (F)](25-appendix-f-live-targets.md#color-pipeline) |
+| `dither_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | dithering | [What Is In Here](01-introduction.md#what-is-in-here), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither) |
 | `dma_password` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dma_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
-| `dna` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `dna` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--doctor` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [`--doctor` (1)](02-config-rules.md#--doctor) |
 | `done_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |
-| `dotswarm` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `dotswarm` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | double buffering | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [The Picture (5)](06-under-the-hood.md#the-picture) |
 | `double_buffer` | [`video` (A)](20-appendix-a-configuration.md#video) |
-| `drift` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
-| `drift_speed` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `drift` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
+| `drift_speed` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `[dsp]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `--dump-char-rom` | [`preview` (A)](20-appendix-a-configuration.md#preview), [`big_text` (C)](22-appendix-c-overlays.md#big_text), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `dump_char_rom` | [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `--duration` | [Quick Playback (With Media Args) (G)](26-appendix-g-cli-flags.md#quick-playback-with-media-args) |
 | `duration_s` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Validation (1)](02-config-rules.md#validation), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene) |
-| `duty` (effect) | [Effect (F)](25-appendix-f-live-targets.md#effect) |
+| `duty` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 
 ## E
 
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `effect` | [What Is In Here](01-introduction.md#what-is-in-here), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
+| `effect` | [What Is In Here](01-introduction.md#what-is-in-here), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 | `effects` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `enabled` | [Audio (2)](03-vocabulary.md#audio), [Shaping the Signal (4)](05-sound-and-music.md#shaping-the-signal), [The Machine's Own Keyboard (6)](07-inputs-and-outputs.md#the-machines-own-keyboard) |
 | `enabled` (audio) | [Audio (2)](03-vocabulary.md#audio), [`audio` (A)](20-appendix-a-configuration.md#audio) |
@@ -165,7 +165,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `enabled` (preview) | [The Preview Window (6)](07-inputs-and-outputs.md#the-preview-window), [`preview` (A)](20-appendix-a-configuration.md#preview) |
 | `enabled` (recording) | [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
 | `enabled` (vision) | [Gestures (6)](07-inputs-and-outputs.md#gestures), [`vision` (A)](20-appendix-a-configuration.md#vision) |
-| `epicycle` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `epicycle` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `expander` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `expander_attack_ms` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `expander_floor_db` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
@@ -184,7 +184,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `fft_size` | [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `fg_color` | [`callsign` (C)](22-appendix-c-overlays.md#callsign), [`clock` (C)](22-appendix-c-overlays.md#clock), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |
 | `file` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value) |
-| `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `follower_only` | [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Span and Mirror (6)](07-inputs-and-outputs.md#span-and-mirror), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
 | `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |
@@ -204,31 +204,31 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | Term | See |
 |---|---|
 | `gain` | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`spectrum_bitmap` (C)](22-appendix-c-overlays.md#spectrum_bitmap), [`spectrum_petscii` (C)](22-appendix-c-overlays.md#spectrum_petscii) |
-| `gain` (scene) | [Scope (F)](25-appendix-f-live-targets.md#scope) |
-| `game_of_life` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `gain` (scene) | [`scene` (F)](25-appendix-f-live-targets.md#scene) |
+| `game_of_life` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `generative` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`generative` (2)](03-vocabulary.md#generative), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
 | gesture | [What Ends a Scene (2)](03-vocabulary.md#what-ends-a-scene), [`webcam` (2)](03-vocabulary.md#webcam), [Gestures (6)](07-inputs-and-outputs.md#gestures) |
 | `gesture_cooldown_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `gesture_dwell_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
-| `grow_speed` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `grow_speed` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 
 ## H
 
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `halo` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `halo` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `--heartbeat` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `heartbeat` | [`debug` (A)](20-appendix-a-configuration.md#debug), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `height_frac` | [`spectrum_bitmap` (C)](22-appendix-c-overlays.md#spectrum_bitmap) |
 | `height_rows` | [`spectrum_petscii` (C)](22-appendix-c-overlays.md#spectrum_petscii) |
 | `--help` | [Options (G)](26-appendix-g-cli-flags.md#options) |
-| `hiphotic` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `hiphotic` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `hires` | [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video) |
 | `hires_edges` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow) |
 | `hold_threshold_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
-| `hopalong` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `hopalong` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `host` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`control` (A)](20-appendix-a-configuration.md#control), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
@@ -245,8 +245,8 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `--init` | [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection), [The Extras (I)](28-appendix-i-extras.md#the-extras) |
 | `input_source` | [`launcher` (2)](03-vocabulary.md#launcher), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `--install-char-rom` | [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
-| `intensity` (effect) | [Effect (F)](25-appendix-f-live-targets.md#effect) |
-| `intensity` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `intensity` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
+| `intensity` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `inter_message_pause_s` | [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
 | `interleave_videos` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Single-Scene Mode (1)](02-config-rules.md#single-scene-mode), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next) |
 | `[interstitial]` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`interstitial` (A)](20-appendix-a-configuration.md#interstitial) |
@@ -268,11 +268,11 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 |---|---|
 | `lat` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`weather` (C)](22-appendix-c-overlays.md#weather) |
 | `launcher` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`launcher` (2)](03-vocabulary.md#launcher), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
-| `levels` (effect) | [Effect (F)](25-appendix-f-live-targets.md#effect) |
+| `levels` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 | `limiter` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `limiter_ceiling` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `limiter_release_ms` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
-| `lissajous` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `lissajous` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--list-devices` | [`webcam` (2)](03-vocabulary.md#webcam), [`audio` (A)](20-appendix-a-configuration.md#audio), [`video` (A)](20-appendix-a-configuration.md#video) |
 | `--list-examples` | [Options (G)](26-appendix-g-cli-flags.md#options), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--list-modes` | [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
@@ -294,14 +294,14 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `mandelbrot` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `mandelbrot` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `marquee` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`marquee` (C)](22-appendix-c-overlays.md#marquee), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `max_duration_s` | [`launcher` (2)](03-vocabulary.md#launcher), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `max_items` | [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `mcm` | [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video) |
 | `[menu]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`menu` (A)](20-appendix-a-configuration.md#menu) |
 | `messages` | [`big_text` (C)](22-appendix-c-overlays.md#big_text), [`scrolling_text` (C)](22-appendix-c-overlays.md#scrolling_text) |
-| `metaballs` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `metaballs` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `mhires` | [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video) |
 | `--mic-sensitivity` | [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `mic_sensitivity` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
@@ -326,12 +326,12 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `min_duration_s` | [`launcher` (2)](03-vocabulary.md#launcher), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `min_tracking_confidence` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `mirror` | [`vision` (A)](20-appendix-a-configuration.md#vision), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
-| `mix` (effect) | [Effect (F)](25-appendix-f-live-targets.md#effect) |
+| `mix` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 | `mod_source` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
 | `model_path` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
-| `moire2` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `moire2` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `motion_smoothing` | [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
-| `motion_smoothing` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [Color pipeline (F)](25-appendix-f-live-targets.md#color-pipeline) |
+| `motion_smoothing` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 
 ## N
 
@@ -367,7 +367,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | Term | See |
 |---|---|
 | page flip | [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear), [`video` (A)](20-appendix-a-configuration.md#video) |
-| `palette_mode` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Colours — `cell_strategy` (3)](04-display-pipeline.md#which-colours--cell_strategy), [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing) |
+| `palette_mode` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing) |
 | `palette_mode` (mode) | [Notation](01-introduction.md#notation), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `password` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
 | `path` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
@@ -382,7 +382,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `pitch_mult_mhires` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `pitch_mult_petscii` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `placement` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`spectrum_bitmap` (C)](22-appendix-c-overlays.md#spectrum_bitmap), [`spectrum_petscii` (C)](22-appendix-c-overlays.md#spectrum_petscii) |
-| `plasma` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `plasma` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `[playlist]` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
 | `poll_hz` | [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `poll_interval_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
@@ -401,14 +401,14 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `prompt_to_save` | [The On-C64 Menu (6)](07-inputs-and-outputs.md#the-on-c64-menu), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [`menu` (A)](20-appendix-a-configuration.md#menu) |
 | `provider` | [`weather` (C)](22-appendix-c-overlays.md#weather) |
 | `pulse` | [`midi` (2)](03-vocabulary.md#midi), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features) |
-| `pulse_speed` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `pulse_speed` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 
 ## Q
 
 <!-- table: index -->
 | Term | See |
 |---|---|
-| quantisation | [`slideshow` (2)](03-vocabulary.md#slideshow), [`webcam` (2)](03-vocabulary.md#webcam), [Quantising a Cell (3)](04-display-pipeline.md#quantising-a-cell) |
+| quantization | [`slideshow` (2)](03-vocabulary.md#slideshow), [`webcam` (2)](03-vocabulary.md#webcam), [Quantizing a Cell (3)](04-display-pipeline.md#quantizing-a-cell) |
 
 ## R
 
@@ -416,7 +416,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | Term | See |
 |---|---|
 | raster interrupt | [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
-| `rate` (effect) | [Effect (F)](25-appendix-f-live-targets.md#effect) |
+| `rate` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 | `rate_hz` | [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `reactive` | [`generative` (2)](03-vocabulary.md#generative), [Generators (3)](04-display-pipeline.md#generators), [Listening Back (4)](05-sound-and-music.md#listening-back) |
 | `[recording]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`recording` (A)](20-appendix-a-configuration.md#recording) |
@@ -425,9 +425,9 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `reset_before_launch` | [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `reu_pump_governor` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `rgb_shift` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
-| `ring_freq` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
-| `rorschach` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
-| `rotozoomer` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `ring_freq` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
+| `rorschach` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
+| `rotozoomer` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `row` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`big_text` (C)](22-appendix-c-overlays.md#big_text), [`logo` (C)](22-appendix-c-overlays.md#logo) |
 | `rss` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 
@@ -445,10 +445,10 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `scale` | [Generators (3)](04-display-pipeline.md#generators), [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [Recording (6)](07-inputs-and-outputs.md#recording) |
 | `scale` (preview) | [`preview` (A)](20-appendix-a-configuration.md#preview) |
 | `scale` (recording) | [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
-| `scale` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `scale` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | screen RAM | [The Picture (5)](06-under-the-hood.md#the-picture), [`spectrum_petscii` (C)](22-appendix-c-overlays.md#spectrum_petscii) |
 | `scroll_columns` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
-| `scroll_speed` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `scroll_speed` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `scrolling_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`scrolling_text` (C)](22-appendix-c-overlays.md#scrolling_text), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `separator` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `serial_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
@@ -468,11 +468,11 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `soap` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `song` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`waveform` (B)](21-appendix-b-scene-types.md#waveform) |
 | `songlengths_file` | [Duration and Subtunes (4)](05-sound-and-music.md#duration-and-subtunes), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
-| `source` | [`generative` (2)](03-vocabulary.md#generative), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
+| `source` | [`generative` (2)](03-vocabulary.md#generative), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `source_alignment_marker` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `spectrum_bitmap` | [The Overlays (2)](03-vocabulary.md#the-overlays), [Choosing a Display Mode for an Overlay (2)](03-vocabulary.md#choosing-a-display-mode-for-an-overlay), [`spectrum_bitmap` (C)](22-appendix-c-overlays.md#spectrum_bitmap) |
 | `spectrum_petscii` | [The Overlays (2)](03-vocabulary.md#the-overlays), [Choosing a Display Mode for an Overlay (2)](03-vocabulary.md#choosing-a-display-mode-for-an-overlay), [`spectrum_petscii` (C)](22-appendix-c-overlays.md#spectrum_petscii) |
-| `speed` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `speed` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `speed_cells_per_s` | [`big_text` (C)](22-appendix-c-overlays.md#big_text), [`marquee` (C)](22-appendix-c-overlays.md#marquee), [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `start_s` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`video` (2)](03-vocabulary.md#video), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `storage` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
@@ -500,7 +500,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `time_base` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `trails` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `transport` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Driving a Video (6)](07-inputs-and-outputs.md#driving-a-video), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
-| `tunnel` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `tunnel` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `type` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
 
 ## U
@@ -552,4 +552,4 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `zoom_speed` (source) | [Generator (F)](25-appendix-f-live-targets.md#generator) |
+| `zoom_speed` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |

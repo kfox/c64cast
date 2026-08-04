@@ -830,7 +830,7 @@ def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ign
 
 def run_init(path_arg: str | None) -> tuple[str, bool] | None:
     """Drive the interactive build. Returns (written_path, launch_now) on a
-    successful write, or None if cancelled / dependency missing."""
+    successful write, or None if canceled / dependency missing."""
     q = _ensure_questionary()
     if q is None:
         print(

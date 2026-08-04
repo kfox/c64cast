@@ -12,7 +12,7 @@ and in what order, and to disagree with a default where you have a reason to.
 Appendix A prints every section and every field with the value it holds when
 you say nothing. This chapter is the set of rules those tables obey: which
 file is read, what beats what, and what happens to a line the loader does not
-recognise.
+recognize.
 
 ## Files and Where They Are Found
 
@@ -36,7 +36,7 @@ c64cast --print-example scene-waveform > my.toml
 The name is resolved to a real filesystem path before anything reads the file,
 so everything downstream — the loader, an ensemble master's search for its
 per-system files, `--doctor`, and the on-C64 menu's write-back — sees an
-ordinary path and needs to know nothing about the prefix. An unrecognised name
+ordinary path and needs to know nothing about the prefix. An unrecognized name
 is a usage error, exits 2, and prints the closest name it knows.
 
 The packaged copy lives inside the installation and should be treated as
@@ -88,7 +88,7 @@ climbs the same ladder as a file-driven run.
 Each argument becomes one scene, in the order given, and the extension decides
 which kind:
 
-| Argument | Becomes | Recognised as |
+| Argument | Becomes | Recognized as |
 |---|---|---|
 | A video | a `video` scene | `.mp4` `.avi` `.mkv` `.mov` `.webm` `.m4v` |
 | A tune | a `waveform` scene | `.sid` |
@@ -216,9 +216,9 @@ whichever backend is in use.
 It is not a picture setting. It fixes the two numbers the rest of the program
 derives from: the system frame rate, 60 or 50, which every scene's default
 `target_fps` comes out of; and the CPU clock, 1022727 Hz against 985248, which
-the digitised-audio timer and the host-side SID emulator are computed against.
+the digitized-audio timer and the host-side SID emulator are computed against.
 Told the wrong one, c64cast asks a PAL machine for ten frames a second it will
-never show, plays digitised audio 3.8% off pitch, and runs the oscilloscope's
+never show, plays digitized audio 3.8% off pitch, and runs the oscilloscope's
 emulator on a clock the real chip is not keeping — so the trace drifts against
 the music it is drawing.
 
@@ -253,10 +253,10 @@ page to have open while you are in front of the machine.
 Values are ordinary TOML, but several kinds recur across sections and are
 worth stating once.
 
-**Colours.** Anywhere a colour is taken, it may be a name or an index from 0
+**Colors.** Anywhere a color is taken, it may be a name or an index from 0
 to 15. Names are matched loosely and case-insensitively, so `"light green"`,
 `"lightgreen"` and `"lgrn"` all reach the same entry. A few fields accept
-`"rainbow"` (a colour per row) or `"random"` in addition.
+`"rainbow"` (a color per row) or `"random"` in addition.
 
 **Asset specs.** A scene's `file` is a comma-separated list whose members may
 be literal paths, directories, or glob patterns; their union forms a pool. A
@@ -356,7 +356,7 @@ command line. The point is not to have a second configuration file. The point
 is that `-u`, `-d` and `--sid-model` describe hardware that does not change
 between runs, and retyping them is friction.
 
-The file lives at `~/.config/c64cast/settings.toml`, honouring
+The file lives at `~/.config/c64cast/settings.toml`, honoring
 `$XDG_CONFIG_HOME`; on Windows it is `%APPDATA%\c64cast\settings.toml`.
 `$C64CAST_SETTINGS` overrides the whole path.
 
@@ -539,15 +539,15 @@ on purpose before a show.
 **Parsing.** A TOML syntax error names the file, the line and the column, and
 prints the offending line with a caret under it.
 
-**Loading.** An unknown key inside a section it recognises is dropped with a
-warning naming the section, the key, and the closest key it knows — a misspelt
+**Loading.** An unknown key inside a section it recognizes is dropped with a
+warning naming the section, the key, and the closest key it knows — a misspelled
 `dither_strengh` tells you so. It is a warning rather than an error because a
 configuration written for a newer version should still run. Values are checked
 as they land: a tri-state that is neither boolean nor `"auto"`, a malformed
 camera identifier, an empty audio-device string, and a `[color]` forced-palette
 specification that does not describe a palette all raise here.
 
-A misspelt *section* name is the one class of typo the loader does not report:
+A misspelled *section* name is the one class of typo the loader does not report:
 it looks for the sections it knows, and never asks what else was in the file.
 This is exactly what the `#:schema` line catches, in the editor, as you type.
 

@@ -86,9 +86,9 @@ There is no configuration file involved. c64cast looks at what you handed
 it, decides that a `.mp4` is a video, quantizes each frame down to what the
 VIC-II chip can actually display, and plays the soundtrack through the SID.
 
-![A video clip, quantized live to the C64's multicolour bitmap mode.](img/fig-qs-2-video.png)
+![A video clip, quantized live to the C64's multicolor bitmap mode.](img/fig-qs-2-video.png)
 
-The picture is 160 pixels across with four colours in each 8×8 cell, and it
+The picture is 160 pixels across with four colors in each 8×8 cell, and it
 is being computed and shipped over your network thirty times a second. It's
 not a high-resolution display, but that's the point.
 

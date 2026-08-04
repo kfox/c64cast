@@ -1031,7 +1031,7 @@ class DumpCharRomTest(unittest.TestCase):
         patch.object(self.api, "read_memory", return_value=b"\x00").start()
         with self.assertRaises(RuntimeError) as ctx:
             self.api.dump_char_rom()
-        self.assertIn("never signalled", str(ctx.exception))
+        self.assertIn("never signaled", str(ctx.exception))
 
     def test_a_short_read_back_raises(self):
         def _short(address, length, timeout=1.0):

@@ -101,7 +101,7 @@ TCP to port 64 and port 80 on the Commodore's address.
 
 ### Give It an Address That Does Not Move
 
-While you are in Network Settings, do yourself a favour and pin the address
+While you are in Network Settings, do yourself a favor and pin the address
 down. c64cast is much easier to live with when the C64U is always in the same
 place: you can save the connection target once and never type it again.
 

@@ -1329,7 +1329,7 @@ def run_introspection(args: argparse.Namespace) -> int | None:
 
         result = wizard.run_init(args.init or None)
         if result is None:
-            return 2  # cancelled, or the 'wizard' extra is missing
+            return 2  # canceled, or the 'wizard' extra is missing
         out_path, launch = result
         if launch:
             # Fall through to the normal run path against the file we just

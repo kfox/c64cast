@@ -4,9 +4,9 @@ against after-image / ghost persistence across a hard shot cut.
 
 The ghost the user reports — an outline from the previous shot lingering for a
 couple of seconds after a cut — lives entirely in the percell path's per-cell
-colour histogram EMA (`modes._smoothed_cell_counts`, blended each frame with
+color histogram EMA (`modes._smoothed_cell_counts`, blended each frame with
 `PERCELL_PICK_EMA_ALPHA`). It is a *compose-level* artifact: it is baked into
-the screen/colour/bitmap RAM before anything is pushed to the wire, so a
+the screen/color/bitmap RAM before anything is pushed to the wire, so a
 software-VIC render of the compose output reproduces it exactly, deterministically,
 with no hardware.
 
@@ -14,7 +14,7 @@ This steps a real video window through the production render path
 (`scenes._render_with_overlays` → `Framebuffer`) at a fixed compose framerate,
 sweeping the EMA alpha, and writes a montage: rows = alpha, cols = time samples
 across (and after) the cut. Higher alpha = faster decay = shorter ghost; the
-cost (more per-frame colour churn on noisy content) is what the low default
+cost (more per-frame color churn on noisy content) is what the low default
 0.15 buys. The absolute ghost *duration* depends on `--fps` (the effective
 displayed-frame rate); the *direction* across alphas does not.
 

@@ -21,6 +21,13 @@ These apply whatever the scene's `type` is. The per-type sections below list onl
 | **`orchestrate`**<br>*Type:* `bool`<br>*Default:* `False` | Ensemble: make this system the conductor and broadcast this scene to all others (requires name; ignored single-system). |
 | **`follower_only`**<br>*Type:* `bool`<br>*Default:* `False` | Ensemble: exclude from normal rotation; used only as a broadcast follower override (requires name; excludes orchestrate). |
 
+Every type but `video` takes these as well.
+
+<!-- table: fields -->
+| Key | Description |
+|---|---|
+| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
+
 ## `asid`
 
 Play an incoming ASID MIDI stream on the real SID + 3-voice oscilloscope (bitmap-only).
@@ -36,7 +43,6 @@ auto_cycles = 4
 <!-- table: fields -->
 | Key | Description |
 |---|---|
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`color_mode`**<br>*Type:* `str`<br>*Default:* `'per_voice'` | Oscilloscope coloring: fixed per voice, or by current waveform type. Choices: `per_voice`, `per_waveform`. |
 | **`voice_colors`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Per-voice trace colors (C64 color names) for color_mode=per_voice. |
 | **`waveform_colors`**<br>*Type:* `dict[str, str]`<br>*Default:* `{}` | Per-waveform-type colors (e.g. pulse=cyan) for color_mode=per_waveform. |
@@ -66,7 +72,6 @@ background = 0
 | Key | Description |
 |---|---|
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`audio`**<br>*Type:* `bool \| None`<br>*Default:* `None` | Per-scene audio override. Unset follows [audio].enabled; false mutes this scene only. |
 | **`pre_emphasis`**<br>*Type:* `float \| None`<br>*Default:* `None` | Per-scene HF pre-emphasis (0 = off, ~0.3-0.7 typical; brightens speech). Unset = global [dsp].pre_emphasis / source-aware default. Needs [dsp].enabled + scene audio. |
 | **`border`**<br>*Type:* `int \| str`<br>*Default:* `0` | Border color (blank scenes): a C64 color name (fuzzy + case-insensitive, e.g. "light blue") or a palette index 0..15. |
@@ -90,7 +95,6 @@ reactive = true
 | Key | Description |
 |---|---|
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid. |
 | **`audio`**<br>*Type:* `bool \| None`<br>*Default:* `None` | Per-scene audio override. Unset follows [audio].enabled; false mutes this scene only. |
 | **`source`**<br>*Type:* `str`<br>*Default:* `'plasma'` | Generative video source to render (generative scenes only). Choices: `plasma`, `tunnel`, `fire`, `mandelbrot`, `moire2`, `halo`, `epicycle`, `hopalong`, `rorschach`, `hiphotic`, `metaballs`, `rotozoomer`, `lissajous`, `dna`, `drift`, `colored_bursts`, `dotswarm`, `game_of_life`, `soap`, `fireworks`. |
@@ -120,7 +124,6 @@ reset_before_launch = true
 <!-- table: fields -->
 | Key | Description |
 |---|---|
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid. |
 | **`input_source`**<br>*Type:* `str`<br>*Default:* `'cia'` | What counts as player input to reset the idle timeout: 'cia' (joystick bits at $DC00/$DC01), 'kernal' ($00C5/$00C6, only live while the kernal IRQ runs), 'auto' (both), or 'none' (pure timer, for demos). Never counts C=/SHIFT/CTRL. Choices: `cia`, `kernal`, `auto`, `none`. |
 | **`max_duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Hard ceiling in seconds — advance regardless of input. Unset = no cap (a continuously-played game runs forever). |
@@ -143,7 +146,6 @@ auto_cycles = 4
 <!-- table: fields -->
 | Key | Description |
 |---|---|
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`color_mode`**<br>*Type:* `str`<br>*Default:* `'per_voice'` | Oscilloscope coloring: fixed per voice, or by current waveform type. Choices: `per_voice`, `per_waveform`. |
 | **`voice_colors`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Per-voice trace colors (C64 color names) for color_mode=per_voice. |
 | **`waveform_colors`**<br>*Type:* `dict[str, str]`<br>*Default:* `{}` | Per-waveform-type colors (e.g. pulse=cyan) for color_mode=per_waveform. |
@@ -182,7 +184,6 @@ mod_source = "audio"  # audio | clock | off
 | Key | Description |
 |---|---|
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid. |
 | **`image_duration_s`**<br>*Type:* `float`<br>*Default:* `5.0` | Per-image dwell time before advancing (total runtime is duration_s). |
 | **`aspect_mode`**<br>*Type:* `str`<br>*Default:* `'crop'` | How each image is fit to the C64 4:2.5 aspect: 'crop' (center-crop to fill — the default, edges lost), 'fit' (letterbox/pillarbox so the whole image shows, padded black), or 'stretch' (distort to fill, no padding or cropping). Choices: `crop`, `fit`, `stretch`. |
@@ -237,7 +238,6 @@ time_base = "wallclock"   # wallclock | auto
 <!-- table: fields -->
 | Key | Description |
 |---|---|
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Asset spec (comma-separated paths/dirs/globs). Videos for video, .sid for waveform, images for slideshow, .prg/.crt for launcher, .sid for generative when audio_source = sid. |
 | **`song`**<br>*Type:* `int`<br>*Default:* `0` | SID subtune index to play (0 = the SID's default; 1-based otherwise). For generative scenes, only with audio_source = sid. |
 | **`color_mode`**<br>*Type:* `str`<br>*Default:* `'per_voice'` | Oscilloscope coloring: fixed per voice, or by current waveform type. Choices: `per_voice`, `per_waveform`. |
@@ -266,7 +266,6 @@ text_double_height = false
 | Key | Description |
 |---|---|
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`audio`**<br>*Type:* `bool \| None`<br>*Default:* `None` | Per-scene audio override. Unset follows [audio].enabled; false mutes this scene only. |
 | **`effect`**<br>*Type:* `str \| None`<br>*Default:* `None` | Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to). Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
 | **`effects`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Ordered pixel-effect chain applied before quantization, e.g. effects = ["trails", "rgb_shift", "strobe"]. Each is one of the `effect` choices; layers apply in order and are individually tunable (map a CC to fx0.<param>/fx1.<param>…) and bypass-toggleable live (fx_toggle). Mutually exclusive with the single `effect` field. Empty = none. Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
@@ -294,7 +293,6 @@ mod_source = "audio"  # audio | clock | off
 | Key | Description |
 |---|---|
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 | **`sink_width`**<br>*Type:* `int`<br>*Default:* `320` | WLED sink: virtual LED-matrix width in pixels a sender streams to (wled scenes only). Must match the sender's configured matrix; the display mode downscales it to the C64. Default 320. |
 | **`sink_height`**<br>*Type:* `int`<br>*Default:* `200` | WLED sink: virtual LED-matrix height in pixels a sender streams to (wled scenes only). Must match the sender's configured matrix; the display mode downscales it to the C64. Default 200. |
 | **`effect`**<br>*Type:* `str \| None`<br>*Default:* `None` | Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to). Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
