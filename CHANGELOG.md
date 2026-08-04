@@ -12,6 +12,10 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-08-04
+
 ### Added
 
 - **c64cast reads the C64 character ROM off your own machine.** Every glyph
@@ -452,5 +456,6 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kfox/c64cast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kfox/c64cast/releases/tag/v0.1.0
