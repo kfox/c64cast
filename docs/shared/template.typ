@@ -182,13 +182,37 @@
 // The handful of longer ones wrap, which is the right thing to spend on them.
 // ---------------------------------------------------------------------------
 
-// The identity column is not justified. It holds names, which do not stretch,
-// until the index puts a section title there — and "The BASIC Program
-// Underneath" justified into 1.5in is three words with two rivers through it.
 #let fields-column = 1.5in
-#let fields-table(..args) = {
-  show table.cell.where(x: 0): set par(justify: false)
-  table(columns: (fields-column, 1fr), ..args)
+#let fields-table(..args) = table(columns: (fields-column, 1fr), ..args)
+
+// ---------------------------------------------------------------------------
+// Index locators
+//
+// The index's Markdown links each locator at the section that discusses it,
+// because on github.com the Markdown *is* the book and a section title is the
+// only thing to point at. On paper a title is the wrong locator: the reader is
+// holding a printout, and the answer to "where" is a page.
+//
+// So the same link resolves to the page its target sits on. Set in the folio's
+// own numbering style, read at the target rather than here, so a locator in
+// the front matter prints iv and one in the body prints 84.
+//
+// Duplicates are dropped rather than printed twice: three sections that all
+// discuss one term can easily share a page, and "84, 84, 85" reads as a fault.
+// ---------------------------------------------------------------------------
+
+#let pagerefs(targets) = context {
+  let seen = ()
+  for target in targets {
+    let found = query(target)
+    if found.len() == 0 { continue }
+    let loc = found.first().location()
+    let folio = numbering(numstyle.at(loc), ..counter(page).at(loc))
+    if folio in seen { continue }
+    if seen.len() > 0 { [, ] }
+    seen.push(folio)
+    link(loc, folio)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +244,12 @@
       fill: accent,
       margin: (left: 0.85in, right: 0.85in, top: 1.35in, bottom: 1in),
       header: none,
+      // No folio is printed on an opener — `footer: none` is what does that.
+      // Its `numbering` is deliberately left alone: the folio a page prints
+      // and the label a PDF reader shows in its thumbnail strip come from
+      // different places, and suppressing the numbering as well left every
+      // opener as a gap in the strip that no page number could reach.
       footer: none,
-      numbering: none,
       {
         // Registered inside the opener page so the contents entry points at
         // the opener rather than at the first page of body copy.
@@ -331,24 +359,36 @@
 
 // ---------------------------------------------------------------------------
 // Front matter / body numbering switches
+//
+// Both take the rest of the document and are applied with `#show: frontmatter`
+// rather than called as `#frontmatter()`. A `set page` inside a function body
+// is scoped to that body, so the called form changed nothing the caller could
+// see: the footer read the right style out of `numstyle` and looked correct,
+// while the PDF's own page labels stayed on the document-level "i" from the
+// first page to the last. That is what a reader's thumbnail strip and page-
+// number box show, so a book with arabic folios navigated in roman numerals.
+// Taking the remaining content as an argument puts the set rule in the scope
+// it has to reach.
 // ---------------------------------------------------------------------------
 
-// The roman count is already running by the time this is called -- it starts
+// The roman count is already running by the time this is reached -- it starts
 // at the half-title so the colophon lands on ii, the way a printed book does.
 // This only marks where the numbered front matter begins.
-#let frontmatter() = {
+#let frontmatter(body) = {
   set page(numbering: "i")
   numstyle.update("i")
+  body
 }
 
 // Break to the recto *first*, then restart the count, so that chapter 1's
 // opener page is page 1. Resetting before the break would let the blank verso
 // consume the low numbers, and the contents would point at page 3.
-#let mainmatter() = {
+#let mainmatter(body) = {
   pagebreak(weak: true, to: "odd")
   set page(numbering: "1")
   numstyle.update("1")
   counter(page).update(1)
+  body
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +611,14 @@
     column-gutter: 1.2 * size,
   )
   show table.cell.where(y: 0): set text(weight: "bold")
+
+  // No cell justifies. The document justifies its body copy, and a table
+  // inherited that into columns two and three inches wide: Appendix F's
+  // "Declared by" lists fourteen generator names down a 1.6in column, and
+  // justified they came out as two words a line with a river between them.
+  // Tabular matter is read down rather than across, so ragged right costs
+  // nothing and is what stops a wrapped cell looking broken.
+  show table.cell: set par(justify: false)
 
   // Figures ----------------------------------------------------------------
   show figure: it => block(above: 1.3 * size, below: 1.3 * size, align(center, {

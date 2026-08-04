@@ -277,12 +277,19 @@ That arithmetic is where the default frame-rate caps in Chapter 2 come from. A
 bitmap scene streaming digitised audio is the heaviest case in the program, and
 20 fps is where it fits.
 
-`--profile` prints what is actually happening, per scene, every ten seconds:
+`--profile` prints what is actually happening, per scene, every ten seconds.
+It comes out as one long line per scene; it is broken at its separators here,
+and indented, so that it fits the page:
 
 ```text
-profile[webcam:mcm] n=58 | frame avg=33.4 p50=33.3 p95=34.1 max=41.2 ms |
-  cpu_render avg=12.8 ... | compose avg=5.4 ... | push avg=7.0 ... |
-  wait avg=20.5 ... | writes/frame avg=24 p95=27 | bytes/frame avg=8192
+profile[webcam:mcm] n=58 |
+    frame avg=33.4 p50=33.3 p95=34.1 max=41.2 ms |
+    cpu_render avg=12.8 ... |
+    compose avg=5.4 ... |
+    push avg=7.0 ... |
+    wait avg=20.5 ... |
+    writes/frame avg=24 p95=27 |
+    bytes/frame avg=8192 p95=8192
 u64 dma latency: n=256 avg=5.1 p50=4.9 p95=7.8 max=18.4 ms
 ```
 

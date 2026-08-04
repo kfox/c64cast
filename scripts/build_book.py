@@ -26,6 +26,7 @@ paragraph is worse than one that fails to build:
     ```lang ... ```            code block
     | a | b |                  table (GFM, with alignment row)
     <!-- table: fields -->     the table below is a settings list; see _table
+    <!-- table: index -->      the same, with locators set as page numbers
     a<br>b                     line break inside a table cell
     - / 1.                     lists, nestable by indentation
     **bold** *italic* `code` [text](url)
@@ -79,6 +80,19 @@ LAYOUT_KEYS = {
 # The layout's chapter renderer. A card has no room for the guide's full-page
 # openers, so its "chapters" are drawn as banded headings instead.
 CHAPTER_FN = {"guide": "chapter", "card": "card-chapter"}
+
+# How many characters of a listing fit on one line, per layout.
+#
+# Derived from the template rather than chosen. A guide page is 6.24in with
+# 0.82in margins, a code block insets 0.9 x the 10pt body size on each side,
+# and Inconsolata advances exactly 0.5em -- so 62. A card is us-letter with
+# 0.5in margins in two columns at 8.5pt, which comes to 57.
+#
+# Nothing enforces it at render time: Typst wraps a long line rather than
+# complaining, and a wrapped listing is not obviously wrong on screen -- it
+# reads as a second line of output the program never printed. So the guard is
+# a test (tests/test_book_build.py), and this is the number it holds books to.
+CODE_WIDTH = {"guide": 62, "card": 57}
 
 # Keys naming a file relative to the book directory. They are rewritten to
 # root-relative paths on the way out, because Typst resolves a relative path
@@ -408,6 +422,14 @@ _ULI_RE = re.compile(r"^(?P<indent> *)[-*]\s+(?P<text>.*)$")
 _OLI_RE = re.compile(r"^(?P<indent> *)\d+\.\s+(?P<text>.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:|-]+\|[\s:|-]*$")
 _DIRECTIVE_RE = re.compile(r"^<!--\s*(?P<name>.+?)\s*-->$")
+# The directives a book may write, and what each does to the table below it.
+# Both take the template's fixed field widths; `index` additionally turns the
+# right-hand column's section links into page numbers. See `_locators`.
+_TABLE_DIRECTIVES = {"table: fields": "fields", "table: index": "index"}
+# One index cell: `[A Section (4)](04-file.md#slug), [Another](#slug)`.
+_LINK = r"\[[^\]]+\]\(([^)]+)\)"
+_LINK_RE = re.compile(_LINK)
+_LOCATOR_LIST_RE = re.compile(rf"^{_LINK}(?:,\s*{_LINK})*$")
 # A cell boundary is an *unescaped* pipe. GFM spells a literal one `\|`, which
 # several generated appendices need: a field of type `str | None` and config
 # help that quotes its choices as `'cc'|'note'|'pc'` both carry one, and
@@ -459,7 +481,7 @@ class Converter:
         lines = body.split("\n")
         out: list[str] = []
         i = 0
-        fields_table = False
+        table_kind: str | None = None
         while i < len(lines):
             line = lines[i]
             if not line.strip():
@@ -469,14 +491,13 @@ class Converter:
             directive = _DIRECTIVE_RE.match(line.strip())
             if directive:
                 # An HTML comment, so github.com renders nothing where it sits.
-                # The only one is `table: fields`, which says the table below is
-                # a list of settings rather than a grid of values and should be
-                # set to the width every other such table uses.
-                if directive.group("name") != "table: fields":
-                    fail(
-                        self.path, self.lineno(i), f"unknown directive {directive.group('name')!r}"
-                    )
-                fields_table = True
+                # Both say the table below is a list of settings rather than a
+                # grid of values, and should be set to the width every other
+                # such table uses; see _TABLE_DIRECTIVES.
+                name = directive.group("name")
+                if name not in _TABLE_DIRECTIVES:
+                    fail(self.path, self.lineno(i), f"unknown directive {name!r}")
+                table_kind = _TABLE_DIRECTIVES[name]
                 i += 1
                 continue
 
@@ -498,11 +519,13 @@ class Converter:
                 i += 1
                 continue
             if "|" in line and i + 1 < len(lines) and _TABLE_SEP_RE.match(lines[i + 1]):
-                i = self._table(lines, i, out, fields=fields_table)
-                fields_table = False
+                i = self._table(lines, i, out, kind=table_kind)
+                table_kind = None
                 continue
-            if fields_table:
-                fail(self.path, self.lineno(i), "`table: fields` must be followed by a table")
+            if table_kind:
+                fail(
+                    self.path, self.lineno(i), f"`table: {table_kind}` must be followed by a table"
+                )
             if _ULI_RE.match(line) or _OLI_RE.match(line):
                 i = self._list(lines, i, out)
                 continue
@@ -600,7 +623,27 @@ class Converter:
         out.append(f'#callout(kind: "{kind}")[\n{body}\n]\n')
         return i
 
-    def _table(self, lines: list[str], i: int, out: list[str], *, fields: bool = False) -> int:
+    def _locators(self, text: str, index: int) -> str | None:
+        """An index cell's section links, as the pages they land on.
+
+        The Markdown points at sections because that is the only locator
+        github.com has. In the PDF the reader wants a page, and the template's
+        `pagerefs` resolves one from the same label the link already names — so
+        one source serves both, and neither carries a locator the other cannot
+        follow. Returns None for a cell that is not a plain list of links,
+        which is every other table in the book.
+        """
+        if not _LOCATOR_LIST_RE.match(text.strip()):
+            return None
+        labels = []
+        for href in _LINK_RE.findall(text):
+            target = resolve_section_href(href, self.path, self.lineno(index), self.anchors)
+            if target is None:
+                return None
+            labels.append(f"label({typst_string(target)})")
+        return "#pagerefs((" + ", ".join(labels) + ",))"
+
+    def _table(self, lines: list[str], i: int, out: list[str], *, kind: str | None = None) -> int:
         start = i
 
         def cells(row: str) -> list[str]:
@@ -631,23 +674,27 @@ class Converter:
                     f"table row has {len(row)} cells, header has {ncols}",
                 )
 
-        if fields and ncols != 2:
-            fail(self.path, self.lineno(start), f"a fields table takes 2 columns, not {ncols}")
+        if kind and ncols != 2:
+            fail(self.path, self.lineno(start), f"a {kind} table takes 2 columns, not {ncols}")
 
-        def cell(text: str, index: int) -> str:
+        def cell(text: str, index: int, column: int = 0) -> str:
+            if kind == "index" and column == 1:
+                locators = self._locators(text, index)
+                if locators is not None:
+                    return f"[{locators}]"
             return f"[{self.inline(text, index)}]"
 
         # A fields table gets its widths from the template, which is where every
         # other measurement in the book is decided; an ordinary table lets Typst
         # size its columns to what is in them.
-        call = "#fields-table(" if fields else f"#table(\n  columns: {ncols},"
+        call = "#fields-table(" if kind else f"#table(\n  columns: {ncols},"
         parts = [call, f"  align: ({', '.join(aligns)},),"]
         # A real `table.header`, not just a first row: it repeats when a table
         # splits across a page, and it stops Typst from stranding the header at
         # the foot of one page with its body at the top of the next.
         parts.append("  table.header(" + ", ".join(cell(c, start) for c in header) + "),")
         for offset, row in enumerate(rows, start=start + 2):
-            parts.append("  " + ", ".join(cell(c, offset) for c in row) + ",")
+            parts.append("  " + ", ".join(cell(c, offset, x) for x, c in enumerate(row)) + ",")
         parts.append(")\n")
         out.append("\n".join(parts))
         return i
@@ -881,10 +928,14 @@ def build(book_dir: Path) -> str:
             raise BookError(f"cannot read {colophon_path}: {exc}") from exc
         colophon_conv = Converter(colophon_path, 1, numbers, anchors)
         colophon_conv.title = ""  # the colophon is bare prose, no heading
+        # `#show:` and not `#frontmatter()`: both switches contain a `set page`,
+        # which in Typst reaches only to the end of the block it is written in.
+        # Called, they changed the folio (the footer reads a state) and left the
+        # PDF's own page labels on the document-level roman for all 205 pages.
         out += [
             f"#colophon[\n{colophon_conv.convert(colophon)}\n]",
             "",
-            "#frontmatter()",
+            "#show: frontmatter",
             "",
             "#toc()",
             "",
@@ -893,7 +944,7 @@ def build(book_dir: Path) -> str:
     seen_numbered = False
     for chapter in chapters:
         if layout == "guide" and chapter.number is not None and not seen_numbered:
-            out += ["#mainmatter()", ""]
+            out += ["#show: mainmatter", ""]
             seen_numbered = True
         number_arg = "none" if chapter.number is None else typst_string(chapter.number)
         out.append(

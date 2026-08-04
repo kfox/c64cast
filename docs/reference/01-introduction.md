@@ -21,26 +21,29 @@ Chapter 7 is the exception, and is for a different reader: it is what you need
 to add a scene, an overlay, a generator or an effect to c64cast itself. Nothing
 in the first six chapters depends on it.
 
-Appendices A to I are not prose and are not written by hand. They are generated
-from the same definitions the program answers `--describe`, `--compat` and
-`--print-schema` from, by `scripts/gen_reference_appendices.py`, and they are
-regenerated as part of the build. A table in this book cannot disagree with the
-program it documents; if it ever does, the build is broken and says so.
+Appendices A to I are not prose. Each is a complete table of one kind of thing
+— every configuration field, every scene key, every overlay parameter, every
+flag — read out of the same definitions the program answers `--describe`,
+`--compat` and `--print-schema` from. A table in this book cannot disagree with
+the program it documents. Each opens with a short fragment of a configuration
+file, because a name and a default still leave the question of where the line
+is written.
 
 The chapters name an optional install extra wherever a feature needs one —
 `video` for a video scene, `midi` for a MIDI one, `wled` for the virtual WLED
 device. Appendix I is the whole list, with what each extra unlocks and what it
 installs.
 
-Appendix J is a glossary, which is hand-written because a machine has no
-opinion about which words a reader will not know.
+Appendix J is a glossary of the terms this book uses without stopping.
 
-The index at the back is generated too, and from both halves at once: every
-name the program can utter, against the sections of this book that discuss it.
-A configuration key is listed bare, and again qualified with its section where
-two sections share the name. A section title in ordinary words — "Companding",
-"The Audio Slot" — is an entry in its own right, so the concept can be looked
-up by somebody who does not yet know what it is called.
+The index at the back is every name c64cast answers to, against the pages that
+discuss it. A configuration key is listed bare, and again under its section
+where two sections share the name; a parameter belonging to a generator, an
+effect or a display mode is filed under its own name with the holder in
+parentheses, so `axis` is where you would look for it and `axis (effect)` is
+what you find. A few entries are ordinary words rather than anything the
+program prints — "camera", "dithering" — for the reader who does not yet know
+what it calls the thing.
 
 ## What Is Not
 

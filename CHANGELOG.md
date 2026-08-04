@@ -109,13 +109,60 @@ the version and stamps it with the date.
 - **The Programmer's Reference Guide has an index**, and it is generated like
   its appendices. Every name the program can utter goes in — configuration
   sections and keys, command-line flags, scene types, overlays, display modes,
-  generators, effects and live-tune targets — against the sections of the book
-  that discuss it, the section written about the name first and the table it
-  appears in last. Section titles are entries too, so "Companding" and "The
-  Audio Slot" can be looked up by a reader who does not yet know which key they
-  mean. A key is listed bare, and again qualified with its section where two
-  sections share the name, which is the rule the book's own Notation section
-  states. Every locator is a link that works on github.com and in the PDF alike.
+  generators, effects and live-tune targets — against the pages that discuss it.
+  Locators are **clickable page numbers** in the PDF and section links on
+  github.com, from the one source, because the Markdown is the book in one place
+  and there are no pages in the other. A key is listed bare, and again under its
+  section where two sections share the name; a parameter belonging to a
+  generator, an effect or a display mode is filed under its own name with the
+  holder in parentheses, so `axis` is where you look and `axis (effect)` is what
+  you find. A short curated set of ordinary words — "camera", "dithering",
+  "display mode" — is in there for the reader who does not yet know what the
+  program calls the thing. Section *titles* are deliberately not entries: a
+  topic belongs to the contents page, and nobody looks up "Saving What a Run
+  Changed".
+- **Each appendix section opens with a worked TOML fragment.** A table of
+  settings says what each one means and nothing about where the line is
+  written, which left a reader who had found the right knob holding a name and
+  no file. Every configuration section, scene type, overlay, generator, effect
+  and live-tune mapping now shows the two or three lines that put it in a file,
+  with a key's choices as a trailing comment. The fragments are generated from
+  the same model as the tables under them and carry only real defaults — a key
+  with no default is named in a comment rather than given an invented value.
+- **The appendices are in alphabetical order.** Configuration sections and scene
+  types were in declaration order, which reads well in the annotated example
+  file and is no use in a book nobody reads in order — finding `[wled]` meant
+  paging through nineteen sections in an order you could not predict. Overlays
+  were already sorted.
+- **A field's type and default say which is which.** The two lines under a name
+  in every appendix table were bare — `str` over `'serial'` — and only obvious
+  to somebody who already knew. They are now labelled *Type:* and *Default:*.
+- **The PDF navigates in the numbers it prints.** Page labels — what a reader's
+  thumbnail strip and page-number box show — were lowercase roman from the cover
+  to the index, on a book whose body is numbered in arabic, so "page 84" and
+  page 84 were different pages. The switch at the start of the body now reaches
+  the whole document, and a chapter opener is labelled instead of leaving a gap
+  in the strip. Both books.
+- **Reference tables read better.** No table cell justifies any more: Appendix
+  F's "Declared by" lists fourteen generator names down a 1.6in column, and
+  justified they came out as two words a line with a river through them. Ranges
+  and value counts are set as literals rather than in the body face, where their
+  digits stood taller than the mono names beside them and read as the largest
+  thing in the table. Appendix E no longer repeats `source.` and `effect.` on
+  every one of fifty lines — the holder is stated once above each table — and
+  index entries are no longer emboldened, which was setting one column in two
+  faces at two apparent sizes.
+- **The books no longer talk about their own build.** "Generated from the code by
+  `scripts/gen_reference_appendices.py`. Edits here are overwritten" opened every
+  appendix and the index; the glossary explained that it was hand-written
+  "because a machine has no opinion about which words a reader will not know".
+  None of that is for the reader. What the appendices *are* is still said once,
+  in the introduction and the colophon, where it belongs.
+- **No listing wraps.** Typst wraps an over-long line in a code block rather
+  than complaining, and a wrapped listing does not look broken — it looks like a
+  line the program never printed. `--profile`'s sample came out as six lines of
+  four and a class definition wrapped mid-signature. Every listing in all three
+  books now fits its measure, and a test holds them to it.
 - **The Programmer's Reference Guide is illustrated.** Five diagrams, for the
   five things in it that are spatial and were being carried entirely by prose:
   the precedence ladder with the extra rung an ensemble inserts, the twelve-step
@@ -222,6 +269,11 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **The reference guide offered `https://` as a way to reach a C64U.** The
+  machine's REST service is plain HTTP on the ordinary port and has no access
+  control of its own, so a reader who followed the table got a connection
+  failure. The connection-target tables now show `http://` only, and the prose
+  says what the link actually is and points at `SECURITY.md`.
 - `--doctor` never reported the `wled` extra, so a missing `zeroconf` — the one
   thing standing between `[wled].listen` and a WLED app that can discover the
   virtual device — showed up as silence in the one command whose job is to say

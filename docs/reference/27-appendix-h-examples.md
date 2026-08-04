@@ -5,9 +5,6 @@ generated: true
 
 # Example Configurations
 
-*Generated from the code by `scripts/gen_reference_appendices.py`.
-Edits here are overwritten; run `make reference-appendices`.*
-
 The 68 runnable configurations that ship inside the package. Run one with `c64cast --config example:NAME`, or copy it out to edit with `c64cast --print-example NAME > c64cast.toml`. Each summary is read from the file's own header comment.
 
 ## The Demos

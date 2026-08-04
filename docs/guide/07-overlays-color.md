@@ -98,7 +98,9 @@ or to a specific list of them:
 ```toml
 [color]
 force_palette = true
-force_palette_colors = ["black", "blue", "light blue", "white"]
+force_palette_colors = [
+  "black", "blue", "light blue", "white",
+]
 ```
 
 This is a deliberate stylistic effect rather than a fidelity improvement.

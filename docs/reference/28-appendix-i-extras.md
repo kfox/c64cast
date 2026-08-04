@@ -5,9 +5,6 @@ generated: true
 
 # Optional Extras
 
-*Generated from the code by `scripts/gen_reference_appendices.py`.
-Edits here are overwritten; run `make reference-appendices`.*
-
 The 12 groups of dependency that a plain install leaves out, what each one unlocks, the module `c64cast --doctor` imports to tell you it is there, and the packages it brings with it.
 
 ## The Extras

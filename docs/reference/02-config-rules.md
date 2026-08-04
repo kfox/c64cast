@@ -129,14 +129,18 @@ The scheme picks the backend; the rest is that backend's endpoint.
 | Target | Reaches |
 |---|---|
 | `u64://HOST[:PORT]` | A C64U, over REST and the socket DMA service |
-| `http://HOST`, `https://HOST` | The same machine, with the URL handed to the REST client verbatim |
+| `http://HOST` | The same machine, with the URL handed to the REST client verbatim |
 | `tr://` | A TeensyROM+ over USB serial, on the device it detects |
 | `tr:///dev/cu.usbmodemXYZ` | A TeensyROM+ on that serial device node |
 | `tr://COM3` | The same, spelled the way Windows spells a serial port |
 | `tr://HOST[:PORT]` | A TeensyROM+ over raw TCP, port 2112 unless you say otherwise |
 
-`http(s)` is not a guess. The C64U is the only backend that speaks HTTP at
-all, so the scheme names it as definitely as `u64://` does.
+`http` is not a guess. The C64U is the only backend that speaks HTTP at all,
+so the scheme names it as definitely as `u64://` does. Plain HTTP is also all
+it speaks: its REST service is unencrypted and on the ordinary port, and it
+has no access control of its own — the DMA password guards the DMA socket,
+not this. Anything that can reach the machine can drive it. `SECURITY.md` in
+the repository lists every surface this applies to.
 
 The serial-versus-TCP split for `tr://` falls out of the shape of the URL: no
 host means serial, a host means TCP, and a `COM<n>` host means a Windows
@@ -156,7 +160,7 @@ file sets directly, and the ones Appendix A documents:
 | Target | `backend` | And in that backend's section |
 |---|---|---|
 | `u64://192.168.2.64` | `ultimate` | `url = "http://192.168.2.64"` |
-| `https://c64.local` | `ultimate` | `url = "https://c64.local"` |
+| `http://c64.local` | `ultimate` | `url = "http://c64.local"` |
 | `tr://` | `teensyrom` | `transport = "serial"` |
 | `tr:///dev/cu.usbmodem1234` | `teensyrom` | `transport`, `serial_port` |
 | `tr://10.0.0.9:2113` | `teensyrom` | `transport = "tcp"`, `host`, `tcp_port` |
@@ -192,7 +196,8 @@ its SD card, or a USB stick.
 
 ```bash
 c64cast -u 'u64://192.168.2.64?dma_port=64'
-c64cast -u 'tr:///dev/cu.usbmodem1234?baud=2000000&storage=usb'
+c64cast -u 'tr:///dev/cu.usbmodem1234?baud=2000000'
+c64cast -u 'tr://10.0.0.9?tcp_port=2113&storage=usb'
 ```
 
 Quote the target in a shell that treats `?` or `&` as its own.

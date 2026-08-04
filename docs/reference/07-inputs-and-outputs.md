@@ -114,7 +114,8 @@ them is configuration the `[color]` section can hold, so none is offered back.
 ```toml
 [video]
 device = 0                  # an OpenCV index
-device = "Cam Link"         # a case-insensitive substring of the camera's name
+device = "Cam Link"    # a case-insensitive substring
+                       #   of the camera's name
 device = "0fd9:0066"        # a USB vendor:product identifier
 ```
 
@@ -457,8 +458,9 @@ needs no extra.
 
 ```toml
 [wled]
-broadcast = "enabled"         # the multicast group — every listener on the segment
-# broadcast = "10.0.0.42"     # or one device, unicast
+broadcast = "enabled"      # the multicast group: every
+                           #   listener on the segment
+# broadcast = "10.0.0.42"  # or one device, unicast
 rate_hz = 50
 ```
 
