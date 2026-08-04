@@ -64,10 +64,10 @@ thing: a comma-separated list of files, directories and glob patterns, whose
 union forms a pool. Point it at a directory and you get everything in it.
 
 ```toml
-file = "~/Pictures/holiday.jpg"                 # one picture
-file = "~/Pictures"                             # a whole directory
-file = "~/Pictures/*.png"                       # a pattern
-file = "~/Pictures, ~/Downloads/*.jpg"          # both
+file = "~/Pictures/holiday.jpg"         # one picture
+file = "~/Pictures"                     # a whole directory
+file = "~/Pictures/*.png"               # a pattern
+file = "~/Pictures, ~/Downloads/*.jpg"  # both
 ```
 
 > [!NOTE]

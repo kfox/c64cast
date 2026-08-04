@@ -267,11 +267,154 @@ def identity(*lines: str) -> str:
     return "<br>".join([f"**{kept[0]}**", *kept[1:]])
 
 
+def typed(fd: introspect.FieldDoc | introspect.ParamDoc) -> str:
+    """A setting's identity: its name, then its type and default, each named.
+
+    The two lines under the name were bare -- ``str`` over ``'serial'`` -- and
+    which was which was only obvious to somebody who already knew. They are
+    three facts of different kinds stacked in one column, so each says what
+    kind it is; the labels are prose rather than mono, which also stops the
+    block from reading as one unbroken run of code.
+    """
+    return identity(
+        code(fd.name),
+        f"*Type:* {code(fd.type)}" if fd.type else "",
+        f"*Default:* {fmt_default(fd.default)}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Worked fragments
+# ---------------------------------------------------------------------------
+#
+# A table of settings says what each one means and nothing about where it is
+# written, which leaves a reader who has found the right knob still holding a
+# name and no file. Every appendix that documents something configurable opens
+# its section with the two or three lines that put it in a file.
+#
+# The fragments are generated from the same model as the tables under them, so
+# a renamed field cannot leave a stale example behind it. Values are defaults,
+# never invented: a snippet showing `file = "clip.mp4"` would be the one line
+# on the page that the program had never agreed to.
+
+# How wide a fragment's lines may be before the PDF wraps them. Borrowed from
+# `build_book.py`, which is where the measure is derived and where the test
+# that holds every listing in every book to it reads the number from.
+CODE_WIDTH = bb.CODE_WIDTH["guide"]
+
+# Settings per fragment. Enough to show the shape; past this it stops being an
+# illustration and starts being a configuration file the reader has to read.
+_SNIPPET_KEYS = 4
+
+
+def toml_literal(value: object) -> str | None:
+    """`value` as TOML, or None when a fragment is better off without it.
+
+    A fragment exists to show placement, so it carries only settings whose
+    default *is* a usable value. An empty string, a `None` and a required field
+    are all the same case -- the program has no answer, and the alternative is
+    to invent one.
+    """
+    if value is introspect._REQUIRED or value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return f"{value:g}" if isinstance(value, float) else str(value)
+    if isinstance(value, str):
+        return f'"{value}"' if value else None
+    return None
+
+
+def snippet(
+    header: str,
+    rows: Sequence[tuple[str, str, str]],
+    *,
+    indent: str = "",
+    required: Sequence[str] = (),
+) -> list[str]:
+    """A fenced TOML fragment: a table header and some `key = value` lines.
+
+    Choices ride along as a trailing comment, aligned into a column, which is
+    both the house style of the packaged examples and the one thing a reader
+    writing a file wants next to the key. A comment that would push the line
+    past the measure is dropped rather than wrapped -- it is a convenience,
+    and the table below the fragment has the full list.
+
+    A required key has no default, so it cannot be shown as a value without
+    inventing one. It is named in a comment instead: leaving it out silently
+    would make every fragment for an overlay like `big_text` a block that does
+    not run, which is worse than a fragment that says what is missing.
+    """
+    if not rows and not required:
+        return []
+    body = [f"{indent}{key} = {value}" for key, value, _ in rows]
+    width = max((len(line) for line in body), default=0)
+    out = []
+    for line, (_, _, comment) in zip(body, rows, strict=True):
+        padded = f"{line.ljust(width)}  # {comment}" if comment else line
+        out.append(padded if len(padded) <= CODE_WIDTH else line)
+    # Last, not first: a note naming a key the lines above do not set reads as
+    # a caption on the block rather than as a correction to it.
+    if required:
+        names = ", ".join(required)
+        tail = "have no defaults" if len(required) > 1 else "has no default"
+        out.append(f"{indent}# also required: {names} — {tail}")
+    return ["```toml", f"{indent}{header}", *out, "```", ""]
+
+
+def required_names(fields: Iterable[introspect.FieldDoc | introspect.ParamDoc]) -> list[str]:
+    """The keys with no default, which a fragment has to name rather than set."""
+    return [fd.name for fd in fields if fd.default is introspect._REQUIRED]
+
+
+def sample_rows(
+    fields: Iterable[introspect.FieldDoc | introspect.ParamDoc],
+    *,
+    first: Sequence[tuple[str, str, str]] = (),
+    limit: int = _SNIPPET_KEYS,
+) -> list[tuple[str, str, str]]:
+    """The settings a fragment shows, in the order the program declares them.
+
+    Declaration order and not alphabetical: `config.py` lists a section's most
+    consequential field first, and a fragment is meant to be the beginning of a
+    real file rather than the first four names in the alphabet.
+    """
+    rows = list(first)
+    for fd in fields:
+        if len(rows) >= limit:
+            break
+        value = toml_literal(fd.default)
+        if value is None or any(row[0] == fd.name for row in rows):
+            continue
+        # Only a config field declares its choices; an overlay parameter states
+        # them in its help, where a fragment cannot get at them cleanly.
+        choices: Sequence[str] = getattr(fd, "choices", ())
+        rows.append((fd.name, value, " | ".join(choices)))
+    return rows
+
+
+def scalar_range(lo: float, hi: float) -> str:
+    """A live parameter's range, set as a literal.
+
+    In the body face its digits stand a good deal taller than the mono name
+    beside them -- Jost's figures reach 0.700em against Inconsolata's 0.623em
+    -- and a column of ranges read as the largest thing in the table. As a
+    literal the whole column is one face, which is also what it is: values.
+
+    The dash keeps its spaces. `-2–2` is two characters of punctuation running
+    together and reads as one glyph nobody can name; `-2 – 2` is a range with
+    a negative low end.
+    """
+    return code(f"{lo:g} – {hi:g}")
+
+
 def fields_table(
     label: str,
     rows: Iterable[Sequence[str]],
     *,
     description: str = "Description",
+    directive: str = "table: fields",
 ) -> list[str]:
     """A two-column table: :func:`identity` on the left, prose on the right.
 
@@ -280,19 +423,21 @@ def fields_table(
     shape uses -- so a scene key, an overlay parameter and a CLI flag all line
     up down the book instead of each being sized to its own longest entry.
 
-    The right-hand heading is a parameter only because the index's right column
-    holds locators rather than a description; every appendix takes the default.
+    The heading and the directive are parameters only because the index is the
+    same shape carrying locators rather than descriptions; every appendix takes
+    both defaults.
     """
     body = table([label, description], rows)
-    return ["<!-- table: fields -->", *body] if body else []
+    return [f"<!-- {directive} -->", *body] if body else []
 
 
 def front_matter(number: str, title: str, blurb: str) -> list[str]:
     """The header every generated chapter opens with.
 
-    `generated: true` is the marker :func:`main` deletes by and a human is
-    warned by; the visible line under the title says the same thing to somebody
-    reading the PDF, who cannot see front matter at all.
+    `generated: true` is the marker :func:`main` deletes by and a human editing
+    one is warned by. It stays in the front matter, which neither renderer
+    prints: how this file came to exist is the repository's business, and a
+    reader of the book is owed the appendix rather than a note about the build.
     """
     return [
         "---",
@@ -301,9 +446,6 @@ def front_matter(number: str, title: str, blurb: str) -> list[str]:
         "---",
         "",
         f"# {title}",
-        "",
-        "*Generated from the code by `scripts/gen_reference_appendices.py`.",
-        "Edits here are overwritten; run `make reference-appendices`.*",
         "",
         blurb,
         "",
@@ -316,28 +458,33 @@ def front_matter(number: str, title: str, blurb: str) -> list[str]:
 
 
 def appendix_config() -> list[str]:
-    sections = introspect.config_sections()
+    # Alphabetical. `config_sections()` is in declaration order, which is the
+    # order the annotated example file reads in and is a reasonable narrative;
+    # an appendix is not read in order, it is looked things up in, and twenty
+    # sections in an order the reader cannot predict means paging through all
+    # of them to find `[wled]`.
+    sections = sorted(introspect.config_sections(), key=lambda s: s.name)
     total = sum(len(s.fields) for s in sections)
     out = front_matter(
         "A",
         "Configuration Sections",
-        f"Every section of a configuration file: {len(sections)} sections and {total} "
-        "fields, with the type each takes and the value it holds when you say nothing. "
-        "A field a knob can move mid-show says so, and names the target Appendix F "
-        "lists it under. `c64cast --describe section:NAME` prints any one of these at "
-        "the terminal.",
+        f"Every section of a configuration file, in alphabetical order: {len(sections)} "
+        f"sections and {total} fields, with the type each takes and the value it holds "
+        "when you say nothing. A field a knob can move mid-show says so, and names the "
+        "target Appendix F lists it under. Each section opens with a fragment showing "
+        "how it is written; the table under it is the whole section. `c64cast "
+        "--describe section:NAME` prints any one of these at the terminal.",
     )
     for section in sections:
         out += [f"## `[{section.name}]`", ""]
         if section.help:
             out += [prose(section.help), ""]
-        rows = [
-            [
-                identity(code(fd.name), code(fd.type), fmt_default(fd.default)),
-                describe(section.name, fd),
-            ]
-            for fd in section.fields
-        ]
+        out += snippet(
+            f"[{section.name}]",
+            sample_rows(section.fields),
+            required=required_names(section.fields),
+        )
+        rows = [[typed(fd), describe(section.name, fd)] for fd in section.fields]
         out += fields_table("Field", rows)
     return out
 
@@ -348,7 +495,8 @@ def appendix_config() -> list[str]:
 
 
 def appendix_scenes() -> list[str]:
-    types = introspect.scene_types()
+    # Alphabetical, for the reason Appendix A is; see the note there.
+    types = sorted(introspect.scene_types(), key=lambda s: s.name)
     # A field carried by every type is a property of scenes in general, not of
     # any one of them. Printing all six ten times would bury the handful of
     # keys that actually distinguish a waveform scene from a launcher.
@@ -360,10 +508,11 @@ def appendix_scenes() -> list[str]:
     out = front_matter(
         "B",
         "Scene Types",
-        f"The {len(types)} kinds of scene a `[[scenes]]` block can be, and the keys each "
-        "one reads. A key marked *live-tunable* can be moved by a knob mid-show; one "
-        "marked *menu-live* is one the on-C64 menu can change without rebuilding the "
-        "scene. `c64cast --describe scene:NAME` prints any one of these at the terminal.",
+        f"The {len(types)} kinds of scene a `[[scenes]]` block can be, in alphabetical "
+        "order, and the keys each one reads. A key marked *live-tunable* can be moved "
+        "by a knob mid-show; one marked *menu-live* is one the on-C64 menu can change "
+        "without rebuilding the scene. `c64cast --describe scene:NAME` prints any one "
+        "of these at the terminal.",
     )
     out += ["## Keys Every Scene Takes", ""]
     out += [
@@ -373,16 +522,11 @@ def appendix_scenes() -> list[str]:
         ),
         "",
     ]
-    out += fields_table(
-        "Key",
-        [
-            [
-                identity(code(fd.name), code(fd.type), fmt_default(fd.default)),
-                describe("scenes", fd),
-            ]
-            for fd in common
-        ],
-    )
+    # No fragment here. The common keys have no shape of their own -- a
+    # `[[scenes]]` block is always one of the ten types below, and a fragment
+    # written around this list would have to pick a `type` at random and print
+    # it as though it were the general case.
+    out += fields_table("Key", [[typed(fd), describe("scenes", fd)] for fd in common])
 
     for sd in types:
         # The name alone. `type = "webcam"` is how it is written in a file, but
@@ -394,16 +538,14 @@ def appendix_scenes() -> list[str]:
         if sd.displays:
             modes = ", ".join(code(d) for d in sd.displays)
             out += [prose(f"Display modes: {modes}."), ""]
-        rows = [
-            [
-                identity(code(fd.name), code(fd.type), fmt_default(fd.default)),
-                describe("scenes", fd),
-            ]
-            for fd in sd.fields
-            if fd.name not in common_names
-        ]
-        if rows:
-            out += fields_table("Key", rows)
+        own = [fd for fd in sd.fields if fd.name not in common_names]
+        out += snippet(
+            "[[scenes]]",
+            sample_rows(own, first=[("type", f'"{sd.name}"', "")]),
+            required=required_names(own),
+        )
+        if own:
+            out += fields_table("Key", [[typed(fd), describe("scenes", fd)] for fd in own])
         else:
             out += [prose("No keys beyond the common ones above."), ""]
     return out
@@ -441,20 +583,16 @@ def appendix_overlays() -> list[str]:
             notes.append("only on " + ", ".join(code(m) for m in od.compatible_modes))
         if notes:
             out += [prose("Restrictions: " + "; ".join(notes) + "."), ""]
-        out += fields_table(
-            "Parameter",
-            [
-                [
-                    identity(
-                        code(p.name),
-                        code(p.type) if p.type else "",
-                        fmt_default(p.default),
-                    ),
-                    cell(p.help),
-                ]
-                for p in od.params
-            ],
+        # Indented two spaces, as the packaged examples write it: an overlay
+        # table is nested inside the scene it decorates, and the indentation is
+        # what says so at a glance in a file TOML itself reads flat.
+        out += snippet(
+            "[[scenes.overlays]]",
+            sample_rows(od.params, first=[("type", f'"{od.name}"', "")]),
+            indent="  ",
+            required=required_names(od.params),
         )
+        out += fields_table("Parameter", [[typed(p), cell(p.help)] for p in od.params])
     return out
 
 
@@ -503,25 +641,32 @@ def appendix_compat() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _live_params(holder: str, cls: type) -> list[str]:
+def _live_params(cls: type) -> list[str]:
     """What a knob can reach on this generator or effect, one per line.
 
     A line each rather than one run of commas: they share the identity column
     with the name, and a generator with four of them would otherwise set as a
     paragraph of mono in a column narrower than the paragraph.
 
-    Each is written with its holder — `source.speed`, not `speed` — because
-    that is the string a `cc_map` entry has to carry, and printing the bare
-    name made the reader translate a table into Appendix F's spelling to use
-    it.
+    The holder is *not* repeated on every line. It was, so that a line could be
+    copied into a `cc_map` unchanged -- but it is the same word on all fifty of
+    them, and at 1.5in `source.scroll_speed` is the entry that decides the
+    column's width for the sake of a prefix the reader already knows from the
+    heading. The section above each table gives it once.
     """
     params: dict[str, tuple[float, float]] = getattr(cls, "LIVE_PARAMS", {}) or {}
     choices: dict[str, tuple[str, ...]] = getattr(cls, "LIVE_CHOICES", {}) or {}
-    bits = [f"{code(f'{holder}.{name}')} {lo:g}–{hi:g}" for name, (lo, hi) in params.items()]
-    bits += [
-        f"{code(f'{holder}.{name}')} ({len(values)} values)" for name, values in choices.items()
-    ]
+    bits = [f"{code(name)} {scalar_range(lo, hi)}" for name, (lo, hi) in params.items()]
+    bits += [f"{code(name)} {code(f'{len(values)} values')}" for name, values in choices.items()]
     return bits
+
+
+# The names the two fragments in Appendix E are written around. Constants
+# rather than "whatever the registry lists first", so the examples stay the
+# ones worth showing; tests/test_reference_appendices.py resolves each against
+# its registry, so a rename cannot leave a fragment naming nothing.
+_SAMPLE_GENERATOR = "plasma"
+_SAMPLE_EFFECTS = ("mirror", "trails")
 
 
 def appendix_generators() -> list[str]:
@@ -530,11 +675,9 @@ def appendix_generators() -> list[str]:
         "Generators and Effects",
         f"The {len(generators.REGISTRY)} procedural sources a `generative` scene can "
         f"draw from, and the {len(effects.REGISTRY)} effects that can be layered over "
-        "any scene. Each entry lists what a knob can reach while the show is running "
-        "under its name, spelled as the `target` a `param` mapping takes — so a line "
-        "here can be copied into a `cc_map` unchanged. Appendix F is the same targets "
-        "the other way round: one row each, with every generator or effect that "
-        "declares it.",
+        "any scene. Each entry lists what a knob can reach under its name while the "
+        "show is running. Appendix F is the same parameters the other way round: one "
+        "row each, with every generator or effect that declares it.",
     )
     out += ["## Generators", ""]
     out += [
@@ -544,13 +687,25 @@ def appendix_generators() -> list[str]:
         ),
         "",
     ]
+    out += snippet(
+        "[[scenes]]",
+        [
+            ("type", '"generative"', ""),
+            ("source", f'"{_SAMPLE_GENERATOR}"', "any generator below"),
+        ],
+    )
+    out += [
+        prose(
+            "A parameter below is reached live as `source.NAME` — a knob on this "
+            'scene\'s `source` is mapped with `target = "source.speed"`. It moves '
+            "nothing unless the generator declaring it is the one on screen."
+        ),
+        "",
+    ]
     out += fields_table(
         "Generator",
         [
-            [
-                identity(code(name), *_live_params("source", cls)),
-                cell(first_sentence(cls.__doc__ or "")),
-            ]
+            [identity(code(name), *_live_params(cls)), cell(first_sentence(cls.__doc__ or ""))]
             for name, cls in generators.REGISTRY.items()
         ],
     )
@@ -563,13 +718,25 @@ def appendix_generators() -> list[str]:
         ),
         "",
     ]
+    out += snippet(
+        "[[scenes]]",
+        [
+            ("type", '"generative"', ""),
+            ("source", f'"{_SAMPLE_GENERATOR}"', ""),
+            ("effects", "[" + ", ".join(f'"{e}"' for e in _SAMPLE_EFFECTS) + "]", "in order"),
+        ],
+    )
+    out += [
+        prose(
+            "A parameter below is reached live as `effect.NAME`, and applies to "
+            "whichever effect in the chain declares it."
+        ),
+        "",
+    ]
     out += fields_table(
         "Effect",
         [
-            [
-                identity(code(name), *_live_params("effect", cls)),
-                cell(first_sentence(cls.__doc__ or "")),
-            ]
+            [identity(code(name), *_live_params(cls)), cell(first_sentence(cls.__doc__ or ""))]
             for name, cls in effects.REGISTRY.items()
         ],
     )
@@ -585,11 +752,19 @@ def _live_target_rows(targets: Sequence[introspect.LiveTargetDoc]) -> list[list[
     rows = []
     for t in targets:
         if t.kind == "scalar":
-            span = f"{t.lo:g} – {t.hi:g}" if t.lo is not None and t.hi is not None else ""
+            span = scalar_range(t.lo, t.hi) if t.lo is not None and t.hi is not None else ""
         else:
             span = ", ".join(code(c) for c in t.choices)
-        rows.append([code(t.target), t.kind, span, ", ".join(code(o) for o in t.owners)])
+        # The kind is a literal too. Left in the body face it was the one
+        # proportional column in a table of mono, and Jost against Inconsolata
+        # at an equal size reads as a larger word -- so `scalar` was the
+        # loudest thing in a row, which is not what a reader is looking for.
+        rows.append([code(t.target), code(t.kind), span, ", ".join(code(o) for o in t.owners)])
     return rows
+
+
+# The target the appendix's fragment is written around; a test resolves it.
+_SAMPLE_TARGET = "effect.decay"
 
 
 def appendix_live_targets() -> list[str]:
@@ -602,6 +777,24 @@ def appendix_live_targets() -> list[str]:
         "action in `[[midi_control.cc_map]]`. A knob sweeps a scalar or bucket-"
         "selects a choice; a pad steps a choice on.",
     )
+    out += ["## Mapping One", ""]
+    out += snippet(
+        "[[midi_control.cc_map]]",
+        [
+            ("type", '"cc"', "cc | note | pc"),
+            ("number", "13", "the controller number"),
+            ("action", '"param"', ""),
+            ("target", f'"{_SAMPLE_TARGET}"', "a row below"),
+        ],
+    )
+    out += [
+        prose(
+            "A target is only live while something that declares it is on screen — "
+            "the *Declared by* column is that list. A knob on a target the running "
+            "scene does not declare moves nothing, silently."
+        ),
+        "",
+    ]
     for group in dict.fromkeys(t.group for t in targets):
         out += [f"## {group}", ""]
         out += table(
@@ -759,14 +952,17 @@ _MAX_LOCATORS = 3
 class Term:
     """One index entry.
 
-    `key` is what a code span has to say for the term to be found; `display` is
+    `key` is what the scan has to find for the term to be entered; `display` is
     how the entry prints; `sort` is what it files under, which is neither --
-    `--config` files under C and ``[audio]`` under A.
+    `--config` files under C and ``[audio]`` under A. `qualifier` is the holder
+    a dotted name was split from, and only orders the run of entries that share
+    a `sort`: bare `dither` before `dither (audio)` before `dither (color)`.
     """
 
     key: str
     display: str
     sort: str
+    qualifier: str = ""
 
 
 @dataclass(frozen=True)
@@ -780,15 +976,14 @@ class Locator:
     order: tuple[int, int, int, int]
 
     def markdown(self) -> str:
-        """The locator as a link, with the chapter it is in.
+        """The locator as a link at the section that discusses the term.
 
-        The number is inside the link text rather than beside it, so the whole
-        locator is one thing to press rather than a link with a loose tail.
-
-        Carrying it at all is not decoration: three sections in this book are
-        called some case of "MIDI", and `midi_voice_channels` is discussed in
-        all three. Without the number the reader gets `midi`, MIDI, `midi` and
-        no way to tell which is which.
+        On github.com this is the locator: the Markdown is the book, there are
+        no pages, and a section title is the only thing to point at. In the PDF
+        the same link is set as the page it lands on -- see `pagerefs` in
+        docs/shared/template.typ, which the `table: index` directive routes it
+        through. One source, and neither renderer carries a locator its reader
+        cannot follow.
         """
         where = f" ({self.chapter})" if self.chapter else ""
         return f"[{locator_text(self.title)}{where}]({self.filename}#{self.slug})"
@@ -800,8 +995,6 @@ _LONG_FLAG_RE = re.compile(r"--[a-z][a-z0-9-]*")
 _QUALIFIED_KEY_RE = re.compile(r"\[(\w+)\]\.(\w+)")
 _SECTION_BRACKET_RE = re.compile(r"\[\w+\]")
 _LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+")
-_TRAILING_NAME_RE = re.compile(r"\s+—\s+`[^`]+`$")
-_PURE_CODE_RE = re.compile(r"^`[^`]+`$")
 
 
 def mentions(text: str) -> set[str]:
@@ -833,19 +1026,6 @@ def mentions(text: str) -> set[str]:
     return found
 
 
-def concept(title: str) -> str:
-    """A section title as an index entry, or `""` if it should not be one.
-
-    A title that is nothing but a name -- ``### `sid_panning` `` -- is already
-    an entry under that name, and a second spelled identically would be a
-    duplicate row pointing at the same place. A title that *ends* in a
-    qualifying name -- "Companding — `dac_curve`" -- files under the concept,
-    which is the word a reader who does not yet know the key looks for.
-    """
-    text = _TRAILING_NAME_RE.sub("", title).strip()
-    return "" if not text or _PURE_CODE_RE.match(text) else text
-
-
 def sort_key(text: str) -> str:
     """What an entry files under: the word a reader would look it up by.
 
@@ -854,6 +1034,25 @@ def sort_key(text: str) -> str:
     about the audio slot.
     """
     return _LEADING_ARTICLE_RE.sub("", text.strip("`[]-").lower())
+
+
+def term_for(key: str) -> Term:
+    """One program name, as the entry a reader would look it up by.
+
+    A dotted name is split and inverted -- `effect.axis` files under *axis* and
+    prints ``axis (effect)``. Filed whole it went under E with forty-nine other
+    targets, and a reader who knows the parameter is called `axis` and not
+    which holder declares it had nowhere to start. Inverting is what a printed
+    index has always done with a qualified term, and it puts `axis (effect)`
+    next to any other `axis` the program has.
+
+    A bracketed section keeps its brackets, because they are how the book
+    writes it and how the reader will type it, and files under the bare word.
+    """
+    holder, dot, name = key.rpartition(".")
+    if dot and not key.startswith("--"):
+        return Term(key, f"{code(name)} ({holder})", sort_key(name), holder)
+    return Term(key, code(key), sort_key(key))
 
 
 def code_terms() -> dict[str, Term]:
@@ -871,10 +1070,10 @@ def code_terms() -> dict[str, Term]:
     """
     terms: dict[str, Term] = {}
 
-    def add(key: str, display: str | None = None) -> None:
+    def add(key: str) -> None:
         if len(key) < _MIN_TERM_LEN or key.lower() in _INDEX_STOP_WORDS:
             return
-        terms.setdefault(key, Term(key, display or code(key), sort_key(key)))
+        terms.setdefault(key, term_for(key))
 
     sections = introspect.config_sections()
     shared: dict[str, int] = {}
@@ -908,39 +1107,76 @@ def code_terms() -> dict[str, Term]:
     return terms
 
 
-def concept_terms(paths: Sequence[Path]) -> dict[str, Term]:
-    """The book's own section titles, as entries.
+# Plain-language entries, hand-picked.
+#
+# The index used to enter every section title in the prose chapters, and it was
+# the wrong half of the book: a title is a topic, topics are what the contents
+# page is for, and nobody has ever looked up "One Surface for the Whole
+# Ensemble". What a reader looks up is a *word* -- "camera", not "Choosing a
+# Camera" -- and arrives at every section that discusses it.
+#
+# Kept short and deliberately basic. Each has to be a word somebody would try
+# who does not yet know what c64cast calls the thing; anything the program
+# spells itself is already in `code_terms` and is skipped below rather than
+# entered twice.
+#
+# Each maps the entry as it prints to the stem the prose is searched for, which
+# are the same word most of the time. They part where the book only ever
+# inflects it -- nothing says "double buffering", but "double-buffered" is
+# everywhere -- and an entry that reads as a noun should not have to be spelled
+# as the participle to find itself.
+_CONCEPTS: dict[str, str] = {
+    "beat grid": "beat grid",
+    "camera": "camera",
+    "character ROM": "character ROM",
+    "clip grid": "clip grid",
+    "colour RAM": "colour RAM",
+    "companding": "compand",
+    "dirty cache": "dirty cache",
+    "display mode": "display mode",
+    "dithering": "dithering",
+    "double buffering": "double buffer",
+    "frame rate": "frame rate",
+    "gesture": "gesture",
+    "jukebox": "jukebox",
+    "microphone": "microphone",
+    "oscilloscope": "oscilloscope",
+    "page flip": "page flip",
+    "quantisation": "quantis",
+    "raster interrupt": "raster interrupt",
+    "screen RAM": "screen RAM",
+    "single-scene mode": "single-scene mode",
+    "subtune": "subtune",
+    "vblank": "vblank",
+    "web console": "web console",
+    "write budget": "write budget",
+}
 
-    Only from the numbered prose chapters. An appendix's headings are names,
-    which :func:`code_terms` already has, and the introduction's are about the
-    book rather than about c64cast -- "What Is In Here" is not something anyone
-    looks up.
+
+def concept_pattern(stem: str) -> re.Pattern[str]:
+    """What counts as a mention of a plain-language term.
+
+    Case-insensitive, word-bounded so "camera" is not found inside a longer
+    word, and tolerant of the endings English puts on a stem -- the book writes
+    "display modes" as often as "display mode", and they are one entry. A space
+    in the stem also matches a hyphen, which is the only difference between
+    "page flip" and half the sentences that discuss one.
     """
-    terms: dict[str, Term] = {}
-    for path in paths:
-        fields, body, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
-        if not (fields.get("number") or "").isdigit():
-            continue
-        for title in _headings(body):
-            name = concept(title)
-            if name:
-                terms.setdefault(name, Term(name, name, sort_key(name)))
-    return terms
+    body = r"[ -]".join(re.escape(word) for word in stem.split())
+    return re.compile(rf"\b{body}(?:e?s|ed|ing|ation)?\b", re.IGNORECASE)
 
 
-def _headings(body: str) -> list[str]:
-    """The `##`/`###` titles of one file, in the order `file_section_slugs`
-    returns their slugs -- the two are zipped, so they must not diverge."""
-    titles: list[str] = []
-    fenced = False
-    for line in body.split("\n"):
-        if line.strip().startswith("```"):
-            fenced = not fenced
-            continue
-        m = bb._HEADING_RE.match(line)
-        if not fenced and m and len(m.group("hashes")) in (2, 3):
-            titles.append(m.group("text").strip())
-    return titles
+def concept_terms(codes: dict[str, Term]) -> dict[str, Term]:
+    """:data:`_CONCEPTS`, minus any the program already spells for itself.
+
+    `[playlist]` is a section and `playlist` would be a second entry filed at
+    the same letter pointing at much the same places, which is a duplicate
+    wearing different type rather than a second way in.
+    """
+    taken = {term.sort for term in codes.values()}
+    return {
+        name: Term(name, name, sort_key(name)) for name in _CONCEPTS if sort_key(name) not in taken
+    }
 
 
 def scan(
@@ -948,7 +1184,7 @@ def scan(
     codes: dict[str, Term],
     concepts: dict[str, Term],
 ) -> dict[str, list[Locator]]:
-    """Where each term is discussed, best first.
+    """Where each term is discussed: the best few, in the order they are read.
 
     Best is a section *titled* with the term, because that is the one written
     about it; then the prose chapters before the appendices, which is what
@@ -956,9 +1192,15 @@ def scan(
     `[color]` table rather than the section explaining what dithering is for.
     The two rules do not fight: an appendix names a term in a heading only
     where the whole section is that term's entry, and every other appendix hit
-    is a table cell, which now sorts last.
+    is a table cell, which sorts last.
+
+    The few that survive are then put back into document order. Relevance is
+    how they are *chosen* and would be the better order if they were titles,
+    but they print as page numbers, and "152, 41, 84" reads as a fault in the
+    index rather than as a ranking nobody can see.
     """
     hits: dict[str, dict[tuple[str, str], Locator]] = {}
+    patterns = {name: concept_pattern(_CONCEPTS[name]) for name in concepts}
     for file_order, path in enumerate(paths):
         fields, body, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
         chapter = fields.get("number") or ""
@@ -978,15 +1220,19 @@ def scan(
             if heading is not None and len(heading.group("hashes")) in (2, 3):
                 in_title = True
                 section = (next(slugs), heading.group("text").strip())
-                found = mentions(section[1])
-                name = concept(section[1])
-                if name:
-                    found.add(name)
+                text = section[1]
             elif section is not None:
                 in_title = False
-                found = mentions(line)
+                text = line
             else:
                 continue
+            found = mentions(text)
+            # A plain-language term is matched in the prose itself, not in a
+            # code span: it is in the index precisely because the program never
+            # says it. Spans are blanked first so `dithering` is credited to
+            # the sentence about dithering and not to every `dither` in a table.
+            bare = _CODE_SPAN_SCAN_RE.sub(" ", text)
+            found |= {term for term, pattern in patterns.items() if pattern.search(bare)}
             slug, title = section
             # Appendix A writes a field bare inside the section it belongs to,
             # so `dither` under `## [color]` is where `color.dither` is
@@ -995,14 +1241,17 @@ def scan(
             # section name forms nothing the term table will match.
             found |= {f"{slug}.{name}" for name in found}
             for name in found:
-                term = codes.get(name) or concepts.get(name)
-                if term is None:
+                term_doc = codes.get(name) or concepts.get(name)
+                if term_doc is None:
                     continue
                 order = (0 if in_title else 1, prose_rank, file_order, lineno)
-                where = hits.setdefault(term.key, {})
+                where = hits.setdefault(term_doc.key, {})
                 where.setdefault((path.name, slug), Locator(path.name, slug, title, chapter, order))
     return {
-        key: sorted(found.values(), key=lambda loc: loc.order)[:_MAX_LOCATORS]
+        key: sorted(
+            sorted(found.values(), key=lambda loc: loc.order)[:_MAX_LOCATORS],
+            key=lambda loc: loc.order[2:],
+        )
         for key, found in hits.items()
     }
 
@@ -1019,24 +1268,28 @@ def locator_text(title: str) -> str:
 
 
 def build_index() -> list[str]:
-    """Every name the program can utter, against the sections that discuss it.
+    """Every name the program can utter, against the pages that discuss it.
 
     Not an appendix: it carries no `number`, which is what makes it render as a
     plain heading after Appendix J rather than as Appendix K.
 
-    Locators are section titles rather than page numbers. A page number is
-    reachable -- the contents page queries for them -- but it would need a
-    Typst-side helper per locator, and a title is the more useful of the two on
-    github.com, where the Markdown is the book and there are no pages.
+    What is deliberately *not* here is the book's own section titles. They used
+    to be entered wholesale, which put "Saving What a Run Changed" and "One
+    Surface for the Whole Ensemble" in an index -- phrases nobody looks up, and
+    each one a row pointing at the single section it was copied from. Topics
+    belong to the contents page. An index holds terms, and the handful of plain
+    words worth entering are curated in :data:`_CONCEPTS`.
     """
     paths = [p for p in bb.discover_chapters(REFERENCE_DIR) if p != INDEX_PATH]
     codes = code_terms()
-    concepts = concept_terms(paths)
+    concepts = concept_terms(codes)
     found = scan(paths, codes, concepts)
 
     entries = sorted(
         (term for term in (*codes.values(), *concepts.values()) if term.key in found),
-        key=lambda t: (t.sort, t.key),
+        # The qualifier before the key, so a run under one word reads bare
+        # first and then by holder: `dither`, `dither (audio)`, `dither (color)`.
+        key=lambda t: (t.sort, t.qualifier, t.key),
     )
     out = [
         "---",
@@ -1045,26 +1298,33 @@ def build_index() -> list[str]:
         "",
         "# Index",
         "",
-        "*Generated from the code by `scripts/gen_reference_appendices.py`.",
-        "Edits here are overwritten; run `make reference-appendices`.*",
-        "",
         prose(
-            f"Every name c64cast answers to — {len(entries)} of them — and the sections "
-            "that discuss each one, the section written about it first. Names are "
-            "listed as this book writes them: a configuration key appears bare, and "
-            "again qualified with its section where two sections share the name. An "
-            "entry in ordinary words is a section of the book by that title. The "
-            "chapter or appendix each locator is in follows it, in parentheses."
+            f"Every name c64cast answers to — {len(entries)} of them — and the pages "
+            "that discuss each one. A configuration key appears bare, and again under "
+            "its section where two sections share the name; a parameter that belongs "
+            "to a generator, an effect or a display mode is filed under its own name, "
+            "with the holder in parentheses. A few entries are ordinary words rather "
+            "than anything the program prints, for the reader who does not yet know "
+            "what it calls the thing."
         ),
         "",
     ]
     for letter, group in _by_letter(entries):
         out += [f"## {letter}", ""]
+        # Not :func:`identity`, which emboldens. An appendix bolds a name to
+        # part it from the type and default stacked under it; an index entry is
+        # one line and has nothing to be parted from, so bold said nothing --
+        # and it said it in two faces at once. Jost Bold against Inconsolata
+        # Bold at the same nominal size is a visibly heavier, wider letter, so
+        # a column of `dither_strength` with "dithering" among them read as two
+        # sizes of type. Set plain, the two faces sit together.
         rows = [
-            [identity(term.display), ", ".join(loc.markdown() for loc in found[term.key])]
-            for term in group
+            [term.display, ", ".join(loc.markdown() for loc in found[term.key])] for term in group
         ]
-        out += fields_table("Term", rows, description="Discussed in")
+        # `table: index` and not `table: fields`: same widths, and the locators
+        # are additionally resolved to the pages they land on. See `_locators`
+        # in scripts/build_book.py.
+        out += fields_table("Term", rows, description="See", directive="table: index")
     return out
 
 
@@ -1132,11 +1392,6 @@ def card_live_targets() -> list[str]:
     Deliberately not the same table: a card is read at arm's length in a dark
     room, so it carries the target, its range and — compressed by
     :func:`declared_by` — who declares it.
-
-    The provenance line is likewise shorter than an appendix's. `generated:
-    true` is what the drift check and a human editor go by; the visible line is
-    for somebody holding the printed card, who is better served by being told
-    what the list *is* than how it was made.
     """
     targets = introspect.live_targets()
     totals = _holder_totals()
@@ -1147,7 +1402,7 @@ def card_live_targets() -> list[str]:
         "",
         "# Live Targets",
         "",
-        "*Generated from the code: every parameter a `param` mapping can name.*",
+        "*Every parameter a `param` mapping can name.*",
         "",
     ]
     for group in dict.fromkeys(t.group for t in targets):
@@ -1155,9 +1410,9 @@ def card_live_targets() -> list[str]:
         rows = []
         for t in (x for x in targets if x.group == group):
             span = (
-                f"{t.lo:g} – {t.hi:g}"
+                scalar_range(t.lo, t.hi)
                 if t.kind == "scalar" and t.lo is not None and t.hi is not None
-                else f"{len(t.choices)} values"
+                else code(f"{len(t.choices)} values")
             )
             rows.append([code(t.target), span, declared_by(t, totals)])
         out += table(["Target", "Range", "Declared by"], rows)

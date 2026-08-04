@@ -247,6 +247,37 @@ class BlockConversionTest(unittest.TestCase):
             convert("<!-- table: sideways -->\n| A | B |\n|---|---|\n| 1 | 2 |\n")
         self.assertIn("unknown directive", str(ctx.exception))
 
+    def test_index_directive_sets_locators_as_pages(self):
+        # The Markdown links a term at the section that discusses it, because
+        # a section title is the only locator github.com has. On paper the
+        # answer to "where" is a page, and the same link resolves to one.
+        anchors = frozenset({"sec-99-test-alpha", "sec-99-test-beta"})
+        out = convert(
+            "<!-- table: index -->\n| Term | See |\n|---|---|\n"
+            "| `dither` | [Alpha (3)](#alpha), [Beta (4)](#beta) |\n",
+            anchors=anchors,
+        )
+        self.assertIn("#fields-table(", out)
+        self.assertIn('#pagerefs((label("sec-99-test-alpha"), label("sec-99-test-beta"),))', out)
+        self.assertNotIn("Alpha", out)
+
+    def test_index_directive_leaves_the_term_column_alone(self):
+        out = convert(
+            "<!-- table: index -->\n| Term | See |\n|---|---|\n"
+            "| [Alpha (3)](#alpha) | [Alpha (3)](#alpha) |\n",
+            anchors=frozenset({"sec-99-test-alpha"}),
+        )
+        # Column 0 is a term, never a locator, so it stays an ordinary link
+        # even when it happens to be shaped like one.
+        self.assertIn('#link(label("sec-99-test-alpha"))[Alpha (3)]', out)
+
+    def test_index_directive_falls_back_for_an_ordinary_cell(self):
+        out = convert(
+            "<!-- table: index -->\n| Term | See |\n|---|---|\n| `dither` | nowhere yet |\n"
+        )
+        self.assertIn("nowhere yet", out)
+        self.assertNotIn("#pagerefs", out)
+
     def test_br_becomes_a_line_break(self):
         out = convert("| A | B |\n|---|---|\n| one<br>two | 2 |\n")
         self.assertIn("one#linebreak()two", out)
@@ -445,10 +476,14 @@ class LayoutTest(unittest.TestCase):
         typst = bg.build(_GUIDE_DIR)
         self.assertIn("#show: guide.with(", typst)
         self.assertIn("#colophon[", typst)
-        self.assertIn("#frontmatter()", typst)
         self.assertIn("#toc()", typst)
-        self.assertIn("#mainmatter()", typst)
         self.assertIn("#chapter(", typst)
+        # Applied as show rules, not called. Both contain a `set page`, which
+        # in Typst reaches only to the end of the block it is written in — so
+        # `#mainmatter()` switched the printed folio (the footer reads a state)
+        # and left the PDF's own page labels roman for the whole book.
+        self.assertIn("#show: frontmatter", typst)
+        self.assertIn("#show: mainmatter", typst)
 
     def test_a_guide_without_a_colophon_says_so(self):
         # Every other book problem exits with an `error:` line. A missing
@@ -566,6 +601,33 @@ class BookSourcesTest(unittest.TestCase):
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):
                 self.assertTrue(bg.build(book_dir))
+
+    def test_no_listing_is_wider_than_the_page(self):
+        # Typst wraps an over-long line in a code block rather than complaining,
+        # and a wrapped listing does not look broken -- it looks like a second
+        # line of output the program never printed. `--profile`'s sample came
+        # out as six lines of four, and a class definition wrapped mid-signature
+        # in the middle of Chapter 7. Nothing catches that but a measure.
+        #
+        # A line whose longest unbreakable run is already wider than the measure
+        # is exempt: the schema directive in the User's Guide is a URL that has
+        # to be copied verbatim, and no reflowing will shorten it.
+        for book_dir in _BOOK_DIRS:
+            width = bg.CODE_WIDTH[bg.load_book_toml(book_dir)["layout"]]
+            for path in bg.discover_chapters(book_dir):
+                _, body, _ = bg.parse_front_matter(path.read_text(encoding="utf-8"), path)
+                fenced = False
+                for lineno, line in enumerate(body.split("\n"), start=1):
+                    if line.strip().startswith("```"):
+                        fenced = not fenced
+                        continue
+                    longest = max((len(tok) for tok in line.split()), default=0)
+                    if not fenced or len(line) <= width or longest > width:
+                        continue
+                    self.fail(
+                        f"{path.name}:{lineno}: listing line is {len(line)} characters, "
+                        f"and {width} fit on a {book_dir.name} page:\n  {line}"
+                    )
 
     def test_the_makefile_knows_every_book(self):
         # A book's directory and artefact basename are spelled in both its

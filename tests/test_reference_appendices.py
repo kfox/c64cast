@@ -28,7 +28,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from c64cast import introspect
+from c64cast import effects, generators, introspect
 
 _REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -119,7 +119,7 @@ class IndexTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.text = gen.INDEX_PATH.read_text(encoding="utf-8")
-        cls.rows = dict(re.findall(r"^\| \*\*(.+?)\*\* \| (.+?) \|$", cls.text, re.M))
+        cls.rows = dict(re.findall(r"^\| (.+?) \| (.+?) \|$", cls.text, re.M))
 
     def test_every_locator_names_a_section_that_exists(self):
         anchors = bb.section_anchors(bb.discover_chapters(gen.REFERENCE_DIR))
@@ -138,21 +138,51 @@ class IndexTest(unittest.TestCase):
     def test_it_does_not_index_itself(self):
         self.assertNotIn(gen.INDEX_PATH.name, self.text)
 
-    def test_the_section_written_about_a_term_leads_its_entry(self):
-        # Appendix A has a row for every configuration field, so ordering by
+    def test_locators_are_in_reading_order(self):
+        # The best few are *chosen* by relevance and then put back in document
+        # order, because they print as page numbers and "152, 41, 84" reads as
+        # a fault rather than as a ranking the reader cannot see.
+        order = {p.name: i for i, p in enumerate(bb.discover_chapters(gen.REFERENCE_DIR))}
+        for term, locators in self.rows.items():
+            files = [order[f] for f in re.findall(r"\]\((\d+-[\w.-]+\.md)#", locators)]
+            with self.subTest(term=term):
+                self.assertEqual(files, sorted(files))
+
+    def test_the_section_written_about_a_term_is_among_its_locators(self):
+        # Appendix A has a row for every configuration field, so choosing by
         # position alone would answer "where is dither explained" with the
         # table rather than with the section that explains it.
-        self.assertTrue(
-            self.rows["`dither`"].startswith("[Which Pixel Takes Which"),
-            self.rows["`dither`"],
-        )
+        self.assertIn("Which Pixel Takes Which", self.rows["`dither`"])
 
-    def test_a_section_title_is_an_entry_in_its_own_words(self):
-        # The concept entries are what let a reader look up the thing before
-        # they know what it is called.
-        for title in ("Companding", "The Audio Slot", "Fades"):
+    def test_no_section_title_is_an_entry(self):
+        # Topics belong to the contents page. Entering every heading put
+        # "Saving What a Run Changed" in an index, which is not a term and is
+        # not a phrase anybody looks up.
+        for title in ("Saving What a Run Changed", "One Surface", "The Scene Types"):
             with self.subTest(title=title):
-                self.assertIn(title, self.rows)
+                self.assertNotIn(title, self.rows)
+
+    def test_a_curated_concept_is_an_entry(self):
+        # The few plain words that are, for the reader who does not yet know
+        # what the program calls the thing.
+        for term in ("camera", "dithering", "display mode"):
+            with self.subTest(term=term):
+                self.assertIn(term, self.rows)
+
+    def test_every_curated_concept_is_found_somewhere(self):
+        # The list is hand-written, so an entry can rot two ways: the prose it
+        # was added for gets reworded, or it was never in this book at all.
+        # Either way it is dead configuration, and silence is how it stays so.
+        codes = gen.code_terms()
+        for name in gen.concept_terms(codes):
+            with self.subTest(term=name):
+                self.assertIn(name, self.rows, "no section in the book mentions it")
+
+    def test_a_qualified_name_is_filed_under_its_own_word(self):
+        # A reader knows the parameter is called `axis`, not which holder
+        # declares it, so `effect.axis` has to be findable under A.
+        self.assertIn("`axis` (effect)", self.rows)
+        self.assertIn("`dither` (audio)", self.rows)
 
 
 class IndexTermTest(unittest.TestCase):
@@ -172,24 +202,35 @@ class IndexTermTest(unittest.TestCase):
     def test_a_flag_is_found_inside_a_command(self):
         self.assertIn("--save-settings", gen.mentions("run `c64cast --save-settings`"))
 
-    def test_a_title_that_is_only_a_name_is_not_a_concept(self):
-        for title in ("`sid_panning`", "`[hardware]`"):
-            with self.subTest(title=title):
-                self.assertEqual(gen.concept(title), "")
+    def test_a_dotted_name_is_inverted(self):
+        term = gen.term_for("effect.axis")
+        self.assertEqual(term.display, "`axis` (effect)")
+        self.assertEqual((term.sort, term.qualifier), ("axis", "effect"))
 
-    def test_a_title_qualified_by_a_name_files_under_the_concept(self):
-        self.assertEqual(gen.concept("Companding — `dac_curve`"), "Companding")
-        # Only a *trailing* name is a qualifier; an em dash joining two phrases
-        # is part of the title.
-        self.assertEqual(
-            gen.concept("Broadcast — Fixtures React to the Music"),
-            "Broadcast — Fixtures React to the Music",
-        )
+    def test_a_flag_is_not_a_dotted_name(self):
+        # `--dac-calibration-profile` has no holder, and splitting on a dot it
+        # does not have would be a silent mangling if one ever appeared.
+        self.assertEqual(gen.term_for("--doctor").display, "`--doctor`")
+
+    def test_a_section_keeps_its_brackets(self):
+        term = gen.term_for("[audio]")
+        self.assertEqual((term.display, term.sort), ("`[audio]`", "audio"))
 
     def test_an_entry_files_under_the_word_it_is_looked_up_by(self):
         self.assertEqual(gen.sort_key("--config"), "config")
         self.assertEqual(gen.sort_key("[audio]"), "audio")
         self.assertEqual(gen.sort_key("The Audio Slot"), "audio slot")
+
+    def test_a_concept_matches_an_inflection_and_a_hyphen(self):
+        pattern = gen.concept_pattern("page flip")
+        self.assertTrue(pattern.search("the page-flip lands in vblank"))
+        self.assertTrue(pattern.search("Page flips are invisible"))
+        self.assertFalse(pattern.search("a repaged flipper"))
+
+    def test_a_concept_the_program_already_spells_is_dropped(self):
+        # `[playlist]` is a section. A second "playlist" entry would file at
+        # the same letter and point at much the same places.
+        self.assertNotIn("playlist", gen.concept_terms(gen.code_terms()))
 
     def test_a_value_or_an_abbreviation_is_never_a_term(self):
         keys = gen.code_terms()
@@ -277,19 +318,98 @@ class DeclaredByTest(unittest.TestCase):
 
 
 class LiveParamSpellingTest(unittest.TestCase):
-    """Appendix E writes a knob the way a `cc_map` has to spell it."""
+    """Appendix E lists a knob under a name Appendix F has a row for.
 
-    def test_a_generator_param_carries_its_holder(self):
-        targets = {t.target for t in introspect.live_targets()}
-        text = (gen.REFERENCE_DIR / "24-appendix-e-generators-effects.md").read_text(
+    The holder is stated once above each table rather than repeated on every
+    line, so the check is that the bare names resolve — and that anything the
+    appendix *does* spell in full is still a real target.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = (gen.REFERENCE_DIR / "24-appendix-e-generators-effects.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("`source.speed`", text)
-        self.assertIn("`effect.decay`", text)
-        # Whatever Appendix E prints has to be a row Appendix F has.
-        for name in re.findall(r"`((?:source|effect)\.[a-z_]+)`", text):
+        cls.targets = {t.target for t in introspect.live_targets()}
+
+    def test_the_holder_is_stated_once_per_table(self):
+        self.assertIn("reached live as `source.NAME`", self.text)
+        self.assertIn("reached live as `effect.NAME`", self.text)
+
+    def test_a_spelled_out_target_is_one_appendix_f_has(self):
+        # Anywhere, not only alone in a span: the fragment writes one inside
+        # `target = "source.speed"`. The lowercase class skips `source.NAME`,
+        # which is the placeholder and not a target.
+        found = re.findall(r"\b((?:source|effect|mode|scene)\.[a-z_]+)\b", self.text)
+        self.assertTrue(found, "the appendix stopped naming any target in full")
+        for name in found:
             with self.subTest(target=name):
-                self.assertIn(name, targets)
+                self.assertIn(name, self.targets)
+
+    def test_every_generator_line_names_a_real_target(self):
+        # The bare name plus the section's holder has to compose into a target.
+        for holder, cls in (
+            ("source", generators.REGISTRY["plasma"]),
+            ("effect", effects.REGISTRY["trails"]),
+        ):
+            for line in gen._live_params(cls):
+                name = re.match(r"`([a-z_]+)`", line)
+                assert name is not None
+                with self.subTest(param=line):
+                    self.assertIn(f"{holder}.{name.group(1)}", self.targets)
+
+
+class SnippetTest(unittest.TestCase):
+    """The worked TOML fragment each appendix section opens with."""
+
+    def test_a_fragment_never_invents_a_value(self):
+        # It shows placement, so it carries only settings whose default *is* a
+        # usable value. Anything else and the fragment is the one line on the
+        # page the program never agreed to.
+        self.assertIsNone(gen.toml_literal(None))
+        self.assertIsNone(gen.toml_literal(""))
+        self.assertIsNone(gen.toml_literal(introspect._REQUIRED))
+        self.assertIsNone(gen.toml_literal(["a", "b"]))
+        self.assertEqual(gen.toml_literal(True), "true")
+        self.assertEqual(gen.toml_literal(2112), "2112")
+        self.assertEqual(gen.toml_literal("sd"), '"sd"')
+
+    def test_a_required_key_is_named_rather_than_omitted(self):
+        out = gen.snippet("[[x]]", [("a", "1", "")], required=["messages"])
+        self.assertIn("# also required: messages — has no default", out)
+
+    def test_a_comment_that_would_overrun_the_measure_is_dropped(self):
+        long = "one | two | three | four | five | six | seven | eight | nine"
+        out = gen.snippet("[x]", [("k", '"v"', long)])
+        self.assertIn('k = "v"', out)
+        self.assertNotIn(long, "\n".join(out))
+
+    def test_the_sample_names_resolve(self):
+        # Written as constants so the fragments stay the examples worth
+        # showing; a rename would otherwise leave one naming nothing.
+        self.assertIn(gen._SAMPLE_GENERATOR, generators.REGISTRY)
+        for name in gen._SAMPLE_EFFECTS:
+            self.assertIn(name, effects.REGISTRY)
+        self.assertIn(gen._SAMPLE_TARGET, {t.target for t in introspect.live_targets()})
+
+    def test_every_appendix_fragment_fits_the_page(self):
+        # Same measure tests/test_book_build.py holds the hand-written
+        # listings to; a generated one can overrun it just as easily.
+        for path in (
+            "20-appendix-a-configuration.md",
+            "21-appendix-b-scene-types.md",
+            "22-appendix-c-overlays.md",
+            "24-appendix-e-generators-effects.md",
+            "25-appendix-f-live-targets.md",
+        ):
+            text = (gen.REFERENCE_DIR / path).read_text(encoding="utf-8")
+            fenced = False
+            for lineno, line in enumerate(text.split("\n"), start=1):
+                if line.startswith("```"):
+                    fenced = not fenced
+                elif fenced:
+                    with self.subTest(where=f"{path}:{lineno}"):
+                        self.assertLessEqual(len(line), gen.CODE_WIDTH, line)
 
 
 class TextEscapingTest(unittest.TestCase):

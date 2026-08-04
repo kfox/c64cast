@@ -15,9 +15,9 @@ products of Gideon's Logic Architectures. TeensyROM is a product of Sensorium
 Embedded. All other names are trademarks of their respective owners, used here
 only to identify the hardware this software talks to.
 
-The appendices are generated from the source code rather than written, so the
-tables in this book cannot fall behind the program they describe. The script
-that writes them is `scripts/gen_reference_appendices.py`.
+The appendices and the index are generated from the source code rather than
+written, so the tables in this book cannot fall behind the program they
+describe.
 
 This book is set in Jost\* and Inconsolata, both free under the Open Font
 License and distributed with the source. Its design is an affectionate homage

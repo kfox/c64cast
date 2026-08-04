@@ -5,9 +5,6 @@ generated: true
 
 # Overlay and Display-Mode Compatibility
 
-*Generated from the code by `scripts/gen_reference_appendices.py`.
-Edits here are overwritten; run `make reference-appendices`.*
-
 Which overlays attach to which display modes. A ✓ works; a · is refused at configuration time rather than at the point it would have drawn. `c64cast --compat` prints this at the terminal.
 
 ## The Matrix

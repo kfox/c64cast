@@ -157,7 +157,8 @@ And if you want to try c64cast without installing anything permanently, `uv`
 will fetch it, run it once and throw it away:
 
 ```bash
-uvx --from 'c64cast[all]' c64cast --config example:hello -u u64://192.168.2.64
+uvx --from 'c64cast[all]' c64cast \
+    --config example:hello -u u64://192.168.2.64
 ```
 
 ### What `[all]` Means

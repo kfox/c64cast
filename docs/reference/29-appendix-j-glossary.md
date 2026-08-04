@@ -4,8 +4,7 @@ number: J
 
 # Glossary
 
-Terms this book uses without stopping to explain them. Hand-written, because a
-machine has no opinion about which words a reader will not know.
+Terms this book uses without stopping to explain them.
 
 ## The Machine
 

@@ -5,9 +5,6 @@ generated: true
 
 # Command-Line Flags
 
-*Generated from the code by `scripts/gen_reference_appendices.py`.
-Edits here are overwritten; run `make reference-appendices`.*
-
 Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given here beats the same setting in a configuration file, which beats machine settings, which beats the built-in default.
 
 ## Positional Arguments

@@ -27,18 +27,20 @@ overlays exist.
 
 ```python
 class MyScene(Scene):
-    def __init__(self, api, audio, display_mode, name="My scene"):
+    def __init__(self, api, audio, display_mode,
+                 name="My scene"):
         super().__init__(api, audio, display_mode, name)
-        self.target_fps = 30.0        # only if it can't sustain system rate
+        # Only if it cannot sustain the system rate.
+        self.target_fps = 30.0
 
     def setup(self):
         super().setup()
         self.display_mode.setup(self.api)
 
     def process_frame(self, current_time: float) -> bool:
-        frame_bgr = self._produce_frame()
-        self.display_mode.render(self.api, _crop_to_aspect(frame_bgr))
-        return True                   # False means finished
+        frame = _crop_to_aspect(self._produce_frame())
+        self.display_mode.render(self.api, frame)
+        return True           # False means finished
 
     def teardown(self):
         super().teardown()
