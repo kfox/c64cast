@@ -116,6 +116,16 @@ the version and stamps it with the date.
   mean. A key is listed bare, and again qualified with its section where two
   sections share the name, which is the rule the book's own Notation section
   states. Every locator is a link that works on github.com and in the PDF alike.
+- **The Programmer's Reference Guide is illustrated.** Five diagrams, for the
+  five things in it that are spatial and were being carried entirely by prose:
+  the precedence ladder with the extra rung an ensemble inserts, the twelve-step
+  display pipeline with the setting that enters at each step, one hardware cell
+  in each of the four picture modes with the bytes that colour it, the DAC path
+  against the sampler path with what each costs the 6510, and the 64 KB during a
+  bitmap scene — the VIC's banks drawn as what they are, four 16 KB windows on
+  one memory, with colour RAM outside all of them. They are drawn by
+  `scripts/make_reference_diagrams.py` in the books' own faces and palette, and
+  committed; `make reference-figures` redraws them.
 - **The books' symbols no longer depend on the machine that built them.** Jost
   has no ✓ and no →, and Typst was filling them from whatever was installed — so
   the compatibility matrix was set in a heavy upright check locally and a thin

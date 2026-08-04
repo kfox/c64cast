@@ -82,6 +82,28 @@ and the description in all the measure that is left. `identity()` and
 [`template.typ`](../shared/template.typ), which is where every other
 measurement in the books lives.
 
+## The diagrams
+
+Five figures, in [`img/`](img/README.md), drawn by
+[`scripts/make_reference_diagrams.py`](../../scripts/make_reference_diagrams.py):
+
+```bash
+make reference-figures
+```
+
+They are drawings rather than screen captures — the User's Guide's `img/` is
+the other kind — and they are deliberately not Typst figures, because a Typst
+drawing is invisible on github.com and the Markdown is the book. Pillow draws
+them in the two vendored faces and the template's palette, so a diagram sits in
+the same type and the same blue as the page around it, and the output is
+committed for the same reason the appendices are: the release renders the PDFs
+without the project environment.
+
+`tests/test_reference_diagrams.py` fails if the script's copy of the palette
+drifts from [`template.typ`](../shared/template.typ), if a committed PNG is no
+longer the size the script draws, or if a figure is never referenced by a
+chapter.
+
 ## How the build works
 
 Same pipeline as every book: see [`docs/shared/`](../shared/README.md) for the

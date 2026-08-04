@@ -31,6 +31,8 @@ get is the single most audible choice in the program.
 one and the DAC everywhere else, and `"dac"` forces the lo-fi path. Microphone
 and webcam audio always take the DAC, on every machine.
 
+![Figure 4-1. The two paths out of the host, and what each one costs the 6510.](img/fig-4-1-audio.png)
+
 ### The 4-Bit DAC
 
 The SID's master volume register is four bits wide. Write a sample value into
