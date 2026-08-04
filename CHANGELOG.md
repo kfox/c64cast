@@ -70,6 +70,16 @@ the version and stamps it with the date.
 
 ### Changed
 
+- **The Programmer's Reference Guide now documents what a reload actually
+  re-reads, and the signals.** `POST /reload` was described as re-reading the
+  configuration and rebuilding the playlist, which overpromised: a reload swaps
+  `[[scenes]]` and `[interstitial]` and nothing else — the connection, the audio
+  path, the capture device and even `[playlist]`'s own `loop` and
+  `fade_duration_s` are fixed at startup. Chapter 6 now says so, and gains a
+  *Signals* section covering `SIGHUP` (the control-plane-free spelling of the
+  same reload, POSIX-only, which the User's Guide advertised and the reference
+  never mentioned), `SIGTERM`, and the ensemble rule that each system re-reads
+  its own file while the master is not re-read. No behavior changed.
 - The `hopalong` generator's live target `source.a` is now **`source.shape`**.
   Every other live target is named for what turning it does — `drift_speed`,
   `ring_freq`, `zoom_speed` — and this one was named for the letter Barry

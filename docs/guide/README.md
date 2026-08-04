@@ -118,15 +118,18 @@ openers, which is what the original does.
 
 ## Figures
 
-Every figure is currently a generated placeholder that names, in the image
-itself, the capture it is standing in for. Layout is therefore already
-final, and finishing a figure is a file replacement:
+Every figure is a real capture off real hardware. A new one starts life as a
+generated placeholder that names, in the image itself, the capture it is
+standing in for — so the layout is final before anything has been shot, and
+finishing a figure is a file replacement:
 
 ```bash
 make guide-figures      # redraw placeholders (real captures are left alone)
 ```
 
-See [`img/README.md`](img/README.md) for the shot list.
+See [`img/README.md`](img/README.md) for the shot list, and
+[`shots/README.md`](shots/README.md) for how the current captures were made
+and how to reshoot one.
 
 ## Fonts
 
