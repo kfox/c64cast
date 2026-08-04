@@ -73,6 +73,8 @@ The on-screen display for live tuning and the `--frame-numbers` debug overlay
 are drawn at step 3, before quantisation, which is why they appear on every
 display mode without either of them knowing what a display mode is.
 
+![Figure 3-1. The twelve steps, and where each setting enters. Everything above step 8 still has the frame in full colour.](img/fig-3-1-pipeline.png)
+
 ## The Six Display Modes
 
 A display mode is a *choice about the VIC-II*, and each one trades resolution
@@ -153,6 +155,8 @@ slots are filled:
 `percell` is what makes `mhires` worth using: a cell that contains no
 background colour stops wasting a slot on it, and a corner of the frame stops
 being forced into a palette chosen for the subject in the middle.
+
+![Figure 3-2. One hardware cell in each of the four modes that draw a picture, with the bytes that colour it and where they live.](img/fig-3-2-cells.png)
 
 ## Quantising a Cell
 

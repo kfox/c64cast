@@ -189,6 +189,10 @@ dev = [
     # declares it optional, so the `control` extra doesn't pull it; without it
     # those 13 tests skip. Dev-only; the runtime never imports it.
     "httpx==0.28.1",
+    # Draws the reference guide's diagrams in scripts/make_reference_diagrams.py.
+    # Already resolved transitively through matplotlib, but named here because
+    # that script imports it directly. Dev-only; the runtime never imports it.
+    "pillow==12.3.0",
     # JUnit XML reporter for the unittest suite (a unittest.TestRunner
     # subclass, NOT a different test framework). CI runs the suite through
     # `python -m xmlrunner discover` so Codecov Test Analytics can ingest the

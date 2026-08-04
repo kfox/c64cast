@@ -87,6 +87,8 @@ every chip's scope, but only the first is audible.
 c64cast writes into a real Commodore's 64 KB, alongside a running BASIC program
 and the kernal. What follows is what it claims, and why.
 
+![Figure 5-1. The 64 KB during a bitmap scene. Each bank is one 16 KB window on the same memory; small regions are drawn at a minimum width, so the widths are not to scale.](img/fig-5-1-memory.png)
+
 ### The Picture
 
 | Address | Contents |

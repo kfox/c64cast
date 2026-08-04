@@ -297,6 +297,8 @@ below it:
 | 4 | Command-line flags |
 | 5 | The environment (`C64CAST_DMA_PASSWORD`) |
 
+![Figure 1-1. The five layers, and the extra rung an ensemble run inserts between the per-system file and the command line.](img/fig-1-1-ladder.png)
+
 **The default** is what Appendix A prints. It is chosen to be what most runs
 want rather than what does least: audio is on, the display pipeline's quality
 stages are on, and a scene with no `display` gets the mode that suits its kind

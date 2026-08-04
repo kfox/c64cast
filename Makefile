@@ -30,7 +30,8 @@ SYNC := $(if $(CI),,sync)
 .DEFAULT_GOAL := help
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema \
-        guide reference card books guide-figures reference-appendices
+        guide reference card books guide-figures reference-figures \
+        reference-appendices
 
 # Books (docs/<book>/*.md + book.toml) are rendered by Typst, which is an
 # external binary rather than a Python package. The two faces (Jost*,
@@ -88,6 +89,7 @@ help:
 	@echo "  card       render docs/card/*.md to the Performance Card PDF (needs typst)"
 	@echo "  books      render every book"
 	@echo "  guide-figures  redraw the guide's placeholder figures"
+	@echo "  reference-figures  redraw the reference guide's diagrams"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-I + index"
 	@echo "  check      lint + typecheck + test"
 	@echo "  clean      remove build artifacts"
@@ -137,6 +139,12 @@ schema:
 # filenames are detected and left alone; see the script's --force-all escape.
 guide-figures: $(SYNC)
 	$(PY) scripts/make_guide_figures.py
+
+# Redraw the reference guide's five diagrams. Unlike the guide's figures these
+# are drawings rather than captures, so there is nothing to preserve: the
+# script is the source and the PNGs are its committed output.
+reference-figures: $(SYNC)
+	$(PY) scripts/make_reference_diagrams.py
 
 guide: $(SYNC)
 	$(call render-book,$(GUIDE_DIR),$(GUIDE_BOOK))
