@@ -43,7 +43,7 @@ generated: true
 | `ring_freq` | `10 – 80` | `moire2` |
 | `drift_speed` | `0 – 2` | `moire2`, `halo`, `hopalong` |
 | `pulse_speed` | `0 – 3` | `halo` |
-| `a` | `-2 – 2` | `hopalong` |
+| `shape` | `-2 – 2` | `hopalong` |
 | `grow_speed` | `0 – 4` | `rorschach` |
 
 ## Scope

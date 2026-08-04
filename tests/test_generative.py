@@ -67,7 +67,7 @@ class GeneratorTest(unittest.TestCase):
             "moire2": {"ring_freq", "drift_speed"},
             "halo": {"drift_speed", "pulse_speed"},
             "epicycle": {"speed"},
-            "hopalong": {"a", "drift_speed"},
+            "hopalong": {"shape", "drift_speed"},
             "rorschach": {"grow_speed"},
             "hiphotic": {"speed", "scale"},
             "metaballs": {"speed"},
