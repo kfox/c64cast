@@ -671,18 +671,19 @@ class HopalongSource(GenerativeSource):
     """Hopalong chaotic point-map attractor, iterated for many parallel
     starting points at once (numpy-vectorized across the batch — each *step*
     is still sequential, the map depends on the previous point) into a
-    density accumulator, color-mapped by (log-scaled) density. A slow
-    sinusoidal drift of the `a` constant keeps the attractor's shape breathing
-    over time without needing a fundamentally different computation per
-    frame; the batch is re-run from scratch every frame (cheap: a few hundred
-    vector ops), so the shifting constant is reflected immediately.
+    density accumulator, color-mapped by (log-scaled) density. `shape` is the
+    map's `a` constant (named for what sweeping it does, since it is a live
+    knob); a slow sinusoidal drift of it keeps the attractor breathing over
+    time without needing a fundamentally different computation per frame; the
+    batch is re-run from scratch every frame (cheap: a few hundred vector
+    ops), so the shifting constant is reflected immediately.
 
     Reactive: `level` and a beat-locked term perturb `a`/`b` continuously
     (the attractor's shape swells with the music); a transient adds a
     temporary kick to `a` — one frame's worth of "the constants jump", not a
     lasting state change, matching the pure-in-`t` contract."""
 
-    LIVE_PARAMS = {"a": (-2.0, 2.0), "drift_speed": (0.0, 1.0)}
+    LIVE_PARAMS = {"shape": (-2.0, 2.0), "drift_speed": (0.0, 1.0)}
 
     _BATCH = 4000
     _WARMUP = 60
@@ -699,11 +700,11 @@ class HopalongSource(GenerativeSource):
         *,
         width: int = GEN_WIDTH,
         height: int = GEN_HEIGHT,
-        a: float = 1.1,
+        shape: float = 1.1,
         drift_speed: float = 0.15,
     ):
         super().__init__(width=width, height=height)
-        self.a = float(a)
+        self.shape = float(shape)
         self.drift_speed = float(drift_speed)
         rng = np.random.default_rng(0x0A0F)
         self._x0 = rng.uniform(-0.5, 0.5, self._BATCH)
@@ -734,7 +735,7 @@ class HopalongSource(GenerativeSource):
         return density
 
     def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
-        a = self.a + self._A_DRIFT * math.sin(t * self.drift_speed)
+        a = self.shape + self._A_DRIFT * math.sin(t * self.drift_speed)
         b = self._B
         if modulation is not None:
             a += self._LEVEL_GAIN * modulation.level + self._ONSET_GAIN * modulation.onset

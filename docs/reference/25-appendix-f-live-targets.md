@@ -62,7 +62,7 @@ A generative scene's generator. A row's target is `source.` and its name.
 | `ring_freq` | `scalar` | `10 – 80` | `moire2` |
 | `drift_speed` | `scalar` | `0 – 2` | `moire2`, `halo`, `hopalong` |
 | `pulse_speed` | `scalar` | `0 – 3` | `halo` |
-| `a` | `scalar` | `-2 – 2` | `hopalong` |
+| `shape` | `scalar` | `-2 – 2` | `hopalong` |
 | `grow_speed` | `scalar` | `0 – 4` | `rorschach` |
 
 ## `scene`

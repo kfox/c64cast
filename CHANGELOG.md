@@ -70,6 +70,15 @@ the version and stamps it with the date.
 
 ### Changed
 
+- The `hopalong` generator's live target `source.a` is now **`source.shape`**.
+  Every other live target is named for what turning it does — `drift_speed`,
+  `ring_freq`, `zoom_speed` — and this one was named for the letter Barry
+  Martin's map gives the constant, which tells a performer looking at a knob
+  label nothing. Sweeping it reshapes the attractor, so it is `shape`. The
+  constant is still `a` in the implementation, where it matches the published
+  map. `source.a` was never settable from a config; the one thing this breaks is
+  a hand-written `[[midi.mappings]]` entry naming it, which now silently fails to
+  match — rename the target.
 - `[preview] charset_path` now defaults to unset, meaning "use the character ROM
   c64cast resolved". Set it to force a specific file. A configured path that
   doesn't exist now warns and falls back to the built-in font instead of raising

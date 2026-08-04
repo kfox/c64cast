@@ -6,8 +6,8 @@
 # Thousands of starting points are iterated in parallel (numpy-vectorized
 # across the batch) into a log-scaled density accumulator every frame — the
 # batch is small enough to re-run from scratch each tick, so a slow
-# sinusoidal drift of the `a` constant keeps the attractor's shape breathing
-# continuously.
+# sinusoidal drift of the `a` constant (live target `source.shape`) keeps the
+# attractor's shape breathing continuously.
 #
 # Reactive: loudness and a beat-locked term perturb the `a`/`b` constants
 # continuously (the shape swells with the music), and a transient adds a

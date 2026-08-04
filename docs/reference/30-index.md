@@ -11,7 +11,6 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `a` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `agc` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `agc_max_gain_db` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `agc_noise_floor_db` | [Shaping the Signal (4)](05-sound-and-music.md#shaping-the-signal), [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
@@ -452,6 +451,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `scrolling_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`scrolling_text` (C)](22-appendix-c-overlays.md#scrolling_text), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `separator` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `serial_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
+| `shape` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `show_date` | [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `show_dropped` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
 | `--sid-model` | [Machine Settings (1)](02-config-rules.md#machine-settings), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Connection (G)](26-appendix-g-cli-flags.md#connection) |
