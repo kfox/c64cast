@@ -81,6 +81,7 @@ from .c64 import (
     REU,
     SID,
     VECTORS,
+    halt_quantum_bytes,
 )
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import AudioDSP, DSPParams
@@ -292,6 +293,13 @@ NMI_ARM_VERIFY_DELAY_S = 0.03
 # died mid-session. R moves ~1 KB per chunk period when alive, so identical
 # back-to-back readings are conclusive rather than a heuristic.
 NMI_STALL_WARN_CHUNKS = 8
+
+# Share of the backend's sustained write-rate ceiling the audio drip may spend.
+# The render thread wants the rest of the same socket, and audio that overruns
+# its slots does not merely lose the anti-halt benefit — it stops collecting and
+# pads silence instead (see _halt_quantum). Half leaves a frame-pushing scene its
+# own headroom while still affording a quantum well inside one NMI period.
+AUDIO_WRITE_RATE_SHARE = 0.5
 
 # Float-sample → 4-bit volume code: (x + 1) * VOLUME_SCALE, clipped to
 # [0, MAX_VOLUME]. Centers a [-1, 1] input on 7.5 → DAC ~half-scale.
@@ -1683,6 +1691,123 @@ class AudioStreamer:
         adjusted_period = max(2, round((nominal_latch + 1) / self._pitch_multiplier))
         return max(1, adjusted_period - 1)
 
+    def _collect_until(
+        self, chunk_buf: bytearray, n: int, leftover: bytes, deadline: float
+    ) -> tuple[int, int, bytes]:
+        """Fill ``chunk_buf`` from ``leftover`` then the queue until it holds
+        ``chunk_size`` bytes or ``deadline`` passes.
+
+        Returns ``(new_n, taken_this_call, new_leftover)``. Split out of the
+        worker so collection can be resumed across several short deadlines —
+        the drip schedule calls it once per quantum slot, which is what lets the
+        next chunk be gathered *while* the current one is being written out.
+        """
+        taken = 0
+        size = self.chunk_size
+        if leftover and n < size:
+            take = min(len(leftover), size - n)
+            chunk_buf[n : n + take] = leftover[:take]
+            n += take
+            taken += take
+            leftover = leftover[take:]
+        while n < size and not leftover and self.running:
+            remaining = deadline - time.monotonic()
+            # Past the deadline, still take anything already waiting rather than
+            # reporting an underrun over a full queue. The drip schedule calls
+            # this once per quantum slot, and a write that runs longer than its
+            # slot leaves every later slot already expired — without the
+            # non-blocking drain that starves collection completely and
+            # NEUTRAL-pads every chunk.
+            try:
+                piece = self.q.get(timeout=remaining) if remaining > 0 else self.q.get_nowait()
+            except queue.Empty:
+                break
+            take = min(len(piece), size - n)
+            chunk_buf[n : n + take] = piece[:take]
+            n += take
+            taken += take
+            if take < len(piece):
+                leftover = piece[take:]
+        return n, taken, leftover
+
+    def _drip_chunk(
+        self,
+        payload: bytes,
+        addr: int,
+        chunk_buf: bytearray,
+        leftover: bytes,
+        base_time: float,
+        chunk_period: float,
+    ) -> tuple[int, int, bytes]:
+        """Write `payload` into the ring as sub-NMI-period pieces spread evenly
+        across `chunk_period`, collecting the *next* chunk in the gaps between
+        them. Returns that collection's ``(n, taken, leftover)``.
+
+        Two separate effects, and it is easy to bank only the first. Splitting
+        keeps each write's CPU halt inside one NMI period, so it cannot swallow a
+        second CIA #2 underflow and lose the tick. Spreading keeps those halts
+        from re-bunching into one low-frequency event — which matters because
+        modulation sensitivity peaks around 4-20 Hz, right where a single write
+        per chunk period lands. Measured on hardware at the 12 kHz NTSC default,
+        against a 376 Hz carrier: one 1024-byte write gives 27.3 Hz of FM
+        deviation, the same bytes as 64-byte writes issued back-to-back give
+        10.8 Hz, and spread across the period they give 5.3 Hz.
+
+        Collecting between the writes rather than before them is what keeps the
+        producer's full period of collect time — the writes now occupy the
+        period that used to be spent asleep waiting for the pace deadline.
+        """
+        quantum = self._halt_quantum() or len(payload)
+        slots = max(1, (len(payload) + quantum - 1) // quantum)
+        slot_period = chunk_period / slots
+        n = 0
+        taken_total = 0
+        for i in range(slots):
+            slot_deadline = base_time + i * slot_period
+            n, taken, leftover = self._collect_until(chunk_buf, n, leftover, slot_deadline)
+            taken_total += taken
+            if not self.running:
+                break
+            sleep_s = slot_deadline - time.monotonic()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            piece = payload[i * quantum : (i + 1) * quantum]
+            if not piece:
+                break
+            self.api.write_memory_file(f"{addr:04X}", piece)
+            addr += len(piece)
+            if addr >= RING_BUFFER_END:
+                addr = RING_BUFFER_ADDR
+        return n, taken_total, leftover
+
+    def _halt_quantum(self) -> int:
+        """Bytes per ring write, sized so each write's CPU halt fits inside one
+        NMI period.
+
+        Derived from the live latch rather than a constant, so it tracks the
+        configured rate, PAL vs NTSC, and any pitch-multiplier retune — the
+        period it has to fit inside is exactly ``latch + 1`` cycles.
+
+        That halt-derived size is then floored by what the link can actually
+        carry. The quantum sets the write *rate* — chunk_size/quantum writes per
+        chunk period — and the render thread shares this one socket. Ask for
+        more writes than the link sustains and each one runs past its slot,
+        which starves collection and NEUTRAL-pads chunks over a full queue: on
+        hardware a 65-byte quantum (188 writes/s) produced 1744 full underruns
+        and lapped the ring. The perceptual cost of backing off is small — the
+        measured 4-20 Hz modulation at 128 B is 1.96 against 2.41 at 64 B, i.e.
+        slightly *better* — because what matters most is the write cadence
+        clearing that band at all, not how far past it lands.
+        """
+        period_cycles = (self._nmi_latch or self._compensated_latch()) + 1
+        quantum = halt_quantum_bytes(period_cycles)
+        max_hz = getattr(getattr(self.api, "profile", None), "max_write_rate_hz", None)
+        if max_hz:
+            chunk_period = self.chunk_size / self.effective_rate
+            max_slots = max(1, int(chunk_period * max_hz * AUDIO_WRITE_RATE_SHARE))
+            quantum = max(quantum, -(-self.chunk_size // max_slots))
+        return min(self.chunk_size, quantum)
+
     def _read_read_ptr(self) -> int | None:
         """The NMI consumer's read pointer R — the self-modifying LDA operand at
         ``$C025`` — or None when the read failed or came back outside the ring.
@@ -1878,6 +2003,9 @@ class AudioStreamer:
         reading can't stall or sprint the schedule."""
         try:
             write_addr = RING_BUFFER_ADDR
+            # Just past the last byte actually written — what the servo needs as
+            # the live W head, which the pipeline separates from `write_addr`.
+            w_head = RING_BUFFER_ADDR
             prebuffered = False
             bytes_prebuffered = 0
             chunk_buf = bytearray(self.chunk_size)
@@ -1890,6 +2018,15 @@ class AudioStreamer:
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
             # Pace + collect deadlines. Zero until NMI starts.
             next_write_time = 0.0
+            # The chunk collected last iteration, dripped out over this one. One
+            # chunk_period of extra latency buys collection and writing the
+            # concurrency they need to overlap; the queued-sample count is not
+            # decremented until it is actually written, so position_seconds()
+            # still reports where the audio really is.
+            pending: bytes | None = None
+            pending_addr = RING_BUFFER_ADDR
+            pending_from_queue = 0
+            pending_epoch = 0
 
             while self.running:
                 # Transport-flush epoch (Phase 4): captured before we collect a
@@ -1897,39 +2034,59 @@ class AudioStreamer:
                 # data is stale (pre-splice) and is discarded before the ring
                 # write below rather than played.
                 epoch = self._flush_epoch
-                if prebuffered:
-                    pace_deadline = next_write_time
-                    collect_deadline = pace_deadline
-                else:
-                    pace_deadline = 0.0
-                    collect_deadline = time.monotonic() + chunk_period
+                pace_deadline = next_write_time if prebuffered else 0.0
 
                 n = 0
                 from_queue = 0
 
-                if leftover:
-                    take = min(len(leftover), self.chunk_size)
-                    chunk_buf[:take] = leftover[:take]
-                    n = take
-                    from_queue = take
-                    leftover = leftover[take:]
+                if prebuffered and pending is not None:
+                    if epoch != pending_epoch:
+                        # The splice landed after this chunk left the queue: drop
+                        # it unplayed, with the same paired subtract the
+                        # freshly-collected case uses below.
+                        if pending_from_queue:
+                            with self._count_lock:
+                                self._queued_samples = max(
+                                    0, self._queued_samples - pending_from_queue
+                                )
+                                self._pushed_count = max(0, self._pushed_count - pending_from_queue)
+                        pending = None
+                        pending_from_queue = 0
+                    else:
+                        # Pause fast mute (Phase 4): NEUTRAL-fill the unplayed ring
+                        # ahead of the read head so already-queued content goes
+                        # silent quickly. Stomping from pending_addr keeps the
+                        # original ordering — the chunk about to be written lands
+                        # at the front of the stomped span, exactly as it did when
+                        # the write was one unsplit call.
+                        if self._stomp_requested:
+                            self._stomp_requested = False
+                            self._stomp_ring(pending_addr)
+                        n, from_queue, leftover = self._drip_chunk(
+                            pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
+                        )
+                        if pending_from_queue:
+                            with self._count_lock:
+                                self._queued_samples = max(
+                                    0, self._queued_samples - pending_from_queue
+                                )
+                        w_head = pending_addr + len(pending)
+                        if w_head >= RING_BUFFER_END:
+                            w_head -= RING_BUFFER_SIZE
+                        pending = None
+                        pending_from_queue = 0
 
-                # Block with deadline. Returns early once chunk_buf is
-                # full or once the producer is silent past the deadline.
-                while n < self.chunk_size and not leftover and self.running:
-                    remaining = collect_deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    try:
-                        piece = self.q.get(timeout=remaining)
-                    except queue.Empty:
-                        break
-                    take = min(len(piece), self.chunk_size - n)
-                    chunk_buf[n : n + take] = piece[:take]
-                    n += take
-                    from_queue += take
-                    if take < len(piece):
-                        leftover = piece[take:]
+                if pending is None and n < self.chunk_size:
+                    # Either priming the pipeline (nothing to drip yet) or the
+                    # drip's interleaved slots did not fill the chunk. Fall back
+                    # to the plain blocking collect against the same deadline.
+                    collect_deadline = (
+                        pace_deadline if prebuffered else time.monotonic() + chunk_period
+                    )
+                    n, taken, leftover = self._collect_until(
+                        chunk_buf, n, leftover, collect_deadline
+                    )
+                    from_queue += taken
 
                 if not self.running:
                     break
@@ -1963,20 +2120,34 @@ class AudioStreamer:
                     leftover = b""
                     continue
 
-                # Pause fast mute (Phase 4): NEUTRAL-fill the unplayed ring ahead
-                # of the read head so already-queued content goes silent quickly.
-                # Executed here (worker-side) so write_addr stays worker-local and
-                # no ring DMA races the servo. Only meaningful once the NMI is
-                # consuming (prebuffered); before that R is stale.
+                # Pause fast mute on a priming iteration — the pending path above
+                # handles the steady-state case, where the stomp has to land
+                # against the chunk that is about to go out rather than this one.
                 if self._stomp_requested and prebuffered:
                     self._stomp_requested = False
                     self._stomp_ring(write_addr)
 
                 if prebuffered:
+                    # Hand the chunk to the next iteration, which drips it into
+                    # the ring while collecting its successor. Nothing is written
+                    # here, so the queued-sample count stays untouched until the
+                    # bytes actually land.
                     sleep_s = pace_deadline - time.monotonic()
                     if sleep_s > 0:
                         time.sleep(sleep_s)
+                    pending = bytes(chunk_buf[:n])
+                    pending_addr = write_addr
+                    pending_from_queue = from_queue
+                    pending_epoch = epoch
+                    write_addr += n
+                    if write_addr >= RING_BUFFER_END:
+                        write_addr = RING_BUFFER_ADDR
+                    next_write_time += self._next_pace_increment(w_head, chunk_period)
+                    continue
 
+                # Prebuffer fill: the NMI is not consuming yet, so there is no
+                # halt to hide from — one unsplit write is both correct and the
+                # quickest way to get the ring primed.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
                 if from_queue:
                     with self._count_lock:
@@ -1984,32 +2155,30 @@ class AudioStreamer:
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
+                w_head = write_addr
 
-                if not prebuffered:
-                    bytes_prebuffered += n
-                    if bytes_prebuffered >= prebuffer_bytes:
-                        self._start_nmi_timer()
-                        prebuffered = True
-                        # R only becomes meaningful now that the NMI consumes;
-                        # start the servo integrator + adaptive-rate loop clean.
-                        self._servo_integ = 0.0
-                        self._r_rate_ema = -1.0
-                        self._last_r_addr = -1
-                        self._last_r_time = 0.0
-                        self._nmi_loop_chunk_count = 0
-                        self._nmi_loop_acquiring = True
-                        # Hold the rate loop at the seed until the start/seek
-                        # transient settles (post-seek decode catch-up + the
-                        # playlist's frame-drop snap), so it acquires from a steady
-                        # R instead of chasing the spin-up reading. See
-                        # NMI_RATE_LOOP_WARMUP_S.
-                        self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
-                        # Pace the next write one chunk_period out so the
-                        # PREBUFFER_CHUNKS slack stays steady instead of
-                        # getting eaten up immediately.
-                        next_write_time = time.monotonic() + chunk_period
-                else:
-                    next_write_time += self._next_pace_increment(write_addr, chunk_period)
+                bytes_prebuffered += n
+                if bytes_prebuffered >= prebuffer_bytes:
+                    self._start_nmi_timer()
+                    prebuffered = True
+                    # R only becomes meaningful now that the NMI consumes;
+                    # start the servo integrator + adaptive-rate loop clean.
+                    self._servo_integ = 0.0
+                    self._r_rate_ema = -1.0
+                    self._last_r_addr = -1
+                    self._last_r_time = 0.0
+                    self._nmi_loop_chunk_count = 0
+                    self._nmi_loop_acquiring = True
+                    # Hold the rate loop at the seed until the start/seek
+                    # transient settles (post-seek decode catch-up + the
+                    # playlist's frame-drop snap), so it acquires from a steady
+                    # R instead of chasing the spin-up reading. See
+                    # NMI_RATE_LOOP_WARMUP_S.
+                    self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
+                    # Pace the next write one chunk_period out so the
+                    # PREBUFFER_CHUNKS slack stays steady instead of
+                    # getting eaten up immediately.
+                    next_write_time = time.monotonic() + chunk_period
         except Exception:
             # Without this, a thread crash means audio goes silent forever and
             # main loop has no clue why. Mark not-running so callers can detect.

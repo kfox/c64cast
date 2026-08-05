@@ -12,7 +12,26 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The 4-bit `$D418` DAC wobbles far less.** Each host write to the audio ring
+  halts the C64's CPU for about one cycle per byte, and CIA #2 latches NMIs on an
+  edge — so a write long enough to span two timer underflows makes the second
+  sample vanish rather than merely arrive late. The ring write was one 1024-byte
+  push, which at the 12 kHz default froze the CPU for roughly 12 NMI periods
+  about 12 times a second, right in the 4-20 Hz band the ear is most sensitive to.
+  It is now split into pieces that each fit inside one NMI period and spread
+  across the chunk period. Measured on hardware against a 376 Hz carrier,
+  frequency deviation drops from 27.3 Hz to about 6 Hz on both the Ultimate 64
+  and TeensyROM+. There is no knob: the piece size is derived from the live NMI
+  period and floored by what the link can carry, so a backend that cannot afford
+  to split degrades to a single write on its own.
+
+### Added
+
+- `scripts/diags/audio_fm_probe.py` — measures how much a host DMA write
+  perturbs DAC playback, as a function of payload size, against a tone that
+  cannot underrun.
 
 ## [0.2.1] - 2026-08-05
 
