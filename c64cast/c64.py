@@ -418,6 +418,35 @@ NMI_ENTRY_LATENCY_CYCLES: Final = 7  # safety margin (entry latency + PAL/unit v
 NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 75
 
 
+# A host DMAWRITE halts the 6510 for the whole transfer, and CIA #2 is
+# edge-triggered: two Timer A underflows inside one halt latch as one NMI, so
+# every tick past the first is LOST, not merely late. The halt costs ~1 cycle per
+# byte — HW-measured 2026-08-05 with scripts/diags/audio_fm_probe.py at 1.02
+# us/byte on the U64 and 0.97 on a TeensyROM+, holding within a few percent from
+# 32 to 1024 bytes. So a write's payload size *is* its halt length in cycles, and
+# keeping the payload under one NMI period is what keeps the blocked window
+# (halt + the handler's own ~68 cycles) under the two periods it would take to
+# swallow an underflow.
+#
+# This is the host-side twin of modes.BANK_SWAP_CHUNK_SIZE, which splits C64-side
+# REC DMA for exactly the same reason and took NMI capture from 67% to 97%.
+# Measured payoff at the 12 kHz NTSC default (85-cycle period): a 1024-byte write
+# freezes the CPU ~1064 us = 12.8 periods and costs 27.3 Hz of FM deviation on a
+# 376 Hz carrier; at 65 bytes the freeze is ~46 us and deviation falls to 5.3 Hz.
+# The margin covers the fixed per-write cost and PAL/unit variation.
+HALT_QUANTUM_MARGIN_CYCLES: Final = 20
+
+
+def halt_quantum_bytes(period_cycles: int) -> int:
+    """Largest host-DMAWRITE payload whose CPU halt still fits inside one NMI
+    period of `period_cycles`, at the measured ~1 cycle/byte.
+
+    Floored at 16 so a pathologically fast rate can't collapse the quantum to
+    something that costs more in per-write overhead than it saves in halt time.
+    """
+    return max(16, period_cycles - HALT_QUANTUM_MARGIN_CYCLES)
+
+
 def max_safe_sample_rate(system: str) -> int:
     """Highest sample rate whose NMI period stays at/above the safe minimum
     (measured handler worst case + margin) for `system`. ~13.6 kHz NTSC / ~13.1

@@ -893,6 +893,7 @@ def build_stack(
             use_reu_pump=cfg.audio.use_reu_pump,
             reu_pump_governor=cfg.audio.reu_pump_governor,
             host_dma_servo=cfg.audio.host_dma_servo,
+            halt_quantum=cfg.audio.halt_quantum,
             nmi_rate_adaptive=cfg.audio.nmi_rate_adaptive,
             dsp_params=cfg.dsp.to_params(),
         )

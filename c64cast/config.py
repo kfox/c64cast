@@ -659,6 +659,18 @@ class AudioCfg:
             "host-side timing, no C64 writes. Not the REU pump path."
         },
     )
+    halt_quantum: bool = field(
+        default=True,
+        metadata={
+            "help": "Split each host-DMA audio ring write into pieces small "
+            "enough that the CPU halt they cause fits inside one NMI period, "
+            "and spread them across the chunk period. A DMAWRITE halts the "
+            "6510 about one cycle per byte, and CIA #2 is edge-triggered, so a "
+            "longer write swallows NMI underflows outright. Measured on "
+            "hardware: this cuts FM deviation on the DAC roughly 5x. Turn off "
+            "to go back to one write per chunk."
+        },
+    )
     # Adaptive NMI-rate compensation: a closed loop that RAISES the nominal NMI
     # rate to cancel the video slowdown from bus-halt-stolen NMI ticks. Built
     # when bitmap video cost ~2-14% of ticks — but the bitmap+digi fps cap, the

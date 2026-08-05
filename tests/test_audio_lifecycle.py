@@ -15,6 +15,7 @@ import queue
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
@@ -47,6 +48,17 @@ def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> Aud
     s.chunk_size = chunk_size
     s._start_nmi_timer = lambda: None  # type: ignore[method-assign]
     return s
+
+
+def _written_stream(s: AudioStreamer) -> bytes:
+    """Every byte the worker sent to the ring, in order.
+
+    The worker splits each chunk into sub-NMI-period pieces, so no single write
+    is the whole chunk any more. What the C64 sees is the concatenation, which
+    is also the invariant worth asserting on — it survives any future change to
+    the quantum.
+    """
+    return b"".join(data for _, data in cast(Any, s.api).writes)
 
 
 def _run_worker(s: AudioStreamer, until, timeout: float = 2.0) -> threading.Thread:
@@ -105,15 +117,20 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # flip to strict pacing, and pad NEUTRAL chunks counted as full
         # underruns.
         s = _make_worker_streamer(chunk_size=32)
+        # Prebuffer with a NON-neutral value, so a NEUTRAL run in the stream can
+        # only have come from an underrun pad and not from the prebuffer itself.
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([NEUTRAL_SAMPLE] * 32))
+            s.q.put(bytes([3] * 32))
             s._queued_samples += 32
         _run_worker(s, until=lambda: s._full_underruns >= 3)
         self.assertGreaterEqual(s._full_underruns, 1)
-        writes = cast(Any, s.api).writes
-        # The post-prebuffer underrun chunks are all-NEUTRAL, full chunk_size.
-        neutral_chunks = [d for _, d in writes if d == bytes([NEUTRAL_SAMPLE] * 32)]
-        self.assertTrue(neutral_chunks, "expected NEUTRAL underrun chunks")
+        stream = _written_stream(s)
+        self.assertEqual(stream[: PREBUFFER_CHUNKS * 32], bytes([3] * PREBUFFER_CHUNKS * 32))
+        self.assertIn(
+            bytes([NEUTRAL_SAMPLE] * 32),
+            stream[PREBUFFER_CHUNKS * 32 :],
+            "expected a full NEUTRAL chunk after the prebuffer",
+        )
 
     def test_partial_underrun_pads_tail(self):
         # A collect window that closes on a sub-chunk blob must pad the tail with
@@ -138,10 +155,11 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertGreaterEqual(
             s._partial_underruns, 1, "expected at least one partial-pad underrun"
         )
-        # The padded chunk is the half blob followed by a NEUTRAL tail.
-        writes = cast(Any, s.api).writes
+        # The padded chunk is the half blob followed by a NEUTRAL tail. Asserted
+        # against the reassembled stream, since the chunk reaches the ring as
+        # several sub-NMI-period writes rather than one.
         expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
-        self.assertIn(expected, [d for _, d in writes], "partial chunk was not NEUTRAL-padded")
+        self.assertIn(expected, _written_stream(s), "partial chunk was not NEUTRAL-padded")
 
     def test_oversized_blob_carried_via_leftover(self):
         # A single blob bigger than chunk_size must split across writes through
@@ -153,6 +171,87 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         body = b"".join(d for _, d in cast(Any, s.api).writes)
         self.assertGreaterEqual(len(body), 50)
         self.assertEqual(body[:50], bytes(range(50)))
+
+    def test_ring_writes_stay_under_one_nmi_period(self):
+        # The whole point of the split: a host DMAWRITE halts the 6510 for about
+        # one cycle per byte, and CIA #2 is edge-triggered, so a payload longer
+        # than one NMI period swallows underflows that then never fire. Every
+        # steady-state write must therefore fit the quantum derived from the
+        # live latch — and the bytes must still arrive intact and in order.
+        s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
+        payload = bytes(range(256)) * 8
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(payload)
+            s._queued_samples += len(payload)
+
+        _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 40, timeout=3.0)
+
+        quantum = s._halt_quantum()
+        self.assertLess(quantum, (s._nmi_latch or s._compensated_latch()) + 1)
+        # Prebuffer writes are deliberately unsplit (no NMI is consuming yet), so
+        # only the writes past the prebuffer are held to the quantum.
+        steady = cast(Any, s.api).writes[PREBUFFER_CHUNKS:]
+        self.assertTrue(steady, "expected steady-state writes past the prebuffer")
+        self.assertTrue(
+            all(len(data) <= quantum for _, data in steady),
+            f"a steady-state write exceeded the {quantum}-byte halt quantum",
+        )
+        stream = _written_stream(s)
+        self.assertEqual(stream[: len(payload)], payload, "split lost or reordered bytes")
+
+    def test_split_writes_are_contiguous_in_the_ring(self):
+        # Splitting must not disturb where the bytes land: each piece has to
+        # continue from the end of the one before it, or the ring develops holes
+        # the NMI reads as stale audio.
+        s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([5] * 1024))
+            s._queued_samples += 1024
+
+        _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 30, timeout=3.0)
+
+        expect = None
+        for addr_hex, data in cast(Any, s.api).writes:
+            addr = int(addr_hex, 16)
+            if expect is not None:
+                self.assertEqual(addr, expect, "a ring write did not continue from the last")
+            expect = addr + len(data)
+            if expect >= audio_mod.RING_BUFFER_END:
+                expect = audio_mod.RING_BUFFER_ADDR
+
+    def test_halt_quantum_backs_off_to_the_write_rate_budget(self):
+        # The quantum sets the write RATE, and the render thread shares the same
+        # socket. Asking for more writes than the link sustains makes each one
+        # overrun its slot, which starves collection and pads silence over a full
+        # queue — so a backend that advertises a ceiling has to raise the quantum
+        # above the halt-derived size rather than the other way round.
+        s = _make(sample_rate=12000)
+        halt_sized = s._halt_quantum()
+
+        cast(Any, s.api).profile = SimpleNamespace(max_write_rate_hz=200.0)
+        budgeted = s._halt_quantum()
+
+        self.assertGreater(budgeted, halt_sized, "the budget did not raise the quantum")
+        slots = -(-s.chunk_size // budgeted)
+        writes_hz = slots / (s.chunk_size / s.effective_rate)
+        self.assertLessEqual(writes_hz, 200.0 * audio_mod.AUDIO_WRITE_RATE_SHARE + 1.0)
+
+    def test_halt_quantum_off_writes_the_whole_chunk(self):
+        # The escape hatch: with splitting disabled the worker goes back to one
+        # write per chunk period, which is what the pre-split behavior was.
+        s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
+        s.halt_quantum = False
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([9] * 64))
+            s._queued_samples += 64
+
+        _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= PREBUFFER_CHUNKS + 2)
+
+        self.assertEqual(s._halt_quantum(), 0)
+        self.assertTrue(
+            all(len(data) == 64 for _, data in cast(Any, s.api).writes),
+            "splitting was disabled but a write was still subdivided",
+        )
 
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip

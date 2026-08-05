@@ -423,6 +423,27 @@ host_dma_servo = true               # Closed-loop pacing for the *host-DMA*
                                     # a ring. Pure host-side timing — no C64
                                     # writes, so none of the REU servo's glitch.
                                     # On by default; false = open-loop A/B.
+halt_quantum = true                 # Split each host-DMA ring write so the CPU
+                                    # halt it causes fits inside one NMI period,
+                                    # and spread the pieces across the chunk
+                                    # period. A DMAWRITE freezes the 6510 for
+                                    # about one cycle per byte, and CIA #2 is
+                                    # edge-triggered: when one halt spans two
+                                    # Timer A underflows they latch as a single
+                                    # NMI and the extra samples are never
+                                    # fetched. One 1024-byte write is ~12 NMI
+                                    # periods of freeze, ~12 times a second —
+                                    # right in the 4-20 Hz band where the ear is
+                                    # most sensitive to modulation. HW-measured
+                                    # at the 12 kHz default: FM deviation on a
+                                    # 376 Hz carrier falls from 27.3 Hz to
+                                    # 5.3 Hz. This is the host-side twin of the
+                                    # C64-side REC DMA chunking that already
+                                    # took NMI capture from 67% to 97%.
+                                    # Spreading matters as much as splitting —
+                                    # the same pieces sent back-to-back measure
+                                    # 10.8 Hz. On by default; false = one write
+                                    # per chunk, the pre-split behavior.
 nmi_rate_adaptive = false           # Adaptive NMI-rate compensation. Built to
                                     # cancel a video slowdown from bus-halt-stolen
                                     # NMI ticks — but the bitmap+digi fps cap, the
