@@ -34,6 +34,19 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **DAC audio can no longer come up silent for a whole session.** On some
+  machines a run would play no audio at all from the first frame to the last —
+  never a dropout, never a recovery, and the video also ran noticeably fast.
+  Three writes start the NMI audio consumer, and the write transport is built to
+  absorb a dropped write rather than fail loudly; if any of the three went
+  missing the consumer never started, and nothing on the host noticed (the fast
+  playback was the pacing loop correctly chasing a reader that never read). The
+  bring-up now checks that the consumer actually started and re-sends the writes
+  if it didn't, up to five times, logging when a retry was needed and warning
+  outright if it never takes. A consumer that dies mid-session also warns now
+  instead of playing out as unexplained silence. `--calibrate-dac` uses the same
+  verified bring-up, so a run can no longer spend 50 seconds measuring nothing.
+
 - **Ensemble systems no longer record over each other.** `[recording].path`
   cascaded from the master like the rest of the section, so every system in a
   wall opened a `cv2.VideoWriter` on one file and finished with a single

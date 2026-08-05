@@ -86,6 +86,16 @@ The worker drains the queue at `chunk_size / sample_rate` — the NMI consumptio
 
 After `PREBUFFER_CHUNKS * chunk_size` bytes of prebuffer it starts the CIA #2 timer (`$DD04/05`). The BASIC clear-loop is kicked once at session startup, not per scene.
 
+#### Verifying the arm took
+
+Three writes bring the consumer up, and all three are load-bearing: the `$0318` NMI vector, the Timer A latch, and the `$DD0D`/`$DD0E` enable+start. They ride the same transport as everything else, whose `_emit` contract is to **absorb** a failed write rather than raise — right for a lost border poke, wrong here. Any one of them going missing produces the identical symptom: the NMI never fires, the read pointer R (the self-modifying operand at `$C025`) sits at `RING_BUFFER_ADDR` forever, and the session is silent from the first frame to the last. It also runs *fast* — the host-DMA servo is correctly reacting to a reader that never consumes. A dropped vector write is not a milder case: the KERNAL NMI handler stays installed and writes `#$7F` to `$DD0D`, killing CIA #2 interrupts itself.
+
+So `_start_nmi_timer` verifies rather than assumes. It reads R, calls `_arm_nmi_once` (all three writes, plus a read of `$DD0D` — the only way to clear the latched ICR flags, so the next underflow is a clean 0→1 transition), waits `NMI_ARM_VERIFY_DELAY_S` (30 ms ≈ 240 bytes of R travel at 8 kHz, so a frozen R is unambiguous), and re-reads. Up to `NMI_ARM_MAX_ATTEMPTS` times; `_nmi_arm_attempts` records what it took. Retries are cheap and only happen on failure — five of them is ≈150 ms against the ≈768 ms prebuffer already in hand. This was found on a machine whose short-board DMA is marginal enough to drop one of the three intermittently; a retry lands it.
+
+A backend that can't read R (`profile.supports_read` false, older TeensyROM firmware) arms exactly once, as before — there is nothing to verify against, and inventing a wait would only add latency.
+
+`_note_r_reading`, called from the servo's per-chunk R read, covers the consumer that dies *mid*-session: `NMI_STALL_WARN_CHUNKS` consecutive identical readings warn once. R moves ~1 KB per chunk period when alive, so identical back-to-back readings are conclusive, not a heuristic. The servo already had this reading in hand and simply never said anything about it.
+
 Pacing is **strict absolute** — `next_write_time + chunk_period` — and never snaps forward to wall-clock on overrun. Snapping forward lets DMA round-trip and Python wakeup overhead shrink the effective sample rate below NMI consumption; every chunk then takes NEUTRAL padding, producing audible chunk-rate AM sidebands (≈−5 dB at the carrier) and ≈16 dB of overall level loss on video audio. The 8 KB ring (≈1 s at 8 kHz) absorbs occasional pace overshoots.
 
 ### Why the ring lives at `$4000`

@@ -35,7 +35,7 @@ import sounddevice as sd
 
 from c64cast import dac_calibration as dc
 from c64cast.audio import (
-    CIA2_ICR_CLEAR,
+    CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
     CIA2_ICR_ENABLE_TIMER_A_NMI,
     CIA2_TIMER_A_CONTINUOUS,
@@ -136,7 +136,7 @@ def main() -> int:
         st._upload_nmi_and_buffers()  # installs the Mahoney SID env
         clock = CLOCK_NTSC if args.system == "NTSC" else CLOCK_PAL
         latch = max(1, round(clock / dc.NMI_RATE) - 1)
-        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
 
@@ -177,7 +177,7 @@ def main() -> int:
         try:
             if saved:
                 restore_sid_config(be, saved)
-            be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+            be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
             be.silence_sid()
             be.reset()
             print("[hw] SID config restored, machine silenced + reset.")
