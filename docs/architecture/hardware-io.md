@@ -46,7 +46,17 @@ It is a race, so it reproduces intermittently; single-threaded runs and the Ulti
 
 ## Startup: BASIC clear-and-loop program
 
-After `api.reset()`, `api.run_basic_clear_loop()` POSTs a 25-byte tokenized BASIC PRG (`10 PRINT CHR$(147) : 20 GOTO 20`) to `/v1/runners:run_prg`. `PRINT CHR$(147)` wipes the BASIC READY banner and homes the cursor; the infinite `GOTO 20` keeps BASIC out of the editor's direct-input mode so the kernal cursor-blink IRQ stays naturally suppressed (the editor is what flips `$CC` between 0 and 1 — when BASIC is busy in a tight loop, the blink never re-arms). Audio bring-up still just uploads the NMI routine and starts the CIA #2 timer; the NMI fires regardless of what the BASIC loop is doing.
+After `api.reset()`, `api.run_basic_clear_loop()` POSTs a 25-byte tokenized BASIC PRG (`10 PRINT CHR$(147) : 20 GOTO 20`) to `/v1/runners:run_prg`. `PRINT CHR$(147)` wipes the BASIC READY banner and homes the cursor; the infinite `GOTO 20` keeps BASIC out of the editor's direct-input mode so the kernal cursor-blink IRQ stays naturally suppressed. Audio bring-up still just uploads the NMI routine and starts the CIA #2 timer; the NMI fires regardless of what the BASIC loop is doing.
+
+### The loop is the *only* way to stop the cursor blinking
+
+`suppress_cursor_blink()` writes `$80` to BLNSW (`$00CC`), and that works only while BASIC is *not* at the READY prompt. The editor's input-wait loop copies NDX (`$00C6`) into BLNSW on every pass, so with BASIC waiting for a line the byte is gone microseconds after the DMA lands — measured on hardware, where a write to `$00CC` never reads back while every other zero-page address holds fine. Nothing the host can write holds that address down. So the suppression is a cleanup for the moments BASIC is parked elsewhere (after a SID player's `JMP *` spin survives teardown), not a way to stop a live editor.
+
+### TeensyROM: LaunchFile leaves the loop un-run
+
+The TR has no `run_prg`; `_bring_up_irq_clear_loop` PostFiles the same PRG and LaunchFiles it. Measured on hardware, the body lands at `$0801` but the first line's link pointer reads `00 00` and VARTAB sits at `$0803` — the signature of a BASIC cold-start init arriving *after* the copy. BASIC therefore sees an empty program, RUN drops straight back to READY, and the machine spends the whole session in the editor's input-wait loop. That is where the TR's blinking cursor came from, and why no amount of writing `$CC` could stop it. It also let the editor eat the keystrokes the keyboard poller reads out of KEYD.
+
+`_ensure_clear_loop_running` repairs it with DMA only: re-write the program body to `$0801`, fix VARTAB to just past it (or RUN's `CLR` puts variables on top of the program), then type `RUN` + RETURN into the kernal keyboard buffer — which works *because* BASIC is stuck at READY, since that wait loop is exactly what consumes KEYD. The `$CC` write-and-read-back above doubles as the state probe: if the `$80` survives, BASIC is off in a program and the repair is skipped, which matters because typing into a running loop would leave keystrokes in KEYD for the poller to read as menu input (RETURN is a nav code).
 
 ## `char_rom.py` — reading the character ROM off the machine
 

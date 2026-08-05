@@ -16,6 +16,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -174,6 +175,31 @@ class ResolveKeyTest(unittest.TestCase):
         cfg.audio.dac_calibration_profile = "breadbin"
         self.assertEqual(dc.resolve_calibration_key(cfg), "profile-breadbin")
 
+    def test_profile_naming_a_file_is_used_as_a_path(self):
+        # A path is the only way to point one backend's run at a calibration
+        # filed under another's device identity (a TR+ in a U64's cart port
+        # driving the SID the Ultimate already measured). Sanitizing it into a
+        # key instead folds every separator to '_' and matches no file.
+        cfg = _tr_serial_cfg()
+        cfg.audio.dac_calibration_profile = "/data/c64cast/calibration/dac/ultimate-5D327C.json"
+        self.assertEqual(
+            dc.calibration_path(cfg),
+            Path("/data/c64cast/calibration/dac/ultimate-5D327C.json"),
+        )
+        self.assertEqual(dc.resolve_calibration_key(cfg), "ultimate-5D327C")
+
+    def test_profile_path_expands_user(self):
+        cfg = _tr_serial_cfg()
+        cfg.audio.dac_calibration_profile = "~/cal/breadbin.json"
+        self.assertEqual(dc.calibration_path(cfg), Path.home() / "cal/breadbin.json")
+
+    def test_bare_name_is_never_treated_as_a_path(self):
+        # A name with no separator and no .json suffix stays a key, dots and all.
+        cfg = _tr_serial_cfg()
+        cfg.audio.dac_calibration_profile = "my.rig"
+        self.assertIsNone(dc.profile_path_override(cfg))
+        self.assertEqual(dc.resolve_calibration_key(cfg), "profile-my.rig")
+
 
 class PersistenceTest(unittest.TestCase):
     def setUp(self):
@@ -224,6 +250,18 @@ class PersistenceTest(unittest.TestCase):
             cfg, key, {"default": dc.CalibrationResult(list(range(256)), {}, None, raw)}, {}
         )
         self.assertEqual(dc.load_calibrated_table(cfg), bytes(range(256)))
+
+    def test_save_honours_a_path_profile_and_loads_back(self):
+        # --calibrate-dac and playback must agree on where the file lives, so a
+        # path profile has to steer the write as well as the read.
+        cfg = _u64_cfg()
+        dest = Path(self._tmp.name) / "elsewhere" / "breadbin.json"
+        cfg.audio.dac_calibration_profile = str(dest)
+        path = dc.save_calibration(
+            cfg, dc.resolve_calibration_key(cfg), {"default": _result(0)}, {}
+        )
+        self.assertEqual(path, dest)
+        self.assertEqual(dc.load_calibrated_table(cfg), bytes(256))
 
     def test_load_missing_returns_none(self):
         self.assertIsNone(dc.load_calibrated_table(_u64_cfg("nope.lan")))

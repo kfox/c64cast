@@ -27,6 +27,24 @@ the version and stamps it with the date.
   period and floored by what the link can carry, so a backend that cannot afford
   to split degrades to a single write on its own.
 
+- `[audio].dac_calibration_profile` now also takes a **path** to a calibration
+  file, used as given. A name is folded into one filesystem-safe token, so a path
+  handed to it silently became a key matching no file — and a name can only ever
+  address the current backend's own key space, which made it impossible to point
+  a TeensyROM+ run at the calibration of the C64 it is plugged into (filed under
+  the Ultimate's device id). Missing calibrations now name the file that was
+  looked for instead of a mangled key.
+
+### Fixed
+
+- **TeensyROM: no more blinking cursor, and the BASIC clear loop actually
+  runs.** LaunchFile left the clear-loop program at `$0801` with its link
+  pointer zeroed, so BASIC saw an empty program and dropped back to READY —
+  where the editor's input-wait loop blinks the cursor and, because that loop
+  rewrites `$00CC` on every pass, no write could switch the blink off. Bring-up
+  now detects it and repairs it over DMA. The editor also stops eating the
+  keystrokes the on-C64 keyboard control reads.
+
 ### Added
 
 - `scripts/diags/audio_fm_probe.py` — measures how much a host DMA write

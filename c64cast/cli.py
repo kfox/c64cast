@@ -207,10 +207,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument(
         "--dac-calibration-profile",
         default=None,
-        help="Override the auto-derived DAC calibration file key with this name "
-        "(calibration/dac/profile-<name>.json), for both --calibrate-dac and "
-        "playback. Use when a TeensyROM+ moves between physical C64s: name each "
-        f"host's calibration once, reuse the name on every run there (default: "
+        metavar="NAME|PATH",
+        help="Override the auto-derived DAC calibration file key, for both "
+        "--calibrate-dac and playback. A name keys a file under "
+        "calibration/dac/profile-<name>.json (use when a TeensyROM+ moves between "
+        "physical C64s: name each host's calibration once, reuse the name on every "
+        "run there); a path (ending .json, or containing a separator) names a "
+        "calibration file directly, which is how one machine's calibration is "
+        f"reused from another backend (default: "
         f"{audio_def.dac_calibration_profile})",
     )
 
