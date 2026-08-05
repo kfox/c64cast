@@ -541,7 +541,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Output video file path.",
+          "description": "Output video file path. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4' so the wall's systems don't overwrite each other. Setting it explicitly uses that path verbatim.",
           "default": "recording.mp4"
         },
         "fps": {

@@ -1018,7 +1018,9 @@ def build_stack(
 
             recorder = _SR(
                 framebuffer,
-                paths.expand_user(cfg.recording.path),
+                paths.expand_user(
+                    cfgmod.resolve_recording_path(cfg.recording, name, is_ensemble=is_ensemble)
+                ),
                 fps=cfg.recording.fps,
                 scale=cfg.recording.scale,
                 fourcc=cfg.recording.fourcc,

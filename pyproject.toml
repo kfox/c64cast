@@ -84,6 +84,16 @@ classifiers = [
 # host-side SID register-state tracking (the U64's SID is real
 # hardware: writes only, reads return 0, so we run a parallel py65
 # 6502 to recover live $D4xx state). Pure Python, no C extension.
+#
+# The opencv pin binds only when no other opencv wheel is installed. Every
+# variant (contrib, headless) unpacks to the same `site-packages/cv2/` under a
+# different distribution name, so the installer treats them as unrelated and
+# the last one written wins. `vision` pulls mediapipe, which requires
+# opencv-contrib-python, so `[vision]` and `[all]` both resolve this pin and
+# then load a different build. Not fixable from here — a conflict marker would
+# make c64cast[all] unsolvable rather than make contrib go away — so
+# `doctor._probe_opencv_provider` reports the build that actually loaded
+# instead of leaving the divergence silent.
 dependencies = [
     "numpy>=2.4.6,<3",
     "opencv-python>=5.0.0.93,<6",

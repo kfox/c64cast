@@ -1618,7 +1618,15 @@ class RecordingCfg:
         default=False,
         metadata={"help": "Record the rendered display to a video file (cv2.VideoWriter)."},
     )
-    path: str = field(default="recording.mp4", metadata={"help": "Output video file path."})
+    path: str = field(
+        default="recording.mp4",
+        metadata={
+            "help": "Output video file path. Does not cascade from an ensemble "
+            "master: a system that leaves this alone records to "
+            "'recording-<system>.mp4' so the wall's systems don't overwrite "
+            "each other. Setting it explicitly uses that path verbatim."
+        },
+    )
     fps: int = field(default=30, metadata={"help": "Recording frame rate."})
     scale: int = field(
         default=2, metadata={"help": "Integer pixel scale factor for the recording."}
@@ -3036,7 +3044,10 @@ _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("playlist", frozenset()),
     ("debug", frozenset()),
     ("preview", frozenset()),
-    ("recording", frozenset()),
+    # path is per-system: every system records its own stream, and a cascaded
+    # master path would point N cv2.VideoWriters at one file. Systems that
+    # leave it alone get a name-derived default instead (resolve_recording_path).
+    ("recording", frozenset({"path"})),
     ("color", frozenset()),
     ("performance", frozenset()),
     ("menu", frozenset()),
@@ -3083,6 +3094,28 @@ def apply_master_defaults(
             if sys_val == blank_val and master_val != blank_val:
                 setattr(sys_section, f.name, master_val)
     return sys_cfg
+
+
+def resolve_recording_path(recording: RecordingCfg, system_name: str, *, is_ensemble: bool) -> str:
+    """Per-system output file for `[recording]`, unexpanded.
+
+    cv2.VideoWriter has no notion of sharing a file, so N systems opening one
+    path produce one truncated stream rather than N recordings. In an ensemble
+    a system that left `path` at the default gets the system name folded into
+    the stem — `recording.mp4` -> `recording-left.mp4` — which is the same
+    disambiguation the preview window applies to its HighGUI title.
+
+    An explicit per-system `path` is honored verbatim: the user naming the file
+    outranks a scheme for naming it, and two systems pointed at one name are
+    caught by doctor rather than silently renamed. "Explicit" is the same
+    approximation :func:`apply_master_defaults` makes — a value differing from
+    the dataclass default — so a per-system file that spells out the default
+    is treated as not having set it, and still gets a distinct name.
+    """
+    if not is_ensemble or recording.path != RecordingCfg.path:
+        return recording.path
+    stem, ext = os.path.splitext(recording.path)
+    return f"{stem}-{system_name}{ext}"
 
 
 @dataclass
