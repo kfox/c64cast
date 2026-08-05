@@ -22,9 +22,11 @@ github.com too.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -44,8 +46,6 @@ def _load_bookdoc():
     spec = importlib.util.spec_from_file_location("bookdoc", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    import sys
-
     sys.modules["bookdoc"] = module
     spec.loader.exec_module(module)
     return module
@@ -91,7 +91,7 @@ def _module_name(cell: str) -> str | None:
 def _anchors(path: Path) -> set[str]:
     seen: dict[str, int] = {}
     out = set()
-    for match in re.finditer(r"^#+\s+(.*?)\s*$", path.read_text(), re.M):
+    for match in re.finditer(r"^#+\s+(.*?)\s*$", path.read_text(encoding="utf-8"), re.M):
         slug = _bookdoc.heading_slug(match.group(1))
         count = seen.get(slug, 0)
         seen[slug] = count + 1
@@ -101,7 +101,7 @@ def _anchors(path: Path) -> set[str]:
 
 class ArchitectureIndexTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.text = _INDEX.read_text()
+        self.text = _INDEX.read_text(encoding="utf-8")
         self.indexed = _table_rows(self.text, "Module index")
         self.uncovered = _table_rows(self.text, "Not covered here")
 
@@ -142,14 +142,12 @@ class ArchitectureIndexTest(unittest.TestCase):
 
     def test_uncovered_modules_carry_their_rationale_in_a_docstring(self) -> None:
         """The list promises a docstring; a bare module makes it a dead end."""
-        import ast
-
         for cell, _ in self.uncovered:
             name = _module_name(cell)
             if name is None or name.endswith("/"):
                 continue
             with self.subTest(module=name):
-                source = (_PACKAGE / name).read_text()
+                source = (_PACKAGE / name).read_text(encoding="utf-8")
                 docstring = ast.get_docstring(ast.parse(source))
                 if name == "__main__.py":
                     continue  # a three-line entry point has nothing to say
