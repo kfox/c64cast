@@ -1304,7 +1304,6 @@ class AudioStreamer:
         use_reu_pump: bool = False,
         reu_pump_governor: bool = True,
         host_dma_servo: bool = True,
-        halt_quantum: bool = True,
         nmi_rate_adaptive: bool = False,
         dsp_params: DSPParams | None = None,
     ):
@@ -1376,7 +1375,6 @@ class AudioStreamer:
         # host-side timing — no C64 writes. False = open-loop wall-clock pacing
         # (original drift/echo) for A/B. Does not affect the REU pump path.
         self.host_dma_servo = host_dma_servo
-        self.halt_quantum = halt_quantum
         # Adaptive NMI-rate compensation (closed loop on measured R rate). When
         # True, the worker runs the slow outer loop (_update_nmi_rate_loop) that
         # raises the nominal NMI rate so the bus-halt-throttled consumer lands at
@@ -1784,7 +1782,7 @@ class AudioStreamer:
 
     def _halt_quantum(self) -> int:
         """Bytes per ring write, sized so each write's CPU halt fits inside one
-        NMI period. ``0`` disables splitting (one write per chunk, as before).
+        NMI period.
 
         Derived from the live latch rather than a constant, so it tracks the
         configured rate, PAL vs NTSC, and any pitch-multiplier retune — the
@@ -1801,8 +1799,6 @@ class AudioStreamer:
         slightly *better* — because what matters most is the write cadence
         clearing that band at all, not how far past it lands.
         """
-        if not self.halt_quantum:
-            return 0
         period_cycles = (self._nmi_latch or self._compensated_latch()) + 1
         quantum = halt_quantum_bytes(period_cycles)
         max_hz = getattr(getattr(self.api, "profile", None), "max_write_rate_hz", None)

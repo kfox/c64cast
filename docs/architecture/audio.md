@@ -86,7 +86,7 @@ The worker drains the queue at `chunk_size / sample_rate` — the NMI consumptio
 
 After `PREBUFFER_CHUNKS * chunk_size` bytes of prebuffer it starts the CIA #2 timer (`$DD04/05`). The BASIC clear-loop is kicked once at session startup, not per scene.
 
-#### `[audio].halt_quantum` — the ring write is split and spread
+#### The ring write is split and spread
 
 Step 3 is not one write. A host `DMAWRITE` halts the 6510 for the whole transfer, and CIA #2 is **edge-triggered** through the NMI line: when one halt spans two Timer A underflows the ICR latches once and the second sample is never fetched at all. So the payload size of a ring write is not a throughput question, it is how many NMIs that write destroys.
 
@@ -110,6 +110,10 @@ That burst-vs-spread comparison is also the control that says host-side splittin
 This is the host-side twin of `modes.BANK_SWAP_CHUNK_SIZE`, which splits C64-side REC DMA for exactly the same reason and took NMI capture from 67 % to 97 %. The host path simply never got the same treatment.
 
 *Why the worker gained a one-chunk pipeline.* Spreading the writes across the period consumes the time the worker used to spend asleep waiting for the pace deadline — which was also the producer's collect window. So the worker now holds the chunk it collected last iteration and drips *that* one out while collecting its successor in the gaps between pieces (`_collect_until` is called once per quantum slot). Collection keeps its full period. The cost is one `chunk_period` of extra latency, and the queued-sample count is deliberately not decremented until the bytes actually land, so `position_seconds()` still reports where the audio really is and A/V sync does not shift.
+
+*There is deliberately no off switch.* The quantum sets the write **rate** — `chunk_size / quantum` writes per chunk period — and the render thread shares the one socket, so `_halt_quantum` floors the halt-derived size by what `BackendProfile.max_write_rate_hz` can carry. That floor already expresses the off case: a link that cannot afford to split gets a quantum of the whole chunk and issues one write, exactly the pre-split behavior. A boolean would only let someone pick worse audio on a link that could afford better.
+
+Getting that budget wrong is not a mild regression. A 65-byte quantum asks for 188 writes/s; on hardware each write then ran past its slot, so every later slot deadline was already expired, collection got no time at all, and the session NEUTRAL-padded 1744 chunks over a *full* queue and lapped the ring. `_collect_until` now drains non-blockingly once past its deadline so a slow write can never again manufacture an underrun out of queued data — but the budget is what keeps it from happening.
 
 Prebuffer writes are deliberately left unsplit: the NMI is not consuming yet, so there is no halt to hide from, and one write fills the ring faster.
 

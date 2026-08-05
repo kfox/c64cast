@@ -236,21 +236,25 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         writes_hz = slots / (s.chunk_size / s.effective_rate)
         self.assertLessEqual(writes_hz, 200.0 * audio_mod.AUDIO_WRITE_RATE_SHARE + 1.0)
 
-    def test_halt_quantum_off_writes_the_whole_chunk(self):
-        # The escape hatch: with splitting disabled the worker goes back to one
-        # write per chunk period, which is what the pre-split behavior was.
+    def test_unaffordable_link_collapses_to_one_write(self):
+        # A backend too slow to carry the split degrades all the way back to a
+        # single write per chunk on its own. This is why there is no separate
+        # off switch: the budget already expresses "this link cannot afford to
+        # split", and splitting past what the link carries is actively worse
+        # than not splitting (the writes overrun their slots and collection
+        # starves), so nothing is served by letting it be chosen by hand.
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
-        s.halt_quantum = False
+        cast(Any, s.api).profile = SimpleNamespace(max_write_rate_hz=1.0)
         for _ in range(PREBUFFER_CHUNKS + 2):
             s.q.put(bytes([9] * 64))
             s._queued_samples += 64
 
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= PREBUFFER_CHUNKS + 2)
 
-        self.assertEqual(s._halt_quantum(), 0)
+        self.assertEqual(s._halt_quantum(), s.chunk_size)
         self.assertTrue(
             all(len(data) == 64 for _, data in cast(Any, s.api).writes),
-            "splitting was disabled but a write was still subdivided",
+            "an unaffordable link still had its writes subdivided",
         )
 
     def test_worker_crash_sets_not_running(self):

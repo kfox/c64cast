@@ -271,11 +271,6 @@
           "description": "Closed-loop pacing for the host-DMA audio worker (mic / videos): reads the C64 NMI read pointer and adjusts the producer's software pace so the ring write head holds a fixed gap behind the reader, stopping the ~26s drift/echo. Pure host-side timing, no C64 writes. Not the REU pump path.",
           "default": true
         },
-        "halt_quantum": {
-          "type": "boolean",
-          "description": "Split each host-DMA audio ring write into pieces small enough that the CPU halt they cause fits inside one NMI period, and spread them across the chunk period. A DMAWRITE halts the 6510 about one cycle per byte, and CIA #2 is edge-triggered, so a longer write swallows NMI underflows outright. Measured on hardware: this cuts FM deviation on the DAC roughly 5x. Turn off to go back to one write per chunk.",
-          "default": true
-        },
         "nmi_rate_adaptive": {
           "type": "boolean",
           "description": "Adaptive NMI-rate compensation: closed-loop on the measured C64 consumer rate, raises the NMI rate to cancel a video slowdown from bus-halt-stolen NMI ticks. DEFAULT OFF \u2014 modern fps caps + REU-staged double-buffer drove that loss to ~0, so this only adds pitch error now. Supersedes pitch_mult_* when on. Host-DMA path only.",

@@ -23,7 +23,9 @@ the version and stamps it with the date.
   It is now split into pieces that each fit inside one NMI period and spread
   across the chunk period. Measured on hardware against a 376 Hz carrier,
   frequency deviation drops from 27.3 Hz to about 6 Hz on both the Ultimate 64
-  and TeensyROM+. Disable with `[audio].halt_quantum = false`.
+  and TeensyROM+. There is no knob: the piece size is derived from the live NMI
+  period and floored by what the link can carry, so a backend that cannot afford
+  to split degrades to a single write on its own.
 
 ### Added
 

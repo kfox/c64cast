@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 19 sections and 150 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 19 sections and 149 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -39,7 +39,6 @@ backend = "auto"     # auto | dac | sampler
 | **`use_reu_pump`**<br>*Type:* `bool`<br>*Default:* `False` | EXPERIMENTAL: stream video/mic audio from a REU ring (bus-clean) instead of per-write host DMA. Requires REU enabled. |
 | **`reu_pump_governor`**<br>*Type:* `bool`<br>*Default:* `True` | C64-side rate governor for the REU audio pump: the pump IRQ skips a chunk when its write head outruns the reader, stopping drift/echo with no host writes. Only active with use_reu_pump. |
 | **`host_dma_servo`**<br>*Type:* `bool`<br>*Default:* `True` | Closed-loop pacing for the host-DMA audio worker (mic / videos): reads the C64 NMI read pointer and adjusts the producer's software pace so the ring write head holds a fixed gap behind the reader, stopping the ~26s drift/echo. Pure host-side timing, no C64 writes. Not the REU pump path. |
-| **`halt_quantum`**<br>*Type:* `bool`<br>*Default:* `True` | Split each host-DMA audio ring write into pieces small enough that the CPU halt they cause fits inside one NMI period, and spread them across the chunk period. A DMAWRITE halts the 6510 about one cycle per byte, and CIA #2 is edge-triggered, so a longer write swallows NMI underflows outright. Measured on hardware: this cuts FM deviation on the DAC roughly 5x. Turn off to go back to one write per chunk. |
 | **`nmi_rate_adaptive`**<br>*Type:* `bool`<br>*Default:* `False` | Adaptive NMI-rate compensation: closed-loop on the measured C64 consumer rate, raises the NMI rate to cancel a video slowdown from bus-halt-stolen NMI ticks. DEFAULT OFF — modern fps caps + REU-staged double-buffer drove that loss to ~0, so this only adds pitch error now. Supersedes pitch_mult_* when on. Host-DMA path only. |
 | **`source_alignment_marker`**<br>*Type:* `bool`<br>*Default:* `False` | DEBUG/CAPTURE ONLY: prepend a 100 ms chirp to REU audio as a capture-alignment anchor. Turn OFF for production listening. |
 | **`pitch_mult_petscii`**<br>*Type:* `float`<br>*Default:* `1.0` | Host-DMA servo playback-rate multiplier for PETSCII mode (light char-mode load). 1.0 = none (default; U64-II NTSC is dead-on). Quantized: the NMI period is an integer cycle count, so a request rounds onto the latch grid (~1.2% steps at 12 kHz) — 1.005 is a no-op, 1.015 lands on +1.19%. |
