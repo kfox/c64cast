@@ -42,6 +42,7 @@ from .config import (
     Config,
     SceneCfg,
     apply_machine_settings,
+    merge_cli,
 )
 
 log = logging.getLogger(__name__)
@@ -391,27 +392,22 @@ def build_config(args: argparse.Namespace) -> Config:
     # playback inherits them, and an explicit -u/--url still wins (it's applied
     # after). See config.apply_machine_settings.
     apply_machine_settings(cfg)
-    # Each argument plays once, in order — no videos, no loop (unless --loop).
-    cfg.playlist.loop = bool(args.loop)
+    # Quick-playback policy: each argument plays once, in order, no videos
+    # interleaved. Set *before* merge_cli so `--loop` still overrides it.
+    cfg.playlist.loop = False
     cfg.playlist.interleave_videos = False
+
+    # Every remaining CLI flag, through the same merge the config-driven path
+    # uses. Hand-picking a subset here silently dropped the rest — `-D`,
+    # `--sample-rate`, `--dac-calibration-profile`, `--frame-numbers` and the
+    # DMA-password env var among them.
+    merge_cli(cfg, args)
 
     target = args.url or os.environ.get("C64CAST_URL")
     if target:
         from .connect import apply_to_config, parse_connection_uri
 
         apply_to_config(cfg, parse_connection_uri(target))
-    if args.system:
-        cfg.ultimate64.system = args.system
-    if args.sid_model:
-        cfg.ultimate64.sid_model = args.sid_model
-    if args.device is not None:
-        cfg.video.device = args.device
-    # Audio is on by default in quick playback; --no-audio (args.audio == False)
-    # mutes. args.audio is None when neither --audio nor --no-audio was passed.
-    cfg.audio.enabled = True if args.audio is None else args.audio
-    cfg.debug.skip_probe = bool(args.skip_probe)
-    cfg.debug.verbose = args.verbose or 0
-    cfg.debug.log_file = args.log_file
 
     scenes: list[SceneCfg] = []
     for arg in args.inputs:

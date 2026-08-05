@@ -22,7 +22,7 @@ from _fakes import MachineSettingsIsolation
 
 from c64cast import quickcast
 from c64cast.cli import _resolve_configs, build_parser
-from c64cast.config import resolve_file_spec
+from c64cast.config import CLI_TO_CFG, resolve_file_spec
 
 # Quick playback inherits the machine-settings layer (quickcast.build_config);
 # isolate the module from any real ~/.config/c64cast/settings.toml so the
@@ -220,6 +220,44 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.sid_model, "8580")
         self.assertTrue(cfg.debug.skip_probe)
         self.assertEqual(cfg.debug.log_file, "/tmp/c64cast.log")
+
+    def test_every_mapped_cli_flag_reaches_the_config(self):
+        """Quick playback runs the same merge_cli as the config-driven path.
+
+        Guards against re-introducing the hand-picked subset this replaced,
+        which silently dropped 12 of the 21 mapped flags — `--frame-numbers`,
+        `-D`, `--sample-rate` and `--dac-calibration-profile` among them.
+        Asserted against CLI_TO_CFG itself so a newly mapped flag is covered
+        the moment it is added.
+        """
+        args = _parse(["a.mp4"])
+        # A value that is distinguishable from every default, per field type.
+        sentinels: dict[str, object] = {}
+        for dest, (section, key) in CLI_TO_CFG.items():
+            current = getattr(getattr(quickcast.Config(), section), key)
+            if isinstance(current, bool):
+                value: object = not current
+            elif isinstance(current, int):
+                value = (current or 0) + 7
+            elif isinstance(current, float):
+                value = (current or 0.0) + 7.0
+            else:
+                value = f"sentinel-{dest}"
+            sentinels[dest] = value
+            setattr(args, dest, value)
+
+        cfg = quickcast.build_config(args)
+        for dest, (section, key) in CLI_TO_CFG.items():
+            self.assertEqual(getattr(getattr(cfg, section), key), sentinels[dest], msg=dest)
+
+    def test_frame_numbers_flag_reaches_the_scene(self):
+        cfg = quickcast.build_config(_parse(["--frame-numbers", "a.mp4"]))
+        self.assertTrue(cfg.debug.frame_numbers)
+
+    def test_dma_password_env_applies(self):
+        with mock.patch.dict(os.environ, {"C64CAST_DMA_PASSWORD": "hunter2"}):
+            cfg = quickcast.build_config(_parse(["a.mp4"]))
+        self.assertEqual(cfg.ultimate64.dma_password, "hunter2")
 
     def test_log_file_default_kept_when_unset(self):
         self.assertIsNone(quickcast.build_config(_parse(["a.mp4"])).debug.log_file)

@@ -37,6 +37,17 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **Quick playback obeys every CLI flag again.** Playing media by positional
+  argument (`c64cast clip.mp4`) built its config from a hand-picked handful of
+  flags, so twelve of the twenty-one that the same command honours with
+  `--config` were accepted and then silently ignored — among them
+  `--frame-numbers`, `-D/--audio-device`, `--sample-rate`,
+  `--dac-calibration-profile`, `--vision` and `--heartbeat`, plus the
+  `C64CAST_DMA_PASSWORD` environment variable, which meant quick playback could
+  not reach a password-protected Ultimate at all. Both front doors now share one
+  merge, and a test asserts the whole flag map rather than the flags that
+  happened to break.
+
 - **TeensyROM: no more blinking cursor, and the BASIC clear loop actually
   runs.** LaunchFile left the clear-loop program at `$0801` with its link
   pointer zeroed, so BASIC saw an empty program and dropped back to READY —
