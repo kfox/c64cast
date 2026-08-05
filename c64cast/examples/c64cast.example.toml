@@ -346,7 +346,14 @@ dac_curve = "auto"                  # SID $D418 DAC companding curve.
                                     # host's calibration once at
                                     # --calibrate-dac time and pass the same
                                     # name on every playback run against that
-                                    # host. Unset (default) = auto-derive.
+                                    # host. Also takes a PATH to a calibration
+                                    # file (ending .json, or containing a
+                                    # separator), used as given — that is how
+                                    # one machine's calibration is reused from
+                                    # another backend, e.g. a TeensyROM+ in a
+                                    # U64's cart port driving the SID the
+                                    # Ultimate already measured under its own
+                                    # unique_id. Unset (default) = auto-derive.
 sid_filter_cutoff = 0               # SID LP filter for PWM carrier rejection.
                                     # 0 = off. When > 0, routes voice 1
                                     # through the SID low-pass filter at this

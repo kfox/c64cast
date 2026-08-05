@@ -15,6 +15,7 @@ from dataclasses import replace
 from unittest import mock
 
 from c64cast import config as cfgmod
+from c64cast import teensyrom_api as tr_api
 from c64cast.api import _DEFAULT_PLAYER_LAYOUT
 from c64cast.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
 from c64cast.teensyrom_api import TeensyROMBackend
@@ -404,9 +405,14 @@ class BackendTest(unittest.TestCase):
         # — DEN-off would hang the DMA). The SID player needs no pre-uploaded
         # stub anymore (it starts via a pure-DMA $0314 swap), so bring-up is just
         # the clear-loop. Acks: 5 (delete+post clear-loop) + 2 (launch) +
-        # 1 (screen clear) + 1 (cursor suppress) = 9.
+        # 2 ($CC probe write + read) + 1 (screen clear) + 1 (cursor suppress).
         b, t = self._backend(read=True)
-        for _ in range(9):
+        for _ in range(7):
+            t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)  # $CC probe write
+        t.queue_token(TOK_ACK)  # $CC probe read
+        t.queue_raw(b"\x80")  # ...reads back -> already in the GOTO loop
+        for _ in range(2):
             t.queue_token(TOK_ACK)
         b.run_basic_clear_loop()
         sent = bytes(t.sent)
@@ -421,6 +427,54 @@ class BackendTest(unittest.TestCase):
         self.assertNotEqual(i_del, -1)
         self.assertLess(i_del, i_post)
         self.assertLess(i_post, i_launch)
+
+    def test_bring_up_repairs_a_clear_loop_that_did_not_run(self):
+        # The usual TR outcome (HW-measured): LaunchFile leaves the program body
+        # at $0801 with its link pointer zeroed, so BASIC sees an empty program,
+        # RUN returns to READY, and the machine sits in the editor's input-wait
+        # loop — which copies NDX into BLNSW every pass, making the cursor blink
+        # unstoppable by any write to $CC. Bring-up must detect that (the $80
+        # doesn't read back) and repair it: re-DMA the program, fix VARTAB, and
+        # type RUN into the keyboard buffer.
+        b, t = self._backend(read=True)
+        for _ in range(7):
+            t.queue_token(TOK_ACK)  # delete+post (5) + launch (2)
+        t.queue_token(TOK_ACK)  # probe write
+        t.queue_token(TOK_ACK)  # probe read
+        t.queue_raw(b"\x00")  # ...$80 did not survive -> BASIC is at READY
+        for _ in range(4):
+            t.queue_token(TOK_ACK)  # program body, VARTAB, KEYD, NDX
+        t.queue_token(TOK_ACK)  # re-probe write
+        t.queue_token(TOK_ACK)  # re-probe read
+        t.queue_raw(b"\x80")  # ...now it holds: the loop is running
+        for _ in range(2):
+            t.queue_token(TOK_ACK)  # screen clear + cursor suppress
+        with mock.patch.object(tr_api.time, "sleep"):
+            b.run_basic_clear_loop()
+        sent = bytes(t.sent)
+        self.assertIn(b"\x64\xfb\x08\x01", sent)  # program body re-DMA'd to $0801
+        self.assertIn(b"\x64\xfb\x00\x2d", sent)  # VARTAB fixed ($2D)
+        self.assertIn(b"\x64\xfb\x02\x77", sent)  # RUN typed into KEYD ($0277)
+        self.assertIn(b"RUN\r", sent)
+        self.assertIn(b"\x64\xfb\x00\xc6", sent)  # NDX ($C6) set to the count
+
+    def test_bring_up_does_not_type_into_a_running_clear_loop(self):
+        # Typing RUN into a program that IS looping leaves the keystrokes sitting
+        # in KEYD, where the keyboard poller reads them as menu input (RETURN is
+        # a nav code). So the repair only fires when BASIC is really at READY.
+        b, t = self._backend(read=True)
+        for _ in range(7):
+            t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)  # probe write
+        t.queue_token(TOK_ACK)  # probe read
+        t.queue_raw(b"\x80")  # ...holds -> already looping
+        for _ in range(2):
+            t.queue_token(TOK_ACK)
+        with mock.patch.object(tr_api.time, "sleep"):
+            b.run_basic_clear_loop()
+        sent = bytes(t.sent)
+        self.assertNotIn(b"RUN\r", sent)
+        self.assertNotIn(b"\x64\xfb\x02\x77", sent)  # nothing typed into KEYD
 
     def test_bring_up_spin_stub_when_read_unsupported(self):
         # Old firmware (supports_read False) falls back to the spin stub: DMA
@@ -470,10 +524,13 @@ class BackendTest(unittest.TestCase):
         t.queue_token(TOK_FAIL)  # clear-loop delete body -> file not found (ignored)
         for _ in range(3):
             t.queue_token(TOK_ACK)  # clear-loop post open/header/data
-        for _ in range(5):
-            t.queue_token(TOK_ACK)  # SID stub delete (2) + post (3)
         for _ in range(2):
             t.queue_token(TOK_ACK)  # launch open/body
+        t.queue_token(TOK_ACK)  # $CC probe write
+        t.queue_token(TOK_ACK)  # $CC probe read
+        t.queue_raw(b"\x80")  # ...holds -> the loop is running, no repair needed
+        for _ in range(2):
+            t.queue_token(TOK_ACK)  # screen clear + cursor suppress
         b.run_basic_clear_loop()
         self.assertIn(b"\x64\x44", bytes(t.sent))  # launch still happened
 

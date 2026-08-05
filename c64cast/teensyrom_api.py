@@ -57,7 +57,7 @@ from .api import (
     _StubRunnerBackend,
 )
 from .backend import BackendCapabilityError, HardwareProfile
-from .c64 import VECTORS
+from .c64 import SCREEN, VECTORS
 from .teensyrom_dma import (
     DRIVE_SD,
     DRIVE_USB,
@@ -129,6 +129,17 @@ _LAUNCH_SETTLE_S = 0.6
 _SCREEN_RAM = 0x0400
 _SCREEN_CELLS = 1000
 _SC_SPACE = 0x20
+
+# BASIC program area + the pointers a hand-DMA'd program has to leave consistent
+# (see _ensure_clear_loop_running): TXTTAB is where the program body goes, VARTAB
+# ($2D/$2E) must end up just past it or RUN's CLR puts variables on top of the
+# program. RUN is then typed as PETSCII into the kernal keyboard buffer.
+_BASIC_TXTTAB = 0x0801
+_BASIC_VARTAB = 0x002D
+_RUN_RETURN = bytes([0x52, 0x55, 0x4E, 0x0D])  # R U N + RETURN
+# BASIC has to notice the keystrokes (60 Hz kernal scan), tokenize RUN, and get
+# into the loop before the state probe can see it.
+_RUN_SETTLE_S = 0.5
 
 
 class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
@@ -281,10 +292,11 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         only overwrites screen/VIC RAM, never the BASIC program). So we just
         DMA-clear screen RAM to spaces for a clean 'paused' screen, leaving DEN
         on — badlines keep flowing and the resume-hold reads keep working. This
-        is the closest possible idle to the (working) live-scene state. We also
-        suppress the kernal editor's cursor blink (BASIC sits at READY under the
-        cleared screen) so the paused screen is a clean blank, not a lone
-        blinking cursor."""
+        is the closest possible idle to the (working) live-scene state. The
+        cursor-blink suppression is belt-and-braces: with the clear loop really
+        running (see `_ensure_clear_loop_running`) BASIC never reaches the editor
+        and there is no blink to suppress, but a bring-up that failed to get it
+        looping would otherwise leave a lone blinking cursor on the blank."""
         self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
         self.suppress_cursor_blink()
 
@@ -296,22 +308,71 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         interpreter.
 
         HW note: TR LaunchFile prints "RUNNING..." and doesn't reliably leave
-        the tiny PRG in its `GOTO` loop, so the loader text + a BASIC READY
-        banner + a blinking cursor are left on screen (the program's CHR$(147)
-        never runs). $028D is still live (kernal editor IRQ), so keyboard
-        control works regardless — but, like the spin-stub path, we DMA-clear
-        the screen + suppress the cursor blink once the loader settles so the
-        first scene/interstitial doesn't paint over leftover text. DEN stays
-        on, so the cycle-clean DMA keeps working."""
+        the tiny PRG in its `GOTO` loop — so `_ensure_clear_loop_running` checks
+        and repairs that before the screen is cleaned up. DEN stays on, so the
+        cycle-clean DMA keeps working."""
         from .api import BASIC_CLEAR_LOOP_PRG
 
         self.invalidate_cache()
         path = f"{_UPLOAD_DIR}/{_CLEARLOOP_NAME}"
         if self._upload_and_launch_retry(BASIC_CLEAR_LOOP_PRG, path, "clear-loop"):
             time.sleep(_LAUNCH_SETTLE_S)  # let the loader's "RUNNING..." land
+            self._ensure_clear_loop_running(BASIC_CLEAR_LOOP_PRG)
             self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
             self.suppress_cursor_blink()
             self.invalidate_cache()
+
+    def _basic_is_at_ready(self) -> bool | None:
+        """Is BASIC idling at the READY prompt, in the editor's input-wait loop?
+        None when the probe couldn't be read back.
+
+        Probed by writing BLNSW ($CC) and reading it straight back. That loop
+        copies NDX into BLNSW on every pass, so the byte cannot survive it — if
+        it does survive, BASIC is off running a program instead. The write is
+        the one `suppress_cursor_blink` makes anyway, so probing costs a read."""
+        self.write_memory(f"{SCREEN.BLNSW:04X}", "80")
+        self.flush()
+        got = self.read_memory(SCREEN.BLNSW, 1)
+        return None if got is None else got[0] != 0x80
+
+    def _ensure_clear_loop_running(self, prg: bytes) -> None:
+        """Make BASIC actually *run* the clear loop LaunchFile just loaded.
+
+        HW-measured: LaunchFile lands the program body at $0801 but leaves the
+        first line's link pointer zeroed and VARTAB at $0803 — the signature of
+        a BASIC cold-start init landing after the copy. BASIC therefore sees an
+        empty program, RUN falls straight back to READY, and the machine spends
+        the whole session in the editor's input-wait loop.
+
+        That loop is why a cursor blinks on the TR and cannot be switched off:
+        it copies NDX into BLNSW ($CC) every pass, so `suppress_cursor_blink`'s
+        $80 is gone microseconds after the DMA lands (verified — on this path
+        the byte never reads back). Nothing can hold that address down; only
+        getting BASIC out of the editor stops the blink, which is what the
+        `GOTO 20` loop is for. It also stops the editor from *consuming* the
+        keystrokes the keyboard poller reads out of KEYD.
+
+        So repair it by hand: DMA the program body in, fix VARTAB, and type RUN
+        into the kernal keyboard buffer. The injection works precisely because
+        BASIC is stuck at READY — that wait loop is what consumes it. Skipped
+        when the loop is already running (typing into a running program would
+        leave keystrokes in KEYD for the poller to read as menu input) and when
+        the state can't be read back."""
+        if self._basic_is_at_ready() is not True:
+            return
+        body = prg[2:]  # drop the 2-byte load address
+        end = _BASIC_TXTTAB + len(body)
+        self.write_memory_file(f"{_BASIC_TXTTAB:04X}", body)
+        self.write_memory(f"{_BASIC_VARTAB:04X}", f"{end & 0xFF:02X}{(end >> 8) & 0xFF:02X}")
+        self.write_memory_file(f"{SCREEN.KB_BUFFER:04X}", _RUN_RETURN)
+        self.write_memory(f"{SCREEN.KB_BUFFER_LEN:04X}", f"{len(_RUN_RETURN):02X}")
+        self.flush()
+        time.sleep(_RUN_SETTLE_S)
+        if self._basic_is_at_ready() is not False:
+            log.warning(
+                "TR clear-loop: BASIC stayed at the READY prompt; the cursor will "
+                "blink and physical-keyboard control may be eaten by the editor"
+            )
 
     def _bring_up_spin_stub(self) -> None:
         """Legacy IRQ-masked idle for pre-cycle-clean firmware: DMA the spin MC
