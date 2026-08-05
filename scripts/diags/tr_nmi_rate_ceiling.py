@@ -46,7 +46,7 @@ import numpy as np
 import sounddevice as sd
 
 from c64cast.audio import (
-    CIA2_ICR_CLEAR,
+    CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
     CIA2_ICR_ENABLE_TIMER_A_NMI,
     CIA2_TIMER_A_CONTINUOUS,
@@ -144,7 +144,7 @@ def setup(be, system: str) -> None:
 def arm(be, rate: int, system: str) -> None:
     """(Re)arm the NMI at `rate`: disarm, set the Timer A latch, enable."""
     latch = latch_for(rate, system)
-    be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+    be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
     be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
 
@@ -209,7 +209,7 @@ def main() -> int:
             results.append((r, pitch))
             time.sleep(0.3)
     finally:
-        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         be.silence_sid()
         be.reset()
         be.close()

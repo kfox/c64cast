@@ -1275,20 +1275,16 @@ def run_calibration(
         ) from e
 
     from .audio import (
-        CIA2_ICR_CLEAR,
+        CIA2_CRA_STOP,
         CIA2_ICR_DISABLE_ALL,
-        CIA2_ICR_ENABLE_TIMER_A_NMI,
-        CIA2_TIMER_A_CONTINUOUS,
         RING_BUFFER_ADDR,
         RING_BUFFER_SIZE,
         AudioStreamer,
     )
-    from .c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+    from .c64 import CIA2
     from .dsp import DSPParams
 
     system = cfg.ultimate64.system
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    latch = max(1, round(clock / NMI_RATE) - 1)
 
     key = resolve_calibration_key(cfg, be)
     supports_config = bool(getattr(be.profile, "supports_config", False))
@@ -1403,9 +1399,10 @@ def run_calibration(
         )
         st.running = True
         st._upload_nmi_and_buffers()
-        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
-        be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
-        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+        # The streamer's own arm, so a dropped CIA write is retried here too: a
+        # silent NMI is one of the three causes _capture_fault_message has to
+        # guess between after 50 s of measuring nothing.
+        st._start_nmi_timer()
 
         log_fn("[calib] settling HDMI + (re)initializing capture…")
         time.sleep(3.0)
@@ -1462,7 +1459,7 @@ def run_calibration(
             entries["default"] = CalibrationResult(sidtable, metrics, None, raw)
     finally:
         try:
-            be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+            be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
             be.silence_sid()
             be.reset()
         except Exception as e:  # noqa: BLE001 — best-effort cleanup

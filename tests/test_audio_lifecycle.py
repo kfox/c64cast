@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 from typing import Any, cast
+from unittest import mock
 
 import numpy as np
 from _fakes import FakeAPI
@@ -262,6 +263,155 @@ class PitchCompensationLatchTest(unittest.TestCase):
         s.stop()
         self.assertFalse(s._nmi_timer_started)
         self.assertAlmostEqual(s._pitch_multiplier, 1.0)
+
+
+class _RFakeAPI(FakeAPI):
+    """FakeAPI serving the NMI read pointer R from a scripted sequence.
+
+    Each read of ``READ_PTR_LO_ADDR`` pops the next ring *offset* from
+    ``r_offsets``; the last entry repeats once the list runs out. That lets a
+    test say "R frozen for the first two verify windows, then moving" — the
+    machine-specific dropped-CIA-write case this whole path exists for.
+    """
+
+    def __init__(self, r_offsets: list[int]) -> None:
+        super().__init__()
+        self.r_offsets = r_offsets
+        self.r_reads = 0
+
+    def read_memory(self, address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+        if address == audio_mod.READ_PTR_LO_ADDR and length == 2:
+            offset = self.r_offsets[min(self.r_reads, len(self.r_offsets) - 1)]
+            self.r_reads += 1
+            addr = audio_mod.RING_BUFFER_ADDR + offset
+            return bytes([addr & 0xFF, (addr >> 8) & 0xFF])
+        return super().read_memory(address, length, timeout)
+
+
+class NmiArmVerifyTest(unittest.TestCase):
+    """_start_nmi_timer verifies the arm actually took by watching R move.
+
+    The two CIA #2 writes and the `$0318` vector ride a transport whose `_emit`
+    absorbs a failed write, so a dropped one used to leave R frozen and the whole
+    session silent (and fast, the servo chasing a dead reader) with nothing said.
+    """
+
+    def setUp(self) -> None:
+        # The real 30 ms verify window would make five attempts a 150 ms test.
+        patcher = mock.patch.object(audio_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _streamer(self, api: Any) -> AudioStreamer:
+        return AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC")
+
+    def _arm_count(self, api: Any) -> int:
+        """How many times the ICR enable+start pair was written (= arms)."""
+        key = f"{CIA2.ICR:04X}"
+        armed = (audio_mod.CIA2_ICR_ENABLE_TIMER_A_NMI, audio_mod.CIA2_TIMER_A_CONTINUOUS)
+        return sum(1 for op in api.ops if op[0] == "write_regs" and op[1] == key and op[2] == armed)
+
+    def test_moving_r_arms_once(self):
+        api = _RFakeAPI([0, 240])  # R advanced within the verify window
+        s = self._streamer(api)
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), 1)
+        self.assertEqual(s._nmi_arm_attempts, 1)
+
+    def test_frozen_then_moving_retries(self):
+        api = _RFakeAPI([0, 0, 0, 240])  # two dropped arms, then it takes
+        s = self._streamer(api)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), 3)
+        self.assertEqual(s._nmi_arm_attempts, 3)
+        self.assertEqual(len(cm.records), 1)
+        self.assertIn("3 attempts", cm.output[0])
+
+    def test_frozen_throughout_gives_up_loudly(self):
+        api = _RFakeAPI([0])  # R never moves, whatever we write
+        s = self._streamer(api)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), audio_mod.NMI_ARM_MAX_ATTEMPTS)
+        self.assertEqual(s._nmi_arm_attempts, audio_mod.NMI_ARM_MAX_ATTEMPTS)
+        self.assertEqual(len(cm.records), 1)
+        self.assertIn("never started", cm.output[0])
+
+    def test_arm_relands_the_nmi_vector(self):
+        # A dropped $0318 write leaves the KERNAL handler installed, and its
+        # #$7F → $DD0D kills CIA #2 interrupts — same frozen R. So the retry has
+        # to re-land the vector, not just the CIA registers.
+        api = _RFakeAPI([0, 0, 240])
+        s = self._streamer(api)
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            cast(Any, s)._start_nmi_timer()
+        key = f"{audio_mod.VECTORS.NMI:04X}"
+        vector_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == key]
+        self.assertEqual(len(vector_writes), 2)  # one per arm
+        expected = (audio_mod.NMI_ROUTINE_ADDR & 0xFF, audio_mod.NMI_ROUTINE_ADDR >> 8)
+        self.assertEqual(vector_writes[-1][2], expected)
+
+    def test_unreadable_backend_arms_once_without_waiting(self):
+        # A backend that can't read R (TR on older firmware) can't be verified.
+        # It must keep the old behavior exactly — one arm, no retry latency.
+        api = FakeAPI()  # read_memory → None for the read pointer
+        s = self._streamer(api)
+        with mock.patch.object(audio_mod.time, "sleep") as sleep:
+            with self.assertNoLogs(audio_mod.log, level="WARNING"):
+                cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), 1)
+        self.assertEqual(s._nmi_arm_attempts, 1)
+        sleep.assert_not_called()
+
+    def test_stop_clears_arm_state(self):
+        api = _RFakeAPI([0, 240])
+        s = self._streamer(api)
+        cast(Any, s)._start_nmi_timer()
+        s.running = True
+        s._worker_thread = None
+        s.stop()
+        self.assertEqual(s._nmi_arm_attempts, 0)
+
+
+class NmiStallWatchdogTest(unittest.TestCase):
+    """The servo already read R every chunk and would see it stall instantly;
+    it just never said so. A consumer killed mid-session now warns once."""
+
+    def _servo_streamer(self, r_offset: int) -> tuple[AudioStreamer, Any]:
+        api = _RFakeAPI([r_offset])  # R pinned — a dead consumer
+        s = AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC", host_dma_servo=True)
+        return s, api
+
+    def test_frozen_r_warns_once_per_session(self):
+        s, _ = self._servo_streamer(0)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 8):
+                s._next_pace_increment(write_addr, 0.064)
+        self.assertEqual(len(cm.records), 1)  # once, not once per chunk
+        self.assertIn("stalled", cm.output[0])
+
+    def test_moving_r_never_warns(self):
+        api = _RFakeAPI(list(range(0, 4000, 240)))  # R advancing normally
+        s = AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC", host_dma_servo=True)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 8):
+                s._next_pace_increment(write_addr, 0.064)
+
+    def test_stop_rearms_the_warning(self):
+        s, _ = self._servo_streamer(0)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 1):
+                s._next_pace_increment(write_addr, 0.064)
+        s.running = True
+        s._worker_thread = None
+        s.stop()
+        self.assertFalse(s._nmi_stall_warned)
+        self.assertEqual(s._r_stall_chunks, 0)
 
 
 class NmiRateSafetyTest(unittest.TestCase):

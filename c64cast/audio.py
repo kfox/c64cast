@@ -266,15 +266,32 @@ def _stomp_spans(
 
 NEUTRAL_SAMPLE = 7  # mid-scale 4-bit value; keeps the speaker cone centered
 
-# CIA #2 control words for NMI bring-up / teardown.
+# CIA #2 control words for NMI bring-up / teardown. Each pair is one
+# write_regs(CIA2.ICR, ...) = $DD0D then $DD0E, so the second byte of every pair
+# lands in CRA, not in ICR:
 #  - DISABLE: clear all five IRQ-source bits in ICR (high bit = 0 → clear).
-#  - ICR_CLEAR: companion write to acknowledge any pending NMI.
+#  - CRA_STOP: the CRA companion — Timer A stopped. Note this does NOT clear the
+#    latched ICR *flags*; only a read of $DD0D does that (see _arm_nmi_once).
 #  - ENABLE_TIMER_A_NMI: set bit 7 + bit 0 (enable timer-A IRQ source).
 #  - TIMER_A_CONTINUOUS: continuous mode, start (CRA bits 0+4).
 CIA2_ICR_DISABLE_ALL = 0x7F
-CIA2_ICR_CLEAR = 0x00
+CIA2_CRA_STOP = 0x00
 CIA2_ICR_ENABLE_TIMER_A_NMI = 0x81
 CIA2_TIMER_A_CONTINUOUS = 0x11
+
+# Arming the NMI consumer is verified by watching the C64-side read pointer R
+# move, because the two CIA #2 writes (and the $0318 vector) ride a transport
+# whose _emit absorbs a failed write instead of raising — a dropped one leaves R
+# frozen and the session silent, with nothing on the host the wiser.
+# 30 ms is an unambiguous window: R advances at ≈sample_rate B/s, so ≈240 bytes
+# at 8 kHz. Five attempts cost ≈150 ms in the failure case only, a fifth of the
+# ≈768 ms prebuffer the worker is already sitting on.
+NMI_ARM_MAX_ATTEMPTS = 5
+NMI_ARM_VERIFY_DELAY_S = 0.03
+# Consecutive identical R readings in the servo before warning that the consumer
+# died mid-session. R moves ~1 KB per chunk period when alive, so identical
+# back-to-back readings are conclusive rather than a heuristic.
+NMI_STALL_WARN_CHUNKS = 8
 
 # Float-sample → 4-bit volume code: (x + 1) * VOLUME_SCALE, clipped to
 # [0, MAX_VOLUME]. Centers a [-1, 1] input on 7.5 → DAC ~half-scale.
@@ -1407,6 +1424,14 @@ class AudioStreamer:
         # _nmi_timer_started gates whether a mid-stream update writes immediately.
         self._pitch_multiplier = 1.0
         self._nmi_timer_started = False
+        # NMI arm verification + stall watchdog state. _nmi_arm_attempts is how
+        # many arms the last bring-up needed (1 = clean, or an unverifiable
+        # backend); the rest track the servo's consecutive-identical-R count so
+        # the mid-session stall warning fires once. All reset in stop().
+        self._nmi_arm_attempts = 0
+        self._last_r_reading = -1
+        self._r_stall_chunks = 0
+        self._nmi_stall_warned = False
         self._reu_cia1_latch_nominal = REU_PUMP_CIA1_LATCH
         # REU mic mode: tracks the host's REU write position (wraps at
         # REU_MIC_SIZE). 0 until _start_mic_for_reu_pump() seeds it with
@@ -1499,8 +1524,10 @@ class AudioStreamer:
         self.api.write_memory_file(
             f"{RING_BUFFER_ADDR:04X}", bytes([self._neutral_byte] * RING_BUFFER_SIZE)
         )
-        # Disable CIA #2 IRQs, clear ICR, then point NMI vector → $C020.
-        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+        # Disable CIA #2 IRQs + stop Timer A, then point NMI vector → $C020.
+        # _arm_nmi_once re-lands the vector when the timer arms, so a dropped
+        # write here is recoverable.
+        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         self.api.write_regs(
             f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
         )
@@ -1656,6 +1683,52 @@ class AudioStreamer:
         adjusted_period = max(2, round((nominal_latch + 1) / self._pitch_multiplier))
         return max(1, adjusted_period - 1)
 
+    def _read_read_ptr(self) -> int | None:
+        """The NMI consumer's read pointer R — the self-modifying LDA operand at
+        ``$C025`` — or None when the read failed or came back outside the ring.
+
+        None means "couldn't tell": a torn or dropped read, or a backend with no
+        read capability at all (`profile.supports_read` false, older TeensyROM
+        firmware, where read_memory raises rather than returning None). Every
+        caller degrades to its open-loop behavior on None rather than treating a
+        bad read as data.
+        """
+        try:
+            r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
+        except Exception as e:
+            log.debug("read R failed: %s", e)
+            return None
+        if r is None or len(r) != 2:
+            return None
+        r_addr = r[0] | (r[1] << 8)
+        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
+            return None
+        return r_addr
+
+    def _arm_nmi_once(self, latch: int) -> None:
+        """One full arm of the NMI audio consumer, idempotent so a retry is just
+        another call.
+
+        The `$0318` vector is re-landed here, not only in _upload_nmi_and_buffers:
+        if *that* write is the one the transport dropped, the KERNAL NMI handler
+        is still installed, and its `#$7F` → `$DD0D` kills CIA #2 interrupts —
+        indistinguishable from a dropped CIA write.
+
+        The `$DD0D` read is how the latched ICR flags get cleared (a write can't),
+        deasserting the CIA's interrupt line so the next Timer A underflow is a
+        clean 0→1 transition. Best-effort: a backend that can't read still arms.
+        """
+        self.api.write_regs(
+            f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
+        )
+        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+        try:
+            self.api.read_memory(CIA2.ICR, 1)
+        except Exception as e:
+            log.debug("ICR flag clear read failed: %s", e)
+        # Arm + start timer A, set NMI source.
+        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+
     def _start_nmi_timer(self) -> None:
         # Adaptive mode: arm at the per-mode seed (learned value or class default)
         # so playback starts near the converged rate — the loop trims from there
@@ -1669,9 +1742,35 @@ class AudioStreamer:
             latch = self._compensated_latch()
         self._nmi_latch = latch
         self._nmi_timer_started = True
-        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
-        # Arm + start timer A, set NMI source.
-        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+        before = self._read_read_ptr()
+        if before is None:
+            # No R to check against, so a retry would be indistinguishable from
+            # arming five times for nothing. Fire once and accept the risk.
+            self._nmi_arm_attempts = 1
+            self._arm_nmi_once(latch)
+            return
+        for attempt in range(1, NMI_ARM_MAX_ATTEMPTS + 1):
+            self._nmi_arm_attempts = attempt
+            self._arm_nmi_once(latch)
+            time.sleep(NMI_ARM_VERIFY_DELAY_S)
+            after = self._read_read_ptr()
+            if after is None or after != before:
+                # R advanced (or went unreadable, which is not evidence of a dead
+                # consumer) — the arm took.
+                if attempt > 1:
+                    log.warning(
+                        "audio: NMI arm took %d attempts (a CIA write was dropped)", attempt
+                    )
+                else:
+                    log.debug("audio: NMI arm verified first attempt (R was $%04X)", before)
+                return
+        log.warning(
+            "audio: NMI consumer never started after %d arm attempts — audio will be "
+            "silent this session (R frozen at $%04X). The CIA #2 / NMI-vector writes "
+            "are not reaching the machine.",
+            NMI_ARM_MAX_ATTEMPTS,
+            before,
+        )
 
     def set_nmi_latch_for_mode(
         self, display_mode: str, calibration: dict[str, float] | None = None
@@ -1930,15 +2029,16 @@ class AudioStreamer:
         chunk; it never crashes or freezes the schedule. The increment is added
         to the *absolute* ``next_write_time`` by the caller, so REST read latency
         only shortens the next sleep — it does not snap the schedule forward.
+
+        Also the only place a consumer that dies *mid*-session becomes visible —
+        see ``_note_r_reading``.
         """
         if not self.host_dma_servo:
             return chunk_period
-        r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
-        if r is None or len(r) != 2:
+        r_addr = self._read_read_ptr()
+        if r_addr is None:
             return chunk_period
-        r_addr = r[0] | (r[1] << 8)
-        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
-            return chunk_period
+        self._note_r_reading(r_addr)
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
         self._servo_gap_last = gap
         self._servo_gap_min = gap if self._servo_gap_min < 0 else min(self._servo_gap_min, gap)
@@ -1952,6 +2052,32 @@ class AudioStreamer:
             self._update_nmi_rate_loop(r_addr)
         period, self._servo_integ = _servo_period(gap, self._servo_integ, chunk_period=chunk_period)
         return period
+
+    def _note_r_reading(self, r_addr: int) -> None:
+        """Watch for an NMI consumer that stopped after a verified start.
+
+        A consumer killed mid-session (a stray `#$7F` to `$DD0D`, a reset behind
+        our back) otherwise presents as unexplained silence plus the fast
+        playback the servo produces while chasing a dead reader — the servo has
+        this reading in hand either way, so saying so costs nothing. Warns once
+        per session; the pacing behavior is untouched.
+        """
+        # getattr-guarded so __new__-built test streamers still pace normally.
+        if r_addr == getattr(self, "_last_r_reading", -1):
+            self._r_stall_chunks = getattr(self, "_r_stall_chunks", 0) + 1
+        else:
+            self._last_r_reading = r_addr
+            self._r_stall_chunks = 0
+        if self._r_stall_chunks >= NMI_STALL_WARN_CHUNKS and not getattr(
+            self, "_nmi_stall_warned", False
+        ):
+            self._nmi_stall_warned = True
+            log.warning(
+                "audio: NMI consumer stalled — R has not moved from $%04X for %d chunks. "
+                "Audio is silent and playback pace is unreliable from here.",
+                r_addr,
+                self._r_stall_chunks,
+            )
 
     def _update_nmi_rate_loop(self, r_addr: int) -> None:
         """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2
@@ -2987,15 +3113,11 @@ class AudioStreamer:
 
     def _stomp_ring(self, write_addr: int) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the
-        pause fast mute. Reads the NMI read pointer R with the same sanity
-        pattern as _next_pace_increment; on a bad read it just returns (the
-        drained queue pads the ring to silence within ~1 s regardless). Called
-        only from the worker thread, so write_addr is the live worker-local W."""
-        r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
-        if r is None or len(r) != 2:
-            return
-        r_addr = r[0] | (r[1] << 8)
-        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
+        pause fast mute. On a bad R read it just returns (the drained queue pads
+        the ring to silence within ~1 s regardless). Called only from the worker
+        thread, so write_addr is the live worker-local W."""
+        r_addr = self._read_read_ptr()
+        if r_addr is None:
             return
         neutral = bytes([self._neutral_byte])
         for addr, ln in _stomp_spans(r_addr, write_addr):
@@ -3034,7 +3156,7 @@ class AudioStreamer:
         # IRQ vector stops it — no host thread to join.
         self._disarm_reu_pump()
         try:
-            self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+            self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
             self.api.write_memory("D418", "00")
             if self.digi_boost:
                 self._disable_digi_boost()
@@ -3067,6 +3189,10 @@ class AudioStreamer:
         # mode, so a stale multiplier must not leak across scenes).
         self._nmi_timer_started = False
         self._pitch_multiplier = 1.0
+        self._nmi_arm_attempts = 0
+        self._last_r_reading = -1
+        self._r_stall_chunks = 0
+        self._nmi_stall_warned = False
         # Clear adaptive-rate loop state too, so the next consumer re-acquires
         # from nominal rather than carrying a stale R-rate estimate.
         self._r_rate_ema = -1.0
