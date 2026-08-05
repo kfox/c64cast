@@ -46,9 +46,15 @@ bitmap rendering, SID playback, and overlays; add extras à la carte later
 every one you want in a single command.
 
 You need a reachable [Ultimate 64 or TeensyROM+](#hardware-needed) — there is
-no emulator path for the streaming side. On the Ultimate, enable **Ultimate DMA
-Service** under **F2 → Network Settings** first; c64cast prints an actionable
-error if it can't connect.
+no emulator path for the streaming side. An Ultimate ships with the services
+c64cast needs switched off, and they are three separate switches in two
+different menus under **F2**: **Ultimate DMA Service** and **Web Remote Control
+Service** under *Network Settings*, and **Command Interface** under *Memory
+Configuration*. Save and reboot afterwards. Miss the Command Interface and
+c64cast connects and then hangs rather than printing anything useful, so it is
+worth following
+[Quick Start](https://github.com/kfox/c64cast/blob/main/docs/guide/01-quick-start.md)
+through the menus the first time.
 
 ## What do you want to do?
 
@@ -139,8 +145,17 @@ stream live pixels to. See
 [WLED bridge](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md#wled)
 for the full reference.
 
-**Preview + recording** — an optional local window mirroring what the C64 is
-showing, plus recording to MP4. Both are cv2-based, so neither needs an extra.
+**Preview + recording** — an optional desktop window and an MP4 writer, both
+fed by a host-side *reconstruction* of the bytes c64cast sent rather than a
+capture of the Commodore's own output. Both are cv2-based, so neither needs an
+extra, but the window wants a desktop session and a GUI-capable opencv build.
+Know what it cannot show you before you rely on it: a `launcher` scene is
+blank, and bitmap scenes are black on the staged and double-buffered video
+paths — which are the defaults — until you set `[video].use_reu_staged = false`.
+See
+[The Preview Window](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md#the-preview-window)
+for the full list. Proving what the VIC actually put on HDMI needs a capture
+device, not this.
 
 ## Quick start
 
@@ -321,11 +336,22 @@ One of the following:
 * An [Ultimate 64](https://ultimate64.com/) — confirmed with Elite I, Elite II,
   Ultimate II+ cartridge, or Commodore 64 Ultimate. Best results will be
   obtained from using the Elite II or the Commodore 64 Ultimate.
-  Under **F2 → Network Settings**, enable **Ultimate DMA Service**,
-  **Command Interface** (TCP port 64 — the Command
-  Interface toggle gates command dispatch even when the socket is open),
-  and **Ultimate Audio** for streaming PCM audio.
-  The REST API is used for the few operations that have no DMA equivalent.
+  Three firmware switches, in two menus under **F2**, then save and reboot:
+  * **Ultimate DMA Service** (*Network Settings*) — the socket on TCP port 64
+    that carries every memory write. Without it nothing works at all.
+  * **Command Interface** (*Memory Configuration* — a different menu, and the
+    one people miss) — gates command dispatch even when the socket is open.
+    Without it c64cast connects and then hangs forever.
+  * **Web Remote Control Service** (*Network Settings*) — the REST service
+    carrying the operations that have no DMA equivalent: reset, launching a
+    program or a SID, and every memory *read*, including the keyboard poll and
+    the character-ROM dump. Without it pixels still paint, but nothing starts.
+    On older Ultimate 64 and Ultimate II+ firmware it has no switch of its own
+    and is already on.
+
+  Nothing else needs enabling by hand: c64cast turns on the REU and maps the
+  Ultimate Audio sampler itself when a run needs them, and puts both back at
+  teardown.
 * A [TeensyROM+ Multi-Capable Cartridge for C64/128](https://lectronz.com/products/teensyrom)
   plugged into an original Commodore 64 or one of the above modern
   "ultimate" equivalents.

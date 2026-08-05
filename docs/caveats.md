@@ -449,9 +449,12 @@ This project is developed against U64 firmware 3.x (3.14d/3.14e on the
 test hardware). Two transports are in play:
 
 * **Socket DMA (TCP port 64)** carries every memory write — opcode
-  `0xFF06 DMAWRITE`. Must be enabled in U64 settings (F2 → Network
-  Settings → Ultimate DMA Service → Enabled) before `c64cast` will
-  start; the CLI prints an actionable error otherwise.
+  `0xFF06 DMAWRITE`. Needs two toggles, in two different menus: F2 →
+  Network Settings → Ultimate DMA Service → Enabled, *and* F2 → Memory
+  Configuration → Command Interface → Enabled. The second gates command
+  dispatch even when the listening socket is open, so with it off the
+  connection succeeds and the first IDENTIFY never comes back; the CLI
+  names both toggles in the error either way.
 * **REST** carries the operations that have no DMA equivalent:
   * `GET /v1/machine:readmem` — keyboard poller, waveform scene,
     U64-ping overlay
