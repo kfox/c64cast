@@ -1377,12 +1377,27 @@ class EnsembleRecordingPathTest(unittest.TestCase):
 
     def test_paths_are_compared_after_expansion(self):
         # "~/wall.mp4" and the spelled-out home path name one file;
-        # comparing the raw strings would call them distinct.
-        home = os.path.expanduser("~")
+        # comparing the raw strings would call them distinct. Single-quoted
+        # TOML so a Windows home path's backslashes stay literal.
+        home = os.path.join(os.path.expanduser("~"), "wall.mp4")
         diags = self._diags(
             {
-                "left": '[recording]\nenabled = true\npath = "~/wall.mp4"\n',
-                "right": f'[recording]\nenabled = true\npath = "{home}/wall.mp4"\n',
+                "left": "[recording]\nenabled = true\npath = '~/wall.mp4'\n",
+                "right": f"[recording]\nenabled = true\npath = '{home}'\n",
+            }
+        )
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
+
+    def test_relative_and_absolute_spellings_collide(self):
+        # A bare name is opened relative to the cwd, so it is the same file
+        # as the absolute path — the check has to say so.
+        rel = "wall.mp4"
+        absolute = os.path.join(os.getcwd(), rel)
+        diags = self._diags(
+            {
+                "left": f"[recording]\nenabled = true\npath = '{rel}'\n",
+                "right": f"[recording]\nenabled = true\npath = '{absolute}'\n",
             }
         )
         self.assertEqual(len(diags), 1)

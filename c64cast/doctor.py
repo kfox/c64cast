@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -996,19 +997,30 @@ def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
     `resolve_recording_path` only disambiguates systems that left `path` at
     the default, so spelling out one shared path across two per-system TOMLs
     still points two cv2.VideoWriters at one file — which produces a single
-    truncated stream, with no error from either writer."""
-    by_path: dict[str, list[str]] = {}
+    truncated stream, with no error from either writer.
+
+    Two names for one file have to compare equal or the check misses exactly
+    the case it exists for, so paths are normalized the way the filesystem
+    would read them: expanded, made absolute against the cwd the run will use,
+    and `normcase`'d (identity on POSIX; on Windows it also folds the
+    separators, which matters because `expanduser` leaves `~/x` as
+    `C:\\Users\\me/x`)."""
+    # display path per normalized key, plus the systems that resolved to it
+    by_path: dict[str, tuple[str, list[str]]] = {}
     for sys_name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         if not cfg.recording.enabled:
             continue
-        resolved = expand_user(resolve_recording_path(cfg.recording, sys_name, is_ensemble=True))
-        by_path.setdefault(resolved, []).append(sys_name)
+        resolved = os.path.abspath(
+            expand_user(resolve_recording_path(cfg.recording, sys_name, is_ensemble=True))
+        )
+        _, names = by_path.setdefault(os.path.normcase(resolved), (resolved, []))
+        names.append(sys_name)
 
     return [
         Diagnostic(
             level="error",
             category="recording",
-            subject=path,
+            subject=display,
             message=(
                 f"{len(names)} systems record to this one file "
                 f"({', '.join(sorted(names))}); only one stream survives."
@@ -1018,7 +1030,7 @@ def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
                 "key so each derives one from its system name."
             ),
         )
-        for path, names in sorted(by_path.items())
+        for _, (display, names) in sorted(by_path.items())
         if len(names) > 1
     ]
 
