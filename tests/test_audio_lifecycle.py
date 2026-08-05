@@ -150,15 +150,19 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s.q.put(bytes([2] * half))
         s._queued_samples += half
 
-        _run_worker(s, until=lambda: s._partial_underruns >= 1, timeout=3.0)
-
-        self.assertGreaterEqual(
-            s._partial_underruns, 1, "expected at least one partial-pad underrun"
-        )
         # The padded chunk is the half blob followed by a NEUTRAL tail. Asserted
         # against the reassembled stream, since the chunk reaches the ring as
         # several sub-NMI-period writes rather than one.
         expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
+        # Wait on the bytes, not on the counter: the counter increments when the
+        # short window closes, but the one-chunk pipeline only drips that chunk
+        # out on the following pass, so stopping the worker at the counter can
+        # cut it off before the padded chunk is ever written.
+        _run_worker(s, until=lambda: expected in _written_stream(s), timeout=3.0)
+
+        self.assertGreaterEqual(
+            s._partial_underruns, 1, "expected at least one partial-pad underrun"
+        )
         self.assertIn(expected, _written_stream(s), "partial chunk was not NEUTRAL-padded")
 
     def test_oversized_blob_carried_via_leftover(self):
