@@ -573,6 +573,13 @@ needs a capture device.
 same blind spots, needing nothing beyond the core dependencies. `path`, `fps`,
 `scale` and `fourcc` are the knobs.
 
+Across an ensemble, `enabled` in the master turns recording on everywhere, but
+`path` is one of the few settings that does **not** cascade — every system needs
+its own file. Leave it alone and each system records to `recording-<system>.mp4`;
+set it per system and that path is used exactly as written. Pointing two systems
+at one name is the one way left to lose a recording, so `--doctor` treats it as
+an error.
+
 ### OBS
 
 The integration runs one way only: the `obs_status` overlay reads the current OBS

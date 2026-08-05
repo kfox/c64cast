@@ -22,6 +22,36 @@ the version and stamps it with the date.
   `c64cast-performance-card.pdf`) always serves the current release. The README
   links all three that way; every past release keeps its version-stamped copy.
 
+- **`--doctor` names the opencv build that actually loaded.** Every opencv
+  wheel — plain, contrib, and the headless variants — unpacks into the same
+  `cv2/` directory under a different distribution name, so an installer will
+  co-install several and the last one written wins. Installing the `vision`
+  extra (or `all`) brings `opencv-contrib-python` along with mediapipe, which
+  means the `opencv-python` version c64cast pins is not the one that runs, and
+  nothing said so. ENVIRONMENT now reports the build in place, flags it when
+  more than one distribution is providing `cv2`, and warns when the winner is a
+  headless wheel — the cause of `[preview]` opening no window.
+
+### Fixed
+
+- **Ensemble systems no longer record over each other.** `[recording].path`
+  cascaded from the master like the rest of the section, so every system in a
+  wall opened a `cv2.VideoWriter` on one file and finished with a single
+  truncated recording — silently, since the writers have no way to detect the
+  collision. `path` is now per-system like `ultimate64.url`: leave it unset and
+  each system writes `recording-<system>.mp4`; set it and that path is used as
+  written. `enabled` still cascades, so recording a whole wall is still one
+  key. `--doctor` reports an error if two systems are pointed at one file
+  explicitly.
+
+- **`--doctor` findings can no longer go missing.** The report printed only
+  those categories named in a hard-coded list, so a check reporting under any
+  other name returned findings that never reached the screen — indistinguishable
+  from passing. Unlisted categories now print after the known ones.
+
+- Corrected the troubleshooting advice for a shadowed opencv, which prescribed
+  reinstalling `c64cast[all]` — the install that causes the shadowing.
+
 ### Changed
 
 - **The README is a landing page again.** It had grown a reference section for

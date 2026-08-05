@@ -333,7 +333,7 @@ scale = 2
 | Field | Description |
 |---|---|
 | **`enabled`**<br>*Type:* `bool`<br>*Default:* `False` | Record the rendered display to a video file (cv2.VideoWriter). |
-| **`path`**<br>*Type:* `str`<br>*Default:* `'recording.mp4'` | Output video file path. |
+| **`path`**<br>*Type:* `str`<br>*Default:* `'recording.mp4'` | Output video file path. Does not cascade from an ensemble master: a system that leaves this alone records to 'recording-<system>.mp4' so the wall's systems don't overwrite each other. Setting it explicitly uses that path verbatim. |
 | **`fps`**<br>*Type:* `int`<br>*Default:* `30` | Recording frame rate. |
 | **`scale`**<br>*Type:* `int`<br>*Default:* `2` | Integer pixel scale factor for the recording. |
 | **`fourcc`**<br>*Type:* `str`<br>*Default:* `'mp4v'` | FourCC codec code passed to cv2.VideoWriter. |

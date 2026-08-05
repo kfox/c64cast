@@ -12,14 +12,16 @@ The validation surface is shared with `config.build_scene` via
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import logging
+import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, Any, Literal
 
 from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .config import (
@@ -29,6 +31,7 @@ from .config import (
     resolve_cell_strategy,
     resolve_color_match,
     resolve_dither_method,
+    resolve_recording_path,
     resolve_scene_display,
     resolve_wled_broadcast,
     resolve_wled_listen,
@@ -44,6 +47,7 @@ from .config import (
     validate_wled_cfg,
 )
 from .orchestrator import OrchestratorError
+from .paths import expand_user
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +143,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_validate_wled(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
+        out.extend(_validate_ensemble_recording_paths(loaded))
     out.extend(_probe_extras())
 
     # dac_curve resolution ("auto"/"calibrated" -> an actual table) is
@@ -226,9 +231,93 @@ def _probe_environment() -> list[Diagnostic]:
         else:
             out.append(Diagnostic("ok", "environment", module, "importable"))
 
+    out.extend(_probe_opencv_provider())
+
     if _running_from_checkout():
         out.extend(_probe_uv_lock())
     return out
+
+
+def _probe_opencv_provider() -> list[Diagnostic]:
+    """Report which opencv build actually occupies the `cv2` namespace.
+
+    Every opencv wheel — plain, contrib, headless — unpacks to the same
+    `site-packages/cv2/`, and pip/uv let all of them install because they are
+    different distributions. Only one set of files can survive, so a second
+    one silently replaces the version this project pinned, and nothing in
+    `uv.lock`, `uv pip list` or the dependency metadata says so. `[vision]`
+    pulls mediapipe, which depends on opencv-contrib-python, so `[all]` is
+    exactly where it happens.
+
+    Reads cv2's own build stamp rather than the distribution metadata, because
+    metadata reports what each wheel *claims* and the stamp reports what is
+    actually on disk — which is the whole question here."""
+    try:
+        providers = sorted(importlib.metadata.packages_distributions().get("cv2", []))
+    except Exception:  # metadata unreadable: nothing to say
+        return []
+    if not providers:
+        return []
+
+    build = ""
+    flags: list[str] = []
+    try:
+        # Imported by name because cv2's stubs don't declare the `version`
+        # submodule, even though every wheel generates one.
+        version_mod: Any = importlib.import_module("cv2.version")
+        build = str(version_mod.opencv_version)
+        flags = [
+            label
+            for label, on in (
+                ("contrib", bool(version_mod.contrib)),
+                ("headless", bool(version_mod.headless)),
+            )
+            if on
+        ]
+    except Exception:  # not importable — the hard-dep probe above says so
+        pass
+    effective = f"{build} [{', '.join(flags)}]" if flags else build
+
+    if len(providers) > 1:
+        installed = ", ".join(f"{d} {_dist_version(d)}" for d in providers)
+        return [
+            Diagnostic(
+                "warn",
+                "environment",
+                "opencv",
+                f"{len(providers)} opencv distributions share the `cv2` "
+                f"namespace ({installed}); whichever installed last wins"
+                + (f", and that is {effective}" if build else ""),
+                hint=(
+                    "Expected with the `vision` extra (mediapipe depends on "
+                    "opencv-contrib-python) and harmless — contrib is a "
+                    "superset. Install without `vision` if you need the "
+                    "pinned opencv-python to be the one that loads."
+                ),
+            )
+        ]
+
+    if "headless" in flags:
+        return [
+            Diagnostic(
+                "warn",
+                "environment",
+                "opencv",
+                f"{providers[0]} {effective} — a headless build has no GUI, "
+                "so [preview] cannot open a window ([recording] still works)",
+                hint="Install a non-headless opencv wheel to get the preview window.",
+            )
+        ]
+
+    detail = f"{providers[0]} {effective}" if build else providers[0]
+    return [Diagnostic("ok", "environment", "opencv", detail)]
+
+
+def _dist_version(dist: str) -> str:
+    try:
+        return importlib.metadata.version(dist)
+    except Exception:
+        return "?"
 
 
 def _probe_uv_lock() -> list[Diagnostic]:
@@ -900,6 +989,50 @@ def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]
                     )
                 )
     return out
+
+
+def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
+    """Two recording systems must not resolve to the same output file.
+
+    `resolve_recording_path` only disambiguates systems that left `path` at
+    the default, so spelling out one shared path across two per-system TOMLs
+    still points two cv2.VideoWriters at one file — which produces a single
+    truncated stream, with no error from either writer.
+
+    Two names for one file have to compare equal or the check misses exactly
+    the case it exists for, so paths are normalized the way the filesystem
+    would read them: expanded, made absolute against the cwd the run will use,
+    and `normcase`'d (identity on POSIX; on Windows it also folds the
+    separators, which matters because `expanduser` leaves `~/x` as
+    `C:\\Users\\me/x`)."""
+    # display path per normalized key, plus the systems that resolved to it
+    by_path: dict[str, tuple[str, list[str]]] = {}
+    for sys_name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        if not cfg.recording.enabled:
+            continue
+        resolved = os.path.abspath(
+            expand_user(resolve_recording_path(cfg.recording, sys_name, is_ensemble=True))
+        )
+        _, names = by_path.setdefault(os.path.normcase(resolved), (resolved, []))
+        names.append(sys_name)
+
+    return [
+        Diagnostic(
+            level="error",
+            category="recording",
+            subject=display,
+            message=(
+                f"{len(names)} systems record to this one file "
+                f"({', '.join(sorted(names))}); only one stream survives."
+            ),
+            hint=(
+                "Give each system's [recording] its own `path`, or delete the "
+                "key so each derives one from its system name."
+            ),
+        )
+        for _, (display, names) in sorted(by_path.items())
+        if len(names) > 1
+    ]
 
 
 def _probe_extras() -> list[Diagnostic]:
@@ -1982,12 +2115,16 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         "scene",
         "audio",
         "color",
+        "recording",
         "midi_control",
         "wled",
         "orchestrator",
         "extras",
         "connectivity",
     ]
+    # Anything with a category not named above still has to reach the user;
+    # dropping it would make a new probe look like it passed.
+    category_order += sorted(set(by_category) - set(category_order))
     for cat in category_order:
         rows = by_category.get(cat)
         if not rows:

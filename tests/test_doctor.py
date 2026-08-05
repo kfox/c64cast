@@ -1335,5 +1335,123 @@ class DataDirsProbeTest(unittest.TestCase):
         self.assertEqual([d for d in diags if d.level == "warn"], [])
 
 
+class EnsembleRecordingPathTest(unittest.TestCase):
+    """`resolve_recording_path` only disambiguates systems that left `path`
+    alone, so two spelled-out identical paths still collide — and a
+    cv2.VideoWriter losing that race reports nothing."""
+
+    def _master(self, tmp: str, members: dict[str, str]) -> str:
+        master_path = os.path.join(tmp, "master.toml")
+        entries = ",\n    ".join(f'{{ name = "{n}", config = "{n}.toml" }}' for n in members)
+        _write(master_path, f"[ensemble]\nsystems = [\n    {entries}\n]\n")
+        for name, body in members.items():
+            _write(os.path.join(tmp, f"{name}.toml"), body)
+        return master_path
+
+    def _diags(self, members: dict[str, str]) -> list[doctor.Diagnostic]:
+        with tempfile.TemporaryDirectory() as tmp:
+            loaded = cfgmod.load_master(self._master(tmp, members))
+        return doctor._validate_ensemble_recording_paths(loaded)
+
+    def test_shared_explicit_path_is_an_error(self):
+        body = '[recording]\nenabled = true\npath = "wall.mp4"\n'
+        diags = self._diags({"left": body, "right": body})
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
+        self.assertIn("left", diags[0].message)
+        self.assertIn("right", diags[0].message)
+
+    def test_derived_paths_do_not_collide(self):
+        body = "[recording]\nenabled = true\n"
+        self.assertEqual(self._diags({"left": body, "right": body}), [])
+
+    def test_disabled_systems_are_not_counted(self):
+        # Only one of the two actually opens the file, so it is not a clash.
+        diags = self._diags(
+            {
+                "left": '[recording]\nenabled = true\npath = "wall.mp4"\n',
+                "right": '[recording]\nenabled = false\npath = "wall.mp4"\n',
+            }
+        )
+        self.assertEqual(diags, [])
+
+    def test_paths_are_compared_after_expansion(self):
+        # "~/wall.mp4" and the spelled-out home path name one file;
+        # comparing the raw strings would call them distinct. Single-quoted
+        # TOML so a Windows home path's backslashes stay literal.
+        home = os.path.join(os.path.expanduser("~"), "wall.mp4")
+        diags = self._diags(
+            {
+                "left": "[recording]\nenabled = true\npath = '~/wall.mp4'\n",
+                "right": f"[recording]\nenabled = true\npath = '{home}'\n",
+            }
+        )
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
+
+    def test_relative_and_absolute_spellings_collide(self):
+        # A bare name is opened relative to the cwd, so it is the same file
+        # as the absolute path — the check has to say so.
+        rel = "wall.mp4"
+        absolute = os.path.join(os.getcwd(), rel)
+        diags = self._diags(
+            {
+                "left": f"[recording]\nenabled = true\npath = '{rel}'\n",
+                "right": f"[recording]\nenabled = true\npath = '{absolute}'\n",
+            }
+        )
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
+
+
+class OpenCVProviderProbeTest(unittest.TestCase):
+    """Several opencv wheels unpack to one `cv2/` directory, so a second
+    install silently replaces the pinned one and no metadata records it."""
+
+    def test_two_providers_warn(self):
+        with mock.patch(
+            "importlib.metadata.packages_distributions",
+            return_value={"cv2": ["opencv-python", "opencv-contrib-python"]},
+        ):
+            diags = doctor._probe_opencv_provider()
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "warn")
+        self.assertIn("opencv-contrib-python", diags[0].message)
+
+    def test_single_provider_is_ok(self):
+        with mock.patch(
+            "importlib.metadata.packages_distributions",
+            return_value={"cv2": ["opencv-python"]},
+        ):
+            diags = doctor._probe_opencv_provider()
+        self.assertEqual([d.level for d in diags], ["ok"])
+
+    def test_no_cv2_provider_says_nothing(self):
+        # The hard-dependency probe already reports an unimportable cv2;
+        # a second voice saying so would just be noise.
+        with mock.patch("importlib.metadata.packages_distributions", return_value={}):
+            self.assertEqual(doctor._probe_opencv_provider(), [])
+
+    def test_unreadable_metadata_is_not_fatal(self):
+        with mock.patch(
+            "importlib.metadata.packages_distributions",
+            side_effect=OSError("no metadata"),
+        ):
+            self.assertEqual(doctor._probe_opencv_provider(), [])
+
+
+class PrintReportCategoryTest(unittest.TestCase):
+    def test_unlisted_category_still_prints(self):
+        # The renderer used to iterate a fixed category list, so a probe
+        # with a new category returned findings that never reached the user.
+        buf = io.StringIO()
+        code = doctor.print_report(
+            [doctor.Diagnostic("error", "brand_new_category", "subj", "boom")], file=buf
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("BRAND_NEW_CATEGORY", buf.getvalue())
+        self.assertIn("boom", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -501,7 +501,7 @@ These sections cascade from the master into every system:
 |---|---|
 | `[ultimate64]` | except `url` — every machine has its own address |
 | `[audio]`, `[color]`, `[playlist]`, `[interstitial]` | the show's global look and sound |
-| `[preview]`, `[recording]`, `[debug]`, `[menu]`, `[performance]` | |
+| `[preview]`, `[recording]`, `[debug]`, `[menu]`, `[performance]` | except `recording.path` — every system needs its own file |
 
 `[control]` and `[midi_control]` are read from the master and are **not**
 cascaded: there is one control plane and one MIDI surface for the process, not

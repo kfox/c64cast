@@ -369,7 +369,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `palette_mode` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing) |
 | `palette_mode` (mode) | [Notation](01-introduction.md#notation), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `password` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
-| `path` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
+| `path` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Recording (6)](07-inputs-and-outputs.md#recording) |
 | `[performance]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `performance` | [Gestures (6)](07-inputs-and-outputs.md#gestures), [`vision` (A)](20-appendix-a-configuration.md#vision), [The Demos (H)](27-appendix-h-examples.md#the-demos) |
 | `persistence` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |

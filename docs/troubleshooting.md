@@ -167,17 +167,50 @@ Two known causes:
 ### "`[preview] enabled = true` but no window appears"
 
 Check the log for `preview disabled: cannot open a window`. That means the
-installed opencv has no GUI support — the usual cause is a headless wheel
-(`opencv-python-headless`, often pulled in transitively) shadowing
-`opencv-python`, or running with no desktop session at all (ssh without X,
-a container). Reinstalling so the GUI build wins usually clears it:
+installed opencv has no GUI support — either a headless wheel
+(`opencv-python-headless`, often pulled in transitively) is the one occupying
+the `cv2` namespace, or there is no desktop session at all (ssh without X, a
+container).
 
-```bash
-uv tool install --force 'c64cast[all]'
-```
+`c64cast --doctor` names the build that actually loaded and flags it as
+headless, which distinguishes the two causes. If it is headless, the fix is an
+environment that does not contain a headless wheel at all — find what pulled it
+in (`uv pip tree`) and install without that, rather than installing a GUI wheel
+on top: co-installing both just makes the winner depend on write order.
+
+Reinstalling `c64cast[all]` is *not* the fix — see
+["--doctor says two opencv distributions share the `cv2` namespace"](#--doctor-says-two-opencv-distributions-share-the-cv2-namespace)
+below for why.
 
 Note the window is drawn by the main thread while the playlist renders on a
 worker thread, so a wedged playlist leaves the window up but frozen.
+
+### "`--doctor` says two opencv distributions share the `cv2` namespace"
+
+Every opencv wheel — `opencv-python`, `opencv-contrib-python`, and the
+`-headless` variants of each — unpacks into the same `site-packages/cv2/`
+directory, but they are separate distributions as far as the installer is
+concerned, so it will happily install several. Only one set of files can
+survive. Whichever was written last is the one that loads, and nothing in
+`uv.lock` or `uv pip list` records which that was.
+
+With the `vision` extra this is expected: mediapipe depends on
+`opencv-contrib-python`, so `c64cast[vision]` and `c64cast[all]` both end up
+with two. It is also harmless there — contrib is a superset of the plain
+build, and c64cast uses nothing outside it. This is why reinstalling with
+`[all]` does not cure an opencv problem: `[all]` includes `vision`, so it is
+the install that creates the situation.
+
+If you need the version c64cast pins to be the one that loads, install
+without `vision` and give up hand-gesture control:
+
+```bash
+uv tool install --force \
+  'c64cast[video,mic,control,obs,midi,logging,tr,wizard,camera,yt,wled]'
+```
+
+That is every extra except `vision` — `all` minus the one that brings the
+second opencv.
 
 ### "Preview window scale is too small / too big"
 

@@ -176,6 +176,17 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
         cfgmod.apply_master_defaults(defaults, sys_cfg)
         self.assertEqual(sys_cfg.video.device, cfgmod.VideoCfg().device)
 
+    def test_recording_path_does_not_cascade(self):
+        # A cascaded path would point every system's cv2.VideoWriter at one
+        # file; `enabled` still cascades, so "record the wall" stays one key.
+        defaults = cfgmod.Config()
+        defaults.recording.enabled = True
+        defaults.recording.path = "wall.mp4"
+        sys_cfg = cfgmod.Config()
+        cfgmod.apply_master_defaults(defaults, sys_cfg)
+        self.assertTrue(sys_cfg.recording.enabled)
+        self.assertEqual(sys_cfg.recording.path, cfgmod.RecordingCfg().path)
+
     def test_control_section_does_not_cascade(self):
         # [control] is wired from the master directly (one control plane
         # for the whole ensemble); per-system [control] would be confusing.
@@ -438,6 +449,43 @@ class SceneFollowerOnlyFlagTest(unittest.TestCase):
             _write(path, toml)
             cfg = cfgmod.load(path)
         self.assertFalse(cfg.scenes[0].follower_only)
+
+
+class ResolveRecordingPathTest(unittest.TestCase):
+    """Each ensemble system needs its own output file: cv2.VideoWriter has
+    no notion of sharing one, so N writers on a path leave one truncated
+    stream and no error."""
+
+    def test_ensemble_default_gets_system_name(self):
+        cfg = cfgmod.RecordingCfg()
+        self.assertEqual(
+            cfgmod.resolve_recording_path(cfg, "left", is_ensemble=True),
+            "recording-left.mp4",
+        )
+
+    def test_ensemble_systems_do_not_collide(self):
+        cfg = cfgmod.RecordingCfg()
+        resolved = {
+            cfgmod.resolve_recording_path(cfg, n, is_ensemble=True)
+            for n in ("left", "middle", "right")
+        }
+        self.assertEqual(len(resolved), 3)
+
+    def test_single_system_path_is_untouched(self):
+        cfg = cfgmod.RecordingCfg()
+        self.assertEqual(
+            cfgmod.resolve_recording_path(cfg, "system", is_ensemble=False),
+            "recording.mp4",
+        )
+
+    def test_explicit_path_is_honored_verbatim(self):
+        # Naming the file outranks a scheme for naming it — including the
+        # extension, which the user may have chosen to match `fourcc`.
+        cfg = cfgmod.RecordingCfg(path="~/vids/wall.mkv")
+        self.assertEqual(
+            cfgmod.resolve_recording_path(cfg, "left", is_ensemble=True),
+            "~/vids/wall.mkv",
+        )
 
 
 if __name__ == "__main__":
