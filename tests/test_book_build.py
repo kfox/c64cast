@@ -35,9 +35,9 @@ _SHARED_DIR = _DOCS / "shared"
 _BOOK_DIRS = sorted(p.parent for p in _DOCS.glob("*/book.toml"))
 
 
-def _load_build_book():
-    path = _REPO_ROOT / "scripts" / "build_book.py"
-    spec = importlib.util.spec_from_file_location("build_book", path)
+def _load_script(name: str):
+    path = _REPO_ROOT / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # Registered before exec: @dataclass resolves annotations through
@@ -47,12 +47,14 @@ def _load_build_book():
     return module
 
 
-bg = _load_build_book()
+# The dialect (what the Markdown means) and the Typst renderer (what it becomes).
+bd = _load_script("bookdoc")
+bg = _load_script("build_book")
 
 
 def _chapters() -> list[Path]:
     """Every chapter of every book, in reading order."""
-    return [p for book_dir in _BOOK_DIRS for p in bg.discover_chapters(book_dir)]
+    return [p for book_dir in _BOOK_DIRS for p in bd.discover_chapters(book_dir)]
 
 
 def _load(path: Path):
@@ -62,8 +64,13 @@ def _load(path: Path):
     loaded without them would reject "see Appendix F", or a link at a section
     of the next file, as naming nothing.
     """
-    siblings = bg.discover_chapters(path.parent)
-    return bg.load_chapter(path, bg.chapter_numbers(siblings), bg.section_anchors(siblings))
+    siblings = bd.discover_chapters(path.parent)
+    return bd.load_chapter(
+        path,
+        bg.TypstEmitter(),
+        bd.chapter_numbers(siblings),
+        bd.section_anchors(siblings),
+    )
 
 
 def convert(
@@ -73,9 +80,10 @@ def convert(
     anchors: frozenset[str] | None = None,
 ) -> str:
     """Convert a chapter body, with the `# Title` line already accounted for."""
-    conv = bg.Converter(
+    conv = bd.Converter(
         path or (_GUIDE_DIR / "99-test.md"),
         1,
+        bg.TypstEmitter(),
         chapters or frozenset(),
         anchors or frozenset(),
     )
@@ -133,7 +141,7 @@ class InlineConversionTest(unittest.TestCase):
         self.assertEqual(out, 'see #link(label("ch-F"))[Appendix F] for the rest')
 
     def test_cross_reference_to_a_chapter_the_book_lacks_is_rejected(self):
-        with self.assertRaises(bg.BookError) as ctx:
+        with self.assertRaises(bd.BookError) as ctx:
             convert("see Chapter 9", chapters=frozenset({"1"}))
         self.assertIn("does not have", str(ctx.exception))
 
@@ -159,7 +167,7 @@ class ProseGuardTest(unittest.TestCase):
     def test_double_hyphen_in_prose_is_rejected(self):
         # Typst turns a bare `--` into an en dash, so a flag written outside
         # backticks would render wrong. Fail rather than mangle it.
-        with self.assertRaises(bg.BookError) as ctx:
+        with self.assertRaises(bd.BookError) as ctx:
             convert("pass --config to select a file")
         self.assertIn("en dash", str(ctx.exception))
 
@@ -174,20 +182,23 @@ class BlockConversionTest(unittest.TestCase):
         self.assertIn("#heading(level: 3)[Sub]", out)
 
     def test_section_headings_are_collected_for_the_opener_page(self):
-        conv = bg.Converter(_GUIDE_DIR / "99-test.md", 1)
+        conv = bd.Converter(_GUIDE_DIR / "99-test.md", 1, bg.TypstEmitter())
         conv.convert("# Title\n\n## One\n\n## Two\n\ntext\n")
         self.assertEqual(conv.title, "Title")
         self.assertEqual(
-            conv.sections,
+            [(ref.label, title) for ref, title in conv.sections],
             [("sec-99-test-one", "One"), ("sec-99-test-two", "Two")],
         )
 
     def test_opener_page_sections_carry_their_markup(self):
         # Appendix A's sections are literals. Quoted as strings for the opener
         # page they arrived with their backticks showing.
-        conv = bg.Converter(_GUIDE_DIR / "99-test.md", 1)
+        conv = bd.Converter(_GUIDE_DIR / "99-test.md", 1, bg.TypstEmitter())
         conv.convert("# Title\n\n## `[hardware]`\n\ntext\n")
-        self.assertEqual(conv.sections, [("sec-99-test-hardware", "`[hardware]`")])
+        self.assertEqual(
+            [(ref.label, title) for ref, title in conv.sections],
+            [("sec-99-test-hardware", "`[hardware]`")],
+        )
         self.assertEqual(
             bg.typst_content_list(conv.sections),
             '((label: "sec-99-test-hardware", title: [`[hardware]`]),)',
@@ -199,11 +210,11 @@ class BlockConversionTest(unittest.TestCase):
         self.assertIn("Careful with that.", out)
 
     def test_unknown_callout_kind_is_rejected(self):
-        with self.assertRaises(bg.BookError):
+        with self.assertRaises(bd.BookError):
             convert("> [!GOTCHA]\n> nope\n")
 
     def test_bare_blockquote_is_rejected(self):
-        with self.assertRaises(bg.BookError):
+        with self.assertRaises(bd.BookError):
             convert("> just a quote\n")
 
     def test_code_block_keeps_its_language(self):
@@ -213,7 +224,7 @@ class BlockConversionTest(unittest.TestCase):
         self.assertIn("uv sync", out)
 
     def test_unterminated_code_fence_is_rejected(self):
-        with self.assertRaises(bg.BookError):
+        with self.assertRaises(bd.BookError):
             convert("```bash\nuv sync\n")
 
     def test_table(self):
@@ -223,7 +234,7 @@ class BlockConversionTest(unittest.TestCase):
         self.assertIn("align: (left, right,)", out)
 
     def test_table_with_a_short_row_is_rejected(self):
-        with self.assertRaises(bg.BookError):
+        with self.assertRaises(bd.BookError):
             convert("| A | B |\n|---|---|\n| 1 |\n")
 
     def test_fields_directive_hands_the_table_to_the_template(self):
@@ -234,16 +245,16 @@ class BlockConversionTest(unittest.TestCase):
         self.assertNotIn("columns:", out)
 
     def test_fields_directive_requires_two_columns(self):
-        with self.assertRaises(bg.BookError) as ctx:
+        with self.assertRaises(bd.BookError) as ctx:
             convert("<!-- table: fields -->\n| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n")
         self.assertIn("2 columns", str(ctx.exception))
 
     def test_fields_directive_must_be_followed_by_a_table(self):
-        with self.assertRaises(bg.BookError):
+        with self.assertRaises(bd.BookError):
             convert("<!-- table: fields -->\n\nordinary prose\n")
 
     def test_unknown_directive_is_rejected(self):
-        with self.assertRaises(bg.BookError) as ctx:
+        with self.assertRaises(bd.BookError) as ctx:
             convert("<!-- table: sideways -->\n| A | B |\n|---|---|\n| 1 | 2 |\n")
         self.assertIn("unknown directive", str(ctx.exception))
 
@@ -289,7 +300,7 @@ class BlockConversionTest(unittest.TestCase):
         self.assertIn("+ first", out)
 
     def test_figure_requires_a_caption(self):
-        with self.assertRaises(bg.BookError):
+        with self.assertRaises(bd.BookError):
             convert("![](img/logo-cover.png)")
 
     def test_figure_path_is_rewritten_root_relative(self):
@@ -301,17 +312,17 @@ class BlockConversionTest(unittest.TestCase):
         self.assertIn('#screenshot("/docs/guide/img/logo-cover.png"', out)
 
     def test_missing_figure_is_rejected(self):
-        with self.assertRaises(bg.BookError) as ctx:
+        with self.assertRaises(bd.BookError) as ctx:
             convert("![A caption.](img/does-not-exist.png)")
         self.assertIn("figure not found", str(ctx.exception))
 
     def test_inline_image_is_rejected(self):
-        with self.assertRaises(bg.BookError):
+        with self.assertRaises(bd.BookError):
             convert("text with ![a pic](img/logo-cover.png) inside")
 
     def test_body_before_the_title_is_rejected(self):
-        conv = bg.Converter(_GUIDE_DIR / "99-test.md", 1)
-        with self.assertRaises(bg.BookError):
+        conv = bd.Converter(_GUIDE_DIR / "99-test.md", 1, bg.TypstEmitter())
+        with self.assertRaises(bd.BookError):
             conv.convert("A paragraph before any heading.\n")
 
 
@@ -334,16 +345,16 @@ class SectionAnchorTest(unittest.TestCase):
         }
         for heading, slug in cases.items():
             with self.subTest(heading=heading):
-                self.assertEqual(bg.heading_slug(heading), slug)
+                self.assertEqual(bd.heading_slug(heading), slug)
 
     def test_a_repeated_heading_is_disambiguated(self):
-        slugs = bg.file_section_slugs("## Fades\n\n### Fades\n\n## Other\n")
+        slugs = bd.file_section_slugs("## Fades\n\n### Fades\n\n## Other\n")
         self.assertEqual(slugs, ["fades", "fades-1", "other"])
 
     def test_a_heading_inside_a_code_fence_is_not_a_section(self):
         # A `#` comment in a TOML listing is not a heading, and the converter
         # would not emit a label for one either.
-        slugs = bg.file_section_slugs("## Real\n\n```toml\n## Not a heading\n```\n")
+        slugs = bd.file_section_slugs("## Real\n\n```toml\n## Not a heading\n```\n")
         self.assertEqual(slugs, ["real"])
 
     def test_the_label_names_the_file_not_the_chapter_number(self):
@@ -351,7 +362,7 @@ class SectionAnchorTest(unittest.TestCase):
         # retarget every link into it -- and so the two `## Generators`
         # sections, in different files, stay apart.
         self.assertEqual(
-            bg.section_label("04-display-pipeline", "fades"), "sec-04-display-pipeline-fades"
+            bd.section_label("04-display-pipeline", "fades"), "sec-04-display-pipeline-fades"
         )
 
     def test_subsections_are_labeled_too(self):
@@ -375,7 +386,7 @@ class SectionAnchorTest(unittest.TestCase):
 
     def test_an_unresolvable_anchor_fails_the_build(self):
         anchors = frozenset({"sec-99-test-fades"})
-        with self.assertRaises(bg.BookError) as ctx:
+        with self.assertRaises(bd.BookError) as ctx:
             convert("see [Fades](#fadez)", anchors=anchors)
         message = str(ctx.exception)
         self.assertIn("names no section", message)
@@ -393,9 +404,9 @@ class SectionAnchorTest(unittest.TestCase):
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):
                 labels = []
-                for path in bg.discover_chapters(book_dir):
-                    _, body, _ = bg.parse_front_matter(path.read_text(encoding="utf-8"), path)
-                    labels += [bg.section_label(path.stem, s) for s in bg.file_section_slugs(body)]
+                for path in bd.discover_chapters(book_dir):
+                    _, body, _ = bd.parse_front_matter(path.read_text(encoding="utf-8"), path)
+                    labels += [bd.section_label(path.stem, s) for s in bd.file_section_slugs(body)]
                 duplicates = {label for label in labels if labels.count(label) > 1}
                 self.assertEqual(duplicates, set(), f"duplicate section labels: {duplicates}")
 
@@ -406,8 +417,8 @@ class SectionAnchorTest(unittest.TestCase):
         # print -- so they are pinned to each other.
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):
-                paths = bg.discover_chapters(book_dir)
-                declared = bg.section_anchors(paths)
+                paths = bd.discover_chapters(book_dir)
+                declared = bd.section_anchors(paths)
                 emitted = set()
                 for path in paths:
                     body = _load(path).body
@@ -417,7 +428,7 @@ class SectionAnchorTest(unittest.TestCase):
 
 class FrontMatterTest(unittest.TestCase):
     def test_parses_a_number(self):
-        fields, body, offset = bg.parse_front_matter(
+        fields, body, offset = bd.parse_front_matter(
             "---\nnumber: 2\n---\n# Title\n", _GUIDE_DIR / "99-test.md"
         )
         self.assertEqual(fields, {"number": "2"})
@@ -425,18 +436,18 @@ class FrontMatterTest(unittest.TestCase):
         self.assertEqual(offset, 4)
 
     def test_absent_front_matter_is_fine(self):
-        fields, body, offset = bg.parse_front_matter("# Title\n", _GUIDE_DIR / "99-test.md")
+        fields, body, offset = bd.parse_front_matter("# Title\n", _GUIDE_DIR / "99-test.md")
         self.assertEqual(fields, {})
         self.assertEqual(body.strip(), "# Title")
         self.assertEqual(offset, 1)
 
     def test_unknown_key_is_rejected(self):
-        with self.assertRaises(bg.BookError):
-            bg.parse_front_matter("---\nauthor: nobody\n---\n# T\n", _GUIDE_DIR / "99-test.md")
+        with self.assertRaises(bd.BookError):
+            bd.parse_front_matter("---\nauthor: nobody\n---\n# T\n", _GUIDE_DIR / "99-test.md")
 
     def test_unclosed_front_matter_is_rejected(self):
-        with self.assertRaises(bg.BookError):
-            bg.parse_front_matter("---\nnumber: 1\n# T\n", _GUIDE_DIR / "99-test.md")
+        with self.assertRaises(bd.BookError):
+            bd.parse_front_matter("---\nnumber: 1\n# T\n", _GUIDE_DIR / "99-test.md")
 
 
 class BookTomlTest(unittest.TestCase):
@@ -450,16 +461,16 @@ class BookTomlTest(unittest.TestCase):
 
     def test_unknown_layout_is_rejected(self):
         book_dir = self._write_book(layout="pamphlet", output="x")
-        with self.assertRaises(bg.BookError) as ctx:
-            bg.load_book_toml(book_dir)
+        with self.assertRaises(bd.BookError) as ctx:
+            bd.load_book_toml(book_dir)
         self.assertIn("layout must be one of", str(ctx.exception))
 
     def test_a_missing_key_names_itself(self):
         # A book that lost its cover logo should fail the build, not render a
         # PDF with a blank front that nobody notices until it is published.
         book_dir = self._write_book(layout="guide", output="x", title="t")
-        with self.assertRaises(bg.BookError) as ctx:
-            bg.load_book_toml(book_dir)
+        with self.assertRaises(bd.BookError) as ctx:
+            bd.load_book_toml(book_dir)
         self.assertIn("logo", str(ctx.exception))
 
     def test_the_output_basename_names_the_typ(self):
@@ -495,7 +506,7 @@ class LayoutTest(unittest.TestCase):
         # about the colophon. Listing the keys by hand meant that adding a
         # required one (`volume`, for the second book's cover) failed here
         # instead -- on the wrong error, from a test that never mentions it.
-        keys = dict.fromkeys(bg.LAYOUT_KEYS["guide"], "x") | {"logo": "logo.png"}
+        keys = dict.fromkeys(bd.LAYOUT_KEYS["guide"], "x") | {"logo": "logo.png"}
         body = "\n".join(f'{key} = "{value}"' for key, value in keys.items())
         (book_dir / "book.toml").write_text(
             f'[book]\nlayout = "guide"\noutput = "c64cast-book"\n{body}\n',
@@ -504,8 +515,8 @@ class LayoutTest(unittest.TestCase):
         (book_dir / "logo.png").write_bytes(b"")
         (book_dir / "01-one.md").write_text("---\nnumber: 1\n---\n# One\n\n## Section\n\nText.\n")
 
-        with mock.patch.object(bg, "REPO_ROOT", book_dir):
-            with self.assertRaises(bg.BookError) as ctx:
+        with mock.patch.object(bd, "REPO_ROOT", book_dir):
+            with self.assertRaises(bd.BookError) as ctx:
                 bg.build(book_dir)
         self.assertIn("colophon.md", str(ctx.exception))
 
@@ -526,7 +537,7 @@ class LayoutTest(unittest.TestCase):
 
         # Paths are spelled relative to the repo root, so a scratch book has to
         # stand in as one.
-        with mock.patch.object(bg, "REPO_ROOT", book_dir):
+        with mock.patch.object(bd, "REPO_ROOT", book_dir):
             typst = bg.build(book_dir)
 
         self.assertIn("#show: card.with(", typst)
@@ -554,7 +565,7 @@ class BookSourcesTest(unittest.TestCase):
     def test_chapters_are_discovered_in_order(self):
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):
-                paths = bg.discover_chapters(book_dir)
+                paths = bd.discover_chapters(book_dir)
                 matches = [re.match(r"^(\d+)-", p.name) for p in paths]
                 self.assertTrue(all(matches))
                 prefixes = [int(m.group(1)) for m in matches if m]
@@ -579,7 +590,7 @@ class BookSourcesTest(unittest.TestCase):
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):
                 numbers = [
-                    c.number for c in (_load(p) for p in bg.discover_chapters(book_dir)) if c.number
+                    c.number for c in (_load(p) for p in bd.discover_chapters(book_dir)) if c.number
                 ]
                 self.assertEqual(len(numbers), len(set(numbers)))
                 digits = [n for n in numbers if n.isdigit()]
@@ -613,9 +624,9 @@ class BookSourcesTest(unittest.TestCase):
         # is exempt: the schema directive in the User's Guide is a URL that has
         # to be copied verbatim, and no reflowing will shorten it.
         for book_dir in _BOOK_DIRS:
-            width = bg.CODE_WIDTH[bg.load_book_toml(book_dir)["layout"]]
-            for path in bg.discover_chapters(book_dir):
-                _, body, _ = bg.parse_front_matter(path.read_text(encoding="utf-8"), path)
+            width = bg.CODE_WIDTH[bd.load_book_toml(book_dir)["layout"]]
+            for path in bd.discover_chapters(book_dir):
+                _, body, _ = bd.parse_front_matter(path.read_text(encoding="utf-8"), path)
                 fenced = False
                 for lineno, line in enumerate(body.split("\n"), start=1):
                     if line.strip().startswith("```"):
@@ -640,7 +651,7 @@ class BookSourcesTest(unittest.TestCase):
             with self.subTest(book=book_dir.name):
                 rel = book_dir.relative_to(_REPO_ROOT).as_posix()
                 self.assertIn(rel, makefile, f"the Makefile never names {rel}")
-                output = bg.load_book_toml(book_dir)["output"]
+                output = bd.load_book_toml(book_dir)["output"]
                 self.assertIn(output, makefile, f"the Makefile cannot render {output}")
 
 

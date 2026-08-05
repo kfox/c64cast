@@ -31,7 +31,7 @@ SYNC := $(if $(CI),,sync)
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema \
         guide reference card books guide-figures reference-figures \
-        reference-appendices
+        reference-appendices site site-check
 
 # Books (docs/<book>/*.md + book.toml) are rendered by Typst, which is an
 # external binary rather than a Python package. The two faces (Jost*,
@@ -88,6 +88,8 @@ help:
 	@echo "  reference  render docs/reference/*.md to the Reference Guide PDF (needs typst)"
 	@echo "  card       render docs/card/*.md to the Performance Card PDF (needs typst)"
 	@echo "  books      render every book"
+	@echo "  site       render the documentation site into docs/_site"
+	@echo "  site-check parse every site source, write nothing (what CI runs)"
 	@echo "  guide-figures  redraw the guide's placeholder figures"
 	@echo "  reference-figures  redraw the reference guide's diagrams"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-I + index"
@@ -157,6 +159,24 @@ card: $(SYNC)
 
 books: guide reference card
 
+# The documentation site: the same Markdown as the books, plus the README and
+# the standalone user docs, rendered as HTML into $(SITE_DIR). No typst and no
+# project env — the builder is stdlib-only, which is why pages.yml runs it
+# through `uv run --no-project` exactly as the release renders the books.
+#
+#   make site && python -m http.server -d $(SITE_DIR) 8000
+#
+# `site-check` parses every source and writes nothing; CI runs it on a pull
+# request, which is the only thing that proves a book still renders before
+# release day.
+SITE_DIR := docs/_site
+
+site:
+	$(PY) scripts/build_site.py --out $(SITE_DIR)
+
+site-check:
+	$(PY) scripts/build_site.py --check
+
 # Rewrite the Programmer's Reference Guide's generated appendices (A-I), its
 # index and the performance card's live-target table from the config metadata.
 # Unlike the books themselves this needs the project env, since it imports
@@ -176,5 +196,6 @@ clean:
 	rm -rf build dist .coverage .coverage.* htmlcov coverage.xml
 	rm -rf .ruff_cache .mypy_cache .pytest_cache
 	rm -f $(addsuffix .typ,$(BOOK_ARTS)) $(addsuffix .pdf,$(BOOK_ARTS))
+	rm -rf $(SITE_DIR)
 	find . -type d -name '__pycache__' -prune -exec rm -rf {} +
 	find . -type d -name '*.egg-info' -prune -exec rm -rf {} +

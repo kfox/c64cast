@@ -294,6 +294,10 @@ printable version for the desk beside the controller.
 
 ## Documentation
 
+Everything below is also a website: **<https://kfox.github.io/c64cast/>** reads
+all three books and the notes beneath them in one place, built from these same
+files on every push to `main`.
+
 * [docs/guide/](https://github.com/kfox/c64cast/tree/main/docs/guide) —
   **the User's Guide**: a friendly, read-in-order introduction that starts
   from nothing and builds up. Start at

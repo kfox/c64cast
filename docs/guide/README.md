@@ -16,6 +16,10 @@ The Markdown is the guide. Start at
 [`01-quick-start.md`](01-quick-start.md) and work forward; the files are
 numbered in reading order. Everything renders on github.com as-is.
 
+Read it online at
+[kfox.github.io/c64cast/guide/](https://kfox.github.io/c64cast/guide/), which is
+this same Markdown rendered on every push to `main`.
+
 For the typeset version, download
 [the PDF](https://github.com/kfox/c64cast/releases/latest/download/c64cast-users-guide.pdf)
 — always the newest release, and stamped on the cover with the version it
@@ -35,18 +39,23 @@ make guide          # -> docs/guide/c64cast-users-guide.pdf
 docs/guide/*.md          the guide (the only source)
       |
       +--> scripts/build_book.py  --> c64cast-users-guide.typ
+      |                                   |
+      |   docs/shared/template.typ ------>+--> typst --> .pdf
+      |
+      +--> scripts/build_site.py   --> docs/_site/guide/*.html
                                           |
-      docs/shared/template.typ  --------->+--> typst --> .pdf
+          docs/shared/site.css  --------->+--> GitHub Pages
 ```
 
-`build_book.py` translates constructs; the [shared
-template](../shared/README.md) owns every design decision. Neither the prose
-nor the converter decides what anything looks like, so the whole book can be
-restyled by editing one file — and so can every other book, because they share
-it.
+Two renderings, one reading: [`scripts/bookdoc.py`](../shared/README.md)
+recognizes each construct and checks it, and each builder says only what its
+own output looks like. The [shared assets](../shared/README.md) own every
+design decision — neither the prose nor a converter decides what anything looks
+like, so the whole book can be restyled by editing one file, and so can every
+other book, because they share it.
 
-The generated `.typ` and the `.pdf` are build artifacts and are gitignored.
-The Markdown and the figures are tracked.
+The generated `.typ`, the `.pdf` and `docs/_site/` are build artifacts and are
+gitignored. The Markdown and the figures are tracked.
 
 | File | Is |
 |---|---|
@@ -63,8 +72,13 @@ paragraph is worse than one that fails to build. Check your source without
 rendering:
 
 ```bash
-uv run python scripts/build_book.py --book-dir docs/guide --check
+uv run python scripts/build_book.py --book-dir docs/guide --check   # the PDF
+uv run python scripts/build_site.py --check                         # the site
 ```
+
+The right-hand column says what the construct *is*; the PDF and the site
+each draw it in their own way, and github.com renders the Markdown as it
+stands.
 
 | Write | Get |
 |---|---|
@@ -82,13 +96,14 @@ uv run python scripts/build_book.py --book-dir docs/guide --check
 | `**bold**`, `*italic*`, `` `code` ``, `[text](url)` | As expected |
 | `[text](04-name.md#anchor)` | A link to that section — `#anchor` alone for one in the same file |
 | `Chapter 4`, `Appendix F` | A link to that chapter's opener page |
-| `✓`, `→` | Drawn marks — the body face carries neither |
+| `✓`, `→` | Marks the PDF draws, because its body face carries neither |
 
 Five rules that are not obvious:
 
 - **Put command-line flags in backticks.** Typst turns a bare `--` in prose
   into an en dash, so `--config` outside a code span would render wrong. The
-  converter rejects it rather than mangling it.
+  PDF renderer rejects it rather than mangling it; a browser would have printed
+  it correctly, but the source has to satisfy both.
 - **A chapter's title and its opener-page contents are derived**, from the
   `# H1` and the `##` headings respectively. Neither can drift from the
   prose because neither is written twice.
@@ -97,9 +112,10 @@ Five rules that are not obvious:
   which is what catches a renumbering the prose was not told about.
 - **A section link is checked too**, against the anchors every `##` and `###`
   in the book defines. The anchor is GitHub's — lowercase, punctuation
-  dropped, spaces to hyphens — because the same link has to work on
-  github.com, where the Markdown is the book. An anchor that resolves nowhere
-  fails the build and names the nearest ones it knows.
+  dropped, spaces to hyphens — because the same link has to work in three
+  places: on github.com, where the Markdown is the book; in the PDF; and on the
+  site. An anchor that resolves nowhere fails the build and names the nearest
+  ones it knows.
 - **A character outside the two vendored faces will not be drawn at all.**
   Typst's own fallback is off, so there is no substitute and no warning;
   `tests/test_book_fonts.py` fails instead. Two marks the books lean on, `✓`

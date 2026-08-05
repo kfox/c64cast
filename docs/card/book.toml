@@ -9,6 +9,10 @@ layout = "card"                      # which template entry point renders it
 output = "c64cast-performance-card"  # basename of the .typ and the .pdf
 title = "c64cast"
 subtitle = "Performance Card"        # the footer's second half
+# The card layout has no cover to print this on; the documentation site's
+# front page does, and describes each book from its own book.toml so that a
+# fourth book needs no edit there.
+tagline = "One printable sheet for the desk beside the controller"
 # What a downloaded file calls itself in Get Info / `pdfinfo`. A card has no
 # cover to read it off. The version is appended by the build.
 pdf_title = "c64cast Performance Card"

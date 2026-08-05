@@ -250,12 +250,22 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertIn("--notes-file body.md", self.code)
 
     def test_every_action_is_pinned_to_a_digest(self) -> None:
-        for ref in re.findall(r"^\s*uses: (\S+)", self.code, re.M):
-            self.assertRegex(
-                ref,
-                r"@[0-9a-f]{40}$",
-                f"{ref} is not pinned to a full commit SHA",
-            )
+        """Across every workflow, not only this one.
+
+        A tag is mutable, so an unpinned action is whatever its owner pushed
+        last. The rule is the repository's rather than the release's; it lives
+        here because release.yml is where it first mattered.
+        """
+        workflows = os.path.join(_REPO, ".github", "workflows")
+        for name in sorted(os.listdir(workflows)):
+            if not name.endswith((".yml", ".yaml")):
+                continue
+            for ref in re.findall(r"^\s*uses: (\S+)", _read(f".github/workflows/{name}"), re.M):
+                self.assertRegex(
+                    ref,
+                    r"@[0-9a-f]{40}$",
+                    f"{name}: {ref} is not pinned to a full commit SHA",
+                )
 
     def test_every_book_asset_carries_the_version(self) -> None:
         for output in _book_outputs():

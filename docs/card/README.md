@@ -10,7 +10,9 @@ the four commands worth running before the doors open.
 ## Reading it
 
 The Markdown renders on github.com as-is; start at
-[`01-controls.md`](01-controls.md). For the printable version, download
+[`01-controls.md`](01-controls.md), or read it online at
+[kfox.github.io/c64cast/card/](https://kfox.github.io/c64cast/card/). For the
+printable version, download
 [the PDF](https://github.com/kfox/c64cast/releases/latest/download/c64cast-performance-card.pdf)
 (always the newest release), or render it from a checkout:
 

@@ -226,12 +226,12 @@ c64cast = "c64cast.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/kfox/c64cast"
-# The User's Guide index, which is the read-in-order documentation entry point.
-# NOT a github.io Pages site: the docs are Markdown-in-repo plus a typeset PDF
-# attached to each release, and a URL in published package metadata has to
-# resolve on the day the package is published. Repoint this if a Pages site
-# ever exists.
-Documentation = "https://github.com/kfox/c64cast/tree/main/docs/guide"
+# The documentation site: all three books plus the standalone user docs,
+# rendered from the same Markdown by .github/workflows/pages.yml on every push
+# to main. It is built from `main` rather than from the tag, which is the right
+# trade for a link read off a PyPI page of any age -- a reader following it
+# wants the current documentation, and every page says which branch it is.
+Documentation = "https://kfox.github.io/c64cast/"
 # Deliberately `releases/latest` rather than a pinned tag: this link is read
 # from a PyPI page that may be any version's, and what a reader wants from it
 # is the current release and its User's Guide PDF.

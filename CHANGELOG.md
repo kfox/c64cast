@@ -14,6 +14,20 @@ the version and stamps it with the date.
 
 ### Added
 
+- **The documentation is a website.**
+  [kfox.github.io/c64cast](https://kfox.github.io/c64cast/) publishes all three
+  books — User's Guide, Programmer's Reference Guide, Performance Card — plus
+  the caveats, troubleshooting and extending notes, rendered from the same
+  Markdown the PDFs are set from and republished on every push to `main`. Each
+  book gets a contents page, a chapter sidebar, prev/next paging and a link to
+  its typeset PDF; a section link resolves identically on github.com, in the
+  PDF and on the site, because all three use GitHub's own anchor rule. The
+  renderer (`scripts/build_site.py`) is stdlib-only and shares its reading of
+  the Markdown — and every check that reading makes — with the PDF builder, so
+  the two cannot disagree about what a page says. `make site` builds it
+  locally; a pull request now proves every book still renders, which previously
+  nothing did until release day.
+
 - **Every book has a permanent download link.** A release now carries each PDF
   twice — `c64cast-users-guide-X.Y.Z.pdf` as before, and an unversioned
   `c64cast-users-guide.pdf` — so
