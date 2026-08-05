@@ -71,13 +71,17 @@ The config defines the **playlist** (which scenes run, in what order, for how lo
 ## Architecture
 
 Per-module internals — design rationale, hardware constraints, and edge-case history
-for every module in `c64cast/` — live in [docs/architecture.md](docs/architecture.md),
-which is standalone and current. It is an index: the notes themselves are split by topic
-area under [docs/architecture/](docs/architecture/), and the index's module table routes
-any module to its section. **Read the relevant section before modifying a module**; it
-carries the *why* (and the dead ends) that the code alone doesn't. Keep the two in sync:
-a behavior change to a module updates its architecture section in the same change set
-(see the "Docs reflect functionality changes" working rule).
+— live in [docs/architecture.md](docs/architecture.md). It is an index: the notes
+themselves are split by topic area under [docs/architecture/](docs/architecture/), and
+the index's module table routes a module to its section. Modules whose notes haven't
+been written yet are listed under "Not covered here", where the module docstring
+carries the rationale instead; [tests/test_architecture_index.py](tests/test_architecture_index.py)
+holds the two lists to a partition of the tree and checks every row's anchor resolves,
+so a new module has to be routed somewhere. **Read the relevant section before
+modifying a module**; it carries the *why* (and the dead ends) that the code alone
+doesn't. Keep the two in sync: a behavior change to a module updates its architecture
+section in the same change set (see the "Docs reflect functionality changes" working
+rule).
 
 The three **books** under `docs/` are the end-user surface, and each is a
 directory of numbered Markdown plus a `book.toml` that
