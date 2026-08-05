@@ -12,6 +12,18 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Added
+
+- **Audio worker health lines.** Under `-v`, the DAC path now logs a short line
+  every few seconds — ring gap excursion, late ring sub-writes, underruns, write
+  rate, consumer rate, NMI latch — and reports the session's late-write share on
+  stop. The counts that already existed were session totals, which cannot tell a
+  fault that is present throughout from one that appears part-way in, deepens,
+  clears and returns; the artifacts worth chasing on this path are exactly the
+  latter. "Late" means a ring sub-write reached its slot after that slot's
+  deadline had passed, which bunches the rest of the chunk and undoes the spread
+  described below, without registering as an underrun.
+
 ### Changed
 
 - **The 4-bit `$D418` DAC wobbles far less.** Each host write to the audio ring

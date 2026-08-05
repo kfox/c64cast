@@ -516,6 +516,15 @@ HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
 
+# --- Worker health telemetry --------------------------------------------
+# Seconds between the worker's health lines (0 disables). The stop() summary
+# reports session totals, which cannot distinguish a fault that is present
+# throughout from one that grows, clears and returns — and the DAC artifacts
+# worth chasing are the time-varying ones. The window is short enough to place
+# an onset to within a few seconds of where a listener hears it and long enough
+# that a normal -v run is not drowned by it.
+AUDIO_HEALTH_LOG_INTERVAL_S = 5.0
+
 # --- Adaptive NMI-rate compensation (closed loop on measured R rate) ------
 # The gap servo above keeps the ring centered but locks playback to the
 # bus-halt-throttled consumer R, so video plays slow (R < sample_rate; loss is
@@ -1459,6 +1468,24 @@ class AudioStreamer:
         # producer-side decode is the bottleneck (not DMA pacing).
         self._full_underruns = 0
         self._partial_underruns = 0
+        # Drip-schedule telemetry. _drip_chunk paces each sub-write to its own
+        # slot deadline; a slot reached after its deadline has already passed
+        # gets written immediately, so the remaining sub-writes of that chunk
+        # bunch up at the end of the period. That degrades the spread back
+        # toward the one-write-per-chunk cadence the split exists to escape
+        # (measured: 4-20 Hz modulation 0.65 spread vs 8.33 bursted), without
+        # showing up in the underrun counts. Counted here so a run can be
+        # scored on whether the spread actually held.
+        self._late_slots = 0
+        self._total_slots = 0
+        self._late_worst_s = 0.0
+        # Health-line window state: the wall-clock of the last emitted line,
+        # the counter snapshot taken with it (for per-window deltas), and the
+        # servo gap's excursion within the window.
+        self._health_last_log = 0.0
+        self._health_mark: tuple[int, int, int, int] = (0, 0, 0, 0)
+        self._health_gap_min = -1
+        self._health_gap_max = -1
         # Bytes-per-item queue: each item is a pre-encoded bytes blob of
         # 4-bit volume codes (one byte per sample). This collapses the old
         # per-sample put/get (which hit ~88K lock acquisitions/sec on a
@@ -1769,8 +1796,12 @@ class AudioStreamer:
             if not self.running:
                 break
             sleep_s = slot_deadline - time.monotonic()
+            self._total_slots += 1
             if sleep_s > 0:
                 time.sleep(sleep_s)
+            else:
+                self._late_slots += 1
+                self._late_worst_s = max(self._late_worst_s, -sleep_s)
             piece = payload[i * quantum : (i + 1) * quantum]
             if not piece:
                 break
@@ -1779,6 +1810,51 @@ class AudioStreamer:
             if addr >= RING_BUFFER_END:
                 addr = RING_BUFFER_ADDR
         return n, taken_total, leftover
+
+    def _maybe_log_health(self, now: float) -> None:
+        """Emit one worker-health line per window, as deltas over that window.
+
+        Deltas rather than totals because the question this answers is *when*,
+        not *how much*: a fault that appears a few seconds in, deepens, clears
+        and returns is indistinguishable from a steady one in the session
+        totals stop() prints. Every field is already maintained by the worker,
+        so this costs one clock read per chunk.
+        """
+        if AUDIO_HEALTH_LOG_INTERVAL_S <= 0:
+            return
+        mark = (self._full_underruns, self._partial_underruns, self._late_slots, self._total_slots)
+        if self._health_last_log == 0.0:
+            self._health_last_log = now
+            self._health_mark = mark
+            return
+        dt = now - self._health_last_log
+        if dt < AUDIO_HEALTH_LOG_INTERVAL_S:
+            return
+        d_full, d_part, d_late, d_slots = (
+            a - b for a, b in zip(mark, self._health_mark, strict=True)
+        )
+        gap = (
+            "n/a" if self._health_gap_min < 0 else f"{self._health_gap_min}..{self._health_gap_max}"
+        )
+        log.info(
+            "audio: gap=%s late=%d/%d (worst +%.1fms) under=%d/%d writes=%.0f/s "
+            "quantum=%dB R=%.0f Hz latch=%d",
+            gap,
+            d_late,
+            d_slots,
+            self._late_worst_s * 1000.0,
+            d_full,
+            d_part,
+            d_slots / dt,
+            self._halt_quantum(),
+            max(0.0, self._r_rate_ema),
+            self._nmi_latch,
+        )
+        self._health_last_log = now
+        self._health_mark = mark
+        self._health_gap_min = -1
+        self._health_gap_max = -1
+        self._late_worst_s = 0.0
 
     def _halt_quantum(self) -> int:
         """Bytes per ring write, sized so each write's CPU halt fits inside one
@@ -2143,6 +2219,7 @@ class AudioStreamer:
                     if write_addr >= RING_BUFFER_END:
                         write_addr = RING_BUFFER_ADDR
                     next_write_time += self._next_pace_increment(w_head, chunk_period)
+                    self._maybe_log_health(time.monotonic())
                     continue
 
                 # Prebuffer fill: the NMI is not consuming yet, so there is no
@@ -2167,6 +2244,11 @@ class AudioStreamer:
                     self._r_rate_ema = -1.0
                     self._last_r_addr = -1
                     self._last_r_time = 0.0
+                    # Health windows measure the consuming phase only — the
+                    # prebuffer fill writes unsplit and has no slots to be late.
+                    self._health_last_log = 0.0
+                    self._health_gap_min = -1
+                    self._health_gap_max = -1
                     self._nmi_loop_chunk_count = 0
                     self._nmi_loop_acquiring = True
                     # Hold the rate loop at the seed until the start/seek
@@ -2212,6 +2294,8 @@ class AudioStreamer:
         self._servo_gap_last = gap
         self._servo_gap_min = gap if self._servo_gap_min < 0 else min(self._servo_gap_min, gap)
         self._servo_gap_max = max(self._servo_gap_max, gap)
+        self._health_gap_min = gap if self._health_gap_min < 0 else min(self._health_gap_min, gap)
+        self._health_gap_max = max(self._health_gap_max, gap)
         # Slow outer loop: track R's *rate* and retune the NMI latch so the
         # consumer lands at sample_rate (correct speed/pitch). Reuses the r_addr
         # already read above — no extra REST traffic. Reads the rate, not the gap
@@ -3385,6 +3469,24 @@ class AudioStreamer:
             log.info("audio: clean session (no underruns)")
         self._full_underruns = 0
         self._partial_underruns = 0
+        # Late slots: sub-writes that reached their slot with the deadline
+        # already gone. A run with a low count kept the spread it was designed
+        # to have; a high one collapsed toward one bunched write per chunk
+        # period, which is audible as modulation even though every sample was
+        # delivered and no underrun was counted.
+        if self._total_slots:
+            late_pct = 100.0 * self._late_slots / self._total_slots
+            log.log(
+                logging.WARNING if late_pct >= 10.0 else logging.INFO,
+                "audio: %d/%d ring sub-writes late (%.1f%%) — spread %s",
+                self._late_slots,
+                self._total_slots,
+                late_pct,
+                "degraded toward bursts" if late_pct >= 10.0 else "held",
+            )
+        self._late_slots = 0
+        self._total_slots = 0
+        self._late_worst_s = 0.0
         # Host-DMA servo gap telemetry: confirms the closed loop locked the
         # ring gap near half a ring (4096) and never approached a lap (0) or an
         # underrun (RING_BUFFER_SIZE). The external drift probe can't see this

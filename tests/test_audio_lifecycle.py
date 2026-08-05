@@ -261,6 +261,75 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             "an unaffordable link still had its writes subdivided",
         )
 
+    def test_slow_writes_are_counted_as_late_slots(self):
+        # A sub-write that runs past its own slot leaves every later slot in the
+        # chunk already expired, so they all fire back-to-back — the spread
+        # collapses into the burst it was split to avoid. Nothing else notices:
+        # the bytes still land, in order, and no underrun is counted. This
+        # counter is the only signal that the schedule was not kept.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=64000)
+        real_write = cast(Any, s.api).write_memory_file
+
+        def slow_write(addr: str, data: bytes) -> None:
+            time.sleep(0.004)  # longer than a slot at this chunk period
+            real_write(addr, data)
+
+        cast(Any, s.api).write_memory_file = slow_write
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 256))
+            s._queued_samples += 256
+
+        _run_worker(s, until=lambda: s._total_slots >= 8, timeout=3.0)
+
+        self.assertGreater(s._total_slots, 0)
+        self.assertGreater(s._late_slots, 0, "slow writes did not register as late slots")
+        self.assertGreater(s._late_worst_s, 0.0)
+
+    def test_prompt_writes_keep_the_schedule(self):
+        # The negative control for the counter above: with writes that return
+        # immediately the drip keeps its deadlines, so a late slot means a real
+        # link/collection problem rather than an artifact of the accounting.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=8000)
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 256))
+            s._queued_samples += 256
+
+        _run_worker(s, until=lambda: s._total_slots >= 16, timeout=3.0)
+
+        self.assertGreater(s._total_slots, 0)
+        self.assertLess(s._late_slots, s._total_slots // 2)
+
+    def test_health_line_reports_window_deltas(self):
+        # The health line exists to place an onset in time, so it must report
+        # the window rather than the session: a second window that saw two more
+        # underruns reports two, not the running total.
+        s = _make(sample_rate=12000)
+        s._nmi_latch = 84
+        s._r_rate_ema = 11900.0
+        with mock.patch.object(audio_mod, "AUDIO_HEALTH_LOG_INTERVAL_S", 0.0001):
+            s._maybe_log_health(100.0)  # first call only marks the baseline
+            s._full_underruns = 5
+            s._late_slots = 9
+            s._total_slots = 40
+            with self.assertLogs(audio_mod.log, level="INFO") as first:
+                s._maybe_log_health(101.0)
+            s._full_underruns = 7
+            with self.assertLogs(audio_mod.log, level="INFO") as second:
+                s._maybe_log_health(102.0)
+
+        self.assertIn("late=9/40", first.output[0])
+        self.assertIn("under=5/0", first.output[0])
+        self.assertIn("under=2/0", second.output[0])
+        self.assertIn("late=0/0", second.output[0])
+
+    def test_health_line_suppressed_inside_the_window(self):
+        s = _make(sample_rate=12000)
+        with mock.patch.object(audio_mod, "AUDIO_HEALTH_LOG_INTERVAL_S", 5.0):
+            s._maybe_log_health(100.0)
+            with mock.patch.object(audio_mod.log, "info") as info:
+                s._maybe_log_health(102.0)
+        info.assert_not_called()
+
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.
