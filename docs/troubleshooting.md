@@ -130,6 +130,28 @@ Grant Terminal (or whichever app is running Python) Camera permission
 under **System Settings → Privacy & Security → Camera**, then quit and
 relaunch Terminal. OpenCV's AVFoundation backend will then enumerate.
 
+### "The preview window (or the recording) is black, but the C64 looks fine"
+
+Expected, and not a bug in the scene: the preview is a host-side
+reconstruction of the writes c64cast sends, so any frame that reaches the
+VIC by a route other than host DMA is invisible to it.
+
+1. **A bitmap scene on the staged or double-buffered path** — the common
+   case, because both are on by default. `[video].use_reu_staged = "auto"`
+   stages hires/mhires frames through the REU on a REU-enabled U64, and
+   `double_buffer = "auto"` page-flips them on a TeensyROM; neither routes
+   through the write listener the shadow watches, and the renderer reads a
+   fixed `$2000`/`$0400` without modeling `$DD00` banking. Set
+   `[video].use_reu_staged = false` to bring the picture back into the
+   window — at the cost of the tear-free path on the C64 itself.
+2. **A `launcher` scene** — the `.prg`/`.crt` draws on the Commodore with no
+   host-side pixel writes at all, so there is nothing to reconstruct. This
+   one has no workaround.
+
+Neither is visual verification of what the VIC drew; that needs a capture
+device. Full list of blind spots:
+["Preview window fidelity + limits"](caveats.md#preview-window-fidelity--limits).
+
 ### "Multi-line preview window or recording, but they don't match what the U64 shows"
 
 Two known causes:
