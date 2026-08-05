@@ -259,7 +259,7 @@ class Emitter(Protocol):
         aligns: list[str],
         kind: str | None,
     ) -> str: ...
-    def locators(self, refs: list[SectionRef]) -> str: ...
+    def locators(self, entries: list[tuple[SectionRef, str]]) -> str: ...
     def list_block(self, items: list[ListItem]) -> str: ...
     def paragraph(self, body: str) -> str: ...
 
@@ -350,6 +350,13 @@ def convert_inline(
             out.append(emitter.em(recurse(m.group("em_star"))))
         elif m.group("xref") is not None:
             number = m.group("xref_num")
+            if not chapters:
+                # Not a book chapter -- a standalone document, or the README on
+                # the site. There is no chapter namespace to resolve against, so
+                # "Appendix A" is three words rather than a link into nowhere.
+                out.append(emitter.text(m.group("xref")))
+                pos = m.end()
+                continue
             if number not in chapters:
                 fail(
                     path,
@@ -385,8 +392,8 @@ _DIRECTIVE_RE = re.compile(r"^<!--\s*(?P<name>.+?)\s*-->$")
 # right-hand column's section links into locators.
 _TABLE_DIRECTIVES = {"table: fields": "fields", "table: index": "index"}
 # One index cell: `[A Section (4)](04-file.md#slug), [Another](#slug)`.
-_LINK = r"\[[^\]]+\]\(([^)]+)\)"
-_LINK_RE = re.compile(_LINK)
+_LINK = r"\[[^\]]+\]\([^)]+\)"
+_LINK_RE = re.compile(r"\[(?P<text>[^\]]+)\]\((?P<href>[^)]+)\)")
 _LOCATOR_LIST_RE = re.compile(rf"^{_LINK}(?:,\s*{_LINK})*$")
 # A cell boundary is an *unescaped* pipe. GFM spells a literal one `\|`, which
 # several generated appendices need: a field of type `str | None` and config
@@ -579,20 +586,22 @@ class Converter:
 
         The Markdown points at sections because that is the only locator
         github.com has. In the PDF the reader wants a page, which the template
-        resolves from the same label the link already names -- so one source
-        serves every output, and none carries a locator the others cannot
-        follow. Returns None for a cell that is not a plain list of links,
-        which is every other table in the book.
+        resolves from the same label the link already names; on the web the
+        section's own name is the locator, so each entry carries its converted
+        link text alongside the ref and an emitter takes whichever it sets.
+        One source serves every output, and none carries a locator the others
+        cannot follow. Returns None for a cell that is not a plain list of
+        links, which is every other table in the book.
         """
         if not _LOCATOR_LIST_RE.match(text.strip()):
             return None
-        refs = []
-        for href in _LINK_RE.findall(text):
-            ref = resolve_section_href(href, self.path, self.lineno(index), self.anchors)
+        entries = []
+        for m in _LINK_RE.finditer(text):
+            ref = resolve_section_href(m.group("href"), self.path, self.lineno(index), self.anchors)
             if ref is None:
                 return None
-            refs.append(ref)
-        return self.emitter.locators(refs)
+            entries.append((ref, self.inline(m.group("text"), index)))
+        return self.emitter.locators(entries)
 
     def _table(self, lines: list[str], i: int, out: list[str], *, kind: str | None = None) -> int:
         start = i

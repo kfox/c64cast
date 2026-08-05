@@ -223,11 +223,13 @@ class TypstEmitter(Emitter):
     def callout(self, kind: str, body: str) -> str:
         return f'#callout(kind: "{kind}")[\n{body}\n]\n'
 
-    def locators(self, refs: list[SectionRef]) -> str:
+    def locators(self, entries: list[tuple[SectionRef, str]]) -> str:
         # The template's `pagerefs` resolves a page from the same label the
         # link already names, so the Markdown can point at a section -- the
-        # only locator github.com has -- and the PDF still prints a page.
-        labels = ", ".join(f"label({typst_string(ref.label)})" for ref in refs)
+        # only locator github.com has -- and the PDF still prints a page. The
+        # section's name goes with it and is dropped here: on a page reference
+        # the number is the locator, and printing both would say it twice.
+        labels = ", ".join(f"label({typst_string(ref.label)})" for ref, _ in entries)
         return f"#pagerefs(({labels},))"
 
     def table(

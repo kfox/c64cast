@@ -23,6 +23,7 @@ _SKIP_DIRS = {
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "_site",  # `make site` output: generated HTML, not prose anyone edits
     "assets",
     "build",
     "dist",

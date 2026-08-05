@@ -97,6 +97,30 @@ content was promoted into the reference guide, and
 [tests/test_docs_links.py](tests/test_docs_links.py) fails if anything links to
 it again.
 
+The same Markdown is also the **documentation site** at
+<https://kfox.github.io/c64cast/> — the three books plus `caveats.md`,
+`troubleshooting.md` and `extending.md`, with the README under a generated hero
+on the front page. `docs/architecture*` is deliberately not published: it
+addresses somebody editing the code with the checkout open.
+[scripts/bookdoc.py](scripts/bookdoc.py) owns the dialect (recognition, anchors,
+and every check); [build_book.py](scripts/build_book.py) and
+[build_site.py](scripts/build_site.py) each supply only an `Emitter` saying what
+their own output looks like, so the PDF and the site cannot disagree about what
+a construct *is*. Anchors are GitHub's own slug rule, which is what makes one
+link resolve on github.com, in the PDF and on the site alike. `make site` writes
+`docs/_site/` (gitignored); `make site-check` parses without writing and is what
+CI runs on a PR, alongside a `--check` of every book — before that job existed
+nothing proved a book still rendered until release day.
+[.github/workflows/pages.yml](.github/workflows/pages.yml) publishes on every
+push to `main`, so the site is ahead of the PDFs by design and says so in a
+banner; every PDF link on it points at `releases/latest/download/…`, which is
+the published interface. All three scripts are **stdlib-only** and import
+nothing from `c64cast` — the release renders books under
+`uv run --no-project python`. Design lives in
+[docs/shared/template.typ](docs/shared/template.typ) (PDF) and
+[docs/shared/site.css](docs/shared/site.css) (web), which takes its palette from
+the template's own declarations under a drift test.
+
 Other docs: [caveats.md](docs/caveats.md),
 [troubleshooting.md](docs/troubleshooting.md), [extending.md](docs/extending.md).
 Project-level files: [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog — anything a user

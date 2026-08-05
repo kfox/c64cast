@@ -52,6 +52,27 @@ jobs:
         env:
           SKIP: pyright,unittest
 
+  # Every book, under both renderers, on every pull request. Until this job
+  # existed nothing proved a book still rendered until release day, when the
+  # tag has already been pushed. Both builders are stdlib-only and read only
+  # the checkout, so the whole gate costs one `--no-project` interpreter.
+  docs:
+    name: docs (books + site render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Every book parses as Typst
+        run: |
+          for book in docs/*/book.toml; do
+            uv run --no-project python scripts/build_book.py \
+              --book-dir "$(dirname "$book")" --check
+          done
+      - name: The whole site renders
+        run: make site-check PY="uv run --no-project python"
+
   lint-and-test:
     name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}

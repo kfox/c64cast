@@ -1,0 +1,798 @@
+/* c64cast documentation site — the entire visual language lives in this file.
+ *
+ * The web counterpart of docs/shared/template.typ, and the same bargain: the
+ * prose is Markdown (docs/<book>/*.md), scripts/build_site.py says only what
+ * each construct becomes in HTML, and everything about the *look* is decided
+ * here. Tune the design in this file.
+ *
+ * The palette and the two faces are the PDF's, so a reader who downloads the
+ * book after reading it online gets the same object. The light values below
+ * are copied from template.typ's own declarations rather than re-picked, and
+ * tests/test_build_site.py fails if the two drift.
+ */
+
+/* --------------------------------------------------------------------------
+ * Palette
+ * ----------------------------------------------------------------------- */
+
+:root {
+  --accent: #2b73b5; /* the one blue */
+  --accent-pale: #9fc0de; /* figure frames, hairlines */
+  --accent-wash: #f2f6fa; /* code block fill */
+  --ink: #111111; /* body text */
+  --keycap-fill: #3a3a3a; /* <kbd> chips */
+
+  --paper: #ffffff;
+  --muted: #56606a;
+  --rule: #e2e8ef;
+  --shadow: 0 1px 2px rgb(17 17 17 / 6%), 0 8px 24px rgb(17 17 17 / 6%);
+
+  --measure: 44rem; /* the column width prose is set to */
+  --sidebar: 17.5rem;
+  --radius: 6px;
+}
+
+/* The book palette is light-only: it was measured off a printed page, where
+ * there is no dark mode to derive. These are chosen for the screen instead —
+ * the same blue lightened until it holds contrast on a dark ground, and the
+ * washes rebuilt rather than inverted (an inverted #F2F6FA is a muddy brown). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #6fb3ea;
+    --accent-pale: #35526d;
+    --accent-wash: #1a2026;
+    --ink: #e7ebef;
+    --keycap-fill: #4a5259;
+    --paper: #131719;
+    --muted: #9aa5b0;
+    --rule: #272f36;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 30%);
+  }
+}
+
+/* A reader whose browser or extension stamps data-theme on the root has asked
+ * for that theme specifically, so it wins over the media query in both
+ * directions rather than only in the dark one. */
+:root[data-theme="light"] {
+  --accent: #2b73b5;
+  --accent-pale: #9fc0de;
+  --accent-wash: #f2f6fa;
+  --ink: #111111;
+  --keycap-fill: #3a3a3a;
+  --paper: #ffffff;
+  --muted: #56606a;
+  --rule: #e2e8ef;
+}
+
+:root[data-theme="dark"] {
+  --accent: #6fb3ea;
+  --accent-pale: #35526d;
+  --accent-wash: #1a2026;
+  --ink: #e7ebef;
+  --keycap-fill: #4a5259;
+  --paper: #131719;
+  --muted: #9aa5b0;
+  --rule: #272f36;
+}
+
+/* --------------------------------------------------------------------------
+ * Fonts
+ *
+ * The same two OFL faces the PDFs are set in, served from the same vendored
+ * files — build_site.py copies them, and their licenses, into /fonts/. Both
+ * are variable, so one file covers every weight the site asks for.
+ * ----------------------------------------------------------------------- */
+
+@font-face {
+  font-family: "Jost";
+  src: url("fonts/Jost[wght].ttf") format("truetype-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Jost";
+  src: url("fonts/Jost-Italic[wght].ttf") format("truetype-variations");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inconsolata";
+  src: url("fonts/Inconsolata[wdth,wght].ttf") format("truetype-variations");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --------------------------------------------------------------------------
+ * Page
+ * ----------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* Or an anchored heading lands underneath the sticky header. */
+  scroll-padding-top: 5rem;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Jost", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 17px;
+  line-height: 1.62;
+  -webkit-text-size-adjust: 100%;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: "Inconsolata", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* --------------------------------------------------------------------------
+ * Chrome
+ * ----------------------------------------------------------------------- */
+
+.banner {
+  background: var(--accent-wash);
+  border-bottom: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: 0.4rem 1.25rem;
+  text-align: center;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1.5rem;
+  padding: 0.75rem 1.25rem;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--rule);
+}
+
+.brand {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.topbar nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.1rem;
+  font-size: 0.92rem;
+}
+
+.topbar nav a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.topbar nav a:hover {
+  color: var(--accent);
+}
+
+.topbar nav a.here {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sitefoot {
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 4rem;
+  padding: 1.5rem 1.25rem 3rem;
+  text-align: center;
+}
+
+/* --------------------------------------------------------------------------
+ * Layout
+ * ----------------------------------------------------------------------- */
+
+.layout {
+  display: grid;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  gap: 3rem;
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 0;
+}
+
+.content {
+  max-width: var(--measure);
+  min-width: 0;
+}
+
+.sidebar {
+  position: sticky;
+  top: 4.5rem;
+  align-self: start;
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+/* The landing page is one column: its navigation is the hero's book cards. */
+body.landing .layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.landing .content {
+  max-width: none;
+}
+
+/* A standalone document has no book around it, so its only sidebar is its own
+ * outline — which belongs on the right, where a table of contents goes. */
+body.standalone .layout {
+  grid-template-columns: minmax(0, 1fr) var(--sidebar);
+}
+
+body.standalone .content {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+body.standalone .sidebar {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar li {
+  margin: 0.3rem 0;
+}
+
+.sidebar a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.sidebar a:hover {
+  color: var(--accent);
+}
+
+.sidebar li.here > a {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.navtitle {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.6rem;
+}
+
+.navtitle a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.sidebar .num {
+  color: var(--accent);
+  font-family: "Inconsolata", monospace;
+  font-size: 0.85em;
+  margin-right: 0.35rem;
+}
+
+.onthispage {
+  border-left: 2px solid var(--accent-pale);
+  margin: 0.4rem 0 0.6rem 0.2rem;
+  padding-left: 0.75rem;
+}
+
+/* Inside a book the heading is the chapter you are already reading; standing
+ * alone it needs to say what the list is. */
+.onthispage .navtitle {
+  display: none;
+}
+
+body.standalone .onthispage {
+  border-left: 0;
+  padding-left: 0;
+}
+
+body.standalone .onthispage .navtitle {
+  display: block;
+}
+
+.onthispage li.lvl3 {
+  padding-left: 0.9rem;
+  font-size: 0.95em;
+}
+
+.sidebar .pdf {
+  border-top: 1px solid var(--rule);
+  margin-top: 1.2rem;
+  padding-top: 1rem;
+}
+
+.sidebar .pdf a {
+  color: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
+ * Prose
+ * ----------------------------------------------------------------------- */
+
+.content h1 {
+  font-size: 2.1rem;
+  font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: -0.01em;
+  margin: 0 0 1.5rem;
+}
+
+.content h2 {
+  color: var(--accent);
+  font-size: 1.45rem;
+  font-weight: 600;
+  margin: 2.75rem 0 0.9rem;
+}
+
+.content h3 {
+  font-size: 1.12rem;
+  font-weight: 600;
+  margin: 2rem 0 0.6rem;
+}
+
+.content h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1.5rem 0 0.4rem;
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 0.4rem;
+}
+
+/* A heading's permalink: there for anyone who wants to send one, out of the
+ * way of everyone who does not. */
+.anchor {
+  color: var(--accent-pale);
+  margin-left: 0.4rem;
+  opacity: 0;
+  text-decoration: none;
+  transition: opacity 0.12s;
+}
+
+h2:hover .anchor,
+h3:hover .anchor,
+.anchor:focus {
+  opacity: 1;
+}
+
+.content p {
+  margin: 0 0 1.1rem;
+}
+
+.content li {
+  margin: 0.35rem 0;
+}
+
+.content ul,
+.content ol {
+  padding-left: 1.4rem;
+}
+
+.content :not(pre) > code {
+  background: var(--accent-wash);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  font-size: 0.88em;
+  padding: 0.08em 0.32em;
+}
+
+kbd {
+  background: var(--keycap-fill);
+  border-radius: 4px;
+  box-shadow: inset 0 -2px 0 rgb(0 0 0 / 25%);
+  color: #fff;
+  font-size: 0.8em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.12em 0.45em 0.18em;
+  white-space: nowrap;
+}
+
+pre {
+  background: var(--accent-wash);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 1.4rem;
+  overflow-x: auto;
+  padding: 0.9rem 1.1rem;
+}
+
+/* --------------------------------------------------------------------------
+ * Callouts
+ * ----------------------------------------------------------------------- */
+
+.callout {
+  background: var(--accent-wash);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  margin: 0 0 1.4rem;
+  padding: 0.9rem 1.1rem 0.1rem;
+}
+
+.callout-kind {
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin: 0 0 0.35rem;
+}
+
+.callout-warning,
+.callout-caution {
+  border-left-color: #c2751d;
+}
+
+.callout-warning .callout-kind,
+.callout-caution .callout-kind {
+  color: #c2751d;
+}
+
+/* --------------------------------------------------------------------------
+ * Tables
+ * ----------------------------------------------------------------------- */
+
+/* The reference guide's tables are wider than a phone. Each scrolls inside its
+ * own box, which is what stops the page itself from scrolling sideways. */
+.table-wrap {
+  margin: 0 0 1.5rem;
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--rule);
+  padding: 0.45rem 0.7rem;
+  vertical-align: top;
+}
+
+th {
+  border-bottom: 2px solid var(--accent-pale);
+  color: var(--accent);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ta-right {
+  text-align: right;
+}
+
+.ta-center {
+  text-align: center;
+}
+
+/* A settings list rather than a grid of values: the name column is as narrow
+ * as its longest name, and the description takes whatever is left. */
+table.fields td:first-child,
+table.index td:first-child {
+  white-space: nowrap;
+  width: 1%;
+}
+
+table.index td:first-child {
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+ * Figures
+ * ----------------------------------------------------------------------- */
+
+figure {
+  margin: 0 0 1.6rem;
+}
+
+figure img {
+  border: 1px solid var(--accent-pale);
+  border-radius: var(--radius);
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+figcaption {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+
+/* --------------------------------------------------------------------------
+ * Page furniture
+ * ----------------------------------------------------------------------- */
+
+.pager {
+  border-top: 1px solid var(--rule);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-top: 3rem;
+  padding-top: 1.2rem;
+}
+
+.pager a {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  flex: 1 1 0;
+  font-weight: 600;
+  max-width: 20rem;
+  padding: 0.6rem 0.9rem;
+  text-decoration: none;
+}
+
+.pager a:hover {
+  border-color: var(--accent-pale);
+}
+
+.pager .next {
+  margin-left: auto;
+  text-align: right;
+}
+
+.pager span {
+  color: var(--muted);
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.editlink {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 1.5rem;
+}
+
+/* --------------------------------------------------------------------------
+ * Contents page
+ * ----------------------------------------------------------------------- */
+
+.tagline {
+  color: var(--muted);
+  font-size: 1.1rem;
+  margin-top: -1rem;
+}
+
+.content .pdf {
+  margin-bottom: 2rem;
+}
+
+ol.contents {
+  list-style: none;
+  padding: 0;
+}
+
+ol.contents > li {
+  border-top: 1px solid var(--rule);
+  padding: 1rem 0;
+}
+
+ol.contents .num {
+  color: var(--muted);
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+a.chapter {
+  font-size: 1.2rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+ol.contents ul {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.1rem;
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  font-size: 0.9rem;
+}
+
+ol.contents ul a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+ol.contents ul a:hover {
+  color: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
+ * Landing hero
+ * ----------------------------------------------------------------------- */
+
+.hero {
+  border-bottom: 1px solid var(--rule);
+  margin: 0 auto;
+  max-width: 78rem;
+  padding: 3rem 1.5rem 2.5rem;
+  text-align: center;
+}
+
+.hero h1 {
+  margin: 0;
+}
+
+.herologo {
+  height: auto;
+  max-width: min(100%, 34rem);
+}
+
+.hero .pitch {
+  color: var(--muted);
+  font-size: 1.05rem;
+  margin: 1.5rem auto 0;
+  max-width: 46rem;
+  text-align: left;
+}
+
+.bookcards {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  margin-top: 2.5rem;
+  text-align: left;
+}
+
+a.bookcard {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  color: inherit;
+  display: block;
+  padding: 1.2rem 1.3rem;
+  text-decoration: none;
+  transition:
+    border-color 0.12s,
+    transform 0.12s;
+}
+
+a.bookcard:hover {
+  border-color: var(--accent-pale);
+  transform: translateY(-2px);
+}
+
+a.bookcard h3 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  margin: 0 0 0.4rem;
+}
+
+a.bookcard p {
+  color: var(--muted);
+  font-size: 0.92rem;
+  margin: 0 0 0.8rem;
+}
+
+a.bookcard .cta {
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+a.bookcard .cta::after {
+  content: " →";
+}
+
+/* --------------------------------------------------------------------------
+ * Narrow screens
+ * ----------------------------------------------------------------------- */
+
+@media (max-width: 60rem) {
+  body {
+    font-size: 16px;
+  }
+
+  .layout,
+  body.standalone .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  /* A book's chapter list is long enough to bury the prose if it stays on top,
+   * so on a phone it becomes an index at the foot of the page instead. It is
+   * moved with `order` rather than by placement: it comes first in the source,
+   * which is where a screen reader and a no-CSS reader want the navigation. */
+  .sidebar,
+  body.standalone .sidebar {
+    order: 2;
+    position: static;
+    grid-column: auto;
+    grid-row: auto;
+    max-height: none;
+    border-top: 1px solid var(--rule);
+    margin-top: 2.5rem;
+    padding-top: 1.5rem;
+  }
+
+  .content,
+  body.standalone .content {
+    order: 1;
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .pager {
+    flex-direction: column;
+  }
+
+  .pager .next {
+    margin-left: 0;
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  * {
+    transition: none !important;
+  }
+}
