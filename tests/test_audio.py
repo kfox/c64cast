@@ -67,6 +67,11 @@ def _new_streamer(monkeypatch_api=True) -> AudioStreamer:
     s._health_mark = (0, 0, 0, 0)
     s._health_gap_min = -1
     s._health_gap_max = -1
+    s._r_rate_min = -1.0
+    s._r_rate_max = -1.0
+    s._r_rate_ema = -1.0
+    s._last_r_addr = -1
+    s._last_r_time = 0.0
     # Phase 4 transport-flush state.
     s._flush_epoch = 0
     s._count_lock = threading.Lock()

@@ -299,6 +299,27 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertGreater(s._total_slots, 0)
         self.assertLess(s._late_slots, s._total_slots // 2)
 
+    def test_consumer_rate_is_measured_with_the_adaptive_loop_off(self):
+        # The rate estimate used to be computed inside the adaptive NMI-rate
+        # loop, which is off by default — so the one quantity that shows
+        # content-dependent tick loss read zero in every log. Measuring is not
+        # steering: the loop stays off, the number still has to arrive.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=12000)
+        s.nmi_rate_adaptive = False
+        s.host_dma_servo = True
+        s._nmi_timer_started = True
+        latch_before = s._nmi_latch
+        base = audio_mod.RING_BUFFER_ADDR
+
+        with mock.patch.object(s, "_read_read_ptr", side_effect=[base, base + 1200]):
+            s._next_pace_increment(base + 4096, 0.1)
+            time.sleep(0.05)
+            s._next_pace_increment(base + 4096 + 1200, 0.1)
+
+        self.assertGreater(s._r_rate_ema, 0.0, "consumer rate was not measured")
+        self.assertGreater(s._r_rate_max, 0.0)
+        self.assertEqual(s._nmi_latch, latch_before, "observation must not steer the latch")
+
     def test_health_line_reports_window_deltas(self):
         # The health line exists to place an onset in time, so it must report
         # the window rather than the session: a second window that saw two more
