@@ -12,6 +12,41 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The static on the `$D418` DAC: a calibration table was being applied to the
+  wrong SID.** `[audio].dac_curve = "auto"` chose the baked *emulated-UltiSID*
+  table whenever the backend was an Ultimate, without checking which SID source
+  actually answers `$D400` — the address the DAC writes to. On a board with a
+  physical SID in a socket mapped there (the socket wins address mirroring, so
+  the real chip is what you hear), that applied a ladder measured on different
+  silicon: 19.4 dB worse than a table measured on the chip itself, and 17.6 dB
+  worse than the plain 4-bit path. It is the constant buzz that made the 8-bit
+  mode sound broken. `"auto"` now resolves the live `$D400` owner, and a
+  populated socket with no calibration of its own falls back to the 4-bit path
+  instead. **If you have a physical SID, run `--calibrate-dac` once** — a
+  matched table beats the 4-bit path by 1.7 dB and runs 5.9 dB louder.
+- **`--calibrate-dac` measured every socket after the first with unparked SID
+  voices.** The 8-bit mode needs the three voices parked as DC sources, and that
+  setup was written once at start-up, so it landed on whichever chip was mapped
+  to `$D400` at the time. On a two-socket board the second socket's table was
+  measured with no DC to scale. It is now re-installed after each routing change.
+- **`--calibrate-dac` could measure a muted SID.** Routing a source to `$D400`
+  does not make it audible — the Audio Mixer carries a separate per-source
+  level. Calibration now routes the mixer to the source it is measuring and
+  restores the previous levels afterwards. Previously this produced a capture at
+  the noise floor, which looks like a broken capture device rather than a muted
+  chip.
+
+### Changed
+
+- **The baked `mahoney_ultisid` table has been re-measured** against the
+  emulated core in isolation. It reproduces the original curve almost exactly,
+  but the code-selection step has been rewritten since that table was generated,
+  and the shipped bytes had gone stale against it — non-monotonic through the
+  very curve they came from. No action needed; the improvement is automatic for
+  anyone whose `$D400` is an UltiSID core.
+
 ### Added
 
 - **Audio worker health lines.** Under `-v`, the DAC path now logs a short line
