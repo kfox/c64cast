@@ -6,12 +6,9 @@ recorded write log."""
 
 from __future__ import annotations
 
-import queue
-import threading
 import unittest
 from typing import cast
 
-import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.api import Ultimate64API
@@ -40,76 +37,34 @@ from c64cast.audio import (
     RING_BUFFER_END_HI,
     RING_BUFFER_HI,
     RING_BUFFER_SIZE,
-    SAMPLE_TAP_SIZE,
     AudioStreamer,
     _servo_period,
 )
 
 
 def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
-    """Bare-bones AudioStreamer (no thread, real API replaced by FakeAPI)."""
-    s = AudioStreamer.__new__(AudioStreamer)
-    s.api = cast(Ultimate64API, FakeAPI())
-    s.sample_rate = 8000
-    s.system = "NTSC"
-    s.q = queue.Queue(maxsize=256)
-    s._queued_samples = 0
-    s._max_queued_samples = 16384
-    s.running = False
-    s.chunk_size = 1024
-    s.sensitivity = 1.0
-    s.noise_gate = 0.05
-    s.mic_stream = None
-    s._worker_thread = None
-    s._pushed_count = 0
-    s._tap_buf = np.zeros(SAMPLE_TAP_SIZE, dtype=np.float32)
-    s._tap_write = 0
-    s._tap_lock = threading.Lock()
-    s.dither_enabled = False
-    s.digi_boost = False
-    s.dac_curve_name = "linear"
-    s._dac_curve = None
-    s._neutral_byte = NEUTRAL_SAMPLE
-    s.sid_filter_cutoff = 0
-    s.use_reu_pump = use_reu_pump
-    # Default OFF so the bring-up tests below assert the plain open-loop handler
-    # bytes; GovernorSelectionTest flips it on explicitly. (Production default
-    # is True — see config.AudioCfg.reu_pump_governor.)
-    s.reu_pump_governor = False
-    s._reu_pump_armed = False
-    s._reu_pump_start_time = 0.0
-    s._reu_pump_total_samples = 0
-    s._mic_reu_write_pos = 0
-    s._nmi_latch = 0
-    s._pitch_multiplier = 1.0
-    s._nmi_timer_started = False
-    s._reu_cia1_latch_nominal = REU_PUMP_CIA1_LATCH
-    s._full_underruns = 0
-    s._partial_underruns = 0
-    # Host-DMA servo: default OFF so worker-path tests stay open-loop; the
-    # HostDmaServoTest exercises the pure controller directly.
-    s.host_dma_servo = False
-    s._servo_integ = 0.0
-    s._servo_gap_min = -1
-    s._servo_gap_max = -1
-    s._servo_gap_last = -1
-    s._late_slots = 0
-    s._total_slots = 0
-    s._late_worst_s = 0.0
-    s._health_last_log = 0.0
-    s._health_mark = (0, 0, 0, 0)
-    s._health_gap_min = -1
-    s._health_gap_max = -1
-    s._r_rate_min = -1.0
-    s._r_rate_max = -1.0
-    s._r_rate_ema = -1.0
-    s._last_r_addr = -1
-    s._last_r_time = 0.0
-    # Phase 4 transport-flush state (read by _worker's iteration top).
-    s._flush_epoch = 0
-    s._count_lock = threading.Lock()
-    s._stomp_requested = False
-    return s
+    """Bare-bones AudioStreamer (no thread, real API replaced by FakeAPI).
+
+    Built through the real __init__ rather than __new__ plus a hand-written copy
+    of the constructor's state: that copy went stale every time a field was
+    added, and an absent field surfaces as an AttributeError thrown deep inside
+    a worker thread rather than as a fixture error.
+
+    reu_pump_governor OFF so the bring-up tests below assert the plain open-loop
+    handler bytes (GovernorSelectionTest flips it on explicitly; the production
+    default is True — see config.AudioCfg.reu_pump_governor), and host_dma_servo
+    OFF so worker-path tests stay open-loop — HostDmaServoTest exercises the pure
+    controller directly.
+    """
+    return AudioStreamer(
+        cast(Ultimate64API, FakeAPI()),
+        sample_rate=8000,
+        system="NTSC",
+        dither=False,
+        use_reu_pump=use_reu_pump,
+        reu_pump_governor=False,
+        host_dma_servo=False,
+    )
 
 
 class RingBufferRelocationTest(unittest.TestCase):

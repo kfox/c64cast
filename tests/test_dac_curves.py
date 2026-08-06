@@ -83,19 +83,19 @@ class EncodeCurveTest(unittest.TestCase):
 
 
 def _bare_streamer(api: FakeAPI, dac_curve: str) -> AudioStreamer:
-    """AudioStreamer with just the attrs the env / bring-up paths touch."""
-    s = AudioStreamer.__new__(AudioStreamer)
-    s.api = cast(Ultimate64API, api)
-    s.digi_boost = False
-    s.dac_curve_name = dac_curve
-    table = resolve_dac_curve(dac_curve)
-    if table is not None:
-        s._dac_curve = np.frombuffer(table, dtype=np.uint8)
-        s._neutral_byte = int(s._dac_curve[NEUTRAL_INDEX])
-    else:
-        s._dac_curve = None
-        s._neutral_byte = NEUTRAL_SAMPLE
-    return s
+    """AudioStreamer for the env / bring-up paths.
+
+    Through the real __init__, which resolves the curve name to a table and
+    derives the neutral byte itself — this fixture used to re-implement that
+    resolution against a __new__-built object, so it could agree with the
+    constructor at the time it was written and quietly disagree later.
+    """
+    return AudioStreamer(
+        cast(Ultimate64API, api),
+        sample_rate=8000,
+        system="NTSC",
+        dac_curve=dac_curve,
+    )
 
 
 class MahoneyEnvTest(unittest.TestCase):

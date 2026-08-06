@@ -25,59 +25,22 @@ from c64cast.audio import (
 from c64cast.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
 
 
-def _new_streamer(monkeypatch_api=True) -> AudioStreamer:
-    s = AudioStreamer.__new__(AudioStreamer)
-    s.api = cast(Ultimate64API, FakeAPI())
-    s.sample_rate = 8000
-    s.system = "NTSC"
-    # New queue shape: bytes-blob per item, with a separate sample-count
-    # counter for backpressure (q.qsize() now counts blobs, not samples).
-    s.q = queue.Queue(maxsize=256)
-    s._queued_samples = 0
-    s._max_queued_samples = 16384
-    s.running = False
-    s.chunk_size = 1024
-    s.sensitivity = 1.0
-    s.noise_gate = 0.05
-    s.mic_stream = None
-    s._worker_thread = None
-    s._pushed_count = 0
-    s._tap_buf = np.zeros(SAMPLE_TAP_SIZE, dtype=np.float32)
-    s._tap_write = 0
-    s._tap_lock = threading.Lock()
-    s.dither_enabled = True
-    s.digi_boost = False
-    s.dac_curve_name = "linear"
-    s._dac_curve = None
-    s._neutral_byte = NEUTRAL_SAMPLE
-    s.sid_filter_cutoff = 0
-    s._full_underruns = 0
-    s._partial_underruns = 0
-    # Host-DMA servo off → worker stays open-loop (no R reads) for these
-    # deterministic worker-path tests.
-    s.host_dma_servo = False
-    s._servo_integ = 0.0
-    s._servo_gap_min = -1
-    s._servo_gap_max = -1
-    s._servo_gap_last = -1
-    s._late_slots = 0
-    s._total_slots = 0
-    s._late_worst_s = 0.0
-    s._health_last_log = 0.0
-    s._health_mark = (0, 0, 0, 0)
-    s._health_gap_min = -1
-    s._health_gap_max = -1
-    s._r_rate_min = -1.0
-    s._r_rate_max = -1.0
-    s._r_rate_ema = -1.0
-    s._last_r_addr = -1
-    s._last_r_time = 0.0
-    # Phase 4 transport-flush state.
-    s._flush_epoch = 0
-    s._count_lock = threading.Lock()
-    s._stomp_requested = False
-    s._reu_pump_armed = False
-    return s
+def _new_streamer() -> AudioStreamer:
+    # Built through the real __init__, not __new__ + hand-set attributes: this
+    # fixture used to be a copy of the constructor's state, and it silently fell
+    # behind it. Every field added to AudioStreamer since was simply absent
+    # here, so the worker's post-prebuffer path (which reads _nmi_latch) died of
+    # AttributeError inside the thread — where _worker logs and exits, leaving
+    # the pacing regression test to pass on prebuffer writes alone.
+    #
+    # host_dma_servo off keeps the worker open-loop (no R reads) for the
+    # deterministic worker-path tests below.
+    return AudioStreamer(
+        cast(Ultimate64API, FakeAPI()),
+        sample_rate=8000,
+        system="NTSC",
+        host_dma_servo=False,
+    )
 
 
 def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
@@ -316,8 +279,13 @@ class WorkerBatchingTest(unittest.TestCase):
             f"(cap {cap}) — pacing regression?",
         )
         # Sanity: prebuffer must have fired (≥ 3 writes) so we're actually
-        # exercising the paced post-prebuffer path.
+        # exercising the paced post-prebuffer path. _total_slots counts the drip
+        # scheduler's slots, so it is 0 unless _drip_chunk itself ran — asserted
+        # because a worker that dies right after prebuffer satisfies the write
+        # cap above trivially, which is how this test spent several releases
+        # passing against a thread that had already crashed.
         self.assertGreaterEqual(len(writes), 3)
+        self.assertGreater(s._total_slots, 0)
 
 
 class EffectiveRateTest(unittest.TestCase):
