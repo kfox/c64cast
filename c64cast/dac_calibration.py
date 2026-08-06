@@ -393,6 +393,31 @@ def load_calibrated_table(cfg: Config, *, be: C64Backend | None = None) -> bytes
     table = entry.get("sidtable") if isinstance(entry, dict) else None
     if not isinstance(table, list) or len(table) != 256:
         return None
+    if (
+        entry_key == "default"
+        and isinstance(entry, dict)
+        and entry.get("detected") is None
+        # Only on a link that *cannot* establish the identity. A backend with the
+        # socket map (see _active_socket_at_d400) resolved it or chose not to
+        # write per-socket entries, either way knowingly; saying this there would
+        # fire on every Ultimate run that predates per-socket files.
+        and be is not None
+        and not getattr(be.profile, "supports_config", False)
+    ):
+        # A "default" entry means the measurement never established *which* SID
+        # it was driving: it measured whatever answers $D400 and filed it under
+        # one key. On a single-SID machine that is exactly right. On a machine
+        # with a second chip — or with address mirroring on — the ladder is a
+        # blend of both, and a blended ladder is signal-correlated distortion at
+        # playback. Nothing on this side can tell those two cases apart, so say
+        # which one is assumed.
+        log.info(
+            "audio: this calibration was measured without identifying the SID at $D400 "
+            "(the %s link has no SID config query), so it assumes one SID. If this "
+            "machine has a second SID or address mirroring, re-measure over a link "
+            "that can isolate a socket, or set [audio].dac_curve explicitly.",
+            cfg.hardware.backend,
+        )
     try:
         return bytes(int(v) & 0xFF for v in table)
     except (TypeError, ValueError):
@@ -587,18 +612,42 @@ SELFTEST_TOLERANCE = 0.10
 #: re-recording is pointless and only the rig can be at fault.
 SILENT_CAPTURE_PEAK = 0.002
 
-#: How far ``pass_spread_frac`` may go before a captured ring is refused rather
-#: than merged. Every pass of one capture measures the same levels, so on
-#: hardware the spread is 0.01–0.2 % — two orders of magnitude below this gate.
-#: A capture of something that isn't the ring (a laptop microphone picking up
-#: room noise is the one seen in the field) still yields *numbers*: the peak
-#: finder locks onto noise, a couple of "sync markers" turn up, and the levels
-#: come back near zero with the passes disagreeing by ~100 %. Ungated, those
-#: numbers merged into the table and the run only fell over later — at whichever
-#: ring happened to find fewer than two markers, with a traceback and 30 s of
-#: measuring already spent. Gating each ring on the metric that already exists
-#: to answer this question turns that into an immediate, actionable failure.
-RING_TRUST_MAX_SPREAD = 0.10
+#: Above this ``pass_spread_frac``, the capture is not the ring at all. A
+#: recording of something else (a laptop microphone picking up room noise is the
+#: one seen in the field) still yields *numbers*: the peak finder locks onto
+#: noise, a couple of "sync markers" turn up, and the levels come back near zero
+#: with the passes disagreeing by ~100 %. Ungated, those numbers merged into the
+#: table and the run only fell over later — at whichever ring happened to find
+#: fewer than two markers, with a traceback and 30 s of measuring already spent.
+RING_SPREAD_NOT_THE_RING = 0.10
+
+#: Above this ``pass_spread_frac``, the capture *is* the ring but the ring is not
+#: replaying the same levels each pass, so a ladder fitted to them is wrong.
+#:
+#: Every pass of one capture drives the SID through identical codes, so a healthy
+#: rig reads 0.01–0.2 %. Only :data:`RING_SPREAD_NOT_THE_RING` used to be
+#: checked, which made this band — an order of magnitude above healthy, two
+#: orders below "you recorded the room" — indistinguishable from a good
+#: measurement. A TeensyROM link measured 0.6–2.5 % against a chip an Ultimate
+#: link read at 0.01–0.08 % sixteen minutes earlier, and the table fitted to it
+#: agreed with the Ultimate's on 95 of 256 entries (corr 0.565 — a worse mismatch
+#: than handing a chip a *different* chip's table, which ``dac_curves.py``
+#: measures at corr 0.738 / ~29 % RMS level error). It was written to disk and
+#: ``auto`` preferred it over the baked table for every subsequent run, which
+#: lands as signal-correlated distortion: inaudible over a quiet passage, gross
+#: hiss once the material gets loud.
+#:
+#: 0.5 % is 2.5× the healthy worst case and below every reading from that link,
+#: so a rig that cannot hold the ring steady fails the measurement instead of
+#: silently persisting a wrong ladder. :data:`RING_ATTEMPTS` still absorbs a
+#: transient.
+RING_TRUST_MAX_SPREAD = 0.005
+
+#: Top of the healthy ``pass_spread_frac`` band, for the per-ring progress line.
+#: A ring between this and :data:`RING_TRUST_MAX_SPREAD` is measured and kept,
+#: but is worth saying out loud — a whole run sitting in that band is how a
+#: quietly poor table gets built out of individually-passing rings.
+RING_SPREAD_HEALTHY = 0.002
 
 #: Captures per ring before giving up. A retry costs one settle + one capture
 #: window (~5 s) and rescues a ring spoiled by a transient — a USB hiccup, a
@@ -922,10 +971,17 @@ def read_ring_capture(
         raise MeasurementError("it recorded silence")
     got = extract_slot_levels(cap, n_codes, ring_size, sr=sr)
     spread = float(got.diagnostics["pass_spread_frac"])
-    if spread > RING_TRUST_MAX_SPREAD:
+    if spread > RING_SPREAD_NOT_THE_RING:
         raise MeasurementError(
             f"its ring passes disagree by {spread * 100:.1f}%, where hardware "
             "reads 0.01–0.2% — the levels in it are noise"
+        )
+    if spread > RING_TRUST_MAX_SPREAD:
+        raise MeasurementError(
+            f"its ring passes disagree by {spread * 100:.2f}%, where hardware "
+            "reads 0.01–0.2% — the capture is the ring, but the ring is not "
+            "replaying the same levels each pass, so a ladder fitted to them "
+            "would be wrong"
         )
     return got
 
@@ -1143,7 +1199,7 @@ def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> d
 #: Cam Link used to be recognized, so every other rig silently fell through to
 #: the *system default input*. On Windows that is the on-board microphone, which
 #: records room noise and measures like a dead chip (see
-#: :data:`RING_TRUST_MAX_SPREAD`). These cover the common sticks: Elgato, the
+#: :data:`RING_SPREAD_NOT_THE_RING`). These cover the common sticks: Elgato, the
 #: MacroSilicon-based HDMI→USB dongles ("USB Video", "USB3.0 HD Video Capture"),
 #: and anything self-describing as a capture/HDMI input.
 CAPTURE_NAME_HINTS = (
@@ -1460,10 +1516,19 @@ def run_calibration(
                 got = capture_ring([ANCHOR_CODE, *codes], dev, fmt)
                 measured.append((codes, got))
                 d = got.diagnostics
+                # Marginal spread is called out rather than left as a bare
+                # number: a run whose rings all sit just under the gate is the
+                # one whose table is quietly poor, and nothing else in the
+                # progress output says what "good" looks like.
+                marginal = (
+                    ""
+                    if d["pass_spread_frac"] <= RING_SPREAD_HEALTHY
+                    else f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%)"
+                )
                 log_fn(
                     f"[calib]   {label} ring {n}/{total} (rotation {rnd}): "
                     f"{d['passes']} passes, L($0F)={got.levels[0]:+.5f}, "
-                    f"pass spread {d['pass_spread_frac'] * 100:.2f}%"
+                    f"pass spread {d['pass_spread_frac'] * 100:.2f}%{marginal}"
                 )
         raw, merge_metrics = merge_measurements(measured)
         sidtable, metrics = build_sidtable_from_levels(raw)

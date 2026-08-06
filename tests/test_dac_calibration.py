@@ -241,6 +241,30 @@ class PersistenceTest(unittest.TestCase):
         self.assertNotIn("raw_signed_levels", entry)
         self.assertEqual(dc.load_calibrated_table(cfg), bytes(256))
 
+    def test_default_entry_says_the_sid_was_never_identified(self):
+        # Only the Ultimate exposes the socket map, so every other link files its
+        # measurement under "default" with detected=None — right on a one-SID
+        # machine, a blend of two chips on a machine with a second one or with
+        # mirroring on. Neither the file nor this side can tell them apart, so
+        # the assumption has to be stated where the table is chosen.
+        cfg = _tr_serial_cfg()
+        be = FakeAPI()  # profile.supports_config False, like the real TR
+        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
+        with self.assertLogs("c64cast.dac_calibration", level="INFO") as logs:
+            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes(256))
+        self.assertIn("assumes one SID", "\n".join(logs.output))
+
+    def test_default_entry_from_a_link_that_can_identify_stays_quiet(self):
+        # A backend with the socket map either resolved the identity or chose not
+        # to write per-socket entries — knowingly, either way. Saying it there
+        # would fire on every Ultimate run whose file predates per-socket entries.
+        cfg = _u64_cfg()
+        be = FakeAPI()
+        be.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
+        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
+        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
+            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes(256))
+
     def test_load_ignores_raw_levels(self):
         # A file written by a newer run stays loadable by the table reader.
         cfg = _u64_cfg()
@@ -734,6 +758,40 @@ class RingCaptureGateTest(unittest.TestCase):
             with self.assertRaises(dc.MeasurementError) as ctx:
                 dc.read_ring_capture(cap, 41, RING)
         self.assertIn("100.1%", str(ctx.exception))
+
+    def test_a_ring_that_does_not_replay_the_same_levels_is_refused(self):
+        """The band the gate used to miss. Two orders of magnitude below "you
+        recorded the room", one above healthy: the capture really is the ring,
+        the grid tracks, the levels are plausible — and they move between passes,
+        so the ladder fitted to them is wrong. A link that read 1.85% here wrote
+        a table agreeing with the same chip's on 95 of 256 entries."""
+        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)])
+        wobbly = dc.SlotLevels(
+            levels=np.linspace(-0.5, 0.5, 41),
+            per_pass=np.zeros((3, 41)),
+            diagnostics={"pass_spread_frac": 0.0185, "passes": 3},
+        )
+        with patch.object(dc, "extract_slot_levels", return_value=wobbly):
+            with self.assertRaises(dc.MeasurementError) as ctx:
+                dc.read_ring_capture(cap, 41, RING)
+        msg = str(ctx.exception)
+        self.assertIn("1.85%", msg)
+        # Distinct from the noise message: this one has to say the ring is real
+        # but unsteady, or it reads as "your capture device is wrong" and sends
+        # the user to re-cable a rig that is already correct.
+        self.assertIn("not replaying the same levels", msg)
+
+    def test_the_healthy_band_still_passes_untouched(self):
+        """The gate moved by 20x, so the case it must not start refusing is the
+        ordinary one: hardware reads 0.01-0.2%."""
+        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)])
+        fine = dc.SlotLevels(
+            levels=np.linspace(-0.5, 0.5, 41),
+            per_pass=np.zeros((3, 41)),
+            diagnostics={"pass_spread_frac": 0.002, "passes": 3},
+        )
+        with patch.object(dc, "extract_slot_levels", return_value=fine):
+            self.assertIs(dc.read_ring_capture(cap, 41, RING), fine)
 
     def test_the_failure_names_the_device_and_the_alternatives(self):
         """Every reason above reads like a bug in the measurement; it is almost
