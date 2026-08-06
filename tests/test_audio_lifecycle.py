@@ -1356,6 +1356,7 @@ class LifecycleTest(unittest.TestCase):
     def test_stop_teardown_writes_and_logs_clean(self):
         s = _make()
         s.start_for_external_source()
+        s._total_slots = 1
         with self.assertLogs("c64cast.audio", level="INFO") as cm:
             s.stop()
         self.assertFalse(s.running)
@@ -1363,18 +1364,31 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(api.memories.get("D418"), "00")  # SID muted
         self.assertIsNone(s._worker_thread)
         self.assertEqual(s._queued_samples, 0)
-        self.assertTrue(any("clean session" in m for m in cm.output))
+        self.assertTrue(any("clean run" in m for m in cm.output))
 
     def test_stop_reports_underruns(self):
         s = _make()
+        s._total_slots = 1
         s._full_underruns = 2
         s._partial_underruns = 5
         with self.assertLogs("c64cast.audio", level="WARNING") as cm:
             s.stop()
         self.assertTrue(any("2 full + 5 partial" in m for m in cm.output))
-        # Counters reset for the next session.
+        # Counters reset for the next run.
         self.assertEqual(s._full_underruns, 0)
         self.assertEqual(s._partial_underruns, 0)
+
+    def test_second_stop_reports_nothing(self):
+        # stop() runs at scene teardown and again at session teardown. The
+        # second call has cleared counters, so an unconditional summary would
+        # follow the real numbers with a flat contradiction of them.
+        s = _make()
+        s._total_slots = 1
+        s._full_underruns = 3
+        with self.assertLogs("c64cast.audio", level="WARNING"):
+            s.stop()
+        with self.assertNoLogs("c64cast.audio", level="INFO"):
+            s.stop()
 
     def test_stop_swallows_teardown_write_errors(self):
         s = _make()

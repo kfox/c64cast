@@ -3491,20 +3491,27 @@ class AudioStreamer:
         self._last_r_time = 0.0
         self._nmi_loop_chunk_count = 0
         self._nmi_loop_acquiring = True
-        # Report underrun telemetry. Each full underrun is an audible
-        # click; partials are less audible but still indicate producer
-        # stalls. Deterministic, source-correlated counts (same numbers
-        # across reruns of the same video) point at PyAV decode
+        # Report underrun telemetry for the run that just ended. Each full
+        # underrun is an audible click; partials are less audible but still
+        # indicate producer stalls. Deterministic, source-correlated counts
+        # (same numbers across reruns of the same video) point at PyAV decode
         # stalls rather than DMA timing.
-        if self._full_underruns or self._partial_underruns:
-            log.warning(
-                "audio: %d full + %d partial underruns this session "
-                "(producer stalled past pace deadline)",
-                self._full_underruns,
-                self._partial_underruns,
-            )
-        else:
-            log.info("audio: clean session (no underruns)")
+        #
+        # Gated on the worker having actually written to the ring, and worded
+        # per *run* rather than per session, because stop() is called once when
+        # the scene tears down and again at session teardown — reporting
+        # unconditionally printed the real counts and then, from the second
+        # call with the counters already cleared, a flat contradiction of them.
+        if self._total_slots:
+            if self._full_underruns or self._partial_underruns:
+                log.warning(
+                    "audio: %d full + %d partial underruns this run "
+                    "(producer stalled past pace deadline)",
+                    self._full_underruns,
+                    self._partial_underruns,
+                )
+            else:
+                log.info("audio: clean run (no underruns)")
         self._full_underruns = 0
         self._partial_underruns = 0
         # Late slots: sub-writes that reached their slot with the deadline

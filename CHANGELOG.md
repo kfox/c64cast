@@ -49,6 +49,14 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **The audio underrun summary no longer contradicts itself.** It is emitted
+  when the streamer stops, which happens once as a scene tears down and again at
+  session teardown — so a run that reported real underruns was immediately
+  followed by "clean session (no underruns)" from the second call, whose
+  counters had just been cleared. The summary is now reported only for a run
+  that actually fed the ring, and says "run" rather than "session", which is
+  what it always counted.
+
 - **Quick playback obeys every CLI flag again.** Playing media by positional
   argument (`c64cast clip.mp4`) built its config from a hand-picked handful of
   flags, so twelve of the twenty-one that the same command honours with

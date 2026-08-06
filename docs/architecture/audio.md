@@ -117,6 +117,38 @@ Getting that budget wrong is not a mild regression. A 65-byte quantum asks for 1
 
 Prebuffer writes are deliberately left unsplit: the NMI is not consuming yet, so there is no halt to hide from, and one write fills the ring faster.
 
+#### The video path is deliberately *not* split, and lost ticks are not the hiss
+
+The render thread pushes frames over the same link and those pushes go out whole — a ~1 KB PETSCII frame push spans ~12 NMI periods, so on a 20 fps run video costs roughly 264 of the ~318 ticks/s lost to halts, against ~54 for the audio ring. Splitting it too is the obvious next step. It was built, measured, and removed, and the measurements are worth keeping so nobody rebuilds it:
+
+* **The tick accounting was right.** Loss ≈ (total halt cycles / NMI period) − (number of writes), so each extra write buys back exactly one tick. Splitting video plus raising the TeensyROM write ceiling to 600/s took the consumer-rate deficit from **3.1 % to 1.1 %** — R rising 11661 → 11898 against a 12032 nominal.
+* **The link is not the limit it claims to be.** That run sustained **557 writes/s with zero underruns**, against `max_write_rate_hz = 200`. The declared ceiling is a floor nobody has pushed to a wall.
+* **And none of it was audible.** Recovering those ticks changed nothing a listener could hear, because `$D418` holds the previous sample across a lost tick: the error is a zero-order hold, not a gap. Meanwhile the ~5× write rate measurably *raised* the noise floor — 3.4 dB on `dac_curve = "calibrated"`, 2.2 dB on `"mahoney_ultisid"`, THD+N moving the same way.
+
+So the split is a net loss on this path, and `max_write_rate_hz` is deliberately left at 200 rather than corrected upward: more writes measure *worse*, so the honest ceiling is not the interesting number.
+
+#### The Mahoney path is the noise floor
+
+The audible static on the 4-bit DAC is not the halt at all. It is the **Mahoney 8-bit companded path**, which measures ~15 dB worse than the plain 4-bit `linear` curve it exists to improve on.
+
+Measured through the real playback path — a generated clip carrying a steady 440 Hz tone over `testsrc2` motion video, `petscii` at 20 fps, captured off HDMI and scored both by a notched noise floor and by THD+N with harmonics included, because a 4-bit path's quantisation error is harmonic and a notched metric alone would flatter it:
+
+| `dac_curve` | noise floor | THD+N re carrier |
+| --- | --- | --- |
+| `linear` | **−73.9 dB** | **−8.2 dB** |
+| `calibrated` | −66.8 | −7.3 |
+| `mahoney_ultisid` | −58.6 | −1.3 |
+
+Both metrics agree on the ordering, and so does every listening pass: `mahoney_ultisid` reads as a constant loud buzz, `calibrated` as interference that grows over a run, `linear` as the cleanest. At −1.3 dB THD+N nearly half the output power is not the signal.
+
+This **inverts the assumption `dac_curve = "auto"` encodes** — auto resolves to a Mahoney variant precisely because Mahoney is believed to be the quality option (~6–7 effective bits against 4). On this hardware it is not. Mahoney parks the three voices as DC through the filter and so depends entirely on filter behaviour, which is where to look; the open calibration bugs around sign inference and degraded filter paths are the obvious suspects.
+
+It is **not TeensyROM-specific**: the same clip on the Ultimate with `backend = "dac"` forced measured −73.3 dB against the TR's −76.9, i.e. slightly *worse*. The Ultimate only escapes in normal use because `backend = "auto"` sends it to the off-bus FPGA sampler.
+
+The noise is **episodic**: 0.5–1.5 s bursts that lift the floor 4–10 dB at irregular intervals, which is what listeners describe as plateaus that jump and then hold. A `calibrated` capture also creeps upward across 11 s (−60 → −52 dB). Cause unestablished; a decaying DC park is the obvious candidate and is untested.
+
+This went unmeasured for years because every metric on this path was a *frequency* metric — carrier shift, FM deviation, modulation bands — and the fault is pure amplitude. `audio_fm_probe.py` now carries `noise_floor_db` for exactly this. Note that probe's own conditions use `digi_boost`, i.e. plain 4-bit: it has never exercised the Mahoney env, which is why its earlier results were all null.
+
 *Late slots are the metric that says the spread actually held.* Everything above is a design; whether a given run kept it is a separate question, and one nothing else answers. A sub-write reached after its slot deadline has passed goes out immediately, which leaves every later slot of that chunk expired too — so they fire back-to-back and the run degrades from the spread condition toward the burst condition, continuously and by degree. That is invisible to every other counter: the bytes still land, in order, and no underrun is recorded, because `_collect_until`'s non-blocking drain is doing its job. `_drip_chunk` therefore counts late slots and the worst lateness, `stop()` reports the session share (warning past 10 %), and `_maybe_log_health` emits a per-window line every `AUDIO_HEALTH_LOG_INTERVAL_S`.
 
 That health line is per-**window**, not cumulative, because the artifacts left on this path are the time-varying ones — a fault that appears part-way in, deepens, clears and returns is indistinguishable from a steady one in a session total. It carries the servo gap's excursion, late slots over total, underruns, write rate, the live quantum, the measured consumer rate R and the latch, which is enough to tell a collection stall from a link stall from a servo excursion without a capture rig.

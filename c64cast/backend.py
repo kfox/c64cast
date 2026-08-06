@@ -184,6 +184,11 @@ TEENSYROM_PROFILE = HardwareProfile(
     # of 64 bytes sustained with zero missed slots, so this is a floor rather
     # than the wall. Acked writes did not turn out to be the limit they looked
     # like — the TR matched the U64 here.
+    #
+    # Deliberately not raised, though a later run sustained 557 writes/s with
+    # zero underruns. Spending that headroom measures *worse*: the extra writes
+    # raise the DAC noise floor 2-3 dB while the NMI ticks they buy back are
+    # inaudible. See the video-path note in docs/architecture/audio.md.
     max_write_rate_hz=200.0,
     audio_ring_addr=0x4000,
 )
