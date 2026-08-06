@@ -613,7 +613,7 @@ class TRSerialAutodetectTest(unittest.TestCase):
         "COM19", vid=0x16C0, pid=0x0489, product=None, description="USB Serial Device (COM19)"
     )
     # As it enumerates on macOS/Linux, where the USB product string surfaces.
-    MACOS = _FakePort("/dev/cu.usbmodem193075601", vid=0x16C0, pid=0x0489, product="TeensyROM")
+    MACOS = _FakePort("/dev/cu.usbmodem1234", vid=0x16C0, pid=0x0489, product="TeensyROM")
     OTHER = _FakePort("COM3", vid=0x1234, pid=0x5678, product="Some Modem")
 
     def test_matches_by_vid_pid_when_product_missing(self):

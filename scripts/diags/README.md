@@ -23,8 +23,8 @@ These are **dev tools, not part of the shipped package** — they live under
 - **Outputs** (captures, fixtures) land in `scripts/diags/out/`, which is
   git-ignored. Source tools are tracked; their artifacts are not.
 - **Hardware defaults are env-overridable** because indices/IPs drift with
-  hotplug + DHCP. The committed defaults are confirmed-working values, not
-  ground truth — local specifics live in auto-memory:
+  hotplug + DHCP. The committed defaults are a working rig's values, not ground
+  truth; set the vars for yours:
   | Var | Default | Meaning |
   |-----|---------|---------|
   | `C64_DIAG_URL` | `http://192.168.2.64` | U64 base URL |
@@ -58,5 +58,6 @@ These are **dev tools, not part of the shipped package** — they live under
 
 Anything that drives the machine should leave it clean: `run_and_capture.py`
 resets on exit by default (`--no-reset` to keep state), and
-`u64_probe.py --reset-only` is the manual hook. See the
-`silence-and-reset-after-testing` note in auto-memory.
+`u64_probe.py --reset-only` is the manual hook. Silence the SID (`$D418` = 0)
+and disable CIA #2 NMIs before you reset, or the next run inherits a screaming
+chip and a live NMI source.

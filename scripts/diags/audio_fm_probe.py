@@ -26,11 +26,26 @@ METHOD (STATIC RING + PACED BACKGROUND WRITES)
   forever on its own while a background thread issues DMA writes at a controlled
   size and cadence, and we capture the result off the Cam Link.
 
-  Three conditions:
+  Four conditions:
     ref  — no background writes at all (the clean floor)
     ram  — writes to plain RAM at $2000
     io   — writes to $D800 (color RAM). The positive control: I/O writes keep the
            CPU stop even on a build patched to skip it for plain RAM.
+    ring — writes into the ring the NMI handler is reading, carrying the tone's
+           OWN bytes so the audio stays byte-identical to ref. Against ram at
+           the same size and byte rate this asks one question: does a write
+           landing in the region the handler is reading cost anything *beyond*
+           the halt the two share? Equal results mean the write target is
+           irrelevant and only the halt matters.
+
+           It does NOT detect a torn read, and cannot: rewriting the tone's own
+           bytes is what keeps the audio comparable to ref, but it also means a
+           read that catches a byte mid-write still returns the correct value.
+           Detecting tearing would need a payload that differs from the tone,
+           which changes what the capture is measuring. Not worth building —
+           the host-DMA servo holds the ring gap near half a ring (min observed
+           3747 of 8192), so in production the pointers never come near enough
+           to tear.
 
   The sweep holds **total byte rate constant** and varies the payload, so event
   size and event count trade off against each other and the comparison is about
@@ -120,6 +135,10 @@ RING_CYCLES = 256
 TARGETS: dict[str, tuple[int, int]] = {
     "ram": (0x2000, 0x2000),
     "io": (0xD800, 1000),
+    # The ring itself, rewritten with its own bytes (see BackgroundWriter) so
+    # the audio stays comparable to `ref`. A halt-parity control against `ram`,
+    # not a tearing detector — see the module docstring for why it can't be one.
+    "ring": (RING_BUFFER_ADDR, RING_BUFFER_SIZE),
 }
 
 #: Modulation-spectrum integration bands (Hz) over the inst-freq trace. 4-20 is
@@ -230,7 +249,15 @@ class BackgroundWriter:
     for whether the firmware resumes the CPU between queued commands).
     """
 
-    def __init__(self, be, target: str, write_bytes: int, byte_rate: float, burst: int):
+    def __init__(
+        self,
+        be,
+        target: str,
+        write_bytes: int,
+        byte_rate: float,
+        burst: int,
+        ring_tone: bytes | None = None,
+    ):
         self.be = be
         self.base, self.span = TARGETS[target]
         self.write_bytes = min(write_bytes, self.span)
@@ -240,9 +267,23 @@ class BackgroundWriter:
         # bytes and nothing in the path can be reacting to content.
         rng = np.random.default_rng(0x64CA57)
         self.payload = rng.integers(0, 256, size=self.write_bytes, dtype=np.uint8).tobytes()
+        # Writing the ring is the one case where the payload cannot be arbitrary:
+        # random bytes there would replace the tone and the capture would measure
+        # a different sound, not a different write pattern. Rewriting the tone's
+        # own bytes keeps the audio comparable to `ref` — at the cost of making a
+        # torn read invisible, which the module docstring covers.
+        self.tone = ring_tone if target == "ring" else None
+        if self.tone is not None and len(self.tone) < self.span:
+            raise ValueError("ring target needs the full ring tone as the payload source")
         self.stats = WriterStats()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def _payload_for(self, addr: int) -> bytes:
+        if self.tone is None:
+            return self.payload
+        off = addr - self.base
+        return self.tone[off : off + self.write_bytes]
 
     def _run(self) -> None:
         addr = self.base
@@ -254,7 +295,7 @@ class BackgroundWriter:
             if time.perf_counter() > next_slot + self.slot_period:
                 self.stats.late_writes += 1
             for _ in range(self.burst):
-                self.be.write_memory_file(f"{addr:04X}", self.payload)
+                self.be.write_memory_file(f"{addr:04X}", self._payload_for(addr))
                 self.stats.writes += 1
                 addr += self.write_bytes
                 if addr + self.write_bytes > end:
@@ -314,6 +355,48 @@ class Analysis:
     inst_freq_std: float
     mod_bands: dict[str, float] = field(default_factory=dict)
     write_cadence_peak: float = 0.0
+    noise_floor_db: float = 0.0
+
+
+#: Half-width (Hz) of the notch placed over the carrier and each harmonic when
+#: measuring the broadband floor. Wide enough to swallow the FM sidebands a
+#: write cadence puts next to each tone — those are frequency artifacts, and
+#: counting them as hiss would conflate the two things this tool separates.
+TONE_NOTCH_HZ = 60.0
+#: Harmonics to notch out. The $D418 ladder is nonlinear, so a pure ring tone
+#: still arrives with a substantial harmonic series that is distortion, not noise.
+TONE_HARMONICS = 12
+
+
+def noise_floor_db(x: np.ndarray, sr: int, carrier: float) -> float:
+    """Broadband noise floor in dB relative to the carrier — the hiss metric.
+
+    Every other statistic in this tool is a *frequency* reading, which is why
+    the artifact it was built to chase went unmeasured for so long: a tone can
+    be frequency-clean and still be buried in hiss. This is the amplitude
+    counterpart.
+
+    The floor is the **median** bin power between the notched harmonics, not the
+    mean: discrete spurs are sparse, so the median reads the continuous floor
+    underneath them and ignores whatever tonal junk shares the band. Reported
+    per-bin re the carrier peak, so it is comparable across conditions captured
+    at the same length — which is what a ref-vs-writes A/B needs.
+    """
+    if carrier <= 0 or x.size < 1024:
+        return 0.0
+    win = np.hanning(x.size)
+    psd = np.abs(np.fft.rfft((x - x.mean()) * win)) ** 2
+    freqs = np.fft.rfftfreq(x.size, 1.0 / sr)
+
+    band = (freqs > 20.0) & (freqs < min(20000.0, sr * 0.45))
+    tonal = np.zeros_like(band)
+    for k in range(1, TONE_HARMONICS + 1):
+        tonal |= np.abs(freqs - carrier * k) < TONE_NOTCH_HZ
+    floor_bins = psd[band & ~tonal]
+    peak = psd[band & tonal].max() if (band & tonal).any() else 0.0
+    if floor_bins.size == 0 or peak <= 0:
+        return 0.0
+    return float(10.0 * np.log10(np.median(floor_bins) / peak))
 
 
 def analyze(mono: np.ndarray, sr: int, expected: float, cadence_hz: float) -> Analysis:
@@ -370,6 +453,7 @@ def analyze(mono: np.ndarray, sr: int, expected: float, cadence_hz: float) -> An
         inst_freq_std=float(np.std(inst)),
         mod_bands=bands,
         write_cadence_peak=cadence_peak,
+        noise_floor_db=noise_floor_db(x, sr, peak),
     )
 
 
@@ -403,12 +487,13 @@ def run_condition(
     secs: float,
     device: int,
     expected: float,
+    ring_tone: bytes | None = None,
 ) -> tuple[Analysis, WriterStats]:
     """One capture: optionally start the background writer, record, analyze."""
     writer = None
     cadence = 0.0
     if target is not None:
-        writer = BackgroundWriter(be, target, write_bytes, byte_rate, burst)
+        writer = BackgroundWriter(be, target, write_bytes, byte_rate, burst, ring_tone)
         cadence = 1.0 / writer.slot_period
         writer.start()
         time.sleep(0.5)  # let the write cadence settle before recording
@@ -435,7 +520,9 @@ def main() -> int:
         help="payload sizes to sweep, at matched total byte rate",
     )
     ap.add_argument(
-        "--targets", default="ram,io", help="background-write targets: ram, io (ref always runs)"
+        "--targets",
+        default="ram,io",
+        help="background-write targets: ram, io, ring (ref always runs)",
     )
     ap.add_argument(
         "--burst",
@@ -475,6 +562,7 @@ def main() -> int:
 
     rows: list[dict] = []
     try:
+        ring_tone = build_ring_tone(args.ring_cycles)
         setup(be, args.system, args.ring_cycles)
         arm(be, args.nmi_rate, args.system)
         print("[cap] settling HDMI + re-initializing PortAudio…")
@@ -487,7 +575,10 @@ def main() -> int:
         print("\n=== ref (no background writes) ===")
         ref, _ = run_condition(be, "ref", None, 0, byte_rate, 1, args.secs, device, expected)
         rows.append({"cond": "ref", "target": "-", "bytes": 0, "analysis": ref, "stats": None})
-        print(f"    carrier {ref.carrier:.2f} Hz  inst-freq std {ref.inst_freq_std:.1f} Hz")
+        print(
+            f"    carrier {ref.carrier:.2f} Hz  inst-freq std {ref.inst_freq_std:.1f} Hz"
+            f"  noise floor {ref.noise_floor_db:.1f} dB"
+        )
 
         for target in targets:
             for size in sizes:
@@ -504,6 +595,7 @@ def main() -> int:
                     args.secs,
                     device,
                     expected,
+                    ring_tone,
                 )
                 rows.append(
                     {
@@ -518,6 +610,8 @@ def main() -> int:
                     f"    carrier {analysis.carrier:.2f} Hz "
                     f"(down {ref.carrier - analysis.carrier:+.2f})  "
                     f"std {analysis.inst_freq_std:.1f} Hz  "
+                    f"noise {analysis.noise_floor_db:.1f} dB "
+                    f"({analysis.noise_floor_db - ref.noise_floor_db:+.1f} vs ref)  "
                     f"writes {stats.rate_hz:.1f}/s (late {stats.late_writes})"
                 )
                 time.sleep(0.3)
@@ -530,7 +624,7 @@ def main() -> int:
     # ---- report ----
     band_names = [b[0] for b in MOD_BANDS]
     header = (
-        f"{'condition':>12} {'carrier':>9} {'down':>7} {'std':>7} "
+        f"{'condition':>12} {'carrier':>9} {'down':>7} {'std':>7} {'noise':>7} {'dNoise':>7} "
         + " ".join(f"{n:>9}" for n in band_names)
         + f" {'wr/s':>7} {'halt_us':>8}"
     )
@@ -548,6 +642,7 @@ def main() -> int:
             halt_us = f"{frac / st.rate_hz * 1e6:8.1f}" if frac > 0 else f"{0.0:8.1f}"
         print(
             f"{row['cond']:>12} {a.carrier:>9.2f} {down:>+7.2f} {a.inst_freq_std:>7.1f} "
+            f"{a.noise_floor_db:>7.1f} {a.noise_floor_db - ref.noise_floor_db:>+7.1f} "
             + " ".join(f"{a.mod_bands[n]:>9.2f}" for n in band_names)
             + f" {st.rate_hz if st else 0.0:>7.1f} {halt_us:>8}"
         )

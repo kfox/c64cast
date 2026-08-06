@@ -25,9 +25,9 @@ tool then reports ffmpeg ``volumedetect`` mean/max dB (a silent capture ~ −91 
 floor means no audio reached the SID). Optionally flashes the $D020 border as a
 1 Hz A/V sync marker (--flash) per the border-flash technique.
 
-    scripts/diags/tr_audio_sid_probe.py --tcp 192.168.2.164
+    scripts/diags/tr_audio_sid_probe.py --tcp HOST
     scripts/diags/tr_audio_sid_probe.py --serial /dev/cu.usbmodem* --mode tone --freq 440
-    scripts/diags/tr_audio_sid_probe.py --tcp 192.168.2.164 --mode sid --sid assets/sids/x.sid
+    scripts/diags/tr_audio_sid_probe.py --tcp HOST --mode sid --sid assets/sids/x.sid
 
 Stop gracefully — this tool silences the SID + resets the C64 on the way out
 (the standing silence-and-reset rule) unless --no-reset-exit. Never blank the
