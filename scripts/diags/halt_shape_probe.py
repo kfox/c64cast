@@ -4,6 +4,10 @@
     scripts/diags/halt_shape_probe.py --url tr://
     scripts/diags/halt_shape_probe.py --url u64://192.168.2.64
     scripts/diags/halt_shape_probe.py --url tr:// --hold 120   # stationarity
+    scripts/diags/halt_shape_probe.py --url tr:// --load-only 40 --write-rate 91
+        # load generator only: occupy one link's bus while the OTHER backend
+        # plays audio, to test whether a link's bus activity is what reaches
+        # the SID. Measures nothing and leaves the machine alone.
 
 Every halt figure in this tree is an inference from the C64-side REC DMA model
 (1 cycle/byte) or a read off the capture rig. Neither says what a *host*
@@ -174,6 +178,50 @@ def measure(
     }
 
 
+def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) -> int:
+    """Occupy the bus with paced writes and do nothing else.
+
+    The load generator for the cross-link experiment: the *other* backend plays
+    audio through the production pipeline while this one writes scratch RAM at
+    the worker's real rate. Every other mode in this file owns the machine —
+    reset, clear loop, handler upload, arm, and a reset on the way out. This one
+    must touch none of that, because a live ``c64cast`` is depending on all of
+    it, so it skips the bring-up and the teardown rather than reusing
+    ``measure``. It also takes no R samples: R belongs to the running app's
+    consumer here, and reading it would add this link's own DMA to the very
+    thing under test.
+    """
+    data = bytes([0x5A]) * payload
+    tag = f"{addr:04X}"
+    period = 1.0 / write_rate
+    print(
+        f"\n=== load only: {payload} B x {write_rate:g}/s to ${addr:04X} for {secs:g}s ===\n"
+        "  no reset, no handler upload, no arm, no R reads, no teardown reset"
+    )
+    t0 = time.monotonic()
+    nxt = t0
+    writes = failed = 0
+    while time.monotonic() - t0 < secs:
+        now = time.monotonic()
+        if now < nxt:
+            time.sleep(nxt - now)
+        nxt += period
+        try:
+            be.write_memory_file(tag, data)
+            writes += 1
+        except Exception as exc:  # a link error must not abandon the audio run
+            failed += 1
+            if failed <= 3:
+                print(f"  [write failed] {exc}")
+    el = time.monotonic() - t0
+    print(
+        f"  {writes} writes in {el:.1f}s = {writes / el:.1f}/s, "
+        f"{writes * payload / el / 1024:.1f} KiB/s, {failed} failed"
+    )
+    be.close()
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -205,6 +253,14 @@ def main() -> int:
     )
     ap.add_argument("--hold-payload", type=int, default=128)
     ap.add_argument("--window", type=float, default=10.0, help="--hold window length")
+    ap.add_argument(
+        "--load-only",
+        type=float,
+        default=0.0,
+        help="load-generator mode: write --hold-payload bytes at --write-rate for this "
+        "many seconds and measure nothing, leaving the machine untouched otherwise, so "
+        "the other backend can be running a real playback at the same time",
+    )
     args = ap.parse_args()
 
     eff = effective_rate(args.nmi_rate, args.system)
@@ -219,6 +275,15 @@ def main() -> int:
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
     be = make_backend(cfg)
+
+    if args.load_only > 0:
+        return load_only(
+            be,
+            args.load_only,
+            payload=args.hold_payload,
+            write_rate=args.write_rate,
+            addr=args.addr,
+        )
 
     result: dict = {
         "url": args.url,

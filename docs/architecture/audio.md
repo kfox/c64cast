@@ -378,7 +378,19 @@ Three knobs, and understanding why two of them are off matters more than the kno
 
 **`nmi_rate_adaptive` and `pitch_mult_*` — default off / 1.0.** Playback pitch is `R / sample_rate`, and both of these force R back up toward `sample_rate`: the adaptive loop (`_nmi_rate_step`) shrinks the CIA #2 latch from a measured-R estimate, and the static per-mode `pitch_mult_*` multipliers do the same open-loop.
 
-They are off because there is no tick loss left for them to correct. Hardware measurement (2026-07-02, `scripts/diags/nmi_pitch_ab.py` — full-pipeline capture, pitch via log-spectrum cross-correlation against the source, robust to avfoundation's chunk-drops) puts bus-halt loss at **≈0** with the bitmap+digi fps cap, `VideoScene` frame dedup, and the REU-staged double-buffer in play. DAC-path mhires video, with no compensation at all, plays at +0.07 % on a near-static clip and −0.01 % on a high-motion one.
+They are off because the **net pitch error** they would correct is already ≈0. Hardware measurement (2026-07-02, `scripts/diags/nmi_pitch_ab.py` — full-pipeline capture, pitch via log-spectrum cross-correlation against the source, robust to avfoundation's chunk-drops) puts it at **≈0** with the bitmap+digi fps cap, `VideoScene` frame dedup, and the REU-staged double-buffer in play. DAC-path mhires video, with no compensation at all, plays at +0.07 % on a near-static clip and −0.01 % on a high-motion one.
+
+Read that as a *pitch* result and nothing more. It is tempo-blind, and it is not a claim that a host write costs the 6510 nothing. What a write actually costs was measured directly in 2026-08-05 by `scripts/diags/halt_shape_probe.py`, which counts stolen cycles with R itself: R advances once per serviced NMI, so the deficit in dR/dt under paced background writes — against the same measurement with the bus quiet — is the halt, counted in lost samples by the machine that lost them. Sweeping payload at a fixed write rate splits it into `lost_ticks_per_write = a + b·payload`, r² = 1.000 on both backends:
+
+| | TeensyROM+ | Ultimate 64 |
+|---|---|---|
+| fixed cost `a` | ≈0 (−45 cycles, i.e. noise) | ≈0 (−34 cycles) |
+| per-byte `b` | **1.055 cycles/byte** | **1.270 cycles/byte** |
+| at the worker's 128 B × 91/s | 0.80 % of the sample stream | 1.15 % |
+
+Three things follow. A host `DMAWRITE` really costs **1.06–1.27 cycles/byte**, so the REC DMA model's 1 cycle/byte is low and every halt figure inferred from it is an underestimate. Neither backend has a measurable fixed per-write cost, so subdividing a payload is close to free in cycles — the shipped 128-byte halt quantum costs what its bytes cost and nothing extra for the extra writes, which is what makes the command-rate budget, not the halt, its binding constraint. And the cost is **stationary** (`--hold` at the worker's operating point: 1.079..1.098 ticks/write over 150 s, drift +0.002/min), so it is not a candidate for anything that grows over a run.
+
+Do not treat the two measurements as interchangeable. Under full production load — video writes on the same link, char mode, no `tempo_scale` compensation — R has been observed at 11655 against a 12032.1 nominal, a **3.1 % tick deficit**, alongside the ≈0 % pitch result above. Nothing here has established which of the servo's re-pacing, the fps caps or the pitch estimator's own limits reconciles those two numbers. The pitch A/B is what governs these knobs, because pitch is what they move; `halt_shape_probe.py` is what to run when the question is the halt.
 
 Against that baseline, enabling either one only injects error:
 
