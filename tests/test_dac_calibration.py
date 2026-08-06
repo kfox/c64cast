@@ -478,6 +478,114 @@ class MissingCalibrationLogTest(unittest.TestCase):
         self.assertTrue(label.startswith("calibrated:"))
 
 
+def _socket_at_d400(socket: int) -> FakeAPI:
+    """An Ultimate whose populated physical `socket` answers $D400 — what the
+    NMI DAC handler's `STA $D418` reaches. Mirrors the rig that exposed the
+    bug: both sockets populated, auto-mirroring on, an UltiSID core nominally
+    at the same address (the socket wins, so the real chip is audible)."""
+    other = 2 if socket == 1 else 1
+    api = _ultimate_fake()
+    api.config_store[CAT_ADDRESSING] = {
+        f"SID Socket {socket} Address": "$D400",
+        f"SID Socket {other} Address": "$D420",
+        "UltiSID 1 Address": "$D400",
+        "Auto Address Mirroring": "Enabled",
+    }
+    api.config_store[CAT_SOCKETS] = {
+        "SID Socket 1": "Enabled",
+        "SID Socket 2": "Enabled",
+        "SID Detected Socket 1": "6581",
+        "SID Detected Socket 2": "6581",
+    }
+    return api
+
+
+class AutoCurveD400OwnershipTest(unittest.TestCase):
+    """Resolution must never hand the baked emulated-UltiSID table to a
+    physical chip: measured at ~29% RMS level error cross-chip, which is worse
+    than the 4-bit linear path it is supposed to improve on."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def test_physical_socket_at_d400_without_calibration_falls_back_to_linear(self):
+        cfg = _u64_cfg()
+        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
+            label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        self.assertEqual(label, "linear")
+        self.assertIsNone(table)
+        joined = "\n".join(cm.output)
+        self.assertIn("socket 1", joined)
+        self.assertIn("--calibrate-dac", joined)
+
+    def test_socket_2_at_d400_is_named_in_the_warning(self):
+        cfg = _u64_cfg()
+        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
+            label, _ = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2))
+        self.assertEqual(label, "linear")
+        self.assertIn("socket 2", "\n".join(cm.output))
+
+    def test_ultisid_at_d400_still_gets_the_baked_table(self):
+        # Nothing physical answers $D400, so the baked table is the *matched*
+        # one and stays the right default.
+        cfg = _u64_cfg()
+        api = _ultimate_fake()
+        api.config_store[CAT_ADDRESSING] = {
+            "SID Socket 1 Address": "$D420",
+            "UltiSID 1 Address": "$D400",
+        }
+        api.config_store[CAT_SOCKETS] = {
+            "SID Socket 1": "Enabled",
+            "SID Detected Socket 1": "6581",
+        }
+        label, table = dc.resolve_dac_curve_for_backend(cfg, be=api)
+        self.assertEqual(label, "mahoney_ultisid")
+        self.assertEqual(table, MAHONEY_ULTISID)
+
+    def test_empty_socket_mapped_at_d400_still_gets_the_baked_table(self):
+        # Mapped but no chip detected — nothing physical is there to mismatch.
+        cfg = _u64_cfg()
+        api = _ultimate_fake()
+        api.config_store[CAT_ADDRESSING] = {"SID Socket 1 Address": "$D400"}
+        api.config_store[CAT_SOCKETS] = {
+            "SID Socket 1": "Enabled",
+            "SID Detected Socket 1": "None",
+        }
+        label, _ = dc.resolve_dac_curve_for_backend(cfg, be=api)
+        self.assertEqual(label, "mahoney_ultisid")
+
+    def test_calibration_for_that_socket_still_wins(self):
+        # The guard is a fallback, not a veto: a table measured on the chip
+        # that owns $D400 is exactly what should be used.
+        cfg = _u64_cfg()
+        key = dc.resolve_calibration_key(cfg)
+        dc.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
+        label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        self.assertTrue(label.startswith("calibrated:"))
+        self.assertEqual(table, bytes([1] * 256))
+
+    def test_offline_resolution_is_unchanged_and_silent(self):
+        # be=None can't read who owns $D400; --doctor reports that separately.
+        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
+            label, table = dc.resolve_dac_curve_for_backend(_u64_cfg())
+        self.assertEqual(label, "mahoney_ultisid")
+        self.assertEqual(table, MAHONEY_ULTISID)
+
+    def test_explicit_mahoney_is_not_second_guessed(self):
+        # The guard only shapes "auto". A user who named the curve meant it.
+        cfg = _u64_cfg()
+        cfg.audio.dac_curve = "mahoney_ultisid"
+        label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        self.assertEqual(label, "mahoney_ultisid")
+        self.assertEqual(table, MAHONEY_ULTISID)
+
+
 class SlotRingLayoutTest(unittest.TestCase):
     def test_ring_is_sync_gap_then_code_ref_pairs(self):
         ring = np.frombuffer(dc.build_slot_ring([0x0F, 0x37], RING), dtype=np.uint8)

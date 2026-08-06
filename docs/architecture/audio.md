@@ -127,25 +127,25 @@ The render thread pushes frames over the same link and those pushes go out whole
 
 So the split is a net loss on this path, and `max_write_rate_hz` is deliberately left at 200 rather than corrected upward: more writes measure *worse*, so the honest ceiling is not the interesting number.
 
-#### The Mahoney path is the noise floor
+#### A DAC table only applies to the chip it was measured on
 
-The audible static on the 4-bit DAC is not the halt at all. It is the **Mahoney 8-bit companded path**, which measures ~15 dB worse than the plain 4-bit `linear` curve it exists to improve on.
+The audible static on the 4-bit DAC is not the halt, and it is not Mahoney. It is a **table/chip mismatch**: `dac_curve = "auto"` handed the baked *emulated-UltiSID* table to a *physical 6581*.
 
-Measured through the real playback path — a generated clip carrying a steady 440 Hz tone over `testsrc2` motion video, `petscii` at 20 fps, captured off HDMI and scored both by a notched noise floor and by THD+N with harmonics included, because a 4-bit path's quantisation error is harmonic and a notched metric alone would flatter it:
+`resolve_dac_curve_for_backend`'s auto ladder tested `cfg.hardware.backend == "ultimate"` — the backend — rather than which SID source answers `$D400`, the fixed address the NMI handler's hand-assembled `STA $D418` reaches. On a board with a populated socket mapped there, the socket wins Auto Address Mirroring (the real chip is what a listener hears), so the emulated core's ladder was applied to silicon whose curve correlates with it at only ~0.74.
 
-| `dac_curve` | noise floor | THD+N re carrier |
-| --- | --- | --- |
-| `linear` | **−73.9 dB** | **−8.2 dB** |
-| `calibrated` | −66.8 | −7.3 |
-| `mahoney_ultisid` | −58.6 | −1.3 |
+Level-matched A/B on a physical 6581 (`dac_curve_playback_ab.py --socket 1`, 125 Hz tone):
 
-Both metrics agree on the ordering, and so does every listening pass: `mahoney_ultisid` reads as a constant loud buzz, `calibrated` as interference that grows over a run, `linear` as the cleanest. At −1.3 dB THD+N nearly half the output power is not the signal.
+| `dac_curve` | SNDR | THD | level |
+| --- | --- | --- | --- |
+| `linear` (4-bit) | 21.81 dB | −24.32 dB | −15.6 dBFS |
+| `mahoney_ultisid` (mismatched) | **4.17 dB** | −8.68 dB | −13.2 dBFS |
+| `calibrated` (this chip) | **23.55 dB** | −24.48 dB | −9.7 dBFS |
 
-This **inverts the assumption `dac_curve = "auto"` encodes** — auto resolves to a Mahoney variant precisely because Mahoney is believed to be the quality option (~6–7 effective bits against 4). On this hardware it is not. Mahoney parks the three voices as DC through the filter and so depends entirely on filter behaviour, which is where to look; the open calibration bugs around sign inference and degraded filter paths are the obvious suspects.
+So Mahoney's premise holds once the table matches: `calibrated` beats `linear` by 1.7 dB SNDR and is 5.9 dB louder. The mismatched table sits 19.4 dB below it. At −30 dBFS the gap widens — `calibrated` +2.05 dB SNDR against `linear`'s −29.10, while the mismatched table plays a −30 dBFS signal back at −17 dBFS, the wrong ladder mapping quiet input to loud output. That is the "constant loud buzz" listeners reported.
 
-It is **not TeensyROM-specific**: the same clip on the Ultimate with `backend = "dac"` forced measured −73.3 dB against the TR's −76.9, i.e. slightly *worse*. The Ultimate only escapes in normal use because `backend = "auto"` sends it to the off-bus FPGA sampler.
+The fix is the mirror of a check `_select_sid_entry` already made in the other direction: `auto` now resolves the live `$D400` owner via `_active_socket_at_d400`, and a populated socket with no calibration for it gets `linear` rather than a table measured on different silicon. An UltiSID core owning `$D400` still gets the baked table — that pairing is correct.
 
-The noise is **episodic**: 0.5–1.5 s bursts that lift the floor 4–10 dB at irregular intervals, which is what listeners describe as plateaus that jump and then hold. A `calibrated` capture also creeps upward across 11 s (−60 → −52 dB). Cause unestablished; a decaying DC park is the obvious candidate and is untested.
+> An earlier revision of this section concluded that Mahoney *itself* was the noise floor, reading ~15 dB worse than `linear`. Every measurement behind that claim was taken through the mismatch above, on a rig whose `$D400` was a physical 6581. The ordering it reported was real; the cause it assigned was not.
 
 This went unmeasured for years because every metric on this path was a *frequency* metric — carrier shift, FM deviation, modulation bands — and the fault is pure amplitude. `audio_fm_probe.py` now carries `noise_floor_db` for exactly this. Note that probe's own conditions use `digi_boost`, i.e. plain 4-bit: it has never exercised the Mahoney env, which is why its earlier results were all null.
 
@@ -324,12 +324,14 @@ Beware of one trap when validating a candidate reconstruction offline: agreement
 
 | curve | SNDR | THD | captured level |
 |---|---|---|---|
-| `linear` (4-bit) | 21.80 dB | −24.31 dB | −15.4 dBFS |
-| `mahoney_ultisid` (baked, emulated-SID) | 0.09 dB | −1.35 dB | −12.6 dBFS |
+| `linear` (4-bit) | 21.81 dB | −24.32 dB | −15.6 dBFS |
+| `mahoney_ultisid` (baked, emulated-SID) | 4.17 dB | −8.68 dB | −13.2 dBFS |
 | calibrated, two-reference scheme | 16.99 dB | −21.81 dB | −9.9 dBFS |
-| calibrated, slot ring | **23.85 dB** | **−24.75 dB** | −9.8 dBFS |
+| calibrated, slot ring | **23.55 dB** | **−24.48 dB** | −9.7 dBFS |
 
-Two things to read off it. The slot-ring table beats the 4-bit path by 2.0 dB while running 5.6 dB louder. And the two-reference table scores 4.8 dB *below* `linear` — a calibration that actively makes playback worse, which is exactly the failure the volume-0 self-test exists to refuse.
+Three things to read off it. The slot-ring table beats the 4-bit path by 1.7 dB while running 5.9 dB louder. The two-reference table scores 4.8 dB *below* `linear` — a calibration that actively makes playback worse, which is exactly the failure the volume-0 self-test exists to refuse. And the baked emulated-SID table, applied to this physical chip, scores 19.4 dB below the matched one: that row is a **mismatch**, not a verdict on Mahoney, and is why `"auto"` now checks who owns `$D400` before reaching for it.
+
+The `mahoney_ultisid` row is the re-baked (2026-08-06) table; the superseded bytes measured 0.09 dB here. Both are misapplied on this socket, so neither figure says anything about that table on the core it was measured for.
 
 At −30 dBFS the ordering changes: the slot-ring table reproduces the tone at −38.9 dBFS (i.e. tracking the input correctly) where `linear` collapses to −73.9 dBFS because 4 bits cannot represent that level at all, but its SNDR there is 2.8 dB against the two-reference table's 5.4 dB. That is a real consequence of the slot ring finding a *wider* true span (−0.656 to +0.461, against the two-reference measurement's −0.394 to +0.317): the same 256 rungs spread over more range are coarser near silence. Full-scale SNDR is the figure that tracks what a listener hears, and it is limited to ≈24 dB by the chip's own context dependence rather than by the ladder, whose rms placement error is 0.37% of span.
 
@@ -341,7 +343,14 @@ The USB-serial lookup only fires when `[teensyrom].serial_port` is set, so `make
 
 #### Multi-socket U64/U2+
 
-A real U64 can carry two physical SID sockets, each potentially a different chip. `run_calibration` queries the live config (`sid_hw_config.detect_sockets` — `"SID Detected Socket N"`) and, for every socket reporting a real chip, isolates it to `$D400` (the fixed address the NMI DAC handler's `STA $D418` reaches) via `_isolate_socket` — reusing the "chip 0 must land at `$D400`" trick from [c64cast/asid_sidmap.py](../../c64cast/asid_sidmap.py)'s multi-SID address planner: that socket's address → `$D400` + enabled, the other socket → disabled, both UltiSID cores → unmapped, auto-mirroring off — measures it independently, then restores the original `SID Addressing`/`SID Sockets Configuration` (`sid_hw_config.snapshot_sid_config`/`restore_sid_config`) once every socket is done. This is purely config-driven, no U64-vs-U2+ model check: a U2+ with one socket + one UltiSID core measures just that socket; a bare-UltiSID board or a backend with no config API (TeensyROM) falls back to one unlabeled measurement of whatever SID currently answers `$D400`.
+A real U64 can carry two physical SID sockets, each potentially a different chip. `run_calibration` queries the live config (`sid_hw_config.detect_sockets` — `"SID Detected Socket N"`) and, for every socket reporting a real chip, isolates it to `$D400` (the fixed address the NMI DAC handler's `STA $D418` reaches) via `_isolate_socket` — reusing the "chip 0 must land at `$D400`" trick from [c64cast/asid_sidmap.py](../../c64cast/asid_sidmap.py)'s multi-SID address planner: that socket's address → `$D400` + enabled, the other socket → disabled, both UltiSID cores → unmapped, auto-mirroring off — measures it independently, then restores the original `SID Addressing`/`SID Sockets Configuration` (`sid_hw_config.snapshot_sid_config`/`restore_sid_config`) once every socket is done.
+
+Two things have to happen *after* each routing change, not once at bring-up, and both were found by a measurement that came back at the noise floor:
+
+* **Re-park the Mahoney env** (`st._enable_mahoney_env()`). The env is a series of writes to `$D400`–`$D418`, so it lands on whichever chip owned that window at the time — the first socket measured. Every socket after it was being measured with unparked voices, i.e. no DC for the volume nibble to scale.
+* **Route the mixer** (`_isolate_mixer`). Address routing alone does not make a source audible: the Audio Mixer carries an independent per-source level (`Vol Socket 1`, `Vol UltiSid 1`, …), and a board that has only ever used socketed chips ships its UltiSID cores at `OFF`. Levels are snapshotted once *before* the loop (`_snapshot_mixer`, a sibling of `snapshot_sid_config` rather than part of it — widening that snapshot would make every multi-SID planning caller restore mixer state it never touched), since `_isolate_mixer` rewrites them per socket and a per-iteration snapshot would capture its own previous edit.
+
+Both failures present identically — a capture at the noise floor, which reads as a broken capture rig rather than as the routing problem it is. This is purely config-driven, no U64-vs-U2+ model check: a U2+ with one socket + one UltiSID core measures just that socket; a bare-UltiSID board or a backend with no config API (TeensyROM) falls back to one unlabeled measurement of whatever SID currently answers `$D400`.
 
 #### The calibration file
 
@@ -365,7 +374,7 @@ At playback, `load_calibrated_table` picks the entry matching whichever socket i
 
 Resolution: `resolve_dac_curve_for_backend(cfg, be=...)` maps `"auto"` to the applicable calibrated table if present, else `mahoney_ultisid` on the Ultimate, else `linear`. It yields to an explicit `digi_boost` by staying linear. `"calibrated"` forces the table and raises if it is absent.
 
-When `"auto"` goes looking and finds no calibration on a **live** run (`be` is a reachable backend — not an offline `--doctor` pass, which reports separately and can't even confirm the identity key), it logs a helpful, actionable line so a missing calibration is never a silent fidelity downgrade: `info` on the Ultimate (the baked `mahoney_ultisid` table is a correct default; the line just points at `--calibrate-dac` for a socketed physical SID), `warning` on any other backend (the 4-bit `linear` fallback is a real downgrade). Curve resolution is the right place for that line because it is the only point that knows the identity key and the applicable table; there is no repo calibration location for `--doctor` to check instead.
+When `"auto"` goes looking and finds no calibration on a **live** run (`be` is a reachable backend — not an offline `--doctor` pass, which reports separately and can't even confirm the identity key), it logs a helpful, actionable line so a missing calibration is never a silent fidelity downgrade. The level tracks what the fallback costs: `info` when an UltiSID core owns `$D400` (the baked table is the matched one, so this is a correct default and the line just points at `--calibrate-dac` for a socketed chip), `warning` when a **populated socket** owns it (the fallback is the 4-bit `linear` path, a real downgrade — but 17.6 dB better than misapplying the emulated table, so it is the right one), and `warning` on any other backend. Curve resolution is the right place for that line because it is the only point that knows the identity key and the applicable table; there is no repo calibration location for `--doctor` to check instead.
 
 #### How `--doctor` reports calibration
 

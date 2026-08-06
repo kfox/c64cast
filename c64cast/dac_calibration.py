@@ -179,6 +179,8 @@ from .asid_sidmap import (
 )
 from .dac_curves import resolve_dac_curve
 from .sid_hw_config import detect_sockets, restore_sid_config, snapshot_sid_config
+from .sid_panning import CAT_MIXER
+from .sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 from .transport import atomic_write_text
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
@@ -454,10 +456,13 @@ def resolve_dac_curve_for_backend(
     (the legacy linear 4-bit path).
 
     * ``"auto"`` (default) — prefer a calibrated table applicable to this
-      system/socket if one exists; else ``mahoney_ultisid`` on the Ultimate
-      (deterministic emulated SID); else ``linear`` (a physical/unknown SID
-      with no calibration: the baked emulated table would not match it, so
-      stay on the safe 4-bit path).
+      system/socket if one exists; else ``mahoney_ultisid`` when an UltiSID
+      core answers ``$D400`` (the baked table *is* that core's curve); else
+      ``linear`` (a physical/unknown SID with no calibration: the baked
+      emulated table would not match it, so stay on the safe 4-bit path).
+      Which source owns ``$D400`` is resolved live via
+      :func:`_active_socket_at_d400`, so a populated socket mapped there gets
+      ``linear`` rather than a table measured on a different chip.
     * ``"calibrated"`` — force the applicable calibrated table; raise if absent.
     * ``"linear"`` / ``"mahoney_ultisid"`` — explicit; passed through.
 
@@ -505,6 +510,25 @@ def resolve_dac_curve_for_backend(
         # table is a correct default (info); the 4-bit linear path is a real
         # downgrade for a physical SID (warning).
         if cfg.hardware.backend == "ultimate":
+            # The baked table is the *emulated* UltiSID's curve, so it only
+            # applies when an UltiSID core is what the handler's hand-assembled
+            # `STA $D418` actually reaches. Handing it to a physical chip is
+            # worse than shipping no table at all — a cross-chip table measured
+            # ~29% RMS level error (see dac_curves.py), which lands as
+            # signal-correlated distortion, not a level trim. This is the mirror
+            # of the check _select_sid_entry already makes in the other
+            # direction.
+            socket = _active_socket_at_d400(be) if be is not None else None
+            if socket is not None:
+                log.warning(
+                    "SID socket %d (a physical chip) answers $D400 and no "
+                    "calibration for it was found at %s; falling back to the "
+                    "4-bit linear DAC. Run `c64cast -u <target> --calibrate-dac` "
+                    "to measure this chip for full-fidelity playback.",
+                    socket,
+                    resolve_calibration_key(cfg, be),
+                )
+                return ("linear", None)
             if be is not None:
                 log.info(
                     "no per-unit DAC calibration found for %s; using the baked "
@@ -1275,6 +1299,37 @@ def resolve_capture_format(dev: int) -> CaptureFormat:
     )
 
 
+def _snapshot_mixer(be: C64Backend) -> dict[tuple[str, str], str]:
+    """The Audio Mixer's per-SID-source levels, in ``restore_sid_config`` form.
+
+    A sibling of ``snapshot_sid_config`` rather than part of it: that snapshot
+    is the address/socket set multi-SID *planning* round-trips, and widening it
+    would make every caller restore mixer state they never touched."""
+    try:
+        mixer = be.get_config_category(CAT_MIXER)
+    except Exception:  # noqa: BLE001 — best-effort; no mixer to restore
+        log.debug("calib: mixer read failed", exc_info=True)
+        return {}
+    return {(CAT_MIXER, item): mixer[item] for item in VOL_ITEM.values() if item in mixer}
+
+
+def _isolate_mixer(be: C64Backend, source: str) -> None:
+    """Route only `source` (``"socket1"``/``"ultisid2"``/…) into the mixer, at
+    unity.
+
+    Address routing alone does not make a source audible — the mixer carries an
+    independent per-source level, and a board that has only ever used socketed
+    chips ships its UltiSID cores at ``OFF``. Measuring through a muted source
+    captures the noise floor, which reads as a bring-up or wiring failure rather
+    than the routing one it is. Forcing unity rather than preserving a
+    deliberate trim is what keeps two sources' ladders comparable."""
+    for name, item in VOL_ITEM.items():
+        try:
+            be.put_config_item(CAT_MIXER, item, VOL_UNITY if name == source else VOL_OFF)
+        except Exception:  # noqa: BLE001 — best-effort; a board may lack the item
+            log.debug("calib: mixer put %s failed", item, exc_info=True)
+
+
 def _isolate_socket(be: C64Backend, socket: int) -> None:
     """Route SID Socket `socket` (1 or 2) to $D400 — the fixed address the
     NMI DAC handler's hand-assembled ``STA $D418`` reaches — and silence
@@ -1491,7 +1546,10 @@ def run_calibration(
                 log_fn("[calib] socket detection failed — falling back to a single measurement")
 
         if sockets_present:
-            saved_sid_config = snapshot_sid_config(be)
+            # Mixer levels snapshot once, before the loop: _isolate_mixer
+            # rewrites them per socket, so a per-iteration snapshot would
+            # capture its own previous edit rather than the user's setting.
+            saved_sid_config = {**snapshot_sid_config(be), **_snapshot_mixer(be)}
             try:
                 for socket, detected in sockets_present:
                     log_fn(
@@ -1499,6 +1557,15 @@ def run_calibration(
                         f"({detected or 'detected'}) at $D400…"
                     )
                     _isolate_socket(be, socket)
+                    _isolate_mixer(be, f"socket{socket}")
+                    # Re-park AFTER the routing change, not once at bring-up.
+                    # The env is a series of writes to $D400-$D418, so it lands
+                    # on whichever chip owned that window at the time — the
+                    # first socket measured. Every socket after it would be
+                    # measured with unparked voices, i.e. no DC for the volume
+                    # nibble to scale, which reads as a near-silent capture
+                    # rather than an obviously wrong one.
+                    st._enable_mahoney_env()
                     time.sleep(0.2)
                     sidtable, metrics, raw = measure_one(dev, fmt, f"socket {socket}")
                     entries[str(socket)] = CalibrationResult(
