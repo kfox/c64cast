@@ -117,6 +117,10 @@ Getting that budget wrong is not a mild regression. A 65-byte quantum asks for 1
 
 Prebuffer writes are deliberately left unsplit: the NMI is not consuming yet, so there is no halt to hide from, and one write fills the ring faster.
 
+*Late slots are the metric that says the spread actually held.* Everything above is a design; whether a given run kept it is a separate question, and one nothing else answers. A sub-write reached after its slot deadline has passed goes out immediately, which leaves every later slot of that chunk expired too — so they fire back-to-back and the run degrades from the spread condition toward the burst condition, continuously and by degree. That is invisible to every other counter: the bytes still land, in order, and no underrun is recorded, because `_collect_until`'s non-blocking drain is doing its job. `_drip_chunk` therefore counts late slots and the worst lateness, `stop()` reports the session share (warning past 10 %), and `_maybe_log_health` emits a per-window line every `AUDIO_HEALTH_LOG_INTERVAL_S`.
+
+That health line is per-**window**, not cumulative, because the artifacts left on this path are the time-varying ones — a fault that appears part-way in, deepens, clears and returns is indistinguishable from a steady one in a session total. It carries the servo gap's excursion, late slots over total, underruns, write rate, the live quantum, the measured consumer rate R and the latch, which is enough to tell a collection stall from a link stall from a servo excursion without a capture rig.
+
 #### Verifying the arm took
 
 Three writes bring the consumer up, and all three are load-bearing: the `$0318` NMI vector, the Timer A latch, and the `$DD0D`/`$DD0E` enable+start. They ride the same transport as everything else, whose `_emit` contract is to **absorb** a failed write rather than raise — right for a lost border poke, wrong here. Any one of them going missing produces the identical symptom: the NMI never fires, the read pointer R (the self-modifying operand at `$C025`) sits at `RING_BUFFER_ADDR` forever, and the session is silent from the first frame to the last. It also runs *fast* — the host-DMA servo is correctly reacting to a reader that never consumes. A dropped vector write is not a milder case: the KERNAL NMI handler stays installed and writes `#$7F` to `$DD0D`, killing CIA #2 interrupts itself.
@@ -374,7 +378,19 @@ Three knobs, and understanding why two of them are off matters more than the kno
 
 **`nmi_rate_adaptive` and `pitch_mult_*` — default off / 1.0.** Playback pitch is `R / sample_rate`, and both of these force R back up toward `sample_rate`: the adaptive loop (`_nmi_rate_step`) shrinks the CIA #2 latch from a measured-R estimate, and the static per-mode `pitch_mult_*` multipliers do the same open-loop.
 
-They are off because there is no tick loss left for them to correct. Hardware measurement (2026-07-02, `scripts/diags/nmi_pitch_ab.py` — full-pipeline capture, pitch via log-spectrum cross-correlation against the source, robust to avfoundation's chunk-drops) puts bus-halt loss at **≈0** with the bitmap+digi fps cap, `VideoScene` frame dedup, and the REU-staged double-buffer in play. DAC-path mhires video, with no compensation at all, plays at +0.07 % on a near-static clip and −0.01 % on a high-motion one.
+They are off because the **net pitch error** they would correct is already ≈0. Hardware measurement (2026-07-02, `scripts/diags/nmi_pitch_ab.py` — full-pipeline capture, pitch via log-spectrum cross-correlation against the source, robust to avfoundation's chunk-drops) puts it at **≈0** with the bitmap+digi fps cap, `VideoScene` frame dedup, and the REU-staged double-buffer in play. DAC-path mhires video, with no compensation at all, plays at +0.07 % on a near-static clip and −0.01 % on a high-motion one.
+
+Read that as a *pitch* result and nothing more. It is tempo-blind, and it is not a claim that a host write costs the 6510 nothing. What a write actually costs was measured directly in 2026-08-05 by `scripts/diags/halt_shape_probe.py`, which counts stolen cycles with R itself: R advances once per serviced NMI, so the deficit in dR/dt under paced background writes — against the same measurement with the bus quiet — is the halt, counted in lost samples by the machine that lost them. Sweeping payload at a fixed write rate splits it into `lost_ticks_per_write = a + b·payload`, r² = 1.000 on both backends:
+
+| | TeensyROM+ | Ultimate 64 |
+|---|---|---|
+| fixed cost `a` | ≈0 (−45 cycles, i.e. noise) | ≈0 (−34 cycles) |
+| per-byte `b` | **1.055 cycles/byte** | **1.270 cycles/byte** |
+| at the worker's 128 B × 91/s | 0.80 % of the sample stream | 1.15 % |
+
+Three things follow. A host `DMAWRITE` really costs **1.06–1.27 cycles/byte**, so the REC DMA model's 1 cycle/byte is low and every halt figure inferred from it is an underestimate. Neither backend has a measurable fixed per-write cost, so subdividing a payload is close to free in cycles — the shipped 128-byte halt quantum costs what its bytes cost and nothing extra for the extra writes, which is what makes the command-rate budget, not the halt, its binding constraint. And the cost is **stationary** (`--hold` at the worker's operating point: 1.079..1.098 ticks/write over 150 s, drift +0.002/min), so it is not a candidate for anything that grows over a run.
+
+Do not treat the two measurements as interchangeable. Under full production load — video writes on the same link, char mode, no `tempo_scale` compensation — R has been observed at 11655 against a 12032.1 nominal, a **3.1 % tick deficit**, alongside the ≈0 % pitch result above. Nothing here has established which of the servo's re-pacing, the fps caps or the pitch estimator's own limits reconciles those two numbers. The pitch A/B is what governs these knobs, because pitch is what they move; `halt_shape_probe.py` is what to run when the question is the halt.
 
 Against that baseline, enabling either one only injects error:
 

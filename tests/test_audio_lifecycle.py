@@ -61,6 +61,36 @@ def _written_stream(s: AudioStreamer) -> bytes:
     return b"".join(data for _, data in cast(Any, s.api).writes)
 
 
+class _VirtualClock:
+    """A monotonic clock that advances only when the code under test sleeps.
+
+    The drip schedule marks a slot late by comparing its deadline against the
+    clock, so on a loaded machine one OS scheduling overshoot cascades — every
+    remaining slot in that chunk has an already-past deadline. That makes any
+    absolute late-slot assertion a claim about the host's scheduler rather than
+    about the accounting, and it fails on contended CI runners while passing
+    locally. Driving `audio.py`'s own clock removes the host from the question.
+
+    Only the worker sees this; the test harness keeps the real clock, so its
+    timeout still bounds a hang.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.t = start
+
+    def monotonic(self) -> float:
+        return self.t
+
+    # audio.py reads all four; keeping them on one timeline means a virtual
+    # sleep is visible to every deadline the worker computes.
+    perf_counter = monotonic
+    time = monotonic
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 0:
+            self.t += seconds
+
+
 def _run_worker(s: AudioStreamer, until, timeout: float = 2.0) -> threading.Thread:
     """Start the worker thread and spin until `until()` is true or timeout."""
     s.running = True
@@ -260,6 +290,99 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             all(len(data) == 64 for _, data in cast(Any, s.api).writes),
             "an unaffordable link still had its writes subdivided",
         )
+
+    def test_slow_writes_are_counted_as_late_slots(self):
+        # A sub-write that runs past its own slot leaves every later slot in the
+        # chunk already expired, so they all fire back-to-back — the spread
+        # collapses into the burst it was split to avoid. Nothing else notices:
+        # the bytes still land, in order, and no underrun is counted. This
+        # counter is the only signal that the schedule was not kept.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=64000)
+        real_write = cast(Any, s.api).write_memory_file
+
+        def slow_write(addr: str, data: bytes) -> None:
+            time.sleep(0.004)  # longer than a slot at this chunk period
+            real_write(addr, data)
+
+        cast(Any, s.api).write_memory_file = slow_write
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 256))
+            s._queued_samples += 256
+
+        _run_worker(s, until=lambda: s._total_slots >= 8, timeout=3.0)
+
+        self.assertGreater(s._total_slots, 0)
+        self.assertGreater(s._late_slots, 0, "slow writes did not register as late slots")
+        self.assertGreater(s._late_worst_s, 0.0)
+
+    def test_prompt_writes_keep_the_schedule(self):
+        # The negative control for the counter above: with writes that return
+        # immediately the drip keeps its deadlines, so a late slot means a real
+        # link/collection problem rather than an artifact of the accounting.
+        # Run on a virtual clock — see _VirtualClock for why the host's
+        # scheduler must not be able to answer this question.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=8000)
+        for _ in range(PREBUFFER_CHUNKS + 8):
+            s.q.put(bytes([3] * 256))
+            s._queued_samples += 256
+
+        with mock.patch.object(audio_mod, "time", _VirtualClock()):
+            _run_worker(s, until=lambda: s._total_slots >= 16, timeout=3.0)
+
+        self.assertGreater(s._total_slots, 0)
+        self.assertEqual(s._late_slots, 0, "a prompt write missed its slot on an ideal timeline")
+
+    def test_consumer_rate_is_measured_with_the_adaptive_loop_off(self):
+        # The rate estimate used to be computed inside the adaptive NMI-rate
+        # loop, which is off by default — so the one quantity that shows
+        # content-dependent tick loss read zero in every log. Measuring is not
+        # steering: the loop stays off, the number still has to arrive.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=12000)
+        s.nmi_rate_adaptive = False
+        s.host_dma_servo = True
+        s._nmi_timer_started = True
+        latch_before = s._nmi_latch
+        base = audio_mod.RING_BUFFER_ADDR
+
+        with mock.patch.object(s, "_read_read_ptr", side_effect=[base, base + 1200]):
+            s._next_pace_increment(base + 4096, 0.1)
+            time.sleep(0.05)
+            s._next_pace_increment(base + 4096 + 1200, 0.1)
+
+        self.assertGreater(s._r_rate_ema, 0.0, "consumer rate was not measured")
+        self.assertGreater(s._r_rate_max, 0.0)
+        self.assertEqual(s._nmi_latch, latch_before, "observation must not steer the latch")
+
+    def test_health_line_reports_window_deltas(self):
+        # The health line exists to place an onset in time, so it must report
+        # the window rather than the session: a second window that saw two more
+        # underruns reports two, not the running total.
+        s = _make(sample_rate=12000)
+        s._nmi_latch = 84
+        s._r_rate_ema = 11900.0
+        with mock.patch.object(audio_mod, "AUDIO_HEALTH_LOG_INTERVAL_S", 0.0001):
+            s._maybe_log_health(100.0)  # first call only marks the baseline
+            s._full_underruns = 5
+            s._late_slots = 9
+            s._total_slots = 40
+            with self.assertLogs(audio_mod.log, level="INFO") as first:
+                s._maybe_log_health(101.0)
+            s._full_underruns = 7
+            with self.assertLogs(audio_mod.log, level="INFO") as second:
+                s._maybe_log_health(102.0)
+
+        self.assertIn("late=9/40", first.output[0])
+        self.assertIn("under=5/0", first.output[0])
+        self.assertIn("under=2/0", second.output[0])
+        self.assertIn("late=0/0", second.output[0])
+
+    def test_health_line_suppressed_inside_the_window(self):
+        s = _make(sample_rate=12000)
+        with mock.patch.object(audio_mod, "AUDIO_HEALTH_LOG_INTERVAL_S", 5.0):
+            s._maybe_log_health(100.0)
+            with mock.patch.object(audio_mod.log, "info") as info:
+                s._maybe_log_health(102.0)
+        info.assert_not_called()
 
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip

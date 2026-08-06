@@ -203,8 +203,8 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 audio_proc.kill()
         if not args.no_reset:
-            code = d.rest_reset(args.url)
-            print(f"[reset] {args.url}: {'HTTP ' + str(code) if code else 'FAILED'}")
+            ok = d.machine_reset(args.url)
+            print(f"[reset] {args.url}: {'OK' if ok else 'FAILED — RESET THE MACHINE BY HAND'}")
 
     # Analyze audio if we have any.
     if audio_proc is not None:
