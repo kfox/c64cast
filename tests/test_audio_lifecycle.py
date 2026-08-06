@@ -61,6 +61,36 @@ def _written_stream(s: AudioStreamer) -> bytes:
     return b"".join(data for _, data in cast(Any, s.api).writes)
 
 
+class _VirtualClock:
+    """A monotonic clock that advances only when the code under test sleeps.
+
+    The drip schedule marks a slot late by comparing its deadline against the
+    clock, so on a loaded machine one OS scheduling overshoot cascades — every
+    remaining slot in that chunk has an already-past deadline. That makes any
+    absolute late-slot assertion a claim about the host's scheduler rather than
+    about the accounting, and it fails on contended CI runners while passing
+    locally. Driving `audio.py`'s own clock removes the host from the question.
+
+    Only the worker sees this; the test harness keeps the real clock, so its
+    timeout still bounds a hang.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.t = start
+
+    def monotonic(self) -> float:
+        return self.t
+
+    # audio.py reads all four; keeping them on one timeline means a virtual
+    # sleep is visible to every deadline the worker computes.
+    perf_counter = monotonic
+    time = monotonic
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 0:
+            self.t += seconds
+
+
 def _run_worker(s: AudioStreamer, until, timeout: float = 2.0) -> threading.Thread:
     """Start the worker thread and spin until `until()` is true or timeout."""
     s.running = True
@@ -289,15 +319,18 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # The negative control for the counter above: with writes that return
         # immediately the drip keeps its deadlines, so a late slot means a real
         # link/collection problem rather than an artifact of the accounting.
+        # Run on a virtual clock — see _VirtualClock for why the host's
+        # scheduler must not be able to answer this question.
         s = _make_worker_streamer(chunk_size=256, sample_rate=8000)
-        for _ in range(PREBUFFER_CHUNKS + 4):
+        for _ in range(PREBUFFER_CHUNKS + 8):
             s.q.put(bytes([3] * 256))
             s._queued_samples += 256
 
-        _run_worker(s, until=lambda: s._total_slots >= 16, timeout=3.0)
+        with mock.patch.object(audio_mod, "time", _VirtualClock()):
+            _run_worker(s, until=lambda: s._total_slots >= 16, timeout=3.0)
 
         self.assertGreater(s._total_slots, 0)
-        self.assertLess(s._late_slots, s._total_slots // 2)
+        self.assertEqual(s._late_slots, 0, "a prompt write missed its slot on an ideal timeline")
 
     def test_consumer_rate_is_measured_with_the_adaptive_loop_off(self):
         # The rate estimate used to be computed inside the adaptive NMI-rate
