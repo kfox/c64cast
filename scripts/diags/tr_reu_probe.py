@@ -22,7 +22,7 @@ This is a bus master writing the TR's OWN emulated REC registers, so success
 also proves the TR's DMA write path reaches its IO2 decode over the link.
 
     scripts/diags/tr_reu_probe.py            # tr:// auto serial
-    scripts/diags/tr_reu_probe.py --url tr://192.168.2.164
+    scripts/diags/tr_reu_probe.py --url tr://HOST
 """
 
 from __future__ import annotations

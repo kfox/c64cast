@@ -13,9 +13,8 @@ this module exists to kill:
   index and the U64 URL all shift with hotplug + DHCP, so every default here
   is overridable by env var (and the tools expose matching CLI flags).
 
-Local-machine specifics (which cv2 index is the Cam Link today, U64 IP) are
-documented in auto-memory, not hard-coded as truth — the values below are
-*defaults*, confirmed working as of 2026-06-10.
+The values below are *defaults*, not ground truth: they are one rig's
+working values, confirmed as of 2026-06-10. Point the env vars at yours.
 """
 
 from __future__ import annotations
@@ -80,7 +79,7 @@ def save_image(frame, path, *, max_width: int = DEFAULT_VERIFY_WIDTH) -> tuple[i
 
 # ---- hardware defaults (all env-overridable) ------------------------------
 
-#: Real Ultimate-64 (see auto-memory u64-hardware). Override: C64_DIAG_URL.
+#: Ultimate 64. Override: C64_DIAG_URL.
 U64_URL = os.environ.get("C64_DIAG_URL", "http://192.168.2.64")
 #: Ultimate II+ on the same LAN. Override: C64_DIAG_U2P_URL.
 U2P_URL = os.environ.get("C64_DIAG_U2P_URL", "http://192.168.2.65")
