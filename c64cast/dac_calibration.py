@@ -628,19 +628,24 @@ RING_SPREAD_NOT_THE_RING = 0.10
 #: rig reads 0.01–0.2 %. Only :data:`RING_SPREAD_NOT_THE_RING` used to be
 #: checked, which made this band — an order of magnitude above healthy, two
 #: orders below "you recorded the room" — indistinguishable from a good
-#: measurement. A TeensyROM link measured 0.6–2.5 % against a chip an Ultimate
-#: link read at 0.01–0.08 % sixteen minutes earlier, and the table fitted to it
-#: agreed with the Ultimate's on 95 of 256 entries (corr 0.565 — a worse mismatch
-#: than handing a chip a *different* chip's table, which ``dac_curves.py``
-#: measures at corr 0.738 / ~29 % RMS level error). It was written to disk and
-#: ``auto`` preferred it over the baked table for every subsequent run, which
-#: lands as signal-correlated distortion: inaudible over a quiet passage, gross
-#: hiss once the material gets loud.
+#: measurement. One run read 0.6–2.5 % against a chip that had measured
+#: 0.01–0.08 % sixteen minutes earlier, and the table fitted to it agreed with
+#: that earlier one on 95 of 256 entries (corr 0.565 — a worse mismatch than
+#: handing a chip a *different* chip's table, which ``dac_curves.py`` measures at
+#: corr 0.738 / ~29 % RMS level error). It was written to disk and ``auto``
+#: preferred it over the baked table for every subsequent run, which lands as
+#: signal-correlated distortion: inaudible over a quiet passage, gross hiss once
+#: the material gets loud.
 #:
-#: 0.5 % is 2.5× the healthy worst case and below every reading from that link,
-#: so a rig that cannot hold the ring steady fails the measurement instead of
-#: silently persisting a wrong ladder. :data:`RING_ATTEMPTS` still absorbs a
-#: transient.
+#: What made that capture unsteady was never established — the two runs differed
+#: in the link they used *and* in whether a second SID on the machine could be
+#: switched out of the way (only a backend with a config API can do that), and
+#: the file was deleted before the two could be separated. So this gate is
+#: deliberately a statement about the *data*, not about any link: passes that
+#: disagree by 1.85 % cannot yield a trustworthy ladder whatever the cause, and
+#: a rig that reads in the healthy band is unaffected regardless of how it
+#: connects. 0.5 % is 2.5× the healthy worst case; :data:`RING_ATTEMPTS` still
+#: absorbs a transient.
 RING_TRUST_MAX_SPREAD = 0.005
 
 #: Top of the healthy ``pass_spread_frac`` band, for the per-ring progress line.
@@ -684,6 +689,16 @@ class MeasurementError(RuntimeError):
     """The capture doesn't contain a readable slot ring — no signal, too short,
     or the NMI isn't running. Distinct from a measurement that read fine and
     then failed its self-test, which is a chip/primitive result, not a rig fault."""
+
+
+class UnsteadyRingError(MeasurementError):
+    """The capture *does* contain the ring, but its levels move between passes.
+
+    A separate type because the advice inverts: every cause listed for a plain
+    :class:`MeasurementError` is about the recording not carrying the ring, and
+    sending someone to re-cable an input that is already correct is worse than
+    saying nothing. Here the input is right and the ring is playing — what needs
+    finding is whatever else is moving the level."""
 
 
 def codes_per_ring(ring_size: int) -> int:
@@ -977,7 +992,7 @@ def read_ring_capture(
             "reads 0.01–0.2% — the levels in it are noise"
         )
     if spread > RING_TRUST_MAX_SPREAD:
-        raise MeasurementError(
+        raise UnsteadyRingError(
             f"its ring passes disagree by {spread * 100:.2f}%, where hardware "
             "reads 0.01–0.2% — the capture is the ring, but the ring is not "
             "replaying the same levels each pass, so a ladder fitted to them "
@@ -1286,6 +1301,33 @@ def _capture_fault_message(dev: int, reason: str, peak: float) -> str:
     )
 
 
+def _unsteady_ring_message(reason: str) -> str:
+    """The message an unsteady — as opposed to unreadable — ring fails with.
+
+    Says up front that the rig is right, because the number it is built from
+    ("the passes disagree by 1.85%") reads like the same class of fault as a
+    mistracked capture and would otherwise send the user back to the cabling.
+    What varies is the level the ring comes back at, so the causes are about
+    what else is reaching the same output or interrupting the same machine."""
+    return (
+        f"the calibration ring is playing and is being recorded, but {reason}.\n"
+        "The input is right — what moves is the level it reads back at, and a "
+        "ladder is only worth keeping if it reproduces.\nLikely causes, in "
+        "order:\n"
+        "  • something else is reaching the same audio output. The ring has to "
+        "be the only thing making sound: a second SID still enabled (a link "
+        "with no config API cannot switch one out of the way for you — do it "
+        "in the machine's own settings first), a tune still running, or a "
+        "scene still playing all add signal the fit reads as the chip's.\n"
+        "  • the capture link is dropping or stretching samples — a busy host, "
+        "or a hub shared with the video capture.\n"
+        "  • the C64 is being driven by something else during the ~50 s "
+        "measurement.\n"
+        "Nothing is written: playback keeps the baked/linear curve, which is "
+        "better than a table fitted to levels that move."
+    )
+
+
 class CaptureFormat(NamedTuple):
     """A channel count + sample rate the capture device actually accepts."""
 
@@ -1478,6 +1520,7 @@ def run_calibration(
         be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", build_slot_ring(codes, RING_BUFFER_SIZE))
         reason = "no capture was taken"
         peak = 0.0
+        unsteady = False
         for attempt in range(1, RING_ATTEMPTS + 1):
             time.sleep(settle)
             rec = sd.rec(
@@ -1495,8 +1538,11 @@ def run_calibration(
                 return read_ring_capture(mono, len(codes), RING_BUFFER_SIZE, sr=fmt.samplerate)
             except MeasurementError as e:
                 reason = str(e)
+                unsteady = isinstance(e, UnsteadyRingError)
             if attempt < RING_ATTEMPTS:
                 log_fn(f"[calib]   unusable capture ({reason}) — retrying")
+        if unsteady:
+            raise UnsteadyRingError(_unsteady_ring_message(reason))
         raise MeasurementError(_capture_fault_message(dev, reason, peak))
 
     def measure_one(

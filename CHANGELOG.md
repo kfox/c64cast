@@ -14,20 +14,22 @@ the version and stamps it with the date.
 
 ### Fixed
 
-- **`--calibrate-dac` could write a wrong table from a rig that couldn't hold the
-  ring steady.** Each pass of a capture drives the SID through identical codes,
-  so a healthy rig's `pass_spread_frac` reads 0.01–0.2% — but the only gate was
-  at 10%, which exists to catch recording the room by mistake. A link reading
+- **`--calibrate-dac` could write a wrong table from a capture whose levels
+  moved.** Each pass of a capture drives the SID through identical codes, so a
+  healthy rig's `pass_spread_frac` reads 0.01–0.2% — but the only gate was at
+  10%, which exists to catch recording the room by mistake. A run reading
   0.6–2.5% therefore passed, and the table fitted to it agreed with the same
-  chip's Ultimate-measured table on 95 of 256 entries (correlation 0.565 — a
-  worse mismatch than applying a *different chip's* table), after which `"auto"`
-  preferred that file on every later run. Like any wrong ladder it is
-  signal-correlated distortion: clean over a quiet passage, gross hiss once the
-  material gets loud, so it presents as playback breaking partway in rather than
-  as a bad calibration. Captures above 0.5% are now refused with their own
-  message, and rings above 0.2% are marked marginal as they are measured. **If a
-  calibration of yours logged pass spreads near or above 1%, re-measure it** —
-  or delete it and let `"auto"` fall back.
+  chip's earlier table on 95 of 256 entries (correlation 0.565 — a worse mismatch
+  than applying a *different chip's* table), after which `"auto"` preferred that
+  file on every later run. Like any wrong ladder it is signal-correlated
+  distortion: clean over a quiet passage, gross hiss once the material gets loud,
+  so it presents as playback breaking partway in rather than as a bad
+  calibration. Captures above 0.5% are now refused, with a message that says the
+  input is right and asks what else is reaching that output; rings above 0.2% are
+  marked marginal as they are measured. This is a check on the data, not on any
+  particular link — a rig that reads in the healthy band is unaffected however it
+  connects. **If a calibration of yours logged pass spreads near or above 1%,
+  re-measure it** — or delete it and let `"auto"` fall back.
 - **A calibration measured over a link with no SID config API no longer applies
   itself silently.** Only the Ultimate can report which SID answers `$D400`, so
   every other link measures whatever is there and files it under one key. That is

@@ -772,7 +772,7 @@ class RingCaptureGateTest(unittest.TestCase):
             diagnostics={"pass_spread_frac": 0.0185, "passes": 3},
         )
         with patch.object(dc, "extract_slot_levels", return_value=wobbly):
-            with self.assertRaises(dc.MeasurementError) as ctx:
+            with self.assertRaises(dc.UnsteadyRingError) as ctx:
                 dc.read_ring_capture(cap, 41, RING)
         msg = str(ctx.exception)
         self.assertIn("1.85%", msg)
@@ -780,6 +780,18 @@ class RingCaptureGateTest(unittest.TestCase):
         # but unsteady, or it reads as "your capture device is wrong" and sends
         # the user to re-cable a rig that is already correct.
         self.assertIn("not replaying the same levels", msg)
+
+    def test_the_unsteady_advice_does_not_send_the_user_to_the_cabling(self):
+        """The number this failure is built from reads like the mistracked-capture
+        one, so the advice has to invert: the input is right and the ring is
+        playing. Pointing at the input instead would have someone re-cable a rig
+        that is already correct."""
+        msg = dc._unsteady_ring_message("its ring passes disagree by 1.85%")
+        self.assertIn("input is right", msg)
+        self.assertNotIn("--audio-device", msg)
+        # The one cause the tool cannot fix for the user: without a config API it
+        # cannot switch a second SID out of the measurement.
+        self.assertIn("second SID", msg)
 
     def test_the_healthy_band_still_passes_untouched(self):
         """The gate moved by 20x, so the case it must not start refusing is the
