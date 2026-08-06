@@ -81,6 +81,7 @@ from .c64 import (
     REU,
     SID,
     VECTORS,
+    halt_quantum_bytes,
 )
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import AudioDSP, DSPParams
@@ -266,15 +267,39 @@ def _stomp_spans(
 
 NEUTRAL_SAMPLE = 7  # mid-scale 4-bit value; keeps the speaker cone centered
 
-# CIA #2 control words for NMI bring-up / teardown.
+# CIA #2 control words for NMI bring-up / teardown. Each pair is one
+# write_regs(CIA2.ICR, ...) = $DD0D then $DD0E, so the second byte of every pair
+# lands in CRA, not in ICR:
 #  - DISABLE: clear all five IRQ-source bits in ICR (high bit = 0 → clear).
-#  - ICR_CLEAR: companion write to acknowledge any pending NMI.
+#  - CRA_STOP: the CRA companion — Timer A stopped. Note this does NOT clear the
+#    latched ICR *flags*; only a read of $DD0D does that (see _arm_nmi_once).
 #  - ENABLE_TIMER_A_NMI: set bit 7 + bit 0 (enable timer-A IRQ source).
 #  - TIMER_A_CONTINUOUS: continuous mode, start (CRA bits 0+4).
 CIA2_ICR_DISABLE_ALL = 0x7F
-CIA2_ICR_CLEAR = 0x00
+CIA2_CRA_STOP = 0x00
 CIA2_ICR_ENABLE_TIMER_A_NMI = 0x81
 CIA2_TIMER_A_CONTINUOUS = 0x11
+
+# Arming the NMI consumer is verified by watching the C64-side read pointer R
+# move, because the two CIA #2 writes (and the $0318 vector) ride a transport
+# whose _emit absorbs a failed write instead of raising — a dropped one leaves R
+# frozen and the session silent, with nothing on the host the wiser.
+# 30 ms is an unambiguous window: R advances at ≈sample_rate B/s, so ≈240 bytes
+# at 8 kHz. Five attempts cost ≈150 ms in the failure case only, a fifth of the
+# ≈768 ms prebuffer the worker is already sitting on.
+NMI_ARM_MAX_ATTEMPTS = 5
+NMI_ARM_VERIFY_DELAY_S = 0.03
+# Consecutive identical R readings in the servo before warning that the consumer
+# died mid-session. R moves ~1 KB per chunk period when alive, so identical
+# back-to-back readings are conclusive rather than a heuristic.
+NMI_STALL_WARN_CHUNKS = 8
+
+# Share of the backend's sustained write-rate ceiling the audio drip may spend.
+# The render thread wants the rest of the same socket, and audio that overruns
+# its slots does not merely lose the anti-halt benefit — it stops collecting and
+# pads silence instead (see _halt_quantum). Half leaves a frame-pushing scene its
+# own headroom while still affording a quantum well inside one NMI period.
+AUDIO_WRITE_RATE_SHARE = 0.5
 
 # Float-sample → 4-bit volume code: (x + 1) * VOLUME_SCALE, clipped to
 # [0, MAX_VOLUME]. Centers a [-1, 1] input on 7.5 → DAC ~half-scale.
@@ -490,6 +515,15 @@ HOST_DMA_SERVO_KI = 5e-7  # s/(byte*chunk)    (HW-TUNABLE)
 HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
+
+# --- Worker health telemetry --------------------------------------------
+# Seconds between the worker's health lines (0 disables). The stop() summary
+# reports session totals, which cannot distinguish a fault that is present
+# throughout from one that grows, clears and returns — and the DAC artifacts
+# worth chasing are the time-varying ones. The window is short enough to place
+# an onset to within a few seconds of where a listener hears it and long enough
+# that a normal -v run is not drowned by it.
+AUDIO_HEALTH_LOG_INTERVAL_S = 5.0
 
 # --- Adaptive NMI-rate compensation (closed loop on measured R rate) ------
 # The gap servo above keeps the ring centered but locks playback to the
@@ -1407,6 +1441,14 @@ class AudioStreamer:
         # _nmi_timer_started gates whether a mid-stream update writes immediately.
         self._pitch_multiplier = 1.0
         self._nmi_timer_started = False
+        # NMI arm verification + stall watchdog state. _nmi_arm_attempts is how
+        # many arms the last bring-up needed (1 = clean, or an unverifiable
+        # backend); the rest track the servo's consecutive-identical-R count so
+        # the mid-session stall warning fires once. All reset in stop().
+        self._nmi_arm_attempts = 0
+        self._last_r_reading = -1
+        self._r_stall_chunks = 0
+        self._nmi_stall_warned = False
         self._reu_cia1_latch_nominal = REU_PUMP_CIA1_LATCH
         # REU mic mode: tracks the host's REU write position (wraps at
         # REU_MIC_SIZE). 0 until _start_mic_for_reu_pump() seeds it with
@@ -1426,6 +1468,28 @@ class AudioStreamer:
         # producer-side decode is the bottleneck (not DMA pacing).
         self._full_underruns = 0
         self._partial_underruns = 0
+        # Drip-schedule telemetry. _drip_chunk paces each sub-write to its own
+        # slot deadline; a slot reached after its deadline has already passed
+        # gets written immediately, so the remaining sub-writes of that chunk
+        # bunch up at the end of the period. That degrades the spread back
+        # toward the one-write-per-chunk cadence the split exists to escape
+        # (measured: 4-20 Hz modulation 0.65 spread vs 8.33 bursted), without
+        # showing up in the underrun counts. Counted here so a run can be
+        # scored on whether the spread actually held.
+        self._late_slots = 0
+        self._total_slots = 0
+        self._late_worst_s = 0.0
+        # Health-line window state: the wall-clock of the last emitted line,
+        # the counter snapshot taken with it (for per-window deltas), and the
+        # servo gap's excursion within the window.
+        self._health_last_log = 0.0
+        self._health_mark: tuple[int, int, int, int] = (0, 0, 0, 0)
+        self._health_gap_min = -1
+        self._health_gap_max = -1
+        # Instantaneous consumer-rate excursion within the health window (the
+        # EMA alone smooths away exactly the wander worth seeing).
+        self._r_rate_min = -1.0
+        self._r_rate_max = -1.0
         # Bytes-per-item queue: each item is a pre-encoded bytes blob of
         # 4-bit volume codes (one byte per sample). This collapses the old
         # per-sample put/get (which hit ~88K lock acquisitions/sec on a
@@ -1499,8 +1563,10 @@ class AudioStreamer:
         self.api.write_memory_file(
             f"{RING_BUFFER_ADDR:04X}", bytes([self._neutral_byte] * RING_BUFFER_SIZE)
         )
-        # Disable CIA #2 IRQs, clear ICR, then point NMI vector → $C020.
-        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+        # Disable CIA #2 IRQs + stop Timer A, then point NMI vector → $C020.
+        # _arm_nmi_once re-lands the vector when the timer arms, so a dropped
+        # write here is recoverable.
+        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         self.api.write_regs(
             f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
         )
@@ -1656,6 +1722,225 @@ class AudioStreamer:
         adjusted_period = max(2, round((nominal_latch + 1) / self._pitch_multiplier))
         return max(1, adjusted_period - 1)
 
+    def _collect_until(
+        self, chunk_buf: bytearray, n: int, leftover: bytes, deadline: float
+    ) -> tuple[int, int, bytes]:
+        """Fill ``chunk_buf`` from ``leftover`` then the queue until it holds
+        ``chunk_size`` bytes or ``deadline`` passes.
+
+        Returns ``(new_n, taken_this_call, new_leftover)``. Split out of the
+        worker so collection can be resumed across several short deadlines —
+        the drip schedule calls it once per quantum slot, which is what lets the
+        next chunk be gathered *while* the current one is being written out.
+        """
+        taken = 0
+        size = self.chunk_size
+        if leftover and n < size:
+            take = min(len(leftover), size - n)
+            chunk_buf[n : n + take] = leftover[:take]
+            n += take
+            taken += take
+            leftover = leftover[take:]
+        while n < size and not leftover and self.running:
+            remaining = deadline - time.monotonic()
+            # Past the deadline, still take anything already waiting rather than
+            # reporting an underrun over a full queue. The drip schedule calls
+            # this once per quantum slot, and a write that runs longer than its
+            # slot leaves every later slot already expired — without the
+            # non-blocking drain that starves collection completely and
+            # NEUTRAL-pads every chunk.
+            try:
+                piece = self.q.get(timeout=remaining) if remaining > 0 else self.q.get_nowait()
+            except queue.Empty:
+                break
+            take = min(len(piece), size - n)
+            chunk_buf[n : n + take] = piece[:take]
+            n += take
+            taken += take
+            if take < len(piece):
+                leftover = piece[take:]
+        return n, taken, leftover
+
+    def _drip_chunk(
+        self,
+        payload: bytes,
+        addr: int,
+        chunk_buf: bytearray,
+        leftover: bytes,
+        base_time: float,
+        chunk_period: float,
+    ) -> tuple[int, int, bytes]:
+        """Write `payload` into the ring as sub-NMI-period pieces spread evenly
+        across `chunk_period`, collecting the *next* chunk in the gaps between
+        them. Returns that collection's ``(n, taken, leftover)``.
+
+        Two separate effects, and it is easy to bank only the first. Splitting
+        keeps each write's CPU halt inside one NMI period, so it cannot swallow a
+        second CIA #2 underflow and lose the tick. Spreading keeps those halts
+        from re-bunching into one low-frequency event — which matters because
+        modulation sensitivity peaks around 4-20 Hz, right where a single write
+        per chunk period lands. Measured on hardware at the 12 kHz NTSC default,
+        against a 376 Hz carrier: one 1024-byte write gives 27.3 Hz of FM
+        deviation, the same bytes as 64-byte writes issued back-to-back give
+        10.8 Hz, and spread across the period they give 5.3 Hz.
+
+        Collecting between the writes rather than before them is what keeps the
+        producer's full period of collect time — the writes now occupy the
+        period that used to be spent asleep waiting for the pace deadline.
+        """
+        quantum = self._halt_quantum() or len(payload)
+        slots = max(1, (len(payload) + quantum - 1) // quantum)
+        slot_period = chunk_period / slots
+        n = 0
+        taken_total = 0
+        for i in range(slots):
+            slot_deadline = base_time + i * slot_period
+            n, taken, leftover = self._collect_until(chunk_buf, n, leftover, slot_deadline)
+            taken_total += taken
+            if not self.running:
+                break
+            sleep_s = slot_deadline - time.monotonic()
+            self._total_slots += 1
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            else:
+                self._late_slots += 1
+                self._late_worst_s = max(self._late_worst_s, -sleep_s)
+            piece = payload[i * quantum : (i + 1) * quantum]
+            if not piece:
+                break
+            self.api.write_memory_file(f"{addr:04X}", piece)
+            addr += len(piece)
+            if addr >= RING_BUFFER_END:
+                addr = RING_BUFFER_ADDR
+        return n, taken_total, leftover
+
+    def _maybe_log_health(self, now: float) -> None:
+        """Emit one worker-health line per window, as deltas over that window.
+
+        Deltas rather than totals because the question this answers is *when*,
+        not *how much*: a fault that appears a few seconds in, deepens, clears
+        and returns is indistinguishable from a steady one in the session
+        totals stop() prints. Every field is already maintained by the worker,
+        so this costs one clock read per chunk.
+        """
+        if AUDIO_HEALTH_LOG_INTERVAL_S <= 0:
+            return
+        mark = (self._full_underruns, self._partial_underruns, self._late_slots, self._total_slots)
+        if self._health_last_log == 0.0:
+            self._health_last_log = now
+            self._health_mark = mark
+            return
+        dt = now - self._health_last_log
+        if dt < AUDIO_HEALTH_LOG_INTERVAL_S:
+            return
+        d_full, d_part, d_late, d_slots = (
+            a - b for a, b in zip(mark, self._health_mark, strict=True)
+        )
+        gap = (
+            "n/a" if self._health_gap_min < 0 else f"{self._health_gap_min}..{self._health_gap_max}"
+        )
+        r = (
+            "n/a"
+            if self._r_rate_ema < 0
+            else f"{self._r_rate_ema:.0f}({self._r_rate_min:.0f}..{self._r_rate_max:.0f})"
+        )
+        log.info(
+            "audio: gap=%s late=%d/%d (worst +%.1fms) under=%d/%d writes=%.0f/s "
+            "quantum=%dB R=%s Hz latch=%d",
+            gap,
+            d_late,
+            d_slots,
+            self._late_worst_s * 1000.0,
+            d_full,
+            d_part,
+            d_slots / dt,
+            self._halt_quantum(),
+            r,
+            self._nmi_latch,
+        )
+        self._health_last_log = now
+        self._health_mark = mark
+        self._health_gap_min = -1
+        self._health_gap_max = -1
+        self._r_rate_min = -1.0
+        self._r_rate_max = -1.0
+        self._late_worst_s = 0.0
+
+    def _halt_quantum(self) -> int:
+        """Bytes per ring write, sized so each write's CPU halt fits inside one
+        NMI period.
+
+        Derived from the live latch rather than a constant, so it tracks the
+        configured rate, PAL vs NTSC, and any pitch-multiplier retune — the
+        period it has to fit inside is exactly ``latch + 1`` cycles.
+
+        That halt-derived size is then floored by what the link can actually
+        carry. The quantum sets the write *rate* — chunk_size/quantum writes per
+        chunk period — and the render thread shares this one socket. Ask for
+        more writes than the link sustains and each one runs past its slot,
+        which starves collection and NEUTRAL-pads chunks over a full queue: on
+        hardware a 65-byte quantum (188 writes/s) produced 1744 full underruns
+        and lapped the ring. The perceptual cost of backing off is small — the
+        measured 4-20 Hz modulation at 128 B is 1.96 against 2.41 at 64 B, i.e.
+        slightly *better* — because what matters most is the write cadence
+        clearing that band at all, not how far past it lands.
+        """
+        period_cycles = (self._nmi_latch or self._compensated_latch()) + 1
+        quantum = halt_quantum_bytes(period_cycles)
+        max_hz = getattr(getattr(self.api, "profile", None), "max_write_rate_hz", None)
+        if max_hz:
+            chunk_period = self.chunk_size / self.effective_rate
+            max_slots = max(1, int(chunk_period * max_hz * AUDIO_WRITE_RATE_SHARE))
+            quantum = max(quantum, -(-self.chunk_size // max_slots))
+        return min(self.chunk_size, quantum)
+
+    def _read_read_ptr(self) -> int | None:
+        """The NMI consumer's read pointer R — the self-modifying LDA operand at
+        ``$C025`` — or None when the read failed or came back outside the ring.
+
+        None means "couldn't tell": a torn or dropped read, or a backend with no
+        read capability at all (`profile.supports_read` false, older TeensyROM
+        firmware, where read_memory raises rather than returning None). Every
+        caller degrades to its open-loop behavior on None rather than treating a
+        bad read as data.
+        """
+        try:
+            r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
+        except Exception as e:
+            log.debug("read R failed: %s", e)
+            return None
+        if r is None or len(r) != 2:
+            return None
+        r_addr = r[0] | (r[1] << 8)
+        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
+            return None
+        return r_addr
+
+    def _arm_nmi_once(self, latch: int) -> None:
+        """One full arm of the NMI audio consumer, idempotent so a retry is just
+        another call.
+
+        The `$0318` vector is re-landed here, not only in _upload_nmi_and_buffers:
+        if *that* write is the one the transport dropped, the KERNAL NMI handler
+        is still installed, and its `#$7F` → `$DD0D` kills CIA #2 interrupts —
+        indistinguishable from a dropped CIA write.
+
+        The `$DD0D` read is how the latched ICR flags get cleared (a write can't),
+        deasserting the CIA's interrupt line so the next Timer A underflow is a
+        clean 0→1 transition. Best-effort: a backend that can't read still arms.
+        """
+        self.api.write_regs(
+            f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
+        )
+        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
+        try:
+            self.api.read_memory(CIA2.ICR, 1)
+        except Exception as e:
+            log.debug("ICR flag clear read failed: %s", e)
+        # Arm + start timer A, set NMI source.
+        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+
     def _start_nmi_timer(self) -> None:
         # Adaptive mode: arm at the per-mode seed (learned value or class default)
         # so playback starts near the converged rate — the loop trims from there
@@ -1669,9 +1954,35 @@ class AudioStreamer:
             latch = self._compensated_latch()
         self._nmi_latch = latch
         self._nmi_timer_started = True
-        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
-        # Arm + start timer A, set NMI source.
-        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+        before = self._read_read_ptr()
+        if before is None:
+            # No R to check against, so a retry would be indistinguishable from
+            # arming five times for nothing. Fire once and accept the risk.
+            self._nmi_arm_attempts = 1
+            self._arm_nmi_once(latch)
+            return
+        for attempt in range(1, NMI_ARM_MAX_ATTEMPTS + 1):
+            self._nmi_arm_attempts = attempt
+            self._arm_nmi_once(latch)
+            time.sleep(NMI_ARM_VERIFY_DELAY_S)
+            after = self._read_read_ptr()
+            if after is None or after != before:
+                # R advanced (or went unreadable, which is not evidence of a dead
+                # consumer) — the arm took.
+                if attempt > 1:
+                    log.warning(
+                        "audio: NMI arm took %d attempts (a CIA write was dropped)", attempt
+                    )
+                else:
+                    log.debug("audio: NMI arm verified first attempt (R was $%04X)", before)
+                return
+        log.warning(
+            "audio: NMI consumer never started after %d arm attempts — audio will be "
+            "silent this session (R frozen at $%04X). The CIA #2 / NMI-vector writes "
+            "are not reaching the machine.",
+            NMI_ARM_MAX_ATTEMPTS,
+            before,
+        )
 
     def set_nmi_latch_for_mode(
         self, display_mode: str, calibration: dict[str, float] | None = None
@@ -1779,6 +2090,9 @@ class AudioStreamer:
         reading can't stall or sprint the schedule."""
         try:
             write_addr = RING_BUFFER_ADDR
+            # Just past the last byte actually written — what the servo needs as
+            # the live W head, which the pipeline separates from `write_addr`.
+            w_head = RING_BUFFER_ADDR
             prebuffered = False
             bytes_prebuffered = 0
             chunk_buf = bytearray(self.chunk_size)
@@ -1791,6 +2105,15 @@ class AudioStreamer:
             prebuffer_bytes = PREBUFFER_CHUNKS * self.chunk_size
             # Pace + collect deadlines. Zero until NMI starts.
             next_write_time = 0.0
+            # The chunk collected last iteration, dripped out over this one. One
+            # chunk_period of extra latency buys collection and writing the
+            # concurrency they need to overlap; the queued-sample count is not
+            # decremented until it is actually written, so position_seconds()
+            # still reports where the audio really is.
+            pending: bytes | None = None
+            pending_addr = RING_BUFFER_ADDR
+            pending_from_queue = 0
+            pending_epoch = 0
 
             while self.running:
                 # Transport-flush epoch (Phase 4): captured before we collect a
@@ -1798,39 +2121,59 @@ class AudioStreamer:
                 # data is stale (pre-splice) and is discarded before the ring
                 # write below rather than played.
                 epoch = self._flush_epoch
-                if prebuffered:
-                    pace_deadline = next_write_time
-                    collect_deadline = pace_deadline
-                else:
-                    pace_deadline = 0.0
-                    collect_deadline = time.monotonic() + chunk_period
+                pace_deadline = next_write_time if prebuffered else 0.0
 
                 n = 0
                 from_queue = 0
 
-                if leftover:
-                    take = min(len(leftover), self.chunk_size)
-                    chunk_buf[:take] = leftover[:take]
-                    n = take
-                    from_queue = take
-                    leftover = leftover[take:]
+                if prebuffered and pending is not None:
+                    if epoch != pending_epoch:
+                        # The splice landed after this chunk left the queue: drop
+                        # it unplayed, with the same paired subtract the
+                        # freshly-collected case uses below.
+                        if pending_from_queue:
+                            with self._count_lock:
+                                self._queued_samples = max(
+                                    0, self._queued_samples - pending_from_queue
+                                )
+                                self._pushed_count = max(0, self._pushed_count - pending_from_queue)
+                        pending = None
+                        pending_from_queue = 0
+                    else:
+                        # Pause fast mute (Phase 4): NEUTRAL-fill the unplayed ring
+                        # ahead of the read head so already-queued content goes
+                        # silent quickly. Stomping from pending_addr keeps the
+                        # original ordering — the chunk about to be written lands
+                        # at the front of the stomped span, exactly as it did when
+                        # the write was one unsplit call.
+                        if self._stomp_requested:
+                            self._stomp_requested = False
+                            self._stomp_ring(pending_addr)
+                        n, from_queue, leftover = self._drip_chunk(
+                            pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
+                        )
+                        if pending_from_queue:
+                            with self._count_lock:
+                                self._queued_samples = max(
+                                    0, self._queued_samples - pending_from_queue
+                                )
+                        w_head = pending_addr + len(pending)
+                        if w_head >= RING_BUFFER_END:
+                            w_head -= RING_BUFFER_SIZE
+                        pending = None
+                        pending_from_queue = 0
 
-                # Block with deadline. Returns early once chunk_buf is
-                # full or once the producer is silent past the deadline.
-                while n < self.chunk_size and not leftover and self.running:
-                    remaining = collect_deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    try:
-                        piece = self.q.get(timeout=remaining)
-                    except queue.Empty:
-                        break
-                    take = min(len(piece), self.chunk_size - n)
-                    chunk_buf[n : n + take] = piece[:take]
-                    n += take
-                    from_queue += take
-                    if take < len(piece):
-                        leftover = piece[take:]
+                if pending is None and n < self.chunk_size:
+                    # Either priming the pipeline (nothing to drip yet) or the
+                    # drip's interleaved slots did not fill the chunk. Fall back
+                    # to the plain blocking collect against the same deadline.
+                    collect_deadline = (
+                        pace_deadline if prebuffered else time.monotonic() + chunk_period
+                    )
+                    n, taken, leftover = self._collect_until(
+                        chunk_buf, n, leftover, collect_deadline
+                    )
+                    from_queue += taken
 
                 if not self.running:
                     break
@@ -1864,20 +2207,35 @@ class AudioStreamer:
                     leftover = b""
                     continue
 
-                # Pause fast mute (Phase 4): NEUTRAL-fill the unplayed ring ahead
-                # of the read head so already-queued content goes silent quickly.
-                # Executed here (worker-side) so write_addr stays worker-local and
-                # no ring DMA races the servo. Only meaningful once the NMI is
-                # consuming (prebuffered); before that R is stale.
+                # Pause fast mute on a priming iteration — the pending path above
+                # handles the steady-state case, where the stomp has to land
+                # against the chunk that is about to go out rather than this one.
                 if self._stomp_requested and prebuffered:
                     self._stomp_requested = False
                     self._stomp_ring(write_addr)
 
                 if prebuffered:
+                    # Hand the chunk to the next iteration, which drips it into
+                    # the ring while collecting its successor. Nothing is written
+                    # here, so the queued-sample count stays untouched until the
+                    # bytes actually land.
                     sleep_s = pace_deadline - time.monotonic()
                     if sleep_s > 0:
                         time.sleep(sleep_s)
+                    pending = bytes(chunk_buf[:n])
+                    pending_addr = write_addr
+                    pending_from_queue = from_queue
+                    pending_epoch = epoch
+                    write_addr += n
+                    if write_addr >= RING_BUFFER_END:
+                        write_addr = RING_BUFFER_ADDR
+                    next_write_time += self._next_pace_increment(w_head, chunk_period)
+                    self._maybe_log_health(time.monotonic())
+                    continue
 
+                # Prebuffer fill: the NMI is not consuming yet, so there is no
+                # halt to hide from — one unsplit write is both correct and the
+                # quickest way to get the ring primed.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
                 if from_queue:
                     with self._count_lock:
@@ -1885,32 +2243,35 @@ class AudioStreamer:
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
+                w_head = write_addr
 
-                if not prebuffered:
-                    bytes_prebuffered += n
-                    if bytes_prebuffered >= prebuffer_bytes:
-                        self._start_nmi_timer()
-                        prebuffered = True
-                        # R only becomes meaningful now that the NMI consumes;
-                        # start the servo integrator + adaptive-rate loop clean.
-                        self._servo_integ = 0.0
-                        self._r_rate_ema = -1.0
-                        self._last_r_addr = -1
-                        self._last_r_time = 0.0
-                        self._nmi_loop_chunk_count = 0
-                        self._nmi_loop_acquiring = True
-                        # Hold the rate loop at the seed until the start/seek
-                        # transient settles (post-seek decode catch-up + the
-                        # playlist's frame-drop snap), so it acquires from a steady
-                        # R instead of chasing the spin-up reading. See
-                        # NMI_RATE_LOOP_WARMUP_S.
-                        self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
-                        # Pace the next write one chunk_period out so the
-                        # PREBUFFER_CHUNKS slack stays steady instead of
-                        # getting eaten up immediately.
-                        next_write_time = time.monotonic() + chunk_period
-                else:
-                    next_write_time += self._next_pace_increment(write_addr, chunk_period)
+                bytes_prebuffered += n
+                if bytes_prebuffered >= prebuffer_bytes:
+                    self._start_nmi_timer()
+                    prebuffered = True
+                    # R only becomes meaningful now that the NMI consumes;
+                    # start the servo integrator + adaptive-rate loop clean.
+                    self._servo_integ = 0.0
+                    self._r_rate_ema = -1.0
+                    self._last_r_addr = -1
+                    self._last_r_time = 0.0
+                    # Health windows measure the consuming phase only — the
+                    # prebuffer fill writes unsplit and has no slots to be late.
+                    self._health_last_log = 0.0
+                    self._health_gap_min = -1
+                    self._health_gap_max = -1
+                    self._nmi_loop_chunk_count = 0
+                    self._nmi_loop_acquiring = True
+                    # Hold the rate loop at the seed until the start/seek
+                    # transient settles (post-seek decode catch-up + the
+                    # playlist's frame-drop snap), so it acquires from a steady
+                    # R instead of chasing the spin-up reading. See
+                    # NMI_RATE_LOOP_WARMUP_S.
+                    self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
+                    # Pace the next write one chunk_period out so the
+                    # PREBUFFER_CHUNKS slack stays steady instead of
+                    # getting eaten up immediately.
+                    next_write_time = time.monotonic() + chunk_period
         except Exception:
             # Without this, a thread crash means audio goes silent forever and
             # main loop has no clue why. Mark not-running so callers can detect.
@@ -1930,45 +2291,86 @@ class AudioStreamer:
         chunk; it never crashes or freezes the schedule. The increment is added
         to the *absolute* ``next_write_time`` by the caller, so REST read latency
         only shortens the next sleep — it does not snap the schedule forward.
+
+        Also the only place a consumer that dies *mid*-session becomes visible —
+        see ``_note_r_reading``.
         """
         if not self.host_dma_servo:
             return chunk_period
-        r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
-        if r is None or len(r) != 2:
+        r_addr = self._read_read_ptr()
+        if r_addr is None:
             return chunk_period
-        r_addr = r[0] | (r[1] << 8)
-        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
-            return chunk_period
+        self._note_r_reading(r_addr)
         gap = (write_addr - r_addr) % RING_BUFFER_SIZE
         self._servo_gap_last = gap
         self._servo_gap_min = gap if self._servo_gap_min < 0 else min(self._servo_gap_min, gap)
         self._servo_gap_max = max(self._servo_gap_max, gap)
+        self._health_gap_min = gap if self._health_gap_min < 0 else min(self._health_gap_min, gap)
+        self._health_gap_max = max(self._health_gap_max, gap)
         # Slow outer loop: track R's *rate* and retune the NMI latch so the
         # consumer lands at sample_rate (correct speed/pitch). Reuses the r_addr
         # already read above — no extra REST traffic. Reads the rate, not the gap
         # (the gap servo below nulls the gap, so it carries no rate signal).
         # getattr-guarded so __new__-built test streamers read as adaptive-off.
+        # The rate estimate is taken either way — it is the only view of
+        # content-dependent tick loss, and it costs nothing on top of the read
+        # the gap servo just did. Only the latch *steering* is opt-in.
         if getattr(self, "nmi_rate_adaptive", False):
             self._update_nmi_rate_loop(r_addr)
+        else:
+            self._observe_r_rate(r_addr)
         period, self._servo_integ = _servo_period(gap, self._servo_integ, chunk_period=chunk_period)
         return period
 
-    def _update_nmi_rate_loop(self, r_addr: int) -> None:
-        """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2
-        Timer A latch toward making it equal sample_rate — fast at first
-        (acquisition, ~0.5 s, so the start glide is brief), then ~once per second.
+    def _note_r_reading(self, r_addr: int) -> None:
+        """Watch for an NMI consumer that stopped after a verified start.
 
-        Called per chunk from _next_pace_increment with the already-read R
-        address, so it adds no REST traffic and only runs on the host-DMA path
-        (the REU pump never starts the worker; open-loop returns before this).
-        Differencing R over wall-clock (with the drift-probe's torn/backward-read
-        guard) gives the rate the gap can't; an EMA rejects the noisy 16-bit
-        self-modifying-operand read. The actual latch move is the pure
-        _nmi_rate_step (clamped to the handler budget)."""
-        # Acquisition uses a responsive EMA + short cadence so the start-of-
-        # playback pitch glide is brief; the fine loop uses the slow values.
-        acquiring = self._nmi_loop_acquiring
-        alpha = NMI_RATE_LOOP_ACQUIRE_ALPHA if acquiring else NMI_RATE_LOOP_EMA_ALPHA
+        A consumer killed mid-session (a stray `#$7F` to `$DD0D`, a reset behind
+        our back) otherwise presents as unexplained silence plus the fast
+        playback the servo produces while chasing a dead reader — the servo has
+        this reading in hand either way, so saying so costs nothing. Warns once
+        per session; the pacing behavior is untouched.
+        """
+        # getattr-guarded so __new__-built test streamers still pace normally.
+        if r_addr == getattr(self, "_last_r_reading", -1):
+            self._r_stall_chunks = getattr(self, "_r_stall_chunks", 0) + 1
+        else:
+            self._last_r_reading = r_addr
+            self._r_stall_chunks = 0
+        if self._r_stall_chunks >= NMI_STALL_WARN_CHUNKS and not getattr(
+            self, "_nmi_stall_warned", False
+        ):
+            self._nmi_stall_warned = True
+            log.warning(
+                "audio: NMI consumer stalled — R has not moved from $%04X for %d chunks. "
+                "Audio is silent and playback pace is unreliable from here.",
+                r_addr,
+                self._r_stall_chunks,
+            )
+
+    def _observe_r_rate(self, r_addr: int) -> None:
+        """Track the NMI consumer's byte rate dR/dt, from the R the gap servo
+        already read. Observation only — nothing here steers anything.
+
+        Split out of ``_update_nmi_rate_loop`` because that loop is off by
+        default (steering on R is a closed dead end: R is a biased estimator
+        under bus load, measured biased in *both* directions depending on read
+        method). Gating the measurement on the disabled controller meant the one
+        quantity that shows content-dependent tick loss read zero in every log,
+        which is a diagnostic hole rather than a safety property — the guardrail
+        is against controlling on R, not against looking at it.
+
+        The instantaneous per-chunk rate is kept alongside the EMA: the EMA says
+        where the consumer sits, the spread between successive instantaneous
+        values says how much it is *moving*, and a consumer whose rate wanders
+        drags playback pitch with it through the gap servo, which faithfully
+        follows R by design.
+        """
+        alpha = (
+            NMI_RATE_LOOP_ACQUIRE_ALPHA
+            if getattr(self, "_nmi_loop_acquiring", False)
+            else NMI_RATE_LOOP_EMA_ALPHA
+        )
         now = time.monotonic()
         if self._last_r_addr >= 0 and self._last_r_time > 0.0:
             dt = now - self._last_r_time
@@ -1981,15 +2383,30 @@ class AudioStreamer:
                     self._r_rate_ema = inst  # seed (no ramp-from-zero)
                 else:
                     self._r_rate_ema += alpha * (inst - self._r_rate_ema)
+                self._r_rate_min = inst if self._r_rate_min < 0 else min(self._r_rate_min, inst)
+                self._r_rate_max = max(self._r_rate_max, inst)
         self._last_r_addr = r_addr
         self._last_r_time = now
 
+    def _update_nmi_rate_loop(self, r_addr: int) -> None:
+        """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2
+        Timer A latch toward making it equal sample_rate — fast at first
+        (acquisition, ~0.5 s, so the start glide is brief), then ~once per second.
+
+        Called per chunk from _next_pace_increment with the already-read R
+        address, so it adds no REST traffic and only runs on the host-DMA path
+        (the REU pump never starts the worker; open-loop returns before this).
+        The rate estimate itself comes from _observe_r_rate, which runs whether
+        or not this loop does. The actual latch move is the pure _nmi_rate_step
+        (clamped to the handler budget)."""
+        self._observe_r_rate(r_addr)
+        acquiring = self._nmi_loop_acquiring
         # Warm-up gate: during the post-start / post-disturbance settle window the
-        # EMA keeps warming (above) but the latch is held at the seed — the seed is
-        # already near-converged, so this plays at ~the right rate instead of
-        # chasing the unrepresentative spin-up R and gliding back. The chunk counter
-        # is not advanced, so the normal decide cadence resumes cleanly on release.
-        if now < self._nmi_warmup_until:
+        # EMA keeps warming (in _observe_r_rate) but the latch is held at the seed
+        # — the seed is already near-converged, so this plays at ~the right rate
+        # instead of chasing the unrepresentative spin-up R and gliding back. The
+        # chunk counter is not advanced, so the decide cadence resumes cleanly.
+        if time.monotonic() < self._nmi_warmup_until:
             return
 
         self._nmi_loop_chunk_count += 1
@@ -2987,15 +3404,11 @@ class AudioStreamer:
 
     def _stomp_ring(self, write_addr: int) -> None:
         """NEUTRAL-fill the unplayed ring region ``(R + guard .. W)`` for the
-        pause fast mute. Reads the NMI read pointer R with the same sanity
-        pattern as _next_pace_increment; on a bad read it just returns (the
-        drained queue pads the ring to silence within ~1 s regardless). Called
-        only from the worker thread, so write_addr is the live worker-local W."""
-        r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
-        if r is None or len(r) != 2:
-            return
-        r_addr = r[0] | (r[1] << 8)
-        if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
+        pause fast mute. On a bad R read it just returns (the drained queue pads
+        the ring to silence within ~1 s regardless). Called only from the worker
+        thread, so write_addr is the live worker-local W."""
+        r_addr = self._read_read_ptr()
+        if r_addr is None:
             return
         neutral = bytes([self._neutral_byte])
         for addr, ln in _stomp_spans(r_addr, write_addr):
@@ -3034,7 +3447,7 @@ class AudioStreamer:
         # IRQ vector stops it — no host thread to join.
         self._disarm_reu_pump()
         try:
-            self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+            self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
             self.api.write_memory("D418", "00")
             if self.digi_boost:
                 self._disable_digi_boost()
@@ -3067,6 +3480,10 @@ class AudioStreamer:
         # mode, so a stale multiplier must not leak across scenes).
         self._nmi_timer_started = False
         self._pitch_multiplier = 1.0
+        self._nmi_arm_attempts = 0
+        self._last_r_reading = -1
+        self._r_stall_chunks = 0
+        self._nmi_stall_warned = False
         # Clear adaptive-rate loop state too, so the next consumer re-acquires
         # from nominal rather than carrying a stale R-rate estimate.
         self._r_rate_ema = -1.0
@@ -3074,22 +3491,47 @@ class AudioStreamer:
         self._last_r_time = 0.0
         self._nmi_loop_chunk_count = 0
         self._nmi_loop_acquiring = True
-        # Report underrun telemetry. Each full underrun is an audible
-        # click; partials are less audible but still indicate producer
-        # stalls. Deterministic, source-correlated counts (same numbers
-        # across reruns of the same video) point at PyAV decode
+        # Report underrun telemetry for the run that just ended. Each full
+        # underrun is an audible click; partials are less audible but still
+        # indicate producer stalls. Deterministic, source-correlated counts
+        # (same numbers across reruns of the same video) point at PyAV decode
         # stalls rather than DMA timing.
-        if self._full_underruns or self._partial_underruns:
-            log.warning(
-                "audio: %d full + %d partial underruns this session "
-                "(producer stalled past pace deadline)",
-                self._full_underruns,
-                self._partial_underruns,
-            )
-        else:
-            log.info("audio: clean session (no underruns)")
+        #
+        # Gated on the worker having actually written to the ring, and worded
+        # per *run* rather than per session, because stop() is called once when
+        # the scene tears down and again at session teardown — reporting
+        # unconditionally printed the real counts and then, from the second
+        # call with the counters already cleared, a flat contradiction of them.
+        if self._total_slots:
+            if self._full_underruns or self._partial_underruns:
+                log.warning(
+                    "audio: %d full + %d partial underruns this run "
+                    "(producer stalled past pace deadline)",
+                    self._full_underruns,
+                    self._partial_underruns,
+                )
+            else:
+                log.info("audio: clean run (no underruns)")
         self._full_underruns = 0
         self._partial_underruns = 0
+        # Late slots: sub-writes that reached their slot with the deadline
+        # already gone. A run with a low count kept the spread it was designed
+        # to have; a high one collapsed toward one bunched write per chunk
+        # period, which is audible as modulation even though every sample was
+        # delivered and no underrun was counted.
+        if self._total_slots:
+            late_pct = 100.0 * self._late_slots / self._total_slots
+            log.log(
+                logging.WARNING if late_pct >= 10.0 else logging.INFO,
+                "audio: %d/%d ring sub-writes late (%.1f%%) — spread %s",
+                self._late_slots,
+                self._total_slots,
+                late_pct,
+                "degraded toward bursts" if late_pct >= 10.0 else "held",
+            )
+        self._late_slots = 0
+        self._total_slots = 0
+        self._late_worst_s = 0.0
         # Host-DMA servo gap telemetry: confirms the closed loop locked the
         # ring gap near half a ring (4096) and never approached a lap (0) or an
         # underrun (RING_BUFFER_SIZE). The external drift probe can't see this

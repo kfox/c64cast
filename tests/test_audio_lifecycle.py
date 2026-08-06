@@ -15,7 +15,9 @@ import queue
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest import mock
 
 import numpy as np
 from _fakes import FakeAPI
@@ -46,6 +48,47 @@ def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> Aud
     s.chunk_size = chunk_size
     s._start_nmi_timer = lambda: None  # type: ignore[method-assign]
     return s
+
+
+def _written_stream(s: AudioStreamer) -> bytes:
+    """Every byte the worker sent to the ring, in order.
+
+    The worker splits each chunk into sub-NMI-period pieces, so no single write
+    is the whole chunk any more. What the C64 sees is the concatenation, which
+    is also the invariant worth asserting on — it survives any future change to
+    the quantum.
+    """
+    return b"".join(data for _, data in cast(Any, s.api).writes)
+
+
+class _VirtualClock:
+    """A monotonic clock that advances only when the code under test sleeps.
+
+    The drip schedule marks a slot late by comparing its deadline against the
+    clock, so on a loaded machine one OS scheduling overshoot cascades — every
+    remaining slot in that chunk has an already-past deadline. That makes any
+    absolute late-slot assertion a claim about the host's scheduler rather than
+    about the accounting, and it fails on contended CI runners while passing
+    locally. Driving `audio.py`'s own clock removes the host from the question.
+
+    Only the worker sees this; the test harness keeps the real clock, so its
+    timeout still bounds a hang.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.t = start
+
+    def monotonic(self) -> float:
+        return self.t
+
+    # audio.py reads all four; keeping them on one timeline means a virtual
+    # sleep is visible to every deadline the worker computes.
+    perf_counter = monotonic
+    time = monotonic
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 0:
+            self.t += seconds
 
 
 def _run_worker(s: AudioStreamer, until, timeout: float = 2.0) -> threading.Thread:
@@ -104,15 +147,20 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         # flip to strict pacing, and pad NEUTRAL chunks counted as full
         # underruns.
         s = _make_worker_streamer(chunk_size=32)
+        # Prebuffer with a NON-neutral value, so a NEUTRAL run in the stream can
+        # only have come from an underrun pad and not from the prebuffer itself.
         for _ in range(PREBUFFER_CHUNKS):
-            s.q.put(bytes([NEUTRAL_SAMPLE] * 32))
+            s.q.put(bytes([3] * 32))
             s._queued_samples += 32
         _run_worker(s, until=lambda: s._full_underruns >= 3)
         self.assertGreaterEqual(s._full_underruns, 1)
-        writes = cast(Any, s.api).writes
-        # The post-prebuffer underrun chunks are all-NEUTRAL, full chunk_size.
-        neutral_chunks = [d for _, d in writes if d == bytes([NEUTRAL_SAMPLE] * 32)]
-        self.assertTrue(neutral_chunks, "expected NEUTRAL underrun chunks")
+        stream = _written_stream(s)
+        self.assertEqual(stream[: PREBUFFER_CHUNKS * 32], bytes([3] * PREBUFFER_CHUNKS * 32))
+        self.assertIn(
+            bytes([NEUTRAL_SAMPLE] * 32),
+            stream[PREBUFFER_CHUNKS * 32 :],
+            "expected a full NEUTRAL chunk after the prebuffer",
+        )
 
     def test_partial_underrun_pads_tail(self):
         # A collect window that closes on a sub-chunk blob must pad the tail with
@@ -132,15 +180,20 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s.q.put(bytes([2] * half))
         s._queued_samples += half
 
-        _run_worker(s, until=lambda: s._partial_underruns >= 1, timeout=3.0)
+        # The padded chunk is the half blob followed by a NEUTRAL tail. Asserted
+        # against the reassembled stream, since the chunk reaches the ring as
+        # several sub-NMI-period writes rather than one.
+        expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
+        # Wait on the bytes, not on the counter: the counter increments when the
+        # short window closes, but the one-chunk pipeline only drips that chunk
+        # out on the following pass, so stopping the worker at the counter can
+        # cut it off before the padded chunk is ever written.
+        _run_worker(s, until=lambda: expected in _written_stream(s), timeout=3.0)
 
         self.assertGreaterEqual(
             s._partial_underruns, 1, "expected at least one partial-pad underrun"
         )
-        # The padded chunk is the half blob followed by a NEUTRAL tail.
-        writes = cast(Any, s.api).writes
-        expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
-        self.assertIn(expected, [d for _, d in writes], "partial chunk was not NEUTRAL-padded")
+        self.assertIn(expected, _written_stream(s), "partial chunk was not NEUTRAL-padded")
 
     def test_oversized_blob_carried_via_leftover(self):
         # A single blob bigger than chunk_size must split across writes through
@@ -152,6 +205,184 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         body = b"".join(d for _, d in cast(Any, s.api).writes)
         self.assertGreaterEqual(len(body), 50)
         self.assertEqual(body[:50], bytes(range(50)))
+
+    def test_ring_writes_stay_under_one_nmi_period(self):
+        # The whole point of the split: a host DMAWRITE halts the 6510 for about
+        # one cycle per byte, and CIA #2 is edge-triggered, so a payload longer
+        # than one NMI period swallows underflows that then never fire. Every
+        # steady-state write must therefore fit the quantum derived from the
+        # live latch — and the bytes must still arrive intact and in order.
+        s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
+        payload = bytes(range(256)) * 8
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(payload)
+            s._queued_samples += len(payload)
+
+        _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 40, timeout=3.0)
+
+        quantum = s._halt_quantum()
+        self.assertLess(quantum, (s._nmi_latch or s._compensated_latch()) + 1)
+        # Prebuffer writes are deliberately unsplit (no NMI is consuming yet), so
+        # only the writes past the prebuffer are held to the quantum.
+        steady = cast(Any, s.api).writes[PREBUFFER_CHUNKS:]
+        self.assertTrue(steady, "expected steady-state writes past the prebuffer")
+        self.assertTrue(
+            all(len(data) <= quantum for _, data in steady),
+            f"a steady-state write exceeded the {quantum}-byte halt quantum",
+        )
+        stream = _written_stream(s)
+        self.assertEqual(stream[: len(payload)], payload, "split lost or reordered bytes")
+
+    def test_split_writes_are_contiguous_in_the_ring(self):
+        # Splitting must not disturb where the bytes land: each piece has to
+        # continue from the end of the one before it, or the ring develops holes
+        # the NMI reads as stale audio.
+        s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([5] * 1024))
+            s._queued_samples += 1024
+
+        _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 30, timeout=3.0)
+
+        expect = None
+        for addr_hex, data in cast(Any, s.api).writes:
+            addr = int(addr_hex, 16)
+            if expect is not None:
+                self.assertEqual(addr, expect, "a ring write did not continue from the last")
+            expect = addr + len(data)
+            if expect >= audio_mod.RING_BUFFER_END:
+                expect = audio_mod.RING_BUFFER_ADDR
+
+    def test_halt_quantum_backs_off_to_the_write_rate_budget(self):
+        # The quantum sets the write RATE, and the render thread shares the same
+        # socket. Asking for more writes than the link sustains makes each one
+        # overrun its slot, which starves collection and pads silence over a full
+        # queue — so a backend that advertises a ceiling has to raise the quantum
+        # above the halt-derived size rather than the other way round.
+        s = _make(sample_rate=12000)
+        halt_sized = s._halt_quantum()
+
+        cast(Any, s.api).profile = SimpleNamespace(max_write_rate_hz=200.0)
+        budgeted = s._halt_quantum()
+
+        self.assertGreater(budgeted, halt_sized, "the budget did not raise the quantum")
+        slots = -(-s.chunk_size // budgeted)
+        writes_hz = slots / (s.chunk_size / s.effective_rate)
+        self.assertLessEqual(writes_hz, 200.0 * audio_mod.AUDIO_WRITE_RATE_SHARE + 1.0)
+
+    def test_unaffordable_link_collapses_to_one_write(self):
+        # A backend too slow to carry the split degrades all the way back to a
+        # single write per chunk on its own. This is why there is no separate
+        # off switch: the budget already expresses "this link cannot afford to
+        # split", and splitting past what the link carries is actively worse
+        # than not splitting (the writes overrun their slots and collection
+        # starves), so nothing is served by letting it be chosen by hand.
+        s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
+        cast(Any, s.api).profile = SimpleNamespace(max_write_rate_hz=1.0)
+        for _ in range(PREBUFFER_CHUNKS + 2):
+            s.q.put(bytes([9] * 64))
+            s._queued_samples += 64
+
+        _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= PREBUFFER_CHUNKS + 2)
+
+        self.assertEqual(s._halt_quantum(), s.chunk_size)
+        self.assertTrue(
+            all(len(data) == 64 for _, data in cast(Any, s.api).writes),
+            "an unaffordable link still had its writes subdivided",
+        )
+
+    def test_slow_writes_are_counted_as_late_slots(self):
+        # A sub-write that runs past its own slot leaves every later slot in the
+        # chunk already expired, so they all fire back-to-back — the spread
+        # collapses into the burst it was split to avoid. Nothing else notices:
+        # the bytes still land, in order, and no underrun is counted. This
+        # counter is the only signal that the schedule was not kept.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=64000)
+        real_write = cast(Any, s.api).write_memory_file
+
+        def slow_write(addr: str, data: bytes) -> None:
+            time.sleep(0.004)  # longer than a slot at this chunk period
+            real_write(addr, data)
+
+        cast(Any, s.api).write_memory_file = slow_write
+        for _ in range(PREBUFFER_CHUNKS + 4):
+            s.q.put(bytes([3] * 256))
+            s._queued_samples += 256
+
+        _run_worker(s, until=lambda: s._total_slots >= 8, timeout=3.0)
+
+        self.assertGreater(s._total_slots, 0)
+        self.assertGreater(s._late_slots, 0, "slow writes did not register as late slots")
+        self.assertGreater(s._late_worst_s, 0.0)
+
+    def test_prompt_writes_keep_the_schedule(self):
+        # The negative control for the counter above: with writes that return
+        # immediately the drip keeps its deadlines, so a late slot means a real
+        # link/collection problem rather than an artifact of the accounting.
+        # Run on a virtual clock — see _VirtualClock for why the host's
+        # scheduler must not be able to answer this question.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=8000)
+        for _ in range(PREBUFFER_CHUNKS + 8):
+            s.q.put(bytes([3] * 256))
+            s._queued_samples += 256
+
+        with mock.patch.object(audio_mod, "time", _VirtualClock()):
+            _run_worker(s, until=lambda: s._total_slots >= 16, timeout=3.0)
+
+        self.assertGreater(s._total_slots, 0)
+        self.assertEqual(s._late_slots, 0, "a prompt write missed its slot on an ideal timeline")
+
+    def test_consumer_rate_is_measured_with_the_adaptive_loop_off(self):
+        # The rate estimate used to be computed inside the adaptive NMI-rate
+        # loop, which is off by default — so the one quantity that shows
+        # content-dependent tick loss read zero in every log. Measuring is not
+        # steering: the loop stays off, the number still has to arrive.
+        s = _make_worker_streamer(chunk_size=256, sample_rate=12000)
+        s.nmi_rate_adaptive = False
+        s.host_dma_servo = True
+        s._nmi_timer_started = True
+        latch_before = s._nmi_latch
+        base = audio_mod.RING_BUFFER_ADDR
+
+        with mock.patch.object(s, "_read_read_ptr", side_effect=[base, base + 1200]):
+            s._next_pace_increment(base + 4096, 0.1)
+            time.sleep(0.05)
+            s._next_pace_increment(base + 4096 + 1200, 0.1)
+
+        self.assertGreater(s._r_rate_ema, 0.0, "consumer rate was not measured")
+        self.assertGreater(s._r_rate_max, 0.0)
+        self.assertEqual(s._nmi_latch, latch_before, "observation must not steer the latch")
+
+    def test_health_line_reports_window_deltas(self):
+        # The health line exists to place an onset in time, so it must report
+        # the window rather than the session: a second window that saw two more
+        # underruns reports two, not the running total.
+        s = _make(sample_rate=12000)
+        s._nmi_latch = 84
+        s._r_rate_ema = 11900.0
+        with mock.patch.object(audio_mod, "AUDIO_HEALTH_LOG_INTERVAL_S", 0.0001):
+            s._maybe_log_health(100.0)  # first call only marks the baseline
+            s._full_underruns = 5
+            s._late_slots = 9
+            s._total_slots = 40
+            with self.assertLogs(audio_mod.log, level="INFO") as first:
+                s._maybe_log_health(101.0)
+            s._full_underruns = 7
+            with self.assertLogs(audio_mod.log, level="INFO") as second:
+                s._maybe_log_health(102.0)
+
+        self.assertIn("late=9/40", first.output[0])
+        self.assertIn("under=5/0", first.output[0])
+        self.assertIn("under=2/0", second.output[0])
+        self.assertIn("late=0/0", second.output[0])
+
+    def test_health_line_suppressed_inside_the_window(self):
+        s = _make(sample_rate=12000)
+        with mock.patch.object(audio_mod, "AUDIO_HEALTH_LOG_INTERVAL_S", 5.0):
+            s._maybe_log_health(100.0)
+            with mock.patch.object(audio_mod.log, "info") as info:
+                s._maybe_log_health(102.0)
+        info.assert_not_called()
 
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip
@@ -262,6 +493,155 @@ class PitchCompensationLatchTest(unittest.TestCase):
         s.stop()
         self.assertFalse(s._nmi_timer_started)
         self.assertAlmostEqual(s._pitch_multiplier, 1.0)
+
+
+class _RFakeAPI(FakeAPI):
+    """FakeAPI serving the NMI read pointer R from a scripted sequence.
+
+    Each read of ``READ_PTR_LO_ADDR`` pops the next ring *offset* from
+    ``r_offsets``; the last entry repeats once the list runs out. That lets a
+    test say "R frozen for the first two verify windows, then moving" — the
+    machine-specific dropped-CIA-write case this whole path exists for.
+    """
+
+    def __init__(self, r_offsets: list[int]) -> None:
+        super().__init__()
+        self.r_offsets = r_offsets
+        self.r_reads = 0
+
+    def read_memory(self, address, length, timeout=1.0):  # type: ignore[no-untyped-def]
+        if address == audio_mod.READ_PTR_LO_ADDR and length == 2:
+            offset = self.r_offsets[min(self.r_reads, len(self.r_offsets) - 1)]
+            self.r_reads += 1
+            addr = audio_mod.RING_BUFFER_ADDR + offset
+            return bytes([addr & 0xFF, (addr >> 8) & 0xFF])
+        return super().read_memory(address, length, timeout)
+
+
+class NmiArmVerifyTest(unittest.TestCase):
+    """_start_nmi_timer verifies the arm actually took by watching R move.
+
+    The two CIA #2 writes and the `$0318` vector ride a transport whose `_emit`
+    absorbs a failed write, so a dropped one used to leave R frozen and the whole
+    session silent (and fast, the servo chasing a dead reader) with nothing said.
+    """
+
+    def setUp(self) -> None:
+        # The real 30 ms verify window would make five attempts a 150 ms test.
+        patcher = mock.patch.object(audio_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _streamer(self, api: Any) -> AudioStreamer:
+        return AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC")
+
+    def _arm_count(self, api: Any) -> int:
+        """How many times the ICR enable+start pair was written (= arms)."""
+        key = f"{CIA2.ICR:04X}"
+        armed = (audio_mod.CIA2_ICR_ENABLE_TIMER_A_NMI, audio_mod.CIA2_TIMER_A_CONTINUOUS)
+        return sum(1 for op in api.ops if op[0] == "write_regs" and op[1] == key and op[2] == armed)
+
+    def test_moving_r_arms_once(self):
+        api = _RFakeAPI([0, 240])  # R advanced within the verify window
+        s = self._streamer(api)
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), 1)
+        self.assertEqual(s._nmi_arm_attempts, 1)
+
+    def test_frozen_then_moving_retries(self):
+        api = _RFakeAPI([0, 0, 0, 240])  # two dropped arms, then it takes
+        s = self._streamer(api)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), 3)
+        self.assertEqual(s._nmi_arm_attempts, 3)
+        self.assertEqual(len(cm.records), 1)
+        self.assertIn("3 attempts", cm.output[0])
+
+    def test_frozen_throughout_gives_up_loudly(self):
+        api = _RFakeAPI([0])  # R never moves, whatever we write
+        s = self._streamer(api)
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), audio_mod.NMI_ARM_MAX_ATTEMPTS)
+        self.assertEqual(s._nmi_arm_attempts, audio_mod.NMI_ARM_MAX_ATTEMPTS)
+        self.assertEqual(len(cm.records), 1)
+        self.assertIn("never started", cm.output[0])
+
+    def test_arm_relands_the_nmi_vector(self):
+        # A dropped $0318 write leaves the KERNAL handler installed, and its
+        # #$7F → $DD0D kills CIA #2 interrupts — same frozen R. So the retry has
+        # to re-land the vector, not just the CIA registers.
+        api = _RFakeAPI([0, 0, 240])
+        s = self._streamer(api)
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            cast(Any, s)._start_nmi_timer()
+        key = f"{audio_mod.VECTORS.NMI:04X}"
+        vector_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == key]
+        self.assertEqual(len(vector_writes), 2)  # one per arm
+        expected = (audio_mod.NMI_ROUTINE_ADDR & 0xFF, audio_mod.NMI_ROUTINE_ADDR >> 8)
+        self.assertEqual(vector_writes[-1][2], expected)
+
+    def test_unreadable_backend_arms_once_without_waiting(self):
+        # A backend that can't read R (TR on older firmware) can't be verified.
+        # It must keep the old behavior exactly — one arm, no retry latency.
+        api = FakeAPI()  # read_memory → None for the read pointer
+        s = self._streamer(api)
+        with mock.patch.object(audio_mod.time, "sleep") as sleep:
+            with self.assertNoLogs(audio_mod.log, level="WARNING"):
+                cast(Any, s)._start_nmi_timer()
+        self.assertEqual(self._arm_count(api), 1)
+        self.assertEqual(s._nmi_arm_attempts, 1)
+        sleep.assert_not_called()
+
+    def test_stop_clears_arm_state(self):
+        api = _RFakeAPI([0, 240])
+        s = self._streamer(api)
+        cast(Any, s)._start_nmi_timer()
+        s.running = True
+        s._worker_thread = None
+        s.stop()
+        self.assertEqual(s._nmi_arm_attempts, 0)
+
+
+class NmiStallWatchdogTest(unittest.TestCase):
+    """The servo already read R every chunk and would see it stall instantly;
+    it just never said so. A consumer killed mid-session now warns once."""
+
+    def _servo_streamer(self, r_offset: int) -> tuple[AudioStreamer, Any]:
+        api = _RFakeAPI([r_offset])  # R pinned — a dead consumer
+        s = AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC", host_dma_servo=True)
+        return s, api
+
+    def test_frozen_r_warns_once_per_session(self):
+        s, _ = self._servo_streamer(0)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
+            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 8):
+                s._next_pace_increment(write_addr, 0.064)
+        self.assertEqual(len(cm.records), 1)  # once, not once per chunk
+        self.assertIn("stalled", cm.output[0])
+
+    def test_moving_r_never_warns(self):
+        api = _RFakeAPI(list(range(0, 4000, 240)))  # R advancing normally
+        s = AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC", host_dma_servo=True)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertNoLogs(audio_mod.log, level="WARNING"):
+            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 8):
+                s._next_pace_increment(write_addr, 0.064)
+
+    def test_stop_rearms_the_warning(self):
+        s, _ = self._servo_streamer(0)
+        write_addr = audio_mod.RING_BUFFER_ADDR + 4096
+        with self.assertLogs(audio_mod.log, level="WARNING"):
+            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 1):
+                s._next_pace_increment(write_addr, 0.064)
+        s.running = True
+        s._worker_thread = None
+        s.stop()
+        self.assertFalse(s._nmi_stall_warned)
+        self.assertEqual(s._r_stall_chunks, 0)
 
 
 class NmiRateSafetyTest(unittest.TestCase):
@@ -976,6 +1356,7 @@ class LifecycleTest(unittest.TestCase):
     def test_stop_teardown_writes_and_logs_clean(self):
         s = _make()
         s.start_for_external_source()
+        s._total_slots = 1
         with self.assertLogs("c64cast.audio", level="INFO") as cm:
             s.stop()
         self.assertFalse(s.running)
@@ -983,18 +1364,31 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(api.memories.get("D418"), "00")  # SID muted
         self.assertIsNone(s._worker_thread)
         self.assertEqual(s._queued_samples, 0)
-        self.assertTrue(any("clean session" in m for m in cm.output))
+        self.assertTrue(any("clean run" in m for m in cm.output))
 
     def test_stop_reports_underruns(self):
         s = _make()
+        s._total_slots = 1
         s._full_underruns = 2
         s._partial_underruns = 5
         with self.assertLogs("c64cast.audio", level="WARNING") as cm:
             s.stop()
         self.assertTrue(any("2 full + 5 partial" in m for m in cm.output))
-        # Counters reset for the next session.
+        # Counters reset for the next run.
         self.assertEqual(s._full_underruns, 0)
         self.assertEqual(s._partial_underruns, 0)
+
+    def test_second_stop_reports_nothing(self):
+        # stop() runs at scene teardown and again at session teardown. The
+        # second call has cleared counters, so an unconditional summary would
+        # follow the real numbers with a flat contradiction of them.
+        s = _make()
+        s._total_slots = 1
+        s._full_underruns = 3
+        with self.assertLogs("c64cast.audio", level="WARNING"):
+            s.stop()
+        with self.assertNoLogs("c64cast.audio", level="INFO"):
+            s.stop()
 
     def test_stop_swallows_teardown_write_errors(self):
         s = _make()

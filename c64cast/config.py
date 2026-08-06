@@ -601,10 +601,12 @@ class AudioCfg:
         default=None,
         metadata={
             "help": "Override the auto-derived calibration file key (device unique_id / "
-            "TR USB serial) with this name — calibration/dac/profile-<name>.json. Use "
-            "when a TeensyROM+ moves between physical C64s: name each host's calibration "
-            "once at --calibrate-dac time, then pass the same name on every playback run "
-            "against that host."
+            "TR USB serial) with a name — calibration/dac/profile-<name>.json — or with "
+            "a path to a calibration file, used as given. Use when a TeensyROM+ moves "
+            "between physical C64s (name each host's calibration once at --calibrate-dac "
+            "time, then pass the same name on every playback run against that host), or "
+            "to reuse one machine's calibration from another backend (a path, since that "
+            "file is keyed by the other backend's device identity)."
         },
     )
     # 11-bit cutoff maps roughly 0→200 Hz … 2047→20 kHz on a 6581, but the

@@ -13,9 +13,8 @@ this module exists to kill:
   index and the U64 URL all shift with hotplug + DHCP, so every default here
   is overridable by env var (and the tools expose matching CLI flags).
 
-Local-machine specifics (which cv2 index is the Cam Link today, U64 IP) are
-documented in auto-memory, not hard-coded as truth — the values below are
-*defaults*, confirmed working as of 2026-06-10.
+The values below are *defaults*, not ground truth: they are one rig's
+working values, confirmed as of 2026-06-10. Point the env vars at yours.
 """
 
 from __future__ import annotations
@@ -80,7 +79,7 @@ def save_image(frame, path, *, max_width: int = DEFAULT_VERIFY_WIDTH) -> tuple[i
 
 # ---- hardware defaults (all env-overridable) ------------------------------
 
-#: Real Ultimate-64 (see auto-memory u64-hardware). Override: C64_DIAG_URL.
+#: Ultimate 64. Override: C64_DIAG_URL.
 U64_URL = os.environ.get("C64_DIAG_URL", "http://192.168.2.64")
 #: Ultimate II+ on the same LAN. Override: C64_DIAG_U2P_URL.
 U2P_URL = os.environ.get("C64_DIAG_U2P_URL", "http://192.168.2.65")
@@ -90,7 +89,53 @@ CAMLINK_CV2_INDEX = int(os.environ.get("C64_DIAG_CV2", "0"))
 #: Cam Link 4K avfoundation *audio* device. Override: C64_DIAG_AVF_AUDIO.
 #: avfoundation video for the Cam Link is "[0]" but cv2 is more reliable for
 #: frames (direct ffmpeg avfoundation video has thrown I/O errors here).
-CAMLINK_AVF_AUDIO = os.environ.get("C64_DIAG_AVF_AUDIO", ":3")
+#: Unset (the default) means "resolve by name at run time" — see camlink_avf_audio.
+#: Read as the module attribute ``CAMLINK_AVF_AUDIO``, which resolves on access
+#: via the module __getattr__ at the bottom of this file, so the ffmpeg
+#: enumeration only runs for tools that actually capture.
+_AVF_AUDIO_ENV = os.environ.get("C64_DIAG_AVF_AUDIO")
+
+
+def camlink_avf_audio(name: str = "Cam Link") -> str:
+    """The Cam Link's avfoundation *audio* index, as ffmpeg's ``:N`` spec.
+
+    Resolved by NAME on every call rather than pinned to a constant. macOS
+    re-enumerates avfoundation devices as things are plugged in, joined or left
+    (a call app, a stream mixer, a headset), so a hardcoded index silently
+    becomes some other device: this was pinned at ``:3``, which had drifted onto
+    a virtual mixer, and the capture failed with a bare "Invalid argument" while
+    the run it was measuring carried on to completion. The sounddevice-based
+    probes already resolve by name for exactly this reason.
+
+    Falls back to ``:3`` only if enumeration itself fails, so a broken ffmpeg
+    surfaces as the old behavior rather than a crash.
+    """
+    if _AVF_AUDIO_ENV:
+        return _AVF_AUDIO_ENV
+    import re
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ":3"
+    audio = False
+    for line in r.stderr.splitlines():
+        if "audio devices" in line:
+            audio = True
+            continue
+        if "video devices" in line:
+            audio = False
+            continue
+        m = re.search(r"\[(\d+)\]\s+(.*\S)", line)
+        if audio and m and name.lower() in m.group(2).lower():
+            return f":{m.group(1)}"
+    return ":3"
 
 
 def python_exe() -> str:
@@ -165,6 +210,10 @@ def rest_reset(url: str = U64_URL, timeout: float = 5.0) -> int | None:
     Per the standing end-of-session rule (silence-and-reset-after-testing
     memory), every diag tool that drives the machine should call this on the
     way out — and the standalone ``u64_probe.py --reset`` is the manual hook.
+
+    REST-only, so it is Ultimate-only. Use ``machine_reset`` unless the caller
+    genuinely means "over REST"; a ``tr://`` target has no REST endpoint and
+    every attempt here returns None.
     """
     import requests
 
@@ -172,6 +221,41 @@ def rest_reset(url: str = U64_URL, timeout: float = 5.0) -> int | None:
         return requests.put(url + "/v1/machine:reset", timeout=timeout).status_code
     except requests.RequestException:
         return None
+
+
+def machine_reset(url: str) -> bool:
+    """Silence the SID and reset whatever backend ``url`` names. True on success.
+
+    Scheme-aware because the end-of-session reset is a safety rule, and the
+    REST path only exists on the Ultimate. A ``tr://`` target sent through
+    ``rest_reset`` fails on every call — so a TeensyROM run through a diag
+    harness printed "reset: FAILED" and left the machine running the last
+    thing it was driving, with the rule *appearing* to have been applied. Same
+    trap as u64_probe's --reset-only on a non-http URL.
+
+    Goes through c64cast's own backend, so it works for every scheme the app
+    itself accepts and needs no per-tool knowledge of the transport.
+    """
+    from c64cast.backend import make_backend
+    from c64cast.c64 import SID
+    from c64cast.config import Config
+    from c64cast.connect import apply_to_config, parse_connection_uri
+
+    cfg = Config()
+    apply_to_config(cfg, parse_connection_uri(url))
+    api = None
+    try:
+        api = make_backend(cfg)
+        api.write_memory(f"{SID.MODE_VOL:04X}", "00")  # silence before reset
+        api.reset()
+        return True
+    except Exception as e:  # noqa: BLE001 — a diag teardown must not mask the run
+        print(f"[reset] {url}: {type(e).__name__}: {e}")
+        return False
+    finally:
+        close = getattr(api, "close", None)
+        if close:
+            close()
 
 
 def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float = 2.0) -> bool:
@@ -262,3 +346,17 @@ def rest_set_config(
     except (requests.RequestException, ValueError):
         return False
     return errs == []
+
+
+def __getattr__(name: str) -> object:
+    """Resolve ``CAMLINK_AVF_AUDIO`` on first access (PEP 562).
+
+    A dozen tools take it as an argparse default, so it has to keep reading
+    like a constant — but resolving it at import would run an ffmpeg
+    enumeration for every tool that merely imports this module, capture or
+    not. Module-level __getattr__ gives the constant's ergonomics with the
+    function's freshness.
+    """
+    if name == "CAMLINK_AVF_AUDIO":
+        return camlink_avf_audio()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

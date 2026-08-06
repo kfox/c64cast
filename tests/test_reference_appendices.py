@@ -45,7 +45,9 @@ def _load(name: str):
     return module
 
 
+# The dialect (what the Markdown means) and the Typst renderer (what it becomes).
 gen = _load("gen_reference_appendices")
+bd = _load("bookdoc")
 bb = _load("build_book")
 
 
@@ -67,7 +69,7 @@ class FreshnessTest(unittest.TestCase):
         # human who opened one in an editor is warned before typing into it.
         for path in gen.APPENDICES:
             with self.subTest(file=path.name):
-                fields, _, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
+                fields, _, _ = bd.parse_front_matter(path.read_text(encoding="utf-8"), path)
                 self.assertEqual(fields.get("generated"), "true")
 
     def test_the_appendices_cover_the_reference_book(self):
@@ -77,8 +79,8 @@ class FreshnessTest(unittest.TestCase):
         # the drift guard above would silently pass on a file nobody generates.
         generated = {p for p in gen.APPENDICES if p.parent == gen.REFERENCE_DIR}
         self.assertEqual(len(generated), 10)
-        for path in bb.discover_chapters(gen.REFERENCE_DIR):
-            fields, _, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
+        for path in bd.discover_chapters(gen.REFERENCE_DIR):
+            fields, _, _ = bd.parse_front_matter(path.read_text(encoding="utf-8"), path)
             with self.subTest(chapter=path.name):
                 self.assertEqual(fields.get("generated") == "true", path in generated)
 
@@ -95,12 +97,14 @@ class ConverterSafetyTest(unittest.TestCase):
     def test_every_generated_file_converts(self):
         for path in gen.APPENDICES:
             with self.subTest(file=path.name):
-                paths = bb.discover_chapters(path.parent)
-                anchors = bb.section_anchors(paths)
+                paths = bd.discover_chapters(path.parent)
+                anchors = bd.section_anchors(paths)
                 # The anchors are not optional here: the index is nothing but
                 # links at sections, and the converter refuses one it cannot
                 # resolve rather than emitting a dead destination.
-                chapter = bb.load_chapter(path, bb.chapter_numbers(paths), anchors)
+                chapter = bd.load_chapter(
+                    path, bb.TypstEmitter(), bd.chapter_numbers(paths), anchors
+                )
                 self.assertTrue(chapter.title)
 
     def test_the_reference_book_builds(self):
@@ -122,17 +126,17 @@ class IndexTest(unittest.TestCase):
         cls.rows = dict(re.findall(r"^\| (.+?) \| (.+?) \|$", cls.text, re.M))
 
     def test_every_locator_names_a_section_that_exists(self):
-        anchors = bb.section_anchors(bb.discover_chapters(gen.REFERENCE_DIR))
+        anchors = bd.section_anchors(bd.discover_chapters(gen.REFERENCE_DIR))
         links = re.findall(r"\]\((\d+-[\w.-]+\.md)#([\w-]+)\)", self.text)
         self.assertGreater(len(links), 500, "the index lost most of its locators")
         for filename, slug in links:
             with self.subTest(link=f"{filename}#{slug}"):
-                self.assertIn(bb.section_label(Path(filename).stem, slug), anchors)
+                self.assertIn(bd.section_label(Path(filename).stem, slug), anchors)
 
     def test_it_is_not_an_appendix(self):
         # No `number`, which is what makes it render after Appendix J as a
         # plain heading instead of claiming a letter of its own.
-        fields, _, _ = bb.parse_front_matter(self.text, gen.INDEX_PATH)
+        fields, _, _ = bd.parse_front_matter(self.text, gen.INDEX_PATH)
         self.assertNotIn("number", fields)
 
     def test_it_does_not_index_itself(self):
@@ -142,7 +146,7 @@ class IndexTest(unittest.TestCase):
         # The best few are *chosen* by relevance and then put back in document
         # order, because they print as page numbers and "152, 41, 84" reads as
         # a fault rather than as a ranking the reader cannot see.
-        order = {p.name: i for i, p in enumerate(bb.discover_chapters(gen.REFERENCE_DIR))}
+        order = {p.name: i for i, p in enumerate(bd.discover_chapters(gen.REFERENCE_DIR))}
         for term, locators in self.rows.items():
             files = [order[f] for f in re.findall(r"\]\((\d+-[\w.-]+\.md)#", locators)]
             with self.subTest(term=term):
@@ -471,7 +475,7 @@ class TextEscapingTest(unittest.TestCase):
         # Escaped on the way out, unescaped by the converter before inline
         # parsing -- so a code span gets a pipe, not a backslash it would print.
         markdown = "\n".join(gen.table(["Field", "Type"], [["`x`", "`str | None`"]]))
-        conv = bb.Converter(_REPO_ROOT / "docs" / "reference" / "99-test.md", 1)
+        conv = bd.Converter(_REPO_ROOT / "docs" / "reference" / "99-test.md", 1, bb.TypstEmitter())
         conv.title = "Test"
         typst = conv.convert(markdown)
         self.assertIn("columns: 2", typst)

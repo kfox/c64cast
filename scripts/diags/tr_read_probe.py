@@ -25,9 +25,9 @@ Stages per transport (--tcp HOST and/or --serial PORT):
      idle (c64cast's clear-loop bring-up) is running so the kernal keyboard
      scan updates $028D — at the bare TR menu it may read 0.
 
-    scripts/diags/tr_read_probe.py --tcp 192.168.2.164
-    scripts/diags/tr_read_probe.py --serial /dev/cu.usbmodem193075601
-    scripts/diags/tr_read_probe.py --tcp 192.168.2.164 --serial <PORT> --watch 028d
+    scripts/diags/tr_read_probe.py --tcp HOST
+    scripts/diags/tr_read_probe.py --serial /dev/cu.usbmodem1234
+    scripts/diags/tr_read_probe.py --tcp HOST --serial <PORT> --watch 028d
 
 Resets the C64 on the way out (the standing silence-and-reset rule) unless
 --no-reset-exit; reset boots the TR to its menu.

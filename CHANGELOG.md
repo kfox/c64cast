@@ -14,6 +14,92 @@ the version and stamps it with the date.
 
 ### Added
 
+- **Audio worker health lines.** Under `-v`, the DAC path now logs a short line
+  every few seconds — ring gap excursion, late ring sub-writes, underruns, write
+  rate, consumer rate, NMI latch — and reports the session's late-write share on
+  stop. The counts that already existed were session totals, which cannot tell a
+  fault that is present throughout from one that appears part-way in, deepens,
+  clears and returns; the artifacts worth chasing on this path are exactly the
+  latter. "Late" means a ring sub-write reached its slot after that slot's
+  deadline had passed, which bunches the rest of the chunk and undoes the spread
+  described below, without registering as an underrun.
+
+### Changed
+
+- **The 4-bit `$D418` DAC wobbles far less.** Each host write to the audio ring
+  halts the C64's CPU for about one cycle per byte, and CIA #2 latches NMIs on an
+  edge — so a write long enough to span two timer underflows makes the second
+  sample vanish rather than merely arrive late. The ring write was one 1024-byte
+  push, which at the 12 kHz default froze the CPU for roughly 12 NMI periods
+  about 12 times a second, right in the 4-20 Hz band the ear is most sensitive to.
+  It is now split into pieces that each fit inside one NMI period and spread
+  across the chunk period. Measured on hardware against a 376 Hz carrier,
+  frequency deviation drops from 27.3 Hz to about 6 Hz on both the Ultimate 64
+  and TeensyROM+. There is no knob: the piece size is derived from the live NMI
+  period and floored by what the link can carry, so a backend that cannot afford
+  to split degrades to a single write on its own.
+
+- `[audio].dac_calibration_profile` now also takes a **path** to a calibration
+  file, used as given. A name is folded into one filesystem-safe token, so a path
+  handed to it silently became a key matching no file — and a name can only ever
+  address the current backend's own key space, which made it impossible to point
+  a TeensyROM+ run at the calibration of the C64 it is plugged into (filed under
+  the Ultimate's device id). Missing calibrations now name the file that was
+  looked for instead of a mangled key.
+
+### Fixed
+
+- **The audio underrun summary no longer contradicts itself.** It is emitted
+  when the streamer stops, which happens once as a scene tears down and again at
+  session teardown — so a run that reported real underruns was immediately
+  followed by "clean session (no underruns)" from the second call, whose
+  counters had just been cleared. The summary is now reported only for a run
+  that actually fed the ring, and says "run" rather than "session", which is
+  what it always counted.
+
+- **Quick playback obeys every CLI flag again.** Playing media by positional
+  argument (`c64cast clip.mp4`) built its config from a hand-picked handful of
+  flags, so twelve of the twenty-one that the same command honours with
+  `--config` were accepted and then silently ignored — among them
+  `--frame-numbers`, `-D/--audio-device`, `--sample-rate`,
+  `--dac-calibration-profile`, `--vision` and `--heartbeat`, plus the
+  `C64CAST_DMA_PASSWORD` environment variable, which meant quick playback could
+  not reach a password-protected Ultimate at all. Both front doors now share one
+  merge, and a test asserts the whole flag map rather than the flags that
+  happened to break.
+
+- **TeensyROM: no more blinking cursor, and the BASIC clear loop actually
+  runs.** LaunchFile left the clear-loop program at `$0801` with its link
+  pointer zeroed, so BASIC saw an empty program and dropped back to READY —
+  where the editor's input-wait loop blinks the cursor and, because that loop
+  rewrites `$00CC` on every pass, no write could switch the blink off. Bring-up
+  now detects it and repairs it over DMA. The editor also stops eating the
+  keystrokes the on-C64 keyboard control reads.
+
+### Added
+
+- `scripts/diags/audio_fm_probe.py` — measures how much a host DMA write
+  perturbs DAC playback, as a function of payload size, against a tone that
+  cannot underrun.
+
+## [0.2.1] - 2026-08-05
+
+### Added
+
+- **The documentation is a website.**
+  [kfox.github.io/c64cast](https://kfox.github.io/c64cast/) publishes all three
+  books — User's Guide, Programmer's Reference Guide, Performance Card — plus
+  the caveats, troubleshooting and extending notes, rendered from the same
+  Markdown the PDFs are set from and republished on every push to `main`. Each
+  book gets a contents page, a chapter sidebar, prev/next paging and a link to
+  its typeset PDF; a section link resolves identically on github.com, in the
+  PDF and on the site, because all three use GitHub's own anchor rule. The
+  renderer (`scripts/build_site.py`) is stdlib-only and shares its reading of
+  the Markdown — and every check that reading makes — with the PDF builder, so
+  the two cannot disagree about what a page says. `make site` builds it
+  locally; a pull request now proves every book still renders, which previously
+  nothing did until release day.
+
 - **Every book has a permanent download link.** A release now carries each PDF
   twice — `c64cast-users-guide-X.Y.Z.pdf` as before, and an unversioned
   `c64cast-users-guide.pdf` — so
@@ -33,6 +119,19 @@ the version and stamps it with the date.
   headless wheel — the cause of `[preview]` opening no window.
 
 ### Fixed
+
+- **DAC audio can no longer come up silent for a whole session.** On some
+  machines a run would play no audio at all from the first frame to the last —
+  never a dropout, never a recovery, and the video also ran noticeably fast.
+  Three writes start the NMI audio consumer, and the write transport is built to
+  absorb a dropped write rather than fail loudly; if any of the three went
+  missing the consumer never started, and nothing on the host noticed (the fast
+  playback was the pacing loop correctly chasing a reader that never read). The
+  bring-up now checks that the consumer actually started and re-sends the writes
+  if it didn't, up to five times, logging when a retry was needed and warning
+  outright if it never takes. A consumer that dies mid-session also warns now
+  instead of playing out as unexplained silence. `--calibrate-dac` uses the same
+  verified bring-up, so a run can no longer spend 50 seconds measuring nothing.
 
 - **Ensemble systems no longer record over each other.** `[recording].path`
   cascaded from the master like the rest of the section, so every system in a
@@ -508,6 +607,7 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kfox/c64cast/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kfox/c64cast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kfox/c64cast/releases/tag/v0.1.0

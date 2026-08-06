@@ -19,7 +19,7 @@ scripts/c64cast.sh --doctor --skip-probe
 
 **Connection target (`-u/--url`).** A single scheme-aware string selects both the hardware backend and its endpoint (the granular `--backend`/`--tr-*`/`--dma-port` flags were removed in favor of this — `git log` for the rationale). The parser is [c64cast/connect.py](c64cast/connect.py) (`parse_connection_uri` → `ConnectionSpec` → `apply_to_config`); it decomposes into the existing config fields (`[hardware].backend`, `[ultimate64].url`/`dma_port`, `[teensyrom].transport`/`serial_port`/`host`/…), which stay the canonical store a TOML sets directly. `make_backend` is unchanged. Schemes: `u64://HOST` or `http(s)://HOST` (Ultimate — the only HTTP-speaking backend, so http is deterministically Ultimate); `tr://` (TeensyROM+ USB serial, device auto-detected by USB VID/PID via pyserial on macOS/Linux/Windows), `tr:///dev/cu.usbmodemXYZ` or `tr://COM3` (explicit serial device), `tr://HOST[:PORT]` (TeensyROM+ TCP, default port 2112). Rare per-link knobs as `?query` params (`u64://host?dma_port=64`, `tr://host?tcp_port=2113`, `tr:///dev/…?baud=2000000`, `tr://?storage=usb`). `$C64CAST_URL` is the env fallback. On the CLI the `-u` target overrides the config's connection sections (single-system runs only — in ensemble mode connection comes from the per-system TOMLs).
 
-**Quick playback (positional `MEDIA` args).** Passing media files/dirs/globs/URLs as positional arguments (mutually exclusive with `--config`) builds an **in-memory-only** `Config` (no file on disk) with one scene per argument, in order, **no loop** (override with `--loop`). Each argument is mapped to a scene type by extension — video → `video`, `.sid` → `waveform`, image → `slideshow`, `.prg`/`.crt` → `launcher`, audio (`.mp3`/`.wav`/…) → a `generative` scene with `audio_source = "file"` (a reactive plasma over the decoded track) — and a directory/glob is passed straight through as the scene's `file` spec (so the scene random-picks at setup, e.g. a dir of SIDs plays a random one). A URL becomes a `video`: direct media URLs play as-is (PyAV opens http(s)), and YouTube/other sites are resolved by yt-dlp (the optional `yt` extra) to a single progressive stream. URL resolution + audio-only rejection happen **once, in `config.build_scene`** (the single resolution path shared with config-driven runs — see the `config.py` note below), so `quickcast.classify_url` just stores the URL verbatim; it parses the URL's `?t=`/`&start=`/`#t=` timestamp (`90`, `90s`, `1m30s`, `1h2m3s`) offline into `start_s` so playback begins at that offset (no flag). Audio **files** are first-class (`c64cast tune.mp3` plays the track on the DAC while a generative visual reacts — see the `audio_source = "file"` note in [audio_source.py](docs/architecture/audio.md)); audio **URLs** remain deferred. The classifier library is [c64cast/quickcast.py](c64cast/quickcast.py) (`build_config`; the shared URL resolver is `resolve_video_url`); `cli.main` dispatches to it via `_resolve_configs` when it sees positional args, then runs the result through the normal path (`build_stack` → `_run_playlists` → `teardown_stack`), so behavior matches a config-driven run. **`build_config` applies the machine-settings layer** (`config.apply_machine_settings`) right after building the base `Config`, before the arg-driven field sets — so quick playback inherits the connection target / capture device / SID model from `~/.config/c64cast/settings.toml` without a per-run `-u` (an explicit `-u`/`$C64CAST_URL` still wins, applied afterward). See the machine-settings note in the Configuration section.
+**Quick playback (positional `MEDIA` args).** Passing media files/dirs/globs/URLs as positional arguments (mutually exclusive with `--config`) builds an **in-memory-only** `Config` (no file on disk) with one scene per argument, in order, **no loop** (override with `--loop`). Each argument is mapped to a scene type by extension — video → `video`, `.sid` → `waveform`, image → `slideshow`, `.prg`/`.crt` → `launcher`, audio (`.mp3`/`.wav`/…) → a `generative` scene with `audio_source = "file"` (a reactive plasma over the decoded track) — and a directory/glob is passed straight through as the scene's `file` spec (so the scene random-picks at setup, e.g. a dir of SIDs plays a random one). A URL becomes a `video`: direct media URLs play as-is (PyAV opens http(s)), and YouTube/other sites are resolved by yt-dlp (the optional `yt` extra) to a single progressive stream. URL resolution + audio-only rejection happen **once, in `config.build_scene`** (the single resolution path shared with config-driven runs — see the `config.py` note below), so `quickcast.classify_url` just stores the URL verbatim; it parses the URL's `?t=`/`&start=`/`#t=` timestamp (`90`, `90s`, `1m30s`, `1h2m3s`) offline into `start_s` so playback begins at that offset (no flag). Audio **files** are first-class (`c64cast tune.mp3` plays the track on the DAC while a generative visual reacts — see the `audio_source = "file"` note in [audio_source.py](docs/architecture/audio.md)); audio **URLs** remain deferred. The classifier library is [c64cast/quickcast.py](c64cast/quickcast.py) (`build_config`; the shared URL resolver is `resolve_video_url`); `cli.main` dispatches to it via `_resolve_configs` when it sees positional args, then runs the result through the normal path (`build_stack` → `_run_playlists` → `teardown_stack`), so behavior matches a config-driven run. **`build_config` applies the machine-settings layer** (`config.apply_machine_settings`) right after building the base `Config`, before the arg-driven field sets — so quick playback inherits the connection target / capture device / SID model from `~/.config/c64cast/settings.toml` without a per-run `-u` (an explicit `-u`/`$C64CAST_URL` still wins, applied afterward). See the machine-settings note in the Configuration section. **CLI flags reach the config through the shared `config.merge_cli`**, the same one the `--config` path uses — quick playback sets only its own *policy* first (no loop, no interleaved videos) so `--loop` still overrides it. It must not hand-pick a subset: it used to, and twelve mapped flags plus `$C64CAST_DMA_PASSWORD` were accepted and silently dropped. `tests/test_quickcast.py` asserts against `CLI_TO_CFG` itself, so a newly mapped flag is covered on the day it's added.
 
 ```bash
 scripts/c64cast.sh -u u64://192.168.2.64 clip.mp4 tune.sid assets/pictures/
@@ -71,13 +71,17 @@ The config defines the **playlist** (which scenes run, in what order, for how lo
 ## Architecture
 
 Per-module internals — design rationale, hardware constraints, and edge-case history
-for every module in `c64cast/` — live in [docs/architecture.md](docs/architecture.md),
-which is standalone and current. It is an index: the notes themselves are split by topic
-area under [docs/architecture/](docs/architecture/), and the index's module table routes
-any module to its section. **Read the relevant section before modifying a module**; it
-carries the *why* (and the dead ends) that the code alone doesn't. Keep the two in sync:
-a behavior change to a module updates its architecture section in the same change set
-(see the "Docs reflect functionality changes" working rule).
+— live in [docs/architecture.md](docs/architecture.md). It is an index: the notes
+themselves are split by topic area under [docs/architecture/](docs/architecture/), and
+the index's module table routes a module to its section. Modules whose notes haven't
+been written yet are listed under "Not covered here", where the module docstring
+carries the rationale instead; [tests/test_architecture_index.py](tests/test_architecture_index.py)
+holds the two lists to a partition of the tree and checks every row's anchor resolves,
+so a new module has to be routed somewhere. **Read the relevant section before
+modifying a module**; it carries the *why* (and the dead ends) that the code alone
+doesn't. Keep the two in sync: a behavior change to a module updates its architecture
+section in the same change set (see the "Docs reflect functionality changes" working
+rule).
 
 The three **books** under `docs/` are the end-user surface, and each is a
 directory of numbered Markdown plus a `book.toml` that
@@ -96,6 +100,30 @@ README says what belongs in it. The old single-file usage document is gone — i
 content was promoted into the reference guide, and
 [tests/test_docs_links.py](tests/test_docs_links.py) fails if anything links to
 it again.
+
+The same Markdown is also the **documentation site** at
+<https://kfox.github.io/c64cast/> — the three books plus `caveats.md`,
+`troubleshooting.md` and `extending.md`, with the README under a generated hero
+on the front page. `docs/architecture*` is deliberately not published: it
+addresses somebody editing the code with the checkout open.
+[scripts/bookdoc.py](scripts/bookdoc.py) owns the dialect (recognition, anchors,
+and every check); [build_book.py](scripts/build_book.py) and
+[build_site.py](scripts/build_site.py) each supply only an `Emitter` saying what
+their own output looks like, so the PDF and the site cannot disagree about what
+a construct *is*. Anchors are GitHub's own slug rule, which is what makes one
+link resolve on github.com, in the PDF and on the site alike. `make site` writes
+`docs/_site/` (gitignored); `make site-check` parses without writing and is what
+CI runs on a PR, alongside a `--check` of every book — before that job existed
+nothing proved a book still rendered until release day.
+[.github/workflows/pages.yml](.github/workflows/pages.yml) publishes on every
+push to `main`, so the site is ahead of the PDFs by design and says so in a
+banner; every PDF link on it points at `releases/latest/download/…`, which is
+the published interface. All three scripts are **stdlib-only** and import
+nothing from `c64cast` — the release renders books under
+`uv run --no-project python`. Design lives in
+[docs/shared/template.typ](docs/shared/template.typ) (PDF) and
+[docs/shared/site.css](docs/shared/site.css) (web), which takes its palette from
+the template's own declarations under a drift test.
 
 Other docs: [caveats.md](docs/caveats.md),
 [troubleshooting.md](docs/troubleshooting.md), [extending.md](docs/extending.md).

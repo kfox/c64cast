@@ -38,6 +38,14 @@ a TR+ around names each host's calibration once (``--calibrate-dac
 --dac-calibration-profile my-breadbin``) and passes the same name on every
 playback run against that host.
 
+The same setting also takes a **path** to a calibration file
+(:func:`profile_path_override`), used as given. A name can only address this
+backend's own key space, so it cannot express "drive the SID of a machine whose
+calibration is already filed under a *different* backend's identity" — which is
+exactly what a TR+ in a U64's cartridge port is: one physical SID, already
+measured and filed under the Ultimate's ``unique_id``. Naming that file reuses
+the measurement instead of repeating it.
+
 Multi-socket U64/U2+ calibration
 ---------------------------------
 A real U64 (Elite I/II, C64U) can carry **two physical SID sockets**, each
@@ -143,6 +151,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -196,12 +205,35 @@ def _sanitize(text: str) -> str:
     return "".join(c if (c.isalnum() or c in ".-") else "_" for c in text) or "unknown"
 
 
+def profile_path_override(cfg: Config) -> Path | None:
+    """The file ``[audio].dac_calibration_profile`` points at, when it was given
+    as a path rather than a bare name — else None.
+
+    Both spellings are accepted because a name is folded through
+    :func:`_sanitize` into one filesystem-safe token, so a path handed to a
+    name-only flag came out as ``profile-_Users_me_....json`` and matched
+    nothing: the separators looked escaped rather than honored. Naming the file
+    directly is also the only way to point one machine's run at a calibration
+    that was auto-keyed by a *different* backend — a TeensyROM+ driving the SID
+    of a C64 whose own calibration is filed under the Ultimate's ``unique_id``
+    is exactly that case, and it can't be expressed as a key at all."""
+    value = cfg.audio.dac_calibration_profile
+    if not value:
+        return None
+    separators = [sep for sep in ("/", os.sep, os.altsep) if sep]
+    looks_like_path = (
+        value.endswith(".json") or value.startswith("~") or any(sep in value for sep in separators)
+    )
+    return Path(value).expanduser() if looks_like_path else None
+
+
 def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
     """Stable identity key for the connected system's calibration file.
 
     Resolution order — see the module docstring's "Identity keys" section:
 
-    1. ``[audio].dac_calibration_profile``, if set — used verbatim (sanitized).
+    1. ``[audio].dac_calibration_profile``, if set — used verbatim (sanitized),
+       or, when it names a file, that file's stem.
     2. A live device identity, when `be` is a reachable backend: the
        Ultimate's REST ``unique_id``, or a TeensyROM serial device's USB
        serial number.
@@ -212,6 +244,9 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
     Two runs that resolve to the same key share a calibration file; different
     physical SIDs get different keys."""
     if cfg.audio.dac_calibration_profile:
+        override = profile_path_override(cfg)
+        if override is not None:
+            return override.stem
         return f"profile-{_sanitize(cfg.audio.dac_calibration_profile)}"
 
     backend = cfg.hardware.backend
@@ -241,6 +276,9 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
 
 
 def calibration_path(cfg: Config, be: C64Backend | None = None) -> Path:
+    override = profile_path_override(cfg)
+    if override is not None:
+        return override
     return paths.calibration_dir() / f"{resolve_calibration_key(cfg, be)}.json"
 
 
@@ -391,7 +429,8 @@ def save_calibration(
             out["raw_signed_levels"] = [[int(c), round(v, 8)] for c, v in r.raw]
         return out
 
-    path = paths.calibration_dir() / f"{key}.json"
+    override = profile_path_override(cfg)
+    path = override if override is not None else paths.calibration_dir() / f"{key}.json"
     doc = {
         "schema": _SCHEMA_VERSION,
         "key": key,
@@ -431,9 +470,11 @@ def resolve_dac_curve_for_backend(
         table = load_calibrated_table(cfg, be=be)
         if table is None:
             raise ValueError(
-                "[audio].dac_curve = 'calibrated' but no matching calibration exists "
-                f"for this system ({resolve_calibration_key(cfg, be)}). Run `c64cast "
-                "-u <target> --calibrate-dac` first, or use 'auto'."
+                "[audio].dac_curve = 'calibrated' but no usable calibration was found "
+                f"at {calibration_path(cfg, be)} (key {resolve_calibration_key(cfg, be)}). "
+                "Run `c64cast -u <target> --calibrate-dac` first, point "
+                "[audio].dac_calibration_profile at an existing calibration file, or "
+                "use 'auto'."
             )
         return (f"calibrated:{resolve_calibration_key(cfg, be)}", table)
     if name == "auto":
@@ -445,6 +486,17 @@ def resolve_dac_curve_for_backend(
         table = load_calibrated_table(cfg, be=be)
         if table is not None:
             return (f"calibrated:{resolve_calibration_key(cfg, be)}", table)
+        if cfg.audio.dac_calibration_profile:
+            # A profile the user named by hand that resolves to nothing is a
+            # typo or a wrong path — not the ordinary "this machine was never
+            # calibrated" case the fallbacks below exist for. Name the file that
+            # was missed, since the key alone doesn't say where it looked.
+            log.warning(
+                "[audio].dac_calibration_profile = %r → %s holds no usable "
+                "calibration; falling back.",
+                cfg.audio.dac_calibration_profile,
+                calibration_path(cfg, be),
+            )
         # Went looking for a per-unit calibration and found none. With a live
         # backend — a real playback resolution, not an offline --doctor pass,
         # which can't confirm the identity key and reports separately — say so
@@ -1275,20 +1327,16 @@ def run_calibration(
         ) from e
 
     from .audio import (
-        CIA2_ICR_CLEAR,
+        CIA2_CRA_STOP,
         CIA2_ICR_DISABLE_ALL,
-        CIA2_ICR_ENABLE_TIMER_A_NMI,
-        CIA2_TIMER_A_CONTINUOUS,
         RING_BUFFER_ADDR,
         RING_BUFFER_SIZE,
         AudioStreamer,
     )
-    from .c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
+    from .c64 import CIA2
     from .dsp import DSPParams
 
     system = cfg.ultimate64.system
-    clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
-    latch = max(1, round(clock / NMI_RATE) - 1)
 
     key = resolve_calibration_key(cfg, be)
     supports_config = bool(getattr(be.profile, "supports_config", False))
@@ -1403,9 +1451,10 @@ def run_calibration(
         )
         st.running = True
         st._upload_nmi_and_buffers()
-        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
-        be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
-        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
+        # The streamer's own arm, so a dropped CIA write is retried here too: a
+        # silent NMI is one of the three causes _capture_fault_message has to
+        # guess between after 50 s of measuring nothing.
+        st._start_nmi_timer()
 
         log_fn("[calib] settling HDMI + (re)initializing capture…")
         time.sleep(3.0)
@@ -1462,7 +1511,7 @@ def run_calibration(
             entries["default"] = CalibrationResult(sidtable, metrics, None, raw)
     finally:
         try:
-            be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_ICR_CLEAR)
+            be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
             be.silence_sid()
             be.reset()
         except Exception as e:  # noqa: BLE001 — best-effort cleanup

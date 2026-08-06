@@ -86,7 +86,84 @@ The worker drains the queue at `chunk_size / sample_rate` — the NMI consumptio
 
 After `PREBUFFER_CHUNKS * chunk_size` bytes of prebuffer it starts the CIA #2 timer (`$DD04/05`). The BASIC clear-loop is kicked once at session startup, not per scene.
 
-Pacing is **strict absolute** — `next_write_time + chunk_period` — and never snaps forward to wall-clock on overrun. Snapping forward lets DMA round-trip and Python wakeup overhead shrink the effective sample rate below NMI consumption; every chunk then takes NEUTRAL padding, producing audible chunk-rate AM sidebands (≈−5 dB at the carrier) and ≈16 dB of overall level loss on video audio. The 8 KB ring (≈1 s at 8 kHz) absorbs occasional pace overshoots.
+#### The ring write is split and spread
+
+Step 3 is not one write. A host `DMAWRITE` halts the 6510 for the whole transfer, and CIA #2 is **edge-triggered** through the NMI line: when one halt spans two Timer A underflows the ICR latches once and the second sample is never fetched at all. So the payload size of a ring write is not a throughput question, it is how many NMIs that write destroys.
+
+The halt costs **≈1 cycle per byte**. That is HW-measured, not modelled — `scripts/diags/audio_fm_probe.py` fills the ring with a tone that tiles it exactly, arms the NMI, and then issues background writes of a controlled size while capturing off HDMI, so nothing can underrun and contaminate the reading. It measured 1.02 µs/byte on the U64 and 0.97 on a TeensyROM+, holding within a few percent from 32 to 1024 bytes.
+
+At the 12 kHz NTSC default the NMI period is 85 cycles ≈ 83 µs, so the old single 1024-byte write froze the CPU for ≈1064 µs — **12.8 NMI periods, ~12 times a second**. `c64.halt_quantum_bytes` sizes each piece from the live latch (`period_cycles − HALT_QUANTUM_MARGIN_CYCLES`, ≈65 B at that default) so a write can never swallow a second underflow, and `_drip_chunk` spreads the pieces evenly across the chunk period.
+
+Measured on hardware against a 376 Hz carrier, U64 plain RAM, matched byte rate:
+
+| payload | halt | FM deviation | 4–20 Hz modulation |
+| --- | --- | --- | --- |
+| 1024 B (one write) | 1064 µs | 27.3 Hz | 12.00 |
+| 256 B | 249 µs | 11.9 Hz | 1.94 |
+| 128 B | 104 µs | 6.7 Hz | 1.96 |
+| 64 B | 46 µs | 5.3 Hz | 2.41 |
+
+**Splitting and spreading are two separate wins, and it is easy to bank only the first.** The same bytes sent as 64-byte writes *back-to-back* measure 10.8 Hz deviation and 9.44 in the 4–20 Hz band, against 5.3 and 2.41 when spread — because a burst re-concentrates the halts into one low-frequency event. That band is called out on its own because sensitivity to modulation peaks there, and one write per chunk period puts the cadence at ~11.7 Hz, almost exactly the worst rate available. Note the biggest single step in the table is 1024 → 256, where FM deviation only halves but the 4–20 Hz figure drops 6× — the cadence leaving the band, not the halt shrinking. A metric that sums total sideband power is blind to that.
+
+That burst-vs-spread comparison is also the control that says host-side splitting works at all: if the firmware serviced queued commands without resuming the CPU between them, burst and spread would measure identically. They do not.
+
+This is the host-side twin of `modes.BANK_SWAP_CHUNK_SIZE`, which splits C64-side REC DMA for exactly the same reason and took NMI capture from 67 % to 97 %. The host path simply never got the same treatment.
+
+*Why the worker gained a one-chunk pipeline.* Spreading the writes across the period consumes the time the worker used to spend asleep waiting for the pace deadline — which was also the producer's collect window. So the worker now holds the chunk it collected last iteration and drips *that* one out while collecting its successor in the gaps between pieces (`_collect_until` is called once per quantum slot). Collection keeps its full period. The cost is one `chunk_period` of extra latency, and the queued-sample count is deliberately not decremented until the bytes actually land, so `position_seconds()` still reports where the audio really is and A/V sync does not shift.
+
+*There is deliberately no off switch.* The quantum sets the write **rate** — `chunk_size / quantum` writes per chunk period — and the render thread shares the one socket, so `_halt_quantum` floors the halt-derived size by what `BackendProfile.max_write_rate_hz` can carry. That floor already expresses the off case: a link that cannot afford to split gets a quantum of the whole chunk and issues one write, exactly the pre-split behavior. A boolean would only let someone pick worse audio on a link that could afford better.
+
+Getting that budget wrong is not a mild regression. A 65-byte quantum asks for 188 writes/s; on hardware each write then ran past its slot, so every later slot deadline was already expired, collection got no time at all, and the session NEUTRAL-padded 1744 chunks over a *full* queue and lapped the ring. `_collect_until` now drains non-blockingly once past its deadline so a slow write can never again manufacture an underrun out of queued data — but the budget is what keeps it from happening.
+
+Prebuffer writes are deliberately left unsplit: the NMI is not consuming yet, so there is no halt to hide from, and one write fills the ring faster.
+
+#### The video path is deliberately *not* split, and lost ticks are not the hiss
+
+The render thread pushes frames over the same link and those pushes go out whole — a ~1 KB PETSCII frame push spans ~12 NMI periods, so on a 20 fps run video costs roughly 264 of the ~318 ticks/s lost to halts, against ~54 for the audio ring. Splitting it too is the obvious next step. It was built, measured, and removed, and the measurements are worth keeping so nobody rebuilds it:
+
+* **The tick accounting was right.** Loss ≈ (total halt cycles / NMI period) − (number of writes), so each extra write buys back exactly one tick. Splitting video plus raising the TeensyROM write ceiling to 600/s took the consumer-rate deficit from **3.1 % to 1.1 %** — R rising 11661 → 11898 against a 12032 nominal.
+* **The link is not the limit it claims to be.** That run sustained **557 writes/s with zero underruns**, against `max_write_rate_hz = 200`. The declared ceiling is a floor nobody has pushed to a wall.
+* **And none of it was audible.** Recovering those ticks changed nothing a listener could hear, because `$D418` holds the previous sample across a lost tick: the error is a zero-order hold, not a gap. Meanwhile the ~5× write rate measurably *raised* the noise floor — 3.4 dB on `dac_curve = "calibrated"`, 2.2 dB on `"mahoney_ultisid"`, THD+N moving the same way.
+
+So the split is a net loss on this path, and `max_write_rate_hz` is deliberately left at 200 rather than corrected upward: more writes measure *worse*, so the honest ceiling is not the interesting number.
+
+#### The Mahoney path is the noise floor
+
+The audible static on the 4-bit DAC is not the halt at all. It is the **Mahoney 8-bit companded path**, which measures ~15 dB worse than the plain 4-bit `linear` curve it exists to improve on.
+
+Measured through the real playback path — a generated clip carrying a steady 440 Hz tone over `testsrc2` motion video, `petscii` at 20 fps, captured off HDMI and scored both by a notched noise floor and by THD+N with harmonics included, because a 4-bit path's quantisation error is harmonic and a notched metric alone would flatter it:
+
+| `dac_curve` | noise floor | THD+N re carrier |
+| --- | --- | --- |
+| `linear` | **−73.9 dB** | **−8.2 dB** |
+| `calibrated` | −66.8 | −7.3 |
+| `mahoney_ultisid` | −58.6 | −1.3 |
+
+Both metrics agree on the ordering, and so does every listening pass: `mahoney_ultisid` reads as a constant loud buzz, `calibrated` as interference that grows over a run, `linear` as the cleanest. At −1.3 dB THD+N nearly half the output power is not the signal.
+
+This **inverts the assumption `dac_curve = "auto"` encodes** — auto resolves to a Mahoney variant precisely because Mahoney is believed to be the quality option (~6–7 effective bits against 4). On this hardware it is not. Mahoney parks the three voices as DC through the filter and so depends entirely on filter behaviour, which is where to look; the open calibration bugs around sign inference and degraded filter paths are the obvious suspects.
+
+It is **not TeensyROM-specific**: the same clip on the Ultimate with `backend = "dac"` forced measured −73.3 dB against the TR's −76.9, i.e. slightly *worse*. The Ultimate only escapes in normal use because `backend = "auto"` sends it to the off-bus FPGA sampler.
+
+The noise is **episodic**: 0.5–1.5 s bursts that lift the floor 4–10 dB at irregular intervals, which is what listeners describe as plateaus that jump and then hold. A `calibrated` capture also creeps upward across 11 s (−60 → −52 dB). Cause unestablished; a decaying DC park is the obvious candidate and is untested.
+
+This went unmeasured for years because every metric on this path was a *frequency* metric — carrier shift, FM deviation, modulation bands — and the fault is pure amplitude. `audio_fm_probe.py` now carries `noise_floor_db` for exactly this. Note that probe's own conditions use `digi_boost`, i.e. plain 4-bit: it has never exercised the Mahoney env, which is why its earlier results were all null.
+
+*Late slots are the metric that says the spread actually held.* Everything above is a design; whether a given run kept it is a separate question, and one nothing else answers. A sub-write reached after its slot deadline has passed goes out immediately, which leaves every later slot of that chunk expired too — so they fire back-to-back and the run degrades from the spread condition toward the burst condition, continuously and by degree. That is invisible to every other counter: the bytes still land, in order, and no underrun is recorded, because `_collect_until`'s non-blocking drain is doing its job. `_drip_chunk` therefore counts late slots and the worst lateness, `stop()` reports the session share (warning past 10 %), and `_maybe_log_health` emits a per-window line every `AUDIO_HEALTH_LOG_INTERVAL_S`.
+
+That health line is per-**window**, not cumulative, because the artifacts left on this path are the time-varying ones — a fault that appears part-way in, deepens, clears and returns is indistinguishable from a steady one in a session total. It carries the servo gap's excursion, late slots over total, underruns, write rate, the live quantum, the measured consumer rate R and the latch, which is enough to tell a collection stall from a link stall from a servo excursion without a capture rig.
+
+#### Verifying the arm took
+
+Three writes bring the consumer up, and all three are load-bearing: the `$0318` NMI vector, the Timer A latch, and the `$DD0D`/`$DD0E` enable+start. They ride the same transport as everything else, whose `_emit` contract is to **absorb** a failed write rather than raise — right for a lost border poke, wrong here. Any one of them going missing produces the identical symptom: the NMI never fires, the read pointer R (the self-modifying operand at `$C025`) sits at `RING_BUFFER_ADDR` forever, and the session is silent from the first frame to the last. It also runs *fast* — the host-DMA servo is correctly reacting to a reader that never consumes. A dropped vector write is not a milder case: the KERNAL NMI handler stays installed and writes `#$7F` to `$DD0D`, killing CIA #2 interrupts itself.
+
+So `_start_nmi_timer` verifies rather than assumes. It reads R, calls `_arm_nmi_once` (all three writes, plus a read of `$DD0D` — the only way to clear the latched ICR flags, so the next underflow is a clean 0→1 transition), waits `NMI_ARM_VERIFY_DELAY_S` (30 ms ≈ 360 bytes of R travel at the 12 kHz default, so a frozen R is unambiguous), and re-reads. Up to `NMI_ARM_MAX_ATTEMPTS` times; `_nmi_arm_attempts` records what it took. Retries are cheap and only happen on failure — five of them is ≈150 ms against the ≈512 ms prebuffer already in hand. This was found on a machine whose short-board DMA is marginal enough to drop one of the three intermittently; a retry lands it.
+
+A backend that can't read R (`profile.supports_read` false, older TeensyROM firmware) arms exactly once, as before — there is nothing to verify against, and inventing a wait would only add latency.
+
+`_note_r_reading`, called from the servo's per-chunk R read, covers the consumer that dies *mid*-session: `NMI_STALL_WARN_CHUNKS` consecutive identical readings warn once. R moves ~1 KB per chunk period when alive, so identical back-to-back readings are conclusive, not a heuristic. The servo already had this reading in hand and simply never said anything about it.
+
+Pacing is **strict absolute** — `next_write_time + chunk_period` — and never snaps forward to wall-clock on overrun. Snapping forward lets DMA round-trip and Python wakeup overhead shrink the effective sample rate below NMI consumption; every chunk then takes NEUTRAL padding, producing audible chunk-rate AM sidebands (≈−5 dB at the carrier) and ≈16 dB of overall level loss on video audio. The 8 KB ring (≈0.68 s at the 12 kHz default) absorbs occasional pace overshoots.
 
 ### Why the ring lives at `$4000`
 
@@ -102,7 +179,7 @@ The handler reloads the REU source registers (`$DF04`/`$DF05`/`$DF06`) from a 3-
 
 Two pinned BCC displacements (+15 src wrap, +10 dst wrap) must land on instruction boundaries; wrong values stomp either the tracker or the REU registers.
 
-Bootstrap latency is `REU_MIC_BOOTSTRAP_BYTES / sample_rate`, ≈200 ms at 8 kHz. The one `use_reu_pump` flag covers both the video (`start_for_reu_staged`) and mic (`start_mic`) paths — `AudioStreamer` picks the matching bring-up from whichever start method was called.
+Bootstrap latency is `REU_MIC_BOOTSTRAP_BYTES / sample_rate`, ≈133 ms at the 12 kHz default. The one `use_reu_pump` flag covers both the video (`start_for_reu_staged`) and mic (`start_mic`) paths — `AudioStreamer` picks the matching bring-up from whichever start method was called.
 
 ### `[ultimate64].auto_reu` — automatic REU provisioning
 
@@ -333,7 +410,19 @@ Three knobs, and understanding why two of them are off matters more than the kno
 
 **`nmi_rate_adaptive` and `pitch_mult_*` — default off / 1.0.** Playback pitch is `R / sample_rate`, and both of these force R back up toward `sample_rate`: the adaptive loop (`_nmi_rate_step`) shrinks the CIA #2 latch from a measured-R estimate, and the static per-mode `pitch_mult_*` multipliers do the same open-loop.
 
-They are off because there is no tick loss left for them to correct. Hardware measurement (2026-07-02, `scripts/diags/nmi_pitch_ab.py` — full-pipeline capture, pitch via log-spectrum cross-correlation against the source, robust to avfoundation's chunk-drops) puts bus-halt loss at **≈0** with the bitmap+digi fps cap, `VideoScene` frame dedup, and the REU-staged double-buffer in play. DAC-path mhires video, with no compensation at all, plays at +0.07 % on a near-static clip and −0.01 % on a high-motion one.
+They are off because the **net pitch error** they would correct is already ≈0. Hardware measurement (2026-07-02, `scripts/diags/nmi_pitch_ab.py` — full-pipeline capture, pitch via log-spectrum cross-correlation against the source, robust to avfoundation's chunk-drops) puts it at **≈0** with the bitmap+digi fps cap, `VideoScene` frame dedup, and the REU-staged double-buffer in play. DAC-path mhires video, with no compensation at all, plays at +0.07 % on a near-static clip and −0.01 % on a high-motion one.
+
+Read that as a *pitch* result and nothing more. It is tempo-blind, and it is not a claim that a host write costs the 6510 nothing. What a write actually costs was measured directly in 2026-08-05 by `scripts/diags/halt_shape_probe.py`, which counts stolen cycles with R itself: R advances once per serviced NMI, so the deficit in dR/dt under paced background writes — against the same measurement with the bus quiet — is the halt, counted in lost samples by the machine that lost them. Sweeping payload at a fixed write rate splits it into `lost_ticks_per_write = a + b·payload`, r² = 1.000 on both backends:
+
+| | TeensyROM+ | Ultimate 64 |
+|---|---|---|
+| fixed cost `a` | ≈0 (−45 cycles, i.e. noise) | ≈0 (−34 cycles) |
+| per-byte `b` | **1.055 cycles/byte** | **1.270 cycles/byte** |
+| at the worker's 128 B × 91/s | 0.80 % of the sample stream | 1.15 % |
+
+Three things follow. A host `DMAWRITE` really costs **1.06–1.27 cycles/byte**, so the REC DMA model's 1 cycle/byte is low and every halt figure inferred from it is an underestimate. Neither backend has a measurable fixed per-write cost, so subdividing a payload is close to free in cycles — the shipped 128-byte halt quantum costs what its bytes cost and nothing extra for the extra writes, which is what makes the command-rate budget, not the halt, its binding constraint. And the cost is **stationary** (`--hold` at the worker's operating point: 1.079..1.098 ticks/write over 150 s, drift +0.002/min), so it is not a candidate for anything that grows over a run.
+
+Do not treat the two measurements as interchangeable. Under full production load — video writes on the same link, char mode, no `tempo_scale` compensation — R has been observed at 11655 against a 12032.1 nominal, a **3.1 % tick deficit**, alongside the ≈0 % pitch result above. Nothing here has established which of the servo's re-pacing, the fps caps or the pitch estimator's own limits reconciles those two numbers. The pitch A/B is what governs these knobs, because pitch is what they move; `halt_shape_probe.py` is what to run when the question is the halt.
 
 Against that baseline, enabling either one only injects error:
 

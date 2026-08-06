@@ -81,3 +81,8 @@ Thumbs.db
 # the book (`output` in its book.toml), never `template.typ`.
 docs/*/c64cast-*.typ
 docs/*/c64cast-*.pdf
+
+# The documentation site, rendered from those same sources by `make site`.
+# Published by .github/workflows/pages.yml as a Pages artifact rather than
+# committed to a branch, so nothing generated is ever tracked.
+docs/_site/

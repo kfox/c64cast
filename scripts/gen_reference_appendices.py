@@ -56,8 +56,8 @@ REFERENCE_DIR = REPO_ROOT / "docs" / "reference"
 CARD_DIR = REPO_ROOT / "docs" / "card"
 
 
-def _build_book() -> ModuleType:
-    """``scripts/build_book.py``, loaded by path.
+def _script_module(name: str) -> ModuleType:
+    """A sibling module under ``scripts/``, loaded by path.
 
     The index writes a link per locator, and a link resolves only if the anchor
     it names is spelled exactly the way the converter spells it. Borrowing
@@ -68,10 +68,10 @@ def _build_book() -> ModuleType:
     relied on -- this module is loaded by path itself, from the tests. An
     already-loaded copy is reused rather than a second one built.
     """
-    module = sys.modules.get("build_book")
+    module = sys.modules.get(name)
     if module is None:
-        path = Path(__file__).resolve().with_name("build_book.py")
-        spec = importlib.util.spec_from_file_location("build_book", path)
+        path = Path(__file__).resolve().with_name(f"{name}.py")
+        spec = importlib.util.spec_from_file_location(name, path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         # Registered before exec: @dataclass resolves annotations through
@@ -81,7 +81,10 @@ def _build_book() -> ModuleType:
     return module
 
 
-bb = _build_book()
+# The dialect (slugs, front matter, chapter discovery) and the Typst renderer
+# that measures a listing against the page it will be set on.
+bd = _script_module("bookdoc")
+bb = _script_module("build_book")
 
 # A default longer than this is summarized rather than printed. Only one field
 # hits it -- [midi_control].cc_map, whose shipped default is two dozen mappings
@@ -1257,10 +1260,10 @@ def scan(
     hits: dict[str, dict[tuple[str, str], Locator]] = {}
     patterns = {name: concept_pattern(_CONCEPTS[name]) for name in concepts}
     for file_order, path in enumerate(paths):
-        fields, body, _ = bb.parse_front_matter(path.read_text(encoding="utf-8"), path)
+        fields, body, _ = bd.parse_front_matter(path.read_text(encoding="utf-8"), path)
         chapter = fields.get("number") or ""
         prose_rank = 0 if chapter.isdigit() else 1
-        slugs = iter(bb.file_section_slugs(body))
+        slugs = iter(bd.file_section_slugs(body))
         section: tuple[str, str] | None = None
         fenced = False
         for lineno, line in enumerate(body.split("\n")):
@@ -1271,7 +1274,7 @@ def scan(
                 continue
             if fenced:
                 continue
-            heading = bb._HEADING_RE.match(line)
+            heading = bd._HEADING_RE.match(line)
             if heading is not None and len(heading.group("hashes")) in (2, 3):
                 in_title = True
                 section = (next(slugs), heading.group("text").strip())
@@ -1335,7 +1338,7 @@ def build_index() -> list[str]:
     belong to the contents page. An index holds terms, and the handful of plain
     words worth entering are curated in :data:`_CONCEPTS`.
     """
-    paths = [p for p in bb.discover_chapters(REFERENCE_DIR) if p != INDEX_PATH]
+    paths = [p for p in bd.discover_chapters(REFERENCE_DIR) if p != INDEX_PATH]
     codes = code_terms()
     concepts = concept_terms(codes)
     found = scan(paths, codes, concepts)
