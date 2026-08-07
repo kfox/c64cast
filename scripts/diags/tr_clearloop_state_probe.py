@@ -153,8 +153,25 @@ def main() -> int:
 
         if stop >= 1:
             print("\n== reset ==")
+            # Screen content alone can't tell "reset and redrew the banner" from
+            # "never reset" — both look identical. A marker can: the kernal's
+            # init clears the screen, so surviving the reset proves it didn't
+            # happen. Row 10 is well clear of the banner.
+            marker = bytes([0x0D, 0x05, 0x01, 0x04, 0x0D, 0x05]) * 2  # "MEADME" x2
+            be.write_memory_file(f"{_SCREEN + 400:04X}", marker)
+            be.flush()
+            print(f"    marker written to ${_SCREEN + 400:04X}: {_hex(marker)}")
+            reply = be.tr.transport.drain_text(0.3)
             be.reset()
+            reply = be.tr.transport.drain_text(0.5)
+            print(f"    reset reply: {reply.strip()!r}")
             time.sleep(2.0)
+            got = _rd(be, _SCREEN + 400, len(marker))
+            print(f"    marker now: {_hex(got)}")
+            if got == marker:
+                print("      <- MARKER SURVIVED: the C64 did NOT actually reset")
+            else:
+                print("      <- marker cleared: a real reset happened")
             report(be, "after reset")
 
         if stop >= 2:
