@@ -249,7 +249,20 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
         override = profile_path_override(cfg)
         if override is not None:
             return override.stem
-        return f"profile-{_sanitize(cfg.audio.dac_calibration_profile)}"
+        name = _sanitize(cfg.audio.dac_calibration_profile)
+        # A bare name normally becomes "profile-<name>", which is what a run
+        # calibrating *under* that profile writes. But the auto-keyed files a
+        # plain --calibrate-dac produces are named for the device
+        # ("ultimate-<unique-id>", "tr-<usb-serial>"), and naming one of those —
+        # the obvious thing to type, since it is what is on disk — resolved to
+        # "profile-ultimate-<unique-id>" and matched nothing. So an existing file
+        # named exactly by the given name wins over the prefixed spelling.
+        if (
+            not (paths.calibration_dir() / f"profile-{name}.json").exists()
+            and (paths.calibration_dir() / f"{name}.json").exists()
+        ):
+            return name
+        return f"profile-{name}"
 
     backend = cfg.hardware.backend
     if backend == "ultimate":
@@ -915,7 +928,7 @@ def _pass_gain_decomposition(
         return np.ones(passes.shape[0]), 0.0
     gains = np.asarray(passes @ levels, dtype=np.float64) / denom
     resid = passes - gains[:, None] * levels
-    return gains, float(np.max(resid.std(axis=0))) / scale_ref
+    return gains, float(np.percentile(resid.std(axis=0), 95)) / scale_ref
 
 
 def extract_slot_levels(
@@ -992,7 +1005,12 @@ def extract_slot_levels(
         raise MeasurementError("no complete ring pass fell inside the capture window")
 
     passes = np.vstack(per_pass)
-    levels = passes.mean(axis=0)
+    # Median, not mean, across passes. Individual slots glitch: on every refused
+    # capture examined, 1-6 codes out of ~86 read far off on exactly one pass
+    # while the other 80-odd agreed to 0.004%. A mean folds that outlier into the
+    # code's level and the error survives into the ladder — which is what a wrong
+    # entry sounds like. With three passes the median discards it outright.
+    levels = np.median(passes, axis=0) if passes.shape[0] >= 3 else passes.mean(axis=0)
     scale_ref = float(np.max(np.abs(levels))) or 1.0
     tracked_slot_p = float(np.mean(pitches))
     gains, residual_frac = _pass_gain_decomposition(passes, levels, scale_ref)
@@ -1002,10 +1020,16 @@ def extract_slot_levels(
         "slot_period_samples": round(tracked_slot_p, 4),
         "nmi_rate_implied_hz": round(SLOT_SAMPLES * sr / tracked_slot_p, 2),
         "anchor_fit_rms_samples": round(anchor_rms, 2),
-        # The trust metric. Every pass measures the same 256 levels, so a large
-        # spread means the grid is not landing on the same thing twice — the one
-        # symptom that distinguishes a mistracked capture from a real curve.
+        # Worst single slot. Kept because it names the biggest error in the ring,
+        # but it is NOT the trust metric: it is a max over ~86 codes, so one
+        # transient glitch out of ~260 readings pins it at 1-2% while the ring as
+        # a whole is replaying to 0.004%. Gating on it failed good runs.
         "pass_spread_frac": round(float(np.max(passes.std(axis=0))) / scale_ref, 5),
+        # The trust metric: the 95th percentile of the same per-code spread. A
+        # handful of glitched slots cannot move it, but a ring that genuinely is
+        # not replaying moves every code and so moves this too.
+        "pass_spread_p95_frac": round(float(np.percentile(passes.std(axis=0), 95)) / scale_ref, 5),
+        "pass_outlier_codes": int((passes.std(axis=0) / scale_ref > RING_SPREAD_HEALTHY).sum()),
         # What that spread is made of (:func:`_pass_gain_decomposition`). The level
         # the whole ring came back at on each lap, how far those move, and the
         # disagreement still there once each lap is rescaled to the others —
@@ -1041,7 +1065,7 @@ def read_ring_capture(
     if peak < SILENT_CAPTURE_PEAK:
         raise MeasurementError("it recorded silence")
     got = extract_slot_levels(cap, n_codes, ring_size, sr=sr)
-    spread = float(got.diagnostics["pass_spread_frac"])
+    spread = float(got.diagnostics["pass_spread_p95_frac"])
     if spread > RING_SPREAD_NOT_THE_RING:
         raise MeasurementError(
             f"its ring passes disagree by {spread * 100:.1f}%, where hardware "
@@ -1372,7 +1396,7 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
     from laps that genuinely differ (something else is reaching the output). A
     single combined list made the reader test all of it, and the first item —
     a second SID — is the expensive one to check."""
-    spread = float(diag.get("pass_spread_frac", 0.0))
+    spread = float(diag.get("pass_spread_p95_frac", 0.0))
     resid = float(diag.get("pass_residual_frac", 0.0))
     span = float(diag.get("pass_gain_span_frac", 0.0))
     gains = diag.get("pass_gains") or []
@@ -1725,20 +1749,20 @@ def run_calibration(
                 # run that is drifting can be recognized while it is still
                 # running rather than from the table it produces.
                 marginal = ""
-                if d["pass_spread_frac"] > RING_SPREAD_HEALTHY:
+                if d["pass_spread_p95_frac"] > RING_SPREAD_HEALTHY:
                     kind = (
                         f"level drift, span {d['pass_gain_span_frac'] * 100:.1f}%"
                         if d["pass_residual_frac"]
-                        <= PASS_RESIDUAL_DRIFT_RATIO * d["pass_spread_frac"]
+                        <= PASS_RESIDUAL_DRIFT_RATIO * d["pass_spread_p95_frac"]
                         else f"ring differs, residual {d['pass_residual_frac'] * 100:.2f}%"
                     )
                     marginal = f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%; {kind})"
                 log_fn(
                     f"[calib]   {label} ring {n}/{total} (rotation {rnd}): "
                     f"{d['passes']} passes, L($0F)={got.levels[0]:+.5f}, "
-                    f"pass spread {d['pass_spread_frac'] * 100:.2f}%{marginal}"
+                    f"pass spread {d['pass_spread_p95_frac'] * 100:.3f}% (worst slot {d['pass_spread_frac'] * 100:.2f}%){marginal}"
                 )
-        spreads = [m.diagnostics["pass_spread_frac"] for _, m in measured]
+        spreads = [m.diagnostics["pass_spread_p95_frac"] for _, m in measured]
         n_marginal = sum(1 for s in spreads if s > RING_SPREAD_HEALTHY)
         note = _marginal_run_summary(spreads, label)
         if note:
