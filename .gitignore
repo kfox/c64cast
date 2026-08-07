@@ -64,11 +64,14 @@ videos/
 assets/*/*
 !assets/*/README.md
 
-# Claude — local settings/state stay out, project skills are shared.
+# Claude — local state stays out; project skills, the shared permission
+# allowlist, and the PreToolUse guardrail hooks are shared.
 # Note: `.claude/*` (not `.claude/`) so git still descends into the dir;
 # a re-include cannot resurrect a file whose parent dir is itself excluded.
 .claude/*
 !.claude/skills/
+!.claude/settings.json
+!.claude/hooks/
 
 # OS
 .DS_Store
