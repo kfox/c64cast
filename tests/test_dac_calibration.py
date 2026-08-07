@@ -951,13 +951,21 @@ class RingCaptureGateTest(unittest.TestCase):
         _, resid_noisy = dc._pass_gain_decomposition(noisy, noisy.mean(axis=0), 0.5)
         self.assertGreater(resid_noisy, 0.005)
 
+    def test_passes_that_agree_exactly_are_not_classified_as_drift(self):
+        """A spread of zero leaves nothing to classify. The two call sites used
+        to implement the discriminator separately and only one carried this
+        guard; the shared predicate keeps it for both."""
+        self.assertFalse(
+            dc._is_level_drift({"pass_spread_p95_frac": 0.0, "pass_residual_frac": 0.0})
+        )
+
     def test_a_run_of_marginal_rings_is_called_out_though_each_ring_passed(self):
         """Rings under the trust gate still add up to a table worth re-measuring:
         one run whose rings sat at 0.2-0.44% produced a table disagreeing with the
         same chip measured cleanly by 18% RMS, where two clean runs agree to 0.12%.
         No single ring failed anything, so nothing said so."""
-        note = dc._marginal_run_summary([0.0003, 0.0031, 0.0044, 0.0002, 0.0025], "SID")
-        self.assertIsNotNone(note)
+        count, note = dc._marginal_run_summary([0.0003, 0.0031, 0.0044, 0.0002, 0.0025], "SID")
+        self.assertEqual(count, 3)
         assert note is not None
         self.assertIn("3/5 rings", note)
         self.assertIn("0.44%", note)
@@ -966,7 +974,7 @@ class RingCaptureGateTest(unittest.TestCase):
 
     def test_a_clean_run_says_nothing(self):
         """The summary only earns its place by being absent on a healthy run."""
-        self.assertIsNone(dc._marginal_run_summary([0.0003, 0.0011, 0.0002], "SID"))
+        self.assertEqual(dc._marginal_run_summary([0.0003, 0.0011, 0.0002], "SID"), (0, None))
 
     def test_one_glitched_slot_does_not_fail_an_otherwise_perfect_ring(self):
         """The regression. Individual slots glitch: on every refused capture
