@@ -949,6 +949,18 @@ class SlotLevels:
     diagnostics: dict[str, Any]
 
 
+#: Percentile of the per-code pass spread used as the trust statistic
+#: (``pass_spread_p95_frac``, and the residual it is compared against). A max
+#: over the ~86 codes of a ring is pinned by one transient glitch — on every
+#: refused capture examined, 1–6 codes read far off on exactly one pass while
+#: the rest agreed to 0.004 % — and gating on it failed good runs. 95 sits
+#: above the glitch fraction those captures show (≤7 % of codes) while a ring
+#: that genuinely is not replaying still moves every code, and this with it.
+#: The diagnostics key bakes the value into its name — rename it if this is
+#: ever tuned.
+_SPREAD_TRUST_PERCENTILE = 95
+
+
 def _pass_gain_decomposition(
     passes: np.ndarray, levels: np.ndarray, scale_ref: float
 ) -> tuple[np.ndarray, float]:
@@ -977,7 +989,36 @@ def _pass_gain_decomposition(
         return np.ones(passes.shape[0]), 0.0
     gains = np.asarray(passes @ levels, dtype=np.float64) / denom
     resid = passes - gains[:, None] * levels
-    return gains, float(np.percentile(resid.std(axis=0), 95)) / scale_ref
+    return gains, float(np.percentile(resid.std(axis=0), _SPREAD_TRUST_PERCENTILE)) / scale_ref
+
+
+#: Half-width of the step-detector boxcar (:func:`_boxcar_step`), as a fraction
+#: of the slot period. Its |response| to one boundary is a triangle two
+#: half-widths wide, so anything ≤0.5 keeps adjacent boundaries' peaks from
+#: overlapping; 0.4 takes that with margin while still averaging most of each
+#: plateau into the step estimate.
+_STEP_BOXCAR_HALF_FRAC = 0.4
+
+#: An edge counts as a peak only above this fraction of the capture's strongest
+#: step magnitudes. The reference is a high percentile rather than the max so a
+#: single spike cannot set the bar; the fraction sits far below 1 because a
+#: code near the reference level steps at a tiny fraction of the full-scale
+#: anchor edge, yet above the flat-ish response between boundaries.
+_STEP_PEAK_THRESH_FRAC = 0.15
+_STEP_MAG_REF_PERCENTILE = 99.5
+
+#: Non-maximum-suppression radius for :func:`_peak_positions`, as a fraction of
+#: the slot period: real boundaries are at least one slot apart, so blanking
+#: half a slot around each accepted peak drops double-detections of one edge
+#: and can never swallow a genuine neighbor.
+_STEP_PEAK_MIN_SEP_FRAC = 0.5
+
+#: Capture samples trimmed from each end of a slot before its plateau is
+#: averaged, keeping the boundary transition and its settling out of the mean.
+#: At 48 kHz a slot is ≈192 samples, so 24 (≈0.5 ms) each side leaves a
+#: ≈144-sample core; a pass whose tracked pitch leaves less than an 8-sample
+#: core after trimming is dropped instead.
+_SLOT_EDGE_GUARD_SAMPLES = 24
 
 
 def extract_slot_levels(
@@ -987,7 +1028,7 @@ def extract_slot_levels(
     *,
     sr: int = CAP_SR,
     nmi_rate: float = NMI_RATE,
-    guard: int = 24,
+    guard: int = _SLOT_EDGE_GUARD_SAMPLES,
 ) -> SlotLevels:
     """Recover each code's *signed* output level, relative to the reference
     slots, from a capture of the ring :func:`build_slot_ring` built.
@@ -1014,10 +1055,10 @@ def extract_slot_levels(
     slot_p = SLOT_SAMPLES * sr / float(nmi_rate)
     ring_p = ring_slots * slot_p
 
-    step = _boxcar_step(x, max(2, int(round(0.4 * slot_p))))
+    step = _boxcar_step(x, max(2, int(round(_STEP_BOXCAR_HALF_FRAC * slot_p))))
     mag = np.abs(step)
-    thresh = 0.15 * float(np.percentile(mag, 99.5))
-    peaks = _peak_positions(mag, 0.5 * slot_p, thresh)
+    thresh = _STEP_PEAK_THRESH_FRAC * float(np.percentile(mag, _STEP_MAG_REF_PERCENTILE))
+    peaks = _peak_positions(mag, _STEP_PEAK_MIN_SEP_FRAC * slot_p, thresh)
     anchors = _find_ring_anchors(peaks, slot_p)
     if anchors.size < 2:
         raise MeasurementError(
@@ -1077,7 +1118,9 @@ def extract_slot_levels(
         # The trust metric: the 95th percentile of the same per-code spread. A
         # handful of glitched slots cannot move it, but a ring that genuinely is
         # not replaying moves every code and so moves this too.
-        "pass_spread_p95_frac": round(float(np.percentile(passes.std(axis=0), 95)) / scale_ref, 5),
+        "pass_spread_p95_frac": round(
+            float(np.percentile(passes.std(axis=0), _SPREAD_TRUST_PERCENTILE)) / scale_ref, 5
+        ),
         "pass_outlier_codes": int((passes.std(axis=0) / scale_ref > RING_SPREAD_HEALTHY).sum()),
         # What that spread is made of (:func:`_pass_gain_decomposition`). The level
         # the whole ring came back at on each lap, how far those move, and the
@@ -1439,6 +1482,16 @@ def _capture_fault_message(dev: int, reason: str, peak: float, saved: Path | Non
     )
 
 
+def _is_level_drift(diag: dict[str, Any]) -> bool:
+    """Whether an unsteady ring's disagreement is a moving level rather than
+    laps that genuinely differ — the :data:`PASS_RESIDUAL_DRIFT_RATIO`
+    discriminator over :func:`_pass_gain_decomposition`'s diagnostics. A spread
+    of zero is not drift: there is no disagreement to classify."""
+    spread = float(diag.get("pass_spread_p95_frac", 0.0))
+    resid = float(diag.get("pass_residual_frac", 0.0))
+    return bool(spread) and resid <= PASS_RESIDUAL_DRIFT_RATIO * spread
+
+
 def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None) -> str:
     """The message an unsteady — as opposed to unreadable — ring fails with.
 
@@ -1447,18 +1500,17 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
     mistracked capture and would otherwise send the user back to the cabling.
 
     Beyond that the two ways a ring can be unsteady get different advice, because
-    they have different fixes: :func:`_pass_gain_decomposition` separates a level
-    that was moving *through* a faithful ring (re-measure once it has settled)
-    from laps that genuinely differ (something else is reaching the output). A
-    single combined list made the reader test all of it, and the first item —
-    a second SID — is the expensive one to check."""
-    spread = float(diag.get("pass_spread_p95_frac", 0.0))
+    they have different fixes: :func:`_is_level_drift` separates a level that was
+    moving *through* a faithful ring (re-measure once it has settled) from laps
+    that genuinely differ (something else is reaching the output). A single
+    combined list made the reader test all of it, and the first item — a second
+    SID — is the expensive one to check."""
     resid = float(diag.get("pass_residual_frac", 0.0))
+    spread = float(diag.get("pass_spread_p95_frac", 0.0))
     span = float(diag.get("pass_gain_span_frac", 0.0))
     gains = diag.get("pass_gains") or []
-    drift = bool(spread) and resid <= PASS_RESIDUAL_DRIFT_RATIO * spread
 
-    if drift:
+    if _is_level_drift(diag):
         detail = (
             f"The disagreement is a level change, not a different ring: rescaling "
             f"each pass leaves only {resid * 100:.2f}%, and the per-pass levels "
@@ -1505,9 +1557,10 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
     )
 
 
-def _marginal_run_summary(spreads: Sequence[float], label: str) -> str | None:
-    """One line naming a run that stayed under the trust gate ring by ring and
-    is still not worth trusting, or None when the run was clean.
+def _marginal_run_summary(spreads: Sequence[float], label: str) -> tuple[int, str | None]:
+    """How many rings measured above the healthy band, with one line naming a
+    run that stayed under the trust gate ring by ring and is still not worth
+    trusting (None when the run was clean).
 
     Per ring a marginal spread is a note; across a run it is the finding. A run
     whose rings all sat at 0.2–0.44 % — every one of them under
@@ -1517,8 +1570,8 @@ def _marginal_run_summary(spreads: Sequence[float], label: str) -> str | None:
     Nothing said so at the time, because no single ring had failed anything."""
     marginal = [s for s in spreads if s > RING_SPREAD_HEALTHY]
     if not marginal:
-        return None
-    return (
+        return 0, None
+    return len(marginal), (
         f"[calib] {label}: {len(marginal)}/{len(spreads)} rings measured above the healthy "
         f"band (≤{RING_SPREAD_HEALTHY * 100:.1f}%, worst {max(spreads) * 100:.2f}%). The "
         "table is still written, but a run like this has produced one that disagreed with "
@@ -1805,8 +1858,7 @@ def run_calibration(
                 if d["pass_spread_p95_frac"] > RING_SPREAD_HEALTHY:
                     kind = (
                         f"level drift, span {d['pass_gain_span_frac'] * 100:.1f}%"
-                        if d["pass_residual_frac"]
-                        <= PASS_RESIDUAL_DRIFT_RATIO * d["pass_spread_p95_frac"]
+                        if _is_level_drift(d)
                         else f"ring differs, residual {d['pass_residual_frac'] * 100:.2f}%"
                     )
                     marginal = f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%; {kind})"
@@ -1816,8 +1868,7 @@ def run_calibration(
                     f"pass spread {d['pass_spread_p95_frac'] * 100:.3f}% (worst slot {d['pass_spread_frac'] * 100:.2f}%){marginal}"
                 )
         spreads = [m.diagnostics["pass_spread_p95_frac"] for _, m in measured]
-        n_marginal = sum(1 for s in spreads if s > RING_SPREAD_HEALTHY)
-        note = _marginal_run_summary(spreads, label)
+        n_marginal, note = _marginal_run_summary(spreads, label)
         if note:
             log_fn(note)
 
