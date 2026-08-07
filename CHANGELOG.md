@@ -39,6 +39,13 @@ the version and stamps it with the date.
   `suppress_cursor_blink()` helper is gone, and the TeensyROM+'s "is BASIC at the
   READY prompt?" check — which had been reading that state as a side effect of
   the same write — is now a plain read of CURLIN.
+- **TeensyROM+ bring-up now actually detects the READY prompt.** The check for
+  "is BASIC at the READY prompt, so the clear-loop repair needs to run?" tested
+  CURLIN's high byte for `$FF`, the usual shorthand for direct mode. Measured on
+  hardware that machine reads `$0000` at READY and `$0014` (line 20) running the
+  clear loop, so the test matched neither state, every probe answered "running",
+  and the repair never fired — leaving BASIC in the editor with a blinking
+  cursor. Both spellings of "not executing a line" are now accepted.
 - **TeensyROM+ bring-up no longer skips the clear-loop repair after a slow
   launch.** LaunchFile acks and then streams its own console text back over the
   same link, a C64 reset included. Bring-up waited a fixed 0.6 s for that and
