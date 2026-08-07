@@ -25,6 +25,7 @@ from . import (
     __version__,
     char_rom,
     dac_calibration,
+    hw_provision,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
     paths,
     scene_factory,
@@ -641,9 +642,8 @@ def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
             "keeping video on the host-DMA path (REU undetected)."
         )
         return False
-    from . import doctor
 
-    enabled = doctor.reu_is_enabled(api)
+    enabled = hw_provision.reu_is_enabled(api)
     if enabled:
         log.info(
             "[video].use_reu_staged = auto: U64 REU is enabled — "
@@ -688,9 +688,8 @@ def _resolve_sampler_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
             cfg.audio.backend,
         )
         return False
-    from . import doctor
 
-    avail = doctor.sampler_is_available(api)
+    avail = hw_provision.sampler_is_available(api)
     if avail:
         log.info(
             "[audio].backend = %s: Ultimate Audio sampler available — "
@@ -869,15 +868,13 @@ def build_stack(
     # runs that hard-require it, so the REU-staged audio/video paths "just work"
     # without the manual F2 enable step. No-op unless [ultimate64].auto_reu is
     # on, the backend has an REU, a probe is allowed, and the config hard-needs
-    # the REU (see doctor.provision_reu). Runs BEFORE _resolve_reu_available so
-    # that probe sees the now-enabled REU; restored at teardown (teardown_stack).
-    from . import doctor as _doctor
-
-    reu_restore = _doctor.provision_reu(api, cfg)
+    # the REU (see hw_provision.provision_reu). Runs BEFORE _resolve_reu_available
+    # so that probe sees the now-enabled REU; restored at teardown (teardown_stack).
+    reu_restore = hw_provision.provision_reu(api, cfg)
     # Auto-enable the Ultimate Audio sampler (map $DF20 + unmute Sampler mixer,
     # live + volatile) when a video scene will use it. Runs BEFORE
     # _resolve_sampler_available so the probe sees it on; restored at teardown.
-    sampler_restore = _doctor.provision_sampler(api, cfg)
+    sampler_restore = hw_provision.provision_sampler(api, cfg)
 
     # Resolve the system-aware [audio].dac_curve ("auto"/"calibrated") to a
     # concrete (label, table) for this backend + any per-unit calibration.
@@ -921,8 +918,8 @@ def build_stack(
         log.error("%s", e)
         if audio is not None:
             audio.close()
-        _doctor.restore_sampler(api, sampler_restore)
-        _doctor.restore_reu(api, reu_restore)
+        hw_provision.restore_sampler(api, sampler_restore)
+        hw_provision.restore_reu(api, reu_restore)
         api.close()
         if source is not None:
             source.release()
@@ -1118,8 +1115,6 @@ def teardown_stack(stack: SystemStack) -> None:
     stop audio before the final reset so the NMI timer isn't firing into
     a buffer we're about to clear; preview/recording come down first so
     they don't try to render after the API is closed."""
-    from . import doctor as _doctor
-
     for label, fn in (
         (
             "preview shutdown",
@@ -1133,9 +1128,9 @@ def teardown_stack(stack: SystemStack) -> None:
         ),
         # Restore any REU config we auto-provisioned, while the REST session is
         # still open (no-op when nothing was changed; volatile regardless).
-        ("REU restore", lambda: _doctor.restore_reu(stack.api, stack.reu_restore)),
+        ("REU restore", lambda: hw_provision.restore_reu(stack.api, stack.reu_restore)),
         # Same for the Ultimate Audio sampler map/mixer auto-provisioning.
-        ("sampler restore", lambda: _doctor.restore_sampler(stack.api, stack.sampler_restore)),
+        ("sampler restore", lambda: hw_provision.restore_sampler(stack.api, stack.sampler_restore)),
         ("U64 reset", stack.api.reset),
         ("API close", stack.api.close),
         ("camera release", lambda: stack.source.release() if stack.source else None),

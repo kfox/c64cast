@@ -50,7 +50,7 @@ def _probe(
     import numpy as np
 
     import c64cast.config as cfgmod
-    import c64cast.doctor as doctor
+    import c64cast.hw_provision as hw_provision
     from c64cast.backend import make_backend
     from c64cast.connect import apply_to_config, parse_connection_uri
     from c64cast.sampler import (
@@ -134,8 +134,8 @@ def _probe(
         api.write_memory(f"{cbase:04X}", "00")
         api.flush()
 
-    reu_restore = doctor.provision_reu(api, cfg)
-    samp_restore = doctor.provision_sampler(api, cfg)
+    reu_restore = hw_provision.provision_reu(api, cfg)
+    samp_restore = hw_provision.provision_sampler(api, cfg)
     dt = 1.0 / poll_hz
     rc = 1
     try:
@@ -235,7 +235,7 @@ def _probe(
     finally:
         gate_off()
         clear_irq()
-        doctor.restore_sampler(api, samp_restore)
+        hw_provision.restore_sampler(api, samp_restore)
         del reu_restore
         if not no_reset:
             d.rest_reset(rest_url)

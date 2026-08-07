@@ -209,7 +209,7 @@ def _gen_content(rate: int, run_s: float, period_s: float) -> tuple[np.ndarray, 
 
 def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_reset: bool) -> Path:
     import c64cast.config as cfgmod
-    import c64cast.doctor as doctor
+    import c64cast.hw_provision as hw_provision
     from c64cast.backend import make_backend
     from c64cast.connect import apply_to_config, parse_connection_uri
     from c64cast.sampler import UltimateAudioSampler
@@ -222,8 +222,8 @@ def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_re
     if not rest_url.startswith("http"):
         rest_url = d.U64_URL
 
-    reu_restore = doctor.provision_reu(api, cfg)
-    samp_restore = doctor.provision_sampler(api, cfg)
+    reu_restore = hw_provision.provision_reu(api, cfg)
+    samp_restore = hw_provision.provision_sampler(api, cfg)
     wav = d.stamped(f"samp_align_ref{ref_hz}", "wav")
     try:
         sampler = UltimateAudioSampler(api, sample_rate=44100, bits=16, ref_clock_hz=ref_hz)
@@ -282,7 +282,7 @@ def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_re
         ff.wait()
         sampler.stop()
     finally:
-        doctor.restore_sampler(api, samp_restore)
+        hw_provision.restore_sampler(api, samp_restore)
         del reu_restore
         if not no_reset:
             d.rest_reset(rest_url)

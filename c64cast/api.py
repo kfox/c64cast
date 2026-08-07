@@ -1439,7 +1439,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         no reboot (verified in the 1541ultimate source: C64::effectuate_settings
         / U64Config::setCpuSpeed) — and does NOT persist it to flash, so it
         reverts on the next power-cycle (we never call ``:save_to_flash``).
-        Used by the REU auto-provisioner (doctor.provision_reu) to enable + size
+        Used by the REU auto-provisioner (hw_provision.provision_reu) to enable + size
         the REU for a run and to restore the original at teardown. Raises
         ``requests.RequestException`` on transport/HTTP failure; callers treat
         provisioning as best-effort (a config we can't write just leaves the

@@ -111,7 +111,7 @@ def measure_pitch(wav: Path, nominal_freq: float) -> tuple[float, float] | None:
 
 def play_tone(url: str, seconds: float, freq: float, ref_hz: int, no_reset: bool) -> None:
     import c64cast.config as cfgmod
-    import c64cast.doctor as doctor
+    import c64cast.hw_provision as hw_provision
     from c64cast.backend import make_backend
     from c64cast.connect import apply_to_config, parse_connection_uri
     from c64cast.sampler import UltimateAudioSampler
@@ -120,8 +120,8 @@ def play_tone(url: str, seconds: float, freq: float, ref_hz: int, no_reset: bool
     apply_to_config(cfg, parse_connection_uri(url))
     cfg.ultimate64.auto_reu = True
     api = make_backend(cfg)
-    reu_restore = doctor.provision_reu(api, cfg)  # noqa: F841 (kept on the unit for the run)
-    samp_restore = doctor.provision_sampler(api, cfg)
+    reu_restore = hw_provision.provision_reu(api, cfg)  # noqa: F841 (kept on the unit for the run)
+    samp_restore = hw_provision.provision_sampler(api, cfg)
     try:
         sampler = UltimateAudioSampler(api, sample_rate=44100, bits=16, ref_clock_hz=ref_hz)
         rate = sampler.sample_rate
@@ -142,7 +142,7 @@ def play_tone(url: str, seconds: float, freq: float, ref_hz: int, no_reset: bool
         time.sleep(0.4)
         sampler.stop()
     finally:
-        doctor.restore_sampler(api, samp_restore)
+        hw_provision.restore_sampler(api, samp_restore)
         if not no_reset:
             d.rest_reset(url if url.startswith("http") else d.U64_URL)
 

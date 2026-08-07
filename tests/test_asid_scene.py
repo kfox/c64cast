@@ -328,11 +328,11 @@ class AsidBufferedPlayerTest(unittest.TestCase):
 
     def test_wants_reu_flags_buffered_asid(self):
         from c64cast.config import Config, SceneCfg
-        from c64cast.doctor import _wants_reu
+        from c64cast.hw_provision import wants_reu
 
         cfg = Config()
         cfg.scenes = [SceneCfg(type="asid", asid_buffered_player="on")]
-        wants, reasons = _wants_reu(cfg)
+        wants, reasons = wants_reu(cfg)
         self.assertTrue(wants)
         self.assertTrue(any("asid" in r for r in reasons))
 
