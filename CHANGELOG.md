@@ -12,7 +12,35 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Added
+
+- **`--calibrate-dac` now says which *kind* of unsteady a refused ring was.** A
+  spread number alone cannot distinguish a capture whose level was still settling
+  — where the ring replayed faithfully and only the level moved — from laps that
+  genuinely play different levels, and the two have opposite fixes. Fitting one
+  gain per pass separates them, and the failure now picks its cause list from
+  that instead of listing everything: a drifting level is no longer blamed on a
+  second SID that cannot have caused it. Marginal rings say which kind they are
+  as they are measured.
+- **A run whose rings are individually fine but collectively marginal now says
+  so.** Rings sitting under the trust gate still add up to a table worth
+  re-measuring: one such run produced a table that disagreed with the same chip
+  measured cleanly by 18% RMS, where two clean runs of that chip agree to 0.12%.
+  The table is still written; the run now reports how many rings cleared the
+  healthy band and the worst of them.
+
 ### Fixed
+
+- **A refused calibration capture is no longer discarded.** It is the only
+  evidence for its own refusal, and repeating it costs a ~50 s hardware run that
+  may not fault the same way. Refused captures are now written to
+  `<data root>/calibration/unusable/`, with the codes, sample rate and
+  diagnostics in the same file, and the failure names the path.
+- **The test suite wrote a real calibration file into the developer's own data
+  directory** on every run — `~/.local/share/c64cast/calibration/dac/` — because
+  one test class persisted a calibration without redirecting `$C64CAST_DATA_DIR`.
+  The isolation is now inherited rather than copied per class, so it cannot be
+  omitted by a new one.
 
 - **`--calibrate-dac` could write a wrong table from a capture whose levels
   moved.** Each pass of a capture drives the SID through identical codes, so a

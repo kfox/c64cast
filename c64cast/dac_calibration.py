@@ -654,6 +654,15 @@ RING_TRUST_MAX_SPREAD = 0.005
 #: quietly poor table gets built out of individually-passing rings.
 RING_SPREAD_HEALTHY = 0.002
 
+#: Fraction of ``pass_spread_frac`` that can survive :func:`_pass_gain_decomposition`
+#: and still count as "only the level was moving". Below it the disagreement is a
+#: per-pass gain — the ring replayed faithfully and was measured through something
+#: that changed level; above it the laps genuinely differ and rescaling won't fix
+#: them. Measured on synthetic captures the two land far apart: pure drift (a 2–20 %
+#: ramp, or a settling envelope) reads 0.01–0.22, random per-block gain jitter reads
+#: 0.70–0.89. 0.5 sits in the gap with room on both sides.
+PASS_RESIDUAL_DRIFT_RATIO = 0.5
+
 #: Captures per ring before giving up. A retry costs one settle + one capture
 #: window (~5 s) and rescues a ring spoiled by a transient — a USB hiccup, a
 #: host stall long enough to break the grid tracking — without letting a
@@ -698,7 +707,14 @@ class UnsteadyRingError(MeasurementError):
     :class:`MeasurementError` is about the recording not carrying the ring, and
     sending someone to re-cable an input that is already correct is worse than
     saying nothing. Here the input is right and the ring is playing — what needs
-    finding is whatever else is moving the level."""
+    finding is whatever else is moving the level.
+
+    Carries the capture's ``diagnostics`` so the failure can name *which* way it
+    was unsteady (:func:`_pass_gain_decomposition`) rather than only how much."""
+
+    def __init__(self, message: str, diagnostics: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics: dict[str, Any] = diagnostics or {}
 
 
 def codes_per_ring(ring_size: int) -> int:
@@ -871,6 +887,37 @@ class SlotLevels:
     diagnostics: dict[str, Any]
 
 
+def _pass_gain_decomposition(
+    passes: np.ndarray, levels: np.ndarray, scale_ref: float
+) -> tuple[np.ndarray, float]:
+    """Split the pass-to-pass disagreement into a per-pass level change and
+    whatever is left once that is taken out.
+
+    ``pass_spread_frac`` says the passes disagree but not why, and the two causes
+    want opposite advice. A capture whose level is still settling — or whose path
+    changes gain mid-window — makes *faithful* passes read differently, purely
+    because each was measured at a different point on the ramp; the ladder's shape
+    is intact and a re-measure on a settled path fixes it. A ring that genuinely
+    plays different levels each lap is wrong in a way no rescaling repairs, and
+    points at something else reaching the output.
+
+    Fitting one scalar per pass separates them: ``g_p`` is the level the whole ring
+    came back at on lap ``p``, and the residual ``passes − g_p·levels`` is the part
+    no single gain explains. It is deliberately reported in the same units as
+    ``pass_spread_frac`` (max per-code std over ``scale_ref``) so the two compare
+    directly — a residual well under the spread means a gain change accounts for
+    it. Both failure modes reach the same spread otherwise: on synthetic captures
+    a 10 % drift across the window and 1 % random per-block gain jitter each read
+    1.8 %, and differ only here.
+    """
+    denom = float(levels @ levels)
+    if denom <= 0 or passes.shape[0] < 2:
+        return np.ones(passes.shape[0]), 0.0
+    gains = np.asarray(passes @ levels, dtype=np.float64) / denom
+    resid = passes - gains[:, None] * levels
+    return gains, float(np.max(resid.std(axis=0))) / scale_ref
+
+
 def extract_slot_levels(
     cap: np.ndarray,
     n_codes: int,
@@ -948,6 +995,7 @@ def extract_slot_levels(
     levels = passes.mean(axis=0)
     scale_ref = float(np.max(np.abs(levels))) or 1.0
     tracked_slot_p = float(np.mean(pitches))
+    gains, residual_frac = _pass_gain_decomposition(passes, levels, scale_ref)
     diagnostics = {
         "passes": int(passes.shape[0]),
         "ring_period_samples": round(ring_p, 3),
@@ -958,6 +1006,14 @@ def extract_slot_levels(
         # spread means the grid is not landing on the same thing twice — the one
         # symptom that distinguishes a mistracked capture from a real curve.
         "pass_spread_frac": round(float(np.max(passes.std(axis=0))) / scale_ref, 5),
+        # What that spread is made of (:func:`_pass_gain_decomposition`). The level
+        # the whole ring came back at on each lap, how far those move, and the
+        # disagreement still there once each lap is rescaled to the others —
+        # a residual well under pass_spread_frac means the ring replayed fine and
+        # only the level it was measured through was moving.
+        "pass_gains": [round(float(g), 5) for g in gains],
+        "pass_gain_span_frac": round(float(np.max(gains) - np.min(gains)), 5),
+        "pass_residual_frac": round(residual_frac, 5),
         # The fitted AC-coupling corner, as a sanity check on the capture rig:
         # k = 1/(τ·fs), so f_c = k·fs/2π. Expect a few Hz to a few tens of Hz.
         "ac_coupling_hz": round(float(np.mean(dc_gains)) * sr / (2 * np.pi), 2),
@@ -996,7 +1052,8 @@ def read_ring_capture(
             f"its ring passes disagree by {spread * 100:.2f}%, where hardware "
             "reads 0.01–0.2% — the capture is the ring, but the ring is not "
             "replaying the same levels each pass, so a ladder fitted to them "
-            "would be wrong"
+            "would be wrong",
+            got.diagnostics,
         )
     return got
 
@@ -1272,7 +1329,7 @@ def _input_device_list() -> str:
     return "\n".join(lines) or "  (none)"
 
 
-def _capture_fault_message(dev: int, reason: str, peak: float) -> str:
+def _capture_fault_message(dev: int, reason: str, peak: float, saved: Path | None = None) -> str:
     """The message a capture that doesn't contain the slot ring fails with.
 
     Everything upstream of this can only say *what* it saw — "found 1 ring sync
@@ -1298,34 +1355,125 @@ def _capture_fault_message(dev: int, reason: str, peak: float) -> str:
         "  • the NMI DAC never came up on the C64. Re-run with -v and check the "
         "bring-up lines.\n"
         f"Pick the input with --audio-device N:\n{_input_device_list()}"
+        + (f"\nThe capture is saved at {saved}." if saved is not None else "")
     )
 
 
-def _unsteady_ring_message(reason: str) -> str:
+def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None) -> str:
     """The message an unsteady — as opposed to unreadable — ring fails with.
 
     Says up front that the rig is right, because the number it is built from
     ("the passes disagree by 1.85%") reads like the same class of fault as a
     mistracked capture and would otherwise send the user back to the cabling.
-    What varies is the level the ring comes back at, so the causes are about
-    what else is reaching the same output or interrupting the same machine."""
-    return (
-        f"the calibration ring is playing and is being recorded, but {reason}.\n"
-        "The input is right — what moves is the level it reads back at, and a "
-        "ladder is only worth keeping if it reproduces.\nLikely causes, in "
-        "order:\n"
-        "  • something else is reaching the same audio output. The ring has to "
-        "be the only thing making sound: a second SID still enabled (a link "
-        "with no config API cannot switch one out of the way for you — do it "
-        "in the machine's own settings first), a tune still running, or a "
-        "scene still playing all add signal the fit reads as the chip's.\n"
-        "  • the capture link is dropping or stretching samples — a busy host, "
-        "or a hub shared with the video capture.\n"
-        "  • the C64 is being driven by something else during the ~50 s "
-        "measurement.\n"
+
+    Beyond that the two ways a ring can be unsteady get different advice, because
+    they have different fixes: :func:`_pass_gain_decomposition` separates a level
+    that was moving *through* a faithful ring (re-measure once it has settled)
+    from laps that genuinely differ (something else is reaching the output). A
+    single combined list made the reader test all of it, and the first item —
+    a second SID — is the expensive one to check."""
+    spread = float(diag.get("pass_spread_frac", 0.0))
+    resid = float(diag.get("pass_residual_frac", 0.0))
+    span = float(diag.get("pass_gain_span_frac", 0.0))
+    gains = diag.get("pass_gains") or []
+    drift = bool(spread) and resid <= PASS_RESIDUAL_DRIFT_RATIO * spread
+
+    if drift:
+        detail = (
+            f"The disagreement is a level change, not a different ring: rescaling "
+            f"each pass leaves only {resid * 100:.2f}%, and the per-pass levels "
+            f"themselves span {span * 100:.1f}% ({', '.join(f'{g:.3f}' for g in gains)}). "
+            "So the ring replayed faithfully and the level it was measured through "
+            "was moving.\nLikely causes, in order:\n"
+            "  • the audio path had not settled when the window opened — it "
+            "starts quiet and climbs. Let the machine play for a few seconds "
+            "before calibrating.\n"
+            "  • something is changing gain during the capture: an input with "
+            "AGC, or a capture app/OS mixer applying its own level control.\n"
+            "  • a thermal or supply-level drift in the analog path, if it "
+            "persists across runs at the same magnitude."
+        )
+    else:
+        detail = (
+            f"The passes differ in shape, not just level: rescaling each one still "
+            f"leaves {resid * 100:.2f}% of the {spread * 100:.2f}%, so the laps are "
+            "genuinely playing different levels.\nLikely causes, in order:\n"
+            "  • something else is reaching the same audio output. The ring has "
+            "to be the only thing making sound, and over a link with no config "
+            "API nothing is muted for you: another SID, a sampler channel or a "
+            "drive still up in the machine's mixer all add signal the fit reads "
+            "as the chip's. Mute them in the machine's own settings first. A "
+            "tune or a scene still playing does the same.\n"
+            "  • the capture link is dropping or stretching samples — a busy "
+            "host, or a hub shared with the video capture.\n"
+            "  • the C64 is being driven by something else during the ~50 s "
+            "measurement."
+        )
+    kept = (
         "Nothing is written: playback keeps the baked/linear curve, which is "
         "better than a table fitted to levels that move."
     )
+    if saved is not None:
+        kept += f"\nThe capture is saved at {saved} — it is what any diagnosis has to start from."
+    # The "input is right" line leads both branches: the number this is built from
+    # reads like the mistracked-capture fault, and without it either branch sends
+    # the reader back to cabling that is already correct.
+    return (
+        f"the calibration ring is playing and is being recorded, but {reason}.\n"
+        "The input is right — what moves is the level it reads back at, and a "
+        f"ladder is only worth keeping if it reproduces.\n{detail}\n{kept}"
+    )
+
+
+def _marginal_run_summary(spreads: Sequence[float], label: str) -> str | None:
+    """One line naming a run that stayed under the trust gate ring by ring and
+    is still not worth trusting, or None when the run was clean.
+
+    Per ring a marginal spread is a note; across a run it is the finding. A run
+    whose rings all sat at 0.2–0.44 % — every one of them under
+    :data:`RING_TRUST_MAX_SPREAD` — produced a table that disagreed with the same
+    chip measured cleanly by 18 % RMS (corr 0.84), against the 0.12 % / corr
+    1.0000 that two clean runs of that chip twelve days apart reproduce at.
+    Nothing said so at the time, because no single ring had failed anything."""
+    marginal = [s for s in spreads if s > RING_SPREAD_HEALTHY]
+    if not marginal:
+        return None
+    return (
+        f"[calib] {label}: {len(marginal)}/{len(spreads)} rings measured above the healthy "
+        f"band (≤{RING_SPREAD_HEALTHY * 100:.1f}%, worst {max(spreads) * 100:.2f}%). The "
+        "table is still written, but a run like this has produced one that disagreed with "
+        "the same chip measured cleanly — re-measure with nothing else driving the audio "
+        "output, and over a link that can isolate the socket if you have one."
+    )
+
+
+def _save_unusable_capture(
+    cap: np.ndarray, codes: Sequence[int], fmt: CaptureFormat, key: str, diag: dict[str, Any]
+) -> Path | None:
+    """Write a refused capture to :func:`paths.unusable_capture_dir`, returning
+    the path (or None if it couldn't be written — a diagnosis aid must never be
+    what turns a measurement failure into a crash).
+
+    Self-contained on purpose: the waveform alone can't be re-extracted, because
+    the codes it encodes and the rate it was taken at are what
+    :func:`extract_slot_levels` needs to read it back. With those in the same
+    file, ``np.load`` plus that one call reproduces the refusal offline."""
+    try:
+        out = paths.unusable_capture_dir()
+        out.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        path = out / f"{key}-{stamp}.npz"
+        np.savez_compressed(
+            path,
+            capture=np.asarray(cap, dtype=np.float32),
+            codes=np.asarray(codes, dtype=np.int32),
+            samplerate=np.asarray(fmt.samplerate),
+            diagnostics=np.asarray(json.dumps(diag)),
+        )
+        return path
+    except Exception:  # noqa: BLE001 — diagnosis aid; never mask the real failure
+        log.debug("calib: could not save the unusable capture", exc_info=True)
+        return None
 
 
 class CaptureFormat(NamedTuple):
@@ -1520,7 +1668,8 @@ def run_calibration(
         be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", build_slot_ring(codes, RING_BUFFER_SIZE))
         reason = "no capture was taken"
         peak = 0.0
-        unsteady = False
+        unsteady: UnsteadyRingError | None = None
+        last: np.ndarray | None = None
         for attempt in range(1, RING_ATTEMPTS + 1):
             time.sleep(settle)
             rec = sd.rec(
@@ -1533,17 +1682,23 @@ def run_calibration(
             sd.wait()
             # (N, channels) → mono; a 1-channel capture folds to itself.
             mono = rec.mean(axis=1).astype(np.float64)
+            last = mono
             peak = float(np.max(np.abs(mono))) if mono.size else 0.0
             try:
                 return read_ring_capture(mono, len(codes), RING_BUFFER_SIZE, sr=fmt.samplerate)
             except MeasurementError as e:
                 reason = str(e)
-                unsteady = isinstance(e, UnsteadyRingError)
+                unsteady = e if isinstance(e, UnsteadyRingError) else None
             if attempt < RING_ATTEMPTS:
                 log_fn(f"[calib]   unusable capture ({reason}) — retrying")
-        if unsteady:
-            raise UnsteadyRingError(_unsteady_ring_message(reason))
-        raise MeasurementError(_capture_fault_message(dev, reason, peak))
+        # Keep the waveform that was refused. It is the whole evidence for the
+        # refusal, and re-creating it costs a fresh hardware run that may not
+        # reproduce the fault.
+        diag = unsteady.diagnostics if unsteady is not None else {}
+        saved = None if last is None else _save_unusable_capture(last, codes, fmt, key, dict(diag))
+        if unsteady is not None:
+            raise UnsteadyRingError(_unsteady_ring_message(reason, diag, saved), diag)
+        raise MeasurementError(_capture_fault_message(dev, reason, peak, saved))
 
     def measure_one(
         dev: int, fmt: CaptureFormat, label: str
@@ -1566,20 +1721,34 @@ def run_calibration(
                 # number: a run whose rings all sit just under the gate is the
                 # one whose table is quietly poor, and nothing else in the
                 # progress output says what "good" looks like.
-                marginal = (
-                    ""
-                    if d["pass_spread_frac"] <= RING_SPREAD_HEALTHY
-                    else f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%)"
-                )
+                # A marginal ring also says which *kind* of marginal it is, so a
+                # run that is drifting can be recognized while it is still
+                # running rather than from the table it produces.
+                marginal = ""
+                if d["pass_spread_frac"] > RING_SPREAD_HEALTHY:
+                    kind = (
+                        f"level drift, span {d['pass_gain_span_frac'] * 100:.1f}%"
+                        if d["pass_residual_frac"]
+                        <= PASS_RESIDUAL_DRIFT_RATIO * d["pass_spread_frac"]
+                        else f"ring differs, residual {d['pass_residual_frac'] * 100:.2f}%"
+                    )
+                    marginal = f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%; {kind})"
                 log_fn(
                     f"[calib]   {label} ring {n}/{total} (rotation {rnd}): "
                     f"{d['passes']} passes, L($0F)={got.levels[0]:+.5f}, "
                     f"pass spread {d['pass_spread_frac'] * 100:.2f}%{marginal}"
                 )
+        spreads = [m.diagnostics["pass_spread_frac"] for _, m in measured]
+        n_marginal = sum(1 for s in spreads if s > RING_SPREAD_HEALTHY)
+        note = _marginal_run_summary(spreads, label)
+        if note:
+            log_fn(note)
+
         raw, merge_metrics = merge_measurements(measured)
         sidtable, metrics = build_sidtable_from_levels(raw)
         metrics.update(merge_metrics)
         metrics["capture"] = [m.diagnostics for _, m in measured]
+        metrics["rings_marginal"] = n_marginal
         if sidtable is None:
             log_fn(
                 f"[calib] {label}: REJECTED — the volume-0 self-test is off by "

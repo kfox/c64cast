@@ -28,6 +28,27 @@ noise_gate` and `mic_sensitivity` are the pre-DSP shaping knobs;
 `noise_gate` only takes effect when `[dsp] enabled = false`. Hum and hiss are still part
 of the aesthetic.
 
+### `--calibrate-dac` mutes nothing for you unless the link can
+
+The measurement records the SID's own output, so the calibration ring has to be
+the *only* thing making sound. On an Ultimate connection c64cast arranges that
+itself: it routes the socket being measured to `$D400` and forces every other
+mixer source — the second socket, both UltiSID cores, the sampler channels — to
+`OFF` for the duration, restoring your settings afterwards.
+
+**Over any other link it cannot.** Socket isolation and mixer control both need
+the Ultimate's config API, so calibrating over TeensyROM+ (or any future link
+without one) measures with whatever else you left audible mixed into the result
+— and on a machine with two physical SIDs, that includes a live second chip
+idling into the same output. Mute the other sources in the machine's own
+settings before you calibrate, and put them back afterwards.
+
+This is worth doing on its own merits; it is *not* a known cause of a failed
+calibration. On the two-SID rig where this was investigated, muting everything
+else by hand did not stop `--calibrate-dac` from intermittently refusing a ring,
+and the cause of that refusal is still unknown. If a calibration is refused, the
+message says which kind of unsteadiness it saw and where it saved the capture.
+
 ## High-fidelity video audio: the Ultimate Audio FPGA sampler (U64)
 
 On the Ultimate 64 the lo-fi DAC above is **not** the default for *video*

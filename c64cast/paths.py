@@ -107,6 +107,17 @@ def calibration_dir() -> Path:
     return data_root() / "calibration" / "dac"
 
 
+def unusable_capture_dir() -> Path:
+    """Directory holding calibration captures that were refused
+    (``<data root>/calibration/unusable``).
+
+    A refused capture is the only record of *why* it was refused, and the run
+    that produced it costs ~50 s of hardware time to repeat — twice now a
+    calibration has been rejected on a number nobody could go back and explain,
+    because the waveform was discarded on the way out."""
+    return data_root() / "calibration" / "unusable"
+
+
 def presets_dir() -> Path:
     """Directory holding WLED device presets (``<data root>/presets``)."""
     return data_root() / "presets"

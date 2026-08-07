@@ -201,7 +201,15 @@ class ResolveKeyTest(unittest.TestCase):
         self.assertEqual(dc.resolve_calibration_key(cfg), "profile-my.rig")
 
 
-class PersistenceTest(unittest.TestCase):
+class DataDirIsolated(unittest.TestCase):
+    """Base for every test that persists a calibration.
+
+    Inherited rather than copied into each class because the one class that
+    lacked it wrote a real 15 KB calibration into the developer's own
+    ``~/.local/share/c64cast`` on every run — silently, since a passing test
+    says nothing about where it wrote. Anything reaching `save_calibration`
+    belongs here."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         # Redirect the whole data root at the env layer (paths.calibration_dir()
@@ -213,6 +221,8 @@ class PersistenceTest(unittest.TestCase):
         self._env.stop()
         self._tmp.cleanup()
 
+
+class PersistenceTest(DataDirIsolated):
     def test_save_load_default_entry_round_trip(self):
         cfg = _u64_cfg()
         key = dc.resolve_calibration_key(cfg)
@@ -389,16 +399,7 @@ class IsolateSocketTest(unittest.TestCase):
         )
 
 
-class ResolveCurveTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
-        self._env.start()
-
-    def tearDown(self):
-        self._env.stop()
-        self._tmp.cleanup()
-
+class ResolveCurveTest(DataDirIsolated):
     def test_auto_ultimate_no_cal_uses_baked_mahoney(self):
         label, table = dc.resolve_dac_curve_for_backend(_u64_cfg())
         self.assertEqual(label, "mahoney_ultisid")
@@ -449,20 +450,11 @@ class ResolveCurveTest(unittest.TestCase):
         self.assertEqual(table, MAHONEY_ULTISID)
 
 
-class MissingCalibrationLogTest(unittest.TestCase):
+class MissingCalibrationLogTest(DataDirIsolated):
     """A live "auto" resolution that finds no calibration logs an actionable
     line (this replaced the old --doctor repo-location migration nudge). It
     stays silent for an offline resolution (be=None) — --doctor reports that
     case separately and can't even confirm the identity key."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
-        self._env.start()
-
-    def tearDown(self):
-        self._env.stop()
-        self._tmp.cleanup()
 
     def test_ultimate_live_no_cal_logs_info(self):
         cfg = _u64_cfg()
@@ -524,19 +516,10 @@ def _socket_at_d400(socket: int) -> FakeAPI:
     return api
 
 
-class AutoCurveD400OwnershipTest(unittest.TestCase):
+class AutoCurveD400OwnershipTest(DataDirIsolated):
     """Resolution must never hand the baked emulated-UltiSID table to a
     physical chip: measured at ~29% RMS level error cross-chip, which is worse
     than the 4-bit linear path it is supposed to improve on."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
-        self._env.start()
-
-    def tearDown(self):
-        self._env.stop()
-        self._tmp.cleanup()
 
     def test_physical_socket_at_d400_without_calibration_falls_back_to_linear(self):
         cfg = _u64_cfg()
@@ -786,12 +769,96 @@ class RingCaptureGateTest(unittest.TestCase):
         one, so the advice has to invert: the input is right and the ring is
         playing. Pointing at the input instead would have someone re-cable a rig
         that is already correct."""
-        msg = dc._unsteady_ring_message("its ring passes disagree by 1.85%")
+        msg = dc._unsteady_ring_message(
+            "its ring passes disagree by 1.85%",
+            {"pass_spread_frac": 0.0185, "pass_residual_frac": 0.016, "pass_gain_span_frac": 0.01},
+            None,
+        )
         self.assertIn("input is right", msg)
         self.assertNotIn("--audio-device", msg)
-        # The one cause the tool cannot fix for the user: without a config API it
-        # cannot switch a second SID out of the measurement.
-        self.assertIn("second SID", msg)
+        # The one class of cause the tool cannot clear for the user: over a link
+        # with no config API it mutes nothing, so anything else up in the
+        # machine's mixer lands in the measurement.
+        self.assertIn("nothing is muted for you", msg)
+
+    def test_a_drifting_level_is_not_blamed_on_the_mixer(self):
+        """Both failure modes reach the same pass_spread_frac, and the advice for
+        one is useless for the other: muting another source cannot fix a capture
+        whose level was still settling. When rescaling each pass collapses the
+        disagreement, the ring replayed faithfully and only the level moved."""
+        msg = dc._unsteady_ring_message(
+            "its ring passes disagree by 1.30%",
+            {
+                "pass_spread_frac": 0.013,
+                "pass_residual_frac": 0.0004,
+                "pass_gain_span_frac": 0.07,
+                "pass_gains": [0.978, 1.000, 1.022],
+            },
+            None,
+        )
+        self.assertIn("level change, not a different ring", msg)
+        self.assertIn("had not settled", msg)
+        self.assertNotIn("nothing is muted for you", msg)
+
+    def test_the_two_unsteady_kinds_are_separated_by_the_residual(self):
+        """The discriminator itself, on the numbers that motivated it: a per-pass
+        gain absorbs a drift and leaves the control's residual behind, but cannot
+        absorb laps that genuinely differ."""
+        levels = np.linspace(-0.5, 0.5, 41)
+        drift = levels * np.array([0.97, 1.0, 1.03])[:, None]
+        gains, resid = dc._pass_gain_decomposition(drift, drift.mean(axis=0), 0.5)
+        self.assertAlmostEqual(float(np.max(gains) - np.min(gains)), 0.06, places=3)
+        self.assertLess(resid, 1e-9)  # a pure gain change leaves nothing behind
+
+        rng = np.random.default_rng(1)
+        noisy = levels + rng.normal(0, 0.01, (3, 41))
+        _, resid_noisy = dc._pass_gain_decomposition(noisy, noisy.mean(axis=0), 0.5)
+        self.assertGreater(resid_noisy, 0.005)
+
+    def test_a_run_of_marginal_rings_is_called_out_though_each_ring_passed(self):
+        """Rings under the trust gate still add up to a table worth re-measuring:
+        one run whose rings sat at 0.2-0.44% produced a table disagreeing with the
+        same chip measured cleanly by 18% RMS, where two clean runs agree to 0.12%.
+        No single ring failed anything, so nothing said so."""
+        note = dc._marginal_run_summary([0.0003, 0.0031, 0.0044, 0.0002, 0.0025], "SID")
+        self.assertIsNotNone(note)
+        assert note is not None
+        self.assertIn("3/5 rings", note)
+        self.assertIn("0.44%", note)
+        # It must not read as a failure — the table is written either way.
+        self.assertIn("still written", note)
+
+    def test_a_clean_run_says_nothing(self):
+        """The summary only earns its place by being absent on a healthy run."""
+        self.assertIsNone(dc._marginal_run_summary([0.0003, 0.0011, 0.0002], "SID"))
+
+    def test_the_refused_capture_is_saved_for_diagnosis(self):
+        """A refused capture is the only evidence for the refusal, and repeating
+        it costs a hardware run that may not reproduce the fault. Twice a
+        calibration has been rejected on a number that could not be gone back to.
+        The codes and rate travel with the waveform because extraction needs them."""
+        cap = np.linspace(-1.0, 1.0, 512)
+        fmt = dc.CaptureFormat(channels=2, samplerate=48000)
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
+                path = dc._save_unusable_capture(
+                    cap, [dc.ANCHOR_CODE, 1, 2], fmt, "tr-abc", {"pass_spread_frac": 0.013}
+                )
+            self.assertIsNotNone(path)
+            assert path is not None
+            self.assertTrue(path.exists())
+            with np.load(path) as z:
+                np.testing.assert_allclose(z["capture"], cap, atol=1e-6)
+                self.assertEqual(z["codes"].tolist(), [dc.ANCHOR_CODE, 1, 2])
+                self.assertEqual(int(z["samplerate"]), 48000)
+                self.assertEqual(json.loads(str(z["diagnostics"]))["pass_spread_frac"], 0.013)
+
+    def test_saving_the_capture_never_masks_the_real_failure(self):
+        """It is a diagnosis aid. A full disk or a read-only data dir must still
+        surface the measurement failure, not replace it with an OSError."""
+        fmt = dc.CaptureFormat(channels=2, samplerate=48000)
+        with patch.object(dc.paths, "unusable_capture_dir", side_effect=OSError("read-only")):
+            self.assertIsNone(dc._save_unusable_capture(np.zeros(8), [1], fmt, "k", {}))
 
     def test_the_healthy_band_still_passes_untouched(self):
         """The gate moved by 20x, so the case it must not start refusing is the
@@ -851,7 +918,7 @@ class BuildSidtableTest(unittest.TestCase):
         self.assertGreater(metrics["ladder_bits"], 4.0)
 
 
-class Volume0SelfTestTest(unittest.TestCase):
+class Volume0SelfTestTest(DataDirIsolated):
     """Codes $h0 set the master volume nibble to 0, so their output level is
     $00's whatever the upper nibble does — L($h0) must measure zero. That holds
     with no model assumptions, which makes it the one check that can tell a
