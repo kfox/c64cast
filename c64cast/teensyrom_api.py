@@ -143,11 +143,15 @@ _SC_SPACE = 0x20
 # program. RUN is then typed as PETSCII into the kernal keyboard buffer.
 _BASIC_TXTTAB = 0x0801
 _BASIC_VARTAB = 0x002D
-# CURLIN ($39/$3A) — the line number BASIC is executing, $FF in the high byte
-# meaning direct mode. Read to tell "at the READY prompt" from "running the
-# clear loop" (see _basic_is_at_ready).
-_BASIC_CURLIN_HI = 0x003A
-_BASIC_DIRECT_MODE = 0xFF
+# CURLIN ($39/$3A) — the line number BASIC is currently executing. Read to tell
+# "at the READY prompt" from "running the clear loop" (see _basic_is_at_ready).
+# Measured on hardware rather than taken from the usual "$FF in the high byte
+# means direct mode" summary: at the READY prompt this machine reads $0000, and
+# running the clear loop it reads $0014 (line 20). Testing the high byte for $FF
+# therefore never matched, which silently disabled the repair below — so treat
+# both $0000 and a $FFxx high byte as "not executing a line".
+_BASIC_CURLIN = 0x0039
+_BASIC_NO_LINE_HI = 0xFF
 _RUN_RETURN = bytes([0x52, 0x55, 0x4E, 0x0D])  # R U N + RETURN
 # BASIC has to notice the keystrokes (60 Hz kernal scan), tokenize RUN, and get
 # into the loop before the state probe can see it.
@@ -253,8 +257,14 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             return None
 
     def reset(self) -> None:
-        """Reset the C64 (boots to the TR menu). Best-effort: a failure logs
-        but doesn't raise (mirrors the Ultimate's reset)."""
+        """Reset the C64. Best-effort: a failure logs but doesn't raise (mirrors
+        the Ultimate's reset).
+
+        Lands at the BASIC READY prompt, not the TeensyROM menu — measured by
+        reading screen RAM back, which holds the `COMMODORE 64 BASIC V2` banner
+        and `READY.`. So the machine is left in the editor's input-wait loop with
+        the cursor blinking, and a caller that wants a quiet screen has to run
+        the clear loop itself."""
         self.invalidate_cache()
         try:
             self.tr.reset()
@@ -275,8 +285,10 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             spin stub, which survives a non-cycle-clean DMA but freezes `$028D`
             (no physical-keyboard control).
 
-        Best-effort: failures log, don't raise. Requires the TR menu active
-        (true right after reset()).
+        Best-effort: failures log, don't raise. PostFile/LaunchFile are handled
+        by the Teensy rather than by C64-side menu code, so this does not need
+        the TR menu to be up — which is just as well, since reset() lands at the
+        BASIC READY prompt instead (see there).
         """
         if self.profile.supports_read:
             self._bring_up_irq_clear_loop()
@@ -339,15 +351,18 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         """Is BASIC idling at the READY prompt, in the editor's input-wait loop?
         None when the probe couldn't be read back.
 
-        Read-only, from CURLIN's high byte. The earlier probe wrote $80 to BLNSW
-        ($CC) and read it back, inferring the state from whether the editor's
-        input-wait loop had clobbered it — reading the state only as a side
-        effect of a write that shouldn't have been happening at all. Note the
-        write was not what made that probe fail on the launch path: the collision
-        there is with the loader's console text, which derails a read just as
-        readily (measured). `_settle_after_launch` is what fixes that."""
-        got = self.read_memory(_BASIC_CURLIN_HI, 1)
-        return None if got is None else got[0] == _BASIC_DIRECT_MODE
+        Read-only, from CURLIN: BASIC is at READY when it isn't executing a line
+        (see the constants for the measured values). The earlier probe wrote $80
+        to BLNSW ($CC) and read it back, inferring the state from whether the
+        editor's input-wait loop had clobbered it — reading the state only as a
+        side effect of a write that shouldn't have been happening at all. Note
+        the write was not what made that probe fail on the launch path: the
+        collision there is with the loader's console text, which derails a read
+        just as readily (measured). `_settle_after_launch` fixes that part."""
+        got = self.read_memory(_BASIC_CURLIN, 2)
+        if got is None:
+            return None
+        return got[1] == _BASIC_NO_LINE_HI or (got[0] | (got[1] << 8)) == 0
 
     def _ensure_clear_loop_running(self, prg: bytes) -> None:
         """Make BASIC actually *run* the clear loop LaunchFile just loaded.
