@@ -31,6 +31,22 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **Nothing writes to BLNSW (`$00CC`) any more.** Poking `$80` there to stop the
+  kernal cursor blink never worked — the editor's input-wait loop overwrites that
+  byte on every pass, so it is gone microseconds after the DMA lands. The BASIC
+  clear-and-loop PRG is the mechanism that actually holds the cursor off, and it
+  was already doing so everywhere the write claimed to help. The
+  `suppress_cursor_blink()` helper is gone, and the TeensyROM+'s "is BASIC at the
+  READY prompt?" check — which had been reading that state as a side effect of
+  the same write — is now a plain read of CURLIN.
+- **TeensyROM+ bring-up no longer skips the clear-loop repair after a slow
+  launch.** LaunchFile acks and then streams its own console text back over the
+  same link, a C64 reset included. Bring-up waited a fixed 0.6 s for that and
+  then probed, which on hardware was short: the probe's reply misaligned with the
+  text and came back as the ASCII of `Remote Launch:`, so the state read failed,
+  the repair took its can't-read-the-state early return, and BASIC was left in
+  the editor — with exactly the blinking cursor the repair exists to prevent. The
+  wait now drains the link until it goes quiet instead of guessing a duration.
 - **A calibration measured on the Ultimate could not be replayed over a
   TeensyROM+.** A multi-socket file holds one table per socket, and choosing
   between them means knowing which socket answers `$D400`. A link with no SID

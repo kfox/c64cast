@@ -384,9 +384,6 @@ class C64Backend(ABC):
     def restore_kernal_irq_vector(self) -> None:
         raise BackendCapabilityError("restore_kernal_irq_vector")
 
-    def suppress_cursor_blink(self) -> None:
-        raise BackendCapabilityError("suppress_cursor_blink")
-
     def disable_case_switch(self) -> None:
         raise BackendCapabilityError("disable_case_switch")
 
@@ -652,19 +649,6 @@ class BufferedWriteBackend(C64Backend):
         self.write_regs(
             f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
         )
-
-    def suppress_cursor_blink(self) -> None:
-        """Write $80 to BLNSW ($00CC) so the kernal editor's cursor-blink
-        code (run from the $EA31 IRQ tail) skips its toggle. Needed after
-        teardown of anything that left the 6510 parked outside BASIC's
-        GOTO 20 loop — e.g. our SID player MC's `JMP *` spin survives
-        scene teardown, so BASIC isn't running its tight loop anymore and
-        the editor IRQ path may visibly toggle one screen cell at the
-        kernal-tracked cursor position. The next scene's screen-RAM paint
-        overwrites the frozen cursor cell. Verified live 2026-05-26: a
-        single DMA write of $80 sticks (editor doesn't actively clobber)
-        and visibly stops the blink on real U64 hardware."""
-        self.write_memory(f"{SCREEN.BLNSW:04X}", "80")
 
 
 def make_backend(cfg: Config) -> C64Backend:

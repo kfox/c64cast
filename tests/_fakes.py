@@ -189,9 +189,6 @@ class FakeAPI:
     def restore_kernal_irq_vector(self):
         self.regs["RESTORE_IRQ"] = ()
 
-    def suppress_cursor_blink(self):
-        self.regs["SUPPRESS_BLINK"] = ()
-
     def close(self):
         pass
 

@@ -1019,13 +1019,10 @@ class WaveformSceneTest(unittest.TestCase):
         scene.teardown()
         self.assertIn("SILENCE", api.regs)
         self.assertIn("RESTORE_IRQ", api.regs)
-        # BLNSW suppression: the player MC's JMP * spin survives
-        # teardown, so BASIC's GOTO 20 loop is no longer running and
-        # the kernal editor's cursor-blink path would otherwise toggle
-        # one screen cell on subsequent PETSCII scenes. teardown must
-        # write $00CC = $80 to stop that — verified live on hardware
-        # 2026-05-26, see [[cursor-blink-after-waveform-teardown]].
-        self.assertIn("SUPPRESS_BLINK", api.regs)
+        # Teardown must NOT poke BLNSW ($00CC) to stop the cursor blink: the
+        # editor's input-wait loop overwrites that address on every pass, so it
+        # never holds. The BASIC clear loop is the only thing that stops it.
+        self.assertNotIn("SUPPRESS_BLINK", api.regs)
 
     def test_cycle_style_advances_song(self):
         # Header sets num_songs=4, start_song=1. Cycle should go 1→2.

@@ -37,8 +37,8 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
     opcode. Callers gate on `profile.supports_reu`.
 
 The semantic helpers (`silence_sid`, `restore_kernal_irq_vector`,
-`suppress_cursor_blink`, `disable_case_switch`) are inherited from
-`BufferedWriteBackend` — they're pure writes on the standard C64 map.
+`disable_case_switch`) are inherited from `BufferedWriteBackend` — they're pure
+writes on the standard C64 map.
 """
 
 from __future__ import annotations
@@ -120,8 +120,15 @@ _BRINGUP_RETRY_S = 1.0
 _SID_REINIT_SETTLE_S = 0.08
 
 # After LaunchFile the TR loader prints "RUNNING..." on the C64 screen; let it
-# land before we DMA-clear, so the clear isn't immediately overwritten.
-_LAUNCH_SETTLE_S = 0.6
+# land before we DMA-clear, so the clear isn't immediately overwritten. Waited
+# out by draining rather than sleeping: LaunchFile acks and *then* streams its
+# own console text back over the same link ("Remote Launch: / P: … / F: … /
+# Resetting C64" — it resets the C64, so a BASIC cold start is in there too),
+# and a fixed sleep that guessed short let the next command's reply misalign
+# with that text. Measured on hardware: the first post-launch command came back
+# as the ASCII of "…mote Launch:" instead of an ack. drain_text re-arms on every
+# chunk, so this waits for the stream to actually go quiet.
+_LAUNCH_QUIET_S = 0.6
 
 # Standard C64 screen RAM + dimensions, used to blank the boot banner / loader
 # message the spin stub leaves on screen (the spin MC, unlike the U64's BASIC
@@ -136,6 +143,11 @@ _SC_SPACE = 0x20
 # program. RUN is then typed as PETSCII into the kernal keyboard buffer.
 _BASIC_TXTTAB = 0x0801
 _BASIC_VARTAB = 0x002D
+# CURLIN ($39/$3A) — the line number BASIC is executing, $FF in the high byte
+# meaning direct mode. Read to tell "at the READY prompt" from "running the
+# clear loop" (see _basic_is_at_ready).
+_BASIC_CURLIN_HI = 0x003A
+_BASIC_DIRECT_MODE = 0xFF
 _RUN_RETURN = bytes([0x52, 0x55, 0x4E, 0x0D])  # R U N + RETURN
 # BASIC has to notice the keystrokes (60 Hz kernal scan), tokenize RUN, and get
 # into the loop before the state probe can see it.
@@ -292,13 +304,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         only overwrites screen/VIC RAM, never the BASIC program). So we just
         DMA-clear screen RAM to spaces for a clean 'paused' screen, leaving DEN
         on — badlines keep flowing and the resume-hold reads keep working. This
-        is the closest possible idle to the (working) live-scene state. The
-        cursor-blink suppression is belt-and-braces: with the clear loop really
-        running (see `_ensure_clear_loop_running`) BASIC never reaches the editor
-        and there is no blink to suppress, but a bring-up that failed to get it
-        looping would otherwise leave a lone blinking cursor on the blank."""
+        is the closest possible idle to the (working) live-scene state."""
         self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
-        self.suppress_cursor_blink()
 
     def _bring_up_irq_clear_loop(self) -> None:
         """IRQ-enabled idle: PostFile + LaunchFile the BASIC clear-loop PRG
@@ -316,24 +323,31 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self.invalidate_cache()
         path = f"{_UPLOAD_DIR}/{_CLEARLOOP_NAME}"
         if self._upload_and_launch_retry(BASIC_CLEAR_LOOP_PRG, path, "clear-loop"):
-            time.sleep(_LAUNCH_SETTLE_S)  # let the loader's "RUNNING..." land
+            self._settle_after_launch()
             self._ensure_clear_loop_running(BASIC_CLEAR_LOOP_PRG)
             self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
-            self.suppress_cursor_blink()
             self.invalidate_cache()
+
+    def _settle_after_launch(self) -> None:
+        """Wait out the console text LaunchFile streams back after its ack, so
+        the next command's reply doesn't misalign with it (see _LAUNCH_QUIET_S)."""
+        text = self.tr.transport.drain_text(_LAUNCH_QUIET_S)
+        if text.strip():
+            log.debug("TR post-launch chatter drained: %s", text.strip())
 
     def _basic_is_at_ready(self) -> bool | None:
         """Is BASIC idling at the READY prompt, in the editor's input-wait loop?
         None when the probe couldn't be read back.
 
-        Probed by writing BLNSW ($CC) and reading it straight back. That loop
-        copies NDX into BLNSW on every pass, so the byte cannot survive it — if
-        it does survive, BASIC is off running a program instead. The write is
-        the one `suppress_cursor_blink` makes anyway, so probing costs a read."""
-        self.write_memory(f"{SCREEN.BLNSW:04X}", "80")
-        self.flush()
-        got = self.read_memory(SCREEN.BLNSW, 1)
-        return None if got is None else got[0] != 0x80
+        Read-only, from CURLIN's high byte. The earlier probe wrote $80 to BLNSW
+        ($CC) and read it back, inferring the state from whether the editor's
+        input-wait loop had clobbered it — reading the state only as a side
+        effect of a write that shouldn't have been happening at all. Note the
+        write was not what made that probe fail on the launch path: the collision
+        there is with the loader's console text, which derails a read just as
+        readily (measured). `_settle_after_launch` is what fixes that."""
+        got = self.read_memory(_BASIC_CURLIN_HI, 1)
+        return None if got is None else got[0] == _BASIC_DIRECT_MODE
 
     def _ensure_clear_loop_running(self, prg: bytes) -> None:
         """Make BASIC actually *run* the clear loop LaunchFile just loaded.
@@ -344,13 +358,13 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         empty program, RUN falls straight back to READY, and the machine spends
         the whole session in the editor's input-wait loop.
 
-        That loop is why a cursor blinks on the TR and cannot be switched off:
-        it copies NDX into BLNSW ($CC) every pass, so `suppress_cursor_blink`'s
-        $80 is gone microseconds after the DMA lands (verified — on this path
-        the byte never reads back). Nothing can hold that address down; only
-        getting BASIC out of the editor stops the blink, which is what the
-        `GOTO 20` loop is for. It also stops the editor from *consuming* the
-        keystrokes the keyboard poller reads out of KEYD.
+        That loop is why a cursor blinks on the TR, and getting BASIC out of it
+        is the *only* thing that stops the blink — repeatedly tried and failed:
+        the loop copies NDX into BLNSW ($CC) on every pass, so a DMA'd $80 there
+        is gone microseconds later (verified — on this path the byte never reads
+        back). Nothing the host writes can hold that address down. Escaping the
+        editor also stops it *consuming* the keystrokes the keyboard poller
+        reads out of KEYD.
 
         So repair it by hand: DMA the program body in, fix VARTAB, and type RUN
         into the kernal keyboard buffer. The injection works precisely because
@@ -388,7 +402,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             # The CPU is now parked; clear the boot banner / "RUNNING..." the
             # spin stub left on screen (it doesn't PRINT CHR$(147)). Settle
             # first so the loader's print lands before we blank it.
-            time.sleep(_LAUNCH_SETTLE_S)
+            self._settle_after_launch()
             self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
             self.invalidate_cache()
 

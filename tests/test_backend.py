@@ -146,7 +146,6 @@ class AbstractContractTest(unittest.TestCase):
             lambda: b.reu_write(0, b"\x00"),
             lambda: b.silence_sid(),
             lambda: b.restore_kernal_irq_vector(),
-            lambda: b.suppress_cursor_blink(),
             lambda: b.disable_case_switch(),
         ):
             with self.assertRaises(BackendCapabilityError):
@@ -366,11 +365,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.restore_kernal_irq_vector()
         # $0314/$0315 ← $EA31 (kernal default), coalesced into one write.
         self.assertEqual(b.emits, [(0x0314, b"\x31\xea")])
-
-    def test_suppress_cursor_blink(self):
-        b = self._b()
-        b.suppress_cursor_blink()
-        self.assertEqual(b.emits, [(0x00CC, b"\x80")])
 
 
 class MakeBackendTeensyromValidationTest(unittest.TestCase):

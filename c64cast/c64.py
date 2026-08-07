@@ -321,9 +321,6 @@ class SCREEN:
     MODIFIERS: Final = 0x028D  # bit 1 = COMMODORE, 0 = SHIFT, 2 = CTRL
     CASE_SWITCH: Final = 0x0291  # bit 7 = 1 disables the C= + SHIFT charset toggle
 
-    # Editor scratch bytes.
-    BLNSW: Final = 0x00CC  # cursor blink switch: 0 = blink, non-0 = suppress
-
     # Common screen codes (what goes into $0400 — not the same as PETSCII
     # for chars above 0x40; e.g. PETSCII '@' = 0x40 but screen code 0x00).
     SC_SPACE: Final = 0x20  # blank cell — invisible against bg
