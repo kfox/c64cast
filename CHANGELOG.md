@@ -31,6 +31,19 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **A calibration measured on the Ultimate could not be replayed over a
+  TeensyROM+.** A multi-socket file holds one table per socket, and choosing
+  between them means knowing which socket answers `$D400`. A link with no SID
+  config query cannot read that back — and "unknown" was being treated as the
+  same answer as "an UltiSID core owns it, so no physical-chip table applies",
+  so naming such a file in `[audio].dac_calibration_profile` reported it as
+  holding no usable calibration and playback dropped to the 4-bit linear DAC.
+  That is exactly the cross-backend reuse the option is documented for
+  (measure over the Ultimate, replay over a cartridge in the same machine).
+  Calibration runs now record which socket answered `$D400` before isolation
+  began, and that record is believed on any link; a file predating it falls
+  back to socket 1 — the default mapping — with a warning naming the assumption
+  and how to retire it.
 - **`--calibrate-dac` averaged glitched readings into the table, and later
   refused good runs because of them.** Individual capture slots occasionally read
   far off on one pass: across every refused capture kept for diagnosis, 1-6 codes

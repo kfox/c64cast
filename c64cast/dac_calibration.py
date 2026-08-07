@@ -335,24 +335,53 @@ def list_calibration_files(backend: str | None = None) -> list[Path]:
     return out
 
 
-def _select_sid_entry(cfg: Config, be: C64Backend | None, sids: dict[str, Any]) -> str | None:
-    """Which entry in a loaded calibration's ``sids`` map applies right now."""
+def _select_sid_entry(
+    cfg: Config,
+    be: C64Backend | None,
+    sids: dict[str, Any],
+    recorded_d400: int | None = None,
+) -> str | None:
+    """Which entry in a loaded calibration's ``sids`` map applies right now.
+
+    ``recorded_d400`` is the socket the *calibrating* run saw answering $D400
+    before it isolated anything (the file's ``d400_socket``), which is the only
+    evidence available on a link that can't ask the machine itself."""
     has_socket_entries = "1" in sids or "2" in sids
-    if (
-        has_socket_entries
-        and be is not None
-        and cfg.hardware.backend == "ultimate"
-        and getattr(be.profile, "supports_config", False)
-    ):
-        socket = _active_socket_at_d400(be)
-        if socket is None:
-            # The file has physical-chip table(s), but $D400 is currently
-            # owned by something else (an UltiSID core) — applying a
-            # physical-chip table there would be wrong. Let "auto" fall back
-            # to the baked mahoney_ultisid table instead.
-            return None
-        key = str(socket)
-        return key if key in sids else None
+    if has_socket_entries and be is not None:
+        if cfg.hardware.backend == "ultimate" and getattr(be.profile, "supports_config", False):
+            socket = _active_socket_at_d400(be)
+            if socket is None:
+                # The file has physical-chip table(s), but $D400 is currently
+                # owned by something else (an UltiSID core) — applying a
+                # physical-chip table there would be wrong. Let "auto" fall back
+                # to the baked mahoney_ultisid table instead.
+                return None
+            key = str(socket)
+            return key if key in sids else None
+        # This link has no SID config query, so ownership of $D400 can't be read
+        # back. That is "unknown", not the "an UltiSID owns it" the branch above
+        # returns None for — treating the two the same discarded a perfectly
+        # good multi-socket file (falling all the way back to the 4-bit linear
+        # DAC) on exactly the cross-backend reuse dac_calibration_profile exists
+        # to support: measure on the Ultimate, replay over a TeensyROM+ in the
+        # same machine.
+        if recorded_d400 is not None:
+            # The file names the chip this machine reaches at $D400. If it holds
+            # no table for that chip, then no table in it is the right one —
+            # falling through to "the only entry" would apply the other socket's
+            # ladder, which is the mismatch this whole selection exists to avoid.
+            return str(recorded_d400) if str(recorded_d400) in sids else None
+        if len(sids) > 1 and "1" in sids:
+            log.warning(
+                "audio: this calibration holds tables for %d SID sockets and the %s link "
+                "cannot ask which one answers $D400, so socket 1 (the default mapping) is "
+                "assumed. If this machine maps socket 2 there instead, the wrong chip's "
+                "ladder is being applied — re-run `--calibrate-dac` over a link with a SID "
+                "config query to record the mapping in the file.",
+                len(sids),
+                cfg.hardware.backend,
+            )
+            return "1"
     if "default" in sids:
         return "default"
     if len(sids) == 1:
@@ -399,7 +428,8 @@ def load_calibrated_table(cfg: Config, *, be: C64Backend | None = None) -> bytes
     sids = raw.get("sids")
     if not isinstance(sids, dict) or not sids:
         return None
-    entry_key = _select_sid_entry(cfg, be, sids)
+    recorded = raw.get("d400_socket")
+    entry_key = _select_sid_entry(cfg, be, sids, recorded if isinstance(recorded, int) else None)
     if entry_key is None:
         return None
     entry = sids.get(entry_key)
@@ -442,6 +472,7 @@ def save_calibration(
     key: str,
     entries: dict[str, CalibrationResult],
     device_info: dict[str, str],
+    d400_socket: int | None = None,
 ) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system.
 
@@ -458,7 +489,13 @@ def save_calibration(
     ``sidtable`` — same reason. ``load_calibrated_table`` already treats a
     missing/malformed table as "no calibration applies" and falls back, so the
     rejection needs no reader change, and keeping its ``raw_levels`` +
-    ``metrics`` means the failure can be investigated without re-measuring."""
+    ``metrics`` means the failure can be investigated without re-measuring.
+
+    ``d400_socket`` — which socket answered ``$D400`` *before* the run isolated
+    anything — is written the same additive way. Every socket is measured at
+    ``$D400`` (that is what isolation does), so the entry keys alone can't say
+    which chip a machine reaches there normally; without it, a link that can't
+    query SID config has to guess (see :func:`_select_sid_entry`)."""
 
     def entry(r: CalibrationResult) -> dict[str, Any]:
         out: dict[str, Any] = {"detected": r.detected}
@@ -479,6 +516,8 @@ def save_calibration(
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "sids": {name: entry(r) for name, r in entries.items()},
     }
+    if d400_socket is not None:
+        doc["d400_socket"] = d400_socket
     atomic_write_text(path, json.dumps(doc, indent=2) + "\n")
     return path
 
@@ -1849,6 +1888,11 @@ def run_calibration(
             except Exception:  # noqa: BLE001 — best-effort; fall back to single measurement
                 log_fn("[calib] socket detection failed — falling back to a single measurement")
 
+        # Read before the loop: _isolate_socket remaps every socket to $D400 in
+        # turn, so asking afterwards answers with c64cast's own edit rather than
+        # the mapping this machine actually runs under.
+        normal_d400 = _active_socket_at_d400(be) if supports_config else None
+
         if sockets_present:
             # Mixer levels snapshot once, before the loop: _isolate_mixer
             # rewrites them per socket, so a per-iteration snapshot would
@@ -1888,7 +1932,7 @@ def run_calibration(
         except Exception as e:  # noqa: BLE001 — best-effort cleanup
             log_fn(f"[calib] cleanup warning: {e}")
 
-    path = save_calibration(cfg, key, entries, device_info)
+    path = save_calibration(cfg, key, entries, device_info, normal_d400)
     for name, r in entries.items():
         if r.sidtable is None:
             log_fn(
