@@ -776,13 +776,14 @@ class RingCaptureGateTest(unittest.TestCase):
         )
         self.assertIn("input is right", msg)
         self.assertNotIn("--audio-device", msg)
-        # The one cause the tool cannot fix for the user: without a config API it
-        # cannot switch a second SID out of the measurement.
-        self.assertIn("second SID", msg)
+        # The one class of cause the tool cannot clear for the user: over a link
+        # with no config API it mutes nothing, so anything else up in the
+        # machine's mixer lands in the measurement.
+        self.assertIn("nothing is muted for you", msg)
 
-    def test_a_drifting_level_is_not_blamed_on_a_second_sid(self):
+    def test_a_drifting_level_is_not_blamed_on_the_mixer(self):
         """Both failure modes reach the same pass_spread_frac, and the advice for
-        one is useless for the other: disabling a second SID cannot fix a capture
+        one is useless for the other: muting another source cannot fix a capture
         whose level was still settling. When rescaling each pass collapses the
         disagreement, the ring replayed faithfully and only the level moved."""
         msg = dc._unsteady_ring_message(
@@ -797,7 +798,7 @@ class RingCaptureGateTest(unittest.TestCase):
         )
         self.assertIn("level change, not a different ring", msg)
         self.assertIn("had not settled", msg)
-        self.assertNotIn("second SID", msg)
+        self.assertNotIn("nothing is muted for you", msg)
 
     def test_the_two_unsteady_kinds_are_separated_by_the_residual(self):
         """The discriminator itself, on the numbers that motivated it: a per-pass
