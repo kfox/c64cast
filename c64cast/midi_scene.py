@@ -122,9 +122,6 @@ def _abbrev_waveform(name: str) -> str:
     return "+".join(t[0].upper() for t in tokens)
 
 
-# Standard MIDI note names. Aligned so note 60 = C-4.
-_NOTE_NAMES = ("C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-")
-
 # Mod-wheel (CC1) → pulse-width window. A pulse wave collapses to silent DC
 # at both 0% and 100% duty, so the wheel is mapped into an audible window
 # rather than the raw 0..4095 register range — wheel-to-zero used to mute
@@ -189,11 +186,6 @@ _IDLE_GRAY = "gray"
 # Envelope level below which a voice counts as silent/idle (drives the
 # colored-vs-gray strip). Matches WaveformScene's silence epsilon.
 _ENV_SILENCE_EPS = 1e-3
-
-
-def _note_name(midi_note: int) -> str:
-    n = max(0, min(127, int(midi_note)))
-    return f"{_NOTE_NAMES[n % 12]}{(n // 12) - 1:1d}"
 
 
 def _note_to_sid_freq(midi_note: float, system: str) -> int:
