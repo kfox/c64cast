@@ -47,8 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from c64cast.api import BASIC_CLEAR_LOOP_PRG  # noqa: E402
 from c64cast.backend import make_backend  # noqa: E402
+from c64cast.c64 import SCREEN  # noqa: E402
 from c64cast.config import Config  # noqa: E402
 from c64cast.connect import apply_to_config, parse_connection_uri  # noqa: E402
+from c64cast.teensyrom_api import _RUN_RETURN  # noqa: E402
 
 _STEPS = ("connect", "reset", "launch", "repair")
 
@@ -61,6 +63,11 @@ _BLNON = 0x00CF  # 0 = cursor currently drawn as the char, else inverted
 _BLNSW = 0x00CC  # 0 = blink enabled
 _TXTTAB = 0x0801
 _SCREEN = 0x0400
+
+
+def _le16(b: bytes) -> int:
+    """The first two bytes as the little-endian word every 6502 pointer is."""
+    return b[0] | (b[1] << 8)
 
 
 def _rd(be, addr: int, n: int) -> bytes | None:
@@ -95,6 +102,20 @@ def _petscii_screen(b: bytes | None) -> str:
     return "".join(out)
 
 
+def _force_repair(be) -> None:
+    """The repair `_ensure_clear_loop_running` performs, minus its at-READY
+    gate: the same body + VARTAB DMA and the same RUN keystrokes, built from
+    the same named constants, so a change to the real sequence is measured
+    here rather than silently diverged from."""
+    body = BASIC_CLEAR_LOOP_PRG[2:]  # drop the 2-byte load address
+    end = _TXTTAB + len(body)
+    be.write_memory_file(f"{_TXTTAB:04X}", body)
+    be.write_memory(f"{_VARTAB:04X}", f"{end & 0xFF:02X}{(end >> 8) & 0xFF:02X}")
+    be.write_memory_file(f"{SCREEN.KB_BUFFER:04X}", _RUN_RETURN)
+    be.write_memory(f"{SCREEN.KB_BUFFER_LEN:04X}", f"{len(_RUN_RETURN):02X}")
+    be.flush()
+
+
 def report(be, label: str) -> None:
     print(f"  [{label}]")
     curlin = _rd(be, _CURLIN, 2)
@@ -104,16 +125,16 @@ def report(be, label: str) -> None:
     screen = _rd(be, _SCREEN, 40 * 6)
 
     if curlin is not None:
-        line = curlin[0] | (curlin[1] << 8)
+        line = _le16(curlin)
         at_ready = curlin[1] == 0xFF or line == 0
         mode = "DIRECT (READY prompt)" if at_ready else f"running line {line}"
         print(f"    CURLIN  $39/$3A = {_hex(curlin)}  -> {mode}")
     if vartab is not None:
-        v = vartab[0] | (vartab[1] << 8)
+        v = _le16(vartab)
         note = "  <- $0803: BASIC sees an EMPTY program" if v == 0x0803 else ""
         print(f"    VARTAB  $2D/$2E = {_hex(vartab)}  -> ${v:04X}{note}")
     if body is not None:
-        link = body[0] | (body[1] << 8)
+        link = _le16(body)
         note = "  <- zeroed: first line link is broken" if link == 0 else ""
         print(f"    TXTTAB  $0801   = {_hex(body)}")
         print(f"      line-link       = ${link:04X}{note}")
@@ -186,14 +207,7 @@ def main() -> int:
             print("\n== repair ==")
             print(f"    _basic_is_at_ready() -> {be._basic_is_at_ready()}")
             if args.force_repair:
-                prg = BASIC_CLEAR_LOOP_PRG
-                body = prg[2:]
-                end = 0x0801 + len(body)
-                be.write_memory_file("0801", body)
-                be.write_memory("002D", f"{end & 0xFF:02X}{(end >> 8) & 0xFF:02X}")
-                be.write_memory_file("0277", bytes([0x52, 0x55, 0x4E, 0x0D]))
-                be.write_memory("00C6", "04")
-                be.flush()
+                _force_repair(be)
                 print("    forced: body + VARTAB re-DMA'd, RUN typed into KEYD")
                 time.sleep(1.0)
             else:
