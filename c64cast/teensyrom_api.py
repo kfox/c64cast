@@ -257,14 +257,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             return None
 
     def reset(self) -> None:
-        """Reset the C64. Best-effort: a failure logs but doesn't raise (mirrors
-        the Ultimate's reset).
-
-        Lands at the BASIC READY prompt, not the TeensyROM menu — measured by
-        reading screen RAM back, which holds the `COMMODORE 64 BASIC V2` banner
-        and `READY.`. So the machine is left in the editor's input-wait loop with
-        the cursor blinking, and a caller that wants a quiet screen has to run
-        the clear loop itself."""
+        """Reset the C64 (boots to the TR menu). Best-effort: a failure logs
+        but doesn't raise (mirrors the Ultimate's reset)."""
         self.invalidate_cache()
         try:
             self.tr.reset()
@@ -285,10 +279,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             spin stub, which survives a non-cycle-clean DMA but freezes `$028D`
             (no physical-keyboard control).
 
-        Best-effort: failures log, don't raise. PostFile/LaunchFile are handled
-        by the Teensy rather than by C64-side menu code, so this does not need
-        the TR menu to be up — which is just as well, since reset() lands at the
-        BASIC READY prompt instead (see there).
+        Best-effort: failures log, don't raise. Requires the TR menu active
+        (true right after reset()).
         """
         if self.profile.supports_read:
             self._bring_up_irq_clear_loop()

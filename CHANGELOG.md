@@ -31,6 +31,20 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **Ctrl+C now always stops a headless run, and always tears down.** With no
+  `[preview]` window the main thread waited on a plain `Thread.join()`, which
+  CPython 3.14 parks in `_PyParkingLot_Park` — a wait no signal interrupts. The
+  main thread therefore never returned to the interpreter, Python never ran a
+  signal handler, and Ctrl+C did nothing at all: measured on a hung run, two
+  SIGINTs produced no shutdown, no teardown and no final reset, leaving the
+  machine mid-session. SIGTERM was equally stuck, so there was no graceful way
+  out. Only runs with a preview window escaped, because pumping a window polls
+  `is_alive()` anyway — which is why Ctrl+C seemed to work only sometimes. The
+  headless join now polls, and SIGINT is handled explicitly alongside SIGTERM
+  instead of riding `KeyboardInterrupt`, so an interrupt can no longer land
+  inside teardown and abandon the run's final reset. A second Ctrl+C restores
+  the default handler rather than exiting on the spot, so the third is what
+  kills — cutting an in-flight DMA is what wedges the hardware.
 - **Nothing writes to BLNSW (`$00CC`) any more.** Poking `$80` there to stop the
   kernal cursor blink never worked — the editor's input-wait loop overwrites that
   byte on every pass, so it is gone microseconds after the DMA lands. The BASIC

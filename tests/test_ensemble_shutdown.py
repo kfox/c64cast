@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+import unittest.mock
 from unittest.mock import MagicMock
 
 from c64cast.cli import _run_playlists, teardown_stack
@@ -68,6 +69,34 @@ class RunPlaylistsTest(unittest.TestCase):
         self.assertTrue(stop_event.is_set())
         for st in stacks:
             st.playlist.run.assert_called_once()
+
+    def test_headless_join_polls_so_signals_can_be_delivered(self):
+        # CPython 3.14 parks Thread.join() in _PyParkingLot_Park, which no
+        # signal interrupts: the main thread never returns to the interpreter,
+        # so Python never runs a signal handler. Measured on a hung run — two
+        # SIGINTs produced no shutdown, no teardown and no final reset, and
+        # SIGTERM was just as stuck. Only the preview path escaped it, because
+        # pumping a window polls is_alive() anyway, which is exactly why Ctrl+C
+        # looked intermittent. So the headless path must join with a timeout.
+        stop_event = threading.Event()
+        stacks = [_fake_stack("a")]
+        stacks[0].playlist.run.side_effect = lambda: stop_event.wait()
+        timeouts: list[float | None] = []
+        real_join = threading.Thread.join
+
+        def recording_join(self, timeout=None):  # noqa: ANN001
+            timeouts.append(timeout)
+            return real_join(self, timeout)
+
+        timer = threading.Timer(0.15, stop_event.set)
+        timer.start()
+        try:
+            with unittest.mock.patch.object(threading.Thread, "join", recording_join):
+                _run_playlists(stacks, stop_event)
+        finally:
+            timer.cancel()
+        self.assertTrue(timeouts, "join was never called")
+        self.assertNotIn(None, timeouts, "join blocked with no timeout; signals cannot be handled")
 
 
 class TeardownStackOrderTest(unittest.TestCase):

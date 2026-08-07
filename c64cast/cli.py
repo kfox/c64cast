@@ -1153,6 +1153,11 @@ _PER_SYSTEM_CLI_FLAGS: tuple[tuple[str, str], ...] = (
 )
 
 
+# How long the headless join parks per poll. Short enough that Ctrl+C feels
+# immediate, long enough not to spin (see _run_playlists on why it polls).
+_JOIN_POLL_S = 0.2
+
+
 def _pump_previews_until_done(
     threads: Sequence[threading.Thread], previews: Sequence[PreviewWindow]
 ) -> None:
@@ -1184,7 +1189,16 @@ def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> No
     (pumping any preview windows on the way — see _pump_previews_until_done).
     Ctrl+C in the main thread sets stop_event so every playlist exits its
     run loop on the next iteration; each thread gets up to 5s to drain
-    before we move on and log it as stuck."""
+    before we move on and log it as stuck.
+
+    The headless join polls rather than blocking outright. CPython 3.14 parks
+    `Thread.join()` in `_PyParkingLot_Park`, which no signal interrupts, so the
+    main thread never returns to the interpreter and Python never gets to run a
+    signal handler — measured on a hung run, where two SIGINTs produced no
+    KeyboardInterrupt, no shutdown and no final reset, leaving the machine mid
+    session. (SIGTERM was equally stuck, so there was no graceful way out at
+    all.) Only the preview path escaped it, because pumping a window polls
+    `is_alive()` anyway, which is what made Ctrl+C look intermittent."""
     threads = [
         threading.Thread(target=s.playlist.run, name=f"playlist-{s.name}", daemon=False)
         for s in stacks
@@ -1197,7 +1211,8 @@ def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> No
             _pump_previews_until_done(threads, previews)
         else:
             for t in threads:
-                t.join()
+                while t.is_alive():
+                    t.join(timeout=_JOIN_POLL_S)
     except KeyboardInterrupt:
         log.info("interrupted; stopping %d system(s)", len(stacks))
         stop_event.set()
@@ -1854,13 +1869,29 @@ def main(argv=None) -> int:
     midi_control_listener = None
     wled_device_server = None
 
-    # SIGTERM → graceful shutdown. SIGINT continues to raise KeyboardInterrupt
-    # via the default handler so the user can still Ctrl+C interactively.
+    # SIGINT + SIGTERM → graceful shutdown down the same path. Ctrl+C used to
+    # ride the default handler's KeyboardInterrupt, which lands wherever the
+    # main thread happens to be — including inside the teardown `finally`, where
+    # a second impatient Ctrl+C would abandon the run's final reset and leave the
+    # machine mid-session behind a traceback. A handler can't land mid-teardown,
+    # and setting stop_event means an in-flight DMA finishes rather than being
+    # cut (killing mid-DMA is what wedges the hardware into needing a power
+    # cycle). The second Ctrl+C restores the default handler rather than exiting
+    # on the spot, so a third is what actually kills, for the same reason.
     # SIGHUP → reload TOML config (only the [interstitial] + [playlist] +
     # [[scenes]] sections take effect; [audio], [video], [ultimate64] are
     # set at startup and reloading them would require restarting threads).
-    def _on_sigterm(_signum, _frame):
-        log.info("SIGTERM received; stopping")
+    interrupted = False
+
+    def _on_stop_signal(signum, _frame):
+        nonlocal interrupted
+        name = signal.Signals(signum).name
+        if interrupted:
+            log.warning("%s again; next one exits immediately (teardown may not finish)", name)
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            return
+        interrupted = True
+        log.info("%s received; stopping", name)
         stop_event.set()
 
     def _on_sighup(_signum, _frame):
@@ -1891,7 +1922,8 @@ def main(argv=None) -> int:
             except Exception:
                 log.exception("[%s] SIGHUP reload failed; keeping current playlist", st.name)
 
-    signal.signal(signal.SIGTERM, _on_sigterm)
+    signal.signal(signal.SIGTERM, _on_stop_signal)
+    signal.signal(signal.SIGINT, _on_stop_signal)
     # Windows has no SIGHUP, so config reload is POSIX-only (POST /reload on the
     # control plane is the portable equivalent). Keep the getattr: naming the
     # attribute directly fails pyright when it runs *on* Windows, where the name
