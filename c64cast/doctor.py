@@ -26,6 +26,7 @@ from typing import IO, Any, Literal
 from .c64 import max_safe_sample_rate, nmi_rate_safety
 from .config import (
     ColorCfg,
+    Config,
     ConfigError,
     LoadResult,
     resolve_cell_strategy,
@@ -1215,7 +1216,7 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
-def _probe_reu_unavailable(name: str, cfg: object, api: object) -> list[Diagnostic]:
+def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """On a backend with no REU (e.g. TeensyROM), report that a config's
     REU-staged opt-in is ignored. cli.build_stack coerces these off to the
     host-DMA paths, so this is informational, not a failure."""
@@ -1234,22 +1235,18 @@ def _probe_reu_unavailable(name: str, cfg: object, api: object) -> list[Diagnost
     ]
 
 
-def _wants_reu(cfg: object) -> tuple[bool, list[str]]:
+def _wants_reu(cfg: Config) -> tuple[bool, list[str]]:
     """Return (wants_reu, list of reasons). Reasons name which config flags
     flipped the want, so the doctor message can point the user at the right
     place to either turn the REU on at the U64 or flip the flag off."""
     reasons: list[str] = []
-    # `cfg` is a config.Config; importing the type at module top would
-    # introduce a circular doctor↔config import, so duck-type.
-    audio = getattr(cfg, "audio", None)
-    video = getattr(cfg, "video", None)
-    if audio is not None and getattr(audio, "use_reu_pump", False):
+    if cfg.audio.use_reu_pump:
         reasons.append("[audio].use_reu_pump = true")
     # Only an EXPLICIT `use_reu_staged = true` is a hard REU requirement. The
     # default "auto" is self-healing (config.resolve_use_reu_staged falls back
     # to host-DMA when REU is off), so it must NOT make the doctor demand REU —
     # `is True` excludes both the "auto" string and any other truthy value.
-    if video is not None and getattr(video, "use_reu_staged", False) is True:
+    if cfg.video.use_reu_staged is True:
         reasons.append("[video].use_reu_staged = true")
     # The Ultimate Audio sampler streams its PCM ring out of REU SDRAM, so a run
     # that will use it needs the REU enabled + sized. Provisioning it also makes
@@ -1265,12 +1262,7 @@ def _wants_reu(cfg: object) -> tuple[bool, list[str]]:
     # only turns on where an REU exists — and provision_reu is itself gated on
     # supports_reu — so both auto and on are a genuine want here (unlike video's
     # self-healing use_reu_staged = "auto").
-    scenes = getattr(cfg, "scenes", None) or []
-    if any(
-        getattr(s, "type", None) == "asid"
-        and getattr(s, "asid_buffered_player", "auto") in ("auto", "on")
-        for s in scenes
-    ):
+    if any(s.type == "asid" and s.asid_buffered_player in ("auto", "on") for s in cfg.scenes):
         reasons.append("[[scenes]] asid with asid_buffered_player (REU ring player)")
     return bool(reasons), reasons
 
@@ -1321,7 +1313,7 @@ def read_reu_config(api: object) -> tuple[bool | None, str | None]:
     return enabled, size
 
 
-def provision_reu(api: object, cfg: object) -> dict[str, str] | None:
+def provision_reu(api: object, cfg: Config) -> dict[str, str] | None:
     """Auto-enable + size the U64 REU for a run that needs it — LIVE + VOLATILE.
 
     Returns the original ``{field: value}`` to hand back to `restore_reu` at
@@ -1342,12 +1334,12 @@ def provision_reu(api: object, cfg: object) -> dict[str, str] | None:
     saved to flash, so it reverts on the next power-cycle even if teardown's
     restore never runs. Best-effort: a REST failure logs a warning and returns
     whatever was changed so far (so teardown still restores it)."""
-    if not getattr(getattr(cfg, "ultimate64", None), "auto_reu", False):
+    if not cfg.ultimate64.auto_reu:
         return None
     profile = getattr(api, "profile", None)
     if profile is None or not getattr(profile, "supports_reu", False):
         return None
-    if getattr(getattr(cfg, "debug", None), "skip_probe", False):
+    if cfg.debug.skip_probe:
         return None
     wants, reasons = _wants_reu(cfg)
     if not wants:
@@ -1498,7 +1490,7 @@ def sampler_is_available(api: object) -> bool | None:
     return bool(map_enabled) and audible
 
 
-def _wants_sampler(cfg: object) -> tuple[bool, list[str]]:
+def _wants_sampler(cfg: Config) -> tuple[bool, list[str]]:
     """Return (wants_sampler, reasons). The run wants the sampler when audio is
     enabled, [audio].backend is auto/sampler (not the forced DAC), and a scene is
     wired to play through it: a ``video`` scene, or a ``generative`` scene with
@@ -1506,25 +1498,19 @@ def _wants_sampler(cfg: object) -> tuple[bool, list[str]]:
     routes through the sampler too). Provisioning uses this to enable the FPGA
     map, so missing a sampler-routed scene here leaves it silent."""
     reasons: list[str] = []
-    # Duck-type to avoid a circular doctor<->config import (see _wants_reu).
-    audio = getattr(cfg, "audio", None)
-    if audio is None or not getattr(audio, "enabled", False):
+    if not cfg.audio.enabled:
         return False, reasons
-    backend = getattr(audio, "backend", "auto")
+    backend = cfg.audio.backend
     if backend not in ("auto", "sampler"):
         return False, reasons
-    scenes = getattr(cfg, "scenes", None) or []
-    if any(getattr(s, "type", None) == "video" for s in scenes):
+    if any(s.type == "video" for s in cfg.scenes):
         reasons.append(f"[audio].backend = {backend!r} + video scene(s)")
-    if any(
-        getattr(s, "type", None) == "generative" and getattr(s, "audio_source", None) == "file"
-        for s in scenes
-    ):
+    if any(s.type == "generative" and s.audio_source == "file" for s in cfg.scenes):
         reasons.append(f'[audio].backend = {backend!r} + generative audio_source="file" scene(s)')
     return bool(reasons), reasons
 
 
-def provision_sampler(api: object, cfg: object) -> dict[str, str] | None:
+def provision_sampler(api: object, cfg: Config) -> dict[str, str] | None:
     """Auto-enable the Ultimate Audio sampler for a run that will use it —
     LIVE + VOLATILE (mirrors `provision_reu`). Enables the $DF20 I/O map if off
     and unmutes the Sampler mixer channels if OFF, capturing the originals for
@@ -1538,7 +1524,7 @@ def provision_sampler(api: object, cfg: object) -> dict[str, str] | None:
     profile = getattr(api, "profile", None)
     if profile is None or not getattr(profile, "supports_sampler", False):
         return None
-    if getattr(getattr(cfg, "debug", None), "skip_probe", False):
+    if cfg.debug.skip_probe:
         return None
     wants, reasons = _wants_sampler(cfg)
     if not wants:
@@ -1611,18 +1597,15 @@ _SID_LEFT_FIELD = "SID Left"
 _SID_RIGHT_FIELD = "SID Right"
 
 
-def _wants_sid_audio(cfg: object) -> tuple[bool, list[str]]:
+def _wants_sid_audio(cfg: Config) -> tuple[bool, list[str]]:
     """Return (wants_sid, reasons). Any of these means c64cast will try to
     produce sound through the C64 SID ($D4xx): global audio streaming (the
     4-bit DAC / video audio), or any waveform/midi scene (which DMA a
     SID player and drive the chip even when [audio].enabled is false)."""
     reasons: list[str] = []
-    # Duck-type to avoid a circular doctor<->config import (see _wants_reu).
-    audio = getattr(cfg, "audio", None)
-    if audio is not None and getattr(audio, "enabled", False):
+    if cfg.audio.enabled:
         reasons.append("[audio].enabled = true")
-    scenes = getattr(cfg, "scenes", None) or []
-    types = {getattr(s, "type", None) for s in scenes}
+    types = {s.type for s in cfg.scenes}
     if "waveform" in types:
         reasons.append("waveform (SID oscilloscope) scene(s)")
     if "midi" in types:
@@ -1630,7 +1613,7 @@ def _wants_sid_audio(cfg: object) -> tuple[bool, list[str]]:
     return bool(reasons), reasons
 
 
-def _wants_rest_runner(cfg: object) -> tuple[bool, list[str]]:
+def _wants_rest_runner(cfg: Config) -> tuple[bool, list[str]]:
     """Return (wants, reasons). True when the config has a scene that STARTS
     via the Ultimate's REST `run_prg`/`run_crt` endpoint — SID playback
     (`run_sid_player`) or a native .prg/.crt launcher (`launch_program`).
@@ -1645,19 +1628,14 @@ def _wants_rest_runner(cfg: object) -> tuple[bool, list[str]]:
     its SID player + launcher use pure-DMA vector-swap / LaunchFile, not REST.
     """
     reasons: list[str] = []
-    # Duck-type to avoid a circular doctor<->config import (see _wants_reu).
-    scenes = getattr(cfg, "scenes", None) or []
-    types = {getattr(s, "type", None) for s in scenes}
+    types = {s.type for s in cfg.scenes}
     if "waveform" in types:
         reasons.append("waveform (SID player via run_prg) scene(s)")
     if "launcher" in types:
         reasons.append("launcher (.prg/.crt via run_prg) scene(s)")
     # A generative SourceScene with audio_source = "sid" kicks run_sid_player
     # the same way a waveform scene does (see scenes.py SourceScene.setup).
-    if any(
-        getattr(s, "type", None) == "generative" and getattr(s, "audio_source", None) == "sid"
-        for s in scenes
-    ):
+    if any(s.type == "generative" and s.audio_source == "sid" for s in cfg.scenes):
         reasons.append("generative scene with audio_source = 'sid' (run_prg)")
     return bool(reasons), reasons
 
@@ -1710,7 +1688,7 @@ def _fetch_config_section(
     return section, data, None
 
 
-def _probe_sid_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """If the config will drive the SID, check the Ultimate's emulated-SID
     enable state via REST. On a U64 the internal SID is normally on; on a
     U2+ the emulated SID that snoops $D400 ships *disabled*, which makes
@@ -1788,7 +1766,7 @@ def _probe_sid_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
     ]
 
 
-def _probe_reu_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+def _probe_reu_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """If the config wants REU, check the U64's REU setting via REST.
     Returns an empty list when REU isn't requested. Emits:
       * ok    — REU enabled, with the configured size
@@ -1848,7 +1826,7 @@ def _probe_reu_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
     # just an informational "will be auto-enabled". It's a hard error only when
     # the user has opted out of auto-provisioning. (We reach here only on a
     # REST-reachable Ultimate, so supports_reu is implied.)
-    auto_reu = bool(getattr(getattr(cfg, "ultimate64", None), "auto_reu", False))
+    auto_reu = cfg.ultimate64.auto_reu
     if auto_reu:
         return [
             Diagnostic(
@@ -1887,7 +1865,7 @@ def _probe_reu_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
     ]
 
 
-def _probe_sampler_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """If the config will use the Ultimate Audio sampler for video audio, check
     the U64's sampler state via REST. Returns an empty list when not wanted.
     Emits:
@@ -1903,7 +1881,7 @@ def _probe_sampler_status(name: str, cfg: object, api: object) -> list[Diagnosti
 
     subject = f"{name} (Ultimate Audio sampler)"
     reason_str = ", ".join(reasons)
-    backend = getattr(getattr(cfg, "audio", None), "backend", "auto")
+    backend = cfg.audio.backend
     supports = bool(getattr(getattr(api, "profile", None), "supports_sampler", False))
 
     if not supports:
@@ -1986,16 +1964,15 @@ def _probe_sampler_status(name: str, cfg: object, api: object) -> list[Diagnosti
     ]
 
 
-def _wants_dac_calibration_check(cfg: object) -> bool:
+def _wants_dac_calibration_check(cfg: Config) -> bool:
     """The run wants a DAC calibration check when audio is enabled and
     [audio].dac_curve is a system-aware curve ('auto' or 'calibrated')."""
-    audio = getattr(cfg, "audio", None)
-    if audio is None or not getattr(audio, "enabled", False):
+    if not cfg.audio.enabled:
         return False
-    return getattr(audio, "dac_curve", "auto") in ("auto", "calibrated")
+    return cfg.audio.dac_curve in ("auto", "calibrated")
 
 
-def _probe_dac_calibration_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """If [audio].dac_curve is 'auto'/'calibrated', report the LIVE-resolved
     calibration: which key/file applies and whether it actually matches
     what's currently mapped to $D400 (a live SID-addressing read — the
@@ -2010,10 +1987,10 @@ def _probe_dac_calibration_status(name: str, cfg: object, api: object) -> list[D
     from . import dac_calibration
 
     subject = f"{name} (DAC calibration)"
-    curve = getattr(getattr(cfg, "audio", None), "dac_curve", "auto")
+    curve = cfg.audio.dac_curve
     try:
         label, table = dac_calibration.resolve_dac_curve_for_backend(
-            cfg,  # type: ignore[arg-type]
+            cfg,
             be=api,  # type: ignore[arg-type]
         )
     except ValueError as e:
@@ -2035,24 +2012,22 @@ def _probe_dac_calibration_status(name: str, cfg: object, api: object) -> list[D
     return [Diagnostic(level="ok", category="connectivity", subject=subject, message=message)]
 
 
-def _wants_sid_autoconfig_check(cfg: object) -> bool:
+def _wants_sid_autoconfig_check(cfg: Config) -> bool:
     """The run wants a SID model autoconfig check when [ultimate64].sid_model
     isn't 'off' and a scene will actually drive the SID player — a waveform
     scene, or a generative scene with audio_source = 'sid'
     (SidFileAudioSource; see sid_autoconfig.py's two call sites)."""
-    ultimate64 = getattr(cfg, "ultimate64", None)
-    if ultimate64 is None or getattr(ultimate64, "sid_model", "off") == "off":
+    if cfg.ultimate64.sid_model == "off":
         return False
-    scenes = getattr(cfg, "scenes", None) or []
-    for s in scenes:
-        if getattr(s, "type", None) == "waveform":
+    for s in cfg.scenes:
+        if s.type == "waveform":
             return True
-        if getattr(s, "type", None) == "generative" and getattr(s, "audio_source", None) == "sid":
+        if s.type == "generative" and s.audio_source == "sid":
             return True
     return False
 
 
-def _probe_sid_autoconfig_status(name: str, cfg: object, api: object) -> list[Diagnostic]:
+def _probe_sid_autoconfig_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """If [ultimate64].sid_model isn't 'off' and the config drives the SID
     player, report the resolved mode + what's currently socketed. Since
     doctor has no tune loaded, this can only report live socket/model
@@ -2066,7 +2041,7 @@ def _probe_sid_autoconfig_status(name: str, cfg: object, api: object) -> list[Di
     from . import sid_hw_config
 
     subject = f"{name} (SID model autoconfig)"
-    sid_model = getattr(getattr(cfg, "ultimate64", None), "sid_model", "auto")
+    sid_model = cfg.ultimate64.sid_model
     try:
         socket1, socket2 = sid_hw_config.detect_socket_models(api)  # type: ignore[arg-type]
     except Exception as e:  # noqa: BLE001 — best-effort, matches sid_hw_config's own philosophy
