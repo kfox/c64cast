@@ -290,8 +290,6 @@ To make it a live knob. The scenes install a full-strength `ColorFit` (accumulat
 
 Lerping at apply time is mathematically equivalent to baking the strength into the accumulator, at every strength — pinned in `test_live_tune.py` — so the move costs no fidelity.
 
-See the MIDI live-tune phase notes in [CLAUDE.md](../../CLAUDE.md) for the phased plan.
-
 ## `midi_setup.py` — the `--midi-setup` MIDI-learn wizard (Phase 5)
 
 `c64cast --midi-setup` (needs the `midi` + `wizard` extras) watches a controller and writes a reusable `transport.ControllerProfileStore` profile, so live control needs no hand-authored cc_map TOML. Mirrors `wizard.py`'s split — **pure helpers** (unit-tested with scripted fake-mido messages) plus a **thin questionary shell** (`run_setup() -> int`, 0 saved / 2 canceled-or-extra-missing) — and, like `--init`, runs *instead of* playback (dispatched config-free from `cli.run_introspection`, guarded on both extras with actionable install hints). The learn loop reads a controller through `midi_control.classify_message`, so a learned mapping matches how the listener will later dispatch it.

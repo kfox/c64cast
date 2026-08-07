@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make check)",
+      "Bash(make check *)",
+      "Bash(make typecheck)",
+      "Bash(make typecheck *)",
+      "Bash(make test)",
+      "Bash(make test *)",
+      "Bash(make lint)",
+      "Bash(make lint *)",
+      "Bash(make doctor)",
+      "Bash(make doctor *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-bash-search.py\"",
+            "statusMessage": "Checking for file-search commands that belong in Grep/Read"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-make-test.py\"",
+            "statusMessage": "Checking that tests run via make"
+          }
+        ]
+      }
+    ]
+  }
+}

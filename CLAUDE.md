@@ -80,8 +80,8 @@ holds the two lists to a partition of the tree and checks every row's anchor res
 so a new module has to be routed somewhere. **Read the relevant section before
 modifying a module**; it carries the *why* (and the dead ends) that the code alone
 doesn't. Keep the two in sync: a behavior change to a module updates its architecture
-section in the same change set (see the "Docs reflect functionality changes" working
-rule).
+section in the same change set (see ["Documentation is part of the
+change"](CONTRIBUTING.md#documentation-is-part-of-the-change) in CONTRIBUTING.md).
 
 The three **books** under `docs/` are the end-user surface, and each is a
 directory of numbered Markdown plus a `book.toml` that

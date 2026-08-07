@@ -14,9 +14,24 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from _fakes import MachineSettingsIsolation
+
 from c64cast import config as cfgmod
 from c64cast import config_serialize as ser
 from c64cast import paths, wizard
+
+# The round-trip assertions (load(written) == built cfg) must hold independent
+# of any real machine-settings file on the dev's machine (config.load applies
+# that layer). Isolate it for the whole module.
+_settings_isolation = MachineSettingsIsolation()
+
+
+def setUpModule() -> None:
+    _settings_isolation.start()
+
+
+def tearDownModule() -> None:
+    _settings_isolation.stop()
 
 
 class FieldKindTest(unittest.TestCase):
