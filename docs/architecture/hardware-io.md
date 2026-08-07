@@ -50,13 +50,23 @@ After `api.reset()`, `api.run_basic_clear_loop()` POSTs a 25-byte tokenized BASI
 
 ### The loop is the *only* way to stop the cursor blinking
 
-`suppress_cursor_blink()` writes `$80` to BLNSW (`$00CC`), and that works only while BASIC is *not* at the READY prompt. The editor's input-wait loop copies NDX (`$00C6`) into BLNSW on every pass, so with BASIC waiting for a line the byte is gone microseconds after the DMA lands — measured on hardware, where a write to `$00CC` never reads back while every other zero-page address holds fine. Nothing the host can write holds that address down. So the suppression is a cleanup for the moments BASIC is parked elsewhere (after a SID player's `JMP *` spin survives teardown), not a way to stop a live editor.
+Nothing c64cast writes touches BLNSW (`$00CC`), and nothing should. The obvious move — DMA `$80` there to tell the kernal editor's blink code to skip its toggle — was tried repeatedly and does not work: the editor's input-wait loop copies NDX (`$00C6`) into BLNSW on every pass, so with BASIC at READY the byte is gone microseconds after the DMA lands. Measured on hardware, a write to `$00CC` never reads back while every other zero-page address holds fine. Nothing the host can write holds that address down.
+
+There was a `suppress_cursor_blink()` helper that made that write anyway, on the theory that it was still worth doing for the moments BASIC is parked elsewhere (after a SID player's `JMP *` spin survives teardown). It was removed: it is a no-op wherever the blink is actually visible, and its presence invited exactly the "just poke `$CC` harder" reflex that never works. Getting BASIC into the `GOTO 20` loop is the whole mechanism — there is no second one to fall back on.
 
 ### TeensyROM: LaunchFile leaves the loop un-run
 
 The TR has no `run_prg`; `_bring_up_irq_clear_loop` PostFiles the same PRG and LaunchFiles it. Measured on hardware, the body lands at `$0801` but the first line's link pointer reads `00 00` and VARTAB sits at `$0803` — the signature of a BASIC cold-start init arriving *after* the copy. BASIC therefore sees an empty program, RUN drops straight back to READY, and the machine spends the whole session in the editor's input-wait loop. That is where the TR's blinking cursor came from, and why no amount of writing `$CC` could stop it. It also let the editor eat the keystrokes the keyboard poller reads out of KEYD.
 
-`_ensure_clear_loop_running` repairs it with DMA only: re-write the program body to `$0801`, fix VARTAB to just past it (or RUN's `CLR` puts variables on top of the program), then type `RUN` + RETURN into the kernal keyboard buffer — which works *because* BASIC is stuck at READY, since that wait loop is exactly what consumes KEYD. The `$CC` write-and-read-back above doubles as the state probe: if the `$80` survives, BASIC is off in a program and the repair is skipped, which matters because typing into a running loop would leave keystrokes in KEYD for the poller to read as menu input (RETURN is a nav code).
+`_ensure_clear_loop_running` repairs it with DMA only: re-write the program body to `$0801`, fix VARTAB to just past it (or RUN's `CLR` puts variables on top of the program), then type `RUN` + RETURN into the kernal keyboard buffer — which works *because* BASIC is stuck at READY, since that wait loop is exactly what consumes KEYD.
+
+`_basic_is_at_ready` gates that repair, and is a **read**: CURLIN's high byte (`$003A`) is `$FF` in direct mode and the executing line number otherwise. The gate matters because typing into a running loop would leave keystrokes in KEYD for the poller to read as menu input (RETURN is a nav code). It used to infer the same state from the `$CC` write above — write `$80`, read it back, conclude from whether the editor had clobbered it — reading the state only as a side effect of a write that shouldn't have been happening at all.
+
+### The probe has to wait for the loader to stop talking
+
+LaunchFile acks and *then* streams its own console text back over the same link — `Remote Launch:` / `P:` / `F:` / `Loading IO handler` / `Resetting C64`, a C64 reset and BASIC cold start included. A fixed `time.sleep` after the launch guessed at how long that takes, and guessed short: measured on hardware, the first post-launch command's reply misaligned with the text and came back as the ASCII of `…mote Launch:`. The probe then failed, `_basic_is_at_ready` returned `None`, `_ensure_clear_loop_running` took its can't-read-the-state early return, and the repair was **silently skipped** — leaving BASIC in the editor with the blinking cursor the repair exists to prevent.
+
+This is not a property of writes. A read collides identically; the earlier `$CC` write was simply the command that happened to be first in line. `_settle_after_launch` replaces the sleep with `drain_text`, which re-arms its deadline on every chunk and so waits for the stream to actually go quiet, consuming the text instead of leaving it to desync the next command.
 
 ## `char_rom.py` — reading the character ROM off the machine
 

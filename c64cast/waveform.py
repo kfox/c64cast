@@ -1080,13 +1080,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.api.restore_kernal_irq_vector()
             self.api.flush()
             self.api.silence_sid()
-            # The player MC's `JMP *` spin survives teardown by design (see
-            # api.SID_PLAYER_MC_TEMPLATE docstring), so BASIC's GOTO 20 loop
-            # is no longer running and the kernal editor's cursor-blink path
-            # is reachable. Without this suppression, a subsequent PETSCII
-            # scene (BlankScene, etc.) visibly blinks one cell at the saved
-            # cursor position. Verified live on U64 hardware 2026-05-26.
-            self.api.suppress_cursor_blink()
             # Restore VIC bank 0 + the default $D018 so the next scene's
             # bank-0 display renders (a no-op when we never relocated; the
             # next scene's mode setup also writes $D018, but restore it for

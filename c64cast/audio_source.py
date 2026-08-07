@@ -742,8 +742,6 @@ class SidFileAudioSource:
             self._api.flush()
             self._api.silence_sid()
             self._api.flush()
-            self._api.suppress_cursor_blink()
-            self._api.flush()
         except Exception:
             log.exception("sid audio: teardown silence/restore failed")
         if self._saved_sid_config:

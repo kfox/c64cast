@@ -185,7 +185,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         # Record call order: vector restore MUST precede silence (so a PLAY
         # tick can't rewrite the SID between the volume-clear and gate-clears).
         order: list[str] = []
-        for name in ("restore_kernal_irq_vector", "silence_sid", "suppress_cursor_blink"):
+        for name in ("restore_kernal_irq_vector", "silence_sid"):
             orig = getattr(api, name)
 
             def wrap(orig=orig, name=name):
@@ -202,9 +202,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
             display_mode=cast("object", _FakeMode(False)),  # type: ignore[arg-type]
         )
         src.teardown()
-        self.assertEqual(
-            order, ["restore_kernal_irq_vector", "silence_sid", "suppress_cursor_blink"]
-        )
+        self.assertEqual(order, ["restore_kernal_irq_vector", "silence_sid"])
 
     def test_pool_retry_skips_bad_candidate(self):
         # A directory with one spinning SID + one healthy SID: the source must

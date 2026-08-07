@@ -399,27 +399,26 @@ class BackendTest(unittest.TestCase):
     def test_bring_up_clear_loop_when_read_supported(self):
         # Cycle-clean firmware (supports_read True) launches the IRQ-enabled
         # BASIC clear-loop: DeleteFile -> PostFile -> LaunchFile, then (like the
-        # spin path) DMA-clears the screen + suppresses the cursor blink to wipe
-        # the loader "RUNNING.."/READY/cursor text TR LaunchFile leaves behind.
+        # spin path) DMA-clears the screen to wipe the loader "RUNNING.."/READY
+        # text TR LaunchFile leaves behind. NO write to BLNSW ($00CC) — the
+        # clear loop is what stops the cursor, and poking $CC never held.
         # NO spin MC write to $C000 and NO $D011 blanking (the display stays on
         # — DEN-off would hang the DMA). The SID player needs no pre-uploaded
         # stub anymore (it starts via a pure-DMA $0314 swap), so bring-up is just
         # the clear-loop. Acks: 5 (delete+post clear-loop) + 2 (launch) +
-        # 2 ($CC probe write + read) + 1 (screen clear) + 1 (cursor suppress).
+        # 1 (CURLIN probe read) + 1 (screen clear).
         b, t = self._backend(read=True)
         for _ in range(7):
             t.queue_token(TOK_ACK)
-        t.queue_token(TOK_ACK)  # $CC probe write
-        t.queue_token(TOK_ACK)  # $CC probe read
-        t.queue_raw(b"\x80")  # ...reads back -> already in the GOTO loop
-        for _ in range(2):
-            t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)  # CURLIN probe read
+        t.queue_raw(b"\x14")  # ...executing line 20 -> already in the GOTO loop
+        t.queue_token(TOK_ACK)
         b.run_basic_clear_loop()
         sent = bytes(t.sent)
         self.assertNotIn(b"\x64\xfb\xc0\x00", sent)  # no spin MC ($C000)
         self.assertNotIn(b"\x64\xfb\xd0\x11", sent)  # display never blanked ($D011)
         self.assertIn(b"\x64\xfb\x04\x00", sent)  # screen-clear to $0400
-        self.assertIn(b"\x64\xfb\x00\xcc", sent)  # cursor-blink suppress ($00CC)
+        self.assertNotIn(b"\x64\xfb\x00\xcc", sent)  # BLNSW ($00CC) never written
         # The clear-loop PRG was deleted-then-posted-then-launched.
         i_del = sent.find(b"\x64\xcf")
         i_post = sent.find(b"\x64\xbb")
@@ -433,22 +432,19 @@ class BackendTest(unittest.TestCase):
         # at $0801 with its link pointer zeroed, so BASIC sees an empty program,
         # RUN returns to READY, and the machine sits in the editor's input-wait
         # loop — which copies NDX into BLNSW every pass, making the cursor blink
-        # unstoppable by any write to $CC. Bring-up must detect that (the $80
-        # doesn't read back) and repair it: re-DMA the program, fix VARTAB, and
-        # type RUN into the keyboard buffer.
+        # unstoppable by any write to $CC. Bring-up must detect that (CURLIN
+        # reads as direct mode) and repair it: re-DMA the program, fix VARTAB,
+        # and type RUN into the keyboard buffer.
         b, t = self._backend(read=True)
         for _ in range(7):
             t.queue_token(TOK_ACK)  # delete+post (5) + launch (2)
-        t.queue_token(TOK_ACK)  # probe write
-        t.queue_token(TOK_ACK)  # probe read
-        t.queue_raw(b"\x00")  # ...$80 did not survive -> BASIC is at READY
+        t.queue_token(TOK_ACK)  # CURLIN probe read
+        t.queue_raw(b"\xff")  # ...direct mode -> BASIC is at READY
         for _ in range(4):
             t.queue_token(TOK_ACK)  # program body, VARTAB, KEYD, NDX
-        t.queue_token(TOK_ACK)  # re-probe write
-        t.queue_token(TOK_ACK)  # re-probe read
-        t.queue_raw(b"\x80")  # ...now it holds: the loop is running
-        for _ in range(2):
-            t.queue_token(TOK_ACK)  # screen clear + cursor suppress
+        t.queue_token(TOK_ACK)  # CURLIN re-probe read
+        t.queue_raw(b"\x14")  # ...executing line 20: the loop is running
+        t.queue_token(TOK_ACK)  # screen clear
         with mock.patch.object(tr_api.time, "sleep"):
             b.run_basic_clear_loop()
         sent = bytes(t.sent)
@@ -465,16 +461,38 @@ class BackendTest(unittest.TestCase):
         b, t = self._backend(read=True)
         for _ in range(7):
             t.queue_token(TOK_ACK)
-        t.queue_token(TOK_ACK)  # probe write
-        t.queue_token(TOK_ACK)  # probe read
-        t.queue_raw(b"\x80")  # ...holds -> already looping
-        for _ in range(2):
-            t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)  # CURLIN probe read
+        t.queue_raw(b"\x14")  # ...executing line 20 -> already looping
+        t.queue_token(TOK_ACK)
         with mock.patch.object(tr_api.time, "sleep"):
             b.run_basic_clear_loop()
         sent = bytes(t.sent)
         self.assertNotIn(b"RUN\r", sent)
         self.assertNotIn(b"\x64\xfb\x02\x77", sent)  # nothing typed into KEYD
+
+    def test_bring_up_drains_the_loaders_console_text_before_probing(self):
+        # LaunchFile acks and *then* streams its own console text back over the
+        # same link, including a C64 reset. HW-measured: with only a fixed sleep
+        # in between, the next command's reply misaligned with that text and came
+        # back as the ASCII of "...mote Launch:" — so the CURLIN probe failed,
+        # _basic_is_at_ready went None, and the repair was silently skipped,
+        # leaving BASIC in the editor with a blinking cursor. Bring-up must drain
+        # to silence first.
+        b, t = self._backend(read=True)
+        t.queue_stale(b"Remote Launch:\rF: clearloop.prg\rResetting C64\r")
+        for _ in range(7):
+            t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)  # CURLIN probe read
+        t.queue_raw(b"\xff")  # ...direct mode -> BASIC is at READY, repair fires
+        for _ in range(4):
+            t.queue_token(TOK_ACK)  # program body, VARTAB, KEYD, NDX
+        t.queue_token(TOK_ACK)  # CURLIN re-probe read
+        t.queue_raw(b"\x14")  # ...line 20: the loop is running
+        t.queue_token(TOK_ACK)  # screen clear
+        with mock.patch.object(tr_api.time, "sleep"):
+            b.run_basic_clear_loop()
+        self.assertEqual(bytes(t._stale), b"")  # chatter consumed, not left to desync
+        self.assertIn(b"RUN\r", bytes(t.sent))  # ...so the repair actually ran
 
     def test_bring_up_spin_stub_when_read_unsupported(self):
         # Old firmware (supports_read False) falls back to the spin stub: DMA
@@ -503,18 +521,18 @@ class BackendTest(unittest.TestCase):
         # menu, freezing $028D and stranding the resume-hold; and (2) NOT turn
         # the VIC display off — DEN=0 removes badlines, hanging the cycle-clean
         # DMA so reads/writes time out (HW-confirmed, wedges the TR). So it
-        # clears screen RAM (spaces) + suppresses the cursor blink, with DEN
-        # left ON. Asserts: WriteC64Mem to $0400 (clear) + $00CC (cursor), and
-        # NO ResetC64 and NO $D011 (blank) write.
+        # clears screen RAM (spaces) with DEN left ON. Asserts: WriteC64Mem to
+        # $0400 (clear), and NO ResetC64, NO $D011 (blank), NO $00CC (BLNSW —
+        # the clear loop already running underneath is what holds the cursor
+        # off, and poking $CC never worked).
         b, t = self._backend(read=True)
         t.queue_token(TOK_ACK)  # screen-clear write (<4096 -> 1 seg)
-        t.queue_token(TOK_ACK)  # cursor-blink suppress write
         b.pause_idle()
         sent = bytes(t.sent)
         self.assertNotIn(b"\x64\xee", sent)  # no ResetC64 anywhere
         self.assertNotIn(b"\x64\xfb\xd0\x11", sent)  # no $D011 write (display stays on)
         self.assertIn(b"\x64\xfb\x04\x00", sent)  # WriteC64Mem to $0400 (screen clear)
-        self.assertIn(b"\x64\xfb\x00\xcc", sent)  # cursor-blink suppress ($00CC)
+        self.assertNotIn(b"\x64\xfb\x00\xcc", sent)  # BLNSW ($00CC) never written
 
     def test_bring_up_tolerates_missing_file_on_delete(self):
         # First-ever run: the file doesn't exist, so DeleteFile NAKs; bring-up
@@ -526,11 +544,9 @@ class BackendTest(unittest.TestCase):
             t.queue_token(TOK_ACK)  # clear-loop post open/header/data
         for _ in range(2):
             t.queue_token(TOK_ACK)  # launch open/body
-        t.queue_token(TOK_ACK)  # $CC probe write
-        t.queue_token(TOK_ACK)  # $CC probe read
-        t.queue_raw(b"\x80")  # ...holds -> the loop is running, no repair needed
-        for _ in range(2):
-            t.queue_token(TOK_ACK)  # screen clear + cursor suppress
+        t.queue_token(TOK_ACK)  # CURLIN probe read
+        t.queue_raw(b"\x14")  # ...line 20 -> the loop is running, no repair needed
+        t.queue_token(TOK_ACK)  # screen clear
         b.run_basic_clear_loop()
         self.assertIn(b"\x64\x44", bytes(t.sent))  # launch still happened
 
