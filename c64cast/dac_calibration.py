@@ -1482,6 +1482,16 @@ def _capture_fault_message(dev: int, reason: str, peak: float, saved: Path | Non
     )
 
 
+def _is_level_drift(diag: dict[str, Any]) -> bool:
+    """Whether an unsteady ring's disagreement is a moving level rather than
+    laps that genuinely differ — the :data:`PASS_RESIDUAL_DRIFT_RATIO`
+    discriminator over :func:`_pass_gain_decomposition`'s diagnostics. A spread
+    of zero is not drift: there is no disagreement to classify."""
+    spread = float(diag.get("pass_spread_p95_frac", 0.0))
+    resid = float(diag.get("pass_residual_frac", 0.0))
+    return bool(spread) and resid <= PASS_RESIDUAL_DRIFT_RATIO * spread
+
+
 def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None) -> str:
     """The message an unsteady — as opposed to unreadable — ring fails with.
 
@@ -1490,18 +1500,17 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
     mistracked capture and would otherwise send the user back to the cabling.
 
     Beyond that the two ways a ring can be unsteady get different advice, because
-    they have different fixes: :func:`_pass_gain_decomposition` separates a level
-    that was moving *through* a faithful ring (re-measure once it has settled)
-    from laps that genuinely differ (something else is reaching the output). A
-    single combined list made the reader test all of it, and the first item —
-    a second SID — is the expensive one to check."""
-    spread = float(diag.get("pass_spread_p95_frac", 0.0))
+    they have different fixes: :func:`_is_level_drift` separates a level that was
+    moving *through* a faithful ring (re-measure once it has settled) from laps
+    that genuinely differ (something else is reaching the output). A single
+    combined list made the reader test all of it, and the first item — a second
+    SID — is the expensive one to check."""
     resid = float(diag.get("pass_residual_frac", 0.0))
+    spread = float(diag.get("pass_spread_p95_frac", 0.0))
     span = float(diag.get("pass_gain_span_frac", 0.0))
     gains = diag.get("pass_gains") or []
-    drift = bool(spread) and resid <= PASS_RESIDUAL_DRIFT_RATIO * spread
 
-    if drift:
+    if _is_level_drift(diag):
         detail = (
             f"The disagreement is a level change, not a different ring: rescaling "
             f"each pass leaves only {resid * 100:.2f}%, and the per-pass levels "
@@ -1548,9 +1557,10 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
     )
 
 
-def _marginal_run_summary(spreads: Sequence[float], label: str) -> str | None:
-    """One line naming a run that stayed under the trust gate ring by ring and
-    is still not worth trusting, or None when the run was clean.
+def _marginal_run_summary(spreads: Sequence[float], label: str) -> tuple[int, str | None]:
+    """How many rings measured above the healthy band, with one line naming a
+    run that stayed under the trust gate ring by ring and is still not worth
+    trusting (None when the run was clean).
 
     Per ring a marginal spread is a note; across a run it is the finding. A run
     whose rings all sat at 0.2–0.44 % — every one of them under
@@ -1560,8 +1570,8 @@ def _marginal_run_summary(spreads: Sequence[float], label: str) -> str | None:
     Nothing said so at the time, because no single ring had failed anything."""
     marginal = [s for s in spreads if s > RING_SPREAD_HEALTHY]
     if not marginal:
-        return None
-    return (
+        return 0, None
+    return len(marginal), (
         f"[calib] {label}: {len(marginal)}/{len(spreads)} rings measured above the healthy "
         f"band (≤{RING_SPREAD_HEALTHY * 100:.1f}%, worst {max(spreads) * 100:.2f}%). The "
         "table is still written, but a run like this has produced one that disagreed with "
@@ -1848,8 +1858,7 @@ def run_calibration(
                 if d["pass_spread_p95_frac"] > RING_SPREAD_HEALTHY:
                     kind = (
                         f"level drift, span {d['pass_gain_span_frac'] * 100:.1f}%"
-                        if d["pass_residual_frac"]
-                        <= PASS_RESIDUAL_DRIFT_RATIO * d["pass_spread_p95_frac"]
+                        if _is_level_drift(d)
                         else f"ring differs, residual {d['pass_residual_frac'] * 100:.2f}%"
                     )
                     marginal = f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%; {kind})"
@@ -1859,8 +1868,7 @@ def run_calibration(
                     f"pass spread {d['pass_spread_p95_frac'] * 100:.3f}% (worst slot {d['pass_spread_frac'] * 100:.2f}%){marginal}"
                 )
         spreads = [m.diagnostics["pass_spread_p95_frac"] for _, m in measured]
-        n_marginal = sum(1 for s in spreads if s > RING_SPREAD_HEALTHY)
-        note = _marginal_run_summary(spreads, label)
+        n_marginal, note = _marginal_run_summary(spreads, label)
         if note:
             log_fn(note)
 
