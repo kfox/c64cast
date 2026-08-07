@@ -851,6 +851,14 @@ class DmaPasswordEnvTest(unittest.TestCase):
         self.assertEqual(merged.ultimate64.dma_password, "from-config")
 
 
+class BuildersTableTest(unittest.TestCase):
+    def test_every_scene_type_has_a_builder(self):
+        # A new entry in SCENE_TYPES must land in _BUILDERS the day it's
+        # added — a missing one would otherwise surface as a KeyError deep
+        # in build_scene instead of a failing test.
+        self.assertEqual(set(scene_factory._BUILDERS), set(cfgmod.SCENE_TYPES))
+
+
 class ValidateSceneCfgTest(unittest.TestCase):
     """Direct tests for `validate_scene_cfg` — the seam doctor mode and
     `build_scene` both go through. Covers every per-scene ValueError path

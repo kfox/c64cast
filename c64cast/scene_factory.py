@@ -3,7 +3,9 @@
 `scenes_from_config` is the entry point: it validates every SceneCfg up
 front (`validate_scene_cfg`, which fans out to the per-type `_validate_*`
 helpers), then `build_scene` constructs each scene with its display mode,
-overlays, effects, and audio source. The `resolve_*` helpers coalesce the
+overlays, effects, and audio source — dispatching to the mirror-image
+`_build_<type>` helpers via the `_BUILDERS` table, then running the shared
+epilogue. The `resolve_*` helpers coalesce the
 tri-state config knobs (dither / color_match / cell_strategy / REU staging /
 double-buffer / audio backend) into concrete per-scene values — doctor mode
 calls them too, so a config is checked identically with and without hardware.
@@ -24,6 +26,8 @@ import math
 import os
 import random
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from . import paths
@@ -59,7 +63,7 @@ from .config import (
 from .dac_curves import DAC_CURVE_CHOICES
 from .dither import DITHER_METHODS
 from .effects import build_effect
-from .generators import build_generator
+from .generators import GenerativeSource, build_generator
 from .midi_scene import MidiScene
 from .modes import (
     BitmapDisplayMode,
@@ -1314,8 +1318,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     Raises ValueError (display-mode parse, required fields, overlay
     compatibility) or OrchestratorError (orchestrate=true with no
     claiming subclass). The constructor-only webcam check (`source is None`)
-    lives in `build_scene` itself — doctor mode runs without a source and
-    must not be tripped by it.
+    lives in `_build_webcam` — doctor mode runs without a source and must
+    not be tripped by it.
 
     Per-type checks live in `_validate_<type>` helpers, each returning the
     display mode the scene will paint (so the shared overlay-compat loop can
@@ -1394,6 +1398,12 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         resolve_orchestrator(s)
 
 
+def _half_system_rate(system: str) -> float:
+    """Half the VIC refresh rate (25 PAL / 30 NTSC) — the default frame-push
+    cap for a bitmap scene without digitized audio."""
+    return 25.0 if system.upper() == "PAL" else 30.0
+
+
 def _frame_push_default_fps(
     mode: DisplayMode,
     has_digitized_audio: bool,
@@ -1454,7 +1464,559 @@ def _frame_push_default_fps(
         return None
     if off_bus_audio:
         return 50.0 if system.upper() == "PAL" else 60.0
-    return 25.0 if system.upper() == "PAL" else 30.0
+    return _half_system_rate(system)
+
+
+@dataclass(frozen=True)
+class _SceneBuildContext:
+    """Everything ``build_scene`` hands a per-type ``_build_<type>`` helper.
+
+    One frozen bundle instead of threading eight parameters through ten
+    builders. ``s`` is the scene being built; the rest is the run-wide
+    context (build_scene's docstring says what each field means)."""
+
+    s: SceneCfg
+    cfg: Config
+    api: C64Backend
+    audio: AudioStreamer | None
+    source: WebcamSource | None
+    is_ensemble: bool
+    reu_available: bool
+    sampler_available: bool
+
+    @property
+    def backend_supports_reu(self) -> bool:
+        """Whether THIS backend has an REU at all (capability, not "REU
+        enabled" — that's ``reu_available``). Resolves the
+        [video].double_buffer "auto" host-DMA page-flip path on no-REU
+        backends (the TeensyROM). See resolve_double_buffer."""
+        return self.api.profile.supports_reu
+
+    def display_mode(self, display: str | None) -> DisplayMode:
+        """The scene's display mode for ``display``, with the probe verdicts
+        threaded through — the call every frame-bearing builder makes."""
+        return _display_mode_for_scene(
+            display,
+            self.s,
+            self.cfg,
+            reu_available=self.reu_available,
+            backend_supports_reu=self.backend_supports_reu,
+        )
+
+
+def _resolve_live_audio(ctx: _SceneBuildContext, name: str, label: str) -> AudioStreamer | None:
+    """The DAC streamer a live-input scene (webcam / blank / generative mic)
+    should carry, or None for silence.
+
+    Default: follow global [audio].enabled. When ``ctx.audio`` is None the
+    streamer wasn't constructed (global is off) so the scene runs silent;
+    when it's a real streamer, the scene picks it up. Set ``audio = false``
+    per-scene to opt out even when the global is on. In ensemble mode live
+    scenes never hold the audio spotlight, so audio is always suppressed —
+    with a log line when the scene explicitly opted in."""
+    scene_audio = None if ctx.s.audio is False else ctx.audio
+    if ctx.is_ensemble and scene_audio is not None:
+        if ctx.s.audio is True:
+            log.info(
+                "[%s] %s: audio suppressed in ensemble mode "
+                "(live scenes never hold the audio spotlight)",
+                name,
+                label,
+            )
+        scene_audio = None
+    return scene_audio
+
+
+def _resolve_sampler_audio(ctx: _SceneBuildContext) -> UltimateAudioSampler | None:
+    """A per-scene Ultimate Audio sampler when [audio].backend resolves to
+    it, else None (the caller keeps the shared 4-bit DAC streamer).
+
+    On a sampler-capable U64 with the Ultimate Audio sampler available, video
+    and generative-file scenes swap the shared ``$D418`` DAC for a per-scene
+    UltimateAudioSampler (high fidelity, off the C64 bus — see sampler.py).
+    It satisfies the same scene-facing audio contract (sample_rate /
+    position_seconds / push_samples / stop), so scenes drive it
+    polymorphically; mic/webcam scenes keep the shared DAC."""
+    backend = resolve_audio_backend(
+        ctx.cfg.audio.backend,
+        supports_sampler=ctx.api.profile.supports_sampler,
+        sampler_available=ctx.sampler_available,
+    )
+    if backend != "sampler":
+        return None
+    return UltimateAudioSampler(
+        ctx.api,
+        sample_rate=ctx.cfg.audio.sampler_sample_rate,
+        bits=ctx.cfg.audio.sampler_bits,
+        ref_clock_hz=ctx.cfg.audio.sampler_clock_hz,
+    )
+
+
+def _video_tempo_scale(cfg: Config, mode: DisplayMode, *, dac_audio: bool) -> float:
+    """Bitmap + ``$D418``-DAC tempo compensation factor (1.0 = none).
+
+    On the host-DMA 4-bit DAC path over a bitmap mode, heavy REU bank-swap
+    bitmap writes bias the audio servo and time-stretch playback ~1/s SLOW at
+    correct pitch. Pre-compress the content by 1/s (audio time-compress +
+    video PTS × s) so it nets to real time. Gated OFF (1.0) for the off-bus
+    sampler, the REU pump, char modes, and muted scenes — none of which
+    stretch (``dac_audio`` False covers sampler and muted)."""
+    if not dac_audio or cfg.audio.use_reu_pump or not isinstance(mode, BitmapDisplayMode):
+        return 1.0
+    if isinstance(mode, MultiHiresDisplayMode):
+        return cfg.audio.dac_bitmap_tempo_mhires
+    return cfg.audio.dac_bitmap_tempo_hires
+
+
+def _resolve_video_source(s: SceneCfg) -> tuple[str, float | None, str | None]:
+    """The video scene's (file_spec, start_s, name) after URL resolution.
+
+    A single media URL (YouTube et al.) is resolved here — the ONE resolution
+    path shared with quick playback — so config-driven videos accept URLs
+    too. Its t=/start= timestamp folds into start_s (an explicit start_s
+    wins), and the resolved title becomes the scene name (an explicit name
+    wins). Local files / dir / glob / multi specs are untouched."""
+    assert s.file is not None  # narrowed by validate_scene_cfg
+    file_spec = s.file
+    start_s = s.start_s
+    name = s.name
+    if _is_single_url_spec(s.file):
+        # Deferred: cycle with quickcast (see _validate_video).
+        from .quickcast import resolve_video_url
+
+        stream_url, url_start_s, title = resolve_video_url(s.file.strip())
+        file_spec = stream_url
+        if start_s is None:
+            start_s = url_start_s
+        if name is None:
+            name = title
+    return file_spec, start_s, name
+
+
+def _build_webcam(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    if ctx.source is None:
+        raise ValueError(
+            "webcam scene declared but no WebcamSource was provided — "
+            "this should have been caught at cli.py startup"
+        )
+    display = resolve_scene_display(s.display, s.type)
+    mode = ctx.display_mode(display)
+    name = s.name or f"Webcam {display}"
+    scene_audio = _resolve_live_audio(ctx, name, "live webcam scene")
+    scene = WebcamScene(ctx.api, scene_audio, mode, ctx.source, cfg.audio, name, color=cfg.color)
+    if s.target_fps is None:
+        # always_fresh: every camera grab differs, so there is no dedup —
+        # a char mode still repaints the whole screen each tick and, with
+        # mic audio on the DAC, contends with the ring writes.
+        fps = _frame_push_default_fps(
+            mode,
+            scene_audio is not None,
+            cfg.ultimate64.system,
+            always_fresh=True,
+        )
+        if fps is not None:
+            scene.target_fps = fps
+    return scene
+
+
+def _build_blank(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    mode = _build_display_mode(
+        "blank",
+        border=s.border,
+        background=s.background,
+        use_reu_staged=resolve_use_reu_staged(
+            cfg.video.use_reu_staged, "blank", reu_available=ctx.reu_available
+        ),
+    )
+    name = s.name or "Blank"
+    scene_audio = _resolve_live_audio(ctx, name, "live blank scene")
+    return BlankScene(ctx.api, scene_audio, mode, cfg.audio, name)
+
+
+def _build_video(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    mode = ctx.display_mode(s.display)
+    # Default: audio ON for videos (it's part of the file). The user can mute
+    # one with `audio = false`. Widened because it may hold the per-scene
+    # off-bus sampler instead of the shared DAC streamer (see
+    # _resolve_sampler_audio).
+    video_audio: AudioStreamer | UltimateAudioSampler | None = (
+        None if s.audio is False else ctx.audio
+    )
+    using_sampler = False
+    if video_audio is not None:
+        sampler = _resolve_sampler_audio(ctx)
+        if sampler is not None:
+            video_audio = sampler
+            using_sampler = True
+    # `using_sampler` False with audio present means the DAC path.
+    has_dac_audio = video_audio is not None and not using_sampler
+    file_spec, start_s, video_name = _resolve_video_source(s)
+    scene = VideoScene(
+        ctx.api,
+        video_audio,
+        mode,
+        file_spec,
+        prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
+        color=cfg.color,
+        start_s=start_s or 0.0,
+        tempo_scale=_video_tempo_scale(cfg, mode, dac_audio=has_dac_audio),
+        loop_audio=cfg.midi_control.loop_audio,
+    )
+    if video_name:
+        scene.name = video_name
+    if s.target_fps is None:
+        # The sampler plays entirely off the C64 bus, so it neither imposes
+        # the 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs
+        # compete with frame uploads for the bus) nor the muted half-rate
+        # cap (its REU-staged frame uploads are bus-clean, not host DMA).
+        # So sampler bitmap video uncaps to the system rate (60/50) — and
+        # because VideoScene dedups, the effective push rate then equals the
+        # source video's fps (24fps clip → 24/s, etc.). DAC video stays 20;
+        # muted bitmap stays 30/25. See _frame_push_default_fps.
+        fps = _frame_push_default_fps(
+            mode, has_dac_audio, cfg.ultimate64.system, off_bus_audio=using_sampler
+        )
+        if fps is not None:
+            scene.target_fps = fps
+    return scene
+
+
+def _build_waveform(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    # If duration_s is unset AND a songlengths DB is configured, let the
+    # WaveformScene look up the true length. Explicit duration_s wins over
+    # the DB.
+    db = _load_songlengths(cfg.playlist.songlengths_file)
+    assert s.file is not None  # narrowed by validate_scene_cfg
+    scene = WaveformScene(
+        ctx.api,
+        ctx.audio,
+        file=s.file,
+        song=s.song,
+        duration_s=s.duration_s,
+        target_fps=s.target_fps,
+        system=cfg.ultimate64.system,
+        color_mode=s.color_mode,
+        voice_colors=s.voice_colors or None,
+        waveform_colors=s.waveform_colors or None,
+        time_base=s.time_base,
+        auto_cycles=s.auto_cycles,
+        persistence=s.persistence,
+        scroll_columns=s.scroll_columns,
+        songlengths_db=db,
+        sid_model=resolve_sid_model_cfg(cfg),
+        sid_panning=cfg.ultimate64.sid_panning,
+        sid_volume=cfg.ultimate64.sid_volume,
+    )
+    if s.name:
+        scene.name = s.name
+    return scene
+
+
+def _build_slideshow(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    display = _resolve_slideshow_display(s.display)
+    mode = ctx.display_mode(display)
+    assert s.file is not None  # narrowed by validate_scene_cfg
+    # Pass the *original* display spec (may be "random") so the scene can
+    # re-resolve at each setup() for fresh variety in single-scene loops. The
+    # build kwargs travel along so the scene can rebuild without re-plumbing
+    # through `scene._cfg`. The REU staging setting is handed over as the raw
+    # tri-state + the probe verdict (not the resolved bool), so a
+    # `display = "random"` rebuild re-decides staging per concrete mode each
+    # setup().
+    return SlideshowScene(
+        ctx.api,
+        mode,
+        s.file,
+        image_duration_s=s.image_duration_s,
+        display_spec=s.display,
+        palette_mode=s.palette_mode,
+        border=s.border,
+        background=s.background,
+        style=s.style,
+        use_reu_staged=cfg.video.use_reu_staged,
+        double_buffer=cfg.video.double_buffer,
+        reu_available=ctx.reu_available,
+        backend_supports_reu=ctx.backend_supports_reu,
+        audio_reu_pump_active=cfg.audio.use_reu_pump,
+        color=cfg.color,
+        text_double_height=s.text_double_height,
+        aspect_mode=s.aspect_mode,
+    )
+
+
+def _build_generative(ctx: _SceneBuildContext) -> Scene:
+    # The three arms differ in how audio reaches the C64: "sid" plays through
+    # the real SID chip via the player IRQ, "listen" analyzes live input with
+    # no C64 output, and mic/file/none ride the live DAC-or-sampler path.
+    s = ctx.s
+    gen = build_generator(s.source)
+    name = s.name or f"Generative {s.source}"
+    if s.audio_source == "sid":
+        return _build_generative_sid(ctx, gen, name)
+    if s.audio_source == "listen":
+        return _build_generative_listen(ctx, gen, name)
+    return _build_generative_live(ctx, gen, name)
+
+
+def _build_generative_sid(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    # Force host-DMA: the SID player owns the $0314 IRQ for PLAY, so the
+    # display must NOT install the REU bank-swap raster IRQ (it would
+    # collide). The SID drives the chip directly — no DAC streamer, plays
+    # regardless of [audio].enabled, and is NOT subject to the ensemble
+    # live-mic suppression (it legitimately holds the audio spotlight;
+    # wants_audio_lock=True gates the slot). The scene's base audio stays
+    # None.
+    mode = _display_mode_for_scene(s.display, s, cfg, force_host_dma=True)
+    assert s.file is not None  # narrowed by _validate_generative
+    audio_src = SidFileAudioSource(
+        ctx.api,
+        s.file,
+        song=s.song,
+        display_mode=mode,
+        system=cfg.ultimate64.system,
+        reactive=s.reactive,
+        sid_model=resolve_sid_model_cfg(cfg),
+        sid_panning=cfg.ultimate64.sid_panning,
+        sid_volume=cfg.ultimate64.sid_volume,
+    )
+    scene = SourceScene(ctx.api, None, mode, gen, audio_src, name, color=cfg.color)
+    # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at full
+    # system rate that competes with the SID player's per-frame PLAY IRQ for
+    # the bus. Default such scenes to half-rate (like WaveformScene) for
+    # safety; a char display stays full-rate, and an explicit target_fps
+    # (applied in build_scene's epilogue) still wins.
+    if s.target_fps is None and mode.is_bitmapped:
+        scene.target_fps = _half_system_rate(cfg.ultimate64.system)
+    return scene
+
+
+def _build_generative_listen(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    mode = ctx.display_mode(s.display)
+    # Listen-only: analyze the live input for reactive visuals with NO C64
+    # audio output. It drives neither the DAC nor the SID, so it is never
+    # ensemble-suppressed and ignores the per-scene `audio` DAC toggle — it
+    # just needs the shared streamer to own the input + analysis sink. The
+    # SourceScene gets no DAC audio (None): the analyzer taps pre-DSP, so
+    # per-scene pre-emphasis is irrelevant, and there is no DAC stream to
+    # frame-cap against.
+    audio_src: AudioSource
+    if ctx.audio is not None and s.reactive:
+        audio_src = MicAudioSource(
+            ctx.audio,
+            cfg.audio,
+            display_mode=mode,
+            reactive=True,
+            listen_only=True,
+            features_cfg=cfg.audio_features,
+        )
+    else:
+        # No streamer ([audio] off) or reactive = false → silence.
+        audio_src = NullAudioSource()
+    return SourceScene(ctx.api, None, mode, gen, audio_src, name, color=cfg.color)
+
+
+def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
+    # mic / file / none: the live-frame audio path. Like webcam/blank, a live
+    # mic source is suppressed in ensemble mode.
+    s, cfg = ctx.s, ctx.cfg
+    mode = ctx.display_mode(s.display)
+    scene_audio = _resolve_live_audio(ctx, name, "generative scene")
+    audio_src: AudioSource
+    file_audio_src: AudioFileSource | None = None
+    # The audio object the SourceScene carries as its base `.audio` (the
+    # set_pre_emphasis hook + overlay sample tap). Defaults to the shared
+    # 4-bit DAC streamer; the file path may swap it for a per-scene off-bus
+    # sampler (below), so it must widen to either.
+    scene_base_audio: AudioStreamer | UltimateAudioSampler | None = scene_audio
+    # True when the file path decodes into the Ultimate Audio sampler rather
+    # than the $D418 DAC — lifts the DAC bitmap fps caps.
+    file_uses_sampler = False
+    if s.audio_source == "mic" and scene_audio is not None:
+        audio_src = MicAudioSource(
+            scene_audio,
+            cfg.audio,
+            display_mode=mode,
+            reactive=s.reactive,
+            features_cfg=cfg.audio_features,
+        )
+    elif s.audio_source == "file" and scene_audio is not None:
+        # Decode a music file to the C64's audio AND analyze it — the same
+        # analyzer the mic path uses, sourced from a file. The backend
+        # resolves exactly like a video scene: on a sampler-capable U64 with
+        # the Ultimate Audio sampler available (backend = auto/sampler),
+        # decode into the off-bus 16-bit sampler instead of the 4-bit $D418
+        # DAC. The DAC path is intrinsically staticky here — its NMI service
+        # is jittered by every host-DMA RAM write and it quantizes to ~6-7
+        # bits — so a decoded track is barely recognizable regardless of
+        # display mode (HW-measured 2026-07-24); the sampler is immune (no
+        # $D418/NMI/CPU). Falls back to the DAC on TeensyROM, when the
+        # sampler is unavailable, or backend = "dac".
+        assert s.file is not None  # narrowed by _validate_generative
+        file_audio_obj: AudioStreamer | UltimateAudioSampler = scene_audio
+        sampler = _resolve_sampler_audio(ctx)
+        if sampler is not None:
+            file_audio_obj = sampler
+            file_uses_sampler = True
+        scene_base_audio = file_audio_obj
+        file_audio_src = AudioFileSource(
+            file_audio_obj,
+            s.file,
+            reactive=s.reactive,
+            features_cfg=cfg.audio_features,
+        )
+        audio_src = file_audio_src
+    else:
+        # "none", or "mic"/"file" with audio disabled → silence.
+        audio_src = NullAudioSource()
+    scene = SourceScene(ctx.api, scene_base_audio, mode, gen, audio_src, name, color=cfg.color)
+    # Size a file-audio scene to the track so `c64cast tune.mp3` plays the
+    # whole song then advances/loops (an explicit duration_s still wins,
+    # applied in build_scene's duration-resolution epilogue).
+    if file_audio_src is not None and s.duration_s is None and file_audio_src.duration_s:
+        scene.duration_s = file_audio_src.duration_s
+    # A mic/file-source generative scene is digitized-audio-capable like
+    # webcam/video, so a bitmap display caps its frame push: 20 fps while the
+    # 4-bit DAC streams (its NMI + ring DMAWRITEs compete with frame
+    # uploads), half the system rate (30/25) otherwise. The off-bus sampler
+    # frees the *audio* from the bus, but NOT the video: a generative source
+    # renders a fresh frame every tick (no VideoScene-style dedup), so
+    # uncapping to the system rate would push 60 real mhires frames/s of REU
+    # bank-swap traffic — which starves the sampler's own REU writes (audible
+    # static) and overloads the bus (C64-side visual crash, HW 2026-07-24).
+    # So a sampler-routed file scene keeps the muted 30/25 bitmap cap:
+    # off-bus audio, no on-bus digi, no uncap. The "none" source drives no
+    # audio, so it keeps the playlist default.
+    #
+    # That same no-dedup property (always_fresh) is why the DAC's 20 fps cap
+    # now applies in CHAR modes too, not just bitmap ones — a 60 fps mcm
+    # generative scene repaints screen + color RAM every tick over the socket
+    # the audio ring shares. Sampler-routed audio is off-bus and keeps the
+    # high default.
+    if s.target_fps is None and s.audio_source in ("mic", "file"):
+        fps = _frame_push_default_fps(
+            mode,
+            scene_audio is not None and not file_uses_sampler,
+            cfg.ultimate64.system,
+            always_fresh=True,
+        )
+        if fps is not None:
+            scene.target_fps = fps
+    return scene
+
+
+def _build_wled(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    # A network pixel sink: the frame arrives over UDP, no audio, no SID.
+    # It's just another FrameSource behind the SourceScene seam — the display
+    # mode quantizes the received BGR frame to the C64 unchanged.
+    mode = ctx.display_mode(s.display)
+    wled_source = WLEDSource(s.sink_width, s.sink_height)
+    name = s.name or "WLED sink"
+    scene = SourceScene(ctx.api, None, mode, wled_source, NullAudioSource(), name, color=cfg.color)
+    # Bitmap displays push a full ~9-10 KB frame per update; default to half
+    # rate like the other frame scenes (an explicit target_fps, applied in
+    # build_scene's epilogue, still wins).
+    if s.target_fps is None and mode.is_bitmapped:
+        scene.target_fps = _half_system_rate(cfg.ultimate64.system)
+    return scene
+
+
+def _build_launcher(ctx: _SceneBuildContext) -> Scene:
+    s = ctx.s
+    assert s.file is not None  # narrowed by validate_scene_cfg
+    # No audio streamer: the launched program drives the real SID directly.
+    # No display mode / overlays: it owns the VIC.
+    return LauncherScene(
+        ctx.api,
+        s.file,
+        input_source=s.input_source,
+        reset_before_launch=s.reset_before_launch,
+        min_duration_s=s.min_duration_s,
+        max_duration_s=(math.inf if s.max_duration_s is None else s.max_duration_s),
+        bypass_audio_lock=s.bypass_audio_lock,
+        name=s.name,
+    )
+
+
+def _build_midi(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    a, d, sus, r = s.midi_adsr
+    return MidiScene(
+        ctx.api,
+        ctx.audio,
+        port=s.midi_port,
+        waveform=s.midi_waveform,
+        voice_waveforms=s.midi_voice_waveforms or None,
+        voice_mode=s.midi_voice_mode,
+        voice_channels=s.midi_voice_channels or None,
+        program_change=s.midi_program_change,
+        adsr=(a, d, sus, r),
+        pulse_width=s.midi_pulse_width,
+        filter_cutoff=s.midi_filter_cutoff,
+        filter_resonance=s.midi_filter_resonance,
+        filter_mode=s.midi_filter_mode,
+        master_volume=s.midi_master_volume,
+        voice_colors=s.voice_colors or None,
+        color_mode=s.color_mode,
+        waveform_colors=s.waveform_colors or None,
+        time_base=s.time_base,
+        auto_cycles=s.auto_cycles,
+        persistence=s.persistence,
+        scroll_columns=s.scroll_columns,
+        target_fps=s.target_fps,
+        system=cfg.ultimate64.system,
+        name=s.name or "MIDI",
+    )
+
+
+def _build_asid(ctx: _SceneBuildContext) -> Scene:
+    s, cfg = ctx.s, ctx.cfg
+    return AsidScene(
+        ctx.api,
+        ctx.audio,
+        port=s.asid_port,
+        voice_colors=s.voice_colors or None,
+        color_mode=s.color_mode,
+        waveform_colors=s.waveform_colors or None,
+        time_base=s.time_base,
+        auto_cycles=s.auto_cycles,
+        persistence=s.persistence,
+        scroll_columns=s.scroll_columns,
+        target_fps=s.target_fps,
+        system=cfg.ultimate64.system,
+        multi_sid=s.asid_multi_sid,
+        max_sids=s.asid_max_sids,
+        buffered_player=s.asid_buffered_player,
+        sid_panning=cfg.ultimate64.sid_panning,
+        sid_volume=cfg.ultimate64.sid_volume,
+        name=s.name or "ASID",
+    )
+
+
+# One builder per scene type, mirroring the _validate_<type> helpers that
+# validate_scene_cfg fans out to. validate_scene_cfg (always called first in
+# build_scene) rejects unknown types, so the lookup can't miss. Keep in sync
+# with config.SCENE_TYPES — tests/test_config.py holds the two to the same
+# set.
+_BUILDERS: dict[str, Callable[[_SceneBuildContext], Scene]] = {
+    "webcam": _build_webcam,
+    "blank": _build_blank,
+    "video": _build_video,
+    "waveform": _build_waveform,
+    "midi": _build_midi,
+    "asid": _build_asid,
+    "slideshow": _build_slideshow,
+    "launcher": _build_launcher,
+    "generative": _build_generative,
+    "wled": _build_wled,
+}
 
 
 def build_scene(
@@ -1491,491 +2053,27 @@ def build_scene(
 
     `sampler_available` is the probe's verdict on whether the U64's Ultimate
     Audio sampler is exposed + routed; it resolves [audio].backend for video
-    scenes (see resolve_audio_backend). False without a probe → DAC."""
+    scenes (see resolve_audio_backend). False without a probe → DAC.
+
+    Per-type construction lives in the `_build_<type>` helpers dispatched
+    through `_BUILDERS`, mirroring the `_validate_<type>` split; the epilogue
+    below applies what every scene gets — duration resolution, an explicit
+    target_fps, the effect chain, overlays, and the debug/OSD/pre-emphasis
+    stamps."""
     validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
 
-    audio_reu_pump_active = cfg.audio.use_reu_pump
-    # Whether THIS backend has an REU at all (capability, not "REU enabled" —
-    # that's reu_available). Resolves the [video].double_buffer "auto" host-DMA
-    # page-flip path on no-REU backends (the TeensyROM). See resolve_double_buffer.
-    backend_supports_reu = api.profile.supports_reu
-    scene: Scene
-    if s.type == "webcam":
-        if source is None:
-            raise ValueError(
-                "webcam scene declared but no WebcamSource was provided — "
-                "this should have been caught at cli.py startup"
-            )
-        display = resolve_scene_display(s.display, s.type)
-        mode = _display_mode_for_scene(
-            display,
-            s,
-            cfg,
-            reu_available=reu_available,
-            backend_supports_reu=backend_supports_reu,
-        )
-        name = s.name or f"Webcam {display}"
-        # Default: follow global [audio].enabled. When `audio` is None here,
-        # the streamer wasn't constructed (global is off) so the scene runs
-        # silent; when it's a real streamer, the scene picks it up. Set
-        # `audio = false` per-scene to opt out even when the global is on.
-        scene_audio = None if s.audio is False else audio
-        if is_ensemble and scene_audio is not None:
-            if s.audio is True:
-                log.info(
-                    "[%s] live webcam scene: audio suppressed in "
-                    "ensemble mode (live scenes never hold the audio "
-                    "spotlight)",
-                    name,
-                )
-            scene_audio = None
-        scene = WebcamScene(api, scene_audio, mode, source, cfg.audio, name, color=cfg.color)
-        if s.target_fps is None:
-            # always_fresh: every camera grab differs, so there is no dedup —
-            # a char mode still repaints the whole screen each tick and, with
-            # mic audio on the DAC, contends with the ring writes.
-            fps = _frame_push_default_fps(
-                mode,
-                scene_audio is not None,
-                cfg.ultimate64.system,
-                always_fresh=True,
-            )
-            if fps is not None:
-                scene.target_fps = fps
-    elif s.type == "blank":
-        mode = _build_display_mode(
-            "blank",
-            border=s.border,
-            background=s.background,
-            use_reu_staged=resolve_use_reu_staged(
-                cfg.video.use_reu_staged, "blank", reu_available=reu_available
-            ),
-        )
-        name = s.name or "Blank"
-        scene_audio = None if s.audio is False else audio
-        if is_ensemble and scene_audio is not None:
-            if s.audio is True:
-                log.info(
-                    "[%s] live blank scene: audio suppressed in "
-                    "ensemble mode (live scenes never hold the audio "
-                    "spotlight)",
-                    name,
-                )
-            scene_audio = None
-        scene = BlankScene(api, scene_audio, mode, cfg.audio, name)
-    elif s.type == "video":
-        mode = _display_mode_for_scene(
-            s.display,
-            s,
-            cfg,
-            reu_available=reu_available,
-            backend_supports_reu=backend_supports_reu,
-        )
-        # Default: audio ON for videos (it's part of the file).
-        # The user can mute one with `audio = false`. Distinct name from the
-        # other branches' `scene_audio` because this one may hold the sampler.
-        video_audio: AudioStreamer | UltimateAudioSampler | None = (
-            None if s.audio is False else audio
-        )
-        # Resolve the video-audio backend. On a sampler-capable U64 with the
-        # Ultimate Audio sampler available, swap the shared 4-bit DAC streamer
-        # for a per-scene UltimateAudioSampler (high fidelity, off the C64 bus —
-        # see sampler.py). It satisfies the same scene-facing audio contract
-        # (sample_rate / position_seconds / push_samples / stop), so VideoScene
-        # drives it polymorphically; mic/webcam scenes keep the shared DAC.
-        using_sampler = False
-        if video_audio is not None:
-            backend = resolve_audio_backend(
-                cfg.audio.backend,
-                supports_sampler=api.profile.supports_sampler,
-                sampler_available=sampler_available,
-            )
-            if backend == "sampler":
-                video_audio = UltimateAudioSampler(
-                    api,
-                    sample_rate=cfg.audio.sampler_sample_rate,
-                    bits=cfg.audio.sampler_bits,
-                    ref_clock_hz=cfg.audio.sampler_clock_hz,
-                )
-                using_sampler = True
-        # Bitmap + $D418-DAC tempo compensation. On the host-DMA 4-bit DAC path
-        # over a bitmap mode, heavy REU bank-swap bitmap writes bias the audio
-        # servo and time-stretch playback ~1/s SLOW at correct pitch. Pre-
-        # compress the content by 1/s (audio time-compress + video PTS × s) so it
-        # nets to real time. Gated OFF (tempo_scale 1.0) for the off-bus sampler,
-        # the REU pump, char modes, and muted scenes — none of which stretch.
-        # `using_sampler` False with audio present means the DAC path.
-        tempo_scale = 1.0
-        if (
-            video_audio is not None
-            and not using_sampler
-            and not cfg.audio.use_reu_pump
-            and isinstance(mode, BitmapDisplayMode)
-        ):
-            tempo_scale = (
-                cfg.audio.dac_bitmap_tempo_mhires
-                if isinstance(mode, MultiHiresDisplayMode)
-                else cfg.audio.dac_bitmap_tempo_hires
-            )
-        assert s.file is not None  # narrowed by validate_scene_cfg
-        # A single media URL (YouTube et al.) is resolved here — the ONE
-        # resolution path shared with quick playback — so config-driven videos
-        # accept URLs too. Its t=/start= timestamp folds into start_s (an
-        # explicit start_s wins), and the resolved title becomes the scene name.
-        # Local files / dir / glob / multi specs are untouched.
-        file_spec = s.file
-        start_s = s.start_s
-        video_name = s.name
-        if _is_single_url_spec(s.file):
-            # Deferred: cycle with quickcast (see _validate_video).
-            from .quickcast import resolve_video_url
+    ctx = _SceneBuildContext(
+        s=s,
+        cfg=cfg,
+        api=api,
+        audio=audio,
+        source=source,
+        is_ensemble=is_ensemble,
+        reu_available=reu_available,
+        sampler_available=sampler_available,
+    )
+    scene = _BUILDERS[s.type](ctx)
 
-            stream_url, url_start_s, title = resolve_video_url(s.file.strip())
-            file_spec = stream_url
-            if start_s is None:
-                start_s = url_start_s
-            if video_name is None:
-                video_name = title
-        scene = VideoScene(
-            api,
-            video_audio,
-            mode,
-            file_spec,
-            prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
-            color=cfg.color,
-            start_s=start_s or 0.0,
-            tempo_scale=tempo_scale,
-            loop_audio=cfg.midi_control.loop_audio,
-        )
-        if video_name:
-            scene.name = video_name
-        if s.target_fps is None:
-            # The sampler plays entirely off the C64 bus, so it neither imposes
-            # the 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs
-            # compete with frame uploads for the bus) nor the muted half-rate
-            # cap (its REU-staged frame uploads are bus-clean, not host DMA).
-            # So sampler bitmap video uncaps to the system rate (60/50) — and
-            # because VideoScene dedups, the effective push rate then equals the
-            # source video's fps (24fps clip → 24/s, etc.). DAC video stays 20;
-            # muted bitmap stays 30/25. See _frame_push_default_fps.
-            has_digitized_audio = video_audio is not None and not using_sampler
-            fps = _frame_push_default_fps(
-                mode, has_digitized_audio, cfg.ultimate64.system, off_bus_audio=using_sampler
-            )
-            if fps is not None:
-                scene.target_fps = fps
-    elif s.type == "waveform":
-        # If duration_s is unset AND a songlengths DB is configured, let
-        # the WaveformScene look up the true length. Explicit duration_s
-        # wins over the DB.
-        user_duration = s.duration_s
-        db = _load_songlengths(cfg.playlist.songlengths_file)
-        assert s.file is not None  # narrowed by validate_scene_cfg
-        scene = WaveformScene(
-            api,
-            audio,
-            file=s.file,
-            song=s.song,
-            duration_s=user_duration,
-            target_fps=s.target_fps,
-            system=cfg.ultimate64.system,
-            color_mode=s.color_mode,
-            voice_colors=s.voice_colors or None,
-            waveform_colors=s.waveform_colors or None,
-            time_base=s.time_base,
-            auto_cycles=s.auto_cycles,
-            persistence=s.persistence,
-            scroll_columns=s.scroll_columns,
-            songlengths_db=db,
-            sid_model=resolve_sid_model_cfg(cfg),
-            sid_panning=cfg.ultimate64.sid_panning,
-            sid_volume=cfg.ultimate64.sid_volume,
-        )
-        if s.name:
-            scene.name = s.name
-    elif s.type == "slideshow":
-        display = _resolve_slideshow_display(s.display)
-        mode = _display_mode_for_scene(
-            display, s, cfg, reu_available=reu_available, backend_supports_reu=backend_supports_reu
-        )
-        assert s.file is not None  # narrowed by validate_scene_cfg
-        # Pass the *original* display spec (may be "random") so the scene
-        # can re-resolve at each setup() for fresh variety in single-scene
-        # loops. The build kwargs travel along so the scene can rebuild
-        # without re-plumbing through `scene._cfg`. The REU staging setting
-        # is handed over as the raw tri-state + the probe verdict (not the
-        # resolved bool), so a `display = "random"` rebuild re-decides
-        # staging per concrete mode each setup().
-        scene = SlideshowScene(
-            api,
-            mode,
-            s.file,
-            image_duration_s=s.image_duration_s,
-            display_spec=s.display,
-            palette_mode=s.palette_mode,
-            border=s.border,
-            background=s.background,
-            style=s.style,
-            use_reu_staged=cfg.video.use_reu_staged,
-            double_buffer=cfg.video.double_buffer,
-            reu_available=reu_available,
-            backend_supports_reu=backend_supports_reu,
-            audio_reu_pump_active=audio_reu_pump_active,
-            color=cfg.color,
-            text_double_height=s.text_double_height,
-            aspect_mode=s.aspect_mode,
-        )
-    elif s.type == "generative":
-        gen = build_generator(s.source)
-        name = s.name or f"Generative {s.source}"
-        audio_src: AudioSource
-        if s.audio_source == "sid":
-            # Force host-DMA: the SID player owns the $0314 IRQ for PLAY, so the
-            # display must NOT install the REU bank-swap raster IRQ (it would
-            # collide). The SID drives the chip directly — no DAC streamer, plays
-            # regardless of [audio].enabled, and is NOT subject to the ensemble
-            # live-mic suppression (it legitimately holds the audio spotlight;
-            # wants_audio_lock=True gates the slot). scene_audio stays None.
-            mode = _display_mode_for_scene(s.display, s, cfg, force_host_dma=True)
-            assert s.file is not None  # narrowed by _validate_generative
-            audio_src = SidFileAudioSource(
-                api,
-                s.file,
-                song=s.song,
-                display_mode=mode,
-                system=cfg.ultimate64.system,
-                reactive=s.reactive,
-                sid_model=resolve_sid_model_cfg(cfg),
-                sid_panning=cfg.ultimate64.sid_panning,
-                sid_volume=cfg.ultimate64.sid_volume,
-            )
-            scene = SourceScene(api, None, mode, gen, audio_src, name, color=cfg.color)
-            # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at
-            # full system rate that competes with the SID player's per-frame
-            # PLAY IRQ for the bus. Default such scenes to half-rate (like
-            # WaveformScene) for safety; a char display stays full-rate, and an
-            # explicit target_fps (applied at the end of build_scene) still wins.
-            if s.target_fps is None and mode.is_bitmapped:
-                scene.target_fps = 25.0 if cfg.ultimate64.system.upper() == "PAL" else 30.0
-        else:
-            mode = _display_mode_for_scene(
-                s.display,
-                s,
-                cfg,
-                reu_available=reu_available,
-                backend_supports_reu=backend_supports_reu,
-            )
-            if s.audio_source == "listen":
-                # Listen-only: analyze the live input for reactive visuals with
-                # NO C64 audio output. It drives neither the DAC nor the SID, so
-                # it is never ensemble-suppressed and ignores the per-scene
-                # `audio` DAC toggle — it just needs the shared streamer to own
-                # the input + analysis sink. The SourceScene gets no DAC audio
-                # (None): the analyzer taps pre-DSP, so per-scene pre-emphasis is
-                # irrelevant, and there is no DAC stream to frame-cap against.
-                if audio is not None and s.reactive:
-                    audio_src = MicAudioSource(
-                        audio,
-                        cfg.audio,
-                        display_mode=mode,
-                        reactive=True,
-                        listen_only=True,
-                        features_cfg=cfg.audio_features,
-                    )
-                else:
-                    # No streamer ([audio] off) or reactive = false → silence.
-                    audio_src = NullAudioSource()
-                scene = SourceScene(api, None, mode, gen, audio_src, name, color=cfg.color)
-            else:
-                # mic / none: the live-frame audio path. Like webcam/blank, a live
-                # mic source is suppressed in ensemble mode.
-                scene_audio = None if s.audio is False else audio
-                if is_ensemble and scene_audio is not None:
-                    if s.audio is True:
-                        log.info(
-                            "[%s] generative scene: audio suppressed in ensemble mode "
-                            "(live scenes never hold the audio spotlight)",
-                            name,
-                        )
-                    scene_audio = None
-                file_audio_src: AudioFileSource | None = None
-                # The audio object the SourceScene carries as its base `.audio`
-                # (the set_pre_emphasis hook + overlay sample tap). Defaults to
-                # the shared 4-bit DAC streamer; the file path may swap it for a
-                # per-scene off-bus sampler (below), so it must widen to either.
-                scene_base_audio: AudioStreamer | UltimateAudioSampler | None = scene_audio
-                # True when the file path decodes into the Ultimate Audio sampler
-                # rather than the $D418 DAC — lifts the DAC bitmap fps caps.
-                file_uses_sampler = False
-                if s.audio_source == "mic" and scene_audio is not None:
-                    audio_src = MicAudioSource(
-                        scene_audio,
-                        cfg.audio,
-                        display_mode=mode,
-                        reactive=s.reactive,
-                        features_cfg=cfg.audio_features,
-                    )
-                elif s.audio_source == "file" and scene_audio is not None:
-                    # Decode a music file to the C64's audio AND analyze it — the
-                    # same analyzer the mic path uses, sourced from a file.
-                    # Resolve the backend exactly like a video scene: on a
-                    # sampler-capable U64 with the Ultimate Audio sampler
-                    # available (backend = auto/sampler), decode into the off-bus
-                    # 16-bit sampler instead of the 4-bit $D418 DAC. The DAC path
-                    # is intrinsically staticky here — its NMI service is jittered
-                    # by every host-DMA RAM write and it quantizes to ~6-7 bits —
-                    # so a decoded track is barely recognizable regardless of
-                    # display mode (HW-measured 2026-07-24); the sampler is immune
-                    # (no $D418/NMI/CPU). Falls back to the DAC on TeensyROM, when
-                    # the sampler is unavailable, or backend = "dac".
-                    assert s.file is not None  # narrowed by _validate_generative
-                    file_audio_obj: AudioStreamer | UltimateAudioSampler = scene_audio
-                    file_backend = resolve_audio_backend(
-                        cfg.audio.backend,
-                        supports_sampler=api.profile.supports_sampler,
-                        sampler_available=sampler_available,
-                    )
-                    if file_backend == "sampler":
-                        file_audio_obj = UltimateAudioSampler(
-                            api,
-                            sample_rate=cfg.audio.sampler_sample_rate,
-                            bits=cfg.audio.sampler_bits,
-                            ref_clock_hz=cfg.audio.sampler_clock_hz,
-                        )
-                        file_uses_sampler = True
-                    scene_base_audio = file_audio_obj
-                    file_audio_src = AudioFileSource(
-                        file_audio_obj,
-                        s.file,
-                        reactive=s.reactive,
-                        features_cfg=cfg.audio_features,
-                    )
-                    audio_src = file_audio_src
-                else:
-                    # "none", or "mic"/"file" with audio disabled → silence.
-                    audio_src = NullAudioSource()
-                scene = SourceScene(
-                    api, scene_base_audio, mode, gen, audio_src, name, color=cfg.color
-                )
-                # Size a file-audio scene to the track so `c64cast tune.mp3` plays
-                # the whole song then advances/loops (an explicit duration_s still
-                # wins, applied in the duration-resolution block below).
-                if (
-                    file_audio_src is not None
-                    and s.duration_s is None
-                    and file_audio_src.duration_s
-                ):
-                    scene.duration_s = file_audio_src.duration_s
-                # A mic/file-source generative scene is digitized-audio-capable
-                # like webcam/video, so a bitmap display caps its frame push:
-                # 20 fps while the 4-bit DAC streams (its NMI + ring DMAWRITEs
-                # compete with frame uploads), half the system rate (30/25)
-                # otherwise. The off-bus sampler frees the *audio* from the bus,
-                # but NOT the video: a generative source renders a fresh frame
-                # every tick (no VideoScene-style dedup), so uncapping to the
-                # system rate would push 60 real mhires frames/s of REU bank-swap
-                # traffic — which starves the sampler's own REU writes (audible
-                # static) and overloads the bus (C64-side visual crash, HW
-                # 2026-07-24). So a sampler-routed file scene keeps the muted
-                # 30/25 bitmap cap: off-bus audio, no on-bus digi, no uncap. The
-                # "none" source drives no audio, so it keeps the playlist default.
-                #
-                # That same no-dedup property (always_fresh) is why the DAC's
-                # 20 fps cap now applies in CHAR modes too, not just bitmap ones
-                # — a 60 fps mcm generative scene repaints screen + color RAM
-                # every tick over the socket the audio ring shares. Sampler-
-                # routed audio is off-bus and keeps the high default.
-                if s.target_fps is None and s.audio_source in ("mic", "file"):
-                    fps = _frame_push_default_fps(
-                        mode,
-                        scene_audio is not None and not file_uses_sampler,
-                        cfg.ultimate64.system,
-                        always_fresh=True,
-                    )
-                    if fps is not None:
-                        scene.target_fps = fps
-    elif s.type == "wled":
-        # A network pixel sink: the frame arrives over UDP, no audio, no SID.
-        # It's just another FrameSource behind the SourceScene seam — the
-        # display mode quantizes the received BGR frame to the C64 unchanged.
-        mode = _display_mode_for_scene(
-            s.display,
-            s,
-            cfg,
-            reu_available=reu_available,
-            backend_supports_reu=backend_supports_reu,
-        )
-        wled_source = WLEDSource(s.sink_width, s.sink_height)
-        name = s.name or "WLED sink"
-        scene = SourceScene(api, None, mode, wled_source, NullAudioSource(), name, color=cfg.color)
-        # Bitmap displays push a full ~9-10 KB frame per update; default to
-        # half rate like the other frame scenes (an explicit target_fps, applied
-        # at the end of build_scene, still wins).
-        if s.target_fps is None and mode.is_bitmapped:
-            scene.target_fps = 25.0 if cfg.ultimate64.system.upper() == "PAL" else 30.0
-    elif s.type == "launcher":
-        assert s.file is not None  # narrowed by validate_scene_cfg
-        # No audio streamer: the launched program drives the real SID
-        # directly. No display mode / overlays: it owns the VIC.
-        scene = LauncherScene(
-            api,
-            s.file,
-            input_source=s.input_source,
-            reset_before_launch=s.reset_before_launch,
-            min_duration_s=s.min_duration_s,
-            max_duration_s=(math.inf if s.max_duration_s is None else s.max_duration_s),
-            bypass_audio_lock=s.bypass_audio_lock,
-            name=s.name,
-        )
-    elif s.type == "midi":
-        a, d, sus, r = s.midi_adsr
-        scene = MidiScene(
-            api,
-            audio,
-            port=s.midi_port,
-            waveform=s.midi_waveform,
-            voice_waveforms=s.midi_voice_waveforms or None,
-            voice_mode=s.midi_voice_mode,
-            voice_channels=s.midi_voice_channels or None,
-            program_change=s.midi_program_change,
-            adsr=(a, d, sus, r),
-            pulse_width=s.midi_pulse_width,
-            filter_cutoff=s.midi_filter_cutoff,
-            filter_resonance=s.midi_filter_resonance,
-            filter_mode=s.midi_filter_mode,
-            master_volume=s.midi_master_volume,
-            voice_colors=s.voice_colors or None,
-            color_mode=s.color_mode,
-            waveform_colors=s.waveform_colors or None,
-            time_base=s.time_base,
-            auto_cycles=s.auto_cycles,
-            persistence=s.persistence,
-            scroll_columns=s.scroll_columns,
-            target_fps=s.target_fps,
-            system=cfg.ultimate64.system,
-            name=s.name or "MIDI",
-        )
-    else:  # s.type == "asid" (validator already rejected unknown types)
-        scene = AsidScene(
-            api,
-            audio,
-            port=s.asid_port,
-            voice_colors=s.voice_colors or None,
-            color_mode=s.color_mode,
-            waveform_colors=s.waveform_colors or None,
-            time_base=s.time_base,
-            auto_cycles=s.auto_cycles,
-            persistence=s.persistence,
-            scroll_columns=s.scroll_columns,
-            target_fps=s.target_fps,
-            system=cfg.ultimate64.system,
-            multi_sid=s.asid_multi_sid,
-            max_sids=s.asid_max_sids,
-            buffered_player=s.asid_buffered_player,
-            sid_panning=cfg.ultimate64.sid_panning,
-            sid_volume=cfg.ultimate64.sid_volume,
-            name=s.name or "ASID",
-        )
     # Duration resolution. `scene.duration_s = math.inf` means "run until
     # stopped" (the scene never auto-advances).
     #   * explicit duration_s == 0 → the "run forever" sentinel (any type);
