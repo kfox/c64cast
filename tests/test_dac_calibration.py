@@ -631,6 +631,100 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         self.assertEqual(table, MAHONEY_ULTISID)
 
 
+class CrossBackendSocketSelectionTest(DataDirIsolated):
+    """A multi-socket calibration measured on the Ultimate and replayed over a
+    link with no SID config query — the cross-backend reuse
+    ``dac_calibration_profile`` is documented to support (one machine, two
+    links: a TeensyROM+ cartridge plugged into a U64)."""
+
+    def _tr(self) -> tuple[Config, FakeAPI]:
+        cfg = _tr_serial_cfg()
+        cfg.audio.dac_calibration_profile = "shared"
+        return cfg, FakeAPI()  # profile.supports_config False, like the real TR
+
+    def _save(self, cfg, be, entries, d400=None) -> Path:
+        return dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), entries, {}, d400)
+
+    def test_a_two_socket_file_is_not_discarded_by_a_link_that_cannot_ask(self):
+        # The regression: "can't read who owns $D400" was treated as the same
+        # answer as "an UltiSID owns it", so a good file resolved to nothing and
+        # playback silently dropped to the 4-bit linear DAC.
+        cfg, be = self._tr()
+        self._save(cfg, be, {"1": _result(1), "2": _result(2)})
+        with self.assertLogs("c64cast.dac_calibration", level="WARNING"):
+            label, table = dc.resolve_dac_curve_for_backend(cfg, be=be)
+        self.assertTrue(label.startswith("calibrated:"))
+        self.assertEqual(table, bytes([1] * 256))
+
+    def test_the_assumed_socket_is_stated_and_says_how_to_make_it_certain(self):
+        cfg, be = self._tr()
+        self._save(cfg, be, {"1": _result(1), "2": _result(2)})
+        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
+            dc.load_calibrated_table(cfg, be=be)
+        joined = "\n".join(cm.output)
+        self.assertIn("socket 1", joined)
+        self.assertIn("--calibrate-dac", joined)
+
+    def test_the_recorded_owner_wins_over_the_assumption(self):
+        cfg, be = self._tr()
+        self._save(cfg, be, {"1": _result(1), "2": _result(2)}, d400=2)
+        with self.assertNoLogs("c64cast.dac_calibration", level="WARNING"):
+            table = dc.load_calibrated_table(cfg, be=be)
+        self.assertEqual(table, bytes([2] * 256))
+
+    def test_a_file_holding_no_table_for_the_recorded_owner_applies_none(self):
+        # Socket 2 answers $D400 but only socket 1 was tabled: the one entry
+        # present is the *other* chip, so no table here is the right one.
+        cfg, be = self._tr()
+        self._save(cfg, be, {"1": _result(1)}, d400=2)
+        self.assertIsNone(dc.load_calibrated_table(cfg, be=be))
+
+    def test_a_single_socket_file_still_loads_without_an_assumption(self):
+        cfg, be = self._tr()
+        self._save(cfg, be, {"1": _result(1)})
+        with self.assertNoLogs("c64cast.dac_calibration", level="WARNING"):
+            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes([1] * 256))
+
+    def test_the_ultimate_still_refuses_a_physical_table_when_an_ultisid_owns_d400(self):
+        # The live answer stays authoritative, including its None. Guarding this
+        # because the "unknown" path added beside it must not become a way for a
+        # physical-chip table to reach an emulated core.
+        cfg = _u64_cfg()
+        api = _ultimate_fake()
+        api.config_store[CAT_ADDRESSING] = {
+            "SID Socket 1 Address": "$D420",
+            "UltiSID 1 Address": "$D400",
+        }
+        api.config_store[CAT_SOCKETS] = {
+            "SID Socket 1": "Enabled",
+            "SID Detected Socket 1": "6581",
+        }
+        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, api), {"1": _result(1)}, {})
+        self.assertIsNone(dc.load_calibrated_table(cfg, be=api))
+
+    def test_offline_selection_is_unchanged(self):
+        # be=None can't confirm the identity key either; --doctor reports that
+        # separately, so an offline miss must stay a miss rather than acquiring
+        # an assumption of its own.
+        cfg = _u64_cfg()
+        dc.save_calibration(
+            cfg, dc.resolve_calibration_key(cfg), {"1": _result(1), "2": _result(2)}, {}
+        )
+        self.assertIsNone(dc.load_calibrated_table(cfg))
+
+    def test_the_owner_is_recorded_in_the_file(self):
+        cfg = _u64_cfg()
+        path = self._save(cfg, None, {"1": _result(1), "2": _result(2)}, d400=2)
+        self.assertEqual(json.loads(path.read_text())["d400_socket"], 2)
+
+    def test_a_run_that_could_not_read_the_owner_writes_no_claim(self):
+        # Absent, not null: an older file and a link that can't ask are the same
+        # state, and both have to read back as "unknown".
+        cfg = _u64_cfg()
+        path = self._save(cfg, None, {"1": _result(1)})
+        self.assertNotIn("d400_socket", json.loads(path.read_text()))
+
+
 class SlotRingLayoutTest(unittest.TestCase):
     def test_ring_is_sync_gap_then_code_ref_pairs(self):
         ring = np.frombuffer(dc.build_slot_ring([0x0F, 0x37], RING), dtype=np.uint8)

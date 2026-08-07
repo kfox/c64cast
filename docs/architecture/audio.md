@@ -390,11 +390,21 @@ Two things have to happen *after* each routing change, not once at bring-up, and
 
 Both failures present identically — a capture at the noise floor, which reads as a broken capture rig rather than as the routing problem it is. This is purely config-driven, no U64-vs-U2+ model check: a U2+ with one socket + one UltiSID core measures just that socket; a bare-UltiSID board or a backend with no config API (TeensyROM) falls back to one unlabeled measurement of whatever SID currently answers `$D400`.
 
+#### Which of those entries applies at playback
+
+Every socket is measured *at* `$D400` — that is what isolation does — so the entry keys alone cannot say which chip a machine reaches there when it is running normally. `_select_sid_entry` answers that per run, and the three cases are genuinely different:
+
+* **The Ultimate, live** — `_active_socket_at_d400` reads the socket map, and its answer is authoritative *including* its `None`: nothing physical owns `$D400`, an UltiSID core does, and a physical-chip table must not be applied there.
+* **A link with no SID config query** (TeensyROM+) — ownership cannot be read back at all. This is "unknown", **not** the "an UltiSID owns it" above. Collapsing the two is what made a perfectly good two-socket file resolve to nothing, dropping playback to the 4-bit linear path on exactly the cross-backend reuse `[audio].dac_calibration_profile` exists for: measure over the Ultimate, replay over a TeensyROM+ cartridge sitting in the same machine. So a file that records the mapping is believed, and one that doesn't falls back to socket 1 (the default mapping) with a warning that says the assumption out loud and how to retire it.
+* **Offline** (`be=None`, `--doctor --skip-probe`) — the identity key isn't confirmable either, so a miss stays a miss and no assumption is acquired; `--doctor` reports that hedge separately (see "Why the offline check hedges").
+
+The mapping itself is what `d400_socket` records, and it has to be read *before* the socket loop: `_isolate_socket` remaps each socket to `$D400` in turn, so asking afterwards answers with c64cast's own edit rather than the machine's real configuration. A file that records it needs no assumption, which is what makes this self-healing — one re-measure over the Ultimate and the warning stops. If the file records a socket it holds no table for, nothing in it applies: falling through to "the only entry present" would hand over the *other* chip's ladder, which is the mismatch the whole selection exists to prevent.
+
 #### The calibration file
 
 It lives under `paths.calibration_dir()` — the canonical `<data root>/calibration/dac/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)). It is machine-specific captured data, never committed; a `.gitignore` entry only guards against an accidental commit if a dev points `$C64CAST_DATA_DIR` at the checkout. Writes go through `transport.atomic_write_text`.
 
-Schema 2 holds one 256-entry sidtable per measured SID, keyed `"1"`/`"2"` by socket number, or `"default"` for the single-measurement fallback, plus a `"device"` provenance block.
+Schema 2 holds one 256-entry sidtable per measured SID, keyed `"1"`/`"2"` by socket number, or `"default"` for the single-measurement fallback, plus a `"device"` provenance block and — when the measuring link could read it — a top-level `"d400_socket"` naming the socket that answered `$D400` before isolation began. That key is written the same additive way as `raw_signed_levels` below: absent, never null, so an older file and a link that could not ask read back as the same "unknown" state.
 
 Each entry also carries `raw_signed_levels` — the per-code `[code, level]` pairs the ladder was folded from. This is written **additively under the same schema version**: `load_calibrated_table` only ever requires `sidtable`, so older files keep loading and new files stay readable by older code. A version bump would orphan every calibration on disk for no reader-visible gain. It is a distinct key from the `raw_levels` some files on disk carry — those hold two-reference `[code, p, q]` triples, a different measurement rather than a different encoding of this one.
 
