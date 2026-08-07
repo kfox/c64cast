@@ -23,14 +23,34 @@ the version and stamps it with the date.
   second SID that cannot have caused it. Marginal rings say which kind they are
   as they are measured.
 - **A run whose rings are individually fine but collectively marginal now says
-  so.** Rings sitting under the trust gate still add up to a table worth
-  re-measuring: one such run produced a table that disagreed with the same chip
-  measured cleanly by 18% RMS, where two clean runs of that chip agree to 0.12%.
-  The table is still written; the run now reports how many rings cleared the
-  healthy band and the worst of them.
+  so.** Rings sitting under the trust gate still add up: measured on one chip an
+  hour apart, a run with a single marginal ring reproduced at corr 0.9994 / 0.78%
+  RMS where a run with none managed corr 1.0000 / 0.00%. The table is still
+  written; the run now reports how many rings cleared the healthy band and the
+  worst of them, and the count is persisted with the metrics.
 
 ### Fixed
 
+- **`--calibrate-dac` averaged glitched readings into the table, and later
+  refused good runs because of them.** Individual capture slots occasionally read
+  far off on one pass: across every refused capture kept for diagnosis, 1-6 codes
+  out of ~86 glitched while the rest agreed to 0.004%. Those readings were folded
+  into the affected code's level, and a wrong ladder entry is signal-correlated
+  distortion — clean over a quiet passage, gross hiss once the material gets
+  loud. Levels are now the median across passes, which discards the outlier
+  outright, and the trust gate reads a 95th percentile instead of the worst
+  single slot, so one transient no longer fails a ring that is otherwise perfect.
+  Measured effect: a table measured over TeensyROM+ and one measured over the
+  Ultimate, of the same 6581, went from agreeing at corr 0.844 / 18% RMS to
+  **corr 1.0000 / 0.12%** — the figure two clean runs of one chip reproduce at.
+  The link was never the variable.
+- **A calibration profile named by a bare name could not refer to an existing
+  file.** `--calibrate-dac` writes device-keyed names (`ultimate-<unique-id>`), but
+  naming one of those in `[audio].dac_calibration_profile` resolved to
+  `profile-ultimate-<unique-id>` and matched nothing — the obvious thing to type,
+  since it is what is on disk. A name matching an existing file now wins; a name
+  with no such file still gets the `profile-` prefix so new profiles file
+  themselves as before.
 - **A refused calibration capture is no longer discarded.** It is the only
   evidence for its own refusal, and repeating it costs a ~50 s hardware run that
   may not fault the same way. Refused captures are now written to
@@ -52,12 +72,14 @@ the version and stamps it with the date.
   file on every later run. Like any wrong ladder it is signal-correlated
   distortion: clean over a quiet passage, gross hiss once the material gets loud,
   so it presents as playback breaking partway in rather than as a bad
-  calibration. Captures above 0.5% are now refused, with a message that says the
-  input is right and asks what else is reaching that output; rings above 0.2% are
-  marked marginal as they are measured. This is a check on the data, not on any
-  particular link — a rig that reads in the healthy band is unaffected however it
-  connects. **If a calibration of yours logged pass spreads near or above 1%,
-  re-measure it** — or delete it and let `"auto"` fall back.
+  calibration. Captures whose passes disagree broadly are now refused, with a
+  message that says the input is right and asks what else is reaching that
+  output; rings above 0.2% are marked marginal as they are measured. This is a
+  check on the data, not on any particular link — a rig that reads in the healthy
+  band is unaffected however it connects. **If a calibration of yours logged pass
+  spreads near or above 1%, re-measure it** — or delete it and let `"auto"` fall
+  back. (The gate this shipped with read the worst single slot, which refused
+  good runs; see the slot-glitch entry under Fixed for what it reads now.)
 - **A calibration measured over a link with no SID config API no longer applies
   itself silently.** Only the Ultimate can report which SID answers `$D400`, so
   every other link measures whatever is there and files it under one key. That is

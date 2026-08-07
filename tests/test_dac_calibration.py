@@ -175,6 +175,44 @@ class ResolveKeyTest(unittest.TestCase):
         cfg.audio.dac_calibration_profile = "breadbin"
         self.assertEqual(dc.resolve_calibration_key(cfg), "profile-breadbin")
 
+    def test_a_bare_name_matching_an_existing_file_is_not_re_prefixed(self):
+        """The auto-keyed files --calibrate-dac writes are named for the device
+        ("ultimate-<unique-id>"), not "profile-…". Naming one of those — the
+        obvious thing to type, since it is what is on disk — resolved to
+        "profile-ultimate-<unique-id>" and matched nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
+                d = Path(tmp) / "calibration" / "dac"
+                d.mkdir(parents=True)
+                (d / "ultimate-DEV123.json").write_text("{}")
+                cfg = _tr_serial_cfg()
+                cfg.audio.dac_calibration_profile = "ultimate-DEV123"
+                self.assertEqual(dc.resolve_calibration_key(cfg), "ultimate-DEV123")
+                self.assertEqual(dc.calibration_path(cfg), d / "ultimate-DEV123.json")
+
+    def test_a_bare_name_still_prefixes_when_no_such_file_exists(self):
+        """A run calibrating *under* a new profile name must keep writing
+        profile-<name>.json, or every fresh profile would file itself under the
+        unprefixed spelling."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
+                cfg = _tr_serial_cfg()
+                cfg.audio.dac_calibration_profile = "breadbin"
+                self.assertEqual(dc.resolve_calibration_key(cfg), "profile-breadbin")
+
+    def test_a_prefixed_file_wins_over_an_unprefixed_one(self):
+        """Both spellings on disk is ambiguous; the profile spelling is the one
+        the flag has always meant, so it keeps precedence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
+                d = Path(tmp) / "calibration" / "dac"
+                d.mkdir(parents=True)
+                (d / "profile-x.json").write_text("{}")
+                (d / "x.json").write_text("{}")
+                cfg = _tr_serial_cfg()
+                cfg.audio.dac_calibration_profile = "x"
+                self.assertEqual(dc.resolve_calibration_key(cfg), "profile-x")
+
     def test_profile_naming_a_file_is_used_as_a_path(self):
         # A path is the only way to point one backend's run at a calibration
         # filed under another's device identity (a TR+ in a U64's cart port
@@ -735,7 +773,7 @@ class RingCaptureGateTest(unittest.TestCase):
         bad = dc.SlotLevels(
             levels=np.full(41, 1e-5),
             per_pass=np.zeros((2, 41)),
-            diagnostics={"pass_spread_frac": 1.0008, "passes": 2},
+            diagnostics={"pass_spread_frac": 1.0008, "pass_spread_p95_frac": 1.0008, "passes": 2},
         )
         with patch.object(dc, "extract_slot_levels", return_value=bad):
             with self.assertRaises(dc.MeasurementError) as ctx:
@@ -752,7 +790,7 @@ class RingCaptureGateTest(unittest.TestCase):
         wobbly = dc.SlotLevels(
             levels=np.linspace(-0.5, 0.5, 41),
             per_pass=np.zeros((3, 41)),
-            diagnostics={"pass_spread_frac": 0.0185, "passes": 3},
+            diagnostics={"pass_spread_frac": 0.0185, "pass_spread_p95_frac": 0.0185, "passes": 3},
         )
         with patch.object(dc, "extract_slot_levels", return_value=wobbly):
             with self.assertRaises(dc.UnsteadyRingError) as ctx:
@@ -771,7 +809,11 @@ class RingCaptureGateTest(unittest.TestCase):
         that is already correct."""
         msg = dc._unsteady_ring_message(
             "its ring passes disagree by 1.85%",
-            {"pass_spread_frac": 0.0185, "pass_residual_frac": 0.016, "pass_gain_span_frac": 0.01},
+            {
+                "pass_spread_p95_frac": 0.0185,
+                "pass_residual_frac": 0.016,
+                "pass_gain_span_frac": 0.01,
+            },
             None,
         )
         self.assertIn("input is right", msg)
@@ -789,7 +831,7 @@ class RingCaptureGateTest(unittest.TestCase):
         msg = dc._unsteady_ring_message(
             "its ring passes disagree by 1.30%",
             {
-                "pass_spread_frac": 0.013,
+                "pass_spread_p95_frac": 0.013,
                 "pass_residual_frac": 0.0004,
                 "pass_gain_span_frac": 0.07,
                 "pass_gains": [0.978, 1.000, 1.022],
@@ -832,6 +874,41 @@ class RingCaptureGateTest(unittest.TestCase):
         """The summary only earns its place by being absent on a healthy run."""
         self.assertIsNone(dc._marginal_run_summary([0.0003, 0.0011, 0.0002], "SID"))
 
+    def test_one_glitched_slot_does_not_fail_an_otherwise_perfect_ring(self):
+        """The regression. Individual slots glitch: on every refused capture
+        examined, 1-6 codes out of ~86 read far off on exactly one pass while the
+        rest agreed to 0.004%. Gating on the max over codes turned that single
+        transient into a failed run, on both links."""
+        levels = np.linspace(-0.5, 0.5, 41)
+        pp = np.tile(levels, (3, 1))
+        pp[2, 16] += 0.25  # one slot, one pass — a glitch, not an unsteady ring
+        scale = float(np.max(np.abs(np.median(pp, axis=0))))
+        p95 = float(np.percentile(pp.std(axis=0), 95)) / scale
+        worst = float(np.max(pp.std(axis=0))) / scale
+        self.assertGreater(worst, dc.RING_TRUST_MAX_SPREAD)  # the old gate refused it
+        self.assertLess(p95, dc.RING_TRUST_MAX_SPREAD)  # the robust one does not
+
+    def test_a_glitched_slot_is_discarded_rather_than_averaged_in(self):
+        """A mean folds the outlier into that code's level and the error survives
+        into the ladder, which is what a wrong entry sounds like. With three
+        passes the median discards it outright."""
+        pp = np.tile(np.linspace(-0.5, 0.5, 41), (3, 1))
+        pp[2, 16] += 0.25
+        self.assertAlmostEqual(float(np.median(pp, axis=0)[16]), float(pp[0, 16]), places=9)
+        self.assertGreater(abs(float(pp.mean(axis=0)[16]) - float(pp[0, 16])), 0.08)
+
+    def test_a_ring_where_every_code_moves_is_still_refused(self):
+        """The robust statistic must not be a way through for a ring that really
+        is not replaying: that moves every code, so it moves the 95th percentile
+        too."""
+        rng = np.random.default_rng(5)
+        levels = np.linspace(-0.5, 0.5, 41)
+        pp = levels + rng.normal(0, 0.02, (3, 41))
+        scale = float(np.max(np.abs(np.median(pp, axis=0))))
+        self.assertGreater(
+            float(np.percentile(pp.std(axis=0), 95)) / scale, dc.RING_TRUST_MAX_SPREAD
+        )
+
     def test_the_refused_capture_is_saved_for_diagnosis(self):
         """A refused capture is the only evidence for the refusal, and repeating
         it costs a hardware run that may not reproduce the fault. Twice a
@@ -867,7 +944,7 @@ class RingCaptureGateTest(unittest.TestCase):
         fine = dc.SlotLevels(
             levels=np.linspace(-0.5, 0.5, 41),
             per_pass=np.zeros((3, 41)),
-            diagnostics={"pass_spread_frac": 0.002, "passes": 3},
+            diagnostics={"pass_spread_frac": 0.002, "pass_spread_p95_frac": 0.002, "passes": 3},
         )
         with patch.object(dc, "extract_slot_levels", return_value=fine):
             self.assertIs(dc.read_ring_capture(cap, 41, RING), fine)

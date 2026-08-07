@@ -43,11 +43,11 @@ without one) measures with whatever else you left audible mixed into the result
 idling into the same output. Mute the other sources in the machine's own
 settings before you calibrate, and put them back afterwards.
 
-This is worth doing on its own merits; it is *not* a known cause of a failed
-calibration. On the two-SID rig where this was investigated, muting everything
-else by hand did not stop `--calibrate-dac` from intermittently refusing a ring,
-and the cause of that refusal is still unknown. If a calibration is refused, the
-message says which kind of unsteadiness it saw and where it saved the capture.
+This is worth doing on its own merits; it is *not* what caused the refused
+calibrations investigated on a two-SID rig — those turned out to be individual
+capture slots glitching, which are now discarded rather than averaged into the
+table. If a calibration is still refused, the message says what it saw and where
+it saved the capture.
 
 ## High-fidelity video audio: the Ultimate Audio FPGA sampler (U64)
 
