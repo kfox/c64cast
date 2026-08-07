@@ -411,7 +411,7 @@ class BackendTest(unittest.TestCase):
         for _ in range(7):
             t.queue_token(TOK_ACK)
         t.queue_token(TOK_ACK)  # CURLIN probe read
-        t.queue_raw(b"\x14")  # ...executing line 20 -> already in the GOTO loop
+        t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20 -> already in the GOTO loop
         t.queue_token(TOK_ACK)
         b.run_basic_clear_loop()
         sent = bytes(t.sent)
@@ -439,11 +439,11 @@ class BackendTest(unittest.TestCase):
         for _ in range(7):
             t.queue_token(TOK_ACK)  # delete+post (5) + launch (2)
         t.queue_token(TOK_ACK)  # CURLIN probe read
-        t.queue_raw(b"\xff")  # ...direct mode -> BASIC is at READY
+        t.queue_raw(b"\x00\x00")  # ...CURLIN $0000 -> BASIC is at READY
         for _ in range(4):
             t.queue_token(TOK_ACK)  # program body, VARTAB, KEYD, NDX
         t.queue_token(TOK_ACK)  # CURLIN re-probe read
-        t.queue_raw(b"\x14")  # ...executing line 20: the loop is running
+        t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20: the loop is running
         t.queue_token(TOK_ACK)  # screen clear
         with mock.patch.object(tr_api.time, "sleep"):
             b.run_basic_clear_loop()
@@ -462,13 +462,40 @@ class BackendTest(unittest.TestCase):
         for _ in range(7):
             t.queue_token(TOK_ACK)
         t.queue_token(TOK_ACK)  # CURLIN probe read
-        t.queue_raw(b"\x14")  # ...executing line 20 -> already looping
+        t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20 -> already looping
         t.queue_token(TOK_ACK)
         with mock.patch.object(tr_api.time, "sleep"):
             b.run_basic_clear_loop()
         sent = bytes(t.sent)
         self.assertNotIn(b"RUN\r", sent)
         self.assertNotIn(b"\x64\xfb\x02\x77", sent)  # nothing typed into KEYD
+
+    def test_basic_is_at_ready_reads_curlin(self):
+        # HW-measured on a TeensyROM+, both states captured off the same machine:
+        # at the READY prompt CURLIN reads $0000, and running the clear loop it
+        # reads $0014 (line 20). The widely-repeated "$FF in the high byte means
+        # direct mode" shorthand did NOT hold here, and testing for it matched
+        # neither state — which made every probe answer "running", so the repair
+        # was skipped and the cursor blinked. Accept both spellings of "no line".
+        for hi, lo, expected in (
+            (0x00, 0x00, True),  # measured at READY
+            (0x00, 0x14, False),  # measured running the clear loop, line 20
+            (0xFF, 0x00, True),  # the documented direct-mode marker
+            (0xFF, 0xFF, True),
+            (0x00, 0x0A, False),  # any other real line number
+        ):
+            with self.subTest(curlin=f"${hi:02X}{lo:02X}"):
+                b, t = self._backend(read=True)
+                t.queue_token(TOK_ACK)
+                t.queue_raw(bytes([lo, hi]))
+                self.assertIs(b._basic_is_at_ready(), expected)
+
+    def test_basic_is_at_ready_is_none_when_unreadable(self):
+        # An unreadable probe must not be mistaken for either state — the caller
+        # skips the repair rather than typing RUN into an unknown machine.
+        b, t = self._backend(read=True)
+        t.queue_token(TOK_FAIL)
+        self.assertIsNone(b._basic_is_at_ready())
 
     def test_bring_up_drains_the_loaders_console_text_before_probing(self):
         # LaunchFile acks and *then* streams its own console text back over the
@@ -483,11 +510,11 @@ class BackendTest(unittest.TestCase):
         for _ in range(7):
             t.queue_token(TOK_ACK)
         t.queue_token(TOK_ACK)  # CURLIN probe read
-        t.queue_raw(b"\xff")  # ...direct mode -> BASIC is at READY, repair fires
+        t.queue_raw(b"\x00\x00")  # ...CURLIN $0000 -> BASIC is at READY, repair fires
         for _ in range(4):
             t.queue_token(TOK_ACK)  # program body, VARTAB, KEYD, NDX
         t.queue_token(TOK_ACK)  # CURLIN re-probe read
-        t.queue_raw(b"\x14")  # ...line 20: the loop is running
+        t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20: the loop is running
         t.queue_token(TOK_ACK)  # screen clear
         with mock.patch.object(tr_api.time, "sleep"):
             b.run_basic_clear_loop()
@@ -545,7 +572,7 @@ class BackendTest(unittest.TestCase):
         for _ in range(2):
             t.queue_token(TOK_ACK)  # launch open/body
         t.queue_token(TOK_ACK)  # CURLIN probe read
-        t.queue_raw(b"\x14")  # ...line 20 -> the loop is running, no repair needed
+        t.queue_raw(b"\x14\x00")  # ...line 20 -> loop running, no repair needed
         t.queue_token(TOK_ACK)  # screen clear
         b.run_basic_clear_loop()
         self.assertIn(b"\x64\x44", bytes(t.sent))  # launch still happened
