@@ -88,7 +88,7 @@ from .sidemu import ACCUMULATOR_RANGE, SIDEmulator, primary_waveform
 # The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
 # helpers, VIC hires bring-up, and the per-voice render paths) lives in
 # voice_scope.py so MidiScene can share it. Several names are re-exported
-# (imported-unused here) because config._validate_waveform + tests/test_waveform
+# (imported-unused here) because scene_factory._validate_waveform + tests/test_waveform
 # import them from this module historically.
 from .voice_scope import (
     _PERSISTENCE_RANDOM_CHOICES,  # noqa: F401  (re-exported)
@@ -351,7 +351,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     _render_hires(). Defaults match the redraw-from-scratch
                     wallclock-locked behavior of the prior implementation.
         """
-        from .config import SID_EXTS, resolve_file_spec
+        from .scene_factory import SID_EXTS, resolve_file_spec
         # Knob validation (color_mode/time_base/auto_cycles/persistence/
         # scroll_columns) now lives in VoiceScopeRenderer._init_scope_knobs,
         # called below after the file load + super().__init__.
@@ -504,7 +504,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _resolve_candidates(self) -> list[str]:
         """Re-resolve the spec at setup time so directory contents can
         change between iterations (newly dropped SIDs are picked up)."""
-        from .config import SID_EXTS, resolve_file_spec
+        from .scene_factory import SID_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, SID_EXTS, label="waveform")
 

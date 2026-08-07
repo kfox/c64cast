@@ -161,7 +161,7 @@ class Playlist:
             getattr(getattr(config, "wled", None), "broadcast_tempo_fallback", False)
         )
         if config is not None:
-            from .config import resolve_wled_broadcast
+            from .scene_factory import resolve_wled_broadcast
 
             broadcast_on, broadcast_host, broadcast_port = resolve_wled_broadcast(config)
             if broadcast_on:

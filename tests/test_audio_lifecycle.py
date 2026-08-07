@@ -695,7 +695,8 @@ class NmiRateSafetyTest(unittest.TestCase):
     def test_config_validate_raises_on_overrun_when_audio_enabled(self):
         import dataclasses
 
-        from c64cast.config import Config, ConfigError, validate_nmi_sample_rate
+        from c64cast.config import Config, ConfigError
+        from c64cast.scene_factory import validate_nmi_sample_rate
 
         cfg = Config()
         cfg = dataclasses.replace(
@@ -707,7 +708,8 @@ class NmiRateSafetyTest(unittest.TestCase):
     def test_config_validate_noop_when_audio_disabled(self):
         import dataclasses
 
-        from c64cast.config import Config, validate_nmi_sample_rate
+        from c64cast.config import Config
+        from c64cast.scene_factory import validate_nmi_sample_rate
 
         cfg = Config()  # audio disabled by default
         cfg = dataclasses.replace(
@@ -716,7 +718,8 @@ class NmiRateSafetyTest(unittest.TestCase):
         validate_nmi_sample_rate(cfg)  # must not raise
 
     def test_config_validate_passes_default(self):
-        from c64cast.config import Config, validate_nmi_sample_rate
+        from c64cast.config import Config
+        from c64cast.scene_factory import validate_nmi_sample_rate
 
         validate_nmi_sample_rate(Config())  # default 12000, no raise
 

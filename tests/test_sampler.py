@@ -13,7 +13,7 @@ from unittest import mock
 import numpy as np
 
 from c64cast import config as cfgmod
-from c64cast import doctor
+from c64cast import doctor, scene_factory
 from c64cast import sampler as s
 
 
@@ -371,36 +371,46 @@ class SamplerFlushTests(unittest.TestCase):
 class ResolveAudioBackendTest(unittest.TestCase):
     def test_auto_picks_sampler_when_available(self):
         self.assertEqual(
-            cfgmod.resolve_audio_backend("auto", supports_sampler=True, sampler_available=True),
+            scene_factory.resolve_audio_backend(
+                "auto", supports_sampler=True, sampler_available=True
+            ),
             "sampler",
         )
 
     def test_auto_falls_back_to_dac(self):
         self.assertEqual(
-            cfgmod.resolve_audio_backend("auto", supports_sampler=True, sampler_available=False),
+            scene_factory.resolve_audio_backend(
+                "auto", supports_sampler=True, sampler_available=False
+            ),
             "dac",
         )
         self.assertEqual(
-            cfgmod.resolve_audio_backend("auto", supports_sampler=False, sampler_available=False),
+            scene_factory.resolve_audio_backend(
+                "auto", supports_sampler=False, sampler_available=False
+            ),
             "dac",
         )
 
     def test_dac_is_forced(self):
         self.assertEqual(
-            cfgmod.resolve_audio_backend("dac", supports_sampler=True, sampler_available=True),
+            scene_factory.resolve_audio_backend(
+                "dac", supports_sampler=True, sampler_available=True
+            ),
             "dac",
         )
 
     def test_explicit_sampler_warns_and_falls_back(self):
-        with self.assertLogs("c64cast.config", level="WARNING"):
-            got = cfgmod.resolve_audio_backend(
+        with self.assertLogs("c64cast.scene_factory", level="WARNING"):
+            got = scene_factory.resolve_audio_backend(
                 "sampler", supports_sampler=False, sampler_available=False
             )
         self.assertEqual(got, "dac")
 
     def test_explicit_sampler_succeeds_when_available(self):
         self.assertEqual(
-            cfgmod.resolve_audio_backend("sampler", supports_sampler=True, sampler_available=True),
+            scene_factory.resolve_audio_backend(
+                "sampler", supports_sampler=True, sampler_available=True
+            ),
             "sampler",
         )
 
@@ -414,21 +424,21 @@ class ValidateSamplerCfgTest(unittest.TestCase):
         return cfg
 
     def test_valid_passes(self):
-        cfgmod.validate_sampler_cfg(self._cfg())  # no raise
+        scene_factory.validate_sampler_cfg(self._cfg())  # no raise
 
     def test_bad_bits_rejected(self):
         with self.assertRaises(cfgmod.ConfigError):
-            cfgmod.validate_sampler_cfg(self._cfg(bits=12))
+            scene_factory.validate_sampler_cfg(self._cfg(bits=12))
 
     def test_out_of_range_rate_rejected(self):
         with self.assertRaises(cfgmod.ConfigError):
-            cfgmod.validate_sampler_cfg(self._cfg(rate=96000))
+            scene_factory.validate_sampler_cfg(self._cfg(rate=96000))
         with self.assertRaises(cfgmod.ConfigError):
-            cfgmod.validate_sampler_cfg(self._cfg(rate=10))
+            scene_factory.validate_sampler_cfg(self._cfg(rate=10))
 
     def test_skipped_when_audio_disabled(self):
         # Even an invalid value is ignored when audio is off.
-        cfgmod.validate_sampler_cfg(self._cfg(bits=99, enabled=False))
+        scene_factory.validate_sampler_cfg(self._cfg(bits=99, enabled=False))
 
 
 # ---------------------------------------------------------------------------

@@ -35,9 +35,10 @@ import cv2
 import numpy as np
 
 from c64cast import modes as modes_mod
-from c64cast.config import ColorCfg, _build_display_mode
+from c64cast.config import ColorCfg
 from c64cast.framebuffer import Framebuffer
 from c64cast.palette import ColorFitAccumulator
+from c64cast.scene_factory import _build_display_mode
 from c64cast.scenes import _crop_to_aspect, _render_with_overlays
 
 # Reuse the offline no-wire backend from render_offline (framebuffer shadows

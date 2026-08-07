@@ -937,7 +937,8 @@ class SlideshowScene(Scene):
         text_double_height: bool = False,
         aspect_mode: str = "crop",
     ):
-        from .config import PICTURE_EXTS, ColorCfg, resolve_file_spec
+        from .config import ColorCfg
+        from .scene_factory import PICTURE_EXTS, resolve_file_spec
 
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
@@ -995,7 +996,7 @@ class SlideshowScene(Scene):
         self._prepared = False
 
     def _resolve_candidates(self) -> list[str]:
-        from .config import PICTURE_EXTS, resolve_file_spec
+        from .scene_factory import PICTURE_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, PICTURE_EXTS, label="slideshow")
 
@@ -1005,7 +1006,7 @@ class SlideshowScene(Scene):
         otherwise."""
         if self.display_spec != "random":
             return
-        from .config import (
+        from .scene_factory import (
             _build_display_mode,
             _resolve_slideshow_display,
             resolve_double_buffer,
@@ -1210,7 +1211,7 @@ class VideoScene(Scene):
         pool). The candidate pool is resolved here once; each `setup()`
         re-resolves so a directory's contents can change between scene
         repeats. Single-entry pools stay deterministic."""
-        from .config import VIDEO_EXTS, resolve_file_spec
+        from .scene_factory import VIDEO_EXTS, resolve_file_spec
 
         self.file_spec = file
         # Initial resolution so __init__ raises on bad specs (mirrors the
@@ -1317,7 +1318,7 @@ class VideoScene(Scene):
         self._loop_store: LoopPresetStore | None = None
 
     def _resolve_candidates(self) -> list[str]:
-        from .config import VIDEO_EXTS, resolve_file_spec
+        from .scene_factory import VIDEO_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, VIDEO_EXTS, label="video")
 
@@ -2105,7 +2106,7 @@ class LauncherScene(Scene):
         launch_grace_s: float = 1.5,
         name: str | None = None,
     ):
-        from .config import PROGRAM_EXTS, resolve_file_spec
+        from .scene_factory import PROGRAM_EXTS, resolve_file_spec
 
         self.file_spec = file
         # Resolve once so __init__ raises on a bad spec (mirrors
@@ -2141,7 +2142,7 @@ class LauncherScene(Scene):
         self._prepared = False
 
     def _resolve_candidates(self) -> list[str]:
-        from .config import PROGRAM_EXTS, resolve_file_spec
+        from .scene_factory import PROGRAM_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, PROGRAM_EXTS, label="launcher")
 

@@ -21,13 +21,7 @@ import numpy as np
 
 from c64cast import midi_control as mc
 from c64cast.backend import HardwareProfile
-from c64cast.config import (
-    Config,
-    SceneCfg,
-    _is_valid_param_holder,
-    build_scene,
-    validate_scene_cfg,
-)
+from c64cast.config import Config, SceneCfg, _is_valid_param_holder
 from c64cast.effects import (
     FrameEffect,
     InvertEffect,
@@ -37,6 +31,7 @@ from c64cast.effects import (
     build_effect,
 )
 from c64cast.modulation import MusicModulation
+from c64cast.scene_factory import build_scene, validate_scene_cfg
 from c64cast.scenes import Scene, SourceScene, _apply_effect_chain
 from c64cast.tempo import ClockModulationSource, TempoClock
 

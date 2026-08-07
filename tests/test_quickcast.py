@@ -22,7 +22,8 @@ from _fakes import MachineSettingsIsolation
 
 from c64cast import quickcast
 from c64cast.cli import _resolve_configs, build_parser
-from c64cast.config import CLI_TO_CFG, resolve_file_spec
+from c64cast.config import CLI_TO_CFG
+from c64cast.scene_factory import resolve_file_spec
 
 # Quick playback inherits the machine-settings layer (quickcast.build_config);
 # isolate the module from any real ~/.config/c64cast/settings.toml so the

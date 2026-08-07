@@ -14,7 +14,7 @@ from dataclasses import fields, replace
 from typing import cast
 
 from c64cast import config as cfgmod
-from c64cast import scenes
+from c64cast import scene_factory, scenes
 from c64cast.config import _PALETTE_MODE_CHOICES, ColorCfg, Config, SceneCfg
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -359,7 +359,7 @@ class BuildSceneOsdStampTests(unittest.TestCase):
         cfg.midi_control = replace(cfg.midi_control, osd=osd_value)
         s = SceneCfg(type="blank")
         api = cast("cfgmod.C64Backend", FakeAPI())  # type: ignore[attr-defined]
-        return cfgmod.build_scene(s, cfg, api, None, None)
+        return scene_factory.build_scene(s, cfg, api, None, None)
 
     def test_bottom_default(self):
         scene = self._build("bottom")
@@ -393,7 +393,7 @@ class BuildSceneLoopAudioStampTests(unittest.TestCase):
         # A sentinel audio streamer is enough — setup() is never called here
         # (matches the fps/ensemble build_scene tests).
         audio = cast("cfgmod.AudioStreamer", object())  # type: ignore[attr-defined]
-        return cfgmod.build_scene(s, cfg, api, audio, None)
+        return scene_factory.build_scene(s, cfg, api, audio, None)
 
     def test_on_round_trips(self):
         scene = self._build_video("on")

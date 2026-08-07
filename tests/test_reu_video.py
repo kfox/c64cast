@@ -31,7 +31,7 @@ from c64cast.c64 import (
     VIC_BANK_0,
     VIC_BANK_2,
 )
-from c64cast.config import Config, VideoCfg, _build_display_mode
+from c64cast.config import Config, VideoCfg
 from c64cast.modes import (
     AUDIO_HANDLER_INSTALL_ADDR,
     AUDIO_HANDLER_STUB,
@@ -68,6 +68,7 @@ from c64cast.modes import (
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
 )
+from c64cast.scene_factory import _build_display_mode
 
 
 class ReuStagedFlagDefaultTest(unittest.TestCase):
@@ -91,7 +92,7 @@ class ResolveUseReuStagedTest(unittest.TestCase):
     is available; explicit true/false ignore the probe."""
 
     def _resolve(self, setting, display, reu_available):
-        from c64cast.config import resolve_use_reu_staged
+        from c64cast.scene_factory import resolve_use_reu_staged
 
         return resolve_use_reu_staged(setting, display, reu_available=reu_available)
 
@@ -267,7 +268,8 @@ class ReuCoexistenceTest(unittest.TestCase):
     $0314 hook and serialize REC access naturally."""
 
     def test_video_alone_is_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -276,7 +278,8 @@ class ReuCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_audio_alone_is_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = False
@@ -288,7 +291,8 @@ class ReuCoexistenceTest(unittest.TestCase):
         # Char-mode REU video is host-triggered single-buffer (no $0314
         # hook), so the merged-dispatcher branch isn't even taken — but
         # the combination must still build cleanly.
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -300,7 +304,8 @@ class ReuCoexistenceTest(unittest.TestCase):
         # The interesting case the merge enables: REU audio + REU bank-
         # swap video on the same video scene. Before the merge this
         # raised ValueError; after, it builds.
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -309,7 +314,8 @@ class ReuCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_both_on_webcam_is_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -756,7 +762,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
     the mic install is told to skip its own $0314 hook (scenes.py)."""
 
     def test_webcam_hires_both_on_is_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -765,7 +772,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_webcam_hires_edges_both_on_is_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -776,7 +784,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
     def test_webcam_petscii_both_on_ok(self):
         # Char modes don't install a raster IRQ — single-buffer REU only.
         # Coexisted with mic REU before the merge too; still should.
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -788,7 +797,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         # Quirk preserved: blank scenes accept display = "hires_edges"
         # but the blank branch always builds BlankDisplayMode (single-
         # buffer REU, no IRQ install). No $0314 collision either way.
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -797,7 +807,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_webcam_hires_audio_off_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -806,7 +817,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_webcam_mhires_both_on_is_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -815,7 +827,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_webcam_mhires_audio_off_ok(self):
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         cfg = Config()
         cfg.video.use_reu_staged = True

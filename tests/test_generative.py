@@ -15,7 +15,7 @@ from c64cast import generators
 from c64cast.audio import AudioStreamer
 from c64cast.audio_source import MicAudioSource, NullAudioSource
 from c64cast.backend import C64Backend, HardwareProfile
-from c64cast.config import AudioCfg, Config, SceneCfg, build_scene, validate_scene_cfg
+from c64cast.config import AudioCfg, Config, SceneCfg
 from c64cast.effects import (
     BlurEffect,
     FrameEffect,
@@ -27,6 +27,7 @@ from c64cast.effects import (
 from c64cast.frame_source import BaseFrameSource, FrameSource
 from c64cast.generators import build_generator, generator_names
 from c64cast.modes import DisplayMode
+from c64cast.scene_factory import build_scene, validate_scene_cfg
 from c64cast.scenes import Scene, SourceScene, _render_with_overlays
 from c64cast.video import ensure_pyav
 

@@ -22,6 +22,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 from c64cast import config as cfgmod
+from c64cast import scene_factory
 from c64cast.ensemble import Ensemble, SystemStack
 from c64cast.playlist import Playlist
 from c64cast.scenes import BlankScene, Scene, VideoScene, WebcamScene
@@ -128,14 +129,14 @@ class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
 
     def test_webcam_audio_suppressed_in_ensemble_mode(self):
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
-        scene = cfgmod.build_scene(
+        scene = scene_factory.build_scene(
             s, self.cfg, self.api, self.audio_sentinel, self.source, is_ensemble=True
         )
         self.assertIsNone(scene.audio, "live webcam scene must not hold audio in ensemble")
 
     def test_blank_audio_suppressed_in_ensemble_mode(self):
         s = cfgmod.SceneCfg(type="blank")
-        scene = cfgmod.build_scene(
+        scene = scene_factory.build_scene(
             s, self.cfg, self.api, self.audio_sentinel, None, is_ensemble=True
         )
         self.assertIsNone(scene.audio)
@@ -145,8 +146,8 @@ class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
         # we silently overrode it — debug-find-later silence would be
         # confusing.
         s = cfgmod.SceneCfg(type="webcam", display="petscii", audio=True)
-        with self.assertLogs("c64cast.config", level="INFO") as cap:
-            scene = cfgmod.build_scene(
+        with self.assertLogs("c64cast.scene_factory", level="INFO") as cap:
+            scene = scene_factory.build_scene(
                 s, self.cfg, self.api, self.audio_sentinel, self.source, is_ensemble=True
             )
         self.assertIsNone(scene.audio)
@@ -155,7 +156,7 @@ class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
     def test_single_system_mode_unaffected(self):
         # is_ensemble defaults False; behavior matches the existing tests.
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
-        scene = cfgmod.build_scene(s, self.cfg, self.api, self.audio_sentinel, self.source)
+        scene = scene_factory.build_scene(s, self.cfg, self.api, self.audio_sentinel, self.source)
         self.assertIs(scene.audio, self.audio_sentinel)
 
 

@@ -282,7 +282,7 @@ class AudioFileSource:
     def _pick_and_probe(self) -> None:
         """Re-resolve the spec, shuffle, and probe the first file that opens.
         Sets self._path + self.duration_s. Raises if none open."""
-        from .config import AUDIO_EXTS, resolve_file_spec
+        from .scene_factory import AUDIO_EXTS, resolve_file_spec
         from .video import av_open, ensure_pyav
 
         if not ensure_pyav():
@@ -599,7 +599,7 @@ class SidFileAudioSource:
         """Re-resolve the spec, shuffle, and load the first candidate that
         validates. Sets self._sid_file/sid_bytes/song/header. Raises if every
         attempt fails (mirrors WaveformScene._pick_and_load_sid)."""
-        from .config import SID_EXTS, resolve_file_spec
+        from .scene_factory import SID_EXTS, resolve_file_spec
 
         candidates = resolve_file_spec(self.file_spec, SID_EXTS, label="sid audio")
         pool = list(candidates)

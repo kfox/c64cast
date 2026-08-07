@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import cast
 
 from c64cast import config as cfgmod
+from c64cast import scene_factory
 from c64cast.playlist import Playlist
 from c64cast.wled_device import PresetStore, WledBridge, build_wled_app
 
@@ -144,7 +145,7 @@ def _bridge(
 
 class EndpointParserTests(unittest.TestCase):
     def _parse(self, value: str | None) -> tuple[bool, str, int]:
-        return cfgmod.parse_wled_endpoint(value, "0.0.0.0", 8080, field_name="[wled].listen")
+        return scene_factory.parse_wled_endpoint(value, "0.0.0.0", 8080, field_name="[wled].listen")
 
     def test_none_and_disabled_are_off(self):
         self.assertEqual(self._parse(None), (False, "0.0.0.0", 8080))
@@ -178,12 +179,12 @@ class EndpointParserTests(unittest.TestCase):
 
     def test_resolvers_use_mode_defaults(self):
         cfg = cfgmod.Config()
-        self.assertEqual(cfgmod.resolve_wled_broadcast(cfg), (False, "239.0.0.1", 11988))
-        self.assertEqual(cfgmod.resolve_wled_listen(cfg), (False, "0.0.0.0", 8080))
+        self.assertEqual(scene_factory.resolve_wled_broadcast(cfg), (False, "239.0.0.1", 11988))
+        self.assertEqual(scene_factory.resolve_wled_listen(cfg), (False, "0.0.0.0", 8080))
         cfg.wled.broadcast = "enabled"
         cfg.wled.listen = "enabled"
-        self.assertEqual(cfgmod.resolve_wled_broadcast(cfg), (True, "239.0.0.1", 11988))
-        self.assertEqual(cfgmod.resolve_wled_listen(cfg), (True, "0.0.0.0", 8080))
+        self.assertEqual(scene_factory.resolve_wled_broadcast(cfg), (True, "239.0.0.1", 11988))
+        self.assertEqual(scene_factory.resolve_wled_listen(cfg), (True, "0.0.0.0", 8080))
 
 
 # --- bridge reads -----------------------------------------------------------
