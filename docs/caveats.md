@@ -325,7 +325,7 @@ DAC, so the whole `$C000` page and the REU are free for it. See
 it (warns + falls back on a no-REU backend); `off` always coalesces. TeensyROM /
 any no-REU backend keeps the coalesced path unchanged (and its display is never
 blanked). A buffered run folds the ASID ring into the REU auto-provisioner
-(`doctor._wants_reu`), so the REU is enabled + sized like the sampler's.
+(`hw_provision.wants_reu`), so the REU is enabled + sized like the sampler's.
 
 **v1 limitations (documented, not over-engineered):**
 

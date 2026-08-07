@@ -108,6 +108,7 @@ rationale in the meantime — each of the ones below opens with one.
 | `connect.py` | `-u/--url` connection-target URI parsing |
 | `doctor.py` | `--doctor` configuration + environment diagnostics |
 | `framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
+| `hw_provision.py` | Live U64 REU + Ultimate Audio sampler auto-provisioning (volatile, restored at teardown) |
 | `introspect.py` | The single rendering surface over config metadata |
 | `playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
 | `preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |

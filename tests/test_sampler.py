@@ -1,6 +1,6 @@
 """Unit tests for the Ultimate Audio FPGA PCM sampler (c64cast/sampler.py) and
-its config/doctor integration. No hardware: a recording fake backend stands in
-for the U64, and the doctor REST queries are mocked."""
+its config/provisioning integration. No hardware: a recording fake backend
+stands in for the U64, and the hw_provision REST queries are mocked."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from unittest import mock
 import numpy as np
 
 from c64cast import config as cfgmod
-from c64cast import doctor, scene_factory
+from c64cast import hw_provision, scene_factory
 from c64cast import sampler as s
 
 
@@ -442,7 +442,7 @@ class ValidateSamplerCfgTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# doctor: availability + provisioning
+# hw_provision: availability + provisioning
 # ---------------------------------------------------------------------------
 class _FakeProfile:
     def __init__(self, supports_sampler: bool = True) -> None:
@@ -512,58 +512,60 @@ def _video_cfg(*, backend="auto", enabled=True, skip_probe=False):
 
 class SamplerAvailabilityTest(unittest.TestCase):
     def test_available_when_mapped_and_audible(self):
-        self.assertIs(doctor.sampler_is_available(_FakeRestApi()), True)
+        self.assertIs(hw_provision.sampler_is_available(_FakeRestApi()), True)
 
     def test_unavailable_when_map_disabled(self):
-        self.assertIs(doctor.sampler_is_available(_FakeRestApi(map_status="Disabled")), False)
+        self.assertIs(hw_provision.sampler_is_available(_FakeRestApi(map_status="Disabled")), False)
 
     def test_unavailable_when_muted(self):
-        self.assertIs(doctor.sampler_is_available(_FakeRestApi(vol_l="OFF", vol_r="OFF")), False)
+        self.assertIs(
+            hw_provision.sampler_is_available(_FakeRestApi(vol_l="OFF", vol_r="OFF")), False
+        )
 
     def test_audible_when_one_channel_on(self):
-        self.assertIs(doctor.sampler_is_available(_FakeRestApi(vol_r="OFF")), True)
+        self.assertIs(hw_provision.sampler_is_available(_FakeRestApi(vol_r="OFF")), True)
 
     def test_unavailable_when_feature_absent(self):
-        self.assertIs(doctor.sampler_is_available(_FakeRestApi(present=False)), False)
+        self.assertIs(hw_provision.sampler_is_available(_FakeRestApi(present=False)), False)
 
     def test_none_on_query_failure(self):
         import requests
 
         api = _FakeRestApi(get_error=requests.Timeout("read timeout"))
-        self.assertIsNone(doctor.sampler_is_available(api))
+        self.assertIsNone(hw_provision.sampler_is_available(api))
 
 
 class WantsSamplerTest(unittest.TestCase):
     def test_wants_with_auto_and_video(self):
-        wants, reasons = doctor._wants_sampler(_video_cfg(backend="auto"))
+        wants, reasons = hw_provision.wants_sampler(_video_cfg(backend="auto"))
         self.assertTrue(wants)
         self.assertTrue(reasons)
 
     def test_wants_with_explicit_sampler(self):
-        self.assertTrue(doctor._wants_sampler(_video_cfg(backend="sampler"))[0])
+        self.assertTrue(hw_provision.wants_sampler(_video_cfg(backend="sampler"))[0])
 
     def test_not_wanted_with_dac(self):
-        self.assertFalse(doctor._wants_sampler(_video_cfg(backend="dac"))[0])
+        self.assertFalse(hw_provision.wants_sampler(_video_cfg(backend="dac"))[0])
 
     def test_not_wanted_without_audio(self):
-        self.assertFalse(doctor._wants_sampler(_video_cfg(enabled=False))[0])
+        self.assertFalse(hw_provision.wants_sampler(_video_cfg(enabled=False))[0])
 
     def test_not_wanted_without_video_scene(self):
         cfg = cfgmod.Config()
         cfg.audio.enabled = True
         cfg.scenes = [cfgmod.SceneCfg(type="waveform", file="t.sid")]
-        self.assertFalse(doctor._wants_sampler(cfg)[0])
+        self.assertFalse(hw_provision.wants_sampler(cfg)[0])
 
 
 class ProvisionSamplerTest(unittest.TestCase):
     def test_noop_when_already_enabled(self):
         api = _FakeRestApi(map_status="Enabled", vol_l=" 0 dB", vol_r=" 0 dB")
-        self.assertIsNone(doctor.provision_sampler(api, _video_cfg()))
+        self.assertIsNone(hw_provision.provision_sampler(api, _video_cfg()))
         self.assertEqual(api.put_calls, [])
 
     def test_enables_map_when_disabled(self):
         api = _FakeRestApi(map_status="Disabled")
-        restore = doctor.provision_sampler(api, _video_cfg())
+        restore = hw_provision.provision_sampler(api, _video_cfg())
         self.assertIsNotNone(restore)
         self.assertIn(
             ("C64 and Cartridge Settings", "Map Ultimate Audio $DF20-DFFF", "Enabled"),
@@ -575,7 +577,7 @@ class ProvisionSamplerTest(unittest.TestCase):
 
     def test_unmutes_when_off(self):
         api = _FakeRestApi(vol_l="OFF", vol_r="OFF")
-        restore = doctor.provision_sampler(api, _video_cfg())
+        restore = hw_provision.provision_sampler(api, _video_cfg())
         assert restore is not None
         unmutes = [c for c in api.put_calls if c[0] == "Audio Mixer"]
         self.assertEqual(len(unmutes), 2)
@@ -583,24 +585,24 @@ class ProvisionSamplerTest(unittest.TestCase):
 
     def test_skipped_on_no_sampler_backend(self):
         api = _FakeRestApi(supports_sampler=False, map_status="Disabled")
-        self.assertIsNone(doctor.provision_sampler(api, _video_cfg()))
+        self.assertIsNone(hw_provision.provision_sampler(api, _video_cfg()))
         self.assertEqual(api.put_calls, [])
 
     def test_skipped_under_skip_probe(self):
         api = _FakeRestApi(map_status="Disabled")
-        self.assertIsNone(doctor.provision_sampler(api, _video_cfg(skip_probe=True)))
+        self.assertIsNone(hw_provision.provision_sampler(api, _video_cfg(skip_probe=True)))
         self.assertEqual(api.put_calls, [])
 
     def test_skipped_when_backend_dac(self):
         api = _FakeRestApi(map_status="Disabled")
-        self.assertIsNone(doctor.provision_sampler(api, _video_cfg(backend="dac")))
+        self.assertIsNone(hw_provision.provision_sampler(api, _video_cfg(backend="dac")))
         self.assertEqual(api.put_calls, [])
 
     def test_restore_puts_originals_back(self):
         api = _FakeRestApi(map_status="Disabled", vol_l="OFF", vol_r=" 0 dB")
-        restore = doctor.provision_sampler(api, _video_cfg())
+        restore = hw_provision.provision_sampler(api, _video_cfg())
         api.put_calls.clear()
-        doctor.restore_sampler(api, restore)
+        hw_provision.restore_sampler(api, restore)
         # Map restored to Disabled, the muted channel back to OFF.
         self.assertIn(
             ("C64 and Cartridge Settings", "Map Ultimate Audio $DF20-DFFF", "Disabled"),
@@ -610,21 +612,21 @@ class ProvisionSamplerTest(unittest.TestCase):
 
     def test_restore_noop_on_none(self):
         api = _FakeRestApi()
-        doctor.restore_sampler(api, None)  # must not raise
+        hw_provision.restore_sampler(api, None)  # must not raise
         self.assertEqual(api.put_calls, [])
 
 
 class WantsReuCouplingTest(unittest.TestCase):
     """The sampler streams its ring out of REU SDRAM, so a sampler run must
-    pull the REU into _wants_reu (provisioning + the doctor REU probe)."""
+    pull the REU into wants_reu (provisioning + the doctor REU probe)."""
 
     def test_sampler_makes_wants_reu_true(self):
-        wants, reasons = doctor._wants_reu(_video_cfg(backend="auto"))
+        wants, reasons = hw_provision.wants_reu(_video_cfg(backend="auto"))
         self.assertTrue(wants)
         self.assertTrue(any("sampler" in r for r in reasons))
 
     def test_dac_video_does_not_want_reu(self):
-        self.assertFalse(doctor._wants_reu(_video_cfg(backend="dac"))[0])
+        self.assertFalse(hw_provision.wants_reu(_video_cfg(backend="dac"))[0])
 
 
 if __name__ == "__main__":

@@ -185,11 +185,11 @@ Bootstrap latency is `REU_MIC_BOOTSTRAP_BYTES / sample_rate`, ≈133 ms at the 1
 
 Default `true`, so the REU paths that hard-require it work without the manual F2 enable step.
 
-*When it fires.* Only when the config **hard**-requires the REU: `[audio].use_reu_pump`, or an explicit `[video].use_reu_staged = true`. This is the same `_wants_reu` condition the doctor checks. The `"auto"` default is deliberately excluded, because it self-heals to the host-DMA double-buffer path, which is also tear-free.
+*When it fires.* Only when the config **hard**-requires the REU: `[audio].use_reu_pump`, or an explicit `[video].use_reu_staged = true`. This is the same `hw_provision.wants_reu` condition the doctor's REU probe checks. The `"auto"` default is deliberately excluded, because it self-heals to the host-DMA double-buffer path, which is also tear-free.
 
-*What it does.* `cli.build_stack` calls `doctor.provision_reu(api, cfg)` after the probe and **before** `_resolve_reu_available`, so that probe sees the now-enabled REU. It enables `"RAM Expansion Unit"` and grows `"REU Size"` to `16 MB` via `api.put_config_item` (`PUT /v1/configs/<cat>/<item>?value=…`, verified live and no-reboot in the firmware's `effectuate_settings`). 16 MB covers every c64cast REU offset — the audio ring near 1 MB, the video staging region near 14 MB — and is both the maximum and FPGA-backed, so it costs nothing.
+*What it does.* `cli.build_stack` calls `hw_provision.provision_reu(api, cfg)` after the probe and **before** `_resolve_reu_available`, so that probe sees the now-enabled REU. It enables `"RAM Expansion Unit"` and grows `"REU Size"` to `16 MB` via `api.put_config_item` (`PUT /v1/configs/<cat>/<item>?value=…`, verified live and no-reboot in the firmware's `effectuate_settings`). 16 MB covers every c64cast REU offset — the audio ring near 1 MB, the video staging region near 14 MB — and is both the maximum and FPGA-backed, so it costs nothing.
 
-*Restoring.* The change is live and **volatile**, never saved to flash, so it reverts on the next power-cycle even if teardown's restore is missed. `teardown_stack` calls `doctor.restore_reu` while the REST session is still open to put the originals back; those originals ride on `SystemStack.reu_restore`, which survives SIGHUP and control-plane reloads since they reuse the same `api`.
+*Restoring.* The change is live and **volatile**, never saved to flash, so it reverts on the next power-cycle even if teardown's restore is missed. `teardown_stack` calls `hw_provision.restore_reu` while the REST session is still open to put the originals back; those originals ride on `SystemStack.reu_restore`, which survives SIGHUP and control-plane reloads since they reuse the same `api`.
 
 *When it is skipped.* No-REU backends (`profile.supports_reu`, i.e. TeensyROM); under `--skip-probe`, since we never write config we could not first read back; and when `auto_reu = false`, meaning you manage the REU yourself. It is best-effort throughout — any REST failure logs a warning and leaves the existing doctor/probe degradation in place.
 
@@ -202,7 +202,7 @@ If it is disabled the severity depends on `auto_reu`:
 * `auto_reu` on → **ok**, because the run will provision it live.
 * `auto_reu = false` → **error**. Without it the staged paths silently produce silent audio or unchanged video, with no host-side error at all: REUWRITE succeeds and the REU→main DMA simply reads zeroes.
 
-The hint points at both `auto_reu` and the F2 menu path. `doctor.reu_is_enabled(api)` and `read_reu_config(api)` are the shared REST queries, also feeding cli.py's `"auto"` resolution and the provisioner.
+The hint points at both `auto_reu` and the F2 menu path. `hw_provision.reu_is_enabled(api)` and `read_reu_config(api)` are the shared REST queries, also feeding cli.py's `"auto"` resolution and the provisioner.
 
 ### `--doctor`: REST-probe severity
 
@@ -619,11 +619,11 @@ Since `VideoScene` dedups, re-pushing only on a genuinely new source frame, the 
 
 ### Provisioning
 
-`doctor.provision_sampler` / `restore_sampler`, gated on `profile.supports_sampler`, not `--skip-probe`, and `_wants_sampler`. It enables `Map Ultimate Audio $DF20-DFFF` if disabled, and unmutes `Vol Sampler L`/`R` to `" 0 dB"` if OFF. Both changes are live and volatile, restored at teardown via the composite-keyed `SystemStack.sampler_restore`.
+`hw_provision.provision_sampler` / `restore_sampler`, gated on `profile.supports_sampler`, not `--skip-probe`, and `wants_sampler`. It enables `Map Ultimate Audio $DF20-DFFF` if disabled, and unmutes `Vol Sampler L`/`R` to `" 0 dB"` if OFF. Both changes are live and volatile, restored at teardown via the composite-keyed `SystemStack.sampler_restore`.
 
-Because the ring lives in REU SDRAM, `_wants_sampler` also pulls the REU into `_wants_reu`, so `provision_reu` enables the REU at 16 MB for a sampler run. A useful side effect: that makes `"auto"` video resolve to the tear-free REU bank-swap path. The sampler installs no `$0314` IRQ, so REU-staged video and the sampler coexist with no IRQ contention.
+Because the ring lives in REU SDRAM, `wants_sampler` also pulls the REU into `wants_reu`, so `provision_reu` enables the REU at 16 MB for a sampler run. A useful side effect: that makes `"auto"` video resolve to the tear-free REU bank-swap path. The sampler installs no `$0314` IRQ, so REU-staged video and the sampler coexist with no IRQ contention.
 
-`doctor.sampler_is_available(api)` — map enabled and a channel audible — feeds `cli._resolve_sampler_available`, and `_probe_sampler_status` reports the state in `--doctor`.
+`hw_provision.sampler_is_available(api)` — map enabled and a channel audible — feeds `cli._resolve_sampler_available`, and `_probe_sampler_status` reports the state in `--doctor`.
 
 ## `dsp.py` — host-side audio DSP for the 4-bit DAC path
 
@@ -711,7 +711,7 @@ The third `MusicModulation` producer's *plumbing*, and what makes `c64cast tune.
 
 **Wiring + gating.** In `build_scene`'s generative branch, `audio_source = "file"` builds the source where `"mic"` does, gated on `scene_audio is not None` (so it inherits the ensemble live-audio suppression and falls back to `NullAudioSource` when `[audio]` is off / `audio = false`), then resolves the backend and — when it lands on the sampler — swaps `scene_audio` for a fresh `UltimateAudioSampler` before constructing the source. That resolved object is *also* passed as the `SourceScene`'s base `.audio` (the `set_pre_emphasis` hook + overlay sample tap), so `self.audio` and the source's audio object stay the same instance. `_validate_generative` **requires** `file` (no default dir), resolves the spec at load time, and **warns** (doesn't fail) when audio is off. A startup/decode failure degrades to non-reactive with the visual intact, the same contract as `MicAudioSource`/`SidFileAudioSource`.
 
-*Provisioning.* `doctor._wants_sampler` counts a `generative` + `audio_source = "file"` scene (not just `video`), so a sampler-routed file scene triggers the live FPGA-map enable + Sampler-mixer unmute + REU 16 MB provisioning — without it the sampler ring would play silently.
+*Provisioning.* `hw_provision.wants_sampler` counts a `generative` + `audio_source = "file"` scene (not just `video`), so a sampler-routed file scene triggers the live FPGA-map enable + Sampler-mixer unmute + REU 16 MB provisioning — without it the sampler ring would play silently.
 
 *Frame rate (the crash lesson).* A sampler video scene uncaps its bitmap frame-push to the system rate because `VideoScene` **dedups** — a 24 fps clip polled at 60 pushes only 24 genuinely-new frames/s. A **generative** source has no such redundancy: it renders a fresh frame every tick, so uncapping to 60 pushes 60 real `mhires` frames/s of REU bank-swap traffic, which *starves the sampler's own REU writes* (the ring's write-ahead lead collapsed to ~322 B → audible static) **and** overloads the bus (C64-side visual crash — HW 2026-07-24). So a sampler-routed file scene keeps the **muted-bitmap 30/25 cap** (`_frame_push_default_fps` with `has_digitized_audio=False`, *no* `off_bus_audio` uncap): the audio is off-bus, but the video frame push must stay bounded. At 30 fps the lead held ≈46 KB and the audio was clean. The DAC file path keeps its 20 fps bitmap cap.
 

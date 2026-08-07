@@ -62,7 +62,7 @@ class SystemStack:
     # scenes after the initial probe). False under --skip-probe or a failed
     # query, so "auto" degrades to host-DMA rather than freezing video.
     reu_available: bool = False
-    # REU config fields auto-provisioned for this run (doctor.provision_reu),
+    # REU config fields auto-provisioned for this run (hw_provision.provision_reu),
     # mapping field name -> the original value to restore at teardown. None
     # when nothing was changed (REU already enabled+sized, auto_reu off, a
     # no-REU backend, or --skip-probe). The change is volatile firmware state,
@@ -74,7 +74,7 @@ class SystemStack:
     # False under --skip-probe / a failed query / a no-sampler backend, so the
     # backend degrades to the 4-bit DAC rather than producing silence.
     sampler_available: bool = False
-    # Sampler config fields auto-provisioned for this run (doctor.provision_sampler),
+    # Sampler config fields auto-provisioned for this run (hw_provision.provision_sampler),
     # composite-keyed "category\x1ffield" -> original, restored at teardown. None
     # when nothing changed (already enabled, no-sampler backend, or --skip-probe).
     sampler_restore: dict[str, str] | None = None

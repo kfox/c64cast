@@ -386,7 +386,7 @@ Char modes (petscii, blank) stay on host-DMA under auto, because their delta cac
 
 Explicit `true`/`false` ignore both the probe and the overlay check; `true` deliberately opts into the shimmer in exchange for tear-free cuts.
 
-**Where `reu_available` comes from.** Computed once in `cli._resolve_reu_available` — gated on `"auto"`, `api.profile.supports_reu`, and not `--skip-probe`, via `doctor.reu_is_enabled` — then stashed on `SystemStack.reu_available` and threaded through `scenes_from_config`/`build_scene`, including SIGHUP/control-plane reloads and ensemble-follower rebuilds. A `display = "random"` slideshow stores the raw tri-state plus `reu_available` and re-resolves per concrete mode at each setup.
+**Where `reu_available` comes from.** Computed once in `cli._resolve_reu_available` — gated on `"auto"`, `api.profile.supports_reu`, and not `--skip-probe`, via `hw_provision.reu_is_enabled` — then stashed on `SystemStack.reu_available` and threaded through `scenes_from_config`/`build_scene`, including SIGHUP/control-plane reloads and ensemble-follower rebuilds. A `display = "random"` slideshow stores the raw tri-state plus `reu_available` and re-resolves per concrete mode at each setup.
 
 Any uncertainty — no REU, a failed query, `--skip-probe`, a non-REU backend — degrades to host-DMA, so video never silently freezes.
 
