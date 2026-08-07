@@ -283,9 +283,9 @@ class AudioFileSource:
         """Re-resolve the spec, shuffle, and probe the first file that opens.
         Sets self._path + self.duration_s. Raises if none open."""
         from .config import AUDIO_EXTS, resolve_file_spec
-        from .video import _av_open, _ensure_pyav
+        from .video import av_open, ensure_pyav
 
-        if not _ensure_pyav():
+        if not ensure_pyav():
             raise RuntimeError(
                 "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
             )
@@ -295,7 +295,7 @@ class AudioFileSource:
         last_error: Exception | None = None
         for path in pool[: self._MAX_PICK_ATTEMPTS]:
             try:
-                container = _av_open(path)
+                container = av_open(path)
                 try:
                     if not container.streams.audio:
                         raise ValueError(f"no audio stream in {os.path.basename(path)}")
@@ -396,10 +396,10 @@ class AudioFileSource:
         push_samples' queue-full block. Ends at EOF or when `_stop` is set."""
         import numpy as np
 
-        from .video import _av_open
+        from .video import av_open
 
         try:
-            container = _av_open(self._path)
+            container = av_open(self._path)
         except Exception:
             log.exception("audio file: could not open %s for decode", self._path)
             return

@@ -56,7 +56,7 @@ NEUTRAL_BAND_INT16 = INT16_FULL_SCALE * 0.5 / DAC_VOLUME_SCALE
 #   reconnect_streamed         reconnect for non-seekable (streamed) inputs
 #   reconnect_on_network_error reconnect on any network error mid-stream
 #   reconnect_delay_max        cap the exponential backoff (seconds)
-# Applied only to remote URLs (see `_av_open`) — harmless for local files but
+# Applied only to remote URLs (see `av_open`) — harmless for local files but
 # these are http-protocol-only options, so we scope them to avoid FFmpeg
 # warning about unrecognized options on a file:// / plain-path input.
 _HTTP_RECONNECT_OPTIONS = {
@@ -72,7 +72,7 @@ def _is_remote_url(path: str) -> bool:
     return path.startswith(("http://", "https://"))
 
 
-def _av_open(path: str):
+def av_open(path: str):
     """`av.open` wrapper that injects the HTTP reconnect options for remote
     URLs so a transient CDN drop mid-stream resumes instead of crashing the
     demuxer. Local paths open unchanged."""
@@ -171,7 +171,7 @@ av: Any = None
 PYAV_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
 
 
-def _ensure_pyav() -> bool:
+def ensure_pyav() -> bool:
     """Import PyAV on demand; cache the result. Returns availability."""
     global av, PYAV_AVAILABLE
     if PYAV_AVAILABLE is not None:
@@ -198,7 +198,7 @@ def _build_atempo_graph(target_sample_rate: int, tempo_scale: float):
 
     Callers keep ``tempo_scale`` in (0, 1) (validate_dac_bitmap_tempo_cfg bounds
     it to 0.5..1.0), so ``1/tempo_scale`` lands in (1.0, 2.0] — inside atempo's
-    single-stage 0.5..2.0 range. Requires PyAV (`_ensure_pyav()` first)."""
+    single-stage 0.5..2.0 range. Requires PyAV (`ensure_pyav()` first)."""
     graph = av.filter.Graph()
     abuffer = graph.add(
         "abuffer",
@@ -227,11 +227,11 @@ def decode_audio_full(path: str, target_sample_rate: int) -> np.ndarray:
     Raises RuntimeError if PyAV isn't available or there's no audio stream
     in the container.
     """
-    if not _ensure_pyav():
+    if not ensure_pyav():
         raise RuntimeError(
             "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
         )
-    container = _av_open(path)
+    container = av_open(path)
     try:
         if not container.streams.audio:
             raise RuntimeError(f"no audio stream in {path}")
@@ -348,7 +348,7 @@ def _decode_sample_frames(
             break
 
 
-def _scan_video_samples(
+def scan_video_samples(
     path: str,
     accumulators: list[Any],
     max_samples: int = 120,
@@ -373,10 +373,10 @@ def _scan_video_samples(
     downscaled frame yields the same fit/palette as the full-res one at a
     fraction of the cost.
     """
-    if not accumulators or not _ensure_pyav():
+    if not accumulators or not ensure_pyav():
         return False
     try:
-        container = _av_open(path)
+        container = av_open(path)
         try:
             v_stream = container.streams.video[0]
             v_stream.thread_type = "AUTO"
@@ -406,7 +406,7 @@ def _scan_video_samples(
             if not seeked:
                 # Re-open to reset any partial seek state, then decode in order.
                 container.close()
-                container = _av_open(path)
+                container = av_open(path)
                 v_stream = container.streams.video[0]
                 v_stream.thread_type = "AUTO"
                 _decode_sample_frames(
@@ -434,7 +434,7 @@ def prescan_source_color(
     ``map_colors``/``map_indices`` not None/empty enables the forced-palette
     ColorMap ([color].force_palette). Both stages share a single decode pass.
     ``decode_target_size`` downscales sampled frames during decode (see
-    _scan_video_samples). Returns (ColorFit|None, ColorMap|None); a disabled or
+    scan_video_samples). Returns (ColorFit|None, ColorMap|None); a disabled or
     failed stage is None, so callers can unconditionally pass the results to
     set_color_fit / set_color_map. See palette.ColorFitAccumulator /
     palette.ColorMapAccumulator.
@@ -446,7 +446,7 @@ def prescan_source_color(
         else None
     )
     accs = [a for a in (fit_acc, map_acc) if a is not None]
-    if not _scan_video_samples(path, accs, decode_target_size=decode_target_size):
+    if not scan_video_samples(path, accs, decode_target_size=decode_target_size):
         return None, None
     return (fit_acc.result() if fit_acc else None, map_acc.result() if map_acc else None)
 
@@ -546,7 +546,7 @@ class AVFileSource:
         decode_target_size: tuple[int, int] | None = None,
         tempo_scale: float = 1.0,
     ):
-        if not _ensure_pyav():
+        if not ensure_pyav():
             raise RuntimeError(
                 "PyAV not installed; install with `uv tool install --force 'c64cast[all]'`"
             )
@@ -590,7 +590,7 @@ class AVFileSource:
         self._pending_seek: float | None = None
         self._muted = False
 
-        self.container = _av_open(path)
+        self.container = av_open(path)
         self.v_stream = self.container.streams.video[0]
         self.a_stream = self.container.streams.audio[0] if self.container.streams.audio else None
 
@@ -700,7 +700,7 @@ class AVFileSource:
         its first frame."""
         peak = 0
         try:
-            container = _av_open(self.path)
+            container = av_open(self.path)
             try:
                 a_stream = container.streams.audio[0]
                 # Match the played portion: with a start_s seek, normalize over

@@ -310,8 +310,8 @@ class InterleavedVideoFpsTest(_BuildSceneFpsBase):
             cfgmod.SceneCfg(type="blank", name="b"),
         ]
         # Pretend PyAV is present so interleaving runs without the extra
-        # (config imports _ensure_pyav from c64cast.video locally).
-        with mock.patch.object(videomod, "_ensure_pyav", return_value=True):
+        # (config imports ensure_pyav from c64cast.video locally).
+        with mock.patch.object(videomod, "ensure_pyav", return_value=True):
             built = cfgmod.scenes_from_config(cfg, self.api, audio, None)
         return [s for s in built if isinstance(s, VideoScene)]
 

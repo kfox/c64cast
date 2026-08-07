@@ -5404,7 +5404,7 @@ def scenes_from_config(
     `sampler_available` propagates to `build_scene` to resolve the
     [audio].backend selector for video scenes (see resolve_audio_backend)."""
     from .scenes import VideoScene, WebcamScene
-    from .video import _ensure_pyav
+    from .video import ensure_pyav
 
     # Validate follower-only scenes here too — they're built lazily at
     # broadcast time via `build_follower_scene`, so without this call a
@@ -5463,7 +5463,7 @@ def scenes_from_config(
     video_files = _gather_videos(cfg.playlist.videos_dir)
     if not video_files:
         return base
-    if not _ensure_pyav():
+    if not ensure_pyav():
         log.warning(
             "Found %d video files but PyAV is not installed; skipping videos.", len(video_files)
         )

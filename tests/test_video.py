@@ -22,10 +22,10 @@ from c64cast.video import (
     AVFileSource,
     _build_atempo_graph,
     _compute_normalization_gain,
-    _ensure_pyav,
     _is_remote_url,
     _plan_decode_size,
-    _scan_video_samples,
+    ensure_pyav,
+    scan_video_samples,
 )
 
 
@@ -1178,7 +1178,7 @@ class CurrentFrameTelemetryTest(unittest.TestCase):
         self.assertEqual(src.video_buffer_depth, 3)
 
 
-@unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
 class AtempoTempoCompensationTest(unittest.TestCase):
     """Bitmap+DAC tempo compensation: the atempo graph time-compresses audio
     (pitch-preserving) by 1/tempo_scale, so the emitted sample count is ≈
@@ -1285,9 +1285,9 @@ def _write_synthetic_video(path: str, *, seconds: int = 3, fps: int = 30) -> Non
         container.close()
 
 
-@unittest.skipUnless(_ensure_pyav(), "PyAV not installed")
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
 class ScanVideoSamplesTest(unittest.TestCase):
-    """`_scan_video_samples` seek-samples across a source's whole timeline."""
+    """`scan_video_samples` seek-samples across a source's whole timeline."""
 
     def _make(self) -> str:
         import tempfile
@@ -1308,7 +1308,7 @@ class ScanVideoSamplesTest(unittest.TestCase):
         # not just the head — the whole point of even-spaced timestamps.
         path = self._make()
         acc = _RecordingAcc()
-        self.assertTrue(_scan_video_samples(path, [acc], max_samples=30))
+        self.assertTrue(scan_video_samples(path, [acc], max_samples=30))
         self.assertGreater(len(acc.means), 0)
         seen = {self._dominant(m) for m in acc.means}
         self.assertEqual(seen, {"r", "g", "b"})
@@ -1316,11 +1316,11 @@ class ScanVideoSamplesTest(unittest.TestCase):
     def test_missing_file_returns_false(self):
         acc = _RecordingAcc()
         with self.assertLogs("c64cast.video", level="WARNING"):
-            self.assertFalse(_scan_video_samples("/no/such/file.mp4", [acc]))
+            self.assertFalse(scan_video_samples("/no/such/file.mp4", [acc]))
         self.assertEqual(acc.means, [])
 
     def test_empty_accumulators_short_circuit(self):
-        self.assertFalse(_scan_video_samples(self._make(), []))
+        self.assertFalse(scan_video_samples(self._make(), []))
 
     def test_falls_back_to_sequential_when_seek_fails(self):
         # A non-seekable source (seek raises) must still get sampled via the
@@ -1332,13 +1332,13 @@ class ScanVideoSamplesTest(unittest.TestCase):
         path = self._make()
         acc = _RecordingAcc()
         with mock.patch.object(video, "_seek_sample_frames", side_effect=OSError("not seekable")):
-            self.assertTrue(_scan_video_samples(path, [acc], max_samples=30))
+            self.assertTrue(scan_video_samples(path, [acc], max_samples=30))
         self.assertGreater(len(acc.means), 0)
         seen = {self._dominant(m) for m in acc.means}
         self.assertEqual(seen, {"r", "g", "b"})
 
 
-@unittest.skipUnless(_ensure_pyav(), "PyAV not installed")
+@unittest.skipUnless(ensure_pyav(), "PyAV not installed")
 class DurationSTest(unittest.TestCase):
     """`AVFileSource.duration_s` (MIDI live-tune Phase 2 — absolute-jog
     mapping and seek/loop clamping) reads the container's real duration at

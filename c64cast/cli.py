@@ -1226,13 +1226,13 @@ def _collect_lab_samples(path: str):
     """Decode ``path`` (image or video/URL) into the CIE-Lab sample reservoir
     `suggest_palette` ranks over. Returns the (N, 3) float32 array, or None when
     the file can't be read. Images load via cv2; videos/URLs reuse the shared
-    color pre-scan (`video._scan_video_samples`), so the same sampling that
+    color pre-scan (`video.scan_video_samples`), so the same sampling that
     feeds force_palette/auto_fit feeds the suggestion."""
     import cv2
 
     from .config import VIDEO_EXTS
     from .palette import ColorMapAccumulator
-    from .video import _scan_video_samples
+    from .video import scan_video_samples
 
     acc = ColorMapAccumulator()  # accumulate only; we want its raw lab_samples()
     ext = os.path.splitext(path)[1].lower()
@@ -1243,7 +1243,7 @@ def _collect_lab_samples(path: str):
         if img is None:
             return None
         acc.add(img)
-    elif not _scan_video_samples(path, [acc]):
+    elif not scan_video_samples(path, [acc]):
         return None
     samples = acc.lab_samples()
     return samples if samples.size else None
