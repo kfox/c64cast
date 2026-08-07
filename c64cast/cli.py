@@ -27,6 +27,7 @@ from . import (
     dac_calibration,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
     paths,
+    scene_factory,
 )
 from . import config as cfgmod
 from ._native_io import silence_native_stderr
@@ -238,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--videos",
         default=None,
         help=f"Directory containing videos "
-        f"({', '.join(cfgmod.VIDEO_EXTS)}) "
+        f"({', '.join(scene_factory.VIDEO_EXTS)}) "
         f"(default: {playlist_def.videos_dir})",
     )
     pl.add_argument(
@@ -907,7 +908,7 @@ def build_stack(
     reu_available = _resolve_reu_available(cfg, api)
     sampler_available = _resolve_sampler_available(cfg, api)
     try:
-        playlist_scenes = cfgmod.scenes_from_config(
+        playlist_scenes = scene_factory.scenes_from_config(
             cfg,
             api,
             audio,
@@ -1072,7 +1073,7 @@ def build_stack(
     # playlist thread at the swap.
     playlist.build_performance_scene = (
         lambda clip, _cfg=cfg, _api=api, _audio=audio, _source=source, _reu=reu_available, _samp=sampler_available, _ens=is_ensemble: (
-            cfgmod.build_scene(
+            scene_factory.build_scene(
                 cfgmod.clip_scene_cfg(clip),
                 _cfg,
                 _api,
@@ -1230,8 +1231,8 @@ def _collect_lab_samples(path: str):
     feeds force_palette/auto_fit feeds the suggestion."""
     import cv2
 
-    from .config import VIDEO_EXTS
     from .palette import ColorMapAccumulator
+    from .scene_factory import VIDEO_EXTS
     from .video import scan_video_samples
 
     acc = ColorMapAccumulator()  # accumulate only; we want its raw lab_samples()
@@ -1783,15 +1784,15 @@ def main(argv=None) -> int:
         # Reject a sample rate that would overrun the NMI DAC handler on the
         # target system (broken/pitch-dropped audio) before the playlist runs.
         try:
-            cfgmod.validate_nmi_sample_rate(cfg)
-            cfgmod.validate_sampler_cfg(cfg)
-            cfgmod.validate_dac_curve_cfg(cfg)
-            cfgmod.validate_dac_bitmap_tempo_cfg(cfg)
-            cfgmod.validate_sid_model_cfg(cfg)
-            cfgmod.validate_dither_cfg(cfg)
-            cfgmod.validate_color_match_cfg(cfg)
-            cfgmod.validate_cell_strategy_cfg(cfg)
-            cfgmod.validate_motion_smoothing_cfg(cfg)
+            scene_factory.validate_nmi_sample_rate(cfg)
+            scene_factory.validate_sampler_cfg(cfg)
+            scene_factory.validate_dac_curve_cfg(cfg)
+            scene_factory.validate_dac_bitmap_tempo_cfg(cfg)
+            scene_factory.validate_sid_model_cfg(cfg)
+            scene_factory.validate_dither_cfg(cfg)
+            scene_factory.validate_color_match_cfg(cfg)
+            scene_factory.validate_cell_strategy_cfg(cfg)
+            scene_factory.validate_motion_smoothing_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             return 5
@@ -1853,7 +1854,7 @@ def main(argv=None) -> int:
             st.playlist._broadcast_interrupt = ensemble.broadcast_interrupt[st.name]
             st.playlist._broadcast_resume = ensemble.broadcast_resume[st.name]
             st.playlist.build_follower_scene = lambda scene_cfg, _st=st, _cfg=cfg: (
-                cfgmod.build_scene(
+                scene_factory.build_scene(
                     scene_cfg,
                     _cfg,
                     _st.api,
@@ -1906,7 +1907,7 @@ def main(argv=None) -> int:
             try:
                 new_cfg = cfgmod.load(sub_path)
                 new_cfg = cfgmod.merge_cli(new_cfg, args)
-                new_scenes = cfgmod.scenes_from_config(
+                new_scenes = scene_factory.scenes_from_config(
                     new_cfg,
                     st.api,
                     st.audio,
@@ -1946,7 +1947,7 @@ def main(argv=None) -> int:
                 # every lambda would see the last loop iteration's st.
                 config_loaders = {
                     st.name: (
-                        lambda st=st, p=p: cfgmod.scenes_from_config(
+                        lambda st=st, p=p: scene_factory.scenes_from_config(
                             cfgmod.merge_cli(cfgmod.load(p), args),
                             st.api,
                             st.audio,
@@ -1983,7 +1984,7 @@ def main(argv=None) -> int:
         midi_cfg = loaded.master_midi_control if loaded.is_ensemble else cfgs[0].midi_control
         if midi_cfg.enabled:
             try:
-                cfgmod.validate_midi_control_cfg(midi_cfg)
+                scene_factory.validate_midi_control_cfg(midi_cfg)
                 from .midi_control import build_midi_control_listener
 
                 midi_control_listener = build_midi_control_listener(
@@ -2005,7 +2006,7 @@ def main(argv=None) -> int:
         # (mDNS + WLED JSON API) so the WLED app / python-wled / HA can control
         # it. One server spans every system (one WLED segment per system); the
         # first system's [wled].listen governs it (like [control]).
-        listen_on, wled_host, wled_port = cfgmod.resolve_wled_listen(cfgs[0])
+        listen_on, wled_host, wled_port = scene_factory.resolve_wled_listen(cfgs[0])
         if listen_on:
             try:
                 from .wled_device import start_wled_device

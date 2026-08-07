@@ -25,8 +25,9 @@ from dataclasses import replace
 from typing import cast
 
 from c64cast import config as cfgmod
-from c64cast.config import _frame_push_default_fps
+from c64cast import scene_factory
 from c64cast.modes import DisplayMode
+from c64cast.scene_factory import _frame_push_default_fps
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402
@@ -134,30 +135,30 @@ class WebcamFpsDefaultTest(_BuildSceneFpsBase):
     def test_bitmap_with_audio_caps_at_20(self):
         # The default webcam display (hires_edges) is a bitmap mode.
         s = cfgmod.SceneCfg(type="webcam", display="hires_edges")
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, self.source)
         self.assertEqual(scene.target_fps, 20.0)
 
     def test_bitmap_with_audio_caps_at_20_on_pal(self):
         s = cfgmod.SceneCfg(type="webcam", display="mhires")
-        scene = cfgmod.build_scene(s, self._cfg("PAL"), self.api, self.audio, self.source)
+        scene = scene_factory.build_scene(s, self._cfg("PAL"), self.api, self.audio, self.source)
         self.assertEqual(scene.target_fps, 20.0)
 
     def test_bitmap_muted_falls_to_half_rate(self):
         # audio = None (global off) → no digitized DAC → half system rate.
         s = cfgmod.SceneCfg(type="webcam", display="hires")
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, None, self.source)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, None, self.source)
         self.assertEqual(scene.target_fps, 30.0)
 
     def test_bitmap_muted_half_rate_on_pal(self):
         s = cfgmod.SceneCfg(type="webcam", display="hires")
-        scene = cfgmod.build_scene(s, self._cfg("PAL"), self.api, None, self.source)
+        scene = scene_factory.build_scene(s, self._cfg("PAL"), self.api, None, self.source)
         self.assertEqual(scene.target_fps, 25.0)
 
     def test_per_scene_audio_false_falls_to_half_rate(self):
         # `audio = false` opts a single bitmap scene out of the DAC even when
         # the global streamer is on → half rate, not 20.
         s = cfgmod.SceneCfg(type="webcam", display="mhires", audio=False)
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, self.source)
         self.assertEqual(scene.target_fps, 30.0)
 
     def test_char_mode_with_dac_audio_takes_the_20_cap(self):
@@ -165,18 +166,18 @@ class WebcamFpsDefaultTest(_BuildSceneFpsBase):
         # mic audio on the DAC those writes contend with the ring, so the 20 fps
         # cap applies here too, not just on bitmap.
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, self.source)
         self.assertEqual(scene.target_fps, 20.0)
 
     def test_char_mode_without_audio_keeps_system_default(self):
         # No DAC stream → nothing to contend with → playlist system default.
         s = cfgmod.SceneCfg(type="webcam", display="petscii", audio=False)
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, self.source)
         self.assertIsNone(scene.target_fps)
 
     def test_explicit_target_fps_wins(self):
         s = cfgmod.SceneCfg(type="webcam", display="hires_edges", target_fps=45.0)
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, self.source)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, self.source)
         self.assertEqual(scene.target_fps, 45.0)
 
 
@@ -191,17 +192,17 @@ class VideoFpsDefaultTest(_BuildSceneFpsBase):
 
     def test_bitmap_with_audio_caps_at_20(self):
         s = cfgmod.SceneCfg(type="video", display="mhires", file=self.vid)
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertEqual(scene.target_fps, 20.0)
 
     def test_bitmap_muted_falls_to_half_rate(self):
         s = cfgmod.SceneCfg(type="video", display="hires", file=self.vid, audio=False)
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertEqual(scene.target_fps, 30.0)
 
     def test_char_mode_keeps_system_default(self):
         s = cfgmod.SceneCfg(type="video", display="petscii", file=self.vid)
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)
 
     def test_sampler_bitmap_video_gets_full_system_rate(self):
@@ -211,7 +212,9 @@ class VideoFpsDefaultTest(_BuildSceneFpsBase):
         cfg = self._cfg()
         cfg.audio.backend = "sampler"
         s = cfgmod.SceneCfg(type="video", display="mhires", file=self.vid)
-        scene = cfgmod.build_scene(s, cfg, self.api, self.audio, None, sampler_available=True)
+        scene = scene_factory.build_scene(
+            s, cfg, self.api, self.audio, None, sampler_available=True
+        )
         self.assertEqual(scene.target_fps, 60.0)
 
     def test_sampler_bitmap_video_full_rate_on_pal(self):
@@ -219,7 +222,9 @@ class VideoFpsDefaultTest(_BuildSceneFpsBase):
         cfg = self._cfg("PAL")
         cfg.audio.backend = "auto"  # auto resolves to sampler when available
         s = cfgmod.SceneCfg(type="video", display="hires", file=self.vid)
-        scene = cfgmod.build_scene(s, cfg, self.api, self.audio, None, sampler_available=True)
+        scene = scene_factory.build_scene(
+            s, cfg, self.api, self.audio, None, sampler_available=True
+        )
         self.assertEqual(scene.target_fps, 50.0)
 
     def test_sampler_unavailable_falls_back_to_dac_cap(self):
@@ -228,7 +233,9 @@ class VideoFpsDefaultTest(_BuildSceneFpsBase):
         cfg = self._cfg()
         cfg.audio.backend = "auto"
         s = cfgmod.SceneCfg(type="video", display="mhires", file=self.vid)
-        scene = cfgmod.build_scene(s, cfg, self.api, self.audio, None, sampler_available=False)
+        scene = scene_factory.build_scene(
+            s, cfg, self.api, self.audio, None, sampler_available=False
+        )
         self.assertEqual(scene.target_fps, 20.0)
 
 
@@ -237,14 +244,14 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="mic", display="mhires"
         )
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertEqual(scene.target_fps, 20.0)
 
     def test_mic_source_bitmap_audio_off_falls_to_half_rate(self):
         # audio_source = mic is DAC-capable; with the global streamer off it
         # still gets the bitmap baseline (30/25), like a muted webcam.
         s = cfgmod.SceneCfg(type="generative", source="plasma", audio_source="mic", display="hires")
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, None, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, None, None)
         self.assertEqual(scene.target_fps, 30.0)
 
     def test_none_source_bitmap_keeps_system_default(self):
@@ -252,7 +259,7 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="none", display="mhires"
         )
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)
 
     def test_mic_source_char_mode_takes_the_20_cap(self):
@@ -262,13 +269,13 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="mic", display="petscii"
         )
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertEqual(scene.target_fps, 20.0)
 
     def test_mcm_char_mode_takes_the_20_cap(self):
         # mcm is the case the user hit: screen + color RAM every tick.
         s = cfgmod.SceneCfg(type="generative", source="plasma", audio_source="mic", display="mcm")
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertEqual(scene.target_fps, 20.0)
 
     def test_char_mode_without_dac_audio_keeps_system_default(self):
@@ -276,7 +283,7 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="mic", display="mcm", audio=False
         )
-        scene = cfgmod.build_scene(s, self._cfg(), self.api, self.audio, None)
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)
 
 
@@ -298,7 +305,6 @@ class InterleavedVideoFpsTest(_BuildSceneFpsBase):
     def _interleaved_videos(self, cfg, audio):
         import unittest.mock as mock
 
-        from c64cast import video as videomod
         from c64cast.scenes import VideoScene
 
         cfg.playlist.interleave_videos = True
@@ -309,10 +315,11 @@ class InterleavedVideoFpsTest(_BuildSceneFpsBase):
             cfgmod.SceneCfg(type="blank", name="a"),
             cfgmod.SceneCfg(type="blank", name="b"),
         ]
-        # Pretend PyAV is present so interleaving runs without the extra
-        # (config imports ensure_pyav from c64cast.video locally).
-        with mock.patch.object(videomod, "ensure_pyav", return_value=True):
-            built = cfgmod.scenes_from_config(cfg, self.api, audio, None)
+        # Pretend PyAV is present so interleaving runs without the extra.
+        # Patched on scene_factory, which binds ensure_pyav at import time —
+        # patching it in c64cast.video wouldn't reach the factory's copy.
+        with mock.patch.object(scene_factory, "ensure_pyav", return_value=True):
+            built = scene_factory.scenes_from_config(cfg, self.api, audio, None)
         return [s for s in built if isinstance(s, VideoScene)]
 
     def test_interleaved_video_with_audio_caps_at_20(self):

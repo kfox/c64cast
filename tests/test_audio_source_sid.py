@@ -288,7 +288,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.sid = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x40))
 
     def _build(self, cfg=None, **kw):
-        from c64cast.config import SceneCfg, build_scene
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import build_scene
 
         s = SceneCfg(type="generative", source="plasma", audio_source="sid", file=self.sid, **kw)
         return build_scene(s, cfg or self.cfg, cast(C64Backend, FakeAPI()), None, None)
@@ -316,7 +317,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertFalse(scene.display_mode.use_reu_staged)
 
     def test_explicit_audio_with_sid_rejected(self):
-        from c64cast.config import SceneCfg, build_scene
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import build_scene
 
         s = SceneCfg(
             type="generative", audio_source="sid", file=self.sid, display="petscii", audio=False
@@ -327,7 +329,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
     def test_bitmap_sid_defaults_to_half_rate(self):
         # A high-load tune so the bitmap display accepts it; target_fps halves.
         hi = self._write(_make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
-        from c64cast.config import SceneCfg, build_scene
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import build_scene
 
         s = SceneCfg(type="generative", audio_source="sid", file=hi, display="mhires")
         scene = build_scene(s, self.cfg, cast(C64Backend, FakeAPI()), None, None)
@@ -335,7 +338,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
 
     def test_explicit_target_fps_wins_over_half_rate(self):
         hi = self._write(_make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
-        from c64cast.config import SceneCfg, build_scene
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import build_scene
 
         s = SceneCfg(
             type="generative", audio_source="sid", file=hi, display="mhires", target_fps=12.0
@@ -347,7 +351,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         # A SID source legitimately holds the audio spotlight; ensemble mode
         # must not null it out (wants_audio_lock gates the slot instead).
         scene = self._build(display="petscii")  # is_ensemble defaults False
-        from c64cast.config import SceneCfg, build_scene
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import build_scene
 
         s = SceneCfg(type="generative", audio_source="sid", file=self.sid, display="petscii")
         scene = build_scene(s, self.cfg, cast(C64Backend, FakeAPI()), None, None, is_ensemble=True)
@@ -372,7 +377,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
     def test_validate_load_time_rejects_bitmap_overlap(self):
         # A typical $1000-load tune with a real-sized payload overlaps $2000 —
         # rejected at validate_scene_cfg time on a bitmap display.
-        from c64cast.config import SceneCfg, validate_scene_cfg
+        from c64cast.config import SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         big = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x1500))
         s = SceneCfg(type="generative", audio_source="sid", file=big, display="mhires")

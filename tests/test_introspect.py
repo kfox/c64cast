@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 
 from c64cast import config as cfgmod
-from c64cast import introspect
+from c64cast import introspect, scene_factory
 
 
 class RenderSmokeTest(unittest.TestCase):
@@ -55,12 +55,12 @@ class RenderSmokeTest(unittest.TestCase):
 
 
 class ModeTableSyncTest(unittest.TestCase):
-    """The static _MODES table must match what config._build_display_mode
+    """The static _MODES table must match what scene_factory._build_display_mode
     actually builds (flags + runtime name)."""
 
     def test_mode_flags_match_runtime(self):
         for m in introspect.display_modes():
-            built = cfgmod._build_display_mode(m.name)
+            built = scene_factory._build_display_mode(m.name)
             self.assertEqual(built.name, m.runtime_name, m.name)
             self.assertEqual(bool(built.is_bitmapped), m.is_bitmapped, m.name)
             self.assertEqual(bool(built.is_petscii_compatible), m.is_petscii_compatible, m.name)
@@ -114,7 +114,7 @@ class CompatMatrixTest(unittest.TestCase):
         ov = build_overlay({"type": "clock"}, audio=None)
         od = self._doc("clock")
         for m in introspect.display_modes():
-            built_mode = cfgmod._build_display_mode(m.name)
+            built_mode = scene_factory._build_display_mode(m.name)
             try:
                 validate_for_scene(ov, built_mode)
                 raised = False

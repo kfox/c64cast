@@ -33,17 +33,8 @@ import os
 import re
 import urllib.parse
 
-from .config import (
-    AUDIO_EXTS,
-    PICTURE_EXTS,
-    PROGRAM_EXTS,
-    SID_EXTS,
-    VIDEO_EXTS,
-    Config,
-    SceneCfg,
-    apply_machine_settings,
-    merge_cli,
-)
+from .config import Config, SceneCfg, apply_machine_settings, merge_cli
+from .scene_factory import AUDIO_EXTS, PICTURE_EXTS, PROGRAM_EXTS, SID_EXTS, VIDEO_EXTS
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +90,7 @@ _TIMESTR_HMS_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", re.IGNORECA
 # and suits arbitrary film/photo content (matches SceneCfg's own unset-display
 # resolution for video, see config.resolve_scene_display); kept as an
 # explicit constant here since quickcast also applies it to slideshow (whose
-# SceneCfg default resolution differs — see config._resolve_slideshow_display)
+# SceneCfg default resolution differs — see scene_factory._resolve_slideshow_display)
 # and needs a concrete value to fall back on when `-d/--display` isn't passed.
 _DEFAULT_VIDEO_DISPLAY = "mhires"
 

@@ -151,7 +151,7 @@ class MhiresOverlayTest(unittest.TestCase):
         # use_reu_staged="auto" stages bitmap video, but a bitmap scene with a
         # buffer-painting text overlay prefers crisp host-DMA (the REU bank-swap
         # shimmers fine glyphs). Overlay-free bitmap still stages.
-        from c64cast.config import resolve_use_reu_staged
+        from c64cast.scene_factory import resolve_use_reu_staged
 
         self.assertTrue(resolve_use_reu_staged("auto", "mhires", reu_available=True))
         self.assertFalse(
@@ -170,6 +170,7 @@ class MhiresOverlayTest(unittest.TestCase):
         from typing import cast
 
         from c64cast import config as cfgmod
+        from c64cast import scene_factory
 
         toml = (
             '[video]\nuse_reu_staged = "auto"\n'
@@ -181,7 +182,7 @@ class MhiresOverlayTest(unittest.TestCase):
             path = f.name
         try:
             c = cfgmod.load(path)
-            scenes = cfgmod.scenes_from_config(
+            scenes = scene_factory.scenes_from_config(
                 c, FakeAPI(), audio=None, source=None, reu_available=True
             )
         finally:
@@ -193,7 +194,7 @@ class MhiresOverlayTest(unittest.TestCase):
         # The SceneCfg field reaches MultiHiresDisplayMode via _build_display_mode.
         from typing import cast
 
-        from c64cast.config import _build_display_mode
+        from c64cast.scene_factory import _build_display_mode
 
         mode = cast(MultiHiresDisplayMode, _build_display_mode("mhires", text_double_height=True))
         self.assertTrue(mode.text_double_height)

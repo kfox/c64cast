@@ -33,16 +33,16 @@ import os
 
 from . import config as cfgmod
 from . import config_serialize as ser
-from . import introspect, paths
+from . import introspect, paths, scene_factory
 
 # Scene type -> (default asset dir, accepted extensions) for the file picker.
 # Mirrors the DEFAULT_*_DIR / *_EXTS constants the loader resolves against, so
 # the wizard suggests exactly the directory build_scene will search.
 _ASSET_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "video": (cfgmod.DEFAULT_VIDEO_DIR, cfgmod.VIDEO_EXTS),
-    "waveform": (cfgmod.DEFAULT_WAVEFORM_DIR, cfgmod.SID_EXTS),
-    "slideshow": (cfgmod.DEFAULT_SLIDESHOW_DIR, cfgmod.PICTURE_EXTS),
-    "launcher": (cfgmod.DEFAULT_PROGRAM_DIR, cfgmod.PROGRAM_EXTS),
+    "video": (scene_factory.DEFAULT_VIDEO_DIR, scene_factory.VIDEO_EXTS),
+    "waveform": (scene_factory.DEFAULT_WAVEFORM_DIR, scene_factory.SID_EXTS),
+    "slideshow": (scene_factory.DEFAULT_SLIDESHOW_DIR, scene_factory.PICTURE_EXTS),
+    "launcher": (scene_factory.DEFAULT_PROGRAM_DIR, scene_factory.PROGRAM_EXTS),
 }
 
 # Scene-field names handled explicitly by the guided flow; the "advanced" walk
@@ -234,7 +234,7 @@ def validate(cfg: cfgmod.Config) -> str | None:
     """Run the loader's pre-construction validation on the wizard's single
     scene. Returns an error message string on failure, else None."""
     try:
-        cfgmod.validate_scene_cfg(cfg.scenes[0], cfg, audio_enabled=cfg.audio.enabled)
+        scene_factory.validate_scene_cfg(cfg.scenes[0], cfg, audio_enabled=cfg.audio.enabled)
     except Exception as e:  # ValueError / OrchestratorError — surface verbatim
         return str(e)
     return None
@@ -246,7 +246,7 @@ def validate_all(cfg: cfgmod.Config) -> list[str]:
     errs: list[str] = []
     for i, s in enumerate(cfg.scenes):
         try:
-            cfgmod.validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
+            scene_factory.validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
         except Exception as e:  # ValueError / OrchestratorError
             errs.append(f"scene {i + 1} ({s.name or s.type}): {e}")
     return errs
@@ -700,7 +700,7 @@ def _prompt_playlist_opts(
     if do_ads is None:
         return None
     if do_ads:
-        videos_dir = _pick_dir(q, "Videos directory", cfgmod.DEFAULT_VIDEO_DIR)
+        videos_dir = _pick_dir(q, "Videos directory", scene_factory.DEFAULT_VIDEO_DIR)
         if videos_dir is None:
             return None
         playlist["interleave_videos"] = True

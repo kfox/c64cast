@@ -2022,7 +2022,8 @@ class WaveformConfigValidationTest(unittest.TestCase):
         os.unlink(self.sid_path)
 
     def _validate(self, **kwargs):
-        from c64cast.config import Config, SceneCfg, validate_scene_cfg
+        from c64cast.config import Config, SceneCfg
+        from c64cast.scene_factory import validate_scene_cfg
 
         s = SceneCfg(type="waveform", file=self.sid_path, **kwargs)
         validate_scene_cfg(s, Config(), audio_enabled=False)

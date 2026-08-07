@@ -24,15 +24,13 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from .c64 import max_safe_sample_rate, nmi_rate_safety
-from .config import (
-    ColorCfg,
-    Config,
-    ConfigError,
-    LoadResult,
+from .config import ColorCfg, Config, ConfigError, LoadResult, resolve_recording_path
+from .orchestrator import OrchestratorError
+from .paths import expand_user
+from .scene_factory import (
     resolve_cell_strategy,
     resolve_color_match,
     resolve_dither_method,
-    resolve_recording_path,
     resolve_scene_display,
     resolve_wled_broadcast,
     resolve_wled_listen,
@@ -47,8 +45,6 @@ from .config import (
     validate_sid_model_cfg,
     validate_wled_cfg,
 )
-from .orchestrator import OrchestratorError
-from .paths import expand_user
 
 log = logging.getLogger(__name__)
 

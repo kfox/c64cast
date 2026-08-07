@@ -19,7 +19,7 @@ from unittest import mock
 from _fakes import FrozenClock
 
 from c64cast import config as cfgmod
-from c64cast import introspect, midi_setup
+from c64cast import introspect, midi_setup, scene_factory
 from c64cast import midi_control as mc
 from c64cast.config import _DEFAULT_MIDI_CC_MAP
 from c64cast.playlist import Playlist
@@ -276,7 +276,7 @@ class WizardHelperTests(unittest.TestCase):
             midi_setup.build_jump_entry("pc", 3, 5),
         ]
         cfg = cfgmod.MidiControlCfg(enabled=True, cc_map=maps)
-        cfgmod.validate_midi_control_cfg(cfg)  # must not raise
+        scene_factory.validate_midi_control_cfg(cfg)  # must not raise
         mc._parse_cc_map(maps)  # runtime parser must accept them too
 
 
@@ -424,12 +424,12 @@ class ConfigFieldTests(unittest.TestCase):
             controller_profile="off",
             cc_map=[{"type": "cc", "number": 80, "action": "osd.position"}],
         )
-        cfgmod.validate_midi_control_cfg(cfg)  # must not raise
+        scene_factory.validate_midi_control_cfg(cfg)  # must not raise
 
     def test_validate_rejects_empty_profile(self):
         cfg = cfgmod.MidiControlCfg(enabled=True, controller_profile="")
         with self.assertRaises(cfgmod.ConfigError):
-            cfgmod.validate_midi_control_cfg(cfg)
+            scene_factory.validate_midi_control_cfg(cfg)
 
 
 def _load_from_string(text: str) -> cfgmod.Config:
