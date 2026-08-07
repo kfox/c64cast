@@ -54,8 +54,8 @@ from .video import (
     AVFileSource,
     WebcamSource,
     _compute_normalization_gain,
-    _ensure_pyav,
     decode_audio_full,
+    ensure_pyav,
     prescan_source_color,
 )
 
@@ -1376,7 +1376,7 @@ class VideoScene(Scene):
         self._loop_state = "none"
         self._record_border_active = False
         self._loop_store = make_loop_preset_store(self.filepath)
-        if not _ensure_pyav():
+        if not ensure_pyav():
             log.warning(
                 "PyAV unavailable; video scene cannot play %s "
                 "(install with `uv tool install --force 'c64cast[all]'`)",

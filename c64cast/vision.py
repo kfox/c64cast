@@ -201,7 +201,7 @@ _MP_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
 def _ensure_mediapipe() -> bool:
     """Import mediapipe on demand; cache the result. Returns availability.
 
-    Deferred (like video.py's `_ensure_pyav`) so importing c64cast doesn't
+    Deferred (like video.py's `ensure_pyav`) so importing c64cast doesn't
     drag in mediapipe + its heavy native deps unless a vision scene runs."""
     global _mp, _MP_AVAILABLE
     if _MP_AVAILABLE is not None:

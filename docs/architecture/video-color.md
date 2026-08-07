@@ -27,7 +27,7 @@ The playback source. The demuxer thread reads packets from one container, pushes
 
 ### HTTP reconnect for remote streams
 
-`_av_open` / `_HTTP_RECONNECT_OPTIONS`. A yt-dlp-resolved YouTube URL is a single progressive `googlevideo` CDN link that the CDN throttles (see its `cps=`/`ratebypass` query params) and periodically drops mid-stream; that surfaces as `OSError: [Errno 5] Input/output error` out of `container.demux()`, which the demux loop's broad `except` catches, logs as "crashed", and ends playback on. The fix is to open remote inputs with FFmpeg's http-protocol reconnect options (`reconnect`, `reconnect_streamed`, `reconnect_on_network_error`, `reconnect_delay_max=5`) so FFmpeg transparently re-establishes the connection and resumes from the current byte offset instead of erroring. `_av_open(path)` wraps `av.open` and injects these **only for `http(s)://` inputs** (`_is_remote_url`) — they're http-protocol-only options, so scoping them keeps FFmpeg from warning about unrecognized options on a local/file input. Every `av.open` site in the module (playback, audio-full decode, peak scan, color pre-scan) routes through it.
+`av_open` / `_HTTP_RECONNECT_OPTIONS`. A yt-dlp-resolved YouTube URL is a single progressive `googlevideo` CDN link that the CDN throttles (see its `cps=`/`ratebypass` query params) and periodically drops mid-stream; that surfaces as `OSError: [Errno 5] Input/output error` out of `container.demux()`, which the demux loop's broad `except` catches, logs as "crashed", and ends playback on. The fix is to open remote inputs with FFmpeg's http-protocol reconnect options (`reconnect`, `reconnect_streamed`, `reconnect_on_network_error`, `reconnect_delay_max=5`) so FFmpeg transparently re-establishes the connection and resumes from the current byte offset instead of erroring. `av_open(path)` wraps `av.open` and injects these **only for `http(s)://` inputs** (`_is_remote_url`) — they're http-protocol-only options, so scoping them keeps FFmpeg from warning about unrecognized options on a local/file input. Every `av.open` site in the module (playback, audio-full decode, peak scan, color pre-scan) routes through it.
 
 ### Decode-time downscale
 
@@ -46,9 +46,9 @@ Two guards in `_plan_decode_size`:
 * Post-crop dims stay ≥ `DECODE_HEADROOM` (2×) the target in **both** axes, mirroring `scenes._crop_to_aspect` so the anamorphic MHires target — where height > width — is honored.
 * It never upscales. A source already small enough returns None, falling back to a plain full-res convert.
 
-The same downscale applies to the one-shot color pre-scan (`_scan_video_samples`), since color statistics are distribution-based.
+The same downscale applies to the one-shot color pre-scan (`scan_video_samples`), since color statistics are distribution-based.
 
-### Seek-sampled color pre-scan (`_scan_video_samples`)
+### Seek-sampled color pre-scan (`scan_video_samples`)
 
 The auto_fit and force_palette pre-scan needs a representative frame sample across the *whole* source, not real-time playback.
 

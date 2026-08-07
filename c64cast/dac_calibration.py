@@ -290,11 +290,22 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
     return f"tr-serial-{_sanitize(tr.serial_port or 'auto')}"
 
 
+def _path_for_key(cfg: Config, key: str) -> Path:
+    """Where the calibration filed under ``key`` lives — the file
+    ``[audio].dac_calibration_profile`` names, when it named a path, else
+    ``<calibration dir>/<key>.json``."""
+    override = profile_path_override(cfg)
+    return override if override is not None else paths.calibration_dir() / f"{key}.json"
+
+
 def calibration_path(cfg: Config, be: C64Backend | None = None) -> Path:
+    # Short-circuits on the override instead of delegating unconditionally,
+    # because resolve_calibration_key can cost a live device round-trip that an
+    # override makes irrelevant.
     override = profile_path_override(cfg)
     if override is not None:
         return override
-    return paths.calibration_dir() / f"{resolve_calibration_key(cfg, be)}.json"
+    return _path_for_key(cfg, resolve_calibration_key(cfg, be))
 
 
 def offline_key_is_authoritative(cfg: Config) -> bool:
@@ -506,8 +517,7 @@ def save_calibration(
             out["raw_signed_levels"] = [[int(c), round(v, 8)] for c, v in r.raw]
         return out
 
-    override = profile_path_override(cfg)
-    path = override if override is not None else paths.calibration_dir() / f"{key}.json"
+    path = _path_for_key(cfg, key)
     doc = {
         "schema": _SCHEMA_VERSION,
         "key": key,
@@ -1392,6 +1402,13 @@ def _input_device_list() -> str:
     return "\n".join(lines) or "  (none)"
 
 
+def _pick_device_hint(lead: str = "Pick one with") -> str:
+    """The "and here are your inputs" footer every capture-device failure ends
+    with. ``lead`` carries the sentence into it, so the call sites differ only
+    in their verb instead of each restating the flag and the listing."""
+    return f"{lead} --audio-device N:\n{_input_device_list()}"
+
+
 def _capture_fault_message(dev: int, reason: str, peak: float, saved: Path | None = None) -> str:
     """The message a capture that doesn't contain the slot ring fails with.
 
@@ -1417,7 +1434,7 @@ def _capture_fault_message(dev: int, reason: str, peak: float, saved: Path | Non
         "the wrong jack, or the input's gain at zero.\n"
         "  • the NMI DAC never came up on the C64. Re-run with -v and check the "
         "bring-up lines.\n"
-        f"Pick the input with --audio-device N:\n{_input_device_list()}"
+        + _pick_device_hint("Pick the input with")
         + (f"\nThe capture is saved at {saved}." if saved is not None else "")
     )
 
@@ -1574,14 +1591,12 @@ def resolve_capture_format(dev: int) -> CaptureFormat:
         max_in = int(info["max_input_channels"])
     except Exception as e:  # noqa: BLE001 — bad index / device vanished
         raise CaptureUnavailableError(
-            f"capture device {dev} could not be queried: {e}\n"
-            f"Pick one with --audio-device N:\n{_input_device_list()}"
+            f"capture device {dev} could not be queried: {e}\n" + _pick_device_hint()
         ) from e
     name = info["name"]
     if max_in <= 0:
         raise CaptureUnavailableError(
-            f"capture device {dev} ({name!r}) has no input channels. "
-            f"Pick one with --audio-device N:\n{_input_device_list()}"
+            f"capture device {dev} ({name!r}) has no input channels. " + _pick_device_hint()
         )
 
     channel_options: list[int] = []
@@ -1603,8 +1618,7 @@ def resolve_capture_format(dev: int) -> CaptureFormat:
                 log.debug("calib: device %d rejected channels=%d sr=%d", dev, ch, sr, exc_info=True)
     raise CaptureUnavailableError(
         f"capture device {dev} ({name!r}) accepted no combination of channels "
-        f"{channel_options} × rates {rate_options}. Pick another with "
-        f"--audio-device N:\n{_input_device_list()}"
+        f"{channel_options} × rates {rate_options}. " + _pick_device_hint("Pick another with")
     )
 
 
@@ -1873,7 +1887,7 @@ def run_calibration(
                 f"[calib] warning: {dev_name!r} doesn't look like a video-capture "
                 "input — this is the system default, picked because no capture "
                 "device was recognized. If the C64's audio doesn't arrive on it, "
-                f"stop now and pick with --audio-device N:\n{_input_device_list()}"
+                + _pick_device_hint("stop now and pick with")
             )
 
         if supports_config:

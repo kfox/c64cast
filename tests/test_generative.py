@@ -28,7 +28,7 @@ from c64cast.frame_source import BaseFrameSource, FrameSource
 from c64cast.generators import build_generator, generator_names
 from c64cast.modes import DisplayMode
 from c64cast.scenes import Scene, SourceScene, _render_with_overlays
-from c64cast.video import _ensure_pyav
+from c64cast.video import ensure_pyav
 
 
 class GeneratorTest(unittest.TestCase):
@@ -1384,7 +1384,7 @@ class ConfigGenerativeTest(unittest.TestCase):
             w.setframerate(rate)
             w.writeframes(b"\x00\x00" * int(rate * seconds))
 
-    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_builds_source_sized_to_track(self):
         import tempfile
 
@@ -1415,7 +1415,7 @@ class ConfigGenerativeTest(unittest.TestCase):
         api.profile = replace(api.profile, supports_sampler=True)
         return api
 
-    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_routes_to_sampler_and_caps_fps_at_30(self):
         # On a sampler-capable U64 (backend auto/sampler + sampler_available),
         # audio_source="file" decodes into the off-bus UltimateAudioSampler
@@ -1448,7 +1448,7 @@ class ConfigGenerativeTest(unittest.TestCase):
             self.assertIsInstance(scene.audio_source._audio, UltimateAudioSampler)  # type: ignore[attr-defined]
             self.assertEqual(scene.target_fps, 30.0)
 
-    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_sampler_char_mode_uncapped(self):
         # A char display (mcm) is cheap, so a sampler-routed file scene keeps the
         # playlist default (None) — the quickcast `c64cast tune.mp3` path.
@@ -1475,7 +1475,7 @@ class ConfigGenerativeTest(unittest.TestCase):
             self.assertIsInstance(scene.audio_source._audio, UltimateAudioSampler)  # type: ignore[attr-defined]
             self.assertIsNone(scene.target_fps)
 
-    @unittest.skipUnless(_ensure_pyav(), "PyAV (video extra) not installed")
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_dac_backend_stays_on_dac_at_20_fps(self):
         # backend="dac" forces the 4-bit DAC even on a sampler-capable U64 (also
         # the only path on TeensyROM), keeping its 20 fps bitmap cap. Proves the
