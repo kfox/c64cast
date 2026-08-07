@@ -309,7 +309,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         DMA-clear screen RAM to spaces for a clean 'paused' screen, leaving DEN
         on — badlines keep flowing and the resume-hold reads keep working. This
         is the closest possible idle to the (working) live-scene state."""
-        self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
+        self._clear_screen()
 
     def _bring_up_irq_clear_loop(self) -> None:
         """IRQ-enabled idle: PostFile + LaunchFile the BASIC clear-loop PRG
@@ -329,8 +329,25 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         if self._upload_and_launch_retry(BASIC_CLEAR_LOOP_PRG, path, "clear-loop"):
             self._settle_after_launch()
             self._ensure_clear_loop_running(BASIC_CLEAR_LOOP_PRG)
-            self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
+            self._clear_screen()
             self.invalidate_cache()
+
+    def _clear_screen(self) -> None:
+        """DMA screen RAM to spaces — never a kernal CLR, which would need the
+        CPU that the idle loop is using."""
+        self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
+
+    def _require_irq_idle(self, operation: str) -> None:
+        """Refuse `operation` on firmware without the IRQ-enabled idle, whose
+        spin-stub alternative masks IRQs forever — a `$0314` vector swap would
+        never fire, so the operation would hang or play silently instead of
+        failing. `supports_read` is the proxy for that firmware: ReadC64Mem and
+        the cycle-clean DMA fix shipped together."""
+        if not self.profile.supports_read:
+            raise BackendCapabilityError(
+                f"{operation} on TeensyROM (needs the IRQ-enabled idle from "
+                "cycle-clean firmware v0.7.2.5+)"
+            )
 
     def _settle_after_launch(self) -> None:
         """Wait out the console text LaunchFile streams back after its ack, so
@@ -410,7 +427,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             # spin stub left on screen (it doesn't PRINT CHR$(147)). Settle
             # first so the loader's print lands before we blank it.
             self._settle_after_launch()
-            self.write_memory_file(f"{_SCREEN_RAM:04X}", bytes([_SC_SPACE]) * _SCREEN_CELLS)
+            self._clear_screen()
             self.invalidate_cache()
 
     def _upload_and_launch_retry(self, prg: bytes, dest: str, label: str) -> bool:
@@ -503,11 +520,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         Requires the IRQ-enabled idle (cycle-clean fw, proxied by
         `supports_read`); the spin-stub idle on older firmware masks IRQs, so the
         vector-swap would never fire — raise rather than play silently."""
-        if not self.profile.supports_read:
-            raise BackendCapabilityError(
-                "run_sid_player on TeensyROM (needs the IRQ-enabled idle from "
-                "cycle-clean firmware v0.7.2.5+)"
-            )
+        self._require_irq_idle("run_sid_player")
         self._write_sid_blobs(parsed, layout, mc, reinit)
         self.flush()
         if defer_audio:
@@ -534,11 +547,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         fire and the dump would silently time out. `supports_read` is the proxy
         for that firmware (it also gates the read-back), so this refuses rather
         than hanging."""
-        if not self.profile.supports_read:
-            raise BackendCapabilityError(
-                "dump_char_rom on TeensyROM (needs the IRQ-enabled idle from "
-                "cycle-clean firmware v0.7.2.5+)"
-            )
+        self._require_irq_idle("dump_char_rom")
         self.write_regs(f"{VECTORS.IRQ:04X}", stub_addr & 0xFF, (stub_addr >> 8) & 0xFF)
         self.flush()
 
