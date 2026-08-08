@@ -50,6 +50,7 @@ import queue
 import re
 import tempfile
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -99,6 +100,87 @@ def atomic_write_text(path: str | os.PathLike[str], text: str) -> None:
     :func:`atomic_write_bytes`). Shared by PresetStore and the live-tune
     save-back; the loop-preset store (Phase 3) reuses it too."""
     atomic_write_bytes(path, text.encode("utf-8"))
+
+
+class JsonSlotStore:
+    """Shared shape of the numbered-slot JSON stores: WLED presets
+    (:class:`~c64cast.wled.wled_device.PresetStore`), performance looks
+    (:class:`~c64cast.control.performance.LookStore`), and per-video loop
+    presets (:class:`LoopPresetStore`).
+
+    The contract every subclass keeps: loads are *tolerant* — a missing,
+    corrupt, or wrong-shaped file reads as an empty map, and only well-formed
+    numeric-key → dict entries survive — and writes are *atomic* via
+    :func:`atomic_write_text`, with the parent directory created on demand.
+    Slots are stored as string keys of their int value. Subclasses set the
+    slot range as class attrs and override the hooks when the payload nests
+    the slot map inside an envelope (see :class:`LoopPresetStore`) or needs
+    per-entry validation. The path is injectable so tests point it at a
+    tempdir. (`transport.ControllerProfileStore` is deliberately *not* one of
+    these — its payload is a single mapping-list, not numbered slots.)"""
+
+    #: Valid slot range for :meth:`save`. Slot 0 is the reserved empty slot
+    #: everywhere and is never stored.
+    SLOT_MIN = 1
+    SLOT_MAX = 250
+
+    def __init__(self, path: Path) -> None:
+        self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        slots = self._unwrap(data)
+        if not isinstance(slots, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for k, v in slots.items():
+            if not (isinstance(v, dict) and str(k).isdigit()):
+                continue
+            entry = self._coerce_entry(int(k), v)
+            if entry is not None:
+                out[str(int(k))] = entry
+        return out
+
+    def save(self, slot: int, entry: Mapping[str, Any]) -> None:
+        if not self.SLOT_MIN <= slot <= self.SLOT_MAX:
+            return
+        data = self.load()
+        data[str(slot)] = dict(entry)
+        self._write(data)
+
+    def delete(self, slot: int) -> None:
+        data = self.load()
+        if data.pop(str(slot), None) is not None:
+            self._write(data)
+
+    def _write(self, slots: Mapping[str, Any]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self._path, json.dumps(self._envelope(slots), indent=2, sort_keys=True))
+
+    def _unwrap(self, data: dict[str, Any]) -> object:
+        """The slot map inside a loaded payload (default: the payload itself)."""
+        return data
+
+    def _envelope(self, slots: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The JSON payload persisted around a slot map (default: the map)."""
+        return slots
+
+    def _coerce_entry(self, slot: int, entry: dict[str, Any]) -> dict[str, Any] | None:
+        """Validate/normalize one loaded entry; ``None`` drops it."""
+        return entry if slot != 0 else None
 
 
 # Live-tune targets whose `mode.<field>` name maps back to a field of the same
@@ -451,71 +533,45 @@ def loop_preset_path(filepath: str) -> Path:
     return paths.loop_presets_dir() / f"{_slugify(filepath)}.{loop_preset_key(filepath)}.json"
 
 
-class LoopPresetStore:
+class LoopPresetStore(JsonSlotStore):
     """Persists named A/B loop points for one video file (one JSON file per
-    video). Loads are tolerant (a missing or corrupt file reads as an empty
-    map); writes are atomic via :func:`atomic_write_text`, mirroring
-    :class:`~c64cast.wled.wled_device.PresetStore`'s shape (cloned, not shared —
-    the id scheme differs: a hash-string key with no fixed range, one file
-    per video rather than one file per device holding many numbered
-    presets). The path is injectable so tests point it at a tempdir."""
+    video), on the shared :class:`JsonSlotStore` contract. The slot map lives
+    under a ``{"schema", "video", "size", "loops": {...}}`` envelope (the
+    hooks below), entries are normalized to ``{"a": float, "b": float|None}``
+    on load, and :meth:`save` takes the loop points directly — loop slots are
+    pad numbers with no fixed range, so it skips the base range check."""
 
     SCHEMA = 1
 
     def __init__(self, path: Path, *, video_ref: str, size: int | None) -> None:
-        self._path = Path(path)
+        super().__init__(path)
         self._video_ref = video_ref
         self._size = size
 
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    def load(self) -> dict[str, dict[str, float | None]]:
-        try:
-            raw = self._path.read_text(encoding="utf-8")
-        except OSError:
-            return {}
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        loops = data.get("loops")
-        if not isinstance(loops, dict):
-            return {}
-        out: dict[str, dict[str, float | None]] = {}
-        for k, v in loops.items():
-            if not (isinstance(v, dict) and str(k).isdigit()):
-                continue
-            a = v.get("a")
-            b = v.get("b")
-            if not isinstance(a, (int, float)):
-                continue
-            if b is not None and not isinstance(b, (int, float)):
-                continue
-            out[str(int(k))] = {"a": float(a), "b": float(b) if b is not None else None}
-        return out
-
-    def save(self, slot: int, a: float, b: float | None) -> None:
+    def save(self, slot: int, a: float, b: float | None) -> None:  # type: ignore[override]
         data = self.load()
         data[str(slot)] = {"a": a, "b": b}
         self._write(data)
 
-    def delete(self, slot: int) -> None:
-        data = self.load()
-        if data.pop(str(slot), None) is not None:
-            self._write(data)
+    def _unwrap(self, data: dict[str, Any]) -> object:
+        return data.get("loops")
 
-    def _write(self, loops: dict[str, dict[str, float | None]]) -> None:
-        payload = {
+    def _envelope(self, slots: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {
             "schema": self.SCHEMA,
             "video": self._video_ref,
             "size": self._size,
-            "loops": loops,
+            "loops": slots,
         }
-        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
+
+    def _coerce_entry(self, slot: int, entry: dict[str, Any]) -> dict[str, Any] | None:
+        a = entry.get("a")
+        b = entry.get("b")
+        if not isinstance(a, (int, float)):
+            return None
+        if b is not None and not isinstance(b, (int, float)):
+            return None
+        return {"a": float(a), "b": float(b) if b is not None else None}
 
 
 def make_loop_preset_store(filepath: str) -> LoopPresetStore:

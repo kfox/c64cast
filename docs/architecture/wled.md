@@ -148,7 +148,7 @@ Recall calls `_apply_locked(preset, force_palcol=True)` so the stored palette an
 
 **Storage.** `PresetStore` keeps one JSON file per device name at `paths.presets_dir()`/`wled-<slug>.json` — the canonical `<data root>/presets/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)); machine/taste-specific captured data, never committed. It holds the WLED preset map `{"1": {...}}`, ids 1–250, with id 0 reserved empty. The presets/looks/loops resolvers each call `transport.warn_if_legacy_presets_orphaned()`, a one-time log heads-up for a source checkout that still has presets at the repo `presets/` dir, which nothing reads. It fires from the resolver rather than `--doctor` because only the resolver knows which store was actually looked for.
 
-Loads are tolerant — missing or corrupt yields empty. Writes are atomic: a temp file in the same dir, `fsync`, then `os.replace`. So it survives restarts like real WLED. The path is injectable so tests can point it at a tempdir.
+Loads are tolerant — missing or corrupt yields empty. Writes are atomic: a temp file in the same dir, `fsync`, then `os.replace`. So it survives restarts like real WLED. The path is injectable so tests can point it at a tempdir. That whole contract is `transport.JsonSlotStore`'s (`PresetStore` is a subclass — see the transport notes in [control.md](control.md)), shared with `performance.LookStore` and `transport.LoopPresetStore` rather than maintained as three copies.
 
 **No server-side timing or daemon thread.** The deferral is client-managed, and the two clients differ:
 
