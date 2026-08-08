@@ -140,7 +140,7 @@ def disarm(be) -> None:
 
 
 def read_r(be) -> int | None:
-    """R exactly as ``AudioStreamer._read_read_ptr`` reads it — the same two bytes
+    """R exactly as ``AudioStreamer.read_consumer_ptr`` reads it — the same two bytes
     over the same channel, so a readback defect here is the servo's defect."""
     try:
         raw = be.read_memory(READ_PTR_LO_ADDR, 2)
@@ -224,7 +224,7 @@ def phase_r(be, secs: float, rate_hz: float, eff: float) -> dict:
 class MarkerFeeder:
     """The audio worker's ring-write schedule, writing lap markers.
 
-    Mirrors ``AudioStreamer._drip_chunk`` + ``_next_pace_increment``: quanta
+    Mirrors ``AudioStreamer._drip_chunk`` + ``RateServo.next_pace_increment``: quanta
     spread at the *nominal* chunk period (the servo moves the chunk boundary, not
     the intra-chunk spacing), absolute pacing, and the real ``servo_period`` on
     the real ``(w_head - R) % RING_BUFFER_SIZE``. It imports that private

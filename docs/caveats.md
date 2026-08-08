@@ -975,7 +975,7 @@ the ordered family's fixed, position-deterministic offset, so it reads as
 shimmer on video even though any single frame looks great. This is a
 deliberate trade the config lets you make (e.g. a slow-motion or mostly-static
 video clip may look fine), not a bug — see the `[color].dither` note under
-`modes.py` in docs/architecture.md for the mechanism.
+`modes/` in docs/architecture.md for the mechanism.
 
 ## `Scene.video_buffer.maxlen` is "Optional[int]" to Pylance
 

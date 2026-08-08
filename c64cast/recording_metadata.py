@@ -1,6 +1,6 @@
 """Per-scene recording metadata for sharing "how was this configured?" info.
 
-`Playlist._safe_setup` calls `log_scene_recording_metadata` once per scene
+`Playlist.safe_setup` calls `log_scene_recording_metadata` once per scene
 activation (including loop re-entries and random-pool re-picks). It logs one
 JSON line tagged with `SCENE_CONFIG_MARKER` — a snapshot of that scene's
 *coalesced* settings (the same defaults→config→CLI precedence

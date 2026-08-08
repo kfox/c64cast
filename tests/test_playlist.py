@@ -556,9 +556,20 @@ class PlaylistTest(unittest.TestCase):
         )
 
         def fire_jump():
-            time.sleep(0.05)
+            # Wait past the playlist's own startup interstitial before firing
+            # (same rationale as the bypass test below): a jump that lands
+            # while the first "UP NEXT" card is still transitioning is
+            # consumed as a plain skip into scene A and the target is never
+            # taken — the race a coverage-instrumented CI runner actually
+            # hit. Then wait on the observable landing rather than a
+            # wall-clock guess, so a slow box changes this test's duration,
+            # not its verdict; the deadline still bounds a real regression.
+            deadline = time.time() + 5.0
+            while scenes[0].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
             pl.request_jump(2)
-            time.sleep(0.2)
+            while scenes[2].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
             stop.set()
 
         threading.Thread(target=fire_jump, daemon=True).start()
@@ -597,12 +608,15 @@ class PlaylistTest(unittest.TestCase):
             # baseline nondeterministic. Assertions run in the main thread
             # after pl.run() returns (an AssertionError raised here, in a
             # background thread, wouldn't fail the test).
-            deadline = time.time() + 1.0
+            deadline = time.time() + 5.0
             while scenes[0].setup_count < 1 and time.time() < deadline:
                 time.sleep(0.005)
             result["baseline"] = counter["n"]
             pl.request_jump(1, skip_interstitial=True)
-            time.sleep(0.2)
+            # Wait on the landing itself (bounded), not a wall-clock guess —
+            # under coverage instrumentation 0.2 s was not enough loop time.
+            while scenes[1].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
             stop.set()
 
         threading.Thread(target=fire_jump, daemon=True).start()
@@ -710,7 +724,7 @@ class PlaylistTest(unittest.TestCase):
         class FakeOverlay:
             name = "fake"
             PAINTS_INTO_BUFFERS = False
-            _disabled = False
+            disabled = False
             _busy = True
             setup_count = 0
             teardown_count = 0
@@ -762,7 +776,7 @@ class PlaylistTest(unittest.TestCase):
         class StuckOverlay:
             name = "stuck"
             PAINTS_INTO_BUFFERS = False
-            _disabled = False
+            disabled = False
 
             def setup(self, api, scene):
                 pass
@@ -901,7 +915,7 @@ class PlaylistTest(unittest.TestCase):
         class CycleOverlay:
             name = "decorated"
             PAINTS_INTO_BUFFERS = False
-            _disabled = False
+            disabled = False
             cycle_calls = 0
 
             def setup(self, api, scene):
@@ -1147,19 +1161,19 @@ class FrameDropDisturbanceTest(unittest.TestCase):
         audio = _DisturbanceAudio()
         pl = self._playlist(audio)
         # Deadline ~1 s in the past → drops ≫ _AUDIO_DISTURBANCE_DROP_S of frames.
-        pl._run_one_frame(pl.scenes[0], time.time() - 1.0)
+        pl.run_one_frame(pl.scenes[0], time.time() - 1.0)
         self.assertEqual(audio.disturbances, 1)
 
     def test_small_drop_does_not_signal(self):
         audio = _DisturbanceAudio()
         pl = self._playlist(audio)
         # ~10 ms behind: a real (>2 frame) drop, but well under the 0.5 s bar.
-        pl._run_one_frame(pl.scenes[0], time.time() - 0.01)
+        pl.run_one_frame(pl.scenes[0], time.time() - 0.01)
         self.assertEqual(audio.disturbances, 0)
 
     def test_no_audio_is_safe(self):
         pl = self._playlist(None)
-        pl._run_one_frame(pl.scenes[0], time.time() - 1.0)  # must not raise
+        pl.run_one_frame(pl.scenes[0], time.time() - 1.0)  # must not raise
 
 
 class SceneRecordingMetadataTest(unittest.TestCase):
@@ -1182,14 +1196,14 @@ class SceneRecordingMetadataTest(unittest.TestCase):
 
         pl = self._playlist(Config())
         with self.assertLogs("c64cast.recording", level="INFO") as cap:
-            pl._safe_setup(pl.scenes[0])
+            pl.safe_setup(pl.scenes[0])
         self.assertEqual(len(cap.output), 1)
         self.assertIn(SCENE_CONFIG_MARKER, cap.output[0])
 
     def test_no_config_logs_nothing(self):
         pl = self._playlist(None)
         with self.assertNoLogs("c64cast.recording", level="INFO"):
-            pl._safe_setup(pl.scenes[0])
+            pl.safe_setup(pl.scenes[0])
 
 
 class PlaylistUserDimTest(unittest.TestCase):
@@ -1220,8 +1234,8 @@ class PlaylistUserDimTest(unittest.TestCase):
         b.display_mode = self._Mode()
         pl = self._playlist([a, b])
         pl.user_dim = 0.4
-        pl._safe_setup(a)
-        pl._safe_setup(b)  # a later auto-advance re-applies the same dim
+        pl.safe_setup(a)
+        pl.safe_setup(b)  # a later auto-advance re-applies the same dim
         self.assertEqual(a.display_mode.user_dim, 0.4)
         self.assertEqual(b.display_mode.user_dim, 0.4)
 
@@ -1231,7 +1245,7 @@ class PlaylistUserDimTest(unittest.TestCase):
         a = FakeScene("A")
         a.display_mode = self._Mode(user_dim=0.7)
         pl = self._playlist([a])  # user_dim stays 1.0
-        pl._safe_setup(a)
+        pl.safe_setup(a)
         self.assertEqual(a.display_mode.user_dim, 0.7)
 
 

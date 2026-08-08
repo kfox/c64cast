@@ -95,9 +95,9 @@ class Ensemble:
     per-system Event objects exist before any Playlist starts polling.
 
     `active_orchestrator` is a single-slot field set by the conductor's
-    Playlist._safe_setup when entering a scene with `orchestrate = true`
-    and cleared by _safe_teardown when that scene exits. Follower
-    playlists read this slot from inside _handle_broadcast_interrupt
+    Playlist.safe_setup when entering a scene with `orchestrate = true`
+    and cleared by safe_teardown when that scene exits. Follower
+    playlists read this slot from inside EnsembleCoordinator.handle_broadcast_interrupt
     to find the in-flight orchestrator.
 
     `broadcast_interrupt` / `broadcast_resume` are per-system Event

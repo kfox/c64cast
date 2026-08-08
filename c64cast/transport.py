@@ -20,7 +20,7 @@ Phase 1 built:
 - :class:`TransportEvent` / :class:`TransportSession` — a thread-safe queue
   the MIDI reader thread enqueues into (:mod:`midi_control`'s reader thread,
   never the playlist thread) and :meth:`TransportSession.tick` drains once per
-  frame from :meth:`~c64cast.playlist.Playlist._run_one_frame`, dispatching
+  frame from :meth:`~c64cast.playlist.Playlist.run_one_frame`, dispatching
   against whatever scene is current via a duck-typed ``transport_*`` surface
   (see :class:`~c64cast.scenes.VideoScene`). Held rw/ff notes accelerate over
   time; this keeps all scene/DMA-adjacent mutation on the playlist thread,
@@ -61,6 +61,13 @@ if TYPE_CHECKING:
     from .playlist import Playlist
 
 log = logging.getLogger(__name__)
+
+
+def timecode(seconds: float) -> str:
+    """Format seconds as M:SS — the transport OSD posts and the video
+    frame-number debug overlay share this."""
+    s = max(0, int(seconds))
+    return f"{s // 60}:{s % 60:02d}"
 
 
 def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
@@ -311,7 +318,7 @@ class TransportSession:
     def tick(self, pl: Playlist, now: float) -> None:
         """Drain queued events, dispatch each against ``pl.current``, then
         advance any held rw/ff ramp. Called once per frame from
-        ``Playlist._run_one_frame``, right before ``scene.process_frame``."""
+        ``Playlist.run_one_frame``, right before ``scene.process_frame``."""
         dt = now - self._last_tick if self._last_tick is not None else 0.0
         self._last_tick = now
         while True:

@@ -10,7 +10,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 * **[Hardware I/O & transports](architecture/hardware-io.md)** — `api.py`, `teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio.py`, `audio_handlers.py`, `sampler.py`, `dsp.py`, `audio_features.py`
-* **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes.py`, `modes_irq.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
+* **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes/`, `modes_irq.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `sid_panning.py`, `sid_volume.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `keyboard.py`, `camera.py`, `vision.py`, `control_plane.py`, `midi_control.py`, `tempo.py`, `performance.py`, `perf_console.py`, `transport.py`, `midi_setup.py`
@@ -31,6 +31,7 @@ the two lists account for every module in the tree.
 | `asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `asid_sidmap.py` | [SID playback & the oscilloscope](architecture/sid.md#multi-sid-on-the-u64-asid_sidmappy) |
 | `audio.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
+| `audio_rate.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |
 | `audio_features.py` | [Audio output](architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
 | `audio_source.py` | [Audio output](architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source) |
@@ -38,7 +39,8 @@ the two lists account for every module in the tree.
 | `camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
 | `char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
 | `cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
-| Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generatorspy--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
+| `cli_commands.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
+| Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
 | `config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
 | `control_plane.py` | [Control surfaces & live performance](architecture/control.md#control_planepy--http-control-plane-optional) |
 | `dac_calibration.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
@@ -53,18 +55,18 @@ the two lists account for every module in the tree.
 | `ensemble.py` | [Config, CLI & ensemble](architecture/config.md#ensemblepy--audio-slot-coordination) |
 | `frame_source.py` | [Scenes, sources & overlays](architecture/scenes.md#frame_sourcepy) |
 | Framerate pacing & frame-dropping | [Video input & the color pipeline](architecture/video-color.md#framerate-pacing--frame-dropping) |
-| `generators.py` | [Scenes, sources & overlays](architecture/scenes.md#generatorspy--the-generativesource-registry) |
+| `generators/` | [Scenes, sources & overlays](architecture/scenes.md#generators--the-generativesource-registry) |
 | `interstitial.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `keyboard.py` | [Control surfaces & live performance](architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle) |
 | `midi_control.py` | [Control surfaces & live performance](architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
 | `midi_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope) |
 | `midi_setup.py` | [Control surfaces & live performance](architecture/control.md#midi_setuppy--the---midi-setup-midi-learn-wizard-phase-5) |
-| `modulation.py` | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generatorspy--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
-| `music_features.py` | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generatorspy--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
+| `modulation.py` | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
+| `music_features.py` | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
 | `tempo.py` | [Control surfaces & live performance](architecture/control.md#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1) |
 | `performance.py` | [Control surfaces & live performance](architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2) |
 | `perf_console.py` | [Control surfaces & live performance](architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5) |
-| `modes.py` | [Video input & the color pipeline](architecture/video-color.md#modespy--displaymode-hierarchy) |
+| `modes/` | [Video input & the color pipeline](architecture/video-color.md#modes--displaymode-hierarchy) |
 | `modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
 | `orchestrator.py` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `orchestrators/` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
@@ -89,6 +91,7 @@ the two lists account for every module in the tree.
 | `text_surface.py` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
 | `transport.py` | [Control surfaces & live performance](architecture/control.md#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5) |
 | `video.py` | [Video input & the color pipeline](architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
+| `video_transport.py` | [Scenes, sources & overlays](architecture/scenes.md#videoscenes-transport-surface-midi-live-tune-phase-2) |
 | `vision.py` | [Control surfaces & live performance](architecture/control.md#visionpy--webcam-gesture-control-optional-camera-as-input) |
 | `voice_scope.py` | [SID playback & the oscilloscope](architecture/sid.md#voice_scopepy--shared-3-voice-oscilloscope-renderer) |
 | `waveform.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
@@ -117,6 +120,7 @@ rationale in the meantime — each of the ones below opens with one.
 | `hw_provision.py` | Live U64 REU + Ultimate Audio sampler auto-provisioning (volatile, restored at teardown) |
 | `introspect.py` | The single rendering surface over config metadata |
 | `playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
+| `playlist_support.py` | Playlist collaborators — scene fades, on-C64 menu driver, ensemble coordination |
 | `preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
 | `profiler.py` | `--profile` per-frame timing harness |
 | `quickcast.py` | Positional-`MEDIA` quick-playback config builder |

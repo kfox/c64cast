@@ -68,7 +68,7 @@ class SectionDoc:
 class ParamDoc:
     name: str
     type: str
-    default: object  # `_REQUIRED` sentinel when no default
+    default: object  # `REQUIRED` sentinel when no default
     required: bool
     help: str
 
@@ -127,7 +127,7 @@ class _Required:
         return "<required>"
 
 
-_REQUIRED = _Required()
+REQUIRED = _Required()
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +475,7 @@ def _overlay_params(cls: type) -> list[ParamDoc]:
             ParamDoc(
                 name=pname,
                 type=type_str,
-                default=p.default if has_default else _REQUIRED,
+                default=p.default if has_default else REQUIRED,
                 required=not has_default,
                 help=help_map.get(pname, ""),
             )
@@ -484,10 +484,10 @@ def _overlay_params(cls: type) -> list[ParamDoc]:
 
 
 def overlay_docs() -> list[OverlayDoc]:
-    ovmod._load_all()
     out: list[OverlayDoc] = []
-    for name in sorted(ovmod._REGISTRY):
-        cls = ovmod._REGISTRY[name]
+    overlay_classes = ovmod.overlay_types()
+    for name in sorted(overlay_classes):
+        cls = overlay_classes[name]
         out.append(
             OverlayDoc(
                 name=name,
@@ -503,8 +503,7 @@ def overlay_docs() -> list[OverlayDoc]:
 
 
 def overlay_names() -> list[str]:
-    ovmod._load_all()
-    return sorted(ovmod._REGISTRY)
+    return ovmod.known_overlays()
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +540,7 @@ def compat_matrix() -> tuple[list[ModeDoc], list[tuple[OverlayDoc, list[bool]]]]
 
 
 def _fmt_default(val: object) -> str:
-    if val is _REQUIRED:
+    if val is REQUIRED:
         return "(required)"
     return repr(val)
 

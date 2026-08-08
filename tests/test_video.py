@@ -7,15 +7,16 @@ import os
 import tempfile
 import threading
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
 import numpy as np
 from _fakes import FrozenClock
 
-from c64cast import scenes
-from c64cast.scenes import VideoScene, _timecode
-from c64cast.transport import LoopPresetStore
+from c64cast import scenes, video_transport
+from c64cast.scenes import VideoScene
+from c64cast.transport import LoopPresetStore, timecode
 from c64cast.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
@@ -27,6 +28,7 @@ from c64cast.video import (
     ensure_pyav,
     scan_video_samples,
 )
+from c64cast.video_transport import VideoTransportControls
 
 
 def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> AVFileSource:
@@ -415,6 +417,18 @@ class _StubSource:
         return 0
 
 
+def _freeze_time(t: float) -> ExitStack:
+    """Freeze `time` in BOTH namespaces the video clock reads it from —
+    scenes (the wall_start_time epoch) and video_transport (the transport
+    anchors) — so a call site moving between the two modules can never
+    silently escape the freeze."""
+    stack = ExitStack()
+    clock = FrozenClock(t)
+    stack.enter_context(mock.patch.object(scenes, "time", clock))
+    stack.enter_context(mock.patch.object(video_transport, "time", clock))
+    return stack
+
+
 def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> VideoScene:
     """Build a VideoScene without going through __init__/setup() (which need
     PyAV + a real AudioStreamer) — mirrors test_ensemble_audio_lock.py's
@@ -424,7 +438,7 @@ def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> Vide
     scene = VideoScene.__new__(VideoScene)
     scene.source = source  # type: ignore[assignment]  # duck-typed stub, not a real AVFileSource
     scene.audio = None
-    scene._start_time = 0.0
+    scene.wall_start_time = 0.0
     scene.osd = scenes.OsdState()
     scene.start_s = start_s
     scene.show_frame_numbers = False
@@ -441,22 +455,13 @@ def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> Vide
     scene._av_lag_count = 0
     scene._av_buf_min = math.inf
     scene._av_last_log_t = 0.0
-    scene._transport_touched = False
-    scene._paused = False
-    scene._wall_anchor_clock_s = 0.0
-    scene._wall_anchor_time = 0.0
-    # Phase 4 resync state (defaults keep the mute/wall path for audio=None
-    # stubs, so the existing Phase-2 clock tests are unchanged).
-    scene._tempo_scale = 1.0
-    scene._loop_audio = "on"
-    scene._transport_resync = False
-    scene._audio_anchor_clock_s = 0.0
-    scene._audio_anchor_pos = 0.0
-    scene._loop_a = None
-    scene._loop_b = None
-    scene._loop_state = "none"
-    scene._record_border_active = False
-    scene._loop_store = None
+    scene.tempo_scale = 1.0
+    # A real collaborator, not hand-set fields: the transport state machine
+    # lives in video_transport.VideoTransportControls now, and building it for
+    # real means a field added there can never silently miss this stub.
+    # loop_audio="on" keeps the mute/wall path for audio=None stubs, so the
+    # Phase-2 clock tests are unchanged.
+    scene.transport = VideoTransportControls(scene, loop_audio="on")
     return scene
 
 
@@ -472,92 +477,92 @@ class VideoSceneClockTest(unittest.TestCase):
 
     def test_untouched_uses_wall_clock_from_start_time(self):
         scene = self._scene()
-        scene._start_time = 3.0
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            self.assertAlmostEqual(scene._clock_s(), 7.0)
+        scene.wall_start_time = 3.0
+        with _freeze_time(10.0):
+            self.assertAlmostEqual(scene.transport.clock_s(), 7.0)
 
     def test_touch_transport_freezes_current_reading_and_mutes(self):
         scene = self._scene()
-        scene._start_time = 4.0  # untouched clock would read 6.0
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-        self.assertTrue(scene._transport_touched)
-        self.assertAlmostEqual(scene._wall_anchor_clock_s, 6.0)
+        scene.wall_start_time = 4.0  # untouched clock would read 6.0
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        self.assertTrue(scene.transport.touched)
+        self.assertAlmostEqual(scene.transport.wall_anchor_clock_s, 6.0)
         self.assertEqual(scene.source.muted_calls, [True])  # type: ignore[union-attr]
 
     def test_touch_transport_is_idempotent(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-            scene._touch_transport()
+        with _freeze_time(10.0):
+            scene.transport.touch()
+            scene.transport.touch()
         # latched once only
         self.assertEqual(scene.source.muted_calls, [True])  # type: ignore[union-attr]
 
     def test_clock_free_runs_after_touch(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()  # anchors at clock=10.0 (start_time=0)
-        with mock.patch.object(scenes, "time", FrozenClock(13.5)):
-            self.assertAlmostEqual(scene._clock_s(), 13.5)
+        with _freeze_time(10.0):
+            scene.transport.touch()  # anchors at clock=10.0 (start_time=0)
+        with _freeze_time(13.5):
+            self.assertAlmostEqual(scene.transport.clock_s(), 13.5)
 
     def test_pause_freezes_clock(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-        with mock.patch.object(scenes, "time", FrozenClock(15.0)):
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        with _freeze_time(15.0):
             scene.transport_pause()
-            self.assertTrue(scene._paused)
-        frozen = scene._wall_anchor_clock_s
-        with mock.patch.object(scenes, "time", FrozenClock(100.0)):
-            self.assertAlmostEqual(scene._clock_s(), frozen)
+            self.assertTrue(scene.transport.paused)
+        frozen = scene.transport.wall_anchor_clock_s
+        with _freeze_time(100.0):
+            self.assertAlmostEqual(scene.transport.clock_s(), frozen)
 
     def test_resume_continues_from_frozen_value(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-        with mock.patch.object(scenes, "time", FrozenClock(15.0)):
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        with _freeze_time(15.0):
             scene.transport_pause()
-        frozen = scene._wall_anchor_clock_s
-        with mock.patch.object(scenes, "time", FrozenClock(20.0)):
+        frozen = scene.transport.wall_anchor_clock_s
+        with _freeze_time(20.0):
             scene.transport_resume()
-        self.assertFalse(scene._paused)
-        with mock.patch.object(scenes, "time", FrozenClock(22.0)):
-            self.assertAlmostEqual(scene._clock_s(), frozen + 2.0)
+        self.assertFalse(scene.transport.paused)
+        with _freeze_time(22.0):
+            self.assertAlmostEqual(scene.transport.clock_s(), frozen + 2.0)
 
     def test_resume_without_pause_is_noop(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
+        with _freeze_time(10.0):
             scene.transport_resume()
-        self.assertFalse(scene._transport_touched)
+        self.assertFalse(scene.transport.touched)
 
     def test_seek_reanchors_clock_and_calls_source(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
+        with _freeze_time(10.0):
             scene.transport_seek(42.0)
-        self.assertEqual(scene._wall_anchor_clock_s, 42.0)
+        self.assertEqual(scene.transport.wall_anchor_clock_s, 42.0)
         self.assertEqual(scene.source.seeks, [42.0])  # type: ignore[union-attr]
-        self.assertTrue(scene._transport_touched)
+        self.assertTrue(scene.transport.touched)
 
     def test_seek_clamps_to_duration(self):
         scene = self._scene()  # duration=100.0
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
+        with _freeze_time(10.0):
             scene.transport_seek(500.0)
-        self.assertEqual(scene._wall_anchor_clock_s, 100.0)
+        self.assertEqual(scene.transport.wall_anchor_clock_s, 100.0)
 
     def test_seek_clamps_negative_to_zero(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
+        with _freeze_time(10.0):
             scene.transport_seek(-20.0)
-        self.assertEqual(scene._wall_anchor_clock_s, 0.0)
+        self.assertEqual(scene.transport.wall_anchor_clock_s, 0.0)
 
     def test_toggle_pause_first_call_touches_and_pauses(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
+        with _freeze_time(10.0):
             scene.transport_toggle_pause()
-        self.assertTrue(scene._paused)
-        with mock.patch.object(scenes, "time", FrozenClock(11.0)):
+        self.assertTrue(scene.transport.paused)
+        with _freeze_time(11.0):
             scene.transport_toggle_pause()
-        self.assertFalse(scene._paused)
+        self.assertFalse(scene.transport.paused)
 
 
 class _FakeSceneAudio:
@@ -648,31 +653,31 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio = _FakeSceneAudio(position=position, events=events)
         scene = _make_video_scene_stub(source)
         scene.audio = audio  # type: ignore[assignment]
-        scene._tempo_scale = tempo_scale
-        scene._loop_audio = "on"
+        scene.tempo_scale = tempo_scale
+        scene.transport.loop_audio = "on"
         return scene, source, audio
 
     def test_touch_resolves_resync_and_does_not_mute(self):
         scene, source, _ = self._resync_scene(position=7.0)
-        scene._touch_transport()
-        self.assertTrue(scene._transport_resync)
+        scene.transport.touch()
+        self.assertTrue(scene.transport.resync)
         self.assertEqual(source.muted_calls, [])  # NOT muted
-        self.assertAlmostEqual(scene._audio_anchor_pos, 7.0)
+        self.assertAlmostEqual(scene.transport.audio_anchor_pos, 7.0)
 
     def test_touch_with_mute_setting_is_verbatim_phase2(self):
         scene, source, _ = self._resync_scene(position=7.0)
-        scene._loop_audio = "mute"
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-        self.assertFalse(scene._transport_resync)
+        scene.transport.loop_audio = "mute"
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        self.assertFalse(scene.transport.resync)
         self.assertEqual(source.muted_calls, [True])
 
     def test_on_without_audio_falls_back_to_mute(self):
         scene = _make_video_scene_stub(_StubSource(duration=100.0))  # audio=None
-        scene._loop_audio = "on"
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-        self.assertFalse(scene._transport_resync)
+        scene.transport.loop_audio = "on"
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        self.assertFalse(scene.transport.resync)
         self.assertEqual(scene.source.muted_calls, [True])  # type: ignore[union-attr]
 
     def test_on_without_audio_stream_falls_back_to_mute(self):
@@ -680,10 +685,10 @@ class VideoSceneSpliceTest(unittest.TestCase):
         source = _StubSource(duration=100.0, a_stream=None)
         scene = _make_video_scene_stub(source)
         scene.audio = _FakeSceneAudio()  # type: ignore[assignment]
-        scene._loop_audio = "on"
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-        self.assertFalse(scene._transport_resync)
+        scene.transport.loop_audio = "on"
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        self.assertFalse(scene.transport.resync)
         self.assertEqual(source.muted_calls, [True])
 
     def test_seek_splices(self):
@@ -691,35 +696,35 @@ class VideoSceneSpliceTest(unittest.TestCase):
         scene.transport_seek(42.0)
         self.assertEqual(source.seeks, [42.0])  # request_seek fired
         self.assertEqual(audio.flush_calls, [False])  # plain flush (not silence)
-        self.assertAlmostEqual(scene._audio_anchor_clock_s, 42.0)  # tempo 1.0
+        self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, 42.0)  # tempo 1.0
 
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
-        scene._touch_transport()  # anchor_clock=0, anchor_pos=0
+        scene.transport.touch()  # anchor_clock=0, anchor_pos=0
         audio._position = 5.0
         # Wall time is irrelevant on the resync path — only the audio delta.
-        with mock.patch.object(scenes, "time", FrozenClock(999.0)):
-            self.assertAlmostEqual(scene._clock_s(), 5.0)
+        with _freeze_time(999.0):
+            self.assertAlmostEqual(scene.transport.clock_s(), 5.0)
 
     def test_pause_freezes_and_silences(self):
         scene, source, audio = self._resync_scene(position=10.0)
-        scene._touch_transport()
+        scene.transport.touch()
         scene.transport_pause()
-        self.assertTrue(scene._paused)
+        self.assertTrue(scene.transport.paused)
         self.assertEqual(audio.flush_calls, [True])  # silence_output
         self.assertIn(True, source.muted_calls)
         # Clock frozen at the paused position regardless of further audio motion.
         audio._position = 99.0
-        self.assertAlmostEqual(scene._clock_s(), 10.0)
+        self.assertAlmostEqual(scene.transport.clock_s(), 10.0)
 
     def test_resume_splices_back_then_unmutes(self):
         events: list[tuple[str, object]] = []
         scene, _, _ = self._resync_scene(position=10.0, events=events)
-        scene._touch_transport()
+        scene.transport.touch()
         scene.transport_pause()
         events.clear()
         scene.transport_resume()
-        self.assertFalse(scene._paused)
+        self.assertFalse(scene.transport.paused)
         # Order is load-bearing: splice (request_seek then flush) BEFORE unmute.
         self.assertEqual(
             [e[0] for e in events],
@@ -729,10 +734,10 @@ class VideoSceneSpliceTest(unittest.TestCase):
 
     def test_loop_wrap_splices_once_while_seek_pending(self):
         scene, source, _ = self._resync_scene(position=0.0)
-        scene._touch_transport()
-        scene._loop_a = 0.0
-        scene._loop_b = 5.0
-        scene._loop_state = "active"
+        scene.transport.touch()
+        scene.transport.loop_a = 0.0
+        scene.transport.loop_b = 5.0
+        scene.transport.loop_state = "active"
         source.finished = True  # force the wrap path every frame
         scene.process_frame(0.0)
         self.assertEqual(source.seeks, [0.0])  # fired once
@@ -745,14 +750,14 @@ class VideoSceneSpliceTest(unittest.TestCase):
         # surface is content seconds. s=0.88.
         scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
         scene.transport_seek(100.0)
-        self.assertAlmostEqual(scene._audio_anchor_clock_s, 88.0)  # 100 × 0.88
+        self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, 88.0)  # 100 × 0.88
         self.assertAlmostEqual(scene.transport_position(), 100.0)  # back to content
         # Loop B stored in content seconds (10) wraps when clock ≥ 8.8.
-        scene._loop_a = 0.0
-        scene._loop_b = 10.0
-        scene._loop_state = "active"
-        scene._audio_anchor_clock_s = 0.0
-        scene._audio_anchor_pos = 0.0
+        scene.transport.loop_a = 0.0
+        scene.transport.loop_b = 10.0
+        scene.transport.loop_state = "active"
+        scene.transport.audio_anchor_clock_s = 0.0
+        scene.transport.audio_anchor_pos = 0.0
         source.seeks.clear()
         source.seek_pending = False  # transport_seek(100) set it; clear for wrap
         source.finished = False
@@ -764,9 +769,9 @@ class VideoSceneSpliceTest(unittest.TestCase):
         # Frame-number label must report CONTENT seconds, not the scaled clock
         # (an inverted conversion would double the tempo error into the label).
         scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
-        scene._touch_transport()
-        scene._audio_anchor_clock_s = 88.0  # content 100 at s=0.88
-        scene._audio_anchor_pos = 0.0
+        scene.transport.touch()
+        scene.transport.audio_anchor_clock_s = 88.0  # content 100 at s=0.88
+        scene.transport.audio_anchor_pos = 0.0
         audio._position = 0.0  # clock = 88.0
         scene.show_frame_numbers = True
         source.video_fps = 30.0
@@ -780,23 +785,23 @@ class VideoSceneSpliceTest(unittest.TestCase):
         ):
             scene.process_frame(0.0)
         self.assertTrue(labels, "frame-number label was not rendered")
-        self.assertTrue(labels[0].startswith(_timecode(100.0)), labels[0])
+        self.assertTrue(labels[0].startswith(timecode(100.0)), labels[0])
 
     def test_mute_path_wrap_compare_unscaled(self):
         # Guard: on the mute path tempo_scale must NOT scale the loop-B compare.
         scene = _make_video_scene_stub(_StubSource(duration=100.0))  # audio=None
-        scene._loop_audio = "mute"
-        scene._tempo_scale = 0.88
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
-            scene._touch_transport()
-        scene._loop_a = 0.0
-        scene._loop_b = 10.0
-        scene._loop_state = "active"
-        scene._wall_anchor_clock_s = 9.0  # unscaled clock 9.0
-        scene._wall_anchor_time = 10.0
+        scene.transport.loop_audio = "mute"
+        scene.tempo_scale = 0.88
+        with _freeze_time(10.0):
+            scene.transport.touch()
+        scene.transport.loop_a = 0.0
+        scene.transport.loop_b = 10.0
+        scene.transport.loop_state = "active"
+        scene.transport.wall_anchor_clock_s = 9.0  # unscaled clock 9.0
+        scene.transport.wall_anchor_time = 10.0
         scene.source.finished = False  # type: ignore[union-attr]
         scene.source._frame = None  # type: ignore[union-attr]  # pre-roll → no render path
-        with mock.patch.object(scenes, "time", FrozenClock(10.0)):
+        with _freeze_time(10.0):
             # content compare: 9.0 < 10.0 → NO wrap. A wrongly scaled threshold
             # (8.8) would wrap here.
             scene.process_frame(0.0)
@@ -814,34 +819,34 @@ class VideoSceneLoopToggleTest(unittest.TestCase):
 
     def test_three_state_cycle(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(5.0)):
+        with _freeze_time(5.0):
             scene.transport_loop_toggle()
-        self.assertEqual(scene._loop_state, "armed")
-        self.assertEqual(scene._loop_a, 5.0)
-        self.assertIsNone(scene._loop_b)
+        self.assertEqual(scene.transport.loop_state, "armed")
+        self.assertEqual(scene.transport.loop_a, 5.0)
+        self.assertIsNone(scene.transport.loop_b)
 
-        with mock.patch.object(scenes, "time", FrozenClock(8.0)):
+        with _freeze_time(8.0):
             scene.transport_loop_toggle()
-        self.assertEqual(scene._loop_state, "active")
-        self.assertEqual(scene._loop_a, 5.0)
-        self.assertEqual(scene._loop_b, 8.0)
+        self.assertEqual(scene.transport.loop_state, "active")
+        self.assertEqual(scene.transport.loop_a, 5.0)
+        self.assertEqual(scene.transport.loop_b, 8.0)
 
-        with mock.patch.object(scenes, "time", FrozenClock(9.0)):
+        with _freeze_time(9.0):
             scene.transport_loop_toggle()
-        self.assertEqual(scene._loop_state, "none")
-        self.assertIsNone(scene._loop_a)
-        self.assertIsNone(scene._loop_b)
+        self.assertEqual(scene.transport.loop_state, "none")
+        self.assertIsNone(scene.transport.loop_a)
+        self.assertIsNone(scene.transport.loop_b)
 
     def test_first_press_reddens_border_second_clears_it(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(5.0)):
+        with _freeze_time(5.0):
             scene.transport_loop_toggle()
-        self.assertTrue(scene._record_border_active)
+        self.assertTrue(scene.transport.record_border_active)
         scene.api.write_regs.assert_called_with("d020", 2)  # type: ignore[attr-defined]
 
-        with mock.patch.object(scenes, "time", FrozenClock(8.0)):
+        with _freeze_time(8.0):
             scene.transport_loop_toggle()
-        self.assertFalse(scene._record_border_active)
+        self.assertFalse(scene.transport.record_border_active)
         scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
 
 
@@ -855,45 +860,45 @@ class VideoSceneRecordStopTest(unittest.TestCase):
 
     def test_record_arms_and_reddens_border(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(3.0)):
+        with _freeze_time(3.0):
             scene.transport_record()
-        self.assertEqual(scene._loop_state, "armed")
-        self.assertEqual(scene._loop_a, 3.0)
-        self.assertTrue(scene._record_border_active)
+        self.assertEqual(scene.transport.loop_state, "armed")
+        self.assertEqual(scene.transport.loop_a, 3.0)
+        self.assertTrue(scene.transport.record_border_active)
         scene.api.write_regs.assert_called_with("d020", 2)  # type: ignore[attr-defined]
 
     def test_record_is_noop_when_already_armed(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(3.0)):
+        with _freeze_time(3.0):
             scene.transport_record()
-        with mock.patch.object(scenes, "time", FrozenClock(9.0)):
+        with _freeze_time(9.0):
             scene.transport_record()
-        self.assertEqual(scene._loop_a, 3.0)  # unchanged by the second call
+        self.assertEqual(scene.transport.loop_a, 3.0)  # unchanged by the second call
 
     def test_stop_while_armed_closes_loop_and_clears_border(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(3.0)):
+        with _freeze_time(3.0):
             scene.transport_record()
-        with mock.patch.object(scenes, "time", FrozenClock(7.0)):
+        with _freeze_time(7.0):
             quit_requested = scene.transport_stop()
         self.assertFalse(quit_requested)
-        self.assertEqual(scene._loop_state, "active")
-        self.assertEqual(scene._loop_b, 7.0)
-        self.assertFalse(scene._record_border_active)
+        self.assertEqual(scene.transport.loop_state, "active")
+        self.assertEqual(scene.transport.loop_b, 7.0)
+        self.assertFalse(scene.transport.record_border_active)
         scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
 
     def test_stop_while_playing_pauses(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(1.0)):
+        with _freeze_time(1.0):
             quit_requested = scene.transport_stop()
         self.assertFalse(quit_requested)
-        self.assertTrue(scene._paused)
+        self.assertTrue(scene.transport.paused)
 
     def test_stop_while_already_paused_requests_quit(self):
         scene = self._scene()
-        with mock.patch.object(scenes, "time", FrozenClock(1.0)):
+        with _freeze_time(1.0):
             scene.transport_stop()  # first press: pauses
-        with mock.patch.object(scenes, "time", FrozenClock(2.0)):
+        with _freeze_time(2.0):
             quit_requested = scene.transport_stop()  # second press: quit
         self.assertTrue(quit_requested)
 
@@ -909,13 +914,13 @@ class VideoSceneLoopSlotTest(unittest.TestCase):
     def _scene(self) -> tuple[VideoScene, LoopPresetStore]:
         scene = _make_video_scene_stub(_StubSource(duration=100.0))
         store = LoopPresetStore(Path(self._tmp.name) / "loop.json", video_ref="clip.mp4", size=123)
-        scene._loop_store = store
+        scene.transport.loop_store = store
         return scene, store
 
     def test_save_persists_current_loop(self):
         scene, store = self._scene()
-        scene._loop_a = 10.0
-        scene._loop_b = 20.0
+        scene.transport.loop_a = 10.0
+        scene.transport.loop_b = 20.0
         scene.transport_loop_slot(1, save=True, clear=False)
         self.assertEqual(store.load(), {"1": {"a": 10.0, "b": 20.0}})
 
@@ -934,25 +939,25 @@ class VideoSceneLoopSlotTest(unittest.TestCase):
         scene, store = self._scene()
         store.save(3, 12.0, 34.0)
         scene.transport_loop_slot(3, save=False, clear=False)
-        self.assertEqual(scene._loop_a, 12.0)
-        self.assertEqual(scene._loop_b, 34.0)
-        self.assertEqual(scene._loop_state, "active")
+        self.assertEqual(scene.transport.loop_a, 12.0)
+        self.assertEqual(scene.transport.loop_b, 34.0)
+        self.assertEqual(scene.transport.loop_state, "active")
         self.assertEqual(scene.source.seeks, [12.0])  # type: ignore[union-attr]
 
     def test_plain_press_on_empty_slot_loops_whole_file(self):
         scene, _store = self._scene()
         scene.transport_loop_slot(9, save=False, clear=False)
-        self.assertEqual(scene._loop_a, 0.0)
-        self.assertIsNone(scene._loop_b)
-        self.assertEqual(scene._loop_state, "active")
+        self.assertEqual(scene.transport.loop_a, 0.0)
+        self.assertIsNone(scene.transport.loop_b)
+        self.assertEqual(scene.transport.loop_state, "active")
 
     def test_recall_resumes_if_paused(self):
         scene, store = self._scene()
         store.save(1, 5.0, None)
-        scene._paused = True
-        scene._transport_touched = True
+        scene.transport.paused = True
+        scene.transport.touched = True
         scene.transport_loop_slot(1, save=False, clear=False)
-        self.assertFalse(scene._paused)
+        self.assertFalse(scene.transport.paused)
 
 
 class VideoSceneRecordBorderTeardownTest(unittest.TestCase):
@@ -960,11 +965,11 @@ class VideoSceneRecordBorderTeardownTest(unittest.TestCase):
         scene = _make_video_scene_stub(_StubSource(duration=100.0))
         scene.audio = None
         scene._av_lag_count = 0
-        with mock.patch.object(scenes, "time", FrozenClock(1.0)):
+        with _freeze_time(1.0):
             scene.transport_record()
-        self.assertTrue(scene._record_border_active)
+        self.assertTrue(scene.transport.record_border_active)
         scene.teardown()
-        self.assertFalse(scene._record_border_active)
+        self.assertFalse(scene.transport.record_border_active)
         scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
 
     def test_teardown_is_noop_when_never_armed(self):
@@ -982,29 +987,29 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
     def test_wraps_to_a_when_clock_reaches_b(self):
         source = _StubSource(duration=100.0)
         scene = _make_video_scene_stub(source)
-        scene._transport_touched = True
-        scene._loop_state = "active"
-        scene._loop_a = 5.0
-        scene._loop_b = 10.0
-        scene._wall_anchor_clock_s = 10.0
-        scene._wall_anchor_time = 0.0
-        with mock.patch.object(scenes, "time", FrozenClock(0.0)):
+        scene.transport.touched = True
+        scene.transport.loop_state = "active"
+        scene.transport.loop_a = 5.0
+        scene.transport.loop_b = 10.0
+        scene.transport.wall_anchor_clock_s = 10.0
+        scene.transport.wall_anchor_time = 0.0
+        with _freeze_time(0.0):
             still_active = scene.process_frame(current_time=0.0)
         self.assertTrue(still_active)
         self.assertEqual(source.seeks, [5.0])
-        self.assertEqual(scene._wall_anchor_clock_s, 5.0)
+        self.assertEqual(scene.transport.wall_anchor_clock_s, 5.0)
 
     def test_wraps_to_a_when_source_hits_eof_before_b(self):
         source = _StubSource(duration=100.0)
         source.finished = True
         scene = _make_video_scene_stub(source)
-        scene._transport_touched = True
-        scene._loop_state = "active"
-        scene._loop_a = 5.0
-        scene._loop_b = 50.0  # clock hasn't reached B yet
-        scene._wall_anchor_clock_s = 20.0
-        scene._wall_anchor_time = 0.0
-        with mock.patch.object(scenes, "time", FrozenClock(0.0)):
+        scene.transport.touched = True
+        scene.transport.loop_state = "active"
+        scene.transport.loop_a = 5.0
+        scene.transport.loop_b = 50.0  # clock hasn't reached B yet
+        scene.transport.wall_anchor_clock_s = 20.0
+        scene.transport.wall_anchor_time = 0.0
+        with _freeze_time(0.0):
             still_active = scene.process_frame(current_time=0.0)
         self.assertTrue(still_active)
         self.assertEqual(source.seeks, [5.0])
@@ -1021,8 +1026,8 @@ class VideoSceneProcessFrameLoopTest(unittest.TestCase):
         source = _StubSource(duration=100.0)
         source.finished = True
         scene = _make_video_scene_stub(source)
-        scene._loop_state = "armed"
-        scene._loop_a = 5.0
+        scene.transport.loop_state = "armed"
+        scene.transport.loop_a = 5.0
         self.assertFalse(scene.process_frame(current_time=0.0))
 
 
@@ -1041,7 +1046,7 @@ class VideoSceneFrameNumberLabelTest(unittest.TestCase):
         with (
             mock.patch.object(scenes, "_annotate_frame_number", side_effect=fake_annotate),
             mock.patch.object(scenes, "_render_with_overlays"),
-            mock.patch.object(scenes, "time", FrozenClock(0.0)),
+            _freeze_time(0.0),
         ):
             scene.process_frame(current_time=0.0)
         return captured["label"]
@@ -1053,18 +1058,18 @@ class VideoSceneFrameNumberLabelTest(unittest.TestCase):
         label = self._run(scene)
         # clock_s reads 0.0 (untouched, no audio -> wall-from-start_time,
         # both zero); start_s(50) is added back for the true file offset.
-        self.assertIn(_timecode(50.0), label)
+        self.assertIn(timecode(50.0), label)
 
     def test_touched_does_not_double_count_start_s(self):
         source = _StubSource(duration=None)
         scene = _make_video_scene_stub(source, start_s=50.0)
         scene.show_frame_numbers = True
-        scene._transport_touched = True
-        scene._wall_anchor_clock_s = 80.0  # already an absolute file position
-        scene._wall_anchor_time = 0.0
+        scene.transport.touched = True
+        scene.transport.wall_anchor_clock_s = 80.0  # already an absolute file position
+        scene.transport.wall_anchor_time = 0.0
         label = self._run(scene)
-        self.assertIn(_timecode(80.0), label)
-        self.assertNotIn(_timecode(130.0), label)  # the double-counted (wrong) value
+        self.assertIn(timecode(80.0), label)
+        self.assertNotIn(timecode(130.0), label)  # the double-counted (wrong) value
 
 
 class PlanDecodeSizeTest(unittest.TestCase):

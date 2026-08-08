@@ -23,6 +23,7 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast import audio as audio_mod
+from c64cast import audio_rate as audio_rate_mod
 from c64cast.api import Ultimate64API
 from c64cast.audio import AudioStreamer
 from c64cast.audio_handlers import (
@@ -47,7 +48,7 @@ def _make_worker_streamer(chunk_size: int = 32, sample_rate: int = 64000) -> Aud
     prebuffer→pace handoff runs without touching CIA registers."""
     s = _make(sample_rate=sample_rate)
     s.chunk_size = chunk_size
-    s._start_nmi_timer = lambda: None  # type: ignore[method-assign]
+    s.nmi.start = lambda **kw: None  # type: ignore[method-assign]
     return s
 
 
@@ -222,7 +223,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         _run_worker(s, until=lambda: len(cast(Any, s.api).writes) >= 40, timeout=3.0)
 
         quantum = s._halt_quantum()
-        self.assertLess(quantum, (s._nmi_latch or s._compensated_latch()) + 1)
+        self.assertLess(quantum, (s.nmi.latch or s.nmi.compensated_latch()) + 1)
         # Prebuffer writes are deliberately unsplit (no NMI is consuming yet), so
         # only the writes past the prebuffer are held to the quantum.
         steady = cast(Any, s.api).writes[PREBUFFER_CHUNKS:]
@@ -327,7 +328,11 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             s.q.put(bytes([3] * 256))
             s._queued_samples += 256
 
-        with mock.patch.object(audio_mod, "time", _VirtualClock()):
+        clock = _VirtualClock()
+        with (
+            mock.patch.object(audio_mod, "time", clock),
+            mock.patch.object(audio_rate_mod, "time", clock),
+        ):
             _run_worker(s, until=lambda: s._total_slots >= 16, timeout=3.0)
 
         self.assertGreater(s._total_slots, 0)
@@ -341,26 +346,26 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s = _make_worker_streamer(chunk_size=256, sample_rate=12000)
         s.nmi_rate_adaptive = False
         s.host_dma_servo = True
-        s._nmi_timer_started = True
-        latch_before = s._nmi_latch
+        s.nmi.started = True
+        latch_before = s.nmi.latch
         base = audio_mod.RING_BUFFER_ADDR
 
-        with mock.patch.object(s, "_read_read_ptr", side_effect=[base, base + 1200]):
-            s._next_pace_increment(base + 4096, 0.1)
+        with mock.patch.object(s, "read_consumer_ptr", side_effect=[base, base + 1200]):
+            s.servo.next_pace_increment(base + 4096, 0.1)
             time.sleep(0.05)
-            s._next_pace_increment(base + 4096 + 1200, 0.1)
+            s.servo.next_pace_increment(base + 4096 + 1200, 0.1)
 
-        self.assertGreater(s._r_rate_ema, 0.0, "consumer rate was not measured")
-        self.assertGreater(s._r_rate_max, 0.0)
-        self.assertEqual(s._nmi_latch, latch_before, "observation must not steer the latch")
+        self.assertGreater(s.servo.r_rate_ema, 0.0, "consumer rate was not measured")
+        self.assertGreater(s.servo.r_rate_max, 0.0)
+        self.assertEqual(s.nmi.latch, latch_before, "observation must not steer the latch")
 
     def test_health_line_reports_window_deltas(self):
         # The health line exists to place an onset in time, so it must report
         # the window rather than the session: a second window that saw two more
         # underruns reports two, not the running total.
         s = _make(sample_rate=12000)
-        s._nmi_latch = 84
-        s._r_rate_ema = 11900.0
+        s.nmi.latch = 84
+        s.servo.r_rate_ema = 11900.0
         with mock.patch.object(audio_mod, "AUDIO_HEALTH_LOG_INTERVAL_S", 0.0001):
             s._maybe_log_health(100.0)  # first call only marks the baseline
             s._full_underruns = 5
@@ -416,8 +421,8 @@ class PitchCompensationLatchTest(unittest.TestCase):
         # at the nominal latch so the guard passes and a change writes through.
         s = _make(**kw)
         s._worker_thread = cast(Any, object())  # truthy → guard passes
-        s._nmi_timer_started = True  # timer already armed
-        s._nmi_latch = s._nmi_latch_value()  # at nominal
+        s.nmi.started = True  # timer already armed
+        s.nmi.latch = s.nmi.nominal_latch()  # at nominal
         return s
 
     def _latch_write(self, s: AudioStreamer) -> int | None:
@@ -431,31 +436,31 @@ class PitchCompensationLatchTest(unittest.TestCase):
 
     def test_speedup_multiplier_shrinks_latch(self):
         s = self._started()
-        nominal = s._nmi_latch_value()  # NTSC@8kHz → 127 (period 128)
+        nominal = s.nmi.nominal_latch()  # NTSC@8kHz → 127 (period 128)
         s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
         # period = round(128 / 1.1575) = 111 → latch 110, strictly below nominal.
-        self.assertEqual(s._nmi_latch, 110)
-        self.assertLess(s._nmi_latch, nominal)  # faster rate ⇒ smaller latch
+        self.assertEqual(s.nmi.latch, 110)
+        self.assertLess(s.nmi.latch, nominal)  # faster rate ⇒ smaller latch
         self.assertEqual(self._latch_write(s), 110)
 
     def test_slowdown_multiplier_grows_latch(self):
         s = self._started()
-        nominal = s._nmi_latch_value()
+        nominal = s.nmi.nominal_latch()
         s.set_nmi_latch_for_mode("petscii", {"petscii": 0.8})
         # period = round(128 / 0.8) = 160 → latch 159, above nominal.
-        self.assertEqual(s._nmi_latch, 159)
-        self.assertGreater(s._nmi_latch, nominal)
+        self.assertEqual(s.nmi.latch, 159)
+        self.assertGreater(s.nmi.latch, nominal)
 
     def test_unity_multiplier_no_write(self):
         s = self._started()
         s.set_nmi_latch_for_mode("blank", {"blank": 1.0})
-        self.assertEqual(s._nmi_latch, s._nmi_latch_value())
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())
         self.assertIsNone(self._latch_write(s))  # unchanged ⇒ no bus traffic
 
     def test_unknown_mode_defaults_to_unity(self):
         s = self._started()
         s.set_nmi_latch_for_mode("hires_edges", {"hires": 1.1})  # no exact key
-        self.assertEqual(s._nmi_latch, s._nmi_latch_value())  # 1.0 fallback
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())  # 1.0 fallback
         self.assertIsNone(self._latch_write(s))
 
     def test_no_op_without_servo(self):
@@ -476,14 +481,14 @@ class PitchCompensationLatchTest(unittest.TestCase):
         # timer start would clobber the compensation back to nominal.
         s = _make()
         s._worker_thread = cast(Any, object())
-        self.assertFalse(s._nmi_timer_started)
+        self.assertFalse(s.nmi.started)
         s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
         self.assertIsNone(self._latch_write(s))  # deferred, not written
-        self.assertAlmostEqual(s._pitch_multiplier, 1.1575)
+        self.assertAlmostEqual(s.nmi.pitch_multiplier, 1.1575)
 
-        cast(Any, s)._start_nmi_timer()  # worker arms the timer
-        self.assertTrue(s._nmi_timer_started)
-        self.assertEqual(s._nmi_latch, 110)  # compensation applied
+        s.nmi.start(adaptive=s.nmi_rate_adaptive)  # worker arms the timer
+        self.assertTrue(s.nmi.started)
+        self.assertEqual(s.nmi.latch, 110)  # compensation applied
         self.assertEqual(self._latch_write(s), 110)
 
     def test_stop_clears_pitch_state(self):
@@ -492,8 +497,8 @@ class PitchCompensationLatchTest(unittest.TestCase):
         s.running = True
         s._worker_thread = None  # no real thread to join in this unit test
         s.stop()
-        self.assertFalse(s._nmi_timer_started)
-        self.assertAlmostEqual(s._pitch_multiplier, 1.0)
+        self.assertFalse(s.nmi.started)
+        self.assertAlmostEqual(s.nmi.pitch_multiplier, 1.0)
 
 
 class _RFakeAPI(FakeAPI):
@@ -529,7 +534,7 @@ class NmiArmVerifyTest(unittest.TestCase):
 
     def setUp(self) -> None:
         # The real 30 ms verify window would make five attempts a 150 ms test.
-        patcher = mock.patch.object(audio_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0)
+        patcher = mock.patch.object(audio_rate_mod, "NMI_ARM_VERIFY_DELAY_S", 0.0)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -539,34 +544,34 @@ class NmiArmVerifyTest(unittest.TestCase):
     def _arm_count(self, api: Any) -> int:
         """How many times the ICR enable+start pair was written (= arms)."""
         key = f"{CIA2.ICR:04X}"
-        armed = (audio_mod.CIA2_ICR_ENABLE_TIMER_A_NMI, audio_mod.CIA2_TIMER_A_CONTINUOUS)
+        armed = (audio_rate_mod.CIA2_ICR_ENABLE_TIMER_A_NMI, audio_rate_mod.CIA2_TIMER_A_CONTINUOUS)
         return sum(1 for op in api.ops if op[0] == "write_regs" and op[1] == key and op[2] == armed)
 
     def test_moving_r_arms_once(self):
         api = _RFakeAPI([0, 240])  # R advanced within the verify window
         s = self._streamer(api)
-        with self.assertNoLogs(audio_mod.log, level="WARNING"):
-            cast(Any, s)._start_nmi_timer()
+        with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
+            s.nmi.start(adaptive=s.nmi_rate_adaptive)
         self.assertEqual(self._arm_count(api), 1)
-        self.assertEqual(s._nmi_arm_attempts, 1)
+        self.assertEqual(s.nmi.arm_attempts, 1)
 
     def test_frozen_then_moving_retries(self):
         api = _RFakeAPI([0, 0, 0, 240])  # two dropped arms, then it takes
         s = self._streamer(api)
-        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            cast(Any, s)._start_nmi_timer()
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s.nmi.start(adaptive=s.nmi_rate_adaptive)
         self.assertEqual(self._arm_count(api), 3)
-        self.assertEqual(s._nmi_arm_attempts, 3)
+        self.assertEqual(s.nmi.arm_attempts, 3)
         self.assertEqual(len(cm.records), 1)
         self.assertIn("3 attempts", cm.output[0])
 
     def test_frozen_throughout_gives_up_loudly(self):
         api = _RFakeAPI([0])  # R never moves, whatever we write
         s = self._streamer(api)
-        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            cast(Any, s)._start_nmi_timer()
-        self.assertEqual(self._arm_count(api), audio_mod.NMI_ARM_MAX_ATTEMPTS)
-        self.assertEqual(s._nmi_arm_attempts, audio_mod.NMI_ARM_MAX_ATTEMPTS)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            s.nmi.start(adaptive=s.nmi_rate_adaptive)
+        self.assertEqual(self._arm_count(api), audio_rate_mod.NMI_ARM_MAX_ATTEMPTS)
+        self.assertEqual(s.nmi.arm_attempts, audio_rate_mod.NMI_ARM_MAX_ATTEMPTS)
         self.assertEqual(len(cm.records), 1)
         self.assertIn("never started", cm.output[0])
 
@@ -576,8 +581,8 @@ class NmiArmVerifyTest(unittest.TestCase):
         # to re-land the vector, not just the CIA registers.
         api = _RFakeAPI([0, 0, 240])
         s = self._streamer(api)
-        with self.assertLogs(audio_mod.log, level="WARNING"):
-            cast(Any, s)._start_nmi_timer()
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            s.nmi.start(adaptive=s.nmi_rate_adaptive)
         key = f"{audio_mod.VECTORS.NMI:04X}"
         vector_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == key]
         self.assertEqual(len(vector_writes), 2)  # one per arm
@@ -590,20 +595,20 @@ class NmiArmVerifyTest(unittest.TestCase):
         api = FakeAPI()  # read_memory → None for the read pointer
         s = self._streamer(api)
         with mock.patch.object(audio_mod.time, "sleep") as sleep:
-            with self.assertNoLogs(audio_mod.log, level="WARNING"):
-                cast(Any, s)._start_nmi_timer()
+            with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
+                s.nmi.start(adaptive=s.nmi_rate_adaptive)
         self.assertEqual(self._arm_count(api), 1)
-        self.assertEqual(s._nmi_arm_attempts, 1)
+        self.assertEqual(s.nmi.arm_attempts, 1)
         sleep.assert_not_called()
 
     def test_stop_clears_arm_state(self):
         api = _RFakeAPI([0, 240])
         s = self._streamer(api)
-        cast(Any, s)._start_nmi_timer()
+        s.nmi.start(adaptive=s.nmi_rate_adaptive)
         s.running = True
         s._worker_thread = None
         s.stop()
-        self.assertEqual(s._nmi_arm_attempts, 0)
+        self.assertEqual(s.nmi.arm_attempts, 0)
 
 
 class NmiStallWatchdogTest(unittest.TestCase):
@@ -618,9 +623,9 @@ class NmiStallWatchdogTest(unittest.TestCase):
     def test_frozen_r_warns_once_per_session(self):
         s, _ = self._servo_streamer(0)
         write_addr = audio_mod.RING_BUFFER_ADDR + 4096
-        with self.assertLogs(audio_mod.log, level="WARNING") as cm:
-            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 8):
-                s._next_pace_increment(write_addr, 0.064)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING") as cm:
+            for _ in range(audio_rate_mod.NMI_STALL_WARN_CHUNKS + 8):
+                s.servo.next_pace_increment(write_addr, 0.064)
         self.assertEqual(len(cm.records), 1)  # once, not once per chunk
         self.assertIn("stalled", cm.output[0])
 
@@ -628,21 +633,21 @@ class NmiStallWatchdogTest(unittest.TestCase):
         api = _RFakeAPI(list(range(0, 4000, 240)))  # R advancing normally
         s = AudioStreamer(cast(Ultimate64API, api), 8000, "NTSC", host_dma_servo=True)
         write_addr = audio_mod.RING_BUFFER_ADDR + 4096
-        with self.assertNoLogs(audio_mod.log, level="WARNING"):
-            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 8):
-                s._next_pace_increment(write_addr, 0.064)
+        with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
+            for _ in range(audio_rate_mod.NMI_STALL_WARN_CHUNKS + 8):
+                s.servo.next_pace_increment(write_addr, 0.064)
 
     def test_stop_rearms_the_warning(self):
         s, _ = self._servo_streamer(0)
         write_addr = audio_mod.RING_BUFFER_ADDR + 4096
-        with self.assertLogs(audio_mod.log, level="WARNING"):
-            for _ in range(audio_mod.NMI_STALL_WARN_CHUNKS + 1):
-                s._next_pace_increment(write_addr, 0.064)
+        with self.assertLogs(audio_rate_mod.log, level="WARNING"):
+            for _ in range(audio_rate_mod.NMI_STALL_WARN_CHUNKS + 1):
+                s.servo.next_pace_increment(write_addr, 0.064)
         s.running = True
         s._worker_thread = None
         s.stop()
-        self.assertFalse(s._nmi_stall_warned)
-        self.assertEqual(s._r_stall_chunks, 0)
+        self.assertFalse(s.servo.stall_warned)
+        self.assertEqual(s.servo.r_stall_chunks, 0)
 
 
 class NmiRateSafetyTest(unittest.TestCase):
@@ -786,26 +791,26 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
     def test_adaptive_mode_disables_static_multiplier(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
         s._worker_thread = cast(Any, object())
-        s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()  # nominal
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()  # nominal
         s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
         # Adaptive ignores the static multiplier (stays 1.0) and instead records
         # the mode + re-seeds the latch to the mode seed (here: ceiling), NOT the
         # static-multiplier latch (110).
-        self.assertEqual(s._pitch_multiplier, 1.0)
-        self.assertEqual(s._nmi_mode, "mhires")
-        self.assertEqual(s._nmi_latch, s._ceiling_latch())
+        self.assertEqual(s.nmi.pitch_multiplier, 1.0)
+        self.assertEqual(s.nmi.mode, "mhires")
+        self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())
 
     def test_loop_retunes_latch_when_slow(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()  # 96
-        s._r_rate_ema = 9456.0  # ~9.9% slow, pre-seeded
-        s._last_r_addr = -1  # skip the EMA update this call (use the seed)
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()  # 96
+        s.servo.r_rate_ema = 9456.0  # ~9.9% slow, pre-seeded
+        s.servo.last_r_addr = -1  # skip the EMA update this call (use the seed)
         decide_every = max(1, round(s.sample_rate / s.chunk_size))
-        s._nmi_loop_chunk_count = decide_every - 1  # next call triggers a decision
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s._nmi_latch, 92)  # 96 - capped coarse step 4
+        s.servo.loop_chunk_count = decide_every - 1  # next call triggers a decision
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, 92)  # 96 - capped coarse step 4
         regs = cast(Any, s.api).regs[f"{CIA2.TIMER_A_LO:04X}"]
         self.assertEqual(regs[0] | (regs[1] << 8), 92)
 
@@ -813,118 +818,120 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         # When a decision needs no change (R at target ⇒ deadband), the fast
         # acquisition phase flips off so steady-state uses the gentle fine loop.
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()
-        s._r_rate_ema = 10500.0  # already at target → step returns no change
-        s._last_r_addr = -1
-        s._nmi_loop_chunk_count = audio_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
-        self.assertTrue(s._nmi_loop_acquiring)
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertFalse(s._nmi_loop_acquiring)  # settled → fine loop
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()
+        s.servo.r_rate_ema = 10500.0  # already at target → step returns no change
+        s.servo.last_r_addr = -1
+        s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        self.assertTrue(s.servo.loop_acquiring)
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertFalse(s.servo.loop_acquiring)  # settled → fine loop
 
     def test_seed_bitmap_mode_near_ceiling(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        self.assertEqual(s._seed_latch_for_mode("mhires"), s._ceiling_latch())
-        self.assertEqual(s._seed_latch_for_mode("hires"), s._ceiling_latch())
+        self.assertEqual(s.nmi.seed_latch_for_mode("mhires"), s.nmi.ceiling_latch())
+        self.assertEqual(s.nmi.seed_latch_for_mode("hires"), s.nmi.ceiling_latch())
 
     def test_seed_char_mode_at_nominal(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        self.assertEqual(s._seed_latch_for_mode("petscii"), s._nmi_latch_value())
-        self.assertEqual(s._seed_latch_for_mode(None), s._nmi_latch_value())  # unknown → nominal
+        self.assertEqual(s.nmi.seed_latch_for_mode("petscii"), s.nmi.nominal_latch())
+        self.assertEqual(
+            s.nmi.seed_latch_for_mode(None), s.nmi.nominal_latch()
+        )  # unknown → nominal
 
     def test_seed_prefers_learned_value(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_learned_latch["mhires"] = 90
-        self.assertEqual(s._seed_latch_for_mode("mhires"), 90)  # learned beats the class default
+        s.nmi.learned_latch["mhires"] = 90
+        self.assertEqual(s.nmi.seed_latch_for_mode("mhires"), 90)  # learned beats the class default
 
     def test_start_timer_arms_at_mode_seed(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_mode = "mhires"
-        s._start_nmi_timer()
-        self.assertEqual(s._nmi_latch, s._ceiling_latch())  # no glide-up from nominal
+        s.nmi.mode = "mhires"
+        s.nmi.start(adaptive=s.nmi_rate_adaptive)
+        self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())  # no glide-up from nominal
 
     def test_settle_records_learned_latch(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_mode = "mhires"
-        s._nmi_latch = 88
-        s._r_rate_ema = 10500.0  # at target → settles without a change
-        s._last_r_addr = -1
-        s._nmi_loop_chunk_count = audio_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s._nmi_learned_latch["mhires"], 88)
+        s.nmi.started = True
+        s.nmi.mode = "mhires"
+        s.nmi.latch = 88
+        s.servo.r_rate_ema = 10500.0  # at target → settles without a change
+        s.servo.last_r_addr = -1
+        s.servo.loop_chunk_count = audio_rate_mod.NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS - 1
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.learned_latch["mhires"], 88)
 
     def test_loop_discards_torn_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
-        s._last_r_time = time.monotonic() - 0.1
-        s._r_rate_ema = -1.0
+        s.servo.last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s.servo.last_r_time = time.monotonic() - 0.1
+        s.servo.r_rate_ema = -1.0
         # a half-ring forward jump = a torn self-modify read, not real advance
         torn = audio_mod.RING_BUFFER_ADDR + audio_mod.RING_BUFFER_SIZE // 2 + 16
-        s._update_nmi_rate_loop(torn)
-        self.assertEqual(s._r_rate_ema, -1.0)  # estimate left unseeded
+        s.servo.update_rate_loop(torn)
+        self.assertEqual(s.servo.r_rate_ema, -1.0)  # estimate left unseeded
 
     def test_loop_seeds_rate_on_valid_read(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
-        s._last_r_time = time.monotonic() - 0.1  # ~0.1 s ago
-        s._r_rate_ema = -1.0
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)  # ~1000 B in ~0.1 s
-        self.assertGreater(s._r_rate_ema, 0.0)  # seeded to ~10 kB/s (timing-slop)
+        s.servo.last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s.servo.last_r_time = time.monotonic() - 0.1  # ~0.1 s ago
+        s.servo.r_rate_ema = -1.0
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)  # ~1000 B in ~0.1 s
+        self.assertGreater(s.servo.r_rate_ema, 0.0)  # seeded to ~10 kB/s (timing-slop)
 
     # ---- warm-up gate ----
     def _slow_r_primed(self) -> AudioStreamer:
         """A streamer primed so the next _update_nmi_rate_loop call WOULD step the
         latch (slow R, past the decide cadence) absent any warm-up hold."""
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_latch = s._nmi_latch_value()  # nominal
-        s._r_rate_ema = 9456.0  # ~9.9% slow → coarse step
-        s._last_r_addr = -1  # skip the EMA update this call (use the pre-seed)
-        s._nmi_loop_chunk_count = max(1, round(s.sample_rate / s.chunk_size)) - 1
+        s.nmi.started = True
+        s.nmi.latch = s.nmi.nominal_latch()  # nominal
+        s.servo.r_rate_ema = 9456.0  # ~9.9% slow → coarse step
+        s.servo.last_r_addr = -1  # skip the EMA update this call (use the pre-seed)
+        s.servo.loop_chunk_count = max(1, round(s.sample_rate / s.chunk_size)) - 1
         return s
 
     def test_warmup_holds_latch(self):
         # Within the warm-up window the loop must NOT move the latch, even with a
         # slow R that would otherwise step it (the start/seek transient hold).
         s = self._slow_r_primed()
-        s._nmi_warmup_until = time.monotonic() + 5.0  # warm-up in effect
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s._nmi_latch, s._nmi_latch_value())  # unchanged
+        s.servo.warmup_until = time.monotonic() + 5.0  # warm-up in effect
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())  # unchanged
 
     def test_warmup_still_updates_ema(self):
         # The EMA keeps warming during warm-up so the first post-warm-up decision
         # acts on a settled estimate rather than re-seeding off one sample.
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
-        s._nmi_timer_started = True
-        s._nmi_warmup_until = time.monotonic() + 5.0
-        s._last_r_addr = audio_mod.RING_BUFFER_ADDR
-        s._last_r_time = time.monotonic() - 0.1
-        s._r_rate_ema = -1.0
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)
-        self.assertGreater(s._r_rate_ema, 0.0)  # measured + seeded despite the hold
+        s.nmi.started = True
+        s.servo.warmup_until = time.monotonic() + 5.0
+        s.servo.last_r_addr = audio_mod.RING_BUFFER_ADDR
+        s.servo.last_r_time = time.monotonic() - 0.1
+        s.servo.r_rate_ema = -1.0
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR + 1000)
+        self.assertGreater(s.servo.r_rate_ema, 0.0)  # measured + seeded despite the hold
 
     def test_acts_after_warmup(self):
         # Past the warm-up deadline the same slow R steps the latch (gate released).
         s = self._slow_r_primed()
-        s._nmi_warmup_until = time.monotonic() - 0.01  # warm-up elapsed
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s._nmi_latch, 92)  # 96 - capped coarse step 4
+        s.servo.warmup_until = time.monotonic() - 0.01  # warm-up elapsed
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, 92)  # 96 - capped coarse step 4
 
     def test_note_playback_disturbance_rearms_warmup(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
         before = time.monotonic()
         s.note_playback_disturbance()
         self.assertGreaterEqual(
-            s._nmi_warmup_until, before + audio_mod.NMI_RATE_LOOP_WARMUP_S - 0.05
+            s.servo.warmup_until, before + audio_mod.NMI_RATE_LOOP_WARMUP_S - 0.05
         )
 
     def test_disturbance_then_held(self):
         # End-to-end: a disturbance arms warm-up, which then holds a would-be step.
         s = self._slow_r_primed()
         s.note_playback_disturbance()
-        s._update_nmi_rate_loop(audio_mod.RING_BUFFER_ADDR)
-        self.assertEqual(s._nmi_latch, s._nmi_latch_value())  # held by the re-arm
+        s.servo.update_rate_loop(audio_mod.RING_BUFFER_ADDR)
+        self.assertEqual(s.nmi.latch, s.nmi.nominal_latch())  # held by the re-arm
 
 
 class DigiBoostTest(unittest.TestCase):

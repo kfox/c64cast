@@ -752,7 +752,9 @@ class HostDmaServoTest(unittest.TestCase):
 
         # Servo off → always open-loop regardless of what R reads.
         s.host_dma_servo = False
-        self.assertEqual(s._next_pace_increment(write_addr, self.CHUNK_PERIOD), self.CHUNK_PERIOD)
+        self.assertEqual(
+            s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD), self.CHUNK_PERIOD
+        )
 
         s.host_dma_servo = True
         cases = {
@@ -762,19 +764,19 @@ class HostDmaServoTest(unittest.TestCase):
             bytes([0x00, 0x70]): self.CHUNK_PERIOD,  # $7000 out of ring
         }
         for ret, expect in cases.items():
-            s._servo_integ = 0.0
+            s.servo.integ = 0.0
             s.api.read_memory = lambda a, n, timeout=1.0, _r=ret: _r  # type: ignore[method-assign]
-            self.assertEqual(s._next_pace_increment(write_addr, self.CHUNK_PERIOD), expect)
+            self.assertEqual(s.servo.next_pace_increment(write_addr, self.CHUNK_PERIOD), expect)
 
         # In-ring read: R=$4200, W=$4000+6000 → gap=(22384-16896)%8192=5488,
         # well above target, so the controller lengthens the period. Telemetry
         # records the gap.
-        s._servo_integ = 0.0
+        s.servo.integ = 0.0
         ahead_addr = RING_BUFFER_ADDR + 6000
         s.api.read_memory = lambda a, n, timeout=1.0: bytes([0x00, 0x42])  # type: ignore[method-assign]
-        period = s._next_pace_increment(ahead_addr, self.CHUNK_PERIOD)
+        period = s.servo.next_pace_increment(ahead_addr, self.CHUNK_PERIOD)
         self.assertGreater(period, self.CHUNK_PERIOD)
-        self.assertEqual(s._servo_gap_last, (ahead_addr - 0x4200) % RING_BUFFER_SIZE)
+        self.assertEqual(s.servo.gap_last, (ahead_addr - 0x4200) % RING_BUFFER_SIZE)
 
 
 if __name__ == "__main__":

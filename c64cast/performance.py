@@ -19,9 +19,9 @@ which the plain ``midi_control`` surface deliberately excludes):
    supersedes a pending arm.
 2. **Quantized swap** — once the build is ready *and* the next ``quantize``
    boundary (``off`` = immediately, ``beat``/``bar`` = the grid) arrives, the
-   armed scene is swapped in via ``Playlist._perf_swap_scene`` (the single-scene
-   hot-swap generalized from ``_apply_reload``: ``_safe_teardown`` the current
-   scene, ``_safe_setup`` the armed one). When the clock isn't running the
+   armed scene is swapped in via ``Playlist.perf_swap_scene`` (the single-scene
+   hot-swap generalized from ``_apply_reload``: ``safe_teardown`` the current
+   scene, ``safe_setup`` the armed one). When the clock isn't running the
    quantize is treated as ``off`` so a pad always fires.
 3. **Launch semantics** — ``trigger`` plays through / loops; ``gate`` plays while
    the pad is held and restores the prior program on release; ``toggle`` latches
@@ -280,7 +280,7 @@ class PerformanceSession:
     validated by :func:`config._validate_clips`). :meth:`enqueue` is called from
     the MIDI reader thread; :meth:`service` from the playlist thread only. Both
     are cheap in-memory work — the only network/DMA touch is inside the
-    playlist-thread ``_safe_setup``/``_safe_teardown`` a swap triggers."""
+    playlist-thread ``safe_setup``/``safe_teardown`` a swap triggers."""
 
     def __init__(
         self, clips: list[dict[str, Any]] | None = None, look_store: LookStore | None = None
@@ -624,7 +624,7 @@ class PerformanceSession:
             self._return = _Return(kind="playlist", index=pl.index)
         else:
             self._return = _Return(kind="clip", clip=self._active.clip)
-        if not pl._perf_swap_scene(armed.scene):
+        if not pl.perf_swap_scene(armed.scene):
             # Swap aborted (stop fired / audio claim lost) — drop ownership.
             self._active = None
             self._return = None
@@ -658,7 +658,7 @@ class PerformanceSession:
         if not active.scene.is_done:
             return
         if active.loop:
-            pl._perf_swap_scene(active.scene)
+            pl.perf_swap_scene(active.scene)
         else:
             self._end_active(pl)
 
@@ -685,7 +685,7 @@ class PerformanceSession:
         index = index % len(pl.scenes)
         pl.index = index
         pl.transitioning = False
-        pl._perf_swap_scene(pl.scenes[index])
+        pl.perf_swap_scene(pl.scenes[index])
 
     def _restore_clip(self, pl: Playlist, clip: dict[str, Any]) -> None:
         """Return to a prior clip by rebuilding it (a brief gap — the deferred
@@ -700,7 +700,7 @@ class PerformanceSession:
             log.exception("performance: prior-clip rebuild failed; returning to playlist")
             self._restore_playlist(pl, self._base_index)
             return
-        if not pl._perf_swap_scene(scene):
+        if not pl.perf_swap_scene(scene):
             return
         self._active = _Active(
             slot=clip.get("slot", 0),

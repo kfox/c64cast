@@ -413,7 +413,7 @@ def _prompt_overlay_params(q, ov: introspect.OverlayDoc) -> dict[str, object] | 
         kind = field_kind(p.type)
         if kind == "complex":
             continue
-        default = None if p.default is introspect._REQUIRED else p.default
+        default = None if p.default is introspect.REQUIRED else p.default
         val = _prompt_typed(
             q,
             label=f"{ov.name}.{p.name}",
@@ -563,7 +563,7 @@ def _prompt_audio_backend(q, audio_enabled: bool) -> dict[str, object] | None:  
     backend = q.select(
         "Video-audio backend (sampler = U64 Ultimate Audio FPGA PCM, hi-fi; "
         "dac = lo-fi 4-bit $D418)",
-        choices=list(cfgmod._AUDIO_BACKEND_CHOICES),
+        choices=list(cfgmod.AUDIO_BACKEND_CHOICES),
         default="auto",
     ).ask()
     if backend is None:
@@ -589,7 +589,7 @@ def _prompt_globals(q) -> tuple[str, str] | None:  # type: ignore[no-untyped-def
     url = q.text("Ultimate 64 URL", default=cfgmod.Ultimate64Cfg().url).ask()
     if url is None:
         return None
-    system = q.select("Video system", choices=list(cfgmod._SYSTEM_CHOICES), default="NTSC").ask()
+    system = q.select("Video system", choices=list(cfgmod.SYSTEM_CHOICES), default="NTSC").ask()
     if system is None:
         return None
     return url, system

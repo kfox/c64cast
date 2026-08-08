@@ -4,7 +4,7 @@ Three layers:
   1. `Ensemble.try_claim_audio` / `release_audio` — the atomic primitive.
   2. `config.build_scene(..., is_ensemble=True)` — live scenes (webcam,
      blank) build with audio=None so they can't compete for the SID.
-  3. `Playlist._resolve_next_index` + `_safe_teardown` — gating
+  3. `Playlist.ensemble_coord.resolve_next_index` + `_safe_teardown` — gating
      audio-bearing scene advancement and releasing the slot on teardown.
 
 No real U64, no real audio device, no real webcam — every dependency is
@@ -303,20 +303,20 @@ class ResolveNextIndexTest(unittest.TestCase):
         # touch one.
         pl = _build_playlist([FakePlaylistScene("a"), FakePlaylistScene("b")])
         pl.index = 1
-        self.assertEqual(pl._resolve_next_index(), 1)
+        self.assertEqual(pl.ensemble_coord.resolve_next_index(), 1)
 
     def test_non_audio_scene_passes_through(self):
         pl = _build_playlist(
             [FakePlaylistScene("a", wants_audio=False), FakePlaylistScene("b", wants_audio=True)]
         )
         pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
-        self.assertEqual(pl._resolve_next_index(), 0)
+        self.assertEqual(pl.ensemble_coord.resolve_next_index(), 0)
 
     def test_audio_scene_claims_lock_when_free(self):
         scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
-        self.assertEqual(pl._resolve_next_index(), 0)
+        self.assertEqual(pl.ensemble_coord.resolve_next_index(), 0)
         self.assertEqual(pl.ensemble.audio_holder, "sys")
         self.assertTrue(scene.__dict__["_audio_lock_held"])
 
@@ -331,7 +331,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         )
         pl.ensemble.try_claim_audio("other")
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
-            idx = pl._resolve_next_index()
+            idx = pl.ensemble_coord.resolve_next_index()
         self.assertEqual(idx, 1)
         self.assertTrue(any("skipping audio-bearing" in line for line in cap.output))
 
@@ -345,7 +345,7 @@ class ResolveNextIndexTest(unittest.TestCase):
             stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
-        self.assertEqual(pl._resolve_next_index(), 0)
+        self.assertEqual(pl.ensemble_coord.resolve_next_index(), 0)
         self.assertEqual(pl.ensemble.audio_holder, "other")
         self.assertNotIn("_audio_lock_held", muted.__dict__)
 
@@ -368,7 +368,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         threading.Thread(target=free_after_delay, daemon=True).start()
 
         with self.assertLogs("c64cast.playlist", level="INFO"):
-            idx = pl._resolve_next_index()
+            idx = pl.ensemble_coord.resolve_next_index()
         self.assertEqual(idx, 0)
         assert pl.ensemble is not None
         self.assertEqual(pl.ensemble.audio_holder, "sys")
@@ -383,7 +383,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         # Fire stop_event almost immediately.
         threading.Timer(0.05, pl.stop_event.set).start()
         with self.assertLogs("c64cast.playlist", level="INFO"):
-            idx = pl._resolve_next_index()
+            idx = pl.ensemble_coord.resolve_next_index()
         self.assertIsNone(idx)
 
 
@@ -395,7 +395,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         pl.ensemble.try_claim_audio("sys")
         scene.__dict__["_audio_lock_held"] = True
 
-        pl._safe_teardown(scene)
+        pl.safe_teardown(scene)
         self.assertIsNone(pl.ensemble.audio_holder)
         self.assertFalse(scene.__dict__["_audio_lock_held"])
 
@@ -407,7 +407,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         )
         pl.ensemble.try_claim_audio("other")
         # scene didn't claim — _audio_lock_held is not set on it.
-        pl._safe_teardown(scene)
+        pl.safe_teardown(scene)
         # Other system's claim is untouched.
         self.assertEqual(pl.ensemble.audio_holder, "other")
 
@@ -424,7 +424,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
 
         # Should swallow the teardown exception AND still release.
         with self.assertLogs("c64cast.playlist", level="ERROR"):
-            pl._safe_teardown(scene)
+            pl.safe_teardown(scene)
         self.assertIsNone(pl.ensemble.audio_holder)
 
 

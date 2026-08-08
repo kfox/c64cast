@@ -34,9 +34,9 @@ import av
 import cv2
 import numpy as np
 
-from c64cast import modes as modes_mod
 from c64cast.config import ColorCfg
 from c64cast.framebuffer import Framebuffer
+from c64cast.modes import base as modes_base
 from c64cast.palette import ColorFitAccumulator
 from c64cast.scene_factory import _build_display_mode
 from c64cast.scenes import _crop_to_aspect, _render_with_overlays
@@ -116,10 +116,10 @@ def render_sequence(
     truth. Otherwise a single persistent mode accumulates temporal state with
     EMA `alpha` and hysteresis bonuses scaled by `hyst_scale`. The EMA advances
     at the FULL `fps`; only output is subsampled."""
-    modes_mod.PERCELL_PICK_EMA_ALPHA = alpha  # module global, read per-frame in compose
+    modes_base.PERCELL_PICK_EMA_ALPHA = alpha  # modes.base global, read per-frame in compose
     base_q, base_c = 5000.0, 5000.0  # PERCELL_QUANT/CODE_HYSTERESIS_BONUS defaults
-    modes_mod.PERCELL_QUANT_HYSTERESIS_BONUS = base_q * hyst_scale  # read in mode __init__
-    modes_mod.PERCELL_CODE_HYSTERESIS_BONUS = base_c * hyst_scale
+    modes_base.PERCELL_QUANT_HYSTERESIS_BONUS = base_q * hyst_scale  # read in mode __init__
+    modes_base.PERCELL_CODE_HYSTERESIS_BONUS = base_c * hyst_scale
     mode, api, fb = _new_mode(fit)
     saved: list[tuple[float, np.ndarray]] = []
     next_save = t0

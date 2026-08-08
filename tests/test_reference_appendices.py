@@ -399,7 +399,7 @@ class SnippetTest(unittest.TestCase):
         # page the program never agreed to.
         self.assertIsNone(gen.toml_literal(None))
         self.assertIsNone(gen.toml_literal(""))
-        self.assertIsNone(gen.toml_literal(introspect._REQUIRED))
+        self.assertIsNone(gen.toml_literal(introspect.REQUIRED))
         self.assertIsNone(gen.toml_literal(["a", "b"]))
         self.assertEqual(gen.toml_literal(True), "true")
         self.assertEqual(gen.toml_literal(2112), "2112")

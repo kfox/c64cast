@@ -266,7 +266,7 @@ def play_sequence(streamer: AudioStreamer, voices: int, sustain: int, seg_s: flo
     ring, with code-0 silence gaps between segments."""
     streamer._upload_nmi_and_buffers()  # NMI routine + neutral ring (no digiboost)
     set_bias(streamer.api, voices, sustain)  # parameterized bias
-    streamer._start_nmi_timer()  # arm NMI; ring loops forever
+    streamer.nmi.start(adaptive=streamer.nmi_rate_adaptive)  # arm NMI; ring loops forever
     api = streamer.api
     addr = f"{RING_BUFFER_ADDR:04X}"
 

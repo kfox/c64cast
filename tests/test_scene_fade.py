@@ -27,7 +27,7 @@ from c64cast.modes import (  # noqa: E402
     MCMDisplayMode,
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
-    _fade_nibbles,
+    fade_nibbles,
 )
 from c64cast.palette import build_fade_lut  # noqa: E402
 from c64cast.playlist import Playlist  # noqa: E402
@@ -79,7 +79,7 @@ class FadeNibbleTest(unittest.TestCase):
         lut = build_fade_lut(0.5)
         # hi=white(1), lo=red(2) packed as one screen byte per cell.
         arr = np.array([(1 << 4) | 2, (15 << 4) | 0], dtype=np.uint8)
-        out = _fade_nibbles(arr, lut)
+        out = fade_nibbles(arr, lut)
         self.assertEqual(int(out[0] >> 4), int(lut[1]))
         self.assertEqual(int(out[0] & 0x0F), int(lut[2]))
         self.assertEqual(int(out[1] >> 4), int(lut[15]))
@@ -148,7 +148,7 @@ class RepushFadedTest(unittest.TestCase):
         mode = HiresDisplayMode("normal")
         api = FakeAPI()
         mode.setup(api)
-        mode._last_buffers = mode.compose(_frame())
+        mode.last_buffers = mode.compose(_frame())
         api.regions.clear()
         mode.repush_faded(api, 0.0)  # fully black
         # A full re-push happened (bitmap + screen regions written).
@@ -160,7 +160,7 @@ class RepushFadedTest(unittest.TestCase):
     def test_repush_noop_without_cache(self):
         mode = HiresDisplayMode("normal")
         api = FakeAPI()
-        mode._last_buffers = None
+        mode.last_buffers = None
         mode.repush_faded(api, 0.5)
         self.assertEqual(api.regions, {})
 
@@ -216,9 +216,9 @@ class UserDimTest(unittest.TestCase):
         api = FakeAPI()
         mode.setup(api)
         cached = mode.compose(_frame())
-        mode._last_buffers = cached
+        mode.last_buffers = cached
         mode.user_dim = 0.5
-        expected_screen = _fade_nibbles(cached["screen"], build_fade_lut(0.6 * 0.5)).tobytes()
+        expected_screen = fade_nibbles(cached["screen"], build_fade_lut(0.6 * 0.5)).tobytes()
         api.regions.clear()
         mode.repush_faded(api, 0.6)
         self.assertEqual(api.regions[0x0400], expected_screen)
@@ -239,7 +239,7 @@ class _FakeMode:
 
     def __init__(self):
         self.fade_alpha = 1.0
-        self._last_buffers = object()  # non-None: a frame was "composed"
+        self.last_buffers = object()  # non-None: a frame was "composed"
         self.repush_calls: list[float] = []
 
     def repush_faded(self, api, alpha):
@@ -271,41 +271,41 @@ class PlaylistFadeInTest(unittest.TestCase):
     def test_begin_fade_in_starts_black_and_ramps(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._begin_fade_in(s)
+        pl.fades.begin_fade_in(s)
         self.assertEqual(s.display_mode.fade_alpha, 0.0)
-        n = pl._fade_in_remaining
+        n = pl.fades.fade_in_remaining
         self.assertGreater(n, 0)
         # Stepping n frames ramps fade_alpha monotonically up to exactly 1.0.
         last = 0.0
         for _ in range(n):
-            pl._advance_fade_in(s)
+            pl.fades.advance_fade_in(s)
             self.assertGreaterEqual(s.display_mode.fade_alpha, last)
             last = s.display_mode.fade_alpha
         self.assertEqual(last, 1.0)
-        self.assertEqual(pl._fade_in_remaining, 0)
+        self.assertEqual(pl.fades.fade_in_remaining, 0)
 
     def test_disabled_when_duration_zero(self):
         s = _FakeScene()
         pl = _playlist(s, fade_duration_s=0.0)
-        pl._begin_fade_in(s)
+        pl.fades.begin_fade_in(s)
         self.assertEqual(s.display_mode.fade_alpha, 1.0)
-        self.assertEqual(pl._fade_in_remaining, 0)
+        self.assertEqual(pl.fades.fade_in_remaining, 0)
 
     def test_cancel_fade_in_snaps_to_full(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._begin_fade_in(s)
-        pl._cancel_fade_in(s)
+        pl.fades.begin_fade_in(s)
+        pl.fades.cancel_fade_in(s)
         self.assertEqual(s.display_mode.fade_alpha, 1.0)
-        self.assertEqual(pl._fade_in_remaining, 0)
+        self.assertEqual(pl.fades.fade_in_remaining, 0)
 
 
 class PlaylistFadeOutTest(unittest.TestCase):
     def test_fade_out_dims_to_black_over_n_frames(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._fade_out(s)
-        n = pl._fade_frames(s)
+        pl.fades.fade_out(s)
+        n = pl.fades.fade_frames(s)
         self.assertEqual(len(s.display_mode.repush_calls), n)
         # alphas descend toward (and reach) 0, then mode left at full brightness.
         self.assertAlmostEqual(s.display_mode.repush_calls[-1], 0.0)
@@ -314,8 +314,8 @@ class PlaylistFadeOutTest(unittest.TestCase):
     def test_skip_before_fade_out_suppresses_it(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._ended_via_skip = True
-        pl._fade_out(s)
+        pl.fades.ended_via_skip = True
+        pl.fades.fade_out(s)
         self.assertEqual(s.display_mode.repush_calls, [])
 
     def test_skip_during_fade_out_aborts_and_consumes_event(self):
@@ -331,15 +331,15 @@ class PlaylistFadeOutTest(unittest.TestCase):
                 pl.skip_event.set()
 
         s.display_mode.repush_faded = spy
-        pl._fade_out(s)
+        pl.fades.fade_out(s)
         self.assertEqual(len(s.display_mode.repush_calls), 2)
         self.assertFalse(pl.skip_event.is_set(), "skip must be consumed by the aborted fade")
 
     def test_fade_out_noop_without_rendered_frame(self):
         s = _FakeScene()
-        s.display_mode._last_buffers = None
+        s.display_mode.last_buffers = None
         pl = _playlist(s)
-        pl._fade_out(s)
+        pl.fades.fade_out(s)
         self.assertEqual(s.display_mode.repush_calls, [])
 
 

@@ -18,6 +18,8 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 
 An NMI-driven 4-bit SID DAC, writing the `$D418` volume nibble. This is the only approach that works on a real C64 with active video output.
 
+**Collaborators (split 2026-08, `audio_rate.py`).** The CIA #2 timer machinery and the worker-thread closed loops live on two state-owning collaborators the streamer holds as `self.nmi` (`NmiTimer` — latch math, the verified arm sequence, the pitch multiplier, the per-mode learned-latch cache) and `self.servo` (`RateServo` — the PI gap servo, the R-rate observer + adaptive latch steering, the stall watchdog, the gap/rate telemetry). Bodies moved verbatim; every log line and the control math are unchanged, and the threading contract is stated in the module docstring. Tests that white-box these (`test_audio_lifecycle`) address `s.nmi.latch` / `s.servo.r_rate_ema` etc., patch arm/verify constants on `c64cast.audio_rate`, and freeze `time` in BOTH the `audio` and `audio_rate` namespaces (the worker paces in one, the servo measures in the other). The third collaborator the refactoring roadmap sketched, `MicInput`, was deliberately NOT extracted: the three sounddevice callbacks are thin adapters over the streamer's own encode pipeline (`_push_to_analysis` → gate → `_encode_and_enqueue`), so a mic class would reach back into the streamer on every line — and the calibration-side capture plumbing already moved to `dac_capture_device.py` in the #245 split. The prose below describes the machinery's semantics unchanged; read the old `_nmi_*`/`_servo_*`/`_r_rate_*` attribute spellings as their `nmi.*`/`servo.*` equivalents.
+
 **Why not PWM.** `$D402` PWM was tested and rejected on two counts:
 
 * At an 8 kHz NMI rate the PWM carrier sits 9 dB *above* the audio signal (confirmed by spectral capture).
@@ -656,7 +658,7 @@ Five stateful processors, wired by `AudioDSP` in a source-appropriate order: **p
 
 The **second producer** of `modulation.MusicModulation`, alongside [`music_features.SidFeatureStream`](sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene). The SID stream reads envelope/gate/frequency out of a host-side 6502 running the same tune the chip plays; this one analyzes **actual audio samples**, so a generative scene reacts to music c64cast has no symbolic knowledge of — an instrument or mixer feed through an audio interface, a phone into an iRig, a mic in the room.
 
-Everything downstream of `MusicModulation` was already source-agnostic (`generators.py`, the effect chain, `wled_sync.py`), so this module *is* the whole feature: an analyzer, a ring the audio path pushes into, and a poll thread between them. `MicAudioSource.features()` returns that analyzer's snapshot.
+Everything downstream of `MusicModulation` was already source-agnostic (`generators/`, the effect chain, `wled_sync.py`), so this module *is* the whole feature: an analyzer, a ring the audio path pushes into, and a poll thread between them. `MicAudioSource.features()` returns that analyzer's snapshot.
 
 ### Why a separate pre-DSP tap (the non-obvious constraint)
 

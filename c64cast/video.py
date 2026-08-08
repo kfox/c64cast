@@ -831,6 +831,104 @@ class AVFileSource:
         log.info("av %s: transport seek to %.3fs", os.path.basename(self.path), target)
         return True
 
+    def _plan_decode(self, frame: Any) -> None:
+        """Plan the decode downscale once, from the first frame's real
+        dimensions. _decode_size None = source already small enough (or no
+        target) → plain full-res convert."""
+        self._decode_planned = True
+        if self._decode_target is None:
+            return
+        self._decode_size = _plan_decode_size(frame.width, frame.height, *self._decode_target)
+        if self._decode_size is not None:
+            log.info(
+                "av %s: decoding %dx%d→%dx%d (display target %dx%d)",
+                os.path.basename(self.path),
+                frame.width,
+                frame.height,
+                self._decode_size[0],
+                self._decode_size[1],
+                self._decode_target[0],
+                self._decode_target[1],
+            )
+
+    def _frame_to_bgr(self, frame: Any) -> np.ndarray:
+        """Decoded frame → BGR ndarray, at the planned decode size when one
+        applies (yuv→bgr + downscale in one swscale pass — cheap, vs a
+        full-res bgr buffer + a separate cv2.resize)."""
+        if not self._decode_planned:
+            self._plan_decode(frame)
+        if self._decode_size is not None:
+            return frame.reformat(
+                width=self._decode_size[0],
+                height=self._decode_size[1],
+                format="bgr24",
+            ).to_ndarray()
+        return frame.to_ndarray(format="bgr24")
+
+    def _rebase_pts(self, frame: Any) -> float:
+        """Rebase a frame's PTS so the first decoded frame sits at
+        ~_pts_anchor_target (0.0 for ordinary start_s playback; a transport
+        seek's target_s once one has landed — see _apply_pending_seek). With a
+        start_s seek the raw PTS are ~start_s; the playback clock (audio
+        samples / wall-clock) starts at 0, so without this current_frame()
+        would find no frame <= 0 for start_s seconds. Offset is captured from
+        the first frame (the keyframe the seek landed on), so the
+        no-transport-seek path is unchanged (anchor 0.0, offset == first PTS,
+        rebased ~0). Then the bitmap+DAC tempo compensation: compress the
+        video timeline by tempo_scale so it stays in lock-step with the
+        1/tempo_scale-compressed audio (both then net to real time under the
+        ~tempo_scale drain-clock slowdown). No-op when tempo_scale == 1.0."""
+        pts = float(frame.pts * self.video_time_base) if frame.pts is not None else 0.0
+        if self._pts_offset is None:
+            self._pts_offset = pts - self._pts_anchor_target
+        pts -= self._pts_offset
+        if self._tempo_scale != 1.0:
+            pts *= self._tempo_scale
+        return pts
+
+    def _enqueue_frame(self, pts: float, img: np.ndarray) -> bool:
+        """Append (pts, img) to the video buffer, blocking while it is full.
+        Returns False only when the source closed mid-wait (stop demuxing).
+
+        Backpressure rationale: the old behavior (silent-drop oldest frames)
+        was a safety net under host-DMA mode, where AudioStreamer's
+        push_samples blocking throttle keeps the demuxer at real-time and the
+        buffer never filled in practice. In REU mode there's no audio
+        backpressure (audio is pre-decoded and lives in REU), so the demuxer
+        would race ahead, fill the buffer, and start dropping the EARLIEST
+        frames — leaving current_frame() with no frames at PTS ≤ the audio
+        clock for several seconds. User-visible symptom: video freezes early
+        in playback for a long time, then "catches up" near the end. Blocking
+        the demuxer until the consumer drains is correct in both modes;
+        host-DMA just doesn't hit the wait."""
+        while True:
+            if self._closed:
+                return False
+            with self._lock:
+                if self._pending_seek is not None:
+                    # A seek landed while we were blocked on a full buffer —
+                    # this decoded frame predates it and would corrupt the
+                    # post-seek buffer. Abandon it; the demux loop's
+                    # top-of-packet check applies the seek on the next packet.
+                    return True
+                if len(self._video_buf) < self.max_video_buffer:
+                    self._video_buf.append((pts, img))
+                    return True
+            time.sleep(0.005)
+
+    def _decode_audio_packet(self, packet: Any) -> None:
+        """Resample an audio packet and emit it — through the atempo graph
+        when tempo compensation is on (time-compress, pitch-preserving; the
+        graph buffers, so one input frame yields 0..N output frames)."""
+        assert self._resampler is not None  # caller checks (audio-branch gate)
+        for frame in packet.decode():
+            for resampled in self._resampler.resample(frame):
+                if self._atempo_graph is not None:
+                    self._atempo_graph.push(resampled)
+                    self._drain_atempo()
+                else:
+                    self._emit_audio(resampled.to_ndarray().reshape(-1))
+
     def _demux_loop(self):
         # Differentiate "container hit EOF" (expected, info) from "decode blew
         # up mid-stream" (unexpected, log full traceback).
@@ -842,106 +940,15 @@ class AVFileSource:
                     continue
                 if packet.stream.type == "video":
                     for frame in packet.decode():
-                        # Plan the decode downscale once, from the first frame's
-                        # real dimensions. _decode_size None = source already
-                        # small enough (or no target) → plain full-res convert.
-                        if not self._decode_planned:
-                            self._decode_planned = True
-                            if self._decode_target is not None:
-                                self._decode_size = _plan_decode_size(
-                                    frame.width, frame.height, *self._decode_target
-                                )
-                                if self._decode_size is not None:
-                                    log.info(
-                                        "av %s: decoding %dx%d→%dx%d (display target %dx%d)",
-                                        os.path.basename(self.path),
-                                        frame.width,
-                                        frame.height,
-                                        self._decode_size[0],
-                                        self._decode_size[1],
-                                        self._decode_target[0],
-                                        self._decode_target[1],
-                                    )
-                        if self._decode_size is not None:
-                            # yuv→bgr + downscale in one swscale pass (cheap),
-                            # vs a full-res bgr buffer + a separate cv2.resize.
-                            img = frame.reformat(
-                                width=self._decode_size[0],
-                                height=self._decode_size[1],
-                                format="bgr24",
-                            ).to_ndarray()
-                        else:
-                            img = frame.to_ndarray(format="bgr24")
-                        pts = (
-                            float(frame.pts * self.video_time_base)
-                            if frame.pts is not None
-                            else 0.0
-                        )
-                        # Rebase PTS so the first decoded frame sits at
-                        # ~_pts_anchor_target (0.0 for ordinary start_s
-                        # playback; a transport seek's target_s once one has
-                        # landed — see _apply_pending_seek). With a start_s
-                        # seek the raw PTS are ~start_s; the playback clock
-                        # (audio samples / wall-clock) starts at 0, so without
-                        # this current_frame() would find no frame <= 0 for
-                        # start_s seconds. Offset is captured from the first
-                        # frame (the keyframe the seek landed on), so the
-                        # no-transport-seek path is unchanged (anchor 0.0,
-                        # offset == first PTS, rebased ~0).
-                        if self._pts_offset is None:
-                            self._pts_offset = pts - self._pts_anchor_target
-                        pts -= self._pts_offset
-                        # Bitmap+DAC tempo compensation: compress the video
-                        # timeline by tempo_scale so it stays in lock-step with
-                        # the 1/tempo_scale-compressed audio (both then net to
-                        # real time under the ~tempo_scale drain-clock slowdown).
-                        # No-op when tempo_scale == 1.0.
-                        if self._tempo_scale != 1.0:
-                            pts *= self._tempo_scale
-                        # Backpressure: wait if the buffer is at capacity.
-                        # The old behavior (silent-drop oldest frames) was a
-                        # safety net under host-DMA mode, where AudioStreamer's
-                        # push_samples blocking throttle keeps the demuxer at
-                        # real-time and the buffer never filled in practice.
-                        # In REU mode there's no audio backpressure (audio is
-                        # pre-decoded and lives in REU), so the demuxer would
-                        # race ahead, fill the buffer, and start dropping the
-                        # EARLIEST frames — leaving current_frame() with no
-                        # frames at PTS ≤ the audio clock for several seconds.
-                        # User-visible symptom: video freezes early in playback
-                        # for a long time, then "catches up" near the end.
-                        # Blocking the demuxer until consumer drains is correct
-                        # in both modes; host-DMA just doesn't hit the wait.
-                        while True:
-                            if self._closed:
-                                return
-                            with self._lock:
-                                if self._pending_seek is not None:
-                                    # A seek landed while we were blocked on a
-                                    # full buffer — this decoded frame predates
-                                    # it and would corrupt the post-seek buffer.
-                                    # Abandon it; the outer loop's top-of-packet
-                                    # check applies the seek on the next packet.
-                                    break
-                                if len(self._video_buf) < self.max_video_buffer:
-                                    self._video_buf.append((pts, img))
-                                    break
-                            time.sleep(0.005)
+                        img = self._frame_to_bgr(frame)
+                        if not self._enqueue_frame(self._rebase_pts(frame), img):
+                            return
                 elif (
                     packet.stream.type == "audio"
                     and self._resampler is not None
                     and self._audio_push is not None
                 ):
-                    for frame in packet.decode():
-                        for resampled in self._resampler.resample(frame):
-                            if self._atempo_graph is not None:
-                                # Time-compress (pitch-preserving) through the
-                                # atempo graph before emit. The graph buffers, so
-                                # one input frame yields 0..N output frames.
-                                self._atempo_graph.push(resampled)
-                                self._drain_atempo()
-                            else:
-                                self._emit_audio(resampled.to_ndarray().reshape(-1))
+                    self._decode_audio_packet(packet)
             self._flush_atempo()
             log.debug("demux %s: EOF", self.path)
         except (EOFError, StopIteration):

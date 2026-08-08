@@ -156,7 +156,7 @@ MOD_BANDS: tuple[tuple[str, float, float], ...] = (
 
 def latch_for(rate: int, system: str) -> int:
     """CIA #2 Timer A latch (period = latch+1 cycles) for `rate` — the same math
-    as ``AudioStreamer._nmi_latch_value``."""
+    as ``NmiTimer.nominal_latch``."""
     clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
     return max(1, round(clock / rate) - 1)
 
