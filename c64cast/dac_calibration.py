@@ -87,6 +87,7 @@ from .audio_handlers import (
 )
 from .c64 import CIA2
 from .dac_calibration_store import (
+    CalibrationDocument,
     CalibrationResult,
     active_socket_at_d400,
     resolve_calibration_key,
@@ -657,6 +658,9 @@ def run_calibration(
     finally:
         _silence_and_reset(be, log_fn)
 
-    path = save_calibration(cfg, key, entries, device_info, normal_d400)
+    path = save_calibration(
+        cfg,
+        CalibrationDocument(key=key, entries=entries, device=device_info, d400_socket=normal_d400),
+    )
     _report_run(entries, path, log_fn)
     return CalibrationRun(key=key, path=path, entries=entries)

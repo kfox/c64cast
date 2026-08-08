@@ -380,13 +380,19 @@ class CalibrationResult:
     raw: list[tuple[int, float]] | None = None
 
 
-def save_calibration(
-    cfg: Config,
-    key: str,
-    entries: dict[str, CalibrationResult],
-    device_info: dict[str, str],
-    d400_socket: int | None = None,
-) -> Path:
+@dataclass(frozen=True)
+class CalibrationDocument:
+    """One measured run's persistable content — everything
+    :func:`save_calibration` writes, minus where it lands (``path_for_key``
+    derives that from ``cfg`` + ``key``)."""
+
+    key: str
+    entries: dict[str, CalibrationResult]  # "1" / "2" / "default" -> result
+    device: dict[str, str]  # free-form provenance (REST info / transport endpoint)
+    d400_socket: int | None = None
+
+
+def save_calibration(cfg: Config, doc: CalibrationDocument) -> Path:
     """Persist one or more per-socket sidtables + provenance for this system.
 
     ``raw_signed_levels`` is written additively under the *same* schema
@@ -419,16 +425,16 @@ def save_calibration(
             out["raw_signed_levels"] = [[int(c), round(v, 8)] for c, v in r.raw]
         return out
 
-    path = path_for_key(cfg, key)
-    doc = {
+    path = path_for_key(cfg, doc.key)
+    record: dict[str, Any] = {
         "schema": _SCHEMA_VERSION,
-        "key": key,
+        "key": doc.key,
         "backend": cfg.hardware.backend,
-        "device": device_info,
+        "device": doc.device,
         "created": datetime.now(UTC).isoformat(timespec="seconds"),
-        "sids": {name: entry(r) for name, r in entries.items()},
+        "sids": {name: entry(r) for name, r in doc.entries.items()},
     }
-    if d400_socket is not None:
-        doc["d400_socket"] = d400_socket
-    atomic_write_text(path, json.dumps(doc, indent=2) + "\n")
+    if doc.d400_socket is not None:
+        record["d400_socket"] = doc.d400_socket
+    atomic_write_text(path, json.dumps(record, indent=2) + "\n")
     return path

@@ -50,9 +50,9 @@ import time
 from dataclasses import replace
 
 from .api import (
-    ParsedPsid,
     _build_basic_sys_stub,
     _PlayerLayout,
+    _SidLaunch,
     _SidPlayerMixin,
     _StubRunnerBackend,
 )
@@ -487,16 +487,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self.tr.launch_file(dest, self._drive)
 
     # ---- SID player (shared orchestration via _SidPlayerMixin) -------------
-    def _launch_sid_player(
-        self,
-        parsed: ParsedPsid,
-        layout: _PlayerLayout,
-        mc: bytes,
-        reinit: bytes,
-        timeout: float,
-        avoid: bytes | bytearray | None = None,
-        defer_audio: bool = False,
-    ) -> bool:
+    def _launch_sid_player(self, launch: _SidLaunch) -> bool:
         """TeensyROM kick — pure DMA, no LaunchFile/reset/boot.
 
         The cycle-clean idle leaves the C64 running the IRQ-enabled clear-loop
@@ -521,14 +512,14 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         `supports_read`); the spin-stub idle on older firmware masks IRQs, so the
         vector-swap would never fire — raise rather than play silently."""
         self._require_irq_idle("run_sid_player")
-        self._write_sid_blobs(parsed, layout, mc, reinit)
+        self._write_sid_blobs(launch)
         self.flush()
-        if defer_audio:
+        if launch.defer_audio:
             # Loaded but silent: the $0314 swap (which starts INIT/PLAY) waits
             # for begin_sid_audio so the caller can paint the scope first.
             self._sid_audio_pending = True
         else:
-            self._start_sid_audio(layout)
+            self._start_sid_audio(launch.layout)
         return False
 
     def _char_rom_stub_wants_irq_exit(self) -> bool:

@@ -88,7 +88,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -493,6 +493,7 @@ def extract_slot_levels(
         )
     _, ring_p, anchor_rms = _fit_period(anchors, ring_p)
     slot_p = ring_p / ring_slots
+    geom = RingGeometry(slot_period=slot_p, ring_slots=ring_slots, n_codes=n_codes)
 
     # Code i occupies slot SYNC_SLOTS + 2i, bracketed by reference slots.
     code_slots = SYNC_SLOTS + 2 * np.arange(n_codes)
@@ -502,7 +503,7 @@ def extract_slot_levels(
     pitches: list[float] = []
     dc_gains: list[float] = []
     for a in anchors:
-        starts, pitch = _track_slot_grid(peaks, a, slot_p, ring_slots, n_codes)
+        starts, pitch = _track_slot_grid(peaks, a, geom)
         w = int(pitch) - 2 * guard
         if w < 8:
             continue
@@ -600,6 +601,16 @@ def read_ring_capture(
     return got
 
 
+class RingGeometry(NamedTuple):
+    """One ring's layout as it appears in a capture: the fitted slot period in
+    capture samples, the slot count of the whole ring, and how many code
+    slots it carries."""
+
+    slot_period: float
+    ring_slots: int
+    n_codes: int
+
+
 #: Alpha-beta gains for :func:`_track_slot_grid`. Alpha smooths the ±½-sample
 #: jitter in a single edge position; beta learns a *rate* of drift, which is
 #: what keeps the tracker from lagging when the capture timebase is stretched
@@ -615,7 +626,7 @@ _TRACK_CAPTURE_FRAC = 0.35
 
 
 def _track_slot_grid(
-    peaks: np.ndarray, anchor: float, slot_p: float, ring_slots: int, n_codes: int
+    peaks: np.ndarray, anchor: float, geom: RingGeometry
 ) -> tuple[np.ndarray, float]:
     """Start position of every slot in one ring pass, tracked edge by edge.
 
@@ -634,18 +645,18 @@ def _track_slot_grid(
     edge — a code whose level happens to equal the reference, and the whole
     sync gap — coast on the current rate. Returns the slot starts plus the
     median tracked slot length."""
-    starts = np.empty(ring_slots + 1)
-    last_edge_slot = SYNC_SLOTS + 2 * n_codes
+    starts = np.empty(geom.ring_slots + 1)
+    last_edge_slot = SYNC_SLOTS + 2 * geom.n_codes
     off = 0.0
     rate = 0.0
-    for s in range(SYNC_SLOTS, ring_slots + 1):
-        pred = anchor + (s - SYNC_SLOTS) * slot_p + off
+    for s in range(SYNC_SLOTS, geom.ring_slots + 1):
+        pred = anchor + (s - SYNC_SLOTS) * geom.slot_period + off
         if s < last_edge_slot and peaks.size:
             j = int(np.searchsorted(peaks, pred))
             near = peaks[max(0, j - 1) : j + 1]
             if near.size:
                 d = min((p - pred for p in near), key=abs)
-                if abs(d) < _TRACK_CAPTURE_FRAC * slot_p:
+                if abs(d) < _TRACK_CAPTURE_FRAC * geom.slot_period:
                     off += _TRACK_ALPHA * d
                     rate += _TRACK_BETA * d
                     pred += _TRACK_ALPHA * d
@@ -655,7 +666,7 @@ def _track_slot_grid(
     # anchor at the nominal pitch. Only the single ref slot at SYNC_SLOTS-1 is
     # ever read (it brackets the first code), one slot from the anchor.
     for s in range(SYNC_SLOTS - 1, -1, -1):
-        starts[s] = anchor - (SYNC_SLOTS - s) * slot_p
+        starts[s] = anchor - (SYNC_SLOTS - s) * geom.slot_period
     return starts, float(np.median(np.diff(starts[SYNC_SLOTS:])))
 
 

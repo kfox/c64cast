@@ -268,7 +268,7 @@ class PersistenceTest(DataDirIsolated):
     def test_save_load_default_entry_round_trip(self):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        path = dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        path = dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         self.assertTrue(path.exists())
         got = dcs.load_calibrated_table(cfg)
         self.assertEqual(got, bytes(256))
@@ -278,7 +278,7 @@ class PersistenceTest(DataDirIsolated):
         key = dcs.resolve_calibration_key(cfg)
         raw = [(c, (c - 128) / 300.0) for c in range(256)]
         res = dcs.CalibrationResult(list(range(256)), {}, "6581", raw)
-        path = dcs.save_calibration(cfg, key, {"default": res}, {})
+        path = dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": res}, {}))
         entry = json.loads(path.read_text())["sids"]["default"]
         self.assertEqual(len(entry["raw_signed_levels"]), 256)
         self.assertEqual(entry["raw_signed_levels"][1], [1, round(-127 / 300.0, 8)])
@@ -288,7 +288,7 @@ class PersistenceTest(DataDirIsolated):
         # writes the pre-existing key set, and readers only need `sidtable`.
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        path = dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        path = dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         entry = json.loads(path.read_text())["sids"]["default"]
         self.assertNotIn("raw_signed_levels", entry)
         self.assertEqual(dcs.load_calibrated_table(cfg), bytes(256))
@@ -301,7 +301,12 @@ class PersistenceTest(DataDirIsolated):
         # the assumption has to be stated where the table is chosen.
         cfg = _tr_serial_cfg()
         be = FakeAPI()  # profile.supports_config False, like the real TR
-        dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {}
+            ),
+        )
         with self.assertLogs("c64cast.dac_calibration_store", level="INFO") as logs:
             self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
         self.assertIn("assumes one SID", "\n".join(logs.output))
@@ -313,7 +318,12 @@ class PersistenceTest(DataDirIsolated):
         cfg = _u64_cfg()
         be = FakeAPI()
         be.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
-        dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {}
+            ),
+        )
         with self.assertNoLogs("c64cast.dac_calibration_store", level="INFO"):
             self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
 
@@ -323,7 +333,10 @@ class PersistenceTest(DataDirIsolated):
         key = dcs.resolve_calibration_key(cfg)
         raw = [(c, 0.0) for c in range(256)]
         dcs.save_calibration(
-            cfg, key, {"default": dcs.CalibrationResult(list(range(256)), {}, None, raw)}, {}
+            cfg,
+            dcs.CalibrationDocument(
+                key, {"default": dcs.CalibrationResult(list(range(256)), {}, None, raw)}, {}
+            ),
         )
         self.assertEqual(dcs.load_calibrated_table(cfg), bytes(range(256)))
 
@@ -334,7 +347,8 @@ class PersistenceTest(DataDirIsolated):
         dest = Path(self._tmp.name) / "elsewhere" / "breadbin.json"
         cfg.audio.dac_calibration_profile = str(dest)
         path = dcs.save_calibration(
-            cfg, dcs.resolve_calibration_key(cfg), {"default": _result(0)}, {}
+            cfg,
+            dcs.CalibrationDocument(dcs.resolve_calibration_key(cfg), {"default": _result(0)}, {}),
         )
         self.assertEqual(path, dest)
         self.assertEqual(dcs.load_calibrated_table(cfg), bytes(256))
@@ -346,7 +360,7 @@ class PersistenceTest(DataDirIsolated):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
         bad = dcs.CalibrationResult(sidtable=list(range(10)), metrics={})
-        dcs.save_calibration(cfg, key, {"default": bad}, {})
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": bad}, {}))
         self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_load_corrupt_file_returns_none(self):
@@ -368,7 +382,12 @@ class PersistenceTest(DataDirIsolated):
     def test_multi_socket_selection_uses_live_active_socket(self):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        dcs.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {"unique_id": "5D327C"})
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                key, {"1": _result(1), "2": _result(2)}, {"unique_id": "5D327C"}
+            ),
+        )
         api = _ultimate_fake()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
@@ -386,7 +405,9 @@ class PersistenceTest(DataDirIsolated):
     def test_multi_socket_selection_none_when_ultisid_owns_d400(self):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        dcs.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
+        dcs.save_calibration(
+            cfg, dcs.CalibrationDocument(key, {"1": _result(1), "2": _result(2)}, {})
+        )
         api = _ultimate_fake()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
@@ -403,7 +424,7 @@ class PersistenceTest(DataDirIsolated):
     def test_default_entry_used_even_with_live_api_when_no_socket_keys(self):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        dcs.save_calibration(cfg, key, {"default": _result(7)}, {})
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(7)}, {}))
         api = _ultimate_fake()
         got = dcs.load_calibrated_table(cfg, be=api)
         self.assertEqual(got, bytes([7] * 256))
@@ -455,7 +476,7 @@ class ResolveCurveTest(DataDirIsolated):
     def test_auto_prefers_calibration_when_present(self):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
@@ -477,7 +498,7 @@ class ResolveCurveTest(DataDirIsolated):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "calibrated"
         key = dcs.resolve_calibration_key(cfg)
-        dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
@@ -530,7 +551,7 @@ class MissingCalibrationLogTest(DataDirIsolated):
         # A hit doesn't warn.
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
             label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
         self.assertTrue(label.startswith("calibrated:"))
@@ -614,7 +635,9 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         # that owns $D400 is exactly what should be used.
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
-        dcs.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
+        dcs.save_calibration(
+            cfg, dcs.CalibrationDocument(key, {"1": _result(1), "2": _result(2)}, {})
+        )
         label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
@@ -647,7 +670,9 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         return cfg, FakeAPI()  # profile.supports_config False, like the real TR
 
     def _save(self, cfg, be, entries, d400=None) -> Path:
-        return dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, be), entries, {}, d400)
+        return dcs.save_calibration(
+            cfg, dcs.CalibrationDocument(dcs.resolve_calibration_key(cfg, be), entries, {}, d400)
+        )
 
     def test_a_two_socket_file_is_not_discarded_by_a_link_that_cannot_ask(self):
         # The regression: "can't read who owns $D400" was treated as the same
@@ -703,7 +728,10 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "6581",
         }
-        dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, api), {"1": _result(1)}, {})
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(dcs.resolve_calibration_key(cfg, api), {"1": _result(1)}, {}),
+        )
         self.assertIsNone(dcs.load_calibrated_table(cfg, be=api))
 
     def test_offline_selection_is_unchanged(self):
@@ -712,7 +740,10 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         # an assumption of its own.
         cfg = _u64_cfg()
         dcs.save_calibration(
-            cfg, dcs.resolve_calibration_key(cfg), {"1": _result(1), "2": _result(2)}, {}
+            cfg,
+            dcs.CalibrationDocument(
+                dcs.resolve_calibration_key(cfg), {"1": _result(1), "2": _result(2)}, {}
+            ),
         )
         self.assertIsNone(dcs.load_calibrated_table(cfg))
 
@@ -1131,7 +1162,10 @@ class Volume0SelfTestTest(DataDirIsolated):
         sidtable, metrics = dsr.build_sidtable_from_levels(raw)
         self.assertIsNone(sidtable)
         path = dcs.save_calibration(
-            cfg, key, {"default": dcs.CalibrationResult(sidtable, metrics, None, raw)}, {}
+            cfg,
+            dcs.CalibrationDocument(
+                key, {"default": dcs.CalibrationResult(sidtable, metrics, None, raw)}, {}
+            ),
         )
         doc = json.loads(path.read_text())
         entry = doc["sids"]["default"]
