@@ -1483,7 +1483,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         "fpga_version": ..., "hostname": ..., "unique_id": ..., ...}``. The
         ``unique_id`` (e.g. ``"5D327C"``) is a stable per-unit identifier —
         unlike the host/IP, it survives a DHCP re-lease — so
-        :mod:`c64cast.dac_calibration` uses it to key a system's calibrated
+        :mod:`c64cast.audio.dac_calibration` uses it to key a system's calibrated
         DAC table. Raises ``requests.RequestException`` on transport/HTTP
         failure (older firmware without ``/v1/info``, unreachable device);
         callers treat the read as best-effort and fall back to a host-keyed

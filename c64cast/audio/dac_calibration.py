@@ -5,7 +5,7 @@ to the real chip instead of the baked emulated-UltiSID one.
 
 Why per-system calibration
 --------------------------
-The baked ``mahoney_ultisid`` table in :mod:`c64cast.dac_curves` generalizes
+The baked ``mahoney_ultisid`` table in :mod:`c64cast.audio.dac_curves` generalizes
 perfectly across the U64's *emulated* UltiSID (deterministic, model-knob
 irrelevant). But **physical 6581/8580 chips vary enormously** chip-to-chip
 (measured: curve correlation 0.74 between two 6581s; one chip's table on the
@@ -43,11 +43,11 @@ an UltiSID core.
 
 How a capture is *measured* — the slot ring, the context-dependence rounds,
 the volume-0 self-test, and every gate a capture must pass before its numbers
-reach the table — lives with the DSP in :mod:`c64cast.dac_slot_ring`; finding
-and probing the capture device lives in :mod:`c64cast.dac_capture_device`.
+reach the table — lives with the DSP in :mod:`c64cast.audio.dac_slot_ring`; finding
+and probing the capture device lives in :mod:`c64cast.audio.dac_capture_device`.
 Identity keys and the calibration file live in
-:mod:`c64cast.dac_calibration_store`; which curve playback actually uses is
-:mod:`c64cast.dac_curve_resolve`. This module owns the run itself: hardware
+:mod:`c64cast.audio.dac_calibration_store`; which curve playback actually uses is
+:mod:`c64cast.audio.dac_curve_resolve`. This module owns the run itself: hardware
 bring-up, per-socket isolation, capture + retry, and handing the result to
 the store.
 """
@@ -64,10 +64,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from c64cast.hw.c64 import CIA2
-
-from . import paths
-from .asid_sidmap import (
+from c64cast import paths
+from c64cast.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
     CAT_SOCKETS,
@@ -81,6 +79,11 @@ from .asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
+from c64cast.hw.c64 import CIA2
+from c64cast.sid_hw_config import detect_sockets, restore_sid_config, snapshot_sid_config
+from c64cast.sid_panning import CAT_MIXER
+from c64cast.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
+
 from .audio_handlers import (
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
@@ -120,15 +123,12 @@ from .dac_slot_ring import (
     plan_capture_rounds,
     read_ring_capture,
 )
-from .sid_hw_config import detect_sockets, restore_sid_config, snapshot_sid_config
-from .sid_panning import CAT_MIXER
-from .sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
+    from c64cast.config import Config
     from c64cast.hw.backend import C64Backend
 
     from .audio import AudioStreamer
-    from .config import Config
 
 log = logging.getLogger(__name__)
 

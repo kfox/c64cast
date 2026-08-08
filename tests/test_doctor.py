@@ -14,7 +14,8 @@ from _fakes import FakeAPI
 
 import c64cast
 from c64cast import config as cfgmod
-from c64cast import dac_calibration_store, doctor
+from c64cast import doctor
+from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
 
 

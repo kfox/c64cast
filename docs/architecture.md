@@ -9,7 +9,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 ## Topic areas
 
 * **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/api.py`, `hw/teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
-* **[Audio output](architecture/audio.md)** — `audio.py`, `audio_handlers.py`, `sampler.py`, `dsp.py`, `audio_features.py`
+* **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes/`, `modes_irq.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `sid_panning.py`, `sid_volume.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
@@ -30,11 +30,11 @@ the two lists account for every module in the tree.
 | `asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
 | `asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `asid_sidmap.py` | [SID playback & the oscilloscope](architecture/sid.md#multi-sid-on-the-u64-asid_sidmappy) |
-| `audio.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
-| `audio_rate.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
-| `audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |
-| `audio_features.py` | [Audio output](architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
-| `audio_source.py` | [Audio output](architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source) |
+| `audio/audio.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
+| `audio/audio_rate.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
+| `audio/audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |
+| `audio/audio_features.py` | [Audio output](architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
+| `audio/audio_source.py` | [Audio output](architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source) |
 | `backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
 | `hw/char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
@@ -43,14 +43,14 @@ the two lists account for every module in the tree.
 | Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
 | `config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
 | `control_plane.py` | [Control surfaces & live performance](architecture/control.md#control_planepy--http-control-plane-optional) |
-| `dac_calibration.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
-| `dac_calibration_store.py` | [Audio output](architecture/audio.md#the-calibration-file) |
-| `dac_capture_device.py` | [Audio output](architecture/audio.md#picking-the-capture-device) |
-| `dac_curve_resolve.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
-| `dac_curves.py` | [Audio output](architecture/audio.md#audiodac_curve--mahoney-8-bit-d418-companding) |
-| `dac_slot_ring.py` | [Audio output](architecture/audio.md#the-slot-ring-reading-signed-levels-directly) |
+| `audio/dac_calibration.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
+| `audio/dac_calibration_store.py` | [Audio output](architecture/audio.md#the-calibration-file) |
+| `audio/dac_capture_device.py` | [Audio output](architecture/audio.md#picking-the-capture-device) |
+| `audio/dac_curve_resolve.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
+| `audio/dac_curves.py` | [Audio output](architecture/audio.md#audiodac_curve--mahoney-8-bit-d418-companding) |
+| `audio/dac_slot_ring.py` | [Audio output](architecture/audio.md#the-slot-ring-reading-signed-levels-directly) |
 | `dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |
-| `dsp.py` | [Audio output](architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path) |
+| `audio/dsp.py` | [Audio output](architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path) |
 | `effects.py` | [Scenes, sources & overlays](architecture/scenes.md#effectspy--the-frameeffect-registry) |
 | `ensemble.py` | [Config, CLI & ensemble](architecture/config.md#ensemblepy--audio-slot-coordination) |
 | `frame_source.py` | [Scenes, sources & overlays](architecture/scenes.md#frame_sourcepy) |
@@ -76,7 +76,7 @@ the two lists account for every module in the tree.
 | `petscii_styles.py` | [Video input & the color pipeline](architecture/video-color.md#petscii_stylespy) |
 | `recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
 | `rolling_palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
-| `sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
+| `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
 | `scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
 | `sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
@@ -109,7 +109,7 @@ rationale in the meantime — each of the ones below opens with one.
 | `__main__.py` | `python -m c64cast` entry point |
 | `_native_io.py` | Process-level stderr muting for native-library chatter |
 | `_pollthread.py` | Background daemon thread with start/stop boilerplate |
-| `audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
+| `audio/audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
 | `hw/backend.py` | The `C64Backend` hardware abstraction the whole app is duck-typed on |
 | `bitmap_text.py` | Shared hires bitmap text rasterizer (char-ROM glyphs) |
 | `hw/c64.py` | Centralized C64 hardware constants — addresses, registers, magic numbers |

@@ -12,8 +12,8 @@ from typing import cast
 import numpy as np
 
 from c64cast import generators
-from c64cast.audio import AudioStreamer
-from c64cast.audio_source import MicAudioSource, NullAudioSource
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_source import MicAudioSource, NullAudioSource
 from c64cast.config import AudioCfg, Config, SceneCfg
 from c64cast.effects import (
     BlurEffect,
@@ -1389,7 +1389,7 @@ class ConfigGenerativeTest(unittest.TestCase):
     def test_audio_source_file_builds_source_sized_to_track(self):
         import tempfile
 
-        from c64cast.audio_source import AudioFileSource
+        from c64cast.audio.audio_source import AudioFileSource
 
         with tempfile.TemporaryDirectory() as d:
             wav = f"{d}/tune.wav"
@@ -1426,7 +1426,7 @@ class ConfigGenerativeTest(unittest.TestCase):
         # (static) and crash the C64 (HW 2026-07-24).
         import tempfile
 
-        from c64cast.sampler import UltimateAudioSampler
+        from c64cast.audio.sampler import UltimateAudioSampler
 
         with tempfile.TemporaryDirectory() as d:
             wav = f"{d}/tune.wav"
@@ -1455,7 +1455,7 @@ class ConfigGenerativeTest(unittest.TestCase):
         # playlist default (None) — the quickcast `c64cast tune.mp3` path.
         import tempfile
 
-        from c64cast.sampler import UltimateAudioSampler
+        from c64cast.audio.sampler import UltimateAudioSampler
 
         with tempfile.TemporaryDirectory() as d:
             wav = f"{d}/tune.wav"

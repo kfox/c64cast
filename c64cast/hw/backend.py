@@ -365,7 +365,7 @@ class C64Backend(ABC):
         """Read device identity (Ultimate REST: ``GET /v1/info`` —
         ``product``/``hostname``/``unique_id``/firmware+fpga versions).
         Default raises — only the Ultimate exposes this endpoint. Used by
-        :mod:`c64cast.dac_calibration_store` to key a per-unit calibration file by
+        :mod:`c64cast.audio.dac_calibration_store` to key a per-unit calibration file by
         the device's stable ``unique_id`` instead of its (DHCP-mutable) host
         address."""
         raise BackendCapabilityError("get_device_info")

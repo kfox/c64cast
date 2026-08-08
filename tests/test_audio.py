@@ -11,8 +11,8 @@ from typing import Any, cast
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
@@ -21,7 +21,7 @@ from c64cast.audio_handlers import (
     STOMP_GUARD_BYTES,
     stomp_spans,
 )
-from c64cast.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
+from c64cast.audio.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
 from c64cast.hw.api import Ultimate64API
 
 

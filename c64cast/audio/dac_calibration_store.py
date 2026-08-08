@@ -34,9 +34,9 @@ exactly what a TR+ in a U64's cartridge port is: one physical SID, already
 measured and filed under the Ultimate's ``unique_id``. Naming that file reuses
 the measurement instead of repeating it.
 
-The measurement itself lives in :mod:`c64cast.dac_calibration` (the run) and
-:mod:`c64cast.dac_slot_ring` (the DSP); which table playback actually uses is
-:mod:`c64cast.dac_curve_resolve`.
+The measurement itself lives in :mod:`c64cast.audio.dac_calibration` (the run) and
+:mod:`c64cast.audio.dac_slot_ring` (the DSP); which table playback actually uses is
+:mod:`c64cast.audio.dac_curve_resolve`.
 """
 
 from __future__ import annotations
@@ -50,8 +50,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from . import paths
-from .asid_sidmap import (
+from c64cast import paths
+from c64cast.asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
     ITEM_SOCKET1_ADDR,
@@ -61,12 +61,11 @@ from .asid_sidmap import (
     ITEM_SOCKET2_EN,
     ITEM_SOCKET2_TYPE,
 )
-from .transport import atomic_write_text
+from c64cast.transport import atomic_write_text
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
+    from c64cast.config import Config
     from c64cast.hw.backend import C64Backend
-
-    from .config import Config
 
 log = logging.getLogger(__name__)
 

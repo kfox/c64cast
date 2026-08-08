@@ -22,10 +22,10 @@ from unittest import mock
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast import audio as audio_mod
-from c64cast import audio_rate as audio_rate_mod
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.audio import audio as audio_mod
+from c64cast.audio import audio_rate as audio_rate_mod
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     PREBUFFER_CHUNKS,
     SAMPLE_TAP_SIZE,
@@ -401,7 +401,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
             raise RuntimeError("dma exploded")
 
         cast(Any, s).api.write_memory_file = boom
-        with self.assertLogs("c64cast.audio", level="ERROR") as cm:
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
             s.running = True
             t = threading.Thread(target=s._worker, daemon=True)
             t.start()
@@ -937,7 +937,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
 class DigiBoostTest(unittest.TestCase):
     def test_enable_writes_all_voices(self):
         s = _make(digi_boost=True)
-        with self.assertLogs("c64cast.audio", level="INFO"):
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
             s._enable_digi_boost()
         api = cast(Any, s.api)
         # One control byte (write_memory) per voice at its CONTROL register.
@@ -960,7 +960,7 @@ class DigiBoostTest(unittest.TestCase):
             raise RuntimeError("write failed")
 
         cast(Any, s).api.write_memory = boom
-        with self.assertLogs("c64cast.audio", level="DEBUG"):
+        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
             s._disable_digi_boost()  # must not raise
 
 
@@ -1132,7 +1132,7 @@ class ListenOnlyCaptureTest(unittest.TestCase):
         self._patch_sd(fake)
         s = _make(sample_rate=8000)
         try:
-            with self.assertLogs("c64cast.audio", level="INFO"):
+            with self.assertLogs("c64cast.audio.audio", level="INFO"):
                 s.start_listen("Cam Link", 1.0, sample_rate=44100)
             self.assertTrue(s.running)
             # Opened against the name-resolved index (Cam Link → 1).
@@ -1145,7 +1145,7 @@ class ListenOnlyCaptureTest(unittest.TestCase):
         audio_mod.AUDIO_AVAILABLE = False
         self.addCleanup(lambda: setattr(audio_mod, "AUDIO_AVAILABLE", orig_avail))
         s = _make()
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             s.start_listen(0, 1.0)
         self.assertFalse(s.running)
 
@@ -1251,7 +1251,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
         )
         self._patch_sd(fake)
         s = _make()
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             dev, name = s._resolve_input_device(1)
         self.assertEqual(dev, 0)  # fell back to default input
         self.assertEqual(name, "default mic")
@@ -1261,7 +1261,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
         fake = _FakeSD([{"name": "stereo mic", "max_input_channels": 2}], 0, reject_channels={1})
         self._patch_sd(fake)
         s = _make()
-        with self.assertLogs("c64cast.audio", level="INFO"):
+        with self.assertLogs("c64cast.audio.audio", level="INFO"):
             stream = s._open_input_stream(0)
         self.assertIsInstance(stream, _FakeStream)
         self.assertEqual(cast(Any, stream).kw["channels"], 2)
@@ -1272,7 +1272,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
         fake = _FakeSD([{"name": "fussy mic", "max_input_channels": 2}], 0, reject_channels={1, 2})
         self._patch_sd(fake)
         s = _make()
-        with self.assertLogs("c64cast.audio", level="DEBUG"):
+        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
             with self.assertRaises(RuntimeError):
                 s._open_input_stream(0)
 
@@ -1287,7 +1287,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
         fake = _RaisingSD([{"name": "default mic", "max_input_channels": 1}], 0)
         self._patch_sd(fake)
         s = _make()
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             dev, name = s._resolve_input_device(5)
         self.assertEqual(dev, 0)
 
@@ -1297,7 +1297,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
         s = _make()
         # Resolution warns about the unusable device before the open raises;
         # capture the warning so it doesn't leak to the test console.
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             with self.assertRaises(RuntimeError):
                 s._open_input_stream(0)
 
@@ -1306,7 +1306,7 @@ class InputDeviceResolutionTest(unittest.TestCase):
         audio_mod.AUDIO_AVAILABLE = False
         self.addCleanup(lambda: setattr(audio_mod, "AUDIO_AVAILABLE", self._orig_avail))
         s = _make()
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             s.start_mic(0, 1.0, 0.05)
         self.assertFalse(s.running)
 
@@ -1368,7 +1368,7 @@ class LifecycleTest(unittest.TestCase):
         s = _make()
         s.start_for_external_source()
         s._total_slots = 1
-        with self.assertLogs("c64cast.audio", level="INFO") as cm:
+        with self.assertLogs("c64cast.audio.audio", level="INFO") as cm:
             s.stop()
         self.assertFalse(s.running)
         api = cast(Any, s.api)
@@ -1382,7 +1382,7 @@ class LifecycleTest(unittest.TestCase):
         s._total_slots = 1
         s._full_underruns = 2
         s._partial_underruns = 5
-        with self.assertLogs("c64cast.audio", level="WARNING") as cm:
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
             s.stop()
         self.assertTrue(any("2 full + 5 partial" in m for m in cm.output))
         # Counters reset for the next run.
@@ -1396,9 +1396,9 @@ class LifecycleTest(unittest.TestCase):
         s = _make()
         s._total_slots = 1
         s._full_underruns = 3
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             s.stop()
-        with self.assertNoLogs("c64cast.audio", level="INFO"):
+        with self.assertNoLogs("c64cast.audio.audio", level="INFO"):
             s.stop()
 
     def test_stop_swallows_teardown_write_errors(self):
@@ -1408,7 +1408,7 @@ class LifecycleTest(unittest.TestCase):
             raise RuntimeError("teardown write failed")
 
         cast(Any, s).api.write_regs = boom
-        with self.assertLogs("c64cast.audio", level="DEBUG"):
+        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
             s.stop()  # must not raise
 
     def test_stop_drains_leftover_queue(self):
@@ -1430,7 +1430,7 @@ class LifecycleTest(unittest.TestCase):
                 raise RuntimeError("mic close failed")
 
         s.mic_stream = cast(Any, _BadStream())
-        with self.assertLogs("c64cast.audio", level="DEBUG"):
+        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
             s.stop()  # must not raise
         self.assertIsNone(s.mic_stream)
 
@@ -1442,7 +1442,7 @@ class LifecycleTest(unittest.TestCase):
             raise RuntimeError("vector restore failed")
 
         cast(Any, s).api.write_regs = boom
-        with self.assertLogs("c64cast.audio", level="DEBUG"):
+        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
             s._disarm_reu_pump()  # must not raise
         self.assertFalse(s._reu_pump_armed)
 

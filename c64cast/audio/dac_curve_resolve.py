@@ -1,6 +1,6 @@
 """Resolve ``[audio].dac_curve`` to the effective ``(label, table)`` pair for
 the connected system — the policy layer between the calibration store
-(:mod:`c64cast.dac_calibration_store`) and the audio path that plays through
+(:mod:`c64cast.audio.dac_calibration_store`) and the audio path that plays through
 the result. The part worth reading is ``"auto"``'s fallback ladder: a
 calibrated table when one applies to the SID actually answering ``$D400``,
 the baked emulated-UltiSID table only when an UltiSID core owns that address,
@@ -21,9 +21,8 @@ from .dac_calibration_store import (
 from .dac_curves import resolve_dac_curve
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
+    from c64cast.config import Config
     from c64cast.hw.backend import C64Backend
-
-    from .config import Config
 
 log = logging.getLogger(__name__)
 

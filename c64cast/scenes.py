@@ -34,18 +34,22 @@ from typing import TYPE_CHECKING, Any
 import cv2
 import numpy as np
 
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
+    INT16_FULL_SCALE,
+    REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
+    encode_floats_to_dac,
+)
+from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
 
 from ._pollthread import PollThread
-from .audio import AudioStreamer
-from .audio_handlers import INT16_FULL_SCALE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS, encode_floats_to_dac
 from .bitmap_text import glyphs_to_mask, load_glyphs
 from .modes import BitmapDisplayMode, DisplayMode
 from .palette import ColorFitAccumulator, ColorMapAccumulator
 from .profiler import get_profiler
 from .rolling_palette import RollingForcePalette
-from .sampler import UltimateAudioSampler
 from .transport import make_loop_preset_store, timecode
 from .video import (
     AVFileSource,
@@ -58,7 +62,8 @@ from .video import (
 from .video_transport import VideoTransportControls
 
 if TYPE_CHECKING:
-    from .audio_source import AudioSource
+    from c64cast.audio.audio_source import AudioSource
+
     from .config import AudioCfg, ColorCfg
     from .effects import FrameEffect
     from .frame_source import FrameSource
@@ -1569,7 +1574,7 @@ class VideoScene(Scene):
         # mypy. Runtime guarantee: ndarray.tobytes() returns bytes.
         encoded = bytes(vol.tobytes())
         if getattr(self, "prepend_alignment_marker", False):
-            from .audio_marker import MARKER_DURATION_S, synthesize_marker_4bit
+            from c64cast.audio.audio_marker import MARKER_DURATION_S, synthesize_marker_4bit
 
             marker = synthesize_marker_4bit(sr)
             log.info(

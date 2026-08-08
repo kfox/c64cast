@@ -21,12 +21,13 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
+from c64cast.audio.dsp import DSPParams
+from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
+
 from . import paths
-from .dac_curves import DAC_CURVE_CHOICES
 from .dither import DITHER_METHODS
-from .dsp import DSPParams
 from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
-from .sampler import SAMPLER_REF_CLOCK_DEFAULT
 from .sid_autoconfig import SID_MODEL_CHOICES
 from .sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from .sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
@@ -672,7 +673,7 @@ class AudioCfg:
             "pitch error now. Supersedes pitch_mult_* when on. Host-DMA path only."
         },
     )
-    # See c64cast.audio_marker for the find-marker analysis helper. Only the
+    # See c64cast.audio.audio_marker for the find-marker analysis helper. Only the
     # REU-pump path injects the marker; host-DMA scenes are unmarked.
     source_alignment_marker: bool = field(
         default=False,
@@ -1779,7 +1780,7 @@ class AudioFeaturesCfg:
     """Analyzer that turns live audio input into reactive-visual features.
 
     A generative scene with `audio_source = "mic"` and `reactive = true` runs
-    this over a PRE-DSP tap of the input (see c64cast/audio_features.py): block
+    this over a PRE-DSP tap of the input (see c64cast/audio/audio_features.py): block
     RMS becomes `level`, an FFT becomes log-spaced `bands`, spectral flux
     becomes `onset`, and the onset rate becomes `bpm`/`beat_phase`. That is the
     same `MusicModulation` a SID tune produces via the host-side emulator, so
@@ -1841,7 +1842,7 @@ class AudioFeaturesCfg:
 @dataclass
 class DSPCfg:
     """Host-side audio DSP applied to float samples BEFORE the 4-bit $D418 DAC
-    quantization (see c64cast/dsp.py). The DAC has ~24 dB of usable range;
+    quantization (see c64cast/audio/dsp.py). The DAC has ~24 dB of usable range;
     these stages make the signal use it — even out dynamics (compressor +
     limiter), lift quiet mic input (AGC), brighten speech (pre-emphasis), and
     clean the noise floor without the chatter of a hard gate (expander with

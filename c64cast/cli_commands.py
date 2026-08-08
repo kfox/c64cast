@@ -22,15 +22,16 @@ import subprocess
 import sys
 import time
 
+from c64cast.audio import dac_calibration
+from c64cast.audio.audio import AUDIO_AVAILABLE, resolve_audio_input_device
+from c64cast.audio.dac_capture_device import CaptureUnavailableError
+from c64cast.audio.dac_slot_ring import MeasurementError
 from c64cast.hw import char_rom
 from c64cast.hw.backend import make_backend
 
 from . import config as cfgmod
-from . import dac_calibration, paths
+from . import paths
 from ._native_io import silence_native_stderr
-from .audio import AUDIO_AVAILABLE, resolve_audio_input_device
-from .dac_capture_device import CaptureUnavailableError
-from .dac_slot_ring import MeasurementError
 
 log = logging.getLogger("c64cast")
 

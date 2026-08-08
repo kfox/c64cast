@@ -48,7 +48,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..audio_features import FFT_SIZE, WINDOW, band_edges
+from c64cast.audio.audio_features import FFT_SIZE, WINDOW, band_edges
+
 from ..palette import C64_COLORS
 
 if TYPE_CHECKING:

@@ -49,12 +49,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, CPU, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
 
 from ._pollthread import PollThread
-from .audio import AudioStreamer
-from .audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from .modulation import MusicModulation
 from .palette import C64_COLORS
 from .scenes import Scene

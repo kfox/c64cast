@@ -209,7 +209,7 @@ def usb_serial_number(port: str) -> str | None:
     derives from the serial number but Linux/Windows don't — `/dev/ttyACM0`,
     `COM3`), the USB serial number is a genuine per-board hardware identifier,
     stable across replugs and across which physical machine the cartridge is
-    currently seated in. Used by :mod:`c64cast.dac_calibration` to key a
+    currently seated in. Used by :mod:`c64cast.audio.dac_calibration` to key a
     per-cartridge calibration file. Never raises."""
     for p in _list_comports():
         if str(getattr(p, "device", None)) == port:

@@ -38,8 +38,8 @@ import time
 
 import numpy as np
 
-from ._pollthread import PollThread
-from .modulation import MusicModulation, TempoEstimator
+from c64cast._pollthread import PollThread
+from c64cast.modulation import MusicModulation, TempoEstimator
 
 log = logging.getLogger(__name__)
 

@@ -6,8 +6,8 @@ Everything here is pure numpy over an in-memory waveform — no hardware, no
 sounddevice — so the whole pipeline, gates included, runs on synthetic
 captures in tests. The run orchestration that produces real captures
 (hardware bring-up, socket isolation, retries, persistence) is
-:mod:`c64cast.dac_calibration`; picking and probing the capture device is
-:mod:`c64cast.dac_capture_device`.
+:mod:`c64cast.audio.dac_calibration`; picking and probing the capture device is
+:mod:`c64cast.audio.dac_capture_device`.
 
 Measurement method: one slot ring, signed levels read directly
 ---------------------------------------------------------------
@@ -578,7 +578,7 @@ def read_ring_capture(
     be applied to every ring before its numbers reach the table.
 
     Raises :class:`MeasurementError` whose message is a phrase, for
-    :func:`c64cast.dac_capture_device.capture_fault_message` to finish with the device and the advice.
+    :func:`c64cast.audio.dac_capture_device.capture_fault_message` to finish with the device and the advice.
     """
     peak = float(np.max(np.abs(cap))) if cap.size else 0.0
     if peak < SILENT_CAPTURE_PEAK:

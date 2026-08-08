@@ -67,7 +67,7 @@ it and warns + falls back to the DAC if it isn't available. `sampler_sample_rate
 (default 44100) and `sampler_bits` (8 or 16, default 16) tune quality. Mic and
 webcam audio always use the 4-bit DAC.
 
-Implementation (`c64cast/sampler.py`): a **streaming REU ring**. Channel 0 is
+Implementation (`c64cast/audio/sampler.py`): a **streaming REU ring**. Channel 0 is
 programmed as an A↔B loop over a region of REU; a host writer thread REUWRITEs
 decoded PCM ahead of a *wall-clock-computed* read head and wraps. The FPGA
 sample clock is crystal-exact, so the read position is computed (never read
@@ -251,7 +251,7 @@ invisible in an oscilloscope view. The PSID validation above is
 shared, so if `run_sid_player` refuses a tune, `SidHostEmu` refuses
 the same tune with the same error.
 
-The player MC defaults to `$C300` because [audio_handlers.py](../c64cast/audio_handlers.py)
+The player MC defaults to `$C300` because [audio_handlers.py](../c64cast/audio/audio_handlers.py)
 owns `$C000-$C2FF` (NMI DAC at `$C020`, REU pump at `$C100`, REU mic
 tracker at `$C200`); the relocation picker refuses any layout that would
 overlap that region. `WaveformScene.setup()` calls `audio.stop()` before

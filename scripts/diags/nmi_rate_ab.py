@@ -53,14 +53,14 @@ import _diaglib as d
 import numpy as np
 import sounddevice as sd
 
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     NMI_ROUTINE_ADDR,
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
     RING_BUFFER_SIZE,
 )
-from c64cast.dsp import DSPParams
+from c64cast.audio.dsp import DSPParams
 from c64cast.hw.api import Ultimate64API
 from c64cast.video import _compute_normalization_gain, decode_audio_full
 

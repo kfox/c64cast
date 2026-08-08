@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
     from .dsp import AudioDSP
 
-log = logging.getLogger("c64cast.sampler")
+log = logging.getLogger("c64cast.audio.sampler")
 
 # --------------------------------------------------------------------------
 # Register spec (Ultimate Audio v0.2). Multi-byte fields are BIG-ENDIAN.

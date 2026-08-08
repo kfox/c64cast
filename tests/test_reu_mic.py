@@ -13,8 +13,8 @@ from typing import cast
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_MIC_BASE,
@@ -317,7 +317,7 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         # Patch sd availability so we get past the import guard. AUDIO_AVAILABLE
         # is a module global; if sounddevice isn't installed in the test env
         # the function early-returns and we can't observe the branch — skip.
-        from c64cast import audio as audio_mod
+        from c64cast.audio import audio as audio_mod
 
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")
@@ -326,7 +326,7 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
 
     def test_host_path_is_taken_when_flag_unset(self):
         s = _new_streamer(use_reu_pump=False)
-        from c64cast import audio as audio_mod
+        from c64cast.audio import audio as audio_mod
 
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")

@@ -16,7 +16,7 @@ import unittest
 
 import numpy as np
 
-from c64cast.audio_features import (
+from c64cast.audio.audio_features import (
     FFT_SIZE,
     AnalysisTap,
     AudioFeatureAnalyzer,

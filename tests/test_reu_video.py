@@ -1625,17 +1625,17 @@ class ReuPumpBodySubroutineTest(unittest.TestCase):
 
     def test_length_105(self):
         # 104 body bytes + 1 RTS = 105.
-        from c64cast.audio_handlers import REU_PUMP_BODY_SUBROUTINE
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE
 
         self.assertEqual(len(REU_PUMP_BODY_SUBROUTINE), 105)
 
     def test_ends_with_rts(self):
-        from c64cast.audio_handlers import REU_PUMP_BODY_SUBROUTINE
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE
 
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE[-1], 0x60)
 
     def test_address_is_c180(self):
-        from c64cast.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE_ADDR, 0xC180)
 
@@ -1643,7 +1643,7 @@ class ReuPumpBodySubroutineTest(unittest.TestCase):
         # The TRACKED handler starts with PHA ($48); the subroutine
         # drops it (caller saves A if needed). First byte is the LDA
         # #<chunk_size that begins the length-reload sequence.
-        from c64cast.audio_handlers import REU_PUMP_BODY_SUBROUTINE
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE
 
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE[0], 0xA9)
 
@@ -1652,7 +1652,7 @@ class ReuPumpBodySubroutineTest(unittest.TestCase):
         # 105 (PLA). Subroutine shifts everything by −1 (no leading PHA)
         # → BCC at offset 92 → target offset 104 (RTS). Displacement
         # byte stays +10 because the shift is uniform.
-        from c64cast.audio_handlers import REU_PUMP_BODY_SUBROUTINE
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE
 
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE[92], 0x90)  # BCC
         self.assertEqual(REU_PUMP_BODY_SUBROUTINE[93], 0x0A)  # +10

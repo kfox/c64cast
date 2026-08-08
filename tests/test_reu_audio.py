@@ -11,8 +11,8 @@ from typing import cast
 
 from _fakes import FakeAPI
 
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     HOST_DMA_SERVO_INTEG_CLAMP,
     HOST_DMA_SERVO_PERIOD_MAX_FRAC,
     HOST_DMA_SERVO_PERIOD_MIN_FRAC,
@@ -166,7 +166,7 @@ class StartForReuStagedTest(unittest.TestCase):
         fake = cast(FakeAPI, s.api)
         # The no-op path logs an expected warning; assertLogs asserts it and
         # keeps it off the console.
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             s.start_for_reu_staged(b"")
         self.assertEqual(fake.socket_dma.reuwrites, [])
         self.assertFalse(s._reu_pump_armed)
@@ -279,7 +279,7 @@ class ReuPumpChunkSizeOverrideTest(unittest.TestCase):
     the per-IRQ DMA size are mismatched and the ring oscillates."""
 
     def test_default_chunk_uses_module_constant(self):
-        from c64cast.audio_handlers import REU_PUMP_CHUNK_SIZE
+        from c64cast.audio.audio_handlers import REU_PUMP_CHUNK_SIZE
 
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
@@ -418,7 +418,7 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         # $0314 and stomps REC between audio IRQs. The audio handler at
         # $C100 must be the TRACKED variant that reloads $DF04-$DF06 from
         # the main-RAM tracker every IRQ, not the plain auto-increment one.
-        from c64cast.audio_handlers import REU_AUDIO_SRC_TRACKER_ADDR, REU_IRQ_HANDLER_TRACKED
+        from c64cast.audio.audio_handlers import REU_AUDIO_SRC_TRACKER_ADDR, REU_IRQ_HANDLER_TRACKED
 
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
@@ -455,7 +455,10 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         # families (audio.REU_PUMP_BODY_SUBROUTINE_ADDR). Without the
         # body bytes there, the JSR returns from uninitialized RAM.
         # Verify both the body bytes and the address are uploaded.
-        from c64cast.audio_handlers import REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_ADDR
+        from c64cast.audio.audio_handlers import (
+            REU_PUMP_BODY_SUBROUTINE,
+            REU_PUMP_BODY_SUBROUTINE_ADDR,
+        )
 
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
@@ -470,7 +473,7 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         # CIA #1 IRQ that fires between the entry write and the body
         # write would JSR into uninitialized RAM. Easiest correct order
         # is body upload first.
-        from c64cast.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
+        from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
@@ -498,20 +501,20 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
     the other N-1 ticks ack CIA #1 and JMP $EA81 for a lean RTI."""
 
     def test_handler_length_is_125(self):
-        from c64cast.audio_handlers import REU_IRQ_HANDLER_TRACKED
+        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
 
         # 109 (pre-lean-exit) + 16 bytes for the divider/lean-exit tail = 125.
         self.assertEqual(len(REU_IRQ_HANDLER_TRACKED), 125)
 
     def test_pla_at_offset_105(self):
-        from c64cast.audio_handlers import REU_IRQ_HANDLER_TRACKED
+        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
 
         # PLA (0x68) at offset 105 — same as pre-lean-exit. BCC +10 at
         # offset 93 still lands here.
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[105], 0x68)
 
     def test_dec_counter_at_offset_106(self):
-        from c64cast.audio_handlers import REU_IRQ_HANDLER_TRACKED, REU_PUMP_TICK_COUNTER_ADDR
+        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED, REU_PUMP_TICK_COUNTER_ADDR
 
         # DEC $C205 (CE 05 C2)
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[106], 0xCE)
@@ -519,7 +522,7 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[108], (REU_PUMP_TICK_COUNTER_ADDR >> 8) & 0xFF)
 
     def test_bne_to_lean_exit_at_offset_109(self):
-        from c64cast.audio_handlers import REU_IRQ_HANDLER_TRACKED
+        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
 
         # BNE +8 (D0 08) — branches past the reload + chain block to the
         # lean exit at offset 119.
@@ -527,7 +530,7 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[110], 0x08)
 
     def test_divider_immediate_at_offset_112(self):
-        from c64cast.audio_handlers import REU_IRQ_HANDLER_TRACKED, REU_PUMP_TICK_DIVIDER
+        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED, REU_PUMP_TICK_DIVIDER
 
         # LDA #N (A9 N) — the divider value reloaded into the counter on
         # each chain tick.
@@ -535,13 +538,13 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[112], REU_PUMP_TICK_DIVIDER)
 
     def test_chain_jmp_at_offset_116(self):
-        from c64cast.audio_handlers import REU_IRQ_HANDLER_TRACKED
+        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
 
         # JMP $EA31 (4C 31 EA) — full kernal IRQ tail.
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[116:119], bytes([0x4C, 0x31, 0xEA]))
 
     def test_lean_exit_at_offset_119(self):
-        from c64cast.audio_handlers import REU_IRQ_HANDLER_TRACKED
+        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
 
         # LDA $DC0D (AD 0D DC) — ack CIA #1 ICR.
         self.assertEqual(REU_IRQ_HANDLER_TRACKED[119:122], bytes([0xAD, 0x0D, 0xDC]))
@@ -552,7 +555,7 @@ class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
         # First IRQ must DEC the counter to 0, trigger reload+chain, then
         # N-1 lean exits follow. Seeding to 1 guarantees that on-cycle
         # right from the start regardless of what byte was at $C205.
-        from c64cast.audio_handlers import REU_PUMP_TICK_COUNTER_ADDR
+        from c64cast.audio.audio_handlers import REU_PUMP_TICK_COUNTER_ADDR
 
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
@@ -707,7 +710,7 @@ class HostDmaServoTest(unittest.TestCase):
         integ = 0.0
         for _ in range(10_000):
             _, integ = servo_period(RING_BUFFER_SIZE - 1, integ, chunk_period=self.CHUNK_PERIOD)
-        from c64cast.audio_handlers import HOST_DMA_SERVO_KI
+        from c64cast.audio.audio_handlers import HOST_DMA_SERVO_KI
 
         self.assertLessEqual(
             abs(HOST_DMA_SERVO_KI * integ), HOST_DMA_SERVO_INTEG_CLAMP * self.CHUNK_PERIOD + 1e-12

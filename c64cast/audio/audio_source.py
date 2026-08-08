@@ -33,16 +33,16 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from c64cast.config import AudioCfg, AudioFeaturesCfg
     from c64cast.hw.backend import C64Backend
+    from c64cast.modes import DisplayMode
+    from c64cast.modulation import MusicModulation
+    from c64cast.music_features import SidFeatureStream
+    from c64cast.sid_host_emu import SidHeader
 
     from .audio import AudioStreamer
     from .audio_features import AudioFeatureStream
-    from .config import AudioCfg, AudioFeaturesCfg
-    from .modes import DisplayMode
-    from .modulation import MusicModulation
-    from .music_features import SidFeatureStream
     from .sampler import UltimateAudioSampler
-    from .sid_host_emu import SidHeader
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class MicAudioSource:
 
     def setup(self) -> None:
         skip_hook = bool(getattr(self._display_mode, "audio_reu_pump_active", False))
-        from .config import AudioFeaturesCfg
+        from c64cast.config import AudioFeaturesCfg
 
         fcfg = self._features_cfg or AudioFeaturesCfg()
         # Listen-only frees the capture from the DAC rate — open (and analyze)
@@ -283,8 +283,8 @@ class AudioFileSource:
     def _pick_and_probe(self) -> None:
         """Re-resolve the spec, shuffle, and probe the first file that opens.
         Sets self._path + self.duration_s. Raises if none open."""
-        from .scene_factory import AUDIO_EXTS, resolve_file_spec
-        from .video import av_open, ensure_pyav
+        from c64cast.scene_factory import AUDIO_EXTS, resolve_file_spec
+        from c64cast.video import av_open, ensure_pyav
 
         if not ensure_pyav():
             raise RuntimeError(
@@ -366,8 +366,9 @@ class AudioFileSource:
         actually plays, like the mic path). A failure must not cost playback."""
         if not self._reactive:
             return
+        from c64cast.config import AudioFeaturesCfg
+
         from .audio_features import AnalysisTap, AudioFeatureStream
-        from .config import AudioFeaturesCfg
 
         cfg = self._features_cfg or AudioFeaturesCfg()
         try:
@@ -397,7 +398,7 @@ class AudioFileSource:
         push_samples' queue-full block. Ends at EOF or when `_stop` is set."""
         import numpy as np
 
-        from .video import av_open
+        from c64cast.video import av_open
 
         try:
             container = av_open(self._path)
@@ -557,7 +558,7 @@ class SidFileAudioSource:
         one .sid. Raises ValueError on any rejection; returns (sid_bytes,
         resolved_song, header) on success. Shared by __init__'s early check
         and setup()'s authoritative pick."""
-        from .sid_host_emu import (
+        from c64cast.sid_host_emu import (
             _sid_payload_extent,
             parse_sid_header,
             payload_overlaps_bank0_display,
@@ -600,7 +601,7 @@ class SidFileAudioSource:
         """Re-resolve the spec, shuffle, and load the first candidate that
         validates. Sets self._sid_file/sid_bytes/song/header. Raises if every
         attempt fails (mirrors WaveformScene._pick_and_load_sid)."""
-        from .scene_factory import SID_EXTS, resolve_file_spec
+        from c64cast.scene_factory import SID_EXTS, resolve_file_spec
 
         candidates = resolve_file_spec(self.file_spec, SID_EXTS, label="sid audio")
         pool = list(candidates)
@@ -638,7 +639,7 @@ class SidFileAudioSource:
         run_sid_player refuses the tune — RSID / load<$0820 / under KERNAL);
         SourceScene.setup converts that into an aborted scene so the playlist
         advances."""
-        from .sid_host_emu import (
+        from c64cast.sid_host_emu import (
             _play_bank_for_footprints,
             ram_play_access_footprint,
             ram_write_footprint,
@@ -676,7 +677,7 @@ class SidFileAudioSource:
         # writes land on the matched chip. No-op on "off"/TeensyROM/already-
         # matching. Snapshot restored in teardown.
         assert self.header is not None  # set by _pick_and_load, called above
-        from .sid_autoconfig import apply_sid_autoconfig
+        from c64cast.sid_autoconfig import apply_sid_autoconfig
 
         self._saved_sid_config = apply_sid_autoconfig(self._api, self.header, self._sid_model)
         self._apply_sid_mixer()
@@ -689,7 +690,7 @@ class SidFileAudioSource:
         # _validate_candidate), so this shouldn't fail — but a startup failure
         # must not take down playback, so degrade to non-reactive on error.
         if self._reactive:
-            from .music_features import SidFeatureStream
+            from c64cast.music_features import SidFeatureStream
 
             try:
                 self._features = SidFeatureStream(
@@ -710,8 +711,8 @@ class SidFileAudioSource:
         each chip is whatever currently answers its address. Originals fold into
         the same snapshot teardown restores."""
         assert self.header is not None  # set by _pick_and_load, called by setup
-        from .sid_panning import apply_panning, sources_for_addresses
-        from .sid_volume import apply_volume
+        from c64cast.sid_panning import apply_panning, sources_for_addresses
+        from c64cast.sid_volume import apply_volume
 
         sources = sources_for_addresses(self._api, self.header.sid_addresses)
         panning = apply_panning(self._api, sources, self._sid_panning)
@@ -746,7 +747,7 @@ class SidFileAudioSource:
         except Exception:
             log.exception("sid audio: teardown silence/restore failed")
         if self._saved_sid_config:
-            from .sid_hw_config import restore_sid_config
+            from c64cast.sid_hw_config import restore_sid_config
 
             restore_sid_config(self._api, self._saved_sid_config)
             self._saved_sid_config = None

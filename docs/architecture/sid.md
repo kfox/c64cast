@@ -28,7 +28,7 @@ Default layout is the player at `$C300` and the stub at `$C400`, used whenever t
 
 `_build_basic_sys_stub` builds the BASIC SYS stub's decimal argument dynamically to match the chosen `player_base`.
 
-`$C300` was chosen because [audio_handlers.py](../../c64cast/audio_handlers.py) owns `$C000-$C2FF` for the NMI DAC and REU pump. The relocation picker refuses any layout that would overlap that region.
+`$C300` was chosen because [audio_handlers.py](../../c64cast/audio/audio_handlers.py) owns `$C000-$C2FF` for the NMI DAC and REU pump. The relocation picker refuses any layout that would overlap that region.
 
 ### Per-call `$01` banking
 

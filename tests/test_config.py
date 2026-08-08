@@ -1426,7 +1426,7 @@ class SceneAudioAttachmentTest(unittest.TestCase):
         import sys
         from typing import cast
 
-        from c64cast.audio import AudioStreamer
+        from c64cast.audio.audio import AudioStreamer
         from c64cast.hw.api import Ultimate64API
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
@@ -1886,7 +1886,7 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
     for the sampler, the REU pump, char modes, and muted scenes."""
 
     def setUp(self):
-        from c64cast.audio import AudioStreamer
+        from c64cast.audio.audio import AudioStreamer
 
         self._tmp = tempfile.TemporaryDirectory()
         self.clip = os.path.join(self._tmp.name, "clip.mp4")

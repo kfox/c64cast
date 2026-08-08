@@ -596,7 +596,7 @@ def _validate_dac_curve_resolution(
     calibration files exist on disk for this backend that the fallback key
     can't confirm or rule out, the message/error is hedged rather than
     asserting a possibly-wrong resolution."""
-    from . import dac_calibration_store, dac_curve_resolve
+    from c64cast.audio import dac_calibration_store, dac_curve_resolve
 
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
@@ -1604,7 +1604,7 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
     """
     if not _wants_dac_calibration_check(cfg):
         return []
-    from . import dac_calibration_store, dac_curve_resolve
+    from c64cast.audio import dac_calibration_store, dac_curve_resolve
 
     subject = f"{name} (DAC calibration)"
     curve = cfg.audio.dac_curve

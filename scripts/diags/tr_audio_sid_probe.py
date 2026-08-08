@@ -45,7 +45,7 @@ from dataclasses import replace
 import _diaglib as d
 import numpy as np
 
-from c64cast.audio import AudioStreamer
+from c64cast.audio.audio import AudioStreamer
 from c64cast.hw.backend import TEENSYROM_PROFILE
 from c64cast.hw.teensyrom_api import TeensyROMBackend
 from c64cast.hw.teensyrom_dma import (

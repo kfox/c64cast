@@ -11,7 +11,7 @@ from typing import cast
 
 from _fakes import FakeAPI
 
-from c64cast.audio_source import SidFileAudioSource
+from c64cast.audio.audio_source import SidFileAudioSource
 from c64cast.hw.backend import C64Backend
 from c64cast.sid_host_emu import (
     _play_bank_for_footprints,
@@ -140,7 +140,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         path = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x1500))
         # The single-candidate skip logs a WARNING before the hard raise;
         # assertLogs captures it so the console stays clean.
-        with self.assertLogs("c64cast.audio_source", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio_source", level="WARNING"):
             with self.assertRaisesRegex(ValueError, "hires bitmap"):
                 self._src(path, is_bitmapped=True)
 
@@ -218,8 +218,8 @@ class SidFileAudioSourceTest(unittest.TestCase):
             f.write(_make_sid(init=0x1000, play=0x1001, payload=(0x60, 0x60)))
         # The skip logs a warning — assertLogs both verifies the skip AND keeps
         # the console clean.
-        with patch("c64cast.audio_source.random.shuffle", lambda x: x.sort()):
-            with self.assertLogs("c64cast.audio_source", level="WARNING"):
+        with patch("c64cast.audio.audio_source.random.shuffle", lambda x: x.sort()):
+            with self.assertLogs("c64cast.audio.audio_source", level="WARNING"):
                 src = self._src(d + "/*.sid", is_bitmapped=False)
         self.assertEqual(os.path.basename(src._sid_file), "good.sid")
 
@@ -264,7 +264,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         src = self._src(path, reactive=True)
         self.addCleanup(src.teardown)
         with patch("c64cast.music_features.SidFeatureStream.start", side_effect=RuntimeError("x")):
-            with self.assertLogs("c64cast.audio_source", level="ERROR"):
+            with self.assertLogs("c64cast.audio.audio_source", level="ERROR"):
                 src.setup()
         self.assertIsNone(src.features())
 
@@ -396,7 +396,7 @@ class AudioSourceImportWeightTest(unittest.TestCase):
         import sys
 
         code = (
-            "import sys; import c64cast.audio_source; "
+            "import sys; import c64cast.audio.audio_source; "
             "heavy=[m for m in ('c64cast.waveform','numpy','py65','c64cast.sid_host_emu',"
             "'c64cast.voice_scope') if m in sys.modules]; "
             "print(','.join(heavy))"

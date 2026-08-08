@@ -30,17 +30,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from c64cast.hw.c64 import nmi_rate_safety
-
-from . import paths
-from .asid_scene import AsidScene
-from .audio_source import (
+from c64cast.audio.audio_source import (
     AudioFileSource,
     AudioSource,
     MicAudioSource,
     NullAudioSource,
     SidFileAudioSource,
 )
+from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
+from c64cast.audio.sampler import UltimateAudioSampler
+from c64cast.hw.c64 import nmi_rate_safety
+
+from . import paths
+from .asid_scene import AsidScene
 from .config import (
     _ASPECT_MODE_CHOICES,
     _AUDIO_SOURCE_CHOICES,
@@ -61,7 +63,6 @@ from .config import (
     SceneCfg,
     _is_valid_param_holder,
 )
-from .dac_curves import DAC_CURVE_CHOICES
 from .dither import DITHER_METHODS
 from .effects import build_effect
 from .generators import GenerativeSource, build_generator
@@ -78,7 +79,6 @@ from .modes import (
 from .orchestrator import resolve_orchestrator
 from .overlays import build_overlay, paints_into_buffers, validate_for_scene
 from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
-from .sampler import UltimateAudioSampler
 from .scenes import (
     BlankScene,
     LauncherScene,
@@ -98,9 +98,8 @@ from .waveform import WaveformScene
 from .wled_sink import WLEDSource
 
 if TYPE_CHECKING:
+    from c64cast.audio.audio import AudioStreamer
     from c64cast.hw.backend import C64Backend
-
-    from .audio import AudioStreamer
 
 log = logging.getLogger(__name__)
 

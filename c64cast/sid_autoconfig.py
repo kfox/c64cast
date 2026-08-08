@@ -19,7 +19,7 @@ if one exists, else fall back to an UltiSID FPGA core set to a representative
 filter curve for that model, else warn and leave the chip on whatever answers
 its address already.
 
-Mirrors :mod:`c64cast.dac_calibration`'s auto/explicit-override +
+Mirrors :mod:`c64cast.audio.dac_calibration`'s auto/explicit-override +
 snapshot/apply/restore shape, reusing :mod:`c64cast.sid_hw_config` (REST
 plumbing) and :mod:`c64cast.asid_sidmap` (category/item name constants)
 rather than duplicating either.

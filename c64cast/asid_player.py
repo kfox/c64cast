@@ -14,16 +14,16 @@ player fired by CIA #1 Timer A at the ASID frame cadence pops one slot per tick
 and applies its register writes to the SID(s) — honoring the ``0x30`` recipe's
 write order + inter-write waits — decoupled from host-DMA jitter, no frames
 dropped. It is the **producer-ahead-of-computed-read-head** pattern proven by
-:mod:`c64cast.sampler` (open-loop: the C64 crystal is exact, so the read head is
+:mod:`c64cast.audio.sampler` (open-loop: the C64 crystal is exact, so the read head is
 computed from wall-clock, never read back — no servo, no C64→host reads), with
-an IRQ-driven ring consumer modeled on the REU audio pump in :mod:`c64cast.audio`.
+an IRQ-driven ring consumer modeled on the REU audio pump in :mod:`c64cast.audio.audio`.
 
 **U64-only** — it needs bus-clean ``reu_write`` (``profile.supports_reu``). On
 TeensyROM / any no-REU backend :class:`AsidScene` keeps the coalesced path (and
 never blanks the TR display). Because :class:`AsidScene` runs no ``$D418`` DAC /
 NMI, the whole ``$C000`` RAM page and the REU are free for the player.
 
-Two halves, mirroring :mod:`c64cast.sampler`:
+Two halves, mirroring :mod:`c64cast.audio.sampler`:
 
 * **Pure builders** (unit-testable, no hardware): :func:`serialize_frame` /
   :func:`pack_slot` (the wire format), :func:`slot_size_for_chips`, and

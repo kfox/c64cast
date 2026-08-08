@@ -4,7 +4,7 @@ raw waveform once, then iterate on the extraction offline.
 
 WHY THIS EXISTS. ``--calibrate-dac`` measures each code's *signed* output level
 by filling the NMI ring with ``[code][ref]`` slot pairs behind a sync gap and
-reading levels straight off one capture (see ``c64cast/dac_calibration.py``).
+reading levels straight off one capture (see ``c64cast/audio/dac_calibration.py``).
 Everything downstream of the capture is pure — grid alignment, AC-coupling
 restoration, plateau means — and alignment is the part that is easy to get
 subtly, stably wrong. So this probe **saves the captured audio to .npy** and can
@@ -39,9 +39,6 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from c64cast import dac_calibration as dc
-from c64cast import dac_capture_device as dcap
-from c64cast import dac_slot_ring as dsr
 from c64cast.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -52,8 +49,11 @@ from c64cast.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.audio import dac_calibration as dc
+from c64cast.audio import dac_capture_device as dcap
+from c64cast.audio import dac_slot_ring as dsr
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
     CIA2_ICR_ENABLE_TIMER_A_NMI,
@@ -61,9 +61,9 @@ from c64cast.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
 )
+from c64cast.audio.dsp import DSPParams
 from c64cast.config import Config
 from c64cast.connect import apply_to_config, parse_connection_uri
-from c64cast.dsp import DSPParams
 from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 from c64cast.sid_hw_config import restore_sid_config, snapshot_sid_config

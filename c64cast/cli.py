@@ -18,6 +18,8 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from c64cast.audio import dac_curve_resolve
+from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
 from c64cast.hw import char_rom, hw_provision
 from c64cast.hw.api import SocketDMAError
 from c64cast.hw.backend import C64Backend, make_backend
@@ -25,13 +27,11 @@ from c64cast.hw.teensyrom_dma import TRError
 
 from . import (
     __version__,
-    dac_curve_resolve,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
     paths,
     scene_factory,
 )
 from . import config as cfgmod
-from .audio import AUDIO_AVAILABLE, AudioStreamer
 from .cli_commands import (
     configure_logging,
     list_devices,
