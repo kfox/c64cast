@@ -8,7 +8,7 @@ from typing import cast
 
 from _fakes import FakeAPI
 
-from c64cast.config import SceneCfg
+from c64cast.app.config import SceneCfg
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import KEYBUF, SCREEN
 from c64cast.scenes.overlays.menu import MenuItem, MenuOverlay, build_menu_items, can_show_menu

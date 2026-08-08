@@ -19,13 +19,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from c64cast.app.ensemble import Ensemble
+from c64cast.app.orchestrator import Orchestrator, OrchestratorError, register_orchestrator
 from c64cast.scenes.overlays.big_text import SCREEN_W_PX
 
-from ..ensemble import Ensemble
-from ..orchestrator import Orchestrator, OrchestratorError, register_orchestrator
-
 if TYPE_CHECKING:
-    from ..config import SceneCfg
+    from c64cast.app.config import SceneCfg
 
 
 @register_orchestrator

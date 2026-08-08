@@ -24,9 +24,9 @@ import unittest
 from dataclasses import replace
 from typing import cast
 
-from c64cast import config as cfgmod
-from c64cast import scene_factory
-from c64cast.scene_factory import _frame_push_default_fps
+from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
+from c64cast.app.scene_factory import _frame_push_default_fps
 from c64cast.video.modes import DisplayMode
 
 sys.path.insert(0, os.path.dirname(__file__))

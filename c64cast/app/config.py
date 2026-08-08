@@ -21,6 +21,7 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+from c64cast.app import paths
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
@@ -29,8 +30,6 @@ from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
-
-from . import paths
 
 log = logging.getLogger(__name__)
 
@@ -1519,7 +1518,7 @@ class SceneCfg:
         metadata={"help": "List of overlay tables ([[scenes.overlays]]); see --list-overlays."},
     )
     # orchestrate/follower_only drive the conductor/follower broadcast
-    # protocol in c64cast/orchestrator.py; see docs/architecture.md.
+    # protocol in c64cast/app/orchestrator.py; see docs/architecture.md.
     orchestrate: bool = field(
         default=False,
         metadata={

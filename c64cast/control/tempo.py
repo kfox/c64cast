@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 from c64cast.scenes.modulation import MusicModulation
 
 if TYPE_CHECKING:
-    from c64cast.config import PerformanceCfg
+    from c64cast.app.config import PerformanceCfg
 
 # Plausible tempo band. A pulse-derived or tap-derived BPM outside this range is
 # treated as noise (a dropped/duplicated clock byte, a stray double-tap) and
@@ -70,7 +70,7 @@ _TAP_RESET_S = 2.0
 class TempoClock:
     """A process-wide beat grid, GIL-atomically readable by every consumer.
 
-    Construct one per :class:`~c64cast.playlist.Playlist` (mirrors
+    Construct one per :class:`~c64cast.app.playlist.Playlist` (mirrors
     ``Playlist.transport`` / ``Playlist.live_tracker``); the feed methods are
     called from the MIDI reader thread and the read side (`beat_phase` etc.)
     from the playlist/consumer threads. All state lives behind ``_lock`` — every

@@ -1,4 +1,4 @@
-"""Offline tests for c64cast.recording_metadata — no U64 hardware, no I/O.
+"""Offline tests for c64cast.app.recording_metadata — no U64 hardware, no I/O.
 
 Run:    python -m unittest discover tests
    or:  python -m unittest tests.test_recording_metadata
@@ -14,8 +14,8 @@ from __future__ import annotations
 import json
 import unittest
 
-from c64cast.config import Config, SceneCfg
-from c64cast.recording_metadata import (
+from c64cast.app.config import Config, SceneCfg
+from c64cast.app.recording_metadata import (
     _PLACEHOLDER_COPYRIGHT,
     SCENE_CONFIG_MARKER,
     build_scene_recording_metadata,

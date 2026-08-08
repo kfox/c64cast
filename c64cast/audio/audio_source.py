@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from c64cast.config import AudioCfg, AudioFeaturesCfg
+    from c64cast.app.config import AudioCfg, AudioFeaturesCfg
     from c64cast.hw.backend import C64Backend
     from c64cast.scenes.modulation import MusicModulation
     from c64cast.scenes.music_features import SidFeatureStream
@@ -137,7 +137,7 @@ class MicAudioSource:
 
     def setup(self) -> None:
         skip_hook = bool(getattr(self._display_mode, "audio_reu_pump_active", False))
-        from c64cast.config import AudioFeaturesCfg
+        from c64cast.app.config import AudioFeaturesCfg
 
         fcfg = self._features_cfg or AudioFeaturesCfg()
         # Listen-only frees the capture from the DAC rate — open (and analyze)
@@ -283,7 +283,7 @@ class AudioFileSource:
     def _pick_and_probe(self) -> None:
         """Re-resolve the spec, shuffle, and probe the first file that opens.
         Sets self._path + self.duration_s. Raises if none open."""
-        from c64cast.scene_factory import AUDIO_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import AUDIO_EXTS, resolve_file_spec
         from c64cast.video.video import av_open, ensure_pyav
 
         if not ensure_pyav():
@@ -366,7 +366,7 @@ class AudioFileSource:
         actually plays, like the mic path). A failure must not cost playback."""
         if not self._reactive:
             return
-        from c64cast.config import AudioFeaturesCfg
+        from c64cast.app.config import AudioFeaturesCfg
 
         from .audio_features import AnalysisTap, AudioFeatureStream
 
@@ -601,7 +601,7 @@ class SidFileAudioSource:
         """Re-resolve the spec, shuffle, and load the first candidate that
         validates. Sets self._sid_file/sid_bytes/song/header. Raises if every
         attempt fails (mirrors WaveformScene._pick_and_load_sid)."""
-        from c64cast.scene_factory import SID_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import SID_EXTS, resolve_file_spec
 
         candidates = resolve_file_spec(self.file_spec, SID_EXTS, label="sid audio")
         pool = list(candidates)

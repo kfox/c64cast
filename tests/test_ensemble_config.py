@@ -13,7 +13,7 @@ import textwrap
 import unittest
 from unittest import mock
 
-from c64cast import config as cfgmod
+from c64cast.app import config as cfgmod
 
 
 def _write(path: str, body: str) -> None:
@@ -64,7 +64,7 @@ class LoadMasterRoutingTest(unittest.TestCase):
             _write(master_path, master)
             _write(os.path.join(tmp, "left.toml"), left)
             _write(os.path.join(tmp, "right.toml"), right)
-            with self.assertLogs("c64cast.config", level="INFO"):
+            with self.assertLogs("c64cast.app.config", level="INFO"):
                 result = cfgmod.load_master(master_path)
         self.assertTrue(result.is_ensemble)
         self.assertEqual(result.names, ["left", "right"])
@@ -88,7 +88,7 @@ class LoadMasterRoutingTest(unittest.TestCase):
             _write(master_path, master)
             os.makedirs(os.path.join(tmp, "nested"))
             _write(os.path.join(tmp, "nested", "sub.toml"), sub)
-            with self.assertLogs("c64cast.config", level="INFO"):
+            with self.assertLogs("c64cast.app.config", level="INFO"):
                 result = cfgmod.load_master(master_path)
         self.assertTrue(result.is_ensemble)
         self.assertEqual(result.cfgs[0].ultimate64.url, "http://sub.lan")
@@ -105,7 +105,7 @@ class LoadMasterRoutingTest(unittest.TestCase):
             master_path = os.path.join(tmp, "master.toml")
             _write(master_path, master)
             _write(os.path.join(tmp, "only.toml"), only)
-            with self.assertLogs("c64cast.config", level="WARNING") as cm:
+            with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
                 result = cfgmod.load_master(master_path)
         self.assertTrue(any("[[scenes]]" in line for line in cm.output))
         # Master-level scenes don't bleed into the per-system Config.
@@ -127,7 +127,7 @@ class LoadMasterRoutingTest(unittest.TestCase):
             master_path = os.path.join(tmp, "master.toml")
             _write(master_path, master)
             _write(os.path.join(tmp, "only.toml"), only)
-            with self.assertLogs("c64cast.config", level="INFO"):
+            with self.assertLogs("c64cast.app.config", level="INFO"):
                 result = cfgmod.load_master(master_path)
         self.assertTrue(result.master_control.enabled)
         self.assertEqual(result.master_control.port, 9876)
@@ -214,7 +214,7 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
             master_path = os.path.join(tmp, "master.toml")
             _write(master_path, master)
             _write(os.path.join(tmp, "only.toml"), only)
-            with self.assertLogs("c64cast.config", level="INFO"):
+            with self.assertLogs("c64cast.app.config", level="INFO"):
                 result = cfgmod.load_master(master_path)
         self.assertEqual(result.cfgs[0].interstitial.duration_s, 11.0)
         self.assertTrue(result.cfgs[0].audio.enabled)
@@ -236,7 +236,7 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
             master_path = os.path.join(tmp, "master.toml")
             _write(master_path, master)
             _write(os.path.join(tmp, "only.toml"), only)
-            with self.assertLogs("c64cast.config", level="INFO"):
+            with self.assertLogs("c64cast.app.config", level="INFO"):
                 result = cfgmod.load_master(master_path)
         self.assertEqual(result.cfgs[0].interstitial.duration_s, 2.5)
 
@@ -254,7 +254,7 @@ class EnsembleMachineSettingsTest(unittest.TestCase):
             _write(master_path, master)
             _write(os.path.join(tmp, "only.toml"), per_system)
             with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": settings_path}):
-                with self.assertLogs("c64cast.config", level="INFO"):
+                with self.assertLogs("c64cast.app.config", level="INFO"):
                     return cfgmod.load_master(master_path)
 
     _MASTER_ONLY = """

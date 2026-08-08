@@ -20,7 +20,7 @@ Two patterns are supported through the same Orchestrator interface:
   the snapshot just carries different state (a master clock, a frame).
 
 This module ships the ABC + a process-wide registry. Subclasses live
-in `c64cast/orchestrators/` and register themselves with
+in `c64cast/app/orchestrators/` and register themselves with
 `@register_orchestrator` at import time.
 """
 
@@ -47,8 +47,8 @@ _REGISTRY: list[type[Orchestrator]] = []
 
 def register_orchestrator(cls: type[Orchestrator]) -> type[Orchestrator]:
     """Decorator: register an Orchestrator subclass. Subclasses must be
-    imported for their registration to take effect — `c64cast.cli`
-    imports `c64cast.orchestrators` at startup to trigger every
+    imported for their registration to take effect — `c64cast.app.cli`
+    imports `c64cast.app.orchestrators` at startup to trigger every
     package-supplied subclass's registration."""
     _REGISTRY.append(cls)
     return cls

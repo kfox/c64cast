@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import unittest
 
-from c64cast import config as cfgmod
-from c64cast import introspect, scene_factory
+from c64cast.app import config as cfgmod
+from c64cast.app import introspect, scene_factory
 
 
 class RenderSmokeTest(unittest.TestCase):

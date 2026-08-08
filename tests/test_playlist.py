@@ -1,4 +1,4 @@
-"""Offline state-machine tests for c64cast.playlist.
+"""Offline state-machine tests for c64cast.app.playlist.
 
 These exercise Playlist with stub Scene + Api objects -- no U64 hardware,
 no webcam, no audio device, no real network. The runtime env still needs
@@ -20,7 +20,7 @@ import threading
 import time
 import unittest
 
-from c64cast.playlist import Playlist
+from c64cast.app.playlist import Playlist
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -264,7 +264,7 @@ class PlaylistTest(unittest.TestCase):
         # Safety timer in case loop=False is broken and we'd otherwise spin
         # forever (matches the pre-fix video scene behavior).
         threading.Timer(2.0, stop.set).start()
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertEqual(s.setup_count, 1, "scene should set up exactly once with loop=False")
         self.assertEqual(
@@ -296,7 +296,7 @@ class PlaylistTest(unittest.TestCase):
             loop=False,
         )
         threading.Timer(2.0, stop.set).start()
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         for s in scenes:
             self.assertEqual(s.setup_count, 1, f"{s.name} should set up exactly once")
@@ -328,7 +328,7 @@ class PlaylistTest(unittest.TestCase):
         good = FakeScene("GOOD", frames_until_done=2)
         # The scene crash is logged via log.exception — wrap in assertLogs
         # to both capture (silence) the traceback and verify the recovery path.
-        with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             self._run_briefly([bad, good])
         self.assertTrue(
             any("scene 'BAD' raised; advancing" in line for line in cap.output),
@@ -340,7 +340,7 @@ class PlaylistTest(unittest.TestCase):
     def test_teardown_exception_does_not_kill_loop(self):
         bad_td = FakeScene("A", frames_until_done=1, raise_on_teardown=True)
         ok = FakeScene("B", frames_until_done=1)
-        with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             self._run_briefly([bad_td, ok], stop_after=0.3)
         self.assertTrue(
             any("teardown of 'A' failed" in line for line in cap.output),
@@ -363,7 +363,7 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
         # Should not hang -- _advance catches and breaks.
-        with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             pl.run()
         self.assertTrue(
             any("playlist advance failed; aborting" in line for line in cap.output),
@@ -431,7 +431,7 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
         threading.Timer(0.25, stop.set).start()
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertTrue(
             any("writes=" in line for line in cap.output),
@@ -455,11 +455,11 @@ class PlaylistTest(unittest.TestCase):
         )
         threading.Timer(0.2, stop.set).start()
         # No INFO logs should arrive from the playlist module.
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             # Inject one log so assertLogs doesn't error on "no logs captured".
             import logging
 
-            logging.getLogger("c64cast.playlist").info("sentinel")
+            logging.getLogger("c64cast.app.playlist").info("sentinel")
             pl.run()
         heartbeat_lines = [line for line in cap.output if "writes=" in line]
         self.assertEqual(heartbeat_lines, [], "no heartbeat lines expected when interval=0")
@@ -672,7 +672,7 @@ class PlaylistTest(unittest.TestCase):
         # with current=None, instead of landing on the gated scene.
         from unittest.mock import MagicMock
 
-        from c64cast.ensemble import Ensemble, SystemStack
+        from c64cast.app.ensemble import Ensemble, SystemStack
 
         def _stack(name):
             return SystemStack(
@@ -851,7 +851,7 @@ class PlaylistTest(unittest.TestCase):
             stop.set()
 
         threading.Thread(target=fire_cycle, daemon=True).start()
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertEqual(
             fake_mode.calls, 1, "cycle_event should invoke display_mode.cycle_style once"
@@ -957,7 +957,7 @@ class PlaylistTest(unittest.TestCase):
             stop.set()
 
         threading.Thread(target=fire, daemon=True).start()
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertEqual(overlay.cycle_calls, 1, "cycle_event must dispatch to opt-in overlays")
         # Log should mention both the display and overlay labels.
@@ -1024,7 +1024,7 @@ class PlaylistTest(unittest.TestCase):
             stop.set()
 
         threading.Thread(target=fire, daemon=True).start()
-        with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             pl.run()
         self.assertTrue(
             any("cycle_style failed" in line for line in cap.output),
@@ -1065,7 +1065,7 @@ class PlaylistTest(unittest.TestCase):
             stop.set()
 
         threading.Thread(target=fire, daemon=True).start()
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertEqual(s.cycle_calls, 1, "cycle_event must invoke scene.cycle_style once")
         self.assertTrue(
@@ -1104,7 +1104,7 @@ class PlaylistTest(unittest.TestCase):
             stop.set()
 
         threading.Thread(target=fire, daemon=True).start()
-        with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             pl.run()
         self.assertTrue(
             any("cycle_style failed on scene" in line for line in cap.output),
@@ -1191,8 +1191,8 @@ class SceneRecordingMetadataTest(unittest.TestCase):
         )
 
     def test_logs_once_per_setup_with_config(self):
-        from c64cast.config import Config
-        from c64cast.recording_metadata import SCENE_CONFIG_MARKER
+        from c64cast.app.config import Config
+        from c64cast.app.recording_metadata import SCENE_CONFIG_MARKER
 
         pl = self._playlist(Config())
         with self.assertLogs("c64cast.recording", level="INFO") as cap:

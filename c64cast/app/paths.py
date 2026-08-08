@@ -6,7 +6,7 @@ identically from a repo checkout or an installed wheel — no
 non-editable install). Two roots, each with an explicit env override:
 
   * **settings** — `settings_path()` → the machine-settings TOML
-    (:mod:`c64cast.config.load_machine_settings`). Config base dir:
+    (:mod:`c64cast.app.config.load_machine_settings`). Config base dir:
     `%APPDATA%\\c64cast\\` on Windows, else `$XDG_CONFIG_HOME/c64cast` or
     `~/.config/c64cast`. `$C64CAST_SETTINGS` overrides the whole path.
   * **data** — `data_root()` → the base for persisted machine-specific state
@@ -250,7 +250,7 @@ def legacy_data_root() -> Path | None:
     to detect preset files left at the old location for a one-time migration
     heads-up — there is no implicit migration. Returns None for an installed
     package (no repo checkout to migrate from)."""
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parents[2]
     if (repo_root / "pyproject.toml").is_file():
         return repo_root
     return None

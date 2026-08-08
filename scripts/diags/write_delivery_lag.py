@@ -104,8 +104,8 @@ def main() -> int:
     ap.add_argument("--no-reset", action="store_true", help="skip the end-of-run machine reset")
     args = ap.parse_args()
 
-    from c64cast.config import Config
-    from c64cast.connect import apply_to_config, parse_connection_uri
+    from c64cast.app.config import Config
+    from c64cast.app.connect import apply_to_config, parse_connection_uri
     from c64cast.hw.backend import make_backend
 
     cfg = Config()

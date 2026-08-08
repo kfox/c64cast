@@ -353,7 +353,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     _render_hires(). Defaults match the redraw-from-scratch
                     wallclock-locked behavior of the prior implementation.
         """
-        from c64cast.scene_factory import SID_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import SID_EXTS, resolve_file_spec
         # Knob validation (color_mode/time_base/auto_cycles/persistence/
         # scroll_columns) now lives in VoiceScopeRenderer._init_scope_knobs,
         # called below after the file load + super().__init__.
@@ -506,7 +506,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _resolve_candidates(self) -> list[str]:
         """Re-resolve the spec at setup time so directory contents can
         change between iterations (newly dropped SIDs are picked up)."""
-        from c64cast.scene_factory import SID_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import SID_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, SID_EXTS, label="waveform")
 

@@ -95,9 +95,10 @@ _HARD_DEPS: tuple[tuple[str, str], ...] = (
     ("py65", "host-side SID emulator"),
 )
 
-# Repo root (parent of the package dir). Used to locate the project .venv and
-# run `uv lock --check` from the right directory.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# Repo root (parent of the package dir; this file sits two levels below the
+# package). Used to locate the project .venv and run `uv lock --check` from
+# the right directory.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _running_from_checkout() -> bool:
@@ -182,7 +183,7 @@ def _probe_environment() -> list[Diagnostic]:
     # First line of any bug report. `__version__` reads installed metadata and
     # falls back to "0+unknown" in a source checkout that was never installed —
     # say so plainly rather than showing a bare sentinel nobody can interpret.
-    from . import __version__
+    from c64cast import __version__
 
     if __version__ == "0+unknown":
         detail = f"{__version__} (not installed — running from a source checkout)"
@@ -360,7 +361,7 @@ def _probe_machine_settings() -> list[Diagnostic]:
     section's one-stop "where everything lives" answer."""
     import tomllib
 
-    from . import paths
+    from c64cast.app import paths
 
     path = paths.settings_path()
     if not path.is_file():
@@ -403,7 +404,7 @@ def _probe_data_dirs() -> list[Diagnostic]:
     ``dac_curve_resolve.resolve_dac_curve_for_backend`` (at curve resolution),
     orphaned presets by ``transport.warn_if_legacy_presets_orphaned`` (at
     preset-store load)."""
-    from . import paths
+    from c64cast.app import paths
 
     return [
         Diagnostic("ok", "environment", "data dir", str(paths.data_root())),

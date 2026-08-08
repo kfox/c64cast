@@ -34,10 +34,10 @@ import wave
 import _diaglib as d
 import numpy as np
 
+from c64cast.app.config import DSPCfg
+from c64cast.app.config import load as load_config
 from c64cast.audio.audio_handlers import encode_floats_to_dac
 from c64cast.audio.dsp import Expander
-from c64cast.config import DSPCfg
-from c64cast.config import load as load_config
 from c64cast.video.video import decode_audio_full
 
 NEUTRAL = 7.5

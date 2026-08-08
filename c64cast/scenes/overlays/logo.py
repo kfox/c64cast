@@ -17,7 +17,7 @@ import os
 
 import numpy as np
 
-from c64cast import paths
+from c64cast.app import paths
 from c64cast.hw.c64 import SCREEN
 from c64cast.scenes.text_surface import corner_origin as _surface_corner_origin
 from c64cast.video.palette import C64_COLORS, resolve_color

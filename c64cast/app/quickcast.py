@@ -1,12 +1,12 @@
 """Quick-playback config builder.
 
-Build an **in-memory-only** :class:`~c64cast.config.Config` from a list of
+Build an **in-memory-only** :class:`~c64cast.app.config.Config` from a list of
 file / directory / glob / URL arguments — no TOML on disk. One scene per
 argument, in the order given, no video interleaving, no loop (override with
 ``--loop``). This is the library behind ``c64cast``'s positional ``MEDIA``
-mode: when :func:`c64cast.cli.main` sees positional arguments (and no
+mode: when :func:`c64cast.app.cli.main` sees positional arguments (and no
 ``--config``) it calls :func:`build_config` here, then runs the result through
-the normal path (:func:`c64cast.cli.build_stack` → ``_run_playlists`` →
+the normal path (:func:`c64cast.app.cli.build_stack` → ``_run_playlists`` →
 ``teardown_stack``); it adds no new playback machinery.
 
 Argument → scene type mapping:
@@ -343,7 +343,7 @@ def resolve_video_url(url: str) -> tuple[str, float | None, str | None]:
     the URL's ``t=``/``start=``/``#t=`` timestamp in seconds (None if absent),
     and the resolved title (None for direct URLs). Raises ValueError if the URL
     resolves to audio-only (deferred). Shared by quick playback and the config
-    loader (:func:`c64cast.config.build_scene`) so both interfaces resolve URLs
+    loader (:func:`c64cast.app.config.build_scene`) so both interfaces resolve URLs
     and honor timestamps identically."""
     stream_url, kind, title = resolve_media_url(url)
     if kind != "video":
@@ -358,7 +358,7 @@ def classify_url(arg: str, *, display: str | None) -> SceneCfg:
     """Turn a URL argument into a video SceneCfg.
 
     The URL is stored **verbatim**; it is resolved (yt-dlp) and audio-rejected
-    later in :func:`c64cast.config.build_scene` — the single resolution path
+    later in :func:`c64cast.app.config.build_scene` — the single resolution path
     shared with config-driven runs. The ``t=``/``start=`` timestamp is parsed
     here (offline) so it rides onto the SceneCfg's ``start_s``."""
     scene = _make_scene("video", arg, display=display, duration_s=None)
@@ -372,10 +372,10 @@ def build_config(args: argparse.Namespace) -> Config:
     """Build the in-memory Config: defaults, plus one scene per positional
     ``MEDIA`` argument, plus the runtime overrides from the unified CLI flags.
 
-    Called by :func:`c64cast.cli._resolve_configs` when the user passes
+    Called by :func:`c64cast.app.cli._resolve_configs` when the user passes
     positional media. ``args`` is the unified ``c64cast`` argparse namespace, so
     the connection target (``-u/--url`` or ``$C64CAST_URL``) is applied through
-    the shared :mod:`c64cast.connect` decomposer — the same scheme-aware path
+    the shared :mod:`c64cast.app.connect` decomposer — the same scheme-aware path
     the config-driven CLI uses — rather than being treated as a bare URL."""
     cfg = Config()
     # Machine settings (connection, capture device, SID model, …) are the

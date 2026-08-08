@@ -29,8 +29,9 @@ from __future__ import annotations
 import math
 import re
 
-from . import __version__, introspect
-from . import config as cfgmod
+from c64cast import __version__
+from c64cast.app import config as cfgmod
+from c64cast.app import introspect
 
 
 def _published_schema_url(version: str) -> str:

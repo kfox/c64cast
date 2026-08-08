@@ -1,4 +1,4 @@
-"""Tests for c64cast.doctor — collect-all config validation surface."""
+"""Tests for c64cast.app.doctor — collect-all config validation surface."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from unittest import mock
 from _fakes import FakeAPI
 
 import c64cast
-from c64cast import config as cfgmod
-from c64cast import doctor
+from c64cast.app import config as cfgmod
+from c64cast.app import doctor
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
 
@@ -148,7 +148,7 @@ class CrossSystemOrchestrationTest(unittest.TestCase):
         """)
         with tempfile.TemporaryDirectory() as tmp:
             master = self._master(tmp, {"right": right, "left": left})
-            with self.assertLogs("c64cast.config", level="INFO"):
+            with self.assertLogs("c64cast.app.config", level="INFO"):
                 loaded = cfgmod.load_master(master)
         diags = doctor.validate_load_result(loaded, probe_u64=False)
         orch_diags = [d for d in diags if d.category == "orchestrator" and d.level == "warn"]
@@ -180,7 +180,7 @@ class CrossSystemOrchestrationTest(unittest.TestCase):
         """)
         with tempfile.TemporaryDirectory() as tmp:
             master = self._master(tmp, {"right": right, "left": left})
-            with self.assertLogs("c64cast.config", level="INFO"):
+            with self.assertLogs("c64cast.app.config", level="INFO"):
                 loaded = cfgmod.load_master(master)
         diags = doctor.validate_load_result(loaded, probe_u64=False)
         orch_warnings = [d for d in diags if d.category == "orchestrator" and d.level == "warn"]
@@ -1080,7 +1080,7 @@ class DataDirsProbeTest(unittest.TestCase):
             with open(os.path.join(d, "x.json"), "w") as f:
                 f.write("{}")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=Path(legacy)):
                 diags = doctor._probe_data_dirs()
         self.assertEqual([d for d in diags if d.level == "warn"], [])
 

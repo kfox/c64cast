@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from c64cast import paths
+from c64cast.app import paths
 from c64cast.hw.c64 import SCREEN, VIC
 
 from .palette import C64_PALETTE_BGR

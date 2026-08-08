@@ -9,7 +9,7 @@ you press/twist each control when prompted, and it writes a reusable
 ``c64cast --config …`` run (with ``[midi_control].controller_profile = "auto"``,
 the default) picks the mappings up with zero TOML edits.
 
-Mirrors :mod:`c64cast.wizard`'s split: **pure helpers** (``detect_encoder``,
+Mirrors :mod:`c64cast.app.wizard`'s split: **pure helpers** (``detect_encoder``,
 ``dominant_control``, ``build_*`` — all testable with scripted fake-mido
 messages) plus a **thin questionary shell** (:func:`run_setup`). Runs *instead
 of* playback, like ``--init``. Needs the ``midi`` + ``wizard`` extras.
@@ -17,7 +17,7 @@ of* playback, like ``--init``. Needs the ``midi`` + ``wizard`` extras.
 The learn loop reads a controller identically to the live listener by reusing
 :func:`c64cast.control.midi_control.classify_message` — a learned mapping can't disagree
 with how the listener will later interpret the same message. The target picker
-is driven by :func:`c64cast.introspect.live_targets`, the single source of truth
+is driven by :func:`c64cast.app.introspect.live_targets`, the single source of truth
 over the ``LIVE_PARAMS``/``LIVE_CHOICES`` registries.
 """
 
@@ -27,7 +27,7 @@ import time
 from collections import Counter
 from typing import Any
 
-from c64cast import introspect
+from c64cast.app import introspect
 
 from .midi_control import MIDI_AVAILABLE, FeedbackMap, classify_message, mido
 from .transport import make_controller_profile_store

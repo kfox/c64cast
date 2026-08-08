@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import introspect
+from c64cast.app import introspect
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 

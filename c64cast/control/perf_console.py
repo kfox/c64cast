@@ -41,7 +41,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from c64cast.playlist import Playlist
+from c64cast.app.playlist import Playlist
 
 from .performance import ClipEvent
 

@@ -18,9 +18,10 @@ from unittest import mock
 
 from _fakes import FrozenClock
 
-from c64cast import config as cfgmod
-from c64cast import introspect, scene_factory
-from c64cast.config import _DEFAULT_MIDI_CC_MAP
+from c64cast.app import config as cfgmod
+from c64cast.app import introspect, scene_factory
+from c64cast.app.config import _DEFAULT_MIDI_CC_MAP
+from c64cast.app.playlist import Playlist
 from c64cast.control import midi_control as mc
 from c64cast.control import midi_setup
 from c64cast.control.transport import (
@@ -29,7 +30,6 @@ from c64cast.control.transport import (
     make_controller_profile_store,
     slugify_port,
 )
-from c64cast.playlist import Playlist
 
 
 def _defaults() -> list[dict]:
@@ -403,7 +403,7 @@ class OsdPositionDispatchTests(unittest.TestCase):
 # ---------------------------------------------------- config round-trip --------
 class ConfigFieldTests(unittest.TestCase):
     def test_controller_profile_round_trips(self):
-        from c64cast import config_serialize
+        from c64cast.app import config_serialize
 
         cfg = cfgmod.Config()
         cfg.midi_control.controller_profile = "my-keylab"
@@ -414,7 +414,7 @@ class ConfigFieldTests(unittest.TestCase):
         self.assertEqual(reloaded, cfg)
 
     def test_cc_map_is_default_not_serialized(self):
-        from c64cast import config_serialize
+        from c64cast.app import config_serialize
 
         cfg = cfgmod.Config()
         cfg.midi_control.cc_map_is_default = False  # internal — never emitted

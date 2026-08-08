@@ -419,7 +419,7 @@ The vector-swap launch requires the IRQ-enabled idle, so it's gated on
 cycle-clean DMA shipped together). On older firmware the spin-stub idle
 masks IRQs, so the swap would never fire — `run_sid_player` raises
 `BackendCapabilityError` rather than play silently. (The TR also has no
-REUWRITE opcode, so [cli.py](../c64cast/cli.py) coerces any `use_reu_pump`
+REUWRITE opcode, so [cli.py](../c64cast/app/cli.py) coerces any `use_reu_pump`
 / explicit `use_reu_staged = true` opt-in off on a no-REU backend, routing
 audio through the host-DMA NMI DAC and video through host-DMA; `--doctor`
 reports the same.)
@@ -733,7 +733,7 @@ active). Consequences worth knowing:
 * **`bypass_audio_lock` lets several players hear their own games.** In
   ensemble mode at most one system normally holds the exclusive audio slot,
   so an audio-bearing scene on another system is skipped while it's taken
-  (the audio lock in [`c64cast/ensemble.py`](../c64cast/ensemble.py)).
+  (the audio lock in [`c64cast/app/ensemble.py`](../c64cast/app/ensemble.py)).
   That's wrong for
   interactive launchers — two people at two machines both want to play and
   hear their own game. Setting `bypass_audio_lock = true` on a launcher

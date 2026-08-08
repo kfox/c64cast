@@ -1591,7 +1591,7 @@ class WaveformPoolPickTest(unittest.TestCase):
 
 class TargetFpsTest(unittest.TestCase):
     def test_scene_target_fps_overrides_default(self):
-        from c64cast.playlist import Playlist
+        from c64cast.app.playlist import Playlist
         from tests.test_playlist import FakeApi, FakeScene
 
         scenes = [FakeScene("A", frames_until_done=2)]
@@ -1607,7 +1607,7 @@ class TargetFpsTest(unittest.TestCase):
         self.assertAlmostEqual(ft, 1.0 / 15.0)
 
     def test_bitmap_default_to_30fps(self):
-        from c64cast.playlist import Playlist
+        from c64cast.app.playlist import Playlist
         from tests.test_playlist import FakeApi, FakeScene
 
         s = FakeScene("A")
@@ -1624,7 +1624,7 @@ class TargetFpsTest(unittest.TestCase):
         self.assertAlmostEqual(ft, 1.0 / 30.0)
 
     def test_non_bitmap_uses_default(self):
-        from c64cast.playlist import Playlist
+        from c64cast.app.playlist import Playlist
         from tests.test_playlist import FakeApi, FakeScene
 
         s = FakeScene("A")
@@ -2022,8 +2022,8 @@ class WaveformConfigValidationTest(unittest.TestCase):
         os.unlink(self.sid_path)
 
     def _validate(self, **kwargs):
-        from c64cast.config import Config, SceneCfg
-        from c64cast.scene_factory import validate_scene_cfg
+        from c64cast.app.config import Config, SceneCfg
+        from c64cast.app.scene_factory import validate_scene_cfg
 
         s = SceneCfg(type="waveform", file=self.sid_path, **kwargs)
         validate_scene_cfg(s, Config(), audio_enabled=False)

@@ -48,9 +48,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 import cv2
 import numpy as np
 
-from c64cast import paths
 from c64cast._native_io import silence_native_stderr
 from c64cast._pollthread import PollThread
+from c64cast.app import paths
 
 if TYPE_CHECKING:
     from c64cast.video.video import WebcamSource

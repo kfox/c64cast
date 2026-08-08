@@ -11,7 +11,7 @@ import unittest
 
 from _fakes import FakeAPI
 
-from c64cast.config import Config
+from c64cast.app.config import Config
 from c64cast.hw.backend import HardwareProfile
 from c64cast.sid import sid_autoconfig as sa
 from c64cast.sid.asid_sidmap import (

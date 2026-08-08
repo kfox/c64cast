@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from c64cast import config as cfgmod
+from c64cast.app import config as cfgmod
 from c64cast.control.performance import (
     ClipEvent,
     LookStore,

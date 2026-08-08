@@ -242,7 +242,7 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
         return t
 
     def test_opens_pumps_and_joins(self):
-        from c64cast.cli import _pump_previews_until_done
+        from c64cast.app.cli import _pump_previews_until_done
 
         win = MagicMock()
         win.is_open = True
@@ -256,7 +256,7 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
     def test_stops_pumping_once_every_window_is_closed(self):
         # Closing the window is not a stop signal: we bail out of the pump loop
         # and fall through to a plain blocking join so playback carries on.
-        from c64cast.cli import _pump_previews_until_done
+        from c64cast.app.cli import _pump_previews_until_done
 
         win = MagicMock()
         win.is_open = False  # user closed it before the first check
@@ -266,7 +266,7 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
         t.join.assert_called_once_with()
 
     def test_pumps_every_window_in_an_ensemble(self):
-        from c64cast.cli import _pump_previews_until_done
+        from c64cast.app.cli import _pump_previews_until_done
 
         wins = [MagicMock(), MagicMock()]
         for w in wins:

@@ -15,6 +15,7 @@ from typing import cast
 import numpy as np
 from _fakes import FakeAPI
 
+from c64cast.app.config import DSPCfg
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import encode_floats_to_dac
 from c64cast.audio.dsp import (
@@ -25,7 +26,6 @@ from c64cast.audio.dsp import (
     PreEmphasis,
     db_to_lin,
 )
-from c64cast.config import DSPCfg
 from c64cast.hw.api import Ultimate64API
 
 SR = 8000

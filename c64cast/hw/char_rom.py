@@ -39,13 +39,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from c64cast import paths
+from c64cast.app import paths
 from c64cast.control.transport import atomic_write_bytes
 
 from .c64 import SCREEN
 
 if TYPE_CHECKING:
-    from c64cast.config import Config
+    from c64cast.app.config import Config
 
     from .backend import C64Backend
 

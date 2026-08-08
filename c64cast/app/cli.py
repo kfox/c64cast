@@ -18,6 +18,13 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from c64cast import __version__
+from c64cast.app import config as cfgmod
+from c64cast.app import (
+    orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
+    paths,
+    scene_factory,
+)
 from c64cast.audio import dac_curve_resolve
 from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
 from c64cast.control.keyboard import CommodoreKeyPoller
@@ -29,13 +36,6 @@ from c64cast.hw.teensyrom_dma import TRError
 from c64cast.scenes.interstitial import default_factory as interstitial_factory
 from c64cast.video.video import WebcamSource
 
-from . import (
-    __version__,
-    orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
-    paths,
-    scene_factory,
-)
-from . import config as cfgmod
 from .cli_commands import (
     configure_logging,
     list_devices,
@@ -1119,7 +1119,7 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
                 "positional MEDIA arguments and --config are mutually exclusive "
                 "— pass media for quick playback, or --config for a TOML playlist."
             )
-        from . import quickcast
+        from c64cast.app import quickcast
 
         cfg = quickcast.build_config(args)
         loaded = cfgmod.LoadResult(

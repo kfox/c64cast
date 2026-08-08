@@ -237,7 +237,7 @@ class PlaylistMenu:
         import os
         import shutil
 
-        from . import config_serialize
+        from c64cast.app import config_serialize
 
         pl = self._pl
         if pl.config is None or not pl.config_path:
@@ -405,7 +405,7 @@ class EnsembleCoordinator:
         Called from the run loop when `_broadcast_interrupt` is set
         (only happens in ensemble mode where the orchestrator wired the
         events). The actual orchestrator subclass + its protocol live
-        in c64cast/orchestrator.py + subclasses."""
+        in c64cast/app/orchestrator.py + subclasses."""
         pl = self._pl
         assert pl.broadcast_interrupt is not None
         assert pl.broadcast_resume is not None

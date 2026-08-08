@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import os
 
-from . import config as cfgmod
-from . import config_serialize as ser
-from . import introspect, paths, scene_factory
+from c64cast.app import config as cfgmod
+from c64cast.app import config_serialize as ser
+from c64cast.app import introspect, paths, scene_factory
 
 # Scene type -> (default asset dir, accepted extensions) for the file picker.
 # Mirrors the DEFAULT_*_DIR / *_EXTS constants the loader resolves against, so

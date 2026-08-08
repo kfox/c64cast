@@ -2,7 +2,7 @@
 """Turn a c64cast log file into a pasteable YouTube description blob.
 
 `c64cast` logs one SCENE_CONFIG_JSON line per scene activation (see
-c64cast/recording_metadata.py) — a snapshot of that scene's coalesced
+c64cast/app/recording_metadata.py) — a snapshot of that scene's coalesced
 settings (display mode, color/audio config, hardware, source/copyright info).
 This script extracts those lines from a `--log-file` run and renders a
 human, paste-ready text block.
@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from c64cast.recording_metadata import extract_scene_configs, render_description  # noqa: E402
+from c64cast.app.recording_metadata import extract_scene_configs, render_description  # noqa: E402
 
 _RULE = "=" * 40
 

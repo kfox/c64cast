@@ -14,7 +14,7 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-from c64cast import config as cfgmod
+from c64cast.app import config as cfgmod
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
 from c64cast.hw.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
@@ -610,7 +610,7 @@ class ReuCoercionTest(unittest.TestCase):
         return TeensyROMBackend(t, profile=profile, storage="sd")
 
     def test_no_reu_backend_coerces_opt_ins_off(self):
-        from c64cast.cli import _coerce_reu_for_backend
+        from c64cast.app.cli import _coerce_reu_for_backend
 
         cfg = self._cfg(pump=True, staged=True)
         with self.assertLogs("c64cast", level="WARNING"):
@@ -620,14 +620,14 @@ class ReuCoercionTest(unittest.TestCase):
 
     def test_no_reu_backend_leaves_auto_staged_alone(self):
         # "auto" self-heals elsewhere; the coercion only touches explicit true.
-        from c64cast.cli import _coerce_reu_for_backend
+        from c64cast.app.cli import _coerce_reu_for_backend
 
         cfg = self._cfg(pump=False, staged="auto")
         _coerce_reu_for_backend(cfg, self._backend(supports_reu=False))
         self.assertEqual(cfg.video.use_reu_staged, "auto")
 
     def test_reu_backend_unchanged(self):
-        from c64cast.cli import _coerce_reu_for_backend
+        from c64cast.app.cli import _coerce_reu_for_backend
 
         cfg = self._cfg(pump=True, staged=True)
         _coerce_reu_for_backend(cfg, self._backend(supports_reu=True))

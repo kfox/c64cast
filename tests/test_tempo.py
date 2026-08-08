@@ -25,7 +25,7 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
-from c64cast import config as cfgmod
+from c64cast.app import config as cfgmod
 from c64cast.control.tempo import ClockModulationSource, TempoClock, build_tempo_clock
 
 

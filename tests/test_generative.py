@@ -11,11 +11,11 @@ from typing import cast
 
 import numpy as np
 
+from c64cast.app.config import AudioCfg, Config, SceneCfg
+from c64cast.app.scene_factory import build_scene, validate_scene_cfg
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_source import MicAudioSource, NullAudioSource
-from c64cast.config import AudioCfg, Config, SceneCfg
 from c64cast.hw.backend import C64Backend, HardwareProfile
-from c64cast.scene_factory import build_scene, validate_scene_cfg
 from c64cast.scenes import generators
 from c64cast.scenes.effects import (
     BlurEffect,
@@ -1016,7 +1016,7 @@ class AudioSourceTest(unittest.TestCase):
         # Freed from the DAC rate, listen captures + analyzes at the higher
         # listen_sample_rate (44.1 kHz by default), while mic stays at the DAC
         # rate so the analyzer matches what the C64 plays.
-        from c64cast.config import AudioFeaturesCfg
+        from c64cast.app.config import AudioFeaturesCfg
 
         listen_streamer = _FakeStreamer()
         listen = self._listen(listen_streamer)

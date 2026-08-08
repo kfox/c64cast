@@ -222,7 +222,7 @@ dev = [
 ]
 
 [project.scripts]
-c64cast = "c64cast.cli:main"
+c64cast = "c64cast.app.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/kfox/c64cast"
@@ -309,17 +309,17 @@ files = [
     "c64cast/audio/audio.py",
     "c64cast/audio/audio_rate.py",
     "c64cast/audio/audio_handlers.py",
-    "c64cast/playlist.py",
+    "c64cast/app/playlist.py",
     "c64cast/hw/socket_dma.py",
     "c64cast/hw/teensyrom_dma.py",
     "c64cast/scenes/scenes.py",
     "c64cast/video/modes_irq.py",
-    "c64cast/config.py",
-    "c64cast/scene_factory.py",
-    "c64cast/ensemble.py",
+    "c64cast/app/config.py",
+    "c64cast/app/scene_factory.py",
+    "c64cast/app/ensemble.py",
     "c64cast/audio/dsp.py",
-    "c64cast/quickcast.py",
-    "c64cast/connect.py",
+    "c64cast/app/quickcast.py",
+    "c64cast/app/connect.py",
     "c64cast/control/transport.py",
 ]
 strict = true

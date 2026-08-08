@@ -3,7 +3,7 @@ see docs/architecture/control.md → "Live performance").
 
 `PerformanceSession` turns a bank of ``[[performance.clips]]`` slots into
 pad-fired scenes, quantized to the process-wide :class:`~c64cast.control.tempo.TempoClock`
-beat grid (Phase 1). It is constructed one-per-:class:`~c64cast.playlist.Playlist`
+beat grid (Phase 1). It is constructed one-per-:class:`~c64cast.app.playlist.Playlist`
 (mirrors :class:`~c64cast.control.transport.TransportSession` / ``pl.tempo``), and — like
 the transport session — **all scene mutation happens on the playlist thread**:
 the MIDI reader thread only ever :meth:`enqueue`\\s a :class:`ClipEvent`; the
@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from c64cast.playlist import Playlist
+    from c64cast.app.playlist import Playlist
     from c64cast.scenes.scenes import Scene
 
 log = logging.getLogger(__name__)
@@ -220,7 +220,7 @@ def default_look_store(name: str) -> LookStore:
     """The :class:`LookStore` for a system, under ``paths.presets_dir()`` (one
     ``looks-<slug>.json`` per system name, alongside the WLED presets). Resolved
     at call time so it honors ``$C64CAST_DATA_DIR`` like every other data file."""
-    from c64cast import paths
+    from c64cast.app import paths
 
     from .transport import warn_if_legacy_presets_orphaned
 

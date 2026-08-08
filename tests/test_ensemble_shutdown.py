@@ -17,8 +17,8 @@ import unittest
 import unittest.mock
 from unittest.mock import MagicMock
 
-from c64cast.cli import _run_playlists, teardown_stack
-from c64cast.ensemble import SystemStack
+from c64cast.app.cli import _run_playlists, teardown_stack
+from c64cast.app.ensemble import SystemStack
 
 
 def _fake_stack(name: str) -> SystemStack:

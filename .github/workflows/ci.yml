@@ -131,7 +131,7 @@ jobs:
       # Ruff lint + format are enforced in the `pre-commit` job above (single
       # style gate), so they're intentionally not repeated here.
       - name: Mypy --strict (hot modules)
-        run: uv run mypy c64cast/hw/api.py c64cast/audio/audio.py c64cast/playlist.py
+        run: uv run mypy c64cast/hw/api.py c64cast/audio/audio.py c64cast/app/playlist.py
 
       - name: Pyright (basic, whole tree)
         run: uv run pyright

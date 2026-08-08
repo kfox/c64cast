@@ -17,7 +17,7 @@ import unittest
 from dataclasses import FrozenInstanceError, replace
 from unittest import mock
 
-from c64cast import config as cfgmod
+from c64cast.app import config as cfgmod
 from c64cast.hw.backend import (
     BACKENDS,
     DELTA_CHUNK_BYTES,

@@ -33,6 +33,8 @@ import time
 import numpy as np
 import sounddevice as sd
 
+from c64cast.app.config import Config
+from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.audio import dac_calibration as dc
 from c64cast.audio import dac_calibration_store as dcs
 from c64cast.audio import dac_capture_device as dcap
@@ -49,8 +51,6 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.dac_curves import resolve_dac_curve
 from c64cast.audio.dsp import DSPParams
-from c64cast.config import Config
-from c64cast.connect import apply_to_config, parse_connection_uri
 from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 from c64cast.sid.sid_hw_config import restore_sid_config, snapshot_sid_config

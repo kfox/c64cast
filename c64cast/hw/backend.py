@@ -50,7 +50,7 @@ import numpy as np
 from .c64 import KERNAL, SCREEN, SID, VECTORS, VIC
 
 if TYPE_CHECKING:
-    from c64cast.config import Config
+    from c64cast.app.config import Config
 
 log = logging.getLogger(__name__)
 

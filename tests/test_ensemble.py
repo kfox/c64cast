@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest.mock import MagicMock
 
-from c64cast.ensemble import Ensemble, SystemStack
+from c64cast.app.ensemble import Ensemble, SystemStack
 
 
 def _fake_stack(name: str) -> SystemStack:

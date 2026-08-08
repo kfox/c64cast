@@ -74,9 +74,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from c64cast import paths
+from c64cast.app import paths
+from c64cast.app.playlist import Playlist
 from c64cast.control.transport import atomic_write_text
-from c64cast.playlist import Playlist
 from c64cast.video.modes import PALETTE_MODES
 
 # NOTE: this module deliberately does NOT use `from __future__ import

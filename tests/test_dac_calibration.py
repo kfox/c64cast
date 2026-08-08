@@ -23,13 +23,13 @@ from unittest.mock import patch
 import numpy as np
 from _fakes import FakeAPI
 
+from c64cast.app.config import Config
 from c64cast.audio import dac_calibration as dc
 from c64cast.audio import dac_calibration_store as dcs
 from c64cast.audio import dac_capture_device as dcap
 from c64cast.audio import dac_curve_resolve as dcr
 from c64cast.audio import dac_slot_ring as dsr
 from c64cast.audio.dac_curves import MAHONEY_ULTISID
-from c64cast.config import Config
 from c64cast.hw.backend import HardwareProfile
 from c64cast.sid.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
 

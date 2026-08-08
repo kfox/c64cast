@@ -1,4 +1,4 @@
-"""Tests for the scheme-aware connection-target parser (c64cast.connect).
+"""Tests for the scheme-aware connection-target parser (c64cast.app.connect).
 
 Pure string parsing — no hardware, no config file. Covers the u64/http/tr
 schemes, the tr:// serial-vs-TCP disambiguation, ?query knobs, error cases, and
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import unittest
 
-from c64cast.config import Config
-from c64cast.connect import ConnectionURIError, apply_to_config, parse_connection_uri
+from c64cast.app.config import Config
+from c64cast.app.connect import ConnectionURIError, apply_to_config, parse_connection_uri
 
 
 class ParseUltimateTest(unittest.TestCase):

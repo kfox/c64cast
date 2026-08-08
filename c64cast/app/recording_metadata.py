@@ -35,7 +35,7 @@ import math
 import os
 from typing import TYPE_CHECKING, Any
 
-from . import __version__
+from c64cast import __version__
 
 if TYPE_CHECKING:
     from c64cast.scenes.scenes import Scene

@@ -1,4 +1,4 @@
-"""Tests for c64cast.paths — the canonical settings + data-dir resolver.
+"""Tests for c64cast.app.paths — the canonical settings + data-dir resolver.
 
 Covers the env overrides ($C64CAST_SETTINGS / $C64CAST_DATA_DIR), the XDG /
 POSIX defaults, the derived subdirectories, and legacy-repo detection. Pure
@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from c64cast import paths
+from c64cast.app import paths
 
 _ON_WINDOWS = os.name == "nt"
 _ON_POSIX = os.name == "posix"
@@ -114,7 +114,7 @@ class LegacyDataRootTest(unittest.TestCase):
 
     def test_returns_none_without_pyproject(self):
         # Simulate an installed package: the package parent has no pyproject.
-        fake_pkg_file = Path("/opt/site-packages/c64cast/paths.py")
+        fake_pkg_file = Path("/opt/site-packages/c64cast/app/paths.py")
         with mock.patch.object(paths, "__file__", str(fake_pkg_file)):
             self.assertIsNone(paths.legacy_data_root())
 
@@ -134,7 +134,7 @@ class LegacyPresetsDirTest(unittest.TestCase):
         legacy = self._make_orphans()
         data = str(Path(self._tmp.name) / "data")  # canonical does not exist
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=legacy):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=legacy):
                 self.assertEqual(paths.legacy_presets_dir(), legacy / "presets")
 
     def test_none_when_canonical_exists(self):
@@ -142,7 +142,7 @@ class LegacyPresetsDirTest(unittest.TestCase):
         data = Path(self._tmp.name) / "data"
         (data / "presets").mkdir(parents=True)  # already migrated
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": str(data)}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=legacy):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=legacy):
                 self.assertIsNone(paths.legacy_presets_dir())
 
     def test_none_when_no_json_files(self):
@@ -150,11 +150,11 @@ class LegacyPresetsDirTest(unittest.TestCase):
         (legacy / "presets").mkdir(parents=True)  # dir exists but empty
         data = str(Path(self._tmp.name) / "data")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=legacy):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=legacy):
                 self.assertIsNone(paths.legacy_presets_dir())
 
     def test_none_for_installed_package(self):
-        with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
+        with mock.patch("c64cast.app.paths.legacy_data_root", return_value=None):
             self.assertIsNone(paths.legacy_presets_dir())
 
 
@@ -162,7 +162,9 @@ class PackagedResourcesTest(unittest.TestCase):
     """The shipped example configs + JSON schema, and the `example:` resolver."""
 
     def test_examples_and_schema_are_real_files_under_the_package(self):
-        pkg = Path(paths.__file__).resolve().parent
+        import c64cast
+
+        pkg = Path(c64cast.__file__).resolve().parent
         self.assertEqual(paths.examples_dir().resolve(), pkg / "examples")
         self.assertEqual(
             paths.packaged_schema_path().resolve(), pkg / "data" / "c64cast.schema.json"

@@ -20,7 +20,7 @@ Phase 1 built:
 - :class:`TransportEvent` / :class:`TransportSession` — a thread-safe queue
   the MIDI reader thread enqueues into (:mod:`midi_control`'s reader thread,
   never the playlist thread) and :meth:`TransportSession.tick` drains once per
-  frame from :meth:`~c64cast.playlist.Playlist.run_one_frame`, dispatching
+  frame from :meth:`~c64cast.app.playlist.Playlist.run_one_frame`, dispatching
   against whatever scene is current via a duck-typed ``transport_*`` surface
   (see :class:`~c64cast.scenes.scenes.VideoScene`). Held rw/ff notes accelerate over
   time; this keeps all scene/DMA-adjacent mutation on the playlist thread,
@@ -34,7 +34,7 @@ and Stop-held+pad / Record-held+pad chords (save / clear) into a per-video
 ``--midi-setup`` learn wizard's output, one JSON file per controller under
 :func:`paths.controllers_dir`, cloned from the same tolerant-load / atomic-write
 shape. Kept import-light (stdlib
-plus the leaf :mod:`c64cast.paths` module, which itself imports nothing from
+plus the leaf :mod:`c64cast.app.paths` module, which itself imports nothing from
 the package; ``Config``/``Playlist``/``Scene`` referenced under TYPE_CHECKING)
 so it can be pulled in from playlist.py (and now scenes.py) without a cycle.
 """
@@ -54,11 +54,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from c64cast import paths
+from c64cast.app import paths
 
 if TYPE_CHECKING:
-    from c64cast.config import Config
-    from c64cast.playlist import Playlist
+    from c64cast.app.config import Config
+    from c64cast.app.playlist import Playlist
 
 log = logging.getLogger(__name__)
 
@@ -287,7 +287,7 @@ class TransportSession:
     """Applies queued :class:`TransportEvent`\\s to the playlist's current
     scene once per frame, and drives the RW/FF hold-acceleration ramp.
 
-    Construct one per :class:`~c64cast.playlist.Playlist` (mirrors
+    Construct one per :class:`~c64cast.app.playlist.Playlist` (mirrors
     ``Playlist.live_tracker``). :meth:`enqueue` is called from the MIDI
     reader thread; :meth:`tick` is called from the playlist thread only —
     all scene mutation happens there, never on the MIDI thread (the same
@@ -537,7 +537,7 @@ def warn_if_legacy_presets_orphaned() -> None:
     """Log once (at most) if a source checkout still has preset files at the
     old repo ``presets/`` location — they are no longer read. No-op for an
     installed package, a clean checkout, or once the presets have been moved to
-    the canonical data dir. See :func:`c64cast.paths.legacy_presets_dir`."""
+    the canonical data dir. See :func:`c64cast.app.paths.legacy_presets_dir`."""
     global _warned_legacy_presets
     if _warned_legacy_presets:
         return

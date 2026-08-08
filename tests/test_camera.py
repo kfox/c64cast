@@ -4,7 +4,7 @@ patched with fake CameraInfo objects, so these run without the `camera` extra)."
 import unittest
 from unittest import mock
 
-from c64cast.config import ConfigError
+from c64cast.app.config import ConfigError
 from c64cast.control import camera
 from c64cast.control.camera import CameraInfo
 

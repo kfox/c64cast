@@ -111,7 +111,7 @@ hz = 2.0
   `audio.get_recent_samples()` when the scene reports no features.
 
 These are validated by `overlays.validate_for_scene` (invoked from
-`config._attach_overlays` in [config.py](../c64cast/config.py)) at
+`config._attach_overlays` in [config.py](../c64cast/app/config.py)) at
 config-load time, not at the first frame.
 
 ### Painting into screen / color RAM (`compose`)
@@ -207,7 +207,7 @@ class MyScene(Scene):
 
 ### Wire it into the config loader
 
-Open [config.py](../c64cast/config.py) and add a branch in
+Open [config.py](../c64cast/app/config.py) and add a branch in
 `scenes_from_config`:
 
 ```python
@@ -309,7 +309,7 @@ background will be one of the random picks.
 
 ## Adding a CLI flag
 
-The pattern in [cli.py](../c64cast/cli.py) is "argparse `default=None`,
+The pattern in [cli.py](../c64cast/app/cli.py) is "argparse `default=None`,
 plus an entry in `CLI_TO_CFG`":
 
 ```python
@@ -384,6 +384,6 @@ per surface, fakes at the top, three-to-six small `test_*` methods.
 | Scene                      | [c64cast/scenes/scenes.py](../c64cast/scenes/scenes.py) (or new file)  | branch in `config.scenes_from_config` + optional `SceneCfg` fields      |
 | DisplayMode                | [c64cast/video/modes/](../c64cast/video/modes/)                      | branch in `config._build_display_mode`                                  |
 | Background                 | [c64cast/scenes/backgrounds.py](../c64cast/scenes/backgrounds.py)      | `@register("yours")` decorator                                          |
-| CLI flag                   | [c64cast/cli.py](../c64cast/cli.py)                      | `default=None` + entry in `config.CLI_TO_CFG`                           |
+| CLI flag                   | [c64cast/app/cli.py](../c64cast/app/cli.py)                      | `default=None` + entry in `config.CLI_TO_CFG`                           |
 | Control-plane endpoint     | [c64cast/control/control_plane.py](../c64cast/control/control_plane.py)  | new event on `Playlist` + handler in the run loop                       |
 | Test                       | [tests/test_*.py](../tests/)                                 | `FakeAPI` (`tests/_fakes.py`) + `FakeAudio` (`tests/test_overlays.py`) reusable |

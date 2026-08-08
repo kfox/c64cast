@@ -407,7 +407,7 @@ class DumpTest(_CharRomTestCase):
 
 class EnsureInstalledTest(_CharRomTestCase):
     def _cfg(self, *, enabled: bool = True, charset_path: str | None = None):
-        from c64cast import config as cfgmod
+        from c64cast.app import config as cfgmod
 
         cfg = cfgmod.Config()
         cfg.hardware.dump_char_rom = enabled
@@ -500,7 +500,7 @@ class InstallCharRomCliTest(_CharRomTestCase):
         import io
         from contextlib import redirect_stdout
 
-        from c64cast.cli import main
+        from c64cast.app.cli import main
 
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -541,10 +541,10 @@ class DumpCharRomCliTest(_CharRomTestCase):
         import io
         from contextlib import redirect_stdout
 
-        from c64cast.cli import main
+        from c64cast.app.cli import main
 
         buf = io.StringIO()
-        with mock.patch("c64cast.cli_commands.make_backend", return_value=be):
+        with mock.patch("c64cast.app.cli_commands.make_backend", return_value=be):
             with redirect_stdout(buf):
                 rc = main(["--dump-char-rom", "-u", "u64://198.51.100.1"])
         return rc, buf.getvalue()

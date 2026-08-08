@@ -208,10 +208,10 @@ def _gen_content(rate: int, run_s: float, period_s: float) -> tuple[np.ndarray, 
 
 
 def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_reset: bool) -> Path:
-    import c64cast.config as cfgmod
+    import c64cast.app.config as cfgmod
     import c64cast.hw.hw_provision as hw_provision
+    from c64cast.app.connect import apply_to_config, parse_connection_uri
     from c64cast.audio.sampler import UltimateAudioSampler
-    from c64cast.connect import apply_to_config, parse_connection_uri
     from c64cast.hw.backend import make_backend
 
     cfg = cfgmod.Config()

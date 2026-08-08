@@ -34,8 +34,8 @@ import av
 import cv2
 import numpy as np
 
-from c64cast.config import ColorCfg
-from c64cast.scene_factory import _build_display_mode
+from c64cast.app.config import ColorCfg
+from c64cast.app.scene_factory import _build_display_mode
 from c64cast.scenes.scenes import _crop_to_aspect, _render_with_overlays
 from c64cast.video.framebuffer import Framebuffer
 from c64cast.video.modes import base as modes_base

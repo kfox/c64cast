@@ -22,7 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast.playlist import Playlist  # noqa: E402
+from c64cast.app.playlist import Playlist  # noqa: E402
 from c64cast.video.modes import (  # noqa: E402
     HiresDisplayMode,
     MCMDisplayMode,

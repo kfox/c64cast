@@ -28,8 +28,8 @@ from types import SimpleNamespace
 
 import cv2
 
+from c64cast.app.scene_factory import _build_display_mode
 from c64cast.hw.backend import BufferedWriteBackend
-from c64cast.scene_factory import _build_display_mode
 from c64cast.scenes.effects import build_effect
 from c64cast.scenes.generators import build_generator
 from c64cast.scenes.scenes import _render_with_overlays
@@ -152,7 +152,7 @@ def main() -> None:
 
     menu = None
     if args.menu:
-        from c64cast.config import SceneCfg
+        from c64cast.app.config import SceneCfg
         from c64cast.scenes.overlays.menu import MenuOverlay
 
         # Give the scene the attributes the menu option-model reads.

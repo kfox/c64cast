@@ -30,6 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from c64cast.app import paths
 from c64cast.audio.audio_source import (
     AudioFileSource,
     AudioSource,
@@ -74,7 +75,6 @@ from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_co
 from c64cast.video.video import WebcamSource, ensure_pyav
 from c64cast.wled.wled_sink import WLEDSource
 
-from . import paths
 from .config import (
     _ASPECT_MODE_CHOICES,
     _AUDIO_SOURCE_CHOICES,

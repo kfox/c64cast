@@ -155,7 +155,7 @@ a follow-up. Concretely, when you change functionality:
   [`troubleshooting.md`](docs/troubleshooting.md) and
   [`extending.md`](docs/extending.md) sit alongside them.
 - New config knobs, scenes, or overlays: fill in the field's `help`/`choices`
-  metadata (in [`c64cast/config.py`](c64cast/config.py)) or the overlay's
+  metadata (in [`c64cast/app/config.py`](c64cast/app/config.py)) or the overlay's
   `HELP`/`PARAM_HELP`, update
   [`c64cast/examples/c64cast.example.toml`](c64cast/examples/c64cast.example.toml)
   and add a demo under [`c64cast/examples/`](c64cast/examples), then run

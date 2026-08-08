@@ -13,7 +13,7 @@ import time
 
 import numpy as np
 
-from c64cast.config import InterstitialCfg
+from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, RegionID
 from c64cast.video.palette import C64_COLORS, resolve_color

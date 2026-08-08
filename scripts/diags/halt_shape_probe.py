@@ -66,9 +66,9 @@ import _diaglib as d
 # up measuring subtly different machines.
 from ring_race_probe import arm, disarm, effective_rate, latch_for, read_r, setup
 
+from c64cast.app.config import Config
+from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.audio.audio_handlers import RING_BUFFER_SIZE
-from c64cast.config import Config
-from c64cast.connect import apply_to_config, parse_connection_uri
 from c64cast.hw.backend import make_backend
 
 SCRATCH_ADDR = 0x6000  # clear of the ring ($4000-$5FFF) and the NMI handler ($C020)

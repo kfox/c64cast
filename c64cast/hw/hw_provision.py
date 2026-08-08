@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 
-from c64cast.config import Config
+from c64cast.app.config import Config
 
 log = logging.getLogger(__name__)
 

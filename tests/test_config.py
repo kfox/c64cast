@@ -1,4 +1,4 @@
-"""Smoke tests for c64cast.config — loader, defaults, CLI merge."""
+"""Smoke tests for c64cast.app.config — loader, defaults, CLI merge."""
 
 # pyright: reportArgumentType=false
 from __future__ import annotations
@@ -13,8 +13,8 @@ from unittest import mock
 
 from _fakes import FakeAPI, MachineSettingsIsolation
 
-from c64cast import config as cfgmod
-from c64cast import scene_factory
+from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
 from c64cast.hw.backend import C64Backend
 from c64cast.video.modes import BlankDisplayMode
 
@@ -165,7 +165,7 @@ hue_hi_deg = 195
         # warns and drops them (same as other sections) rather than raising.
         # assertLogs both verifies the warning fires and keeps it off the
         # console (an expected message, not a real failure).
-        with self.assertLogs("c64cast.config", level="WARNING") as cm:
+        with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             cfg = self._load("[color]\nbogus_key = 7\n")
         self.assertFalse(hasattr(cfg.color, "bogus_key"))
         self.assertTrue(any("bogus_key" in m for m in cm.output))
@@ -217,7 +217,7 @@ hue_hi_deg = 195
     def test_force_palette_indices_now_unknown_key(self):
         # The old field was removed; a config still using it should warn (and be
         # dropped) rather than silently take effect.
-        with self.assertLogs("c64cast.config", level="WARNING") as cm:
+        with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             cfg = self._load("[color]\nforce_palette_indices = [0, 2]\n")
         self.assertFalse(hasattr(cfg.color, "force_palette_indices"))
         self.assertTrue(any("force_palette_indices" in m for m in cm.output))
@@ -513,7 +513,7 @@ class VideoDeviceTest(unittest.TestCase):
         self.assertIn("[video].device", str(ctx.exception))
 
     def test_string_device_round_trips_through_serialize(self):
-        from c64cast import config_serialize as ser
+        from c64cast.app import config_serialize as ser
 
         cfg = cfgmod.Config()
         cfg.video.device = "Cam Link"
@@ -547,7 +547,7 @@ class AudioDeviceTest(unittest.TestCase):
         self.assertIn("[audio].device", str(ctx.exception))
 
     def test_string_device_round_trips_through_serialize(self):
-        from c64cast import config_serialize as ser
+        from c64cast.app import config_serialize as ser
 
         cfg = cfgmod.Config()
         cfg.audio.device = "Cam Link"
@@ -606,7 +606,7 @@ class LoadSonglengthsTest(unittest.TestCase):
             with mock.patch.object(
                 scene_factory, "_autodetect_songlengths_path", return_value=path
             ):
-                with self.assertLogs("c64cast.scene_factory", level="INFO") as logs:
+                with self.assertLogs("c64cast.app.scene_factory", level="INFO") as logs:
                     db = scene_factory._load_songlengths(None)
             self.assertIsNotNone(db)
             self.assertTrue(any("auto-detected" in m for m in logs.output))
@@ -618,7 +618,7 @@ class LoadSonglengthsTest(unittest.TestCase):
             self.assertIsNone(scene_factory._load_songlengths(None))
 
     def test_missing_file_warns_and_caches_none(self):
-        with self.assertLogs("c64cast.scene_factory", level="WARNING"):
+        with self.assertLogs("c64cast.app.scene_factory", level="WARNING"):
             self.assertIsNone(scene_factory._load_songlengths("/no/such/db.md5"))
         # The None result is memoized so a second call doesn't re-warn.
         self.assertIn("/no/such/db.md5", scene_factory._songlengths_cache)
@@ -817,7 +817,7 @@ class MachineSettingsTest(unittest.TestCase):
     def test_unknown_key_warns_but_loads(self):
         self._write_settings('[ultimate64]\nurl = "http://m.lan"\nbogus_key = 1\n')
         with self._env():
-            with self.assertLogs("c64cast.config", level="WARNING"):
+            with self.assertLogs("c64cast.app.config", level="WARNING"):
                 cfg = cfgmod.load(None)
         self.assertEqual(cfg.ultimate64.url, "http://m.lan")
 
@@ -949,20 +949,20 @@ class ValidateSceneCfgTest(unittest.TestCase):
         # Offline doctor/load check: a YouTube-style URL needs yt-dlp; without
         # the `yt` extra, flag it up front instead of failing at playback.
         s = cfgmod.SceneCfg(type="video", file="https://youtu.be/abc?t=90")
-        with mock.patch("c64cast.quickcast._ytdlp_available", return_value=False):
+        with mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=False):
             with self.assertRaisesRegex(ValueError, "yt-dlp"):
                 scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_video_url_needing_ytdlp_passes_with_extra(self):
         s = cfgmod.SceneCfg(type="video", file="https://youtu.be/abc?t=90")
-        with mock.patch("c64cast.quickcast._ytdlp_available", return_value=True):
+        with mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_direct_media_url_does_not_require_extra(self):
         # A direct media URL plays via PyAV without yt-dlp — no extra needed
         # even when it's absent.
         s = cfgmod.SceneCfg(type="video", file="http://host/clip.mp4")
-        with mock.patch("c64cast.quickcast._ytdlp_available", return_value=False):
+        with mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=False):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_waveform_scene_falls_back_to_default_dir(self):
@@ -1132,7 +1132,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
         # A `blank` scene with no orchestrator-specific shape won't be
         # claimed by BigTextSpanOrchestrator.
         s = cfgmod.SceneCfg(type="blank", name="solo", orchestrate=True)
-        from c64cast.orchestrator import OrchestratorError
+        from c64cast.app.orchestrator import OrchestratorError
 
         with self.assertRaises(OrchestratorError):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
@@ -1611,9 +1611,9 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
 
     def test_youtube_url_resolved_with_timestamp_and_title(self):
         with (
-            mock.patch("c64cast.quickcast._ytdlp_available", return_value=True),
+            mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True),
             mock.patch(
-                "c64cast.quickcast.resolve_media_url",
+                "c64cast.app.quickcast.resolve_media_url",
                 return_value=("http://stream/v.m3u8", "video", "Cool Tune"),
             ),
         ):
@@ -1624,9 +1624,9 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
 
     def test_explicit_start_s_wins_over_url_timestamp(self):
         with (
-            mock.patch("c64cast.quickcast._ytdlp_available", return_value=True),
+            mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True),
             mock.patch(
-                "c64cast.quickcast.resolve_media_url",
+                "c64cast.app.quickcast.resolve_media_url",
                 return_value=("http://stream/v.m3u8", "video", "T"),
             ),
         ):
@@ -1635,9 +1635,9 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
 
     def test_audio_only_url_rejected_at_build(self):
         with (
-            mock.patch("c64cast.quickcast._ytdlp_available", return_value=True),
+            mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True),
             mock.patch(
-                "c64cast.quickcast.resolve_media_url",
+                "c64cast.app.quickcast.resolve_media_url",
                 return_value=("http://stream/a", "audio", None),
             ),
         ):
@@ -1955,7 +1955,7 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
 
         api = FakeAPI()
         api.profile = dataclasses.replace(api.profile, supports_sampler=True)
-        with mock.patch("c64cast.scene_factory.UltimateAudioSampler", return_value=object()):
+        with mock.patch("c64cast.app.scene_factory.UltimateAudioSampler", return_value=object()):
             from c64cast.scenes.scenes import VideoScene
 
             s = cfgmod.SceneCfg(type="video", display="mhires", file=self.clip)

@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from c64cast import introspect
+from c64cast.app import introspect
 from c64cast.hw.c64 import KEYBUF, SCREEN, RegionID
 from c64cast.scenes import bitmap_text
 

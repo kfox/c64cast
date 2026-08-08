@@ -15,7 +15,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
-* **[Config, CLI & ensemble](architecture/config.md)** — `ensemble.py`, `orchestrator.py`, `orchestrators/`, `paths.py`, `config.py`, `scene_factory.py`, `cli.py`, `recording_metadata.py`
+* **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/scene_factory.py`, `app/cli.py`, `app/recording_metadata.py`
 
 ## Module index
 
@@ -38,10 +38,10 @@ the two lists account for every module in the tree.
 | `scenes/backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `control/camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
 | `hw/char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
-| `cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
-| `cli_commands.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
+| `app/cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
+| `app/cli_commands.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
 | Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
-| `config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
+| `app/config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
 | `control/control_plane.py` | [Control surfaces & live performance](architecture/control.md#control_planepy--http-control-plane-optional) |
 | `audio/dac_calibration.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
 | `audio/dac_calibration_store.py` | [Audio output](architecture/audio.md#the-calibration-file) |
@@ -52,7 +52,7 @@ the two lists account for every module in the tree.
 | `video/dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |
 | `audio/dsp.py` | [Audio output](architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path) |
 | `scenes/effects.py` | [Scenes, sources & overlays](architecture/scenes.md#effectspy--the-frameeffect-registry) |
-| `ensemble.py` | [Config, CLI & ensemble](architecture/config.md#ensemblepy--audio-slot-coordination) |
+| `app/ensemble.py` | [Config, CLI & ensemble](architecture/config.md#ensemblepy--audio-slot-coordination) |
 | `scenes/frame_source.py` | [Scenes, sources & overlays](architecture/scenes.md#frame_sourcepy) |
 | Framerate pacing & frame-dropping | [Video input & the color pipeline](architecture/video-color.md#framerate-pacing--frame-dropping) |
 | `scenes/generators/` | [Scenes, sources & overlays](architecture/scenes.md#generators--the-generativesource-registry) |
@@ -68,16 +68,16 @@ the two lists account for every module in the tree.
 | `control/perf_console.py` | [Control surfaces & live performance](architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5) |
 | `video/modes/` | [Video input & the color pipeline](architecture/video-color.md#modes--displaymode-hierarchy) |
 | `video/modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
-| `orchestrator.py` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
-| `orchestrators/` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
+| `app/orchestrator.py` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
+| `app/orchestrators/` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `scenes/overlays/` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
 | `video/palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
-| `paths.py` | [Config, CLI & ensemble](architecture/config.md#pathspy) |
+| `app/paths.py` | [Config, CLI & ensemble](architecture/config.md#pathspy) |
 | `video/petscii_styles.py` | [Video input & the color pipeline](architecture/video-color.md#petscii_stylespy) |
-| `recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
+| `app/recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
 | `video/rolling_palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
-| `scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
+| `app/scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes/scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
 | `sid/sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
 | SID player PRG | [SID playback & the oscilloscope](architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
@@ -113,19 +113,19 @@ rationale in the meantime — each of the ones below opens with one.
 | `hw/backend.py` | The `C64Backend` hardware abstraction the whole app is duck-typed on |
 | `scenes/bitmap_text.py` | Shared hires bitmap text rasterizer (char-ROM glyphs) |
 | `hw/c64.py` | Centralized C64 hardware constants — addresses, registers, magic numbers |
-| `config_serialize.py` | `Config` → annotated TOML, the inverse of `config.load` |
-| `connect.py` | `-u/--url` connection-target URI parsing |
-| `doctor.py` | `--doctor` configuration + environment diagnostics |
+| `app/config_serialize.py` | `Config` → annotated TOML, the inverse of `config.load` |
+| `app/connect.py` | `-u/--url` connection-target URI parsing |
+| `app/doctor.py` | `--doctor` configuration + environment diagnostics |
 | `video/framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
 | `hw/hw_provision.py` | Live U64 REU + Ultimate Audio sampler auto-provisioning (volatile, restored at teardown) |
-| `introspect.py` | The single rendering surface over config metadata |
-| `playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
-| `playlist_support.py` | Playlist collaborators — scene fades, on-C64 menu driver, ensemble coordination |
+| `app/introspect.py` | The single rendering surface over config metadata |
+| `app/playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
+| `app/playlist_support.py` | Playlist collaborators — scene fades, on-C64 menu driver, ensemble coordination |
 | `video/preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
-| `profiler.py` | `--profile` per-frame timing harness |
-| `quickcast.py` | Positional-`MEDIA` quick-playback config builder |
-| `schema.py` | JSON Schema generator for the TOML config |
+| `app/profiler.py` | `--profile` per-frame timing harness |
+| `app/quickcast.py` | Positional-`MEDIA` quick-playback config builder |
+| `app/schema.py` | JSON Schema generator for the TOML config |
 | `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore |
 | `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |
 | `hw/teensyrom_api.py` | TeensyROM+ implementation of `C64Backend` |
-| `wizard.py` | `--init` interactive config builder |
+| `app/wizard.py` | `--init` interactive config builder |

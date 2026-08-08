@@ -64,11 +64,11 @@ class Playlist:
         if not scenes:
             raise ValueError("Playlist needs at least one scene")
         # Per-instance logger so ensemble runs can tell which system a
-        # given line came from. Child of the existing c64cast.playlist
-        # logger, so assertLogs("c64cast.playlist", ...) in tests still
+        # given line came from. Child of the existing c64cast.app.playlist
+        # logger, so assertLogs("c64cast.app.playlist", ...) in tests still
         # matches (per logging hierarchy: parent captures children).
         self.name = name
-        self.log = logging.getLogger(f"c64cast.playlist.{name}")
+        self.log = logging.getLogger(f"c64cast.app.playlist.{name}")
         self.scenes = scenes
         # Single-scene mode: skip the interstitial cycle entirely, loop the
         # one scene via teardown+setup on is_done, and drop CTRL skip events

@@ -14,7 +14,7 @@ import textwrap
 import unittest
 from unittest import mock
 
-from c64cast import config as cfgmod
+from c64cast.app import config as cfgmod
 from c64cast.hw import hw_provision
 
 

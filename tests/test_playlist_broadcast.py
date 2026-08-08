@@ -13,8 +13,8 @@ import unittest
 from typing import Any
 from unittest.mock import MagicMock
 
-from c64cast.ensemble import Ensemble, SystemStack
-from c64cast.playlist import Playlist
+from c64cast.app.ensemble import Ensemble, SystemStack
+from c64cast.app.playlist import Playlist
 
 
 def _fake_ensemble_stack(name: str) -> SystemStack:
@@ -140,7 +140,7 @@ class RunOneFrameTest(unittest.TestCase):
         scene = _FakeScene("s")
         scene._still_active = True
         pl.skip_event.set()
-        with self.assertLogs("c64cast.playlist", level="INFO"):
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
             pl.run_one_frame(scene, 0.0)
         self.assertTrue(scene.is_done)
         # skip_event is cleared after handling.
@@ -190,7 +190,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         t.start()
 
         interrupt.set()
-        with self.assertLogs("c64cast.playlist", level="INFO"):
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
             pl.ensemble_coord.handle_broadcast_interrupt()
         t.join(timeout=2.0)
 
@@ -211,7 +211,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         _, resume = self._wire_broadcast(pl, orch, follower)
         resume.set()  # exit broadcast loop immediately
 
-        with self.assertLogs("c64cast.playlist", level="INFO"):
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
             pl.ensemble_coord.handle_broadcast_interrupt()
 
         self.assertIs(follower._orchestrator, orch)
@@ -228,7 +228,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         _, resume = self._wire_broadcast(pl, orch, follower)
         resume.set()
 
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.ensemble_coord.handle_broadcast_interrupt()
 
         self.assertFalse(pl.pause_event.is_set())
@@ -257,7 +257,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         pl.broadcast_resume = threading.Event()
         pl.broadcast_interrupt.set()
         # build_follower_scene is None — should log + bail without crash.
-        with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             pl.ensemble_coord.handle_broadcast_interrupt()
         self.assertTrue(any("no follower scene factory" in line for line in cap.output))
 
@@ -268,7 +268,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         # follower stamps with a fresh conductor install. _safe_setup's
         # _maybe_install_conductor must skip when scene._orchestrator
         # is already set.
-        from c64cast.config import SceneCfg
+        from c64cast.app.config import SceneCfg
 
         pl = _build_playlist(name="follower")
         # Build the ensemble with our follower's name in it so the
@@ -298,7 +298,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         # fresh orchestrator. Without this, ensemble.active_orchestrator
         # stays None on the 2nd+ broadcast and every follower drops the
         # interrupt as "no active orch".
-        from c64cast.config import SceneCfg
+        from c64cast.app.config import SceneCfg
 
         pl = _build_playlist(name="conductor")
         ens = Ensemble(stacks=[_fake_ensemble_stack("conductor")], stop_event=pl.stop_event)
@@ -324,7 +324,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         # (regression for the "subsequent broadcasts only paint the rightmost
         # screen" bug — followers couldn't see the broadcast because the
         # ensemble slot was empty after the first run).
-        from c64cast.config import SceneCfg
+        from c64cast.app.config import SceneCfg
 
         pl = _build_playlist(name="conductor")
         ens = Ensemble(stacks=[_fake_ensemble_stack("conductor")], stop_event=pl.stop_event)
@@ -335,7 +335,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         # The Playlist's _maybe_install_conductor needs an Orchestrator
         # subclass that claims this cfg. Register a minimal one for the
         # test (the registry is global; we clean up after).
-        from c64cast import orchestrator as orch_mod
+        from c64cast.app import orchestrator as orch_mod
 
         class _TestOrch(orch_mod.Orchestrator):
             @classmethod
@@ -377,7 +377,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         _, _ = self._wire_broadcast(pl, orch, follower)
         # Don't set resume; set stop_event instead.
         pl.stop_event.set()
-        with self.assertLogs("c64cast.playlist", level="INFO"):
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
             pl.ensemble_coord.handle_broadcast_interrupt()
         # Follower was set up, ran zero or more frames, and was torn down.
         self.assertEqual(follower.setup_calls, 1)

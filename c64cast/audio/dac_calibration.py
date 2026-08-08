@@ -64,7 +64,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from c64cast import paths
+from c64cast.app import paths
 from c64cast.hw.c64 import CIA2
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
@@ -125,7 +125,7 @@ from .dac_slot_ring import (
 )
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
-    from c64cast.config import Config
+    from c64cast.app.config import Config
     from c64cast.hw.backend import C64Backend
 
     from .audio import AudioStreamer

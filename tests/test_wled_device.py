@@ -15,9 +15,9 @@ import unittest
 from pathlib import Path
 from typing import cast
 
-from c64cast import config as cfgmod
-from c64cast import scene_factory
-from c64cast.playlist import Playlist
+from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
+from c64cast.app.playlist import Playlist
 from c64cast.wled.wled_device import PresetStore, WledBridge, build_wled_app
 
 try:

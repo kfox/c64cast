@@ -35,8 +35,8 @@ import sys
 import _diaglib as d  # noqa: F401 — inserts repo root on sys.path
 import numpy as np
 
+from c64cast.app.scene_factory import _build_display_mode
 from c64cast.hw.backend import BufferedWriteBackend  # noqa: E402
-from c64cast.scene_factory import _build_display_mode
 
 
 class RecordingBackend(BufferedWriteBackend):

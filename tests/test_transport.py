@@ -491,7 +491,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         legacy = self._legacy_with_orphans()
         data = os.path.join(self._tmp.name, "data")  # canonical does NOT exist
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=Path(legacy)):
                 with self.assertLogs("c64cast.control.transport", level="WARNING") as cm:
                     warn_if_legacy_presets_orphaned()
                 # Second call is a no-op (the one-shot flag is set) — assertLogs
@@ -507,7 +507,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         data = os.path.join(self._tmp.name, "data")
         os.makedirs(os.path.join(data, "presets"))  # already migrated
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=Path(legacy)):
                 with self.assertNoLogs("c64cast.control.transport", level="WARNING"):
                     warn_if_legacy_presets_orphaned()
 
@@ -515,7 +515,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         # No repo checkout (legacy_data_root is None) → nothing to migrate.
         data = os.path.join(self._tmp.name, "data")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=None):
                 with self.assertNoLogs("c64cast.control.transport", level="WARNING"):
                     warn_if_legacy_presets_orphaned()
 
@@ -523,7 +523,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         legacy = self._legacy_with_orphans()
         data = os.path.join(self._tmp.name, "data")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
-            with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
+            with mock.patch("c64cast.app.paths.legacy_data_root", return_value=Path(legacy)):
                 with self.assertLogs("c64cast.control.transport", level="WARNING"):
                     make_loop_preset_store("clip.mp4")
 

@@ -31,7 +31,7 @@ except (ImportError, RuntimeError):
     HAVE_TESTCLIENT = False
     TestClient = None  # type: ignore[misc,assignment]
 
-from c64cast.playlist import Playlist
+from c64cast.app.playlist import Playlist
 
 
 def _fake_playlist(name: str, *, scene_count: int = 2) -> Playlist:

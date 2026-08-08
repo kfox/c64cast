@@ -31,8 +31,8 @@ import argparse
 import sys
 import time
 
-from c64cast.config import Config
-from c64cast.connect import apply_to_config, parse_connection_uri
+from c64cast.app.config import Config
+from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import REU
 

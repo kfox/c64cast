@@ -92,7 +92,7 @@ class SceneGatingTest(unittest.TestCase):
     def test_maybe_start_gates_on_mode_and_color(self):
         from types import SimpleNamespace
 
-        from c64cast.config import ColorCfg
+        from c64cast.app.config import ColorCfg
         from c64cast.scenes.scenes import _maybe_start_rolling_palette
 
         scene = SimpleNamespace(name="live")

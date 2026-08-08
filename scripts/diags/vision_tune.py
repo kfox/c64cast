@@ -31,7 +31,7 @@ import time
 import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work)
 import numpy as np
 
-from c64cast.config import VisionCfg
+from c64cast.app.config import VisionCfg
 from c64cast.control.vision import (
     INDEX_TIP,
     THUMB_TIP,

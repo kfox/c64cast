@@ -35,6 +35,7 @@ import cv2
 import numpy as np
 
 from c64cast._pollthread import PollThread
+from c64cast.app.profiler import get_profiler
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
     INT16_FULL_SCALE,
@@ -45,7 +46,6 @@ from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
-from c64cast.profiler import get_profiler
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.palette import ColorFitAccumulator, ColorMapAccumulator
 from c64cast.video.rolling_palette import RollingForcePalette
@@ -62,8 +62,8 @@ from .bitmap_text import glyphs_to_mask, load_glyphs
 from .video_transport import VideoTransportControls
 
 if TYPE_CHECKING:
+    from c64cast.app.config import AudioCfg, ColorCfg
     from c64cast.audio.audio_source import AudioSource
-    from c64cast.config import AudioCfg, ColorCfg
 
     from .effects import FrameEffect
     from .frame_source import FrameSource
@@ -502,7 +502,7 @@ def _maybe_start_rolling_palette(
     driver, or None when it doesn't apply (a no-op on char/blank/hires modes)."""
     if color is None or not getattr(display_mode, "_force_palette", False):
         return None
-    from c64cast.config import resolved_force_palette
+    from c64cast.app.config import resolved_force_palette
 
     n_colors, indices = resolved_force_palette(color)
     fp = RollingForcePalette(n_colors=n_colors, indices=indices)
@@ -950,8 +950,8 @@ class SlideshowScene(Scene):
         text_double_height: bool = False,
         aspect_mode: str = "crop",
     ):
-        from c64cast.config import ColorCfg
-        from c64cast.scene_factory import PICTURE_EXTS, resolve_file_spec
+        from c64cast.app.config import ColorCfg
+        from c64cast.app.scene_factory import PICTURE_EXTS, resolve_file_spec
 
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
@@ -1009,7 +1009,7 @@ class SlideshowScene(Scene):
         self._prepared = False
 
     def _resolve_candidates(self) -> list[str]:
-        from c64cast.scene_factory import PICTURE_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import PICTURE_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, PICTURE_EXTS, label="slideshow")
 
@@ -1019,7 +1019,7 @@ class SlideshowScene(Scene):
         otherwise."""
         if self.display_spec != "random":
             return
-        from c64cast.scene_factory import (
+        from c64cast.app.scene_factory import (
             _build_display_mode,
             _resolve_slideshow_display,
             resolve_double_buffer,
@@ -1107,7 +1107,7 @@ class SlideshowScene(Scene):
                     fit_acc.add(self._current_img)
                     self.display_mode.set_color_fit(fit_acc.result())
                 if c.force_palette:
-                    from c64cast.config import resolved_force_palette
+                    from c64cast.app.config import resolved_force_palette
 
                     n_colors, indices = resolved_force_palette(c)
                     map_acc = ColorMapAccumulator(n_colors=n_colors, indices=indices)
@@ -1224,7 +1224,7 @@ class VideoScene(Scene):
         pool). The candidate pool is resolved here once; each `setup()`
         re-resolves so a directory's contents can change between scene
         repeats. Single-entry pools stay deterministic."""
-        from c64cast.scene_factory import VIDEO_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import VIDEO_EXTS, resolve_file_spec
 
         self.file_spec = file
         # Initial resolution so __init__ raises on bad specs (mirrors the
@@ -1287,7 +1287,7 @@ class VideoScene(Scene):
         # per-video stages installed at setup() from a one-shot pre-scan of the
         # picked file: the adaptive color fit ([color].auto_fit) and the
         # forced-palette remap ([color].force_palette). See prescan_source_color.
-        from c64cast.config import ColorCfg
+        from c64cast.app.config import ColorCfg
 
         self._color = color if color is not None else ColorCfg()
         # Lifetime is video-driven: `process_frame` returns False when the
@@ -1303,7 +1303,7 @@ class VideoScene(Scene):
         self.transport = VideoTransportControls(self, loop_audio=loop_audio)
 
     def _resolve_candidates(self) -> list[str]:
-        from c64cast.scene_factory import VIDEO_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import VIDEO_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, VIDEO_EXTS, label="video")
 
@@ -1420,7 +1420,7 @@ class VideoScene(Scene):
         self._av_last_log_t = 0.0
         if self.display_mode is not None:
             if c.force_palette:
-                from c64cast.config import resolved_force_palette
+                from c64cast.app.config import resolved_force_palette
 
                 # One pre-scan pass derives the map (and the fit, since it's
                 # already decoding). None clears stale state from a prior file.
@@ -1847,7 +1847,7 @@ class LauncherScene(Scene):
         launch_grace_s: float = 1.5,
         name: str | None = None,
     ):
-        from c64cast.scene_factory import PROGRAM_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import PROGRAM_EXTS, resolve_file_spec
 
         self.file_spec = file
         # Resolve once so __init__ raises on a bad spec (mirrors
@@ -1883,7 +1883,7 @@ class LauncherScene(Scene):
         self._prepared = False
 
     def _resolve_candidates(self) -> list[str]:
-        from c64cast.scene_factory import PROGRAM_EXTS, resolve_file_spec
+        from c64cast.app.scene_factory import PROGRAM_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, PROGRAM_EXTS, label="launcher")
 

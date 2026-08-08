@@ -15,7 +15,7 @@ MIDI Thru, if you want one physical device to feed both).
 Every action bottoms out in one of two cheap, already-existing mechanisms:
 
 - Discrete actions (pause/resume/skip/cycle_style/jump) set a
-  :class:`~c64cast.playlist.Playlist` ``threading.Event`` — the same
+  :class:`~c64cast.app.playlist.Playlist` ``threading.Event`` — the same
   mechanism :mod:`control_plane` and :mod:`keyboard` already use. Picked up
   at the next clean frame boundary (one frame period, worst case).
 - Continuous parameter sweeps (a CC mapped to an effect/generator's
@@ -61,8 +61,8 @@ from typing import TYPE_CHECKING, Any
 from .transport import TransportEvent
 
 if TYPE_CHECKING:
-    from c64cast.config import MidiControlCfg
-    from c64cast.playlist import Playlist
+    from c64cast.app.config import MidiControlCfg
+    from c64cast.app.playlist import Playlist
 
 log = logging.getLogger(__name__)
 
@@ -345,7 +345,7 @@ def _load_profile_feedback(
     (feedback then falls back to the shipped :class:`FeedbackMap` defaults)."""
     if controller_profile == "off":
         return {}
-    from c64cast import paths
+    from c64cast.app import paths
 
     from .transport import ControllerProfileStore
 
@@ -368,7 +368,7 @@ def _load_profile_mappings(
     Any lookup problem (no port yet, missing file, corrupt JSON) yields ``[]``."""
     if controller_profile == "off":
         return []
-    from c64cast import paths
+    from c64cast.app import paths
 
     from .transport import ControllerProfileStore
 
@@ -507,7 +507,7 @@ def compute_pad_leds(
 
 class MidiControlListener:
     """Opens its own MIDI input port and dispatches mapped messages to one
-    or more :class:`~c64cast.playlist.Playlist` instances. Construct via
+    or more :class:`~c64cast.app.playlist.Playlist` instances. Construct via
     :func:`build_midi_control_listener`; call :meth:`start` / :meth:`stop`
     to run the reader thread for the life of the process."""
 

@@ -146,17 +146,17 @@ def parse_camera_device(value: int | str, *, field_name: str) -> None:
     on a malformed ``VID:PID``; everything else (an int, an int-in-a-string, a
     name substring, a valid ``VID:PID``) passes. Does **not** enumerate hardware
     — actual resolution happens at :func:`resolve_camera_index` (runtime). Models
-    :func:`c64cast.config.parse_wled_endpoint` (pure, ``field_name`` threaded into
+    :func:`c64cast.app.config.parse_wled_endpoint` (pure, ``field_name`` threaded into
     every message)."""
     if isinstance(value, int):
         return
     token = str(value).strip()
     if not token:
-        from c64cast.config import ConfigError  # lazy: avoid config<->camera import cycle
+        from c64cast.app.config import ConfigError  # lazy: avoid config<->camera import cycle
 
         raise ConfigError(f"{field_name}: empty camera device string")
     if _looks_like_vidpid_attempt(token) and _parse_vidpid(token) is None:
-        from c64cast.config import ConfigError
+        from c64cast.app.config import ConfigError
 
         raise ConfigError(
             f"{field_name}: {token!r} looks like a USB VID:PID but isn't two hex "
