@@ -45,9 +45,8 @@ import socket
 import struct
 from collections.abc import Callable
 
+from c64cast._pollthread import PollThread
 from c64cast.scenes.modulation import MusicModulation
-
-from ._pollthread import PollThread
 
 log = logging.getLogger(__name__)
 

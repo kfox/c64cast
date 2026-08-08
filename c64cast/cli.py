@@ -1473,7 +1473,7 @@ def _run_session(
         listen_on, wled_host, wled_port = scene_factory.resolve_wled_listen(cfgs[0])
         if listen_on:
             try:
-                from .wled_device import start_wled_device
+                from c64cast.wled.wled_device import start_wled_device
 
                 wled_device_server = start_wled_device(
                     wled_host,

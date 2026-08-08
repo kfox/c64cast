@@ -158,7 +158,7 @@ class LookStore:
     """Persist performance "looks" to a JSON file, one map per system.
 
     A look is ``{"clip": <slot|null>, "effects": [<layer state>, ...]}`` keyed by
-    a 1-based pad slot. Mirrors :class:`~c64cast.wled_device.PresetStore`'s
+    a 1-based pad slot. Mirrors :class:`~c64cast.wled.wled_device.PresetStore`'s
     tolerant-load / atomic-write contract exactly: a missing or corrupt file
     reads as an empty map, and writes go through ``transport.atomic_write_text``
     (temp file + ``os.replace``) so a crash mid-write can't leave a half-written

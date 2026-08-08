@@ -72,6 +72,7 @@ from c64cast.video.modes import (
 )
 from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 from c64cast.video.video import WebcamSource, ensure_pyav
+from c64cast.wled.wled_sink import WLEDSource
 
 from . import paths
 from .config import (
@@ -95,7 +96,6 @@ from .config import (
     _is_valid_param_holder,
 )
 from .orchestrator import resolve_orchestrator
-from .wled_sink import WLEDSource
 
 if TYPE_CHECKING:
     from c64cast.audio.audio import AudioStreamer

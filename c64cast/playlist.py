@@ -163,7 +163,7 @@ class Playlist:
 
             broadcast_on, broadcast_host, broadcast_port = resolve_wled_broadcast(config)
             if broadcast_on:
-                from .wled_sync import WledAudioSyncBroadcaster
+                from c64cast.wled.wled_sync import WledAudioSyncBroadcaster
 
                 self._wled = WledAudioSyncBroadcaster(
                     self._active_features,

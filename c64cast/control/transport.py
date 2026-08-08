@@ -455,7 +455,7 @@ class LoopPresetStore:
     """Persists named A/B loop points for one video file (one JSON file per
     video). Loads are tolerant (a missing or corrupt file reads as an empty
     map); writes are atomic via :func:`atomic_write_text`, mirroring
-    :class:`~c64cast.wled_device.PresetStore`'s shape (cloned, not shared —
+    :class:`~c64cast.wled.wled_device.PresetStore`'s shape (cloned, not shared —
     the id scheme differs: a hash-string key with no fixed range, one file
     per video rather than one file per device holding many numbered
     presets). The path is injectable so tests point it at a tempdir."""

@@ -43,9 +43,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from c64cast._pollthread import PollThread
 from c64cast.scenes.frame_source import BaseFrameSource
-
-from ._pollthread import PollThread
 
 if TYPE_CHECKING:
     from c64cast.scenes.modulation import MusicModulation

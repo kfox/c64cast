@@ -387,7 +387,7 @@ class ModulationCompatTest(unittest.TestCase):
         self.assertEqual(two.treble, 1.0)
 
     def test_wled_packet_builds_from_a_banded_snapshot(self):
-        from c64cast.wled_sync import build_audio_sync_packet
+        from c64cast.wled.wled_sync import build_audio_sync_packet
 
         m = MusicModulation(
             level=0.5,

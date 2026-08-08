@@ -18,7 +18,7 @@ from typing import cast
 from c64cast import config as cfgmod
 from c64cast import scene_factory
 from c64cast.playlist import Playlist
-from c64cast.wled_device import PresetStore, WledBridge, build_wled_app
+from c64cast.wled.wled_device import PresetStore, WledBridge, build_wled_app
 
 try:
     # The WLED JSON API tests drive the real FastAPI app via TestClient, which
@@ -238,7 +238,7 @@ class BridgeReadTests(unittest.TestCase):
         self.assertEqual(set(full), {"state", "info", "effects", "palettes"})
 
     def test_vid_is_content_derived_stable_and_gate_safe(self):
-        from c64cast.wled_device import _WLED_VID_BASE, _WLED_VID_SPREAD
+        from c64cast.wled.wled_device import _WLED_VID_BASE, _WLED_VID_SPREAD
 
         bridge, _ = _bridge()
         vid = bridge.info_dict()["vid"]
@@ -333,7 +333,7 @@ class BridgeApplyTests(unittest.TestCase):
     def test_scene_prefix_resolves_via_set_live_param(self):
         # Direct check of the resolver's `scene.` case, mirroring
         # midi_control._apply_param's verbatim twin.
-        from c64cast.wled_device import _set_live_param
+        from c64cast.wled.wled_device import _set_live_param
 
         pl = _FakePlaylist("main", ["Waveform"])
         scene = _FakeScopeScene()
