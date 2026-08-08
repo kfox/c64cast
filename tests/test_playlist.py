@@ -556,9 +556,20 @@ class PlaylistTest(unittest.TestCase):
         )
 
         def fire_jump():
-            time.sleep(0.05)
+            # Wait past the playlist's own startup interstitial before firing
+            # (same rationale as the bypass test below): a jump that lands
+            # while the first "UP NEXT" card is still transitioning is
+            # consumed as a plain skip into scene A and the target is never
+            # taken — the race a coverage-instrumented CI runner actually
+            # hit. Then wait on the observable landing rather than a
+            # wall-clock guess, so a slow box changes this test's duration,
+            # not its verdict; the deadline still bounds a real regression.
+            deadline = time.time() + 5.0
+            while scenes[0].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
             pl.request_jump(2)
-            time.sleep(0.2)
+            while scenes[2].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
             stop.set()
 
         threading.Thread(target=fire_jump, daemon=True).start()
@@ -597,12 +608,15 @@ class PlaylistTest(unittest.TestCase):
             # baseline nondeterministic. Assertions run in the main thread
             # after pl.run() returns (an AssertionError raised here, in a
             # background thread, wouldn't fail the test).
-            deadline = time.time() + 1.0
+            deadline = time.time() + 5.0
             while scenes[0].setup_count < 1 and time.time() < deadline:
                 time.sleep(0.005)
             result["baseline"] = counter["n"]
             pl.request_jump(1, skip_interstitial=True)
-            time.sleep(0.2)
+            # Wait on the landing itself (bounded), not a wall-clock guess —
+            # under coverage instrumentation 0.2 s was not enough loop time.
+            while scenes[1].setup_count < 1 and time.time() < deadline:
+                time.sleep(0.005)
             stop.set()
 
         threading.Thread(target=fire_jump, daemon=True).start()
