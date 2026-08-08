@@ -2,7 +2,7 @@
 """Live gesture-metric readout for tuning [vision] thresholds.
 
 Runs the SAME camera broker + MediaPipe recognizer + classifiers the vision
-controller uses (c64cast.vision), but instead of firing pause/skip/cycle it
+controller uses (c64cast.control.vision), but instead of firing pause/skip/cycle it
 prints the raw measurements each gesture is decided from:
 
   * pinch distance  — thumb-tip <-> index-tip, normalized (drives pinch_threshold)
@@ -31,9 +31,8 @@ import time
 import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work)
 import numpy as np
 
-from c64cast.config import VisionCfg
-from c64cast.video import WebcamSource
-from c64cast.vision import (
+from c64cast.app.config import VisionCfg
+from c64cast.control.vision import (
     INDEX_TIP,
     THUMB_TIP,
     WRIST,
@@ -42,6 +41,7 @@ from c64cast.vision import (
     classify_static,
     count_extended_fingers,
 )
+from c64cast.video.video import WebcamSource
 
 
 def _pinch_distance(hand) -> float:

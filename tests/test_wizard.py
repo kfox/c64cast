@@ -16,9 +16,9 @@ from unittest import mock
 
 from _fakes import MachineSettingsIsolation
 
-from c64cast import config as cfgmod
-from c64cast import config_serialize as ser
-from c64cast import paths, wizard
+from c64cast.app import config as cfgmod
+from c64cast.app import config_serialize as ser
+from c64cast.app import paths, wizard
 
 # The round-trip assertions (load(written) == built cfg) must hold independent
 # of any real machine-settings file on the dev's machine (config.load applies
@@ -83,7 +83,7 @@ class CompatibleOverlaysTest(unittest.TestCase):
         # compatible_overlays must agree with the authority (overlay_mode_ok +
         # the audio requirement) for every display mode — that's what keeps it
         # from offering a mode-incompatible overlay.
-        from c64cast import introspect
+        from c64cast.app import introspect
 
         modes = {m.runtime_name: m for m in introspect.display_modes()}
         for display, runtime in (
@@ -337,7 +337,7 @@ class RunInitShellTest(unittest.TestCase):
         import contextlib
         import io
 
-        from c64cast import wizard as wz
+        from c64cast.app import wizard as wz
 
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "out.toml")
@@ -385,7 +385,7 @@ class RunInitShellTest(unittest.TestCase):
         import contextlib
         import io
 
-        from c64cast import wizard as wz
+        from c64cast.app import wizard as wz
 
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "multi.toml")
@@ -437,7 +437,7 @@ class RunInitShellTest(unittest.TestCase):
             self.assertEqual(wizard.validate_all(cfg), [])
 
     def test_missing_dependency_returns_none(self):
-        from c64cast import wizard as wz
+        from c64cast.app import wizard as wz
 
         orig = wz._ensure_questionary
         wz._ensure_questionary = lambda: None  # type: ignore[assignment]

@@ -24,8 +24,8 @@ import dataclasses
 import tomllib
 import unittest
 
-from c64cast import config as cfgmod
-from c64cast import introspect, paths
+from c64cast.app import config as cfgmod
+from c64cast.app import introspect, paths
 
 _EXAMPLE = paths.resolve_example("c64cast.example")
 

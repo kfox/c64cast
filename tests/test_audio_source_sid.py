@@ -11,9 +11,9 @@ from typing import cast
 
 from _fakes import FakeAPI
 
-from c64cast.audio_source import SidFileAudioSource
-from c64cast.backend import C64Backend
-from c64cast.sid_host_emu import (
+from c64cast.audio.audio_source import SidFileAudioSource
+from c64cast.hw.backend import C64Backend
+from c64cast.sid.sid_host_emu import (
     _play_bank_for_footprints,
     _sid_payload_extent,
     payload_overlaps_bank0_display,
@@ -140,7 +140,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         path = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x1500))
         # The single-candidate skip logs a WARNING before the hard raise;
         # assertLogs captures it so the console stays clean.
-        with self.assertLogs("c64cast.audio_source", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio_source", level="WARNING"):
             with self.assertRaisesRegex(ValueError, "hires bitmap"):
                 self._src(path, is_bitmapped=True)
 
@@ -218,8 +218,8 @@ class SidFileAudioSourceTest(unittest.TestCase):
             f.write(_make_sid(init=0x1000, play=0x1001, payload=(0x60, 0x60)))
         # The skip logs a warning — assertLogs both verifies the skip AND keeps
         # the console clean.
-        with patch("c64cast.audio_source.random.shuffle", lambda x: x.sort()):
-            with self.assertLogs("c64cast.audio_source", level="WARNING"):
+        with patch("c64cast.audio.audio_source.random.shuffle", lambda x: x.sort()):
+            with self.assertLogs("c64cast.audio.audio_source", level="WARNING"):
                 src = self._src(d + "/*.sid", is_bitmapped=False)
         self.assertEqual(os.path.basename(src._sid_file), "good.sid")
 
@@ -238,7 +238,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertIsNone(src.features())  # no feature stream until setup()
 
     def test_reactive_setup_exposes_features_then_teardown_clears(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         path = self._write(_make_sid())
         src = self._src(path, reactive=True)
@@ -263,8 +263,10 @@ class SidFileAudioSourceTest(unittest.TestCase):
         path = self._write(_make_sid())
         src = self._src(path, reactive=True)
         self.addCleanup(src.teardown)
-        with patch("c64cast.music_features.SidFeatureStream.start", side_effect=RuntimeError("x")):
-            with self.assertLogs("c64cast.audio_source", level="ERROR"):
+        with patch(
+            "c64cast.scenes.music_features.SidFeatureStream.start", side_effect=RuntimeError("x")
+        ):
+            with self.assertLogs("c64cast.audio.audio_source", level="ERROR"):
                 src.setup()
         self.assertIsNone(src.features())
 
@@ -281,22 +283,22 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         return path
 
     def setUp(self):
-        from c64cast.config import Config
+        from c64cast.app.config import Config
 
         self.cfg = Config()
         # A small $1000-load tune clears $0400; works on a char display.
         self.sid = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x40))
 
     def _build(self, cfg=None, **kw):
-        from c64cast.config import SceneCfg
-        from c64cast.scene_factory import build_scene
+        from c64cast.app.config import SceneCfg
+        from c64cast.app.scene_factory import build_scene
 
         s = SceneCfg(type="generative", source="plasma", audio_source="sid", file=self.sid, **kw)
         return build_scene(s, cfg or self.cfg, cast(C64Backend, FakeAPI()), None, None)
 
     def test_sid_scene_is_host_dma_and_competes(self):
-        from c64cast.modes import PETSCIIDisplayMode
-        from c64cast.scenes import SourceScene
+        from c64cast.scenes.scenes import SourceScene
+        from c64cast.video.modes import PETSCIIDisplayMode
 
         scene = self._build(display="petscii")
         assert isinstance(scene, SourceScene)
@@ -307,8 +309,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertIs(scene.audio_source.wants_audio_lock, True)
 
     def test_force_host_dma_overrides_explicit_reu_true(self):
-        from c64cast.config import Config
-        from c64cast.modes import PETSCIIDisplayMode
+        from c64cast.app.config import Config
+        from c64cast.video.modes import PETSCIIDisplayMode
 
         cfg = Config()
         cfg.video.use_reu_staged = True
@@ -317,8 +319,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertFalse(scene.display_mode.use_reu_staged)
 
     def test_explicit_audio_with_sid_rejected(self):
-        from c64cast.config import SceneCfg
-        from c64cast.scene_factory import build_scene
+        from c64cast.app.config import SceneCfg
+        from c64cast.app.scene_factory import build_scene
 
         s = SceneCfg(
             type="generative", audio_source="sid", file=self.sid, display="petscii", audio=False
@@ -329,8 +331,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
     def test_bitmap_sid_defaults_to_half_rate(self):
         # A high-load tune so the bitmap display accepts it; target_fps halves.
         hi = self._write(_make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
-        from c64cast.config import SceneCfg
-        from c64cast.scene_factory import build_scene
+        from c64cast.app.config import SceneCfg
+        from c64cast.app.scene_factory import build_scene
 
         s = SceneCfg(type="generative", audio_source="sid", file=hi, display="mhires")
         scene = build_scene(s, self.cfg, cast(C64Backend, FakeAPI()), None, None)
@@ -338,8 +340,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
 
     def test_explicit_target_fps_wins_over_half_rate(self):
         hi = self._write(_make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
-        from c64cast.config import SceneCfg
-        from c64cast.scene_factory import build_scene
+        from c64cast.app.config import SceneCfg
+        from c64cast.app.scene_factory import build_scene
 
         s = SceneCfg(
             type="generative", audio_source="sid", file=hi, display="mhires", target_fps=12.0
@@ -351,15 +353,15 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         # A SID source legitimately holds the audio spotlight; ensemble mode
         # must not null it out (wants_audio_lock gates the slot instead).
         scene = self._build(display="petscii")  # is_ensemble defaults False
-        from c64cast.config import SceneCfg
-        from c64cast.scene_factory import build_scene
+        from c64cast.app.config import SceneCfg
+        from c64cast.app.scene_factory import build_scene
 
         s = SceneCfg(type="generative", audio_source="sid", file=self.sid, display="petscii")
         scene = build_scene(s, self.cfg, cast(C64Backend, FakeAPI()), None, None, is_ensemble=True)
         self.assertTrue(scene.competes_for_audio_lock())
 
     def test_reactive_defaults_true_and_passes_through(self):
-        from c64cast.scenes import SourceScene
+        from c64cast.scenes.scenes import SourceScene
 
         scene = self._build(display="petscii")  # no reactive kw → default True
         assert isinstance(scene, SourceScene)
@@ -367,7 +369,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertTrue(scene.audio_source._reactive)
 
     def test_reactive_false_passes_through(self):
-        from c64cast.scenes import SourceScene
+        from c64cast.scenes.scenes import SourceScene
 
         scene = self._build(display="petscii", reactive=False)
         assert isinstance(scene, SourceScene)
@@ -377,8 +379,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
     def test_validate_load_time_rejects_bitmap_overlap(self):
         # A typical $1000-load tune with a real-sized payload overlaps $2000 —
         # rejected at validate_scene_cfg time on a bitmap display.
-        from c64cast.config import SceneCfg
-        from c64cast.scene_factory import validate_scene_cfg
+        from c64cast.app.config import SceneCfg
+        from c64cast.app.scene_factory import validate_scene_cfg
 
         big = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x1500))
         s = SceneCfg(type="generative", audio_source="sid", file=big, display="mhires")
@@ -396,9 +398,9 @@ class AudioSourceImportWeightTest(unittest.TestCase):
         import sys
 
         code = (
-            "import sys; import c64cast.audio_source; "
-            "heavy=[m for m in ('c64cast.waveform','numpy','py65','c64cast.sid_host_emu',"
-            "'c64cast.voice_scope') if m in sys.modules]; "
+            "import sys; import c64cast.audio.audio_source; "
+            "heavy=[m for m in ('c64cast.sid.waveform','numpy','py65','c64cast.sid.sid_host_emu',"
+            "'c64cast.sid.voice_scope') if m in sys.modules]; "
             "print(','.join(heavy))"
         )
         out = subprocess.check_output([sys.executable, "-c", code], text=True).strip()

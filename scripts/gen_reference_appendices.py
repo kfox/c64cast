@@ -8,7 +8,7 @@ Appendices A-I are the exhaustive tables -- every config field, every scene
 key, every overlay parameter, every CLI flag. Written by hand they would be
 wrong within a release, so they are read out of the same model that already
 answers ``--describe``, ``--compat`` and ``--print-schema``:
-:mod:`c64cast.introspect`. An appendix cannot disagree with the program.
+:mod:`c64cast.app.introspect`. An appendix cannot disagree with the program.
 
 The index is the same model read the other way round, crossed with the book's
 own prose: every name the program can utter, against the sections that discuss
@@ -47,9 +47,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
-from c64cast import cli as climod
-from c64cast import doctor, effects, generators, introspect
-from c64cast import paths as pathsmod
+from c64cast.app import cli as climod
+from c64cast.app import doctor, introspect
+from c64cast.app import paths as pathsmod
+from c64cast.scenes import effects, generators
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE_DIR = REPO_ROOT / "docs" / "reference"

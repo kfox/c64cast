@@ -166,7 +166,7 @@ def analyze(wav: Path, period_s: float, used_ref: int) -> int:
 
 # ------------------------------------------------------------------ playback
 def _sid_setup(api) -> None:
-    from c64cast.c64 import SID
+    from c64cast.hw.c64 import SID
 
     api.write_memory(f"{SID.MODE_VOL:04X}", "0F")  # master vol 15
     api.write_memory(f"{SID.BASE + 5:04X}", "00")  # AD = 0 (instant attack)
@@ -177,7 +177,7 @@ def _sid_setup(api) -> None:
 
 
 def _sid_gate(api, on: bool) -> None:
-    from c64cast.c64 import SID
+    from c64cast.hw.c64 import SID
 
     api.write_memory(f"{SID.BASE + 4:04X}", "11" if on else "10")  # triangle + gate
     api.flush()
@@ -208,11 +208,11 @@ def _gen_content(rate: int, run_s: float, period_s: float) -> tuple[np.ndarray, 
 
 
 def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_reset: bool) -> Path:
-    import c64cast.config as cfgmod
-    import c64cast.hw_provision as hw_provision
-    from c64cast.backend import make_backend
-    from c64cast.connect import apply_to_config, parse_connection_uri
-    from c64cast.sampler import UltimateAudioSampler
+    import c64cast.app.config as cfgmod
+    import c64cast.hw.hw_provision as hw_provision
+    from c64cast.app.connect import apply_to_config, parse_connection_uri
+    from c64cast.audio.sampler import UltimateAudioSampler
+    from c64cast.hw.backend import make_backend
 
     cfg = cfgmod.Config()
     apply_to_config(cfg, parse_connection_uri(url))

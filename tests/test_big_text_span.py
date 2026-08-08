@@ -11,10 +11,10 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from c64cast.config import SceneCfg
-from c64cast.ensemble import Ensemble, SystemStack
-from c64cast.orchestrator import OrchestratorError
-from c64cast.orchestrators.big_text_span import (
+from c64cast.app.config import SceneCfg
+from c64cast.app.ensemble import Ensemble, SystemStack
+from c64cast.app.orchestrator import OrchestratorError
+from c64cast.app.orchestrators.big_text_span import (
     SCREEN_W_PX,
     BigTextSpanOrchestrator,
 )

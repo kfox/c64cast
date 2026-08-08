@@ -22,15 +22,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast.modes import (  # noqa: E402
+from c64cast.app.playlist import Playlist  # noqa: E402
+from c64cast.video.modes import (  # noqa: E402
     HiresDisplayMode,
     MCMDisplayMode,
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
     fade_nibbles,
 )
-from c64cast.palette import build_fade_lut  # noqa: E402
-from c64cast.playlist import Playlist  # noqa: E402
+from c64cast.video.palette import build_fade_lut  # noqa: E402
 
 
 def _frame() -> np.ndarray:
@@ -60,7 +60,7 @@ class FadeLutTest(unittest.TestCase):
     def test_dimmed_is_never_brighter(self):
         # Each remapped color's luma must not exceed the original's: a fade
         # toward black can hold or darken, never brighten.
-        from c64cast.palette import C64_PALETTE_BGR
+        from c64cast.video.palette import C64_PALETTE_BGR
 
         luma = C64_PALETTE_BGR.sum(axis=1)
         lut = build_fade_lut(0.5)

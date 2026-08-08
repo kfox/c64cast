@@ -15,9 +15,9 @@ import unittest
 
 from _fakes import MachineSettingsIsolation
 
-from c64cast import config as cfgmod
-from c64cast import config_serialize as ser
-from c64cast import paths
+from c64cast.app import config as cfgmod
+from c64cast.app import config_serialize as ser
+from c64cast.app import paths
 
 # The round-trip contract load(dumps(cfg)) == cfg must hold independent of any
 # real machine-settings file on the dev's machine (config.load applies that

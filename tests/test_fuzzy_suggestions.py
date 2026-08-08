@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 import unittest
 
-from c64cast import config as cfgmod
-from c64cast import overlays as ovmod
+from c64cast.app import config as cfgmod
+from c64cast.scenes import overlays as ovmod
 
 
 class SectionKeySuggestionTest(unittest.TestCase):
@@ -18,7 +18,7 @@ class SectionKeySuggestionTest(unittest.TestCase):
         dc = cfgmod.AudioCfg()
         # The typo'd value differs from the default (enabled defaults True), so
         # an applied typo would flip it — this verifies it stays at the default.
-        with self.assertLogs("c64cast.config", level="WARNING") as cm:
+        with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             cfgmod._apply_section(dc, {"enabledd": False}, "audio")
         joined = "\n".join(cm.output)
         self.assertIn("enabledd", joined)
@@ -29,7 +29,7 @@ class SectionKeySuggestionTest(unittest.TestCase):
 
     def test_no_suggestion_when_nothing_close(self):
         dc = cfgmod.AudioCfg()
-        with self.assertLogs("c64cast.config", level="WARNING") as cm:
+        with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             cfgmod._apply_section(dc, {"zzzzzz": 1}, "audio")
         joined = "\n".join(cm.output)
         self.assertIn("zzzzzz", joined)

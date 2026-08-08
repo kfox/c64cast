@@ -23,15 +23,15 @@ from unittest.mock import patch
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast import dac_calibration as dc
-from c64cast import dac_calibration_store as dcs
-from c64cast import dac_capture_device as dcap
-from c64cast import dac_curve_resolve as dcr
-from c64cast import dac_slot_ring as dsr
-from c64cast.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
-from c64cast.backend import HardwareProfile
-from c64cast.config import Config
-from c64cast.dac_curves import MAHONEY_ULTISID
+from c64cast.app.config import Config
+from c64cast.audio import dac_calibration as dc
+from c64cast.audio import dac_calibration_store as dcs
+from c64cast.audio import dac_capture_device as dcap
+from c64cast.audio import dac_curve_resolve as dcr
+from c64cast.audio import dac_slot_ring as dsr
+from c64cast.audio.dac_curves import MAHONEY_ULTISID
+from c64cast.hw.backend import HardwareProfile
+from c64cast.sid.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
 
 
 def _u64_cfg(host: str = "192.168.2.64") -> Config:
@@ -142,14 +142,14 @@ class ResolveKeyTest(unittest.TestCase):
     def test_tr_serial_key_uses_live_usb_serial_number(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
-        with patch("c64cast.teensyrom_dma.usb_serial_number", return_value="TR12345"):
+        with patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value="TR12345"):
             key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-TR12345")
 
     def test_tr_serial_key_falls_back_when_no_usb_serial(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
-        with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
+        with patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value=None):
             key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-serial-_dev_cu.usbmodem1234")
 
@@ -307,7 +307,7 @@ class PersistenceTest(DataDirIsolated):
                 dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {}
             ),
         )
-        with self.assertLogs("c64cast.dac_calibration_store", level="INFO") as logs:
+        with self.assertLogs("c64cast.audio.dac_calibration_store", level="INFO") as logs:
             self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
         self.assertIn("assumes one SID", "\n".join(logs.output))
 
@@ -324,7 +324,7 @@ class PersistenceTest(DataDirIsolated):
                 dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {}
             ),
         )
-        with self.assertNoLogs("c64cast.dac_calibration_store", level="INFO"):
+        with self.assertNoLogs("c64cast.audio.dac_calibration_store", level="INFO"):
             self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
 
     def test_load_ignores_raw_levels(self):
@@ -521,7 +521,7 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_ultimate_live_no_cal_logs_info(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_curve_resolve", level="INFO") as cm:
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", level="INFO") as cm:
             label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
@@ -531,8 +531,8 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_teensyrom_live_no_cal_logs_warning(self):
         cfg = _tr_serial_cfg()
-        with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
-            with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+        with patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value=None):
+            with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
                 label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
@@ -542,9 +542,9 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_offline_no_cal_is_silent(self):
         # be=None → no log (assertNoLogs raises if anything is emitted).
-        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+        with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
             dcr.resolve_dac_curve_for_backend(_u64_cfg())
-        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+        with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
             dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
 
     def test_live_calibration_present_is_silent(self):
@@ -552,7 +552,7 @@ class MissingCalibrationLogTest(DataDirIsolated):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
         dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
-        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+        with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
             label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
         self.assertTrue(label.startswith("calibrated:"))
 
@@ -586,7 +586,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
     def test_physical_socket_at_d400_without_calibration_falls_back_to_linear(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
             label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
@@ -596,7 +596,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
     def test_socket_2_at_d400_is_named_in_the_warning(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+        with self.assertLogs("c64cast.audio.dac_curve_resolve", level="WARNING") as cm:
             label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2))
         self.assertEqual(label, "linear")
         self.assertIn("socket 2", "\n".join(cm.output))
@@ -644,7 +644,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
     def test_offline_resolution_is_unchanged_and_silent(self):
         # be=None can't read who owns $D400; --doctor reports that separately.
-        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+        with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
             label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
@@ -680,7 +680,7 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         # playback silently dropped to the 4-bit linear DAC.
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)})
-        with self.assertLogs("c64cast.dac_calibration_store", level="WARNING"):
+        with self.assertLogs("c64cast.audio.dac_calibration_store", level="WARNING"):
             label, table = dcr.resolve_dac_curve_for_backend(cfg, be=be)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
@@ -688,7 +688,7 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
     def test_the_assumed_socket_is_stated_and_says_how_to_make_it_certain(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)})
-        with self.assertLogs("c64cast.dac_calibration_store", level="WARNING") as cm:
+        with self.assertLogs("c64cast.audio.dac_calibration_store", level="WARNING") as cm:
             dcs.load_calibrated_table(cfg, be=be)
         joined = "\n".join(cm.output)
         self.assertIn("socket 1", joined)
@@ -697,7 +697,7 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
     def test_the_recorded_owner_wins_over_the_assumption(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)}, d400=2)
-        with self.assertNoLogs("c64cast.dac_calibration_store", level="WARNING"):
+        with self.assertNoLogs("c64cast.audio.dac_calibration_store", level="WARNING"):
             table = dcs.load_calibrated_table(cfg, be=be)
         self.assertEqual(table, bytes([2] * 256))
 
@@ -711,7 +711,7 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
     def test_a_single_socket_file_still_loads_without_an_assumption(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1)})
-        with self.assertNoLogs("c64cast.dac_calibration_store", level="WARNING"):
+        with self.assertNoLogs("c64cast.audio.dac_calibration_store", level="WARNING"):
             self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes([1] * 256))
 
     def test_the_ultimate_still_refuses_a_physical_table_when_an_ultisid_owns_d400(self):

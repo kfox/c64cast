@@ -58,11 +58,12 @@ import _diaglib as d
 import numpy as np
 import sounddevice as sd
 
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_SIZE
+
 # c64cast imports work because _diaglib put the repo root on sys.path.
-from c64cast.api import Ultimate64API
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_SIZE
-from c64cast.c64 import SID
+from c64cast.hw.api import Ultimate64API
+from c64cast.hw.c64 import SID
 
 SR = 8000  # SID DAC sample rate (audio default)
 CAP_SR = 48000  # Cam Link capture rate

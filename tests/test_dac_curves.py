@@ -10,21 +10,21 @@ from typing import cast
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast.api import Ultimate64API
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
     SID_GATE_OFF,
     encode_floats_to_dac,
 )
-from c64cast.dac_curves import (
+from c64cast.audio.dac_curves import (
     DAC_CURVE_CHOICES,
     MAHONEY_ULTISID,
     NEUTRAL_INDEX,
     resolve_dac_curve,
 )
+from c64cast.hw.api import Ultimate64API
 
 
 class ResolveDacCurveTest(unittest.TestCase):

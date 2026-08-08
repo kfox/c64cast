@@ -41,7 +41,7 @@ import time
 
 import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work)
 
-from c64cast.teensyrom_dma import (
+from c64cast.hw.teensyrom_dma import (
     DEFAULT_BAUD,
     DEFAULT_TCP_PORT,
     SerialTransport,

@@ -15,12 +15,12 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from c64cast.modes import (  # noqa: E402
+from c64cast.video.modes import (  # noqa: E402
     ERROR_MIN_POOL_SIZE,
     MultiHiresDisplayMode,
     pick_cell_colors,
 )
-from c64cast.palette import PALETTE_LUMA  # noqa: E402
+from c64cast.video.palette import PALETTE_LUMA  # noqa: E402
 
 
 def _cell_counts_from_present(present: dict[int, float], bg0: int) -> np.ndarray:

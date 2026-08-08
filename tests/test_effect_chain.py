@@ -19,10 +19,12 @@ from typing import cast
 
 import numpy as np
 
-from c64cast import midi_control as mc
-from c64cast.backend import HardwareProfile
-from c64cast.config import Config, SceneCfg, _is_valid_param_holder
-from c64cast.effects import (
+from c64cast.app.config import Config, SceneCfg, _is_valid_param_holder
+from c64cast.app.scene_factory import build_scene, validate_scene_cfg
+from c64cast.control import midi_control as mc
+from c64cast.control.tempo import ClockModulationSource, TempoClock
+from c64cast.hw.backend import HardwareProfile
+from c64cast.scenes.effects import (
     FrameEffect,
     InvertEffect,
     MirrorEffect,
@@ -30,10 +32,8 @@ from c64cast.effects import (
     StrobeEffect,
     build_effect,
 )
-from c64cast.modulation import MusicModulation
-from c64cast.scene_factory import build_scene, validate_scene_cfg
-from c64cast.scenes import Scene, SourceScene, _apply_effect_chain
-from c64cast.tempo import ClockModulationSource, TempoClock
+from c64cast.scenes.modulation import MusicModulation
+from c64cast.scenes.scenes import Scene, SourceScene, _apply_effect_chain
 
 _SILENT_VOICES = (0.0, 0.0, 0.0)
 _GATES = (False, False, False)
@@ -413,7 +413,7 @@ class FxToggleTest(unittest.TestCase):
 
 class MidiActionParityTest(unittest.TestCase):
     def test_fx_toggle_in_both_action_lists(self):
-        from c64cast import config as cfgmod
+        from c64cast.app import config as cfgmod
 
         self.assertIn("fx_toggle", mc._ACTIONS)
         self.assertIn("fx_toggle", cfgmod._MIDI_ACTION_CHOICES)

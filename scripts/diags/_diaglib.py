@@ -236,10 +236,10 @@ def machine_reset(url: str) -> bool:
     Goes through c64cast's own backend, so it works for every scheme the app
     itself accepts and needs no per-tool knowledge of the transport.
     """
-    from c64cast.backend import make_backend
-    from c64cast.c64 import SID
-    from c64cast.config import Config
-    from c64cast.connect import apply_to_config, parse_connection_uri
+    from c64cast.app.config import Config
+    from c64cast.app.connect import apply_to_config, parse_connection_uri
+    from c64cast.hw.backend import make_backend
+    from c64cast.hw.c64 import SID
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(url))

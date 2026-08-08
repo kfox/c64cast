@@ -26,14 +26,14 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
-from c64cast import config as cfgmod
-from c64cast import midi_control
-from c64cast.midi_control import (
+from c64cast.app import config as cfgmod
+from c64cast.control import midi_control
+from c64cast.control.midi_control import (
     MidiControlListener,
     _parse_cc_map,
     _parse_mmc_sysex,
 )
-from c64cast.transport import TransportEvent
+from c64cast.control.transport import TransportEvent
 
 
 def _fake_playlist(name: str, *, scene_count: int = 16) -> Any:
@@ -560,7 +560,7 @@ class CrashGuardTests(_MidiControlTestCase):
             [{"type": "note", "number": 36, "action": "skip"}],
             broadcast_channel=16,
         )
-        with self.assertLogs("c64cast.midi_control", level="ERROR"):
+        with self.assertLogs("c64cast.control.midi_control", level="ERROR"):
             listener._dispatch(mido.Message("note_on", note=36, velocity=100, channel=15))
         self.assertTrue(good.skip_event.is_set())
 
@@ -571,7 +571,7 @@ class CrashGuardTests(_MidiControlTestCase):
         )
         with (
             mock.patch.object(listener, "_dispatch", side_effect=RuntimeError("boom")),
-            self.assertLogs("c64cast.midi_control", level="ERROR"),
+            self.assertLogs("c64cast.control.midi_control", level="ERROR"),
         ):
             listener._midi_port = _ScriptedPort([mido.Message("note_on", note=36, velocity=100)])
             listener._stop.clear()

@@ -14,11 +14,11 @@ import time
 import unittest
 from typing import cast
 
-from c64cast.backend import C64Backend, HardwareProfile
-from c64cast.config import Config, SceneCfg
-from c64cast.scene_factory import build_scene, resolve_scene_display, validate_scene_cfg
-from c64cast.scenes import SourceScene
-from c64cast.wled_sink import (
+from c64cast.app.config import Config, SceneCfg
+from c64cast.app.scene_factory import build_scene, resolve_scene_display, validate_scene_cfg
+from c64cast.hw.backend import C64Backend, HardwareProfile
+from c64cast.scenes.scenes import SourceScene
+from c64cast.wled.wled_sink import (
     DdpPacket,
     PixelFrameAssembler,
     WledPixelReceiver,
@@ -188,7 +188,7 @@ class ReceiverTest(unittest.TestCase):
         self.addCleanup(blocker.close)
         busy = blocker.getsockname()[1]
         rx = WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=busy, wled_port=0)
-        with self.assertLogs("c64cast.wled_sink", level="WARNING"):
+        with self.assertLogs("c64cast.wled.wled_sink", level="WARNING"):
             self.assertFalse(rx.start())
         self.assertIsNotNone(rx.bind_error)
 
@@ -224,7 +224,7 @@ class WLEDSourceTest(unittest.TestCase):
         busy = blocker.getsockname()[1]
         src = WLEDSource(2, 1)
         src._receiver = WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=busy, wled_port=0)
-        with self.assertLogs("c64cast.wled_sink", level="WARNING"):
+        with self.assertLogs("c64cast.wled.wled_sink", level="WARNING"):
             src.setup()
         self.addCleanup(src.teardown)
         self.assertTrue(src.finished)  # scene will self-abort

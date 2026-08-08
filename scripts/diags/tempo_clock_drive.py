@@ -4,7 +4,7 @@ tempo grid (Live DJ/VJ Phase 1 — see docs/architecture/control.md).
 
 Opens a virtual MIDI *output* port (visible system-wide as an input to other
 apps, the CoreMIDI/ALSA convention) and streams the real-time transport bytes the
-:class:`c64cast.tempo.TempoClock` consumes: ``0xFA`` Start, ``0xF8`` clock at
+:class:`c64cast.control.tempo.TempoClock` consumes: ``0xFA`` Start, ``0xF8`` clock at
 24 PPQN paced to a target BPM, an optional ``0xF2`` Song-Position seek, and
 ``0xFC`` Stop at the end. Point a running c64cast at the same port name (with
 ``[performance] tempo_source = "midi"`` and ``[midi_control] enabled = true``,
@@ -47,7 +47,7 @@ import time
 
 # tempo.py is stdlib-only (no mido), so --verify works even without a MIDI backend.
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from c64cast.tempo import TempoClock  # noqa: E402
+from c64cast.control.tempo import TempoClock  # noqa: E402
 
 PPQN = TempoClock.PPQN
 

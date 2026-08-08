@@ -86,9 +86,9 @@ def main() -> int:
     ap.add_argument("--step-s", type=float, default=0.4, help="gap between injected keys")
     args = ap.parse_args()
 
-    from c64cast import config as cfgmod
-    from c64cast.cli import build_parser, build_stack, configure_logging, teardown_stack
-    from c64cast.profiler import NullProfiler, set_profiler
+    from c64cast.app import config as cfgmod
+    from c64cast.app.cli import build_parser, build_stack, configure_logging, teardown_stack
+    from c64cast.app.profiler import NullProfiler, set_profiler
 
     configure_logging(1)  # INFO: surface the poller's SPACE/menu log lines
 

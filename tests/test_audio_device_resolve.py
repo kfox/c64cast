@@ -1,5 +1,5 @@
 """Audio input device name-substring selection: resolve_audio_input_device
-(no hardware; c64cast.audio.sd patched with a fake whose query_devices() returns
+(no hardware; c64cast.audio.audio.sd patched with a fake whose query_devices() returns
 a device list, so these run without the 'mic' extra).
 
 PortAudio exposes no USB VID:PID, so — unlike the camera resolver — the only
@@ -11,8 +11,8 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from c64cast import audio as audio_mod
-from c64cast.audio import resolve_audio_input_device
+from c64cast.audio import audio as audio_mod
+from c64cast.audio.audio import resolve_audio_input_device
 
 
 class _FakeSD:
@@ -65,12 +65,12 @@ class ResolveAudioInputDeviceTest(unittest.TestCase):
 
     def test_output_only_device_never_matches(self):
         self._patch(DEVICES)
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             self.assertEqual(resolve_audio_input_device("Speakers"), -1)
 
     def test_no_match_warns_and_defaults(self):
         self._patch(DEVICES)
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             self.assertEqual(resolve_audio_input_device("Scarlett"), -1)
 
     def test_multiple_matches_warns_and_picks_first(self):
@@ -79,12 +79,12 @@ class ResolveAudioInputDeviceTest(unittest.TestCase):
             {"name": "Cam Link 4K #2", "max_input_channels": 2},
         ]
         self._patch(devices)
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             self.assertEqual(resolve_audio_input_device("Cam Link"), 0)
 
     def test_name_without_sounddevice_warns_and_defaults(self):
         self._patch(DEVICES, available=False)
-        with self.assertLogs("c64cast.audio", level="WARNING"):
+        with self.assertLogs("c64cast.audio.audio", level="WARNING"):
             self.assertEqual(resolve_audio_input_device("Cam Link"), -1)
 
 

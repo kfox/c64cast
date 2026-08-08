@@ -11,8 +11,8 @@ from contextlib import redirect_stderr, redirect_stdout
 import cv2
 import numpy as np
 
-from c64cast.cli_commands import _collect_lab_samples, run_suggest_palette
-from c64cast.palette import C64_COLOR_NAMES, C64_PALETTE_BGR, suggest_palette
+from c64cast.app.cli_commands import _collect_lab_samples, run_suggest_palette
+from c64cast.video.palette import C64_COLOR_NAMES, C64_PALETTE_BGR, suggest_palette
 
 
 class SuggestPaletteCliTest(unittest.TestCase):

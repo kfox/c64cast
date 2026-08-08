@@ -18,12 +18,13 @@ from unittest import mock
 
 from _fakes import FrozenClock
 
-from c64cast import config as cfgmod
-from c64cast import introspect, midi_setup, scene_factory
-from c64cast import midi_control as mc
-from c64cast.config import _DEFAULT_MIDI_CC_MAP
-from c64cast.playlist import Playlist
-from c64cast.transport import (
+from c64cast.app import config as cfgmod
+from c64cast.app import introspect, scene_factory
+from c64cast.app.config import _DEFAULT_MIDI_CC_MAP
+from c64cast.app.playlist import Playlist
+from c64cast.control import midi_control as mc
+from c64cast.control import midi_setup
+from c64cast.control.transport import (
     ControllerProfileStore,
     controller_profile_path,
     make_controller_profile_store,
@@ -287,8 +288,9 @@ class LiveTargetsDriftTests(unittest.TestCase):
     LIVE_CHOICES ↔ [color] metadata pin in test_live_tune.py."""
 
     def _declared(self) -> set[str]:
-        from c64cast import effects, generators, voice_scope
-        from c64cast import modes as modesmod
+        from c64cast.scenes import effects, generators
+        from c64cast.sid import voice_scope
+        from c64cast.video import modes as modesmod
 
         declared: set[str] = set()
 
@@ -334,7 +336,7 @@ class LiveTargetsDriftTests(unittest.TestCase):
 # ------------------------------------------------------- osd.position ----------
 class _OsdScene:
     def __init__(self):
-        from c64cast import scenes
+        from c64cast.scenes import scenes
 
         self.osd = scenes.OsdState()
 
@@ -401,7 +403,7 @@ class OsdPositionDispatchTests(unittest.TestCase):
 # ---------------------------------------------------- config round-trip --------
 class ConfigFieldTests(unittest.TestCase):
     def test_controller_profile_round_trips(self):
-        from c64cast import config_serialize
+        from c64cast.app import config_serialize
 
         cfg = cfgmod.Config()
         cfg.midi_control.controller_profile = "my-keylab"
@@ -412,7 +414,7 @@ class ConfigFieldTests(unittest.TestCase):
         self.assertEqual(reloaded, cfg)
 
     def test_cc_map_is_default_not_serialized(self):
-        from c64cast import config_serialize
+        from c64cast.app import config_serialize
 
         cfg = cfgmod.Config()
         cfg.midi_control.cc_map_is_default = False  # internal — never emitted

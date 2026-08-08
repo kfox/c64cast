@@ -17,9 +17,9 @@ from typing import cast
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast.backend import C64Backend
-from c64cast.config import InterstitialCfg
-from c64cast.interstitial import (
+from c64cast.app.config import InterstitialCfg
+from c64cast.hw.backend import C64Backend
+from c64cast.scenes.interstitial import (
     LABEL,
     LEGIBLE_COLORS,
     RAINBOW_COLORS,
@@ -27,8 +27,8 @@ from c64cast.interstitial import (
     _resolve_line_colors,
     default_factory,
 )
-from c64cast.overlays import ascii_to_screen
-from c64cast.palette import C64_COLORS
+from c64cast.scenes.overlays import ascii_to_screen
+from c64cast.video.palette import C64_COLORS
 
 
 def _api() -> C64Backend:
@@ -54,7 +54,7 @@ class ResolveLineColorsTest(unittest.TestCase):
         self.assertEqual(_resolve_line_colors("cyan", 2), [C64_COLORS["cyan"]] * 2)
 
     def test_unknown_color_warns_and_uses_white(self):
-        with self.assertLogs("c64cast.interstitial", level="WARNING"):
+        with self.assertLogs("c64cast.scenes.interstitial", level="WARNING"):
             colors = _resolve_line_colors("chartreuse", 2)
         self.assertEqual(colors, [C64_COLORS["white"]] * 2)
 

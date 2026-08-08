@@ -58,7 +58,7 @@ from dataclasses import dataclass
 
 import _diaglib as d
 
-from c64cast.teensyrom_dma import (
+from c64cast.hw.teensyrom_dma import (
     DEFAULT_BAUD,
     DEFAULT_TCP_PORT,
     DRIVE_SD,

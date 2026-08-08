@@ -16,7 +16,7 @@ import json
 import tomllib
 import unittest
 
-from c64cast import paths, schema
+from c64cast.app import paths, schema
 
 _COMMITTED = paths.packaged_schema_path()
 

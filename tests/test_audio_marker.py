@@ -1,4 +1,4 @@
-"""Tests for c64cast.audio_marker — source-timeline alignment marker.
+"""Tests for c64cast.audio.audio_marker — source-timeline alignment marker.
 
 Two layers of guarantees:
   * Synthesis is byte-deterministic (same code → same bytes) so a marker
@@ -15,7 +15,7 @@ import unittest
 
 import numpy as np
 
-from c64cast.audio_marker import (
+from c64cast.audio.audio_marker import (
     DEFAULT_CAPTURE_RATE,
     DEFAULT_PLAYBACK_RATE,
     MARKER_DURATION_S,

@@ -18,7 +18,8 @@ import re
 import unittest
 from pathlib import Path
 
-from c64cast import effects, generators, introspect
+from c64cast.app import introspect
+from c64cast.scenes import effects, generators
 
 _DOCS = Path(__file__).resolve().parent.parent / "docs"
 

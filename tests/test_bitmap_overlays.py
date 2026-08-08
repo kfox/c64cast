@@ -22,13 +22,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast import text_surface  # noqa: E402
-from c64cast.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
-from c64cast.overlays.callsign import CallsignOverlay  # noqa: E402
-from c64cast.overlays.logo import LogoOverlay  # noqa: E402
-from c64cast.overlays.marquee import MarqueeOverlay  # noqa: E402
-from c64cast.overlays.scrolling_text import ScrollingTextOverlay  # noqa: E402
-from c64cast.text_surface import HiresTextSurface, MHiresTextSurface  # noqa: E402
+from c64cast.scenes import text_surface  # noqa: E402
+from c64cast.scenes.overlays.callsign import CallsignOverlay  # noqa: E402
+from c64cast.scenes.overlays.logo import LogoOverlay  # noqa: E402
+from c64cast.scenes.overlays.marquee import MarqueeOverlay  # noqa: E402
+from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay  # noqa: E402
+from c64cast.scenes.text_surface import HiresTextSurface, MHiresTextSurface  # noqa: E402
+from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
 
 
 def _frame() -> np.ndarray:
@@ -151,7 +151,7 @@ class MhiresOverlayTest(unittest.TestCase):
         # use_reu_staged="auto" stages bitmap video, but a bitmap scene with a
         # buffer-painting text overlay prefers crisp host-DMA (the REU bank-swap
         # shimmers fine glyphs). Overlay-free bitmap still stages.
-        from c64cast.scene_factory import resolve_use_reu_staged
+        from c64cast.app.scene_factory import resolve_use_reu_staged
 
         self.assertTrue(resolve_use_reu_staged("auto", "mhires", reu_available=True))
         self.assertFalse(
@@ -169,8 +169,8 @@ class MhiresOverlayTest(unittest.TestCase):
         import tempfile
         from typing import cast
 
-        from c64cast import config as cfgmod
-        from c64cast import scene_factory
+        from c64cast.app import config as cfgmod
+        from c64cast.app import scene_factory
 
         toml = (
             '[video]\nuse_reu_staged = "auto"\n'
@@ -194,7 +194,7 @@ class MhiresOverlayTest(unittest.TestCase):
         # The SceneCfg field reaches MultiHiresDisplayMode via _build_display_mode.
         from typing import cast
 
-        from c64cast.scene_factory import _build_display_mode
+        from c64cast.app.scene_factory import _build_display_mode
 
         mode = cast(MultiHiresDisplayMode, _build_display_mode("mhires", text_double_height=True))
         self.assertTrue(mode.text_double_height)

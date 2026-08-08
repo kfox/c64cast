@@ -18,7 +18,7 @@ import tempfile
 import time
 from unittest import mock
 
-from c64cast.backend import HardwareProfile
+from c64cast.hw.backend import HardwareProfile
 
 
 class MachineSettingsIsolation:

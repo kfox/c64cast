@@ -67,7 +67,7 @@ it and warns + falls back to the DAC if it isn't available. `sampler_sample_rate
 (default 44100) and `sampler_bits` (8 or 16, default 16) tune quality. Mic and
 webcam audio always use the 4-bit DAC.
 
-Implementation (`c64cast/sampler.py`): a **streaming REU ring**. Channel 0 is
+Implementation (`c64cast/audio/sampler.py`): a **streaming REU ring**. Channel 0 is
 programmed as an A↔B loop over a region of REU; a host writer thread REUWRITEs
 decoded PCM ahead of a *wall-clock-computed* read head and wraps. The FPGA
 sample clock is crystal-exact, so the read position is computed (never read
@@ -187,7 +187,7 @@ The player banks the 6510 CPU port at `$0001` **per call**, matching the
 U64's own player: it rests at `$37`, switches to the right bank around
 `JSR init`, restores `$37`, then switches again around `JSR play` and
 restores `$37` before chaining to the kernal IRQ tail. `_init_bank_for`
-and `_play_bank_for` in [api.py](../c64cast/api.py) pick each value
+and `_play_bank_for` in [api.py](../c64cast/hw/api.py) pick each value
 independently (init-bank from the load-end page, play-bank from the
 play-addr page):
 
@@ -240,7 +240,7 @@ Known limitations:
 the U64 — the FPGA SID is faithful to real hardware, so `$D400-$D418`
 is write-only and reads return open-bus zeros. The Socket DMA protocol
 has no general-memory-read opcode either. So
-[sid_host_emu.py](../c64cast/sid_host_emu.py) runs the same SID file
+[sid_host_emu.py](../c64cast/sid/sid_host_emu.py) runs the same SID file
 in parallel on a host-side [py65](https://github.com/mnaberez/py65)
 6502 emulator, trapping writes to `$D400-$D418` into a 25-byte shadow
 that the render thread consumes. Audio still comes from the real SID
@@ -251,7 +251,7 @@ invisible in an oscilloscope view. The PSID validation above is
 shared, so if `run_sid_player` refuses a tune, `SidHostEmu` refuses
 the same tune with the same error.
 
-The player MC defaults to `$C300` because [audio_handlers.py](../c64cast/audio_handlers.py)
+The player MC defaults to `$C300` because [audio_handlers.py](../c64cast/audio/audio_handlers.py)
 owns `$C000-$C2FF` (NMI DAC at `$C020`, REU pump at `$C100`, REU mic
 tracker at `$C200`); the relocation picker refuses any layout that would
 overlap that region. `WaveformScene.setup()` calls `audio.stop()` before
@@ -273,14 +273,14 @@ the display is always correct regardless of hardware.
 writes only make sound where the U64 has a SID mapped to that exact address,
 so `_apply_sid_hw_config` maps the U64's UltiSID cores (and sockets) to the
 tune's own addresses before the player's INIT runs
-([asid_sidmap.plan_sid_map_for_addresses](../c64cast/asid_sidmap.py)). The
+([asid_sidmap.plan_sid_map_for_addresses](../c64cast/sid/asid_sidmap.py)). The
 firmware exposes ≤2 sockets (`$D400`/`$D420`) + 2 UltiSID cores sharing one
 range split (`1/2` → `$40`-aligned, `1/4` → `$80`-aligned; stride `$20`), so
 consecutive layouts (`$D400/$D420/$D440`) and two-page layouts
 (`$D400`+`$D500`) realize exactly; a scattered set needing three core windows
 (`$D400`+`$DE00`+`$DF00`) can't, and falls back to the canonical
 `plan_sid_map` layout (some chips silent — the scope stays correct). The prior
-config is snapshotted and restored on teardown ([sid_hw_config.py](../c64cast/sid_hw_config.py)).
+config is snapshotted and restored on teardown ([sid_hw_config.py](../c64cast/sid/sid_hw_config.py)).
 Backends without a SID config API (TeensyROM) skip this: every chip's scope
 still renders; only `$D400` is audible. Single-SID tunes never touch the
 config (one window, byte-identical to before). Verified on U64-II hardware:
@@ -339,7 +339,7 @@ It is the open-loop producer-ahead-of-read-head pattern the FPGA sampler uses
 playback** — it obeys the "don't rapid-poll the U64 during capture" rule) with
 an IRQ ring consumer modeled on the REU audio pump. `AsidScene` runs no `$D418`
 DAC, so the whole `$C000` page and the REU are free for it. See
-[asid_player.py](../c64cast/asid_player.py).
+[asid_player.py](../c64cast/sid/asid_player.py).
 
 **U64 only.** It needs a bus-clean `reu_write` (`profile.supports_reu`).
 `auto` engages it where an REU exists and stays coalesced otherwise; `on` forces
@@ -378,7 +378,7 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
 
 The host-side orchestration above (parse / layout / build / divider
 auto-tune / subtune re-INIT) is backend-agnostic and shared via
-`_SidPlayerMixin` in [api.py](../c64cast/api.py); only the **kick** —
+`_SidPlayerMixin` in [api.py](../c64cast/hw/api.py); only the **kick** —
 how control reaches the player — differs per backend, behind the abstract
 `_launch_sid_player`. The Ultimate POSTs the `SYS` stub to `run_prg`
 (a synchronous soft reset that preserves RAM, then RUNs). The TeensyROM
@@ -419,7 +419,7 @@ The vector-swap launch requires the IRQ-enabled idle, so it's gated on
 cycle-clean DMA shipped together). On older firmware the spin-stub idle
 masks IRQs, so the swap would never fire — `run_sid_player` raises
 `BackendCapabilityError` rather than play silently. (The TR also has no
-REUWRITE opcode, so [cli.py](../c64cast/cli.py) coerces any `use_reu_pump`
+REUWRITE opcode, so [cli.py](../c64cast/app/cli.py) coerces any `use_reu_pump`
 / explicit `use_reu_staged = true` opt-in off on a no-REU backend, routing
 audio through the host-DMA NMI DAC and video through host-DMA; `--doctor`
 reports the same.)
@@ -427,7 +427,7 @@ reports the same.)
 ## Preview window fidelity + limits
 
 `[preview] enabled = true` opens a desktop window mirroring the C64. It is a
-*reconstruction*, not a capture: [`framebuffer.py`](../c64cast/framebuffer.py)
+*reconstruction*, not a capture: [`framebuffer.py`](../c64cast/video/framebuffer.py)
 shadows the memory writes c64cast sends and re-renders them host-side. What
 that costs you:
 
@@ -733,7 +733,7 @@ active). Consequences worth knowing:
 * **`bypass_audio_lock` lets several players hear their own games.** In
   ensemble mode at most one system normally holds the exclusive audio slot,
   so an audio-bearing scene on another system is skipped while it's taken
-  (the audio lock in [`c64cast/ensemble.py`](../c64cast/ensemble.py)).
+  (the audio lock in [`c64cast/app/ensemble.py`](../c64cast/app/ensemble.py)).
   That's wrong for
   interactive launchers — two people at two machines both want to play and
   hear their own game. Setting `bypass_audio_lock = true` on a launcher
@@ -893,7 +893,7 @@ painting the "wrong" character, that's the gap. Convert it.
 
 ## `C64_PALETTE_BGR` is OpenCV BGR order
 
-[palette.py](../c64cast/palette.py) stores the C64 palette as BGR
+[palette.py](../c64cast/video/palette.py) stores the C64 palette as BGR
 (blue, green, red) tuples because OpenCV's frame format is BGR. If you
 ever extract a color from this table to display somewhere that expects
 RGB (matplotlib, PIL, a web page), swap channels first or you'll get

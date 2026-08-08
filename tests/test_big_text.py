@@ -13,9 +13,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from c64cast.modes import BlankDisplayMode, MCMDisplayMode, PETSCIIDisplayMode
-from c64cast.overlays import validate_for_scene
-from c64cast.overlays.big_text import BigTextOverlay
+from c64cast.scenes.overlays import validate_for_scene
+from c64cast.scenes.overlays.big_text import BigTextOverlay
+from c64cast.video.modes import BlankDisplayMode, MCMDisplayMode, PETSCIIDisplayMode
 
 
 def _make_buffers():
@@ -296,7 +296,7 @@ class ColorCycleTest(unittest.TestCase):
     then advances through rainbow + each spectrum entry."""
 
     def test_cycle_returns_label_and_advances(self):
-        from c64cast.overlays.big_text import COLOR_CYCLE, COLOR_CYCLE_LABELS
+        from c64cast.scenes.overlays.big_text import COLOR_CYCLE, COLOR_CYCLE_LABELS
 
         ov = _make_overlay()
         # Initial state is index 0 = "config"; first cycle moves to "rainbow".
@@ -322,7 +322,7 @@ class ColorCycleTest(unittest.TestCase):
             ov.compose(buffers, scene, t)
         # Without any cycle press, the strip's color RAM should contain
         # yellow (palette index 7). MCM masking doesn't apply for blank.
-        from c64cast.palette import C64_COLORS
+        from c64cast.video.palette import C64_COLORS
 
         yellow = C64_COLORS["yellow"]
         # The strip starts at the middle row and spans 8 rows × 40 cols.
@@ -351,7 +351,7 @@ class ColorCycleTest(unittest.TestCase):
         )
 
     def test_cycle_wraps_back_to_config(self):
-        from c64cast.overlays.big_text import COLOR_CYCLE
+        from c64cast.scenes.overlays.big_text import COLOR_CYCLE
 
         ov = _make_overlay(messages=[{"text": "X", "color": "yellow"}])
         # Advance all the way around — last label should be "config" again.
@@ -393,7 +393,7 @@ class FollowerComposeTest(unittest.TestCase):
         # own local big_text overlay was configured with color=white
         # (e.g. the placeholder follower scene in left.toml). After fix,
         # follower must paint rainbow, not white.
-        from c64cast.overlays.big_text import _RAINBOW_SENTINEL
+        from c64cast.scenes.overlays.big_text import _RAINBOW_SENTINEL
 
         ov = _make_overlay(messages=[{"text": "PLACEHOLDER", "color": "white"}])
         bits = np.ones((8, 16), dtype=bool)  # all-on glyph block
@@ -426,7 +426,7 @@ class FollowerComposeTest(unittest.TestCase):
     def test_follower_uses_published_solid_color(self):
         # Conductor publishes a specific color (yellow). Follower's local
         # message says white. Follower must paint yellow.
-        from c64cast.palette import C64_COLORS
+        from c64cast.video.palette import C64_COLORS
 
         yellow = C64_COLORS["yellow"]
         white = C64_COLORS["white"]

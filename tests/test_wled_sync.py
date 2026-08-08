@@ -11,8 +11,8 @@ import struct
 import unittest
 from typing import Any
 
-from c64cast.modulation import MusicModulation
-from c64cast.wled_sync import (
+from c64cast.scenes.modulation import MusicModulation
+from c64cast.wled.wled_sync import (
     WledAudioSyncBroadcaster,
     _freq_to_geq_bin,
     build_audio_sync_packet,
@@ -172,8 +172,8 @@ class TempoFallbackTest(unittest.TestCase):
     grid so WLED keeps pulsing on video/webcam/slideshow (Live DJ/VJ Phase 6)."""
 
     def _playlist(self, fallback: bool):
-        from c64cast import config as cfgmod
-        from c64cast.playlist import Playlist
+        from c64cast.app import config as cfgmod
+        from c64cast.app.playlist import Playlist
 
         cfg = cfgmod.Config()
         cfg.wled.broadcast_tempo_fallback = fallback

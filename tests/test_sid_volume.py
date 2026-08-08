@@ -1,4 +1,4 @@
-"""Tests for SID mixer volume (c64cast/sid_volume.py): level/label conversion,
+"""Tests for SID mixer volume (c64cast/sid/sid_volume.py): level/label conversion,
 the auto policy, the pure plan_sid_volume mapping, and the live diff-only apply
 (FakeAPI — no real hardware)."""
 
@@ -11,8 +11,8 @@ import unittest
 
 from _fakes import FakeAPI
 
-from c64cast import sid_volume as sv
-from c64cast.backend import HardwareProfile
+from c64cast.hw.backend import HardwareProfile
+from c64cast.sid import sid_volume as sv
 
 CAT = sv.CAT_MIXER
 VOL_S1 = (CAT, "Vol Socket 1")

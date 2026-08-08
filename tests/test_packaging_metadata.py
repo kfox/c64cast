@@ -131,7 +131,7 @@ class TestDependencyBounds(unittest.TestCase):
 
 class TestExtrasAreProbedAndDocumented(unittest.TestCase):
     def test_doctor_knows_every_extra(self) -> None:
-        from c64cast.doctor import _EXTRAS
+        from c64cast.app.doctor import _EXTRAS
 
         declared = set(_load()["project"]["optional-dependencies"]) - {"all"}
         known = {name for name, _module, _used_for in _EXTRAS}

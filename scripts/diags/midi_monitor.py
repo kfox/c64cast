@@ -49,7 +49,7 @@ import argparse
 import sys
 
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from c64cast.midi_control import MIDI_AVAILABLE, classify_message, mido  # noqa: E402
+from c64cast.control.midi_control import MIDI_AVAILABLE, classify_message, mido  # noqa: E402
 
 # Real-time / housekeeping message types hidden unless --clock is passed.
 _NOISE = {"clock", "active_sensing", "start", "stop", "continue", "songpos", "reset"}

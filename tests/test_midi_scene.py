@@ -1,4 +1,4 @@
-"""Host-side unit tests for MidiScene (c64cast/midi_scene.py).
+"""Host-side unit tests for MidiScene (c64cast/sid/midi_scene.py).
 
 These exercise the pure logic — note→frequency math, voice allocation /
 stealing, CC + pitch-wheel mapping, the SID register shadow + emulator feed,
@@ -36,11 +36,11 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast import midi_scene  # noqa: E402
-from c64cast.c64 import SID  # noqa: E402
-from c64cast.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
-from c64cast.modes import DisplayMode  # noqa: E402
-from c64cast.sidemu import primary_waveform  # noqa: E402
+from c64cast.hw.c64 import SID  # noqa: E402
+from c64cast.sid import midi_scene  # noqa: E402
+from c64cast.sid.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
+from c64cast.sid.sidemu import primary_waveform  # noqa: E402
+from c64cast.video.modes import DisplayMode  # noqa: E402
 
 # Control-register byte index within the 7-byte voice block written by
 # _program_voice (freq_lo, freq_hi, pw_lo, pw_hi, CONTROL, ad, sr).
@@ -659,7 +659,7 @@ class PaintTests(_MidiTestCase):
     def test_voice_strip_grays_when_idle_colors_when_sounding(self):
         # A sounding voice paints its color; once released + decayed it repaints
         # gray. Change-detected via _voice_sounding.
-        from c64cast.palette import C64_COLORS
+        from c64cast.video.palette import C64_COLORS
 
         scene, api = _make_scene(voice_colors=["light green", "cyan", "yellow"])
         _bring_up_display(scene)

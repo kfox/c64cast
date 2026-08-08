@@ -15,9 +15,9 @@ from typing import cast
 
 import numpy as np
 
-from c64cast.modulation import MusicModulation
-from c64cast.overlays import build_overlay, known_overlays, validate_for_scene
-from c64cast.overlays.spectrum_bitmap import (
+from c64cast.scenes.modulation import MusicModulation
+from c64cast.scenes.overlays import build_overlay, known_overlays, validate_for_scene
+from c64cast.scenes.overlays.spectrum_bitmap import (
     BAR_CELLS,
     BITMAP_H,
     CELL_PX,
@@ -26,7 +26,7 @@ from c64cast.overlays.spectrum_bitmap import (
     HW_ROWS,
     BitmapSpectrumOverlay,
 )
-from c64cast.scenes import Scene
+from c64cast.scenes.scenes import Scene
 
 # A recognizable non-zero fill for the incoming frame, so "untouched" is
 # provable rather than indistinguishable from a zeroed buffer.
@@ -218,7 +218,7 @@ class PaintTest(unittest.TestCase):
 
 
 def _band_color(band: int) -> int:
-    from c64cast.overlays._spectrum import BAND_COLORS
+    from c64cast.scenes.overlays._spectrum import BAND_COLORS
 
     return int(BAND_COLORS[band])
 

@@ -13,10 +13,10 @@ import unittest
 from typing import Any
 from unittest.mock import MagicMock
 
-from c64cast import orchestrator as orch_mod
-from c64cast.config import SceneCfg
-from c64cast.ensemble import Ensemble, SystemStack
-from c64cast.orchestrator import (
+from c64cast.app import orchestrator as orch_mod
+from c64cast.app.config import SceneCfg
+from c64cast.app.ensemble import Ensemble, SystemStack
+from c64cast.app.orchestrator import (
     Orchestrator,
     OrchestratorError,
     register_orchestrator,

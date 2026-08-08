@@ -31,7 +31,7 @@ except (ImportError, RuntimeError):
     HAVE_TESTCLIENT = False
     TestClient = None  # type: ignore[misc,assignment]
 
-from c64cast.playlist import Playlist
+from c64cast.app.playlist import Playlist
 
 
 def _fake_playlist(name: str, *, scene_count: int = 2) -> Playlist:
@@ -67,7 +67,7 @@ class ResponseShapeTest(unittest.TestCase):
     httpx is available."""
 
     def test_status_dict_shape(self):
-        from c64cast.control_plane import _status_for
+        from c64cast.control.control_plane import _status_for
 
         pl = _fake_playlist("a")
         body = _status_for(pl)
@@ -80,14 +80,14 @@ class ResponseShapeTest(unittest.TestCase):
         self.assertEqual(body["write_latency"], "lat 5ms")
 
     def test_status_dict_reflects_pause_state(self):
-        from c64cast.control_plane import _status_for
+        from c64cast.control.control_plane import _status_for
 
         pl = _fake_playlist("a")
         pl.pause_event.set()
         self.assertTrue(_status_for(pl)["paused"])
 
     def test_scenes_dict_shape(self):
-        from c64cast.control_plane import _scenes_for
+        from c64cast.control.control_plane import _scenes_for
 
         pl = _fake_playlist("a", scene_count=3)
         body = _scenes_for(pl)
@@ -103,7 +103,7 @@ class BuildAppConstructionTest(unittest.TestCase):
     time rather than yielding a half-built FastAPI app."""
 
     def test_empty_playlists_rejected(self):
-        from c64cast.control_plane import build_app
+        from c64cast.control.control_plane import build_app
 
         with self.assertRaises(ValueError) as cm:
             build_app(playlists={}, config_loaders={}, interstitial_factories={})
@@ -116,7 +116,7 @@ class SingleSystemBackCompatTest(unittest.TestCase):
     same un-wrapped JSON shape today's clients expect."""
 
     def _client(self):
-        from c64cast.control_plane import build_app
+        from c64cast.control.control_plane import build_app
 
         pl = _fake_playlist("system")
         app = build_app(
@@ -170,7 +170,7 @@ class SingleSystemBackCompatTest(unittest.TestCase):
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class MultiSystemTest(unittest.TestCase):
     def _client(self):
-        from c64cast.control_plane import build_app
+        from c64cast.control.control_plane import build_app
 
         playlists = {n: _fake_playlist(n) for n in ("left", "right")}
         app = build_app(
@@ -230,7 +230,7 @@ class MultiSystemTest(unittest.TestCase):
 
     def test_reload_per_system_errors_dont_block_others(self):
         # Stub one loader to raise; the other still reloads.
-        from c64cast.control_plane import build_app
+        from c64cast.control.control_plane import build_app
 
         playlists = {n: _fake_playlist(n) for n in ("a", "b")}
 
@@ -261,7 +261,7 @@ class MultiSystemTest(unittest.TestCase):
         # Per-system reload for a system with no config_loader registered
         # (e.g. defaults-only single-system mode) must yield a friendly
         # per-system error, not a KeyError → 500.
-        from c64cast.control_plane import build_app
+        from c64cast.control.control_plane import build_app
 
         playlists = {n: _fake_playlist(n) for n in ("with_path", "no_path")}
         app = build_app(

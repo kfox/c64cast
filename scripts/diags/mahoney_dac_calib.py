@@ -8,7 +8,7 @@ levels: on a 6581 with a live filter path it misses the volume-0 ground truth by
 52 %, and 89 of its 256 codes violate the triangle inequality, so no set of real
 levels can explain its numbers. The table it produced measured 4.8 dB *worse*
 than no calibration at all. It has been replaced by the slot-ring primitive in
-``c64cast/dac_calibration.py`` — see ``mahoney_slot_ring_probe.py`` and the
+``c64cast/audio/dac_calibration.py`` — see ``mahoney_slot_ring_probe.py`` and the
 "What this replaced" section of docs/architecture/audio.md. This file is kept
 for the unsigned ``--probe`` sweep and as the record of what was tried.
 
@@ -71,8 +71,10 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from c64cast.audio import AudioStreamer
-from c64cast.audio_handlers import (
+from c64cast.app.config import Config
+from c64cast.app.connect import apply_to_config, parse_connection_uri
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_handlers import (
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
     CIA2_ICR_ENABLE_TIMER_A_NMI,
@@ -80,11 +82,9 @@ from c64cast.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
 )
-from c64cast.backend import make_backend
-from c64cast.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
-from c64cast.config import Config
-from c64cast.connect import apply_to_config, parse_connection_uri
-from c64cast.dsp import DSPParams
+from c64cast.audio.dsp import DSPParams
+from c64cast.hw.backend import make_backend
+from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 
 CAP_SR = 48000
 CAP_DEVICE = 1  # Cam Link 4K audio (sounddevice idx); resolved by name too

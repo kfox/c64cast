@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import unittest
 
-from c64cast.sid_host_emu import SidHostEmu, detect_sid_addresses, parse_sid_header
+from c64cast.sid.sid_host_emu import SidHostEmu, detect_sid_addresses, parse_sid_header
 
 # ---------------------------------------------------------------------------
 # Synthetic-SID helper
@@ -274,7 +274,7 @@ class RamWriteFootprintTest(unittest.TestCase):
     relocated C64-side player off the tune's scratch (the Beat_Dis fix)."""
 
     def test_footprint_marks_scratch_writes(self):
-        from c64cast.sid_host_emu import ram_write_footprint
+        from c64cast.sid.sid_host_emu import ram_write_footprint
 
         # PLAY writes a byte to $5000 (scratch) + the SID registers, RTS.
         play = bytes(
@@ -298,7 +298,7 @@ class RamWriteFootprintTest(unittest.TestCase):
         self.assertFalse(fp[0x6000], "untouched RAM must stay clear")
 
     def test_play_access_footprint_catches_reads_excludes_init(self):
-        from c64cast.sid_host_emu import ram_play_access_footprint, ram_write_footprint
+        from c64cast.sid.sid_host_emu import ram_play_access_footprint, ram_write_footprint
 
         # INIT writes a one-time block to $A000 (a display region) then RTS;
         # PLAY *reads* $B400 (live per-song data, à la Times of Lore) and

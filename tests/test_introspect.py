@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import unittest
 
-from c64cast import config as cfgmod
-from c64cast import introspect, scene_factory
+from c64cast.app import config as cfgmod
+from c64cast.app import introspect, scene_factory
 
 
 class RenderSmokeTest(unittest.TestCase):
@@ -109,7 +109,7 @@ class CompatMatrixTest(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_matrix_mirrors_validate_for_scene(self):
-        from c64cast.overlays import build_overlay, validate_for_scene
+        from c64cast.scenes.overlays import build_overlay, validate_for_scene
 
         ov = build_overlay({"type": "clock"}, audio=None)
         od = self._doc("clock")
@@ -129,43 +129,43 @@ class ChoiceVocabSyncTest(unittest.TestCase):
     each matches its authoritative source of truth."""
 
     def test_palette_modes(self):
-        from c64cast import modes
+        from c64cast.video import modes
 
         self.assertEqual(cfgmod._PALETTE_MODE_CHOICES, modes.PALETTE_MODES)
 
     def test_styles(self):
-        from c64cast import petscii_styles as ps
+        from c64cast.video import petscii_styles as ps
 
         self.assertEqual(cfgmod._STYLE_CHOICES, ps.STYLE_NAMES + (ps.RANDOM_STYLE,))
 
     def test_time_base_and_persistence(self):
-        from c64cast import waveform
+        from c64cast.sid import waveform
 
         self.assertEqual(cfgmod._TIME_BASE_CHOICES, waveform.TIME_BASE_NAMES)
         self.assertEqual(cfgmod._PERSISTENCE_CHOICES, waveform.PERSISTENCE_NAMES)
 
     def test_midi_waveforms(self):
-        from c64cast import midi_scene
+        from c64cast.sid import midi_scene
 
         self.assertEqual(set(cfgmod._MIDI_WAVEFORM_CHOICES), set(midi_scene._WAVEFORM_BITS))
 
     def test_midi_voice_modes(self):
-        from c64cast import midi_scene
+        from c64cast.sid import midi_scene
 
         self.assertEqual(cfgmod._MIDI_VOICE_MODE_CHOICES, midi_scene.VOICE_MODES)
 
     def test_backgrounds(self):
-        from c64cast import backgrounds
+        from c64cast.scenes import backgrounds
 
         self.assertEqual(set(cfgmod._BACKGROUND_CHOICES) - {"random"}, set(backgrounds.REGISTRY))
 
     def test_generative_sources(self):
-        from c64cast import generators
+        from c64cast.scenes import generators
 
         self.assertEqual(cfgmod._GENERATIVE_SOURCE_CHOICES, generators.generator_names())
 
     def test_effects(self):
-        from c64cast import effects
+        from c64cast.scenes import effects
 
         self.assertEqual(cfgmod._EFFECT_CHOICES, effects.effect_names())
 

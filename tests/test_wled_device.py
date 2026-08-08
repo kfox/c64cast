@@ -15,10 +15,10 @@ import unittest
 from pathlib import Path
 from typing import cast
 
-from c64cast import config as cfgmod
-from c64cast import scene_factory
-from c64cast.playlist import Playlist
-from c64cast.wled_device import PresetStore, WledBridge, build_wled_app
+from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
+from c64cast.app.playlist import Playlist
+from c64cast.wled.wled_device import PresetStore, WledBridge, build_wled_app
 
 try:
     # The WLED JSON API tests drive the real FastAPI app via TestClient, which
@@ -238,7 +238,7 @@ class BridgeReadTests(unittest.TestCase):
         self.assertEqual(set(full), {"state", "info", "effects", "palettes"})
 
     def test_vid_is_content_derived_stable_and_gate_safe(self):
-        from c64cast.wled_device import _WLED_VID_BASE, _WLED_VID_SPREAD
+        from c64cast.wled.wled_device import _WLED_VID_BASE, _WLED_VID_SPREAD
 
         bridge, _ = _bridge()
         vid = bridge.info_dict()["vid"]
@@ -333,7 +333,7 @@ class BridgeApplyTests(unittest.TestCase):
     def test_scene_prefix_resolves_via_set_live_param(self):
         # Direct check of the resolver's `scene.` case, mirroring
         # midi_control._apply_param's verbatim twin.
-        from c64cast.wled_device import _set_live_param
+        from c64cast.wled.wled_device import _set_live_param
 
         pl = _FakePlaylist("main", ["Waveform"])
         scene = _FakeScopeScene()
@@ -436,7 +436,7 @@ class BridgePaletteColorTests(unittest.TestCase):
         self.assertEqual(bridge.state_dict()["seg"][0]["pal"], 99)  # still echoed
 
     def test_col_forces_palette_to_picked_colors(self):
-        from c64cast import palette as pal
+        from c64cast.video import palette as pal
 
         mode = _FakeMode()
         mode.palette_mode = "grayscale"  # a non-percell mode
@@ -451,7 +451,7 @@ class BridgePaletteColorTests(unittest.TestCase):
         self.assertEqual(bridge.state_dict()["seg"][0]["col"], [[255, 160, 0], [0, 255, 255]])
 
     def test_single_col_gets_a_contrast_partner(self):
-        from c64cast import palette as pal
+        from c64cast.video import palette as pal
 
         mode = _FakeMode()
         bridge, _ = _bridge(display_mode=mode)

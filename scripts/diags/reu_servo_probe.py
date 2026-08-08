@@ -35,7 +35,7 @@ from pathlib import Path
 
 import _diaglib as d
 
-from c64cast.audio_handlers import (
+from c64cast.audio.audio_handlers import (
     NMI_ROUTINE_ADDR,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_PUMP_CIA1_LATCH,

@@ -1,4 +1,4 @@
-"""Tests for the `--save-settings` CLI command (c64cast.cli.run_save_settings
+"""Tests for the `--save-settings` CLI command (c64cast.app.cli.run_save_settings
 via cli.main).
 
 Drives the real argparse entry point with $C64CAST_SETTINGS pointed at a tmp
@@ -17,8 +17,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from c64cast import config as cfgmod
-from c64cast.cli import main
+from c64cast.app import config as cfgmod
+from c64cast.app.cli import main
 
 
 class SaveSettingsTest(unittest.TestCase):

@@ -14,10 +14,11 @@ from unittest import mock
 import numpy as np
 from _fakes import FrozenClock
 
-from c64cast import scenes, video_transport
-from c64cast.scenes import VideoScene
-from c64cast.transport import LoopPresetStore, timecode
-from c64cast.video import (
+from c64cast.control.transport import LoopPresetStore, timecode
+from c64cast.scenes import scenes, video_transport
+from c64cast.scenes.scenes import VideoScene
+from c64cast.scenes.video_transport import VideoTransportControls
+from c64cast.video.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
     AVFileSource,
@@ -28,7 +29,6 @@ from c64cast.video import (
     ensure_pyav,
     scan_video_samples,
 )
-from c64cast.video_transport import VideoTransportControls
 
 
 def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> AVFileSource:
@@ -1320,7 +1320,7 @@ class ScanVideoSamplesTest(unittest.TestCase):
 
     def test_missing_file_returns_false(self):
         acc = _RecordingAcc()
-        with self.assertLogs("c64cast.video", level="WARNING"):
+        with self.assertLogs("c64cast.video.video", level="WARNING"):
             self.assertFalse(scan_video_samples("/no/such/file.mp4", [acc]))
         self.assertEqual(acc.means, [])
 
@@ -1332,7 +1332,7 @@ class ScanVideoSamplesTest(unittest.TestCase):
         # sequential-decode fallback — and still span the whole timeline.
         import unittest.mock as mock
 
-        from c64cast import video
+        from c64cast.video import video
 
         path = self._make()
         acc = _RecordingAcc()

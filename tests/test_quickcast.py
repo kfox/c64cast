@@ -1,4 +1,4 @@
-"""Tests for quick playback — the positional-MEDIA path (c64cast.quickcast).
+"""Tests for quick playback — the positional-MEDIA path (c64cast.app.quickcast).
 
 Covers the pure classification layer (extension/dir/glob -> scene type), the
 in-memory Config builder (playlist semantics + per-flag overrides + the
@@ -20,10 +20,10 @@ from unittest import mock
 
 from _fakes import MachineSettingsIsolation
 
-from c64cast import quickcast
-from c64cast.cli import _resolve_configs, build_parser
-from c64cast.config import CLI_TO_CFG
-from c64cast.scene_factory import resolve_file_spec
+from c64cast.app import quickcast
+from c64cast.app.cli import _resolve_configs, build_parser
+from c64cast.app.config import CLI_TO_CFG
+from c64cast.app.scene_factory import resolve_file_spec
 
 # Quick playback inherits the machine-settings layer (quickcast.build_config);
 # isolate the module from any real ~/.config/c64cast/settings.toml so the
@@ -581,7 +581,7 @@ class ResolveConfigsDispatchTest(unittest.TestCase):
         self.assertEqual([s.type for s in cfgs[0].scenes], ["video", "waveform"])
 
     def test_inputs_with_config_is_rejected(self):
-        from c64cast.cli import _CliUsageError
+        from c64cast.app.cli import _CliUsageError
 
         with self.assertRaises(_CliUsageError):
             _resolve_configs(_parse(["--config", "some.toml", "a.mp4"]))

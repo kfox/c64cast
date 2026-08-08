@@ -1,4 +1,4 @@
-"""Tests for the host-side audio DSP chain (c64cast/dsp.py).
+"""Tests for the host-side audio DSP chain (c64cast/audio/dsp.py).
 
 Pure numpy, no hardware, no sound device. The DSP runs on float samples in
 [-1, 1] BEFORE the 4-bit SID DAC quantization (encode_floats_to_dac), so its
@@ -20,7 +20,7 @@ import unittest
 
 import numpy as np
 
-from c64cast.dsp import (
+from c64cast.audio.dsp import (
     AGC,
     AudioDSP,
     Compressor,

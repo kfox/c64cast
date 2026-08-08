@@ -11,12 +11,13 @@ from typing import cast
 
 import numpy as np
 
-from c64cast import generators
-from c64cast.audio import AudioStreamer
-from c64cast.audio_source import MicAudioSource, NullAudioSource
-from c64cast.backend import C64Backend, HardwareProfile
-from c64cast.config import AudioCfg, Config, SceneCfg
-from c64cast.effects import (
+from c64cast.app.config import AudioCfg, Config, SceneCfg
+from c64cast.app.scene_factory import build_scene, validate_scene_cfg
+from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio_source import MicAudioSource, NullAudioSource
+from c64cast.hw.backend import C64Backend, HardwareProfile
+from c64cast.scenes import generators
+from c64cast.scenes.effects import (
     BlurEffect,
     FrameEffect,
     PulseEffect,
@@ -24,12 +25,11 @@ from c64cast.effects import (
     TrailsEffect,
     build_effect,
 )
-from c64cast.frame_source import BaseFrameSource, FrameSource
-from c64cast.generators import build_generator, generator_names
-from c64cast.modes import DisplayMode
-from c64cast.scene_factory import build_scene, validate_scene_cfg
-from c64cast.scenes import Scene, SourceScene, _render_with_overlays
-from c64cast.video import ensure_pyav
+from c64cast.scenes.frame_source import BaseFrameSource, FrameSource
+from c64cast.scenes.generators import build_generator, generator_names
+from c64cast.scenes.scenes import Scene, SourceScene, _render_with_overlays
+from c64cast.video.modes import DisplayMode
+from c64cast.video.video import ensure_pyav
 
 
 class GeneratorTest(unittest.TestCase):
@@ -133,7 +133,7 @@ class GeneratorTest(unittest.TestCase):
         # Fire's headline reaction: a transient + loudness push the heat field
         # toward the white-hot end of COLORMAP_HOT, so the reactive frame is
         # strictly brighter than the resting fire — the flames leap on the beat.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("fire")
         rest = g.render(0.5)  # pure path
@@ -160,7 +160,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(base, dense))
 
     def test_modulation_changes_output(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("plasma")
         base = g.render(1.0)  # pure path
@@ -177,7 +177,7 @@ class GeneratorTest(unittest.TestCase):
     def test_onset_flashes_brightness(self):
         # A transient (onset=1) must brighten the frame versus the same modulation
         # with onset=0 (the "color pulse / flash" behavior).
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("plasma")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -187,7 +187,7 @@ class GeneratorTest(unittest.TestCase):
     def test_beat_phase_advances_hue(self):
         # A larger accumulated beat_phase shifts the hue (tempo-driven cycling),
         # so frames at different beat_phase differ.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("plasma")
         m0 = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -211,7 +211,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertTrue((frame.sum(axis=-1) == 0).any())
 
     def test_mandelbrot_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("mandelbrot")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -219,7 +219,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
 
     def test_moire2_frame_shape_and_reacts_to_voice_freq(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("moire2")
         f0 = g.render(2.0)
@@ -232,7 +232,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(g.render(2.0, base), g.render(2.0, driven)))
 
     def test_halo_frame_shape_and_onset_spawns_extra_halo(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("halo")
         f0 = g.render(1.0)
@@ -245,7 +245,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
 
     def test_halo_level_grows_radius(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("halo")
         quiet = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -254,7 +254,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertGreater(int(g.render(1.0, loud).sum()), int(g.render(1.0, quiet).sum()))
 
     def test_epicycle_frame_shape_and_voice_freq_changes_shape(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("epicycle")
         f0 = g.render(3.0)
@@ -266,7 +266,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(g.render(3.0, base), g.render(3.0, driven)))
 
     def test_epicycle_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("epicycle")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -282,7 +282,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(f0, g.render(5.0)))  # `a` has drifted
 
     def test_hopalong_reacts_to_level_and_onset(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("hopalong")
         rest = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -308,7 +308,7 @@ class GeneratorTest(unittest.TestCase):
         np.testing.assert_array_equal(mask, mask[:, ::-1])
 
     def test_rorschach_onset_jumps_reveal(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("rorschach")
         rest = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -324,7 +324,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(f0, g.render(3.0)))
 
     def test_hiphotic_reacts_to_beat_phase(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("hiphotic")
         m0 = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -340,7 +340,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(f0, g.render(3.0)))
 
     def test_metaballs_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("metaballs")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -363,7 +363,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(base, zoomed))
 
     def test_rotozoomer_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("rotozoomer")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -385,7 +385,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(base, reshaped))
 
     def test_lissajous_reacts_to_beat_phase(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("lissajous")
         m0 = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -407,7 +407,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(base, reshaped))
 
     def test_dna_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("dna")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -429,7 +429,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(base, reshaped))
 
     def test_drift_level_grows_radius(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("drift")
         rest = MusicModulation(0.0, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -451,7 +451,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(base, reshaped))
 
     def test_colored_bursts_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("colored_bursts")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -473,7 +473,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(base, reshaped))
 
     def test_dotswarm_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("dotswarm")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -509,7 +509,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(f0, f1))
 
     def test_game_of_life_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("game_of_life")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -541,7 +541,7 @@ class GeneratorTest(unittest.TestCase):
         np.testing.assert_array_equal(g.render(0.0), fresh)
 
     def test_soap_onset_flashes_brightness(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("soap")
         rest = MusicModulation(0.3, 0.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -571,7 +571,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(g._shell_alive.any())  # noqa: SLF001
 
     def test_fireworks_onset_triggers_immediate_burst(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         g = generators.FireworksSource()
         g.render(0.1)  # let the accumulator/RNG advance past the first tick
@@ -587,7 +587,7 @@ class GeneratorTest(unittest.TestCase):
         # before comparing spread (right at the burst instant every particle
         # still sits exactly at the burst center, so spread would be zero
         # regardless of scale).
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         tight = generators.FireworksSource(scale=0.3)
@@ -660,7 +660,7 @@ class EffectTest(unittest.TestCase):
         # A transient + loudness raise the effective decay, so more of a prior
         # bright frame survives into the next — a brighter/longer tail than the
         # unmodulated baseline. Drives "the trail blooms on the beat".
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         bright = np.full((2, 2, 3), 200, np.uint8)
         black = np.zeros((2, 2, 3), np.uint8)
@@ -684,7 +684,7 @@ class EffectTest(unittest.TestCase):
         np.testing.assert_array_equal(eff.apply(f, 0.0, None), f)
 
     def test_pulse_zooms_on_onset(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         eff = build_effect("pulse")
         f = np.zeros((8, 8, 3), np.uint8)
@@ -696,7 +696,7 @@ class EffectTest(unittest.TestCase):
 
     def test_pulse_silent_modulation_is_noop(self):
         # A modulation present but with no transient/loudness ⇒ scale 1.0 ⇒ no-op.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         eff = build_effect("pulse")
         f = np.random.default_rng(4).integers(0, 256, (8, 8, 3)).astype(np.uint8)
@@ -706,7 +706,7 @@ class EffectTest(unittest.TestCase):
     def test_pulse_intensity_zero_is_identity_under_modulation(self):
         # intensity=0 scales the whole reaction away ⇒ scale collapses to 1.0
         # ⇒ identity even with a full transient present.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         eff = PulseEffect(intensity=0.0)
         f = np.random.default_rng(6).integers(0, 256, (8, 8, 3)).astype(np.uint8)
@@ -716,7 +716,7 @@ class EffectTest(unittest.TestCase):
     def test_pulse_intensity_scales_reaction(self):
         # A higher intensity zooms harder for the same transient — the frame
         # diverges further from the source than at the baseline intensity.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         f = np.zeros((16, 16, 3), np.uint8)
         f[6:10, 6:10] = 255
@@ -740,7 +740,7 @@ class EffectTest(unittest.TestCase):
 
     def test_rgb_shift_silent_modulation_is_noop(self):
         # Present-but-silent modulation rounds the shift to 0 ⇒ no-op.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         eff = build_effect("rgb_shift")
         f = np.random.default_rng(5).integers(0, 256, (8, 8, 3)).astype(np.uint8)
@@ -749,7 +749,7 @@ class EffectTest(unittest.TestCase):
 
     def test_rgb_shift_intensity_zero_is_identity_under_modulation(self):
         # intensity=0 zeros the separation ⇒ identity even with a full transient.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         eff = RgbShiftEffect(intensity=0.0)
         f = np.random.default_rng(7).integers(0, 256, (8, 16, 3)).astype(np.uint8)
@@ -758,7 +758,7 @@ class EffectTest(unittest.TestCase):
 
     def test_rgb_shift_separates_channels_on_onset(self):
         # A transient slews blue + red apart horizontally; green stays put.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         eff = build_effect("rgb_shift")
         f = np.random.default_rng(3).integers(0, 256, (8, 16, 3)).astype(np.uint8)
@@ -788,7 +788,7 @@ class EffectTest(unittest.TestCase):
     def test_blur_reactive_kick_increases_with_onset(self):
         # Same base intensity, more onset ⇒ more blur (base + reactive kick,
         # same shape as trails' reactive decay boost).
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         f = np.zeros((16, 16, 3), np.uint8)
         f[7:9, 7:9] = 255
@@ -804,7 +804,7 @@ class EffectTest(unittest.TestCase):
     def test_render_with_overlays_threads_modulation_to_effect(self):
         # The render path must hand the per-frame modulation snapshot to the
         # effect (mirrors the frame-source threading) so reactive effects react.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         snap = MusicModulation(0.4, 0.9, 1.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
         seen: dict[str, object] = {}
@@ -1016,7 +1016,7 @@ class AudioSourceTest(unittest.TestCase):
         # Freed from the DAC rate, listen captures + analyzes at the higher
         # listen_sample_rate (44.1 kHz by default), while mic stays at the DAC
         # rate so the analyzer matches what the C64 plays.
-        from c64cast.config import AudioFeaturesCfg
+        from c64cast.app.config import AudioFeaturesCfg
 
         listen_streamer = _FakeStreamer()
         listen = self._listen(listen_streamer)
@@ -1188,7 +1188,7 @@ class SourceSceneTest(unittest.TestCase):
     def test_modulation_threaded_from_audio_source_to_frame_source(self):
         # The audio source's features() snapshot must reach the frame source's
         # read() — this is the music→visuals wiring.
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         snap = MusicModulation(0.5, 1.0, 2.0, 120.0, (1.0, 0.0, 0.0), (True, False, False))
 
@@ -1225,7 +1225,7 @@ class SourceSceneTest(unittest.TestCase):
                 return None
 
         scene, _mode, _src = self._scene(audio_source=_BoomAudio())
-        with self.assertLogs("c64cast.scenes", level="ERROR"):
+        with self.assertLogs("c64cast.scenes.scenes", level="ERROR"):
             scene.setup()
         self.assertTrue(scene.is_done)
         scene.start_time = 0.0
@@ -1389,7 +1389,7 @@ class ConfigGenerativeTest(unittest.TestCase):
     def test_audio_source_file_builds_source_sized_to_track(self):
         import tempfile
 
-        from c64cast.audio_source import AudioFileSource
+        from c64cast.audio.audio_source import AudioFileSource
 
         with tempfile.TemporaryDirectory() as d:
             wav = f"{d}/tune.wav"
@@ -1426,7 +1426,7 @@ class ConfigGenerativeTest(unittest.TestCase):
         # (static) and crash the C64 (HW 2026-07-24).
         import tempfile
 
-        from c64cast.sampler import UltimateAudioSampler
+        from c64cast.audio.sampler import UltimateAudioSampler
 
         with tempfile.TemporaryDirectory() as d:
             wav = f"{d}/tune.wav"
@@ -1455,7 +1455,7 @@ class ConfigGenerativeTest(unittest.TestCase):
         # playlist default (None) — the quickcast `c64cast tune.mp3` path.
         import tempfile
 
-        from c64cast.sampler import UltimateAudioSampler
+        from c64cast.audio.sampler import UltimateAudioSampler
 
         with tempfile.TemporaryDirectory() as d:
             wav = f"{d}/tune.wav"

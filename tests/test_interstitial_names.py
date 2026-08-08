@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 import cv2
 import numpy as np
 
-from c64cast.scenes import SlideshowScene, VideoScene, _display_name
+from c64cast.scenes.scenes import SlideshowScene, VideoScene, _display_name
 
 
 class DisplayNameTest(unittest.TestCase):
@@ -75,7 +75,7 @@ class VideoPrepareNextTest(unittest.TestCase):
             os.remove(os.path.join(self.tmp.name, n))
         # Both _pick_filepath and prepare_next log the expected resolve
         # failure; assertLogs asserts it and keeps it off the console.
-        with self.assertLogs("c64cast.scenes", level="ERROR"):
+        with self.assertLogs("c64cast.scenes.scenes", level="ERROR"):
             self.assertFalse(scene._pick_filepath())
             scene.prepare_next()
         self.assertFalse(scene._prepared)
@@ -129,7 +129,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
     a bare instance with the SID-loading internals stubbed."""
 
     def _bare_scene(self):
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene.__new__(WaveformScene)
         scene._candidates = ["a.sid", "b.sid"]
@@ -157,7 +157,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
         self.assertEqual(scene.duration_s, 42.0)
 
     def test_setup_consumes_prepared_pick_without_reloading(self):
-        from c64cast.scenes import Scene
+        from c64cast.scenes.scenes import Scene
 
         scene = self._bare_scene()
         scene.prepare_next()

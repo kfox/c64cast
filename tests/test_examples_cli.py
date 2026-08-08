@@ -18,9 +18,9 @@ from contextlib import redirect_stdout
 
 from _fakes import MachineSettingsIsolation
 
-from c64cast import config as cfgmod
-from c64cast import introspect, paths
-from c64cast.cli import _resolve_configs, build_parser, main
+from c64cast.app import config as cfgmod
+from c64cast.app import introspect, paths
+from c64cast.app.cli import _resolve_configs, build_parser, main
 
 # Loading a demo applies the machine-settings layer; isolate it so a real
 # ~/.config/c64cast/settings.toml on the dev's machine can't change what the

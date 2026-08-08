@@ -1,4 +1,4 @@
-"""Unit tests for c64cast/dither.py's spatial-dither primitives.
+"""Unit tests for c64cast/video/dither.py's spatial-dither primitives.
 
 bayer_offset / blue_noise_offset (ordered dither) and error_diffuse /
 error_diffuse_cells (Floyd-Steinberg / Atkinson) are pure numpy — no
@@ -12,7 +12,7 @@ import unittest
 
 import numpy as np
 
-from c64cast import dither
+from c64cast.video import dither
 
 
 class BayerOffsetTest(unittest.TestCase):

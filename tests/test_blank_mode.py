@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 from _fakes import FakeAPI
 
-from c64cast.modes import BlankDisplayMode, MCMDisplayMode
+from c64cast.video.modes import BlankDisplayMode, MCMDisplayMode
 
 
 class BlankDisplayModeTest(unittest.TestCase):
@@ -78,7 +78,7 @@ class BlankDisplayModeTest(unittest.TestCase):
 
 class BlankSceneTest(unittest.TestCase):
     def test_scene_constructs_without_source(self):
-        from c64cast.scenes import BlankScene
+        from c64cast.scenes.scenes import BlankScene
 
         api = FakeAPI()
         mode = BlankDisplayMode()
@@ -87,7 +87,7 @@ class BlankSceneTest(unittest.TestCase):
         self.assertIsNone(scene.audio)
 
     def test_process_frame_returns_false_after_duration(self):
-        from c64cast.scenes import BlankScene
+        from c64cast.scenes.scenes import BlankScene
 
         api = FakeAPI()
         mode = BlankDisplayMode()
@@ -107,13 +107,13 @@ class PetsciiCompatibleValidationTest(unittest.TestCase):
     other char modes (MCM)."""
 
     def test_blank_mode_accepts_petscii_overlay(self):
-        from c64cast.overlays import build_overlay, validate_for_scene
+        from c64cast.scenes.overlays import build_overlay, validate_for_scene
 
         ov = build_overlay({"type": "clock"}, audio=None)
         validate_for_scene(ov, BlankDisplayMode())  # no raise
 
     def test_mcm_still_rejects_petscii_overlay(self):
-        from c64cast.overlays import build_overlay, validate_for_scene
+        from c64cast.scenes.overlays import build_overlay, validate_for_scene
 
         ov = build_overlay({"type": "clock"}, audio=None)
         with self.assertRaises(ValueError):

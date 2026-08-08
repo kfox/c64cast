@@ -10,7 +10,7 @@ Usage:
         --dma-port 8064 --http-port 8080 \\
         --writes-log /tmp/fake-u64-writes.jsonl
 
-The DMA service uses opcodes from c64cast/socket_dma.py:
+The DMA service uses opcodes from c64cast/hw/socket_dma.py:
   0xFF0E IDENTIFY   →  responds 1-byte length + ASCII product string
   0xFF1F AUTHENTICATE → responds 1 byte (always 0x01 = accepted)
   0xFF06 DMAWRITE  →  no response; recorded to the writes log
@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, urlsplit
 log = logging.getLogger("fake_u64")
 
 
-# Mirror of c64cast/socket_dma.py opcodes. Duplicated here so the
+# Mirror of c64cast/hw/socket_dma.py opcodes. Duplicated here so the
 # stub stays standalone (no c64cast import — useful when the stub
 # is run on a different machine for genuine multi-host testing).
 CMD_KEYB = 0xFF03

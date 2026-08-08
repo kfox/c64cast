@@ -28,12 +28,12 @@ from types import SimpleNamespace
 
 import cv2
 
-from c64cast.backend import BufferedWriteBackend
-from c64cast.effects import build_effect
-from c64cast.framebuffer import Framebuffer
-from c64cast.generators import build_generator
-from c64cast.scene_factory import _build_display_mode
-from c64cast.scenes import _render_with_overlays
+from c64cast.app.scene_factory import _build_display_mode
+from c64cast.hw.backend import BufferedWriteBackend
+from c64cast.scenes.effects import build_effect
+from c64cast.scenes.generators import build_generator
+from c64cast.scenes.scenes import _render_with_overlays
+from c64cast.video.framebuffer import Framebuffer
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
 
@@ -108,7 +108,7 @@ def main() -> None:
 
     modulation = None
     if args.onset is not None or args.beat_phase is not None or args.level is not None:
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         modulation = MusicModulation(
             level=args.level or 0.0,
@@ -134,7 +134,7 @@ def main() -> None:
 
     overlays = []
     if args.overlay:
-        from c64cast.overlays import build_overlay
+        from c64cast.scenes.overlays import build_overlay
 
         cfg = {"type": args.overlay}
         if args.overlay in ("callsign", "marquee", "scrolling_text"):
@@ -152,8 +152,8 @@ def main() -> None:
 
     menu = None
     if args.menu:
-        from c64cast.config import SceneCfg
-        from c64cast.overlays.menu import MenuOverlay
+        from c64cast.app.config import SceneCfg
+        from c64cast.scenes.overlays.menu import MenuOverlay
 
         # Give the scene the attributes the menu option-model reads.
         scene._cfg = SceneCfg(type="generative", display=args.display, source=args.source)

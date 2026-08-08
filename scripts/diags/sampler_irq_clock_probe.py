@@ -49,11 +49,10 @@ def _probe(
 ) -> int:
     import numpy as np
 
-    import c64cast.config as cfgmod
-    import c64cast.hw_provision as hw_provision
-    from c64cast.backend import make_backend
-    from c64cast.connect import apply_to_config, parse_connection_uri
-    from c64cast.sampler import (
+    import c64cast.app.config as cfgmod
+    import c64cast.hw.hw_provision as hw_provision
+    from c64cast.app.connect import apply_to_config, parse_connection_uri
+    from c64cast.audio.sampler import (
         DEFAULT_RING_BASE,
         SAMPLER_PAN_CENTER,
         SAMPLER_REF_CLOCK,
@@ -64,6 +63,7 @@ def _probe(
         control_byte,
         divider_for_rate,
     )
+    from c64cast.hw.backend import make_backend
 
     cfg = cfgmod.Config()
     apply_to_config(cfg, parse_connection_uri(url))

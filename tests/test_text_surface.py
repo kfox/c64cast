@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from c64cast import text_surface
-from c64cast.text_surface import (
+from c64cast.scenes import text_surface
+from c64cast.scenes.text_surface import (
     CharTextSurface,
     HiresTextSurface,
     MHiresTextSurface,

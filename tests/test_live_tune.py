@@ -13,28 +13,29 @@ import unittest
 from dataclasses import fields, replace
 from typing import cast
 
-from c64cast import config as cfgmod
-from c64cast import scene_factory, scenes
-from c64cast.config import _PALETTE_MODE_CHOICES, ColorCfg, Config, SceneCfg
+from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
+from c64cast.app.config import _PALETTE_MODE_CHOICES, ColorCfg, Config, SceneCfg
+from c64cast.scenes import scenes
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast.dither import DITHER_METHODS
-from c64cast.midi_control import MidiControlListener
-from c64cast.modes import (
+from c64cast.control.midi_control import MidiControlListener
+from c64cast.control.transport import LiveTuneTracker, atomic_write_text
+from c64cast.video.dither import DITHER_METHODS
+from c64cast.video.modes import (
     HiresDisplayMode,
     MCMDisplayMode,
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
 )
-from c64cast.palette import (
+from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
     ColorFit,
     ColorFitAccumulator,
 )
-from c64cast.transport import LiveTuneTracker, atomic_write_text
 
 
 def _color_choices(field_name: str) -> tuple[str, ...]:

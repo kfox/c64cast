@@ -17,8 +17,8 @@ import unittest
 from dataclasses import FrozenInstanceError, replace
 from unittest import mock
 
-from c64cast import config as cfgmod
-from c64cast.backend import (
+from c64cast.app import config as cfgmod
+from c64cast.hw.backend import (
     BACKENDS,
     DELTA_CHUNK_BYTES,
     ULTIMATE_PROFILE,
@@ -167,8 +167,8 @@ class MakeBackendTest(unittest.TestCase):
         # Patch the socket connect so no hardware is needed; assert the
         # factory builds an Ultimate64API carrying a profile whose
         # default_fps was resolved from the configured video system.
-        with mock.patch("c64cast.socket_dma.SocketDMAClient.connect"):
-            from c64cast.api import Ultimate64API
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            from c64cast.hw.api import Ultimate64API
 
             api = make_backend(self._cfg(system="NTSC"))
             self.assertIsInstance(api, Ultimate64API)
@@ -180,8 +180,8 @@ class MakeBackendTest(unittest.TestCase):
             self.assertEqual(api_pal.profile.default_fps, 50.0)
 
     def test_direct_construction_defaults_to_ultimate_profile(self):
-        with mock.patch("c64cast.socket_dma.SocketDMAClient.connect"):
-            from c64cast.api import Ultimate64API
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            from c64cast.hw.api import Ultimate64API
 
             api = Ultimate64API("http://example.lan")
             self.assertIs(api.profile, ULTIMATE_PROFILE)
@@ -189,8 +189,8 @@ class MakeBackendTest(unittest.TestCase):
     def test_ultimate_supports_reu_via_backend_surface(self):
         # reu_write is the backend-agnostic REU entry point; on the Ultimate
         # it forwards to the socket client's reuwrite.
-        with mock.patch("c64cast.socket_dma.SocketDMAClient.connect"):
-            from c64cast.api import Ultimate64API
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            from c64cast.hw.api import Ultimate64API
 
             api = Ultimate64API("http://example.lan")
             with mock.patch.object(api.socket_dma, "reuwrite") as rw:
@@ -318,7 +318,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
     def test_listener_exception_does_not_break_write(self):
         b = self._b()
         b.add_write_listener(lambda a, d: (_ for _ in ()).throw(RuntimeError()))
-        with self.assertLogs("c64cast.backend", level="ERROR"):
+        with self.assertLogs("c64cast.hw.backend", level="ERROR"):
             b.write_memory("d020", "0e")  # must not propagate
         self.assertEqual(b.emits, [(0xD020, b"\x0e")])
 
@@ -326,7 +326,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
     def test_emit_failure_ladder_logs_and_counts(self):
         b = self._b()
         b.fail = True
-        with self.assertLogs("c64cast.backend", level="WARNING") as cap:
+        with self.assertLogs("c64cast.hw.backend", level="WARNING") as cap:
             for _ in range(50):
                 b.write_memory("d020", "00")
         self.assertEqual(b.stats["errors"], 50)
@@ -383,7 +383,7 @@ class MakeBackendTeensyromValidationTest(unittest.TestCase):
         # auto-detect to None so it's deterministic on a Mac with a TR attached.
         cfg = self._cfg(transport="serial", serial_port="")
         with (
-            mock.patch("c64cast.teensyrom_dma.autodetect_serial_port", return_value=None),
+            mock.patch("c64cast.hw.teensyrom_dma.autodetect_serial_port", return_value=None),
             self.assertRaises(ValueError) as ctx,
         ):
             make_backend(cfg)

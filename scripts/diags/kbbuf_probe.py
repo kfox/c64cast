@@ -30,8 +30,8 @@ def main() -> int:
     args = ap.parse_args()
     code = int(args.code, 0)
 
-    from c64cast import config as cfgmod
-    from c64cast.cli import make_backend
+    from c64cast.app import config as cfgmod
+    from c64cast.app.cli import make_backend
 
     cfg = cfgmod.Config()
     cfg.ultimate64.url = args.url

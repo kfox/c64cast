@@ -10,7 +10,7 @@ import unittest
 
 import numpy as np
 
-from c64cast.palette import (
+from c64cast.video.palette import (
     _PALETTE_HUES_DEG,
     _PALETTE_LAB,
     C64_COLOR_NAMES,
@@ -93,7 +93,7 @@ class ResolveColorTest(unittest.TestCase):
         self.assertEqual(resolve_color("light_green"), 13)
 
     def test_default_fallback_logs_warning(self):
-        with self.assertLogs("c64cast.palette", level="WARNING") as cm:
+        with self.assertLogs("c64cast.video.palette", level="WARNING") as cm:
             self.assertEqual(resolve_color("chartreuse", default=1), 1)
         self.assertTrue(any("chartreuse" in m for m in cm.output))
 
@@ -605,7 +605,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         return f
 
     def test_mcm_palette_mode_validation(self):
-        from c64cast.modes import MCMDisplayMode
+        from c64cast.video.modes import MCMDisplayMode
 
         with self.assertRaises(ValueError):
             MCMDisplayMode(palette_mode="bogus")
@@ -620,7 +620,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         self.assertEqual(tuple(m._channel_boost), tuple(CHANNEL_BOOST))
 
     def test_mhires_palette_mode_validation(self):
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         with self.assertRaises(ValueError):
             MultiHiresDisplayMode(palette_mode="bogus")
@@ -634,7 +634,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         # [color] shaping applies to every chromatic mode and is fully
         # configurable: bands extend the defaults, replace+[] disables them,
         # and channel_boost overrides the built-in BGR gain.
-        from c64cast.modes import MCMDisplayMode, MultiHiresDisplayMode
+        from c64cast.video.modes import MCMDisplayMode, MultiHiresDisplayMode
 
         for cls in (MCMDisplayMode, MultiHiresDisplayMode):
             extended = cls(
@@ -675,7 +675,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         # signal rather than argpartition tiebreaks.
         from _fakes import FakeAPI
 
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         f = np.zeros((240, 320, 3), dtype=np.uint8)
         yy = np.linspace(0, 255, 240, dtype=np.uint8)[:, None]
@@ -702,12 +702,12 @@ class DisplayModePaletteTest(unittest.TestCase):
         # perceptual=True sets the mode's flag, scales the percell hysteresis
         # bonuses to the Lab metric's magnitude, and builds a perceptual
         # pal_pairwise. Both quantizing bitmap modes accept it.
-        from c64cast.modes import (
+        from c64cast.video.modes import (
             PERCELL_QUANT_HYSTERESIS_BONUS,
             MCMDisplayMode,
             MultiHiresDisplayMode,
         )
-        from c64cast.palette import PERCEPTUAL_DIST_SCALE
+        from c64cast.video.palette import PERCEPTUAL_DIST_SCALE
 
         m = MultiHiresDisplayMode(palette_mode="percell", perceptual=True)
         self.assertTrue(m._perceptual)
@@ -727,7 +727,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         # change the picks).
         from _fakes import FakeAPI
 
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         # A smooth BGR gradient spans the ambiguous mid-tones (warm grays,
         # violets) where the two metrics disagree — solid primaries would
@@ -758,7 +758,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         # could flip the 3rd top-3 slot on borderline-tied cells every frame.
         from _fakes import FakeAPI
 
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="percell")
@@ -784,7 +784,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         # should be byte-identical, demonstrating the sticky behavior.
         from _fakes import FakeAPI
 
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         rng = np.random.default_rng(42)
         api = FakeAPI()
@@ -828,7 +828,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         #     out-of-palette color (e.g. green) that tore into view on a slow
         #     transport. So screen/color RAM only ever carries bg0 or a color
         #     genuinely present in that cell.
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         m = MultiHiresDisplayMode(palette_mode="percell")
         # Synthetic per-cell layout (so the present set per cell is exact, no
@@ -866,7 +866,7 @@ class DisplayModePaletteTest(unittest.TestCase):
                 self.assertTrue(slots <= {0, 4}, f"sparse cell {i} leaked garbage")
 
     def test_mcm_cheap_compose_produces_three_bg_colors(self):
-        from c64cast.modes import MCMDisplayMode
+        from c64cast.video.modes import MCMDisplayMode
 
         m = MCMDisplayMode(palette_mode="cheap")
         out = m.compose(self._fake_frame())
@@ -881,7 +881,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         # On a 4-region frame with gray + 3 chromatic, the vivid picker
         # should reach for the chromatic entries instead of letting any
         # remaining gray-axis variants take 2 of the 3 bg slots.
-        from c64cast.modes import MCMDisplayMode
+        from c64cast.video.modes import MCMDisplayMode
 
         cheap = MCMDisplayMode(palette_mode="cheap").compose(self._fake_frame())
         vivid = MCMDisplayMode(palette_mode="vivid").compose(self._fake_frame())
@@ -906,7 +906,7 @@ class GrayscaleModeTest(unittest.TestCase):
         return f
 
     def test_mcm_grayscale_picks_only_gray_axis_bgs(self):
-        from c64cast.modes import MCMDisplayMode
+        from c64cast.video.modes import MCMDisplayMode
 
         m = MCMDisplayMode(palette_mode="grayscale")
         out = m.compose(self._fake_frame())
@@ -926,7 +926,7 @@ class GrayscaleModeTest(unittest.TestCase):
         # MultiHires.render() doesn't return buffers; capture via FakeAPI.
         from _fakes import FakeAPI
 
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="grayscale")
@@ -951,7 +951,7 @@ class CycleStyleTest(unittest.TestCase):
     def test_mcm_cycle_rotates_palette_mode(self):
         from _fakes import FakeAPI
 
-        from c64cast.modes import PALETTE_MODES, MCMDisplayMode
+        from c64cast.video.modes import PALETTE_MODES, MCMDisplayMode
 
         api = FakeAPI()
         m = MCMDisplayMode(palette_mode="cheap")
@@ -973,7 +973,7 @@ class CycleStyleTest(unittest.TestCase):
         # compose() uses the fixed slot assignment, not adaptive picks.
         from _fakes import FakeAPI
 
-        from c64cast.modes import MCMDisplayMode
+        from c64cast.video.modes import MCMDisplayMode
 
         api = FakeAPI()
         m = MCMDisplayMode(palette_mode="vivid")
@@ -989,7 +989,7 @@ class CycleStyleTest(unittest.TestCase):
     def test_mhires_cycle_into_grayscale_populates_lut(self):
         from _fakes import FakeAPI
 
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         api = FakeAPI()
         m = MultiHiresDisplayMode(palette_mode="cheap")
@@ -1005,7 +1005,7 @@ class CycleStyleTest(unittest.TestCase):
     def test_hires_cycle_rotates_through_styles(self):
         from _fakes import FakeAPI
 
-        from c64cast.modes import HIRES_STYLES, HiresDisplayMode
+        from c64cast.video.modes import HIRES_STYLES, HiresDisplayMode
 
         api = FakeAPI()
         m = HiresDisplayMode(style="normal")
@@ -1019,7 +1019,7 @@ class CycleStyleTest(unittest.TestCase):
         self.assertEqual(seen[0], seen[-1])
 
     def test_hires_style_validation(self):
-        from c64cast.modes import HiresDisplayMode
+        from c64cast.video.modes import HiresDisplayMode
 
         with self.assertRaises(ValueError):
             HiresDisplayMode(style="bogus")

@@ -1,4 +1,4 @@
-"""Tests for SID Player Autoconfig (c64cast/sid_autoconfig.py): the pure
+"""Tests for SID Player Autoconfig (c64cast/sid/sid_autoconfig.py): the pure
 plan_sid_model_config decision matrix, the resolver, and the live-config
 apply/short-circuit paths (FakeAPI — no real hardware)."""
 
@@ -11,8 +11,10 @@ import unittest
 
 from _fakes import FakeAPI
 
-from c64cast import sid_autoconfig as sa
-from c64cast.asid_sidmap import (
+from c64cast.app.config import Config
+from c64cast.hw.backend import HardwareProfile
+from c64cast.sid import sid_autoconfig as sa
+from c64cast.sid.asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
     CAT_ULTISID,
@@ -26,9 +28,7 @@ from c64cast.asid_sidmap import (
     ITEM_ULTISID1_FILTER,
     ITEM_ULTISID2_ADDR,
 )
-from c64cast.backend import HardwareProfile
-from c64cast.config import Config
-from c64cast.sid_host_emu import SidHeader
+from c64cast.sid.sid_host_emu import SidHeader
 
 
 def _ultimate_fake(*, supports_config: bool = True) -> FakeAPI:
@@ -124,7 +124,7 @@ class PlanSidModelConfigTest(unittest.TestCase):
         self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "6581")
 
     def test_no_match_and_ultisid_disallowed_warns_and_leaves_unchanged(self):
-        with self.assertLogs("c64cast.sid_autoconfig", level="WARNING") as cm:
+        with self.assertLogs("c64cast.sid.sid_autoconfig", level="WARNING") as cm:
             plan = sa.plan_sid_model_config(
                 chips=((0xD400, "8580"),),
                 current_addr_map={0xD400: "socket1"},
@@ -136,7 +136,7 @@ class PlanSidModelConfigTest(unittest.TestCase):
 
     def test_no_free_ultisid_core_warns(self):
         # Both cores already reserved by earlier chips in this pass.
-        with self.assertLogs("c64cast.sid_autoconfig", level="WARNING") as cm:
+        with self.assertLogs("c64cast.sid.sid_autoconfig", level="WARNING") as cm:
             plan = sa.plan_sid_model_config(
                 chips=((0xD400, "8580"), (0xD420, "8580"), (0xD440, "8580")),
                 current_addr_map={},

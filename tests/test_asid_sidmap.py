@@ -1,4 +1,4 @@
-"""Tests for the pure U64 multi-SID address planner (c64cast/asid_sidmap.py).
+"""Tests for the pure U64 multi-SID address planner (c64cast/sid/asid_sidmap.py).
 
 The planner emits ``{(category, item): value}`` REST-config PUTs. To prove those
 PUTs actually realize the intended distinct SID addresses, we port the firmware's
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from c64cast import asid_sidmap as m
+from c64cast.sid import asid_sidmap as m
 
 # --- firmware address-math oracle (port of u64_config.cc) --------------------
 

@@ -21,7 +21,7 @@ The site is one page per source file, mirroring the repo with `.html` for `.md`:
 which is what makes link rewriting nearly free -- `[Fades](04-x.md#fades)` is
 already relative and already anchored on GitHub's slug rule, so it needs only
 its extension changed. A link at something the site does not publish
-(`docs/architecture.md`, `../c64cast/audio.py`, `LICENSE`) is sent to GitHub
+(`docs/architecture.md`, `../c64cast/audio/audio.py`, `LICENSE`) is sent to GitHub
 instead, so nothing 404s and nothing has to be restated.
 
 Every URL the site emits is relative. GitHub Pages serves this under

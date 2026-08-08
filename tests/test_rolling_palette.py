@@ -7,8 +7,8 @@ import unittest
 
 import numpy as np
 
-from c64cast.palette import C64_PALETTE_BGR, ColorMap
-from c64cast.rolling_palette import RollingForcePalette
+from c64cast.video.palette import C64_PALETTE_BGR, ColorMap
+from c64cast.video.rolling_palette import RollingForcePalette
 
 
 def _solid(idx: int, h: int = 64, w: int = 64) -> np.ndarray:
@@ -92,8 +92,8 @@ class SceneGatingTest(unittest.TestCase):
     def test_maybe_start_gates_on_mode_and_color(self):
         from types import SimpleNamespace
 
-        from c64cast.config import ColorCfg
-        from c64cast.scenes import _maybe_start_rolling_palette
+        from c64cast.app.config import ColorCfg
+        from c64cast.scenes.scenes import _maybe_start_rolling_palette
 
         scene = SimpleNamespace(name="live")
         applying_mode = SimpleNamespace(_force_palette=True, set_color_map=lambda c: None)
@@ -118,7 +118,7 @@ class SceneGatingTest(unittest.TestCase):
     def test_apply_installs_polled_map_and_is_none_safe(self):
         from types import SimpleNamespace
 
-        from c64cast.scenes import _apply_rolling_palette
+        from c64cast.scenes.scenes import _apply_rolling_palette
 
         installed: list[ColorMap] = []
         mode = SimpleNamespace(set_color_map=installed.append)

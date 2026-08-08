@@ -9,9 +9,9 @@ from __future__ import annotations
 import time
 import unittest
 
-from c64cast.c64 import SID
-from c64cast.modulation import MusicModulation
-from c64cast.music_features import SidFeatureStream
+from c64cast.hw.c64 import SID
+from c64cast.scenes.modulation import MusicModulation
+from c64cast.scenes.music_features import SidFeatureStream
 
 
 def _make_sid(*, init=0x1000, play=0x1001, payload=(0x60, 0x60), load=0x1000) -> bytes:

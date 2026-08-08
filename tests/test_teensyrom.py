@@ -14,12 +14,12 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-from c64cast import config as cfgmod
-from c64cast import teensyrom_api as tr_api
-from c64cast.api import _DEFAULT_PLAYER_LAYOUT
-from c64cast.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
-from c64cast.teensyrom_api import TeensyROMBackend
-from c64cast.teensyrom_dma import (
+from c64cast.app import config as cfgmod
+from c64cast.hw import teensyrom_api as tr_api
+from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
+from c64cast.hw.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
+from c64cast.hw.teensyrom_api import TeensyROMBackend
+from c64cast.hw.teensyrom_dma import (
     DRIVE_SD,
     TOK_ACK,
     TOK_FAIL,
@@ -375,7 +375,7 @@ class BackendTest(unittest.TestCase):
             t.queue_token(TOK_ACK)
             t.queue_raw(b"\x00\x40")  # $4000 little-endian on the wire
         t.queue_token(TOK_ACK)  # divider write
-        with mock.patch("c64cast.api.time.sleep"):
+        with mock.patch("c64cast.hw.api.time.sleep"):
             n = b._tune_play_divider()
         self.assertEqual(n, 2)
         # Divider byte patched at player_base + DIVIDER_OFFSET ($C300+59=$C33B).
@@ -610,7 +610,7 @@ class ReuCoercionTest(unittest.TestCase):
         return TeensyROMBackend(t, profile=profile, storage="sd")
 
     def test_no_reu_backend_coerces_opt_ins_off(self):
-        from c64cast.cli import _coerce_reu_for_backend
+        from c64cast.app.cli import _coerce_reu_for_backend
 
         cfg = self._cfg(pump=True, staged=True)
         with self.assertLogs("c64cast", level="WARNING"):
@@ -620,14 +620,14 @@ class ReuCoercionTest(unittest.TestCase):
 
     def test_no_reu_backend_leaves_auto_staged_alone(self):
         # "auto" self-heals elsewhere; the coercion only touches explicit true.
-        from c64cast.cli import _coerce_reu_for_backend
+        from c64cast.app.cli import _coerce_reu_for_backend
 
         cfg = self._cfg(pump=False, staged="auto")
         _coerce_reu_for_backend(cfg, self._backend(supports_reu=False))
         self.assertEqual(cfg.video.use_reu_staged, "auto")
 
     def test_reu_backend_unchanged(self):
-        from c64cast.cli import _coerce_reu_for_backend
+        from c64cast.app.cli import _coerce_reu_for_backend
 
         cfg = self._cfg(pump=True, staged=True)
         _coerce_reu_for_backend(cfg, self._backend(supports_reu=True))
@@ -660,44 +660,44 @@ class TRSerialAutodetectTest(unittest.TestCase):
     OTHER = _FakePort("COM3", vid=0x1234, pid=0x5678, product="Some Modem")
 
     def test_matches_by_vid_pid_when_product_missing(self):
-        from c64cast.teensyrom_dma import _is_teensyrom_port
+        from c64cast.hw.teensyrom_dma import _is_teensyrom_port
 
         self.assertTrue(_is_teensyrom_port(self.WINDOWS))
 
     def test_matches_by_product_name_fallback(self):
-        from c64cast.teensyrom_dma import _is_teensyrom_port
+        from c64cast.hw.teensyrom_dma import _is_teensyrom_port
 
         # Product string alone identifies it even if the (VID, PID) is unknown.
         self.assertTrue(_is_teensyrom_port(_FakePort("COM7", product="TeensyROM v1")))
 
     def test_rejects_non_teensyrom_port(self):
-        from c64cast.teensyrom_dma import _is_teensyrom_port
+        from c64cast.hw.teensyrom_dma import _is_teensyrom_port
 
         self.assertFalse(_is_teensyrom_port(self.OTHER))
 
     def _patch_comports(self, ports):
         # Patch the isolated enumeration helper (not serial.tools.list_ports)
         # so these tests don't require the 'tr' extra / pyserial in CI.
-        return mock.patch("c64cast.teensyrom_dma._list_comports", return_value=ports)
+        return mock.patch("c64cast.hw.teensyrom_dma._list_comports", return_value=ports)
 
     def test_autodetect_returns_matching_device(self):
-        from c64cast import teensyrom_dma
+        from c64cast.hw import teensyrom_dma
 
         with self._patch_comports([self.OTHER, self.WINDOWS]):
             self.assertEqual(teensyrom_dma.autodetect_serial_port(), "COM19")
 
     def test_autodetect_returns_none_when_no_match(self):
-        from c64cast import teensyrom_dma
+        from c64cast.hw import teensyrom_dma
 
         with self._patch_comports([self.OTHER]):
             self.assertIsNone(teensyrom_dma.autodetect_serial_port())
 
     def test_autodetect_warns_and_picks_lowest_on_multiple_boards(self):
-        from c64cast import teensyrom_dma
+        from c64cast.hw import teensyrom_dma
 
         second = _FakePort("COM20", vid=0x16C0, pid=0x0489)
         with self._patch_comports([second, self.WINDOWS]):
-            with self.assertLogs("c64cast.teensyrom_dma", level="WARNING"):
+            with self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"):
                 self.assertEqual(teensyrom_dma.autodetect_serial_port(), "COM19")
 
 
@@ -711,7 +711,7 @@ class MakeBackendTest(unittest.TestCase):
         cfg.teensyrom.transport = "serial"
         cfg.teensyrom.serial_port = None
         with (
-            mock.patch("c64cast.teensyrom_dma.autodetect_serial_port", return_value=None),
+            mock.patch("c64cast.hw.teensyrom_dma.autodetect_serial_port", return_value=None),
             self.assertRaises(ValueError),
         ):
             make_backend(cfg)
@@ -731,11 +731,11 @@ class MakeBackendTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "c64cast.teensyrom_dma.autodetect_serial_port",
+                "c64cast.hw.teensyrom_dma.autodetect_serial_port",
                 return_value="/dev/cu.usbmodemAUTO1",
             ),
-            mock.patch("c64cast.teensyrom_api.TeensyROMBackend", side_effect=fake_backend),
-            self.assertLogs("c64cast.backend", level="INFO"),
+            mock.patch("c64cast.hw.teensyrom_api.TeensyROMBackend", side_effect=fake_backend),
+            self.assertLogs("c64cast.hw.backend", level="INFO"),
         ):
             make_backend(cfg)
         self.assertEqual(captured["port"], "/dev/cu.usbmodemAUTO1")
@@ -754,10 +754,10 @@ class MakeBackendTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "c64cast.teensyrom_dma.autodetect_serial_port",
+                "c64cast.hw.teensyrom_dma.autodetect_serial_port",
                 side_effect=AssertionError("auto-detect must not run when serial_port is set"),
             ),
-            mock.patch("c64cast.teensyrom_api.TeensyROMBackend", side_effect=fake_backend),
+            mock.patch("c64cast.hw.teensyrom_api.TeensyROMBackend", side_effect=fake_backend),
         ):
             make_backend(cfg)
         self.assertEqual(captured["port"], "/dev/ttyACM0")

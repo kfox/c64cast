@@ -6,7 +6,7 @@ import logging
 import time
 import unittest
 
-from c64cast.profiler import (
+from c64cast.app.profiler import (
     FrameProfiler,
     NullProfiler,
     _Stats,

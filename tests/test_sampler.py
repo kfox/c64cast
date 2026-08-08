@@ -1,4 +1,4 @@
-"""Unit tests for the Ultimate Audio FPGA PCM sampler (c64cast/sampler.py) and
+"""Unit tests for the Ultimate Audio FPGA PCM sampler (c64cast/audio/sampler.py) and
 its config/provisioning integration. No hardware: a recording fake backend
 stands in for the U64, and the hw_provision REST queries are mocked."""
 
@@ -12,9 +12,10 @@ from unittest import mock
 
 import numpy as np
 
-from c64cast import config as cfgmod
-from c64cast import hw_provision, scene_factory
-from c64cast import sampler as s
+from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
+from c64cast.audio import sampler as s
+from c64cast.hw import hw_provision
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +401,7 @@ class ResolveAudioBackendTest(unittest.TestCase):
         )
 
     def test_explicit_sampler_warns_and_falls_back(self):
-        with self.assertLogs("c64cast.scene_factory", level="WARNING"):
+        with self.assertLogs("c64cast.app.scene_factory", level="WARNING"):
             got = scene_factory.resolve_audio_backend(
                 "sampler", supports_sampler=False, sampler_available=False
             )

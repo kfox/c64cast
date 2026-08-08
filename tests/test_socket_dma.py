@@ -15,7 +15,7 @@ import unittest
 from collections import deque
 from unittest.mock import patch
 
-from c64cast.socket_dma import (
+from c64cast.hw.socket_dma import (
     CMD_AUTHENTICATE,
     CMD_DMAWRITE,
     CMD_IDENTIFY,
@@ -83,7 +83,7 @@ def _client_with(
     Set connect=False if the test wants to drive the connect() flow itself."""
     c = SocketDMAClient("test-host", port=64, password=password)
     if connect:
-        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake):
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake):
             c.connect()
     return c
 
@@ -99,7 +99,7 @@ class ConnectAndIdentifyTest(unittest.TestCase):
     def test_connect_refused_raises_socketdmaerror(self):
         c = SocketDMAClient("test-host", port=64)
         with patch(
-            "c64cast.socket_dma.socket.create_connection", side_effect=ConnectionRefusedError()
+            "c64cast.hw.socket_dma.socket.create_connection", side_effect=ConnectionRefusedError()
         ):
             with self.assertRaises(SocketDMAError) as ctx:
                 c.connect()
@@ -120,7 +120,7 @@ class ConnectAndIdentifyTest(unittest.TestCase):
 
     def test_auth_rejected_raises(self):
         fake = FakeSocket([b"\x00"])  # 0 = rejected
-        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake):
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake):
             c = SocketDMAClient("test-host", port=64, password="wrong")
             with self.assertRaises(SocketDMAError) as ctx:
                 c.connect()
@@ -200,8 +200,8 @@ class ReconnectTest(unittest.TestCase):
         fake2 = FakeSocket([_IDENT_REPLY])
         # The reconnect path logs a WARNING — capture it (so it doesn't
         # spam stderr) and verify the expected message was emitted.
-        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake2):
-            with self.assertLogs("c64cast.socket_dma", level="WARNING") as cap:
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="WARNING") as cap:
                 c.dmawrite(0xD020, b"\x0e")
         self.assertTrue(
             any("send failed (scripted failure) — reconnecting" in line for line in cap.output),
@@ -222,8 +222,8 @@ class ReconnectTest(unittest.TestCase):
 
         fake2 = FakeSocket([_IDENT_REPLY])
         fake2.fail_sendalls_remaining = 1
-        with patch("c64cast.socket_dma.socket.create_connection", return_value=fake2):
-            with self.assertLogs("c64cast.socket_dma", level="WARNING") as cap:
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="WARNING") as cap:
                 with self.assertRaises(OSError):
                     c.dmawrite(0xD020, b"\x0e")
         self.assertTrue(
@@ -255,8 +255,8 @@ class ReconnectTest(unittest.TestCase):
         # Reconnect #2 (for the next dmawrite): clean IDENTIFY this time.
         fake3 = FakeSocket([_IDENT_REPLY])
 
-        with patch("c64cast.socket_dma.socket.create_connection", side_effect=[fake2, fake3]):
-            with self.assertLogs("c64cast.socket_dma", level="WARNING"):
+        with patch("c64cast.hw.socket_dma.socket.create_connection", side_effect=[fake2, fake3]):
+            with self.assertLogs("c64cast.hw.socket_dma", level="WARNING"):
                 with self.assertRaises(SocketDMAError):
                     c.dmawrite(0xD020, b"\x0e")
             # The half-open socket must be cleaned up — otherwise the

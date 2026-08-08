@@ -1,4 +1,4 @@
-"""Host-side unit tests for AsidScene (c64cast/asid_scene.py).
+"""Host-side unit tests for AsidScene (c64cast/sid/asid_scene.py).
 
 These exercise the scene's use of the ASID decoder against the shared FakeAPI:
 folding SysEx into the register shadow, the coalesced $D400-$D418 block write,
@@ -31,9 +31,9 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast import asid  # noqa: E402
-from c64cast.c64 import SID  # noqa: E402
-from c64cast.modes import DisplayMode  # noqa: E402
+from c64cast.hw.c64 import SID  # noqa: E402
+from c64cast.sid import asid  # noqa: E402
+from c64cast.video.modes import DisplayMode  # noqa: E402
 
 
 def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:
@@ -53,7 +53,7 @@ def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:
 @unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
 class AsidSceneTest(unittest.TestCase):
     def _make(self, **kwargs):
-        from c64cast.asid_scene import AsidScene
+        from c64cast.sid.asid_scene import AsidScene
 
         api = FakeAPI()
         # These tests exercise the coalesced flush path specifically; the FakeAPI
@@ -107,7 +107,7 @@ class AsidSceneTest(unittest.TestCase):
 
     def test_unsupported_command_warns_once(self):
         scene, _ = self._make()
-        with self.assertLogs("c64cast.asid_scene", level="WARNING") as cm:
+        with self.assertLogs("c64cast.sid.asid_scene", level="WARNING") as cm:
             scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_OPL, 0x00))
             scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_OPL, 0x00))
         self.assertEqual(len(cm.output), 1)  # warned once, not twice
@@ -130,7 +130,7 @@ class AsidSceneTest(unittest.TestCase):
 
     def test_speed_switches_emulator_clock(self):
         scene, _ = self._make(system="NTSC")
-        from c64cast.c64 import CLOCK_PAL
+        from c64cast.hw.c64 import CLOCK_PAL
 
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x00))  # PAL
         self.assertEqual(scene.system, "PAL")
@@ -138,8 +138,8 @@ class AsidSceneTest(unittest.TestCase):
 
     # ---- config validation + lifecycle --------------------------------------
     def test_validate_asid_returns_bitmap_mode(self):
-        from c64cast.config import SceneCfg
-        from c64cast.scene_factory import _validate_asid
+        from c64cast.app.config import SceneCfg
+        from c64cast.app.scene_factory import _validate_asid
 
         # AsidScene is bitmap-only: the validator synthesises a hires mode so
         # overlay-compat rejects PETSCII overlays (as on a waveform scene).
@@ -147,8 +147,8 @@ class AsidSceneTest(unittest.TestCase):
         self.assertIsInstance(mode, DisplayMode)
 
     def test_validate_scene_cfg_accepts_asid(self):
-        from c64cast.config import Config, SceneCfg
-        from c64cast.scene_factory import validate_scene_cfg
+        from c64cast.app.config import Config, SceneCfg
+        from c64cast.app.scene_factory import validate_scene_cfg
 
         # Full dispatch path: an asid scene validates without error.
         validate_scene_cfg(SceneCfg(type="asid"), Config(), audio_enabled=False)
@@ -164,13 +164,13 @@ class AsidSceneTest(unittest.TestCase):
     def _make_multi(self, sockets=None, **kwargs):
         """A scene on a config-capable (Ultimate-like) backend. `sockets` seeds
         the detected-socket category, e.g. {"SID Detected Socket 1": "6581"}."""
-        from c64cast.asid_scene import AsidScene
-        from c64cast.backend import HardwareProfile
+        from c64cast.hw.backend import HardwareProfile
+        from c64cast.sid.asid_scene import AsidScene
 
         api = FakeAPI()
         api.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
         if sockets:
-            from c64cast.asid_sidmap import CAT_SOCKETS
+            from c64cast.sid.asid_sidmap import CAT_SOCKETS
 
             api.config_store[CAT_SOCKETS] = dict(sockets)
         kwargs.setdefault("buffered_player", "off")  # coalesced-path multi-SID tests
@@ -185,7 +185,7 @@ class AsidSceneTest(unittest.TestCase):
         # Default FakeAPI has supports_config=False → multi-SID inactive.
         scene, _ = self._make()
         self.assertFalse(scene._multi_sid)
-        with self.assertLogs("c64cast.asid_scene", level="WARNING"):
+        with self.assertLogs("c64cast.sid.asid_scene", level="WARNING"):
             scene._handle_sysex(self._multi_msg(1, {0: 0x11}))
         # Downmixed to the primary shadow (chip 0), not chip 1.
         self.assertEqual(scene._sid_shadows[0][0x00], 0x11)
@@ -211,7 +211,7 @@ class AsidSceneTest(unittest.TestCase):
         self.assertEqual(api.regs[chip1_addr][0x00], 0x22)
 
     def test_multi_sid_prefers_physical_socket(self):
-        from c64cast.sid_hw_config import detect_sockets
+        from c64cast.sid.sid_hw_config import detect_sockets
 
         scene, _ = self._make_multi(sockets={"SID Detected Socket 1": "6581"})
         scene._socket_present = detect_sockets(scene.api)
@@ -222,7 +222,7 @@ class AsidSceneTest(unittest.TestCase):
         self.assertGreater(scene._chip_addresses[1], SID.BASE)
 
     def test_multi_sid_teardown_restores_config(self):
-        from c64cast.asid_sidmap import CAT_ADDRESSING
+        from c64cast.sid.asid_sidmap import CAT_ADDRESSING
 
         scene, api = self._make_multi()
         # Seed a prior addressing value so restore has something to write back.
@@ -253,7 +253,7 @@ class AsidBufferedPlayerTest(unittest.TestCase):
     test_asid_player; here we assert the scene wires frames into it."""
 
     def _make(self, **kwargs):
-        from c64cast.asid_scene import AsidScene
+        from c64cast.sid.asid_scene import AsidScene
 
         api = FakeAPI()  # supports_reu=True → "auto" engages the buffered player
         scene = AsidScene(api, None, buffered_player="auto", **kwargs)
@@ -265,19 +265,19 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         self.assertIsNotNone(scene._player)
 
     def test_off_forces_coalesced(self):
-        from c64cast.asid_scene import AsidScene
+        from c64cast.sid.asid_scene import AsidScene
 
         scene = AsidScene(FakeAPI(), None, buffered_player="off")
         self.assertFalse(scene._use_buffered_player)
         self.assertIsNone(scene._player)
 
     def test_on_without_reu_warns_and_falls_back(self):
-        from c64cast.asid_scene import AsidScene
-        from c64cast.backend import HardwareProfile
+        from c64cast.hw.backend import HardwareProfile
+        from c64cast.sid.asid_scene import AsidScene
 
         api = FakeAPI()
         api.profile = HardwareProfile(name="Fake", family="fake", supports_reu=False)
-        with self.assertLogs("c64cast.asid_scene", level="WARNING"):
+        with self.assertLogs("c64cast.sid.asid_scene", level="WARNING"):
             scene = AsidScene(api, None, buffered_player="on")
         self.assertFalse(scene._use_buffered_player)
 
@@ -327,8 +327,8 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         self.assertEqual(scene._recipe, [(1, 0), (0, 0)])
 
     def test_wants_reu_flags_buffered_asid(self):
-        from c64cast.config import Config, SceneCfg
-        from c64cast.hw_provision import wants_reu
+        from c64cast.app.config import Config, SceneCfg
+        from c64cast.hw.hw_provision import wants_reu
 
         cfg = Config()
         cfg.scenes = [SceneCfg(type="asid", asid_buffered_player="on")]

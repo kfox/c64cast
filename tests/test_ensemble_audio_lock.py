@@ -21,11 +21,11 @@ import unittest
 from typing import cast
 from unittest.mock import MagicMock
 
-from c64cast import config as cfgmod
-from c64cast import scene_factory
-from c64cast.ensemble import Ensemble, SystemStack
-from c64cast.playlist import Playlist
-from c64cast.scenes import BlankScene, Scene, VideoScene, WebcamScene
+from c64cast.app import config as cfgmod
+from c64cast.app import scene_factory
+from c64cast.app.ensemble import Ensemble, SystemStack
+from c64cast.app.playlist import Playlist
+from c64cast.scenes.scenes import BlankScene, Scene, VideoScene, WebcamScene
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402
@@ -118,9 +118,9 @@ class EnsembleAudioLockTest(unittest.TestCase):
 
 class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
     def setUp(self):
-        from c64cast.api import Ultimate64API
-        from c64cast.audio import AudioStreamer
-        from c64cast.video import WebcamSource
+        from c64cast.audio.audio import AudioStreamer
+        from c64cast.hw.api import Ultimate64API
+        from c64cast.video.video import WebcamSource
 
         self.api = cast(Ultimate64API, FakeAPI())
         self.audio_sentinel = cast(AudioStreamer, object())
@@ -146,7 +146,7 @@ class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
         # we silently overrode it — debug-find-later silence would be
         # confusing.
         s = cfgmod.SceneCfg(type="webcam", display="petscii", audio=True)
-        with self.assertLogs("c64cast.scene_factory", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.scene_factory", level="INFO") as cap:
             scene = scene_factory.build_scene(
                 s, self.cfg, self.api, self.audio_sentinel, self.source, is_ensemble=True
             )
@@ -184,12 +184,12 @@ class WantsAudioLockFlagTest(unittest.TestCase):
     def test_waveform_scene_claims(self):
         # Local import — waveform pulls in songlengths which is heavier
         # than the live scenes.
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         self.assertTrue(WaveformScene.WANTS_AUDIO_LOCK)
 
     def test_midi_scene_claims(self):
-        from c64cast.midi_scene import MidiScene
+        from c64cast.sid.midi_scene import MidiScene
 
         self.assertTrue(MidiScene.WANTS_AUDIO_LOCK)
 
@@ -225,14 +225,14 @@ class CompetesForAudioLockTest(unittest.TestCase):
     def test_waveform_competes_even_without_streamer(self):
         # WaveformScene drives the SID directly, so it contends whether
         # or not an AudioStreamer was wired in (global [audio] off).
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         wf = WaveformScene.__new__(WaveformScene)
         wf.audio = None
         self.assertTrue(wf.competes_for_audio_lock())
 
     def test_midi_competes_even_without_streamer(self):
-        from c64cast.midi_scene import MidiScene
+        from c64cast.sid.midi_scene import MidiScene
 
         midi = MidiScene.__new__(MidiScene)
         midi.audio = None
@@ -330,7 +330,7 @@ class ResolveNextIndexTest(unittest.TestCase):
             stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
-        with self.assertLogs("c64cast.playlist", level="INFO") as cap:
+        with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             idx = pl.ensemble_coord.resolve_next_index()
         self.assertEqual(idx, 1)
         self.assertTrue(any("skipping audio-bearing" in line for line in cap.output))
@@ -367,7 +367,7 @@ class ResolveNextIndexTest(unittest.TestCase):
 
         threading.Thread(target=free_after_delay, daemon=True).start()
 
-        with self.assertLogs("c64cast.playlist", level="INFO"):
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
             idx = pl.ensemble_coord.resolve_next_index()
         self.assertEqual(idx, 0)
         assert pl.ensemble is not None
@@ -382,7 +382,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         pl.ensemble.try_claim_audio("other")
         # Fire stop_event almost immediately.
         threading.Timer(0.05, pl.stop_event.set).start()
-        with self.assertLogs("c64cast.playlist", level="INFO"):
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
             idx = pl.ensemble_coord.resolve_next_index()
         self.assertIsNone(idx)
 
@@ -423,7 +423,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         scene.__dict__["_audio_lock_held"] = True
 
         # Should swallow the teardown exception AND still release.
-        with self.assertLogs("c64cast.playlist", level="ERROR"):
+        with self.assertLogs("c64cast.app.playlist", level="ERROR"):
             pl.safe_teardown(scene)
         self.assertIsNone(pl.ensemble.audio_holder)
 
@@ -442,7 +442,7 @@ class AudioOnlyEnsembleWarningTest(unittest.TestCase):
             cfgmod.SceneCfg(type="video", file="x.mp4"),
             cfgmod.SceneCfg(type="video", file="y.mp4"),
         ]
-        with self.assertLogs("c64cast.config", level="WARNING") as cap:
+        with self.assertLogs("c64cast.app.config", level="WARNING") as cap:
             cfgmod._warn_audio_only_ensemble([cfg_a, cfg_b], ["a", "b"])
         joined = "\n".join(cap.output)
         self.assertIn("[b]", joined)
@@ -455,12 +455,12 @@ class AudioOnlyEnsembleWarningTest(unittest.TestCase):
             cfgmod.SceneCfg(type="video", file="x.mp4"),
         ]
         # `assertNoLogs` is 3.10+; fall back to capturing and asserting empty.
-        with self.assertLogs("c64cast.config", level="WARNING") as cap:
+        with self.assertLogs("c64cast.app.config", level="WARNING") as cap:
             cfgmod._warn_audio_only_ensemble([cfg], ["mixed"])
             # Emit a sentinel so assertLogs doesn't itself raise on no-output.
             import logging
 
-            logging.getLogger("c64cast.config").warning("sentinel")
+            logging.getLogger("c64cast.app.config").warning("sentinel")
         self.assertEqual([line for line in cap.output if "sentinel" not in line], [])
 
 

@@ -11,7 +11,7 @@ import unittest
 
 import numpy as np
 
-from c64cast.scenes import _C64_ASPECT, _apply_aspect, _crop_to_aspect, _fit_to_aspect
+from c64cast.scenes.scenes import _C64_ASPECT, _apply_aspect, _crop_to_aspect, _fit_to_aspect
 
 
 def _solid(h: int, w: int, value: int = 200) -> np.ndarray:

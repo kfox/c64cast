@@ -222,7 +222,7 @@ dev = [
 ]
 
 [project.scripts]
-c64cast = "c64cast.cli:main"
+c64cast = "c64cast.app.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/kfox/c64cast"
@@ -284,9 +284,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["E402"]   # allow late imports inside test methods
-"c64cast/overlays/__init__.py" = ["E402"]   # late-block re-export of backgrounds
-"c64cast/generators/__init__.py" = ["E402"]   # ordered submodule imports after the base class
-"c64cast/scenes.py" = ["E741"]   # `l` for LAB-color split is canonical opencv idiom
+"c64cast/scenes/overlays/__init__.py" = ["E402"]   # late-block re-export of backgrounds
+"c64cast/scenes/generators/__init__.py" = ["E402"]   # ordered submodule imports after the base class
+"c64cast/scenes/scenes.py" = ["E741"]   # `l` for LAB-color split is canonical opencv idiom
 
 # --- uv --------------------------------------------------------------------
 [tool.uv]
@@ -303,24 +303,24 @@ default-groups = ["dev"]
 [tool.mypy]
 python_version = "3.11"
 files = [
-    "c64cast/api.py",
-    "c64cast/backend.py",
-    "c64cast/teensyrom_api.py",
-    "c64cast/audio.py",
-    "c64cast/audio_rate.py",
-    "c64cast/audio_handlers.py",
-    "c64cast/playlist.py",
-    "c64cast/socket_dma.py",
-    "c64cast/teensyrom_dma.py",
-    "c64cast/scenes.py",
-    "c64cast/modes_irq.py",
-    "c64cast/config.py",
-    "c64cast/scene_factory.py",
-    "c64cast/ensemble.py",
-    "c64cast/dsp.py",
-    "c64cast/quickcast.py",
-    "c64cast/connect.py",
-    "c64cast/transport.py",
+    "c64cast/hw/api.py",
+    "c64cast/hw/backend.py",
+    "c64cast/hw/teensyrom_api.py",
+    "c64cast/audio/audio.py",
+    "c64cast/audio/audio_rate.py",
+    "c64cast/audio/audio_handlers.py",
+    "c64cast/app/playlist.py",
+    "c64cast/hw/socket_dma.py",
+    "c64cast/hw/teensyrom_dma.py",
+    "c64cast/scenes/scenes.py",
+    "c64cast/video/modes_irq.py",
+    "c64cast/app/config.py",
+    "c64cast/app/scene_factory.py",
+    "c64cast/app/ensemble.py",
+    "c64cast/audio/dsp.py",
+    "c64cast/app/quickcast.py",
+    "c64cast/app/connect.py",
+    "c64cast/control/transport.py",
 ]
 strict = true
 # Untyped helpers in the rest of the package are fine as-is; don't

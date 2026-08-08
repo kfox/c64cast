@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from c64cast import config as cfgmod
-from c64cast.performance import (
+from c64cast.app import config as cfgmod
+from c64cast.control.performance import (
     ClipEvent,
     LookStore,
     PerformanceSession,
@@ -345,7 +345,7 @@ def _fake_playlist_with_perf(name: str, clips: list[dict[str, Any]]) -> Any:
 @unittest.skipUnless(HAVE_MIDI, "mido not installed")
 class MidiClipLaunchTest(unittest.TestCase):
     def _listener(self, playlists, cc_map=None):
-        from c64cast.midi_control import MidiControlListener
+        from c64cast.control.midi_control import MidiControlListener
 
         return MidiControlListener(
             {pl.name: pl for pl in playlists},
