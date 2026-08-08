@@ -10,7 +10,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 * **[Hardware I/O & transports](architecture/hardware-io.md)** — `api.py`, `teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio.py`, `audio_handlers.py`, `sampler.py`, `dsp.py`, `audio_features.py`
-* **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
+* **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes.py`, `modes_irq.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `sid_panning.py`, `sid_volume.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `keyboard.py`, `camera.py`, `vision.py`, `control_plane.py`, `midi_control.py`, `tempo.py`, `performance.py`, `perf_console.py`, `transport.py`, `midi_setup.py`
@@ -61,6 +61,7 @@ the two lists account for every module in the tree.
 | `performance.py` | [Control surfaces & live performance](architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2) |
 | `perf_console.py` | [Control surfaces & live performance](architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5) |
 | `modes.py` | [Video input & the color pipeline](architecture/video-color.md#modespy--displaymode-hierarchy) |
+| `modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
 | `orchestrator.py` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `orchestrators/` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `overlays/` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |

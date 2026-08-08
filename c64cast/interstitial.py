@@ -114,7 +114,7 @@ class InterstitialScene(Scene):
         # can re-flip $DD00 after the pin. Idempotent + safe: the interstitial
         # is host-DMA char mode needing only the kernal jiffy IRQ (keyboard
         # scan), so forcing the kernal vector never breaks anything here.
-        # See modes._uninstall_bank_swap_irq.
+        # See modes_irq.uninstall_bank_swap_irq.
         self.api.restore_kernal_irq_vector()
         self.api.write_memory("d01a", "00")
         self.api.write_memory("d019", "01")

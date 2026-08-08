@@ -151,7 +151,7 @@ def resolve_double_buffer(
     audio_reu_pump_active: bool = False,
 ) -> bool:
     """Resolve the [video].double_buffer tri-state to a concrete bool for one
-    scene's display mode (the host-DMA page-flip path — see modes.py
+    scene's display mode (the host-DMA page-flip path — see modes_irq.py
     HOSTDMA_SWAP_IRQ_HANDLER).
 
     Only bitmap modes have the two VIC banks to flip. It's mutually exclusive

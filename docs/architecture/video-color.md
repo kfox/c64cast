@@ -174,7 +174,7 @@ The hires/mhires VIC bring-up is one shared module-level primitive, `engage_bitm
 
 **Why `$0400` too — the non-obvious part.** A zeroed bitmap makes every pixel select its cell's *background* color. In hires, that background is the **low nibble of the `$0400` byte**, not `$D021`. So leaving stale `$0400` — say the previous interstitial's PETSCII codes — paints a 40×25 color ghost on engage. Zeroing `$0400` pins every cell's background to black.
 
-**Why border and bg0 are pinned on every path.** `$D020`/`$D021` are set to `0x00` everywhere, including REU-staged mhires. The REU bank-swap IRQ only starts writing `$D021` from the first *real* swap, since the frame tracker's ready flag starts zeroed (see `_install_bank_swap_irq`). Without the setup-time write, every frame until that first swap showed whatever `$D021` the previous scene left behind — observed on hardware as a black border over a stale-blue screen. The setup write covers exactly that gap; the IRQ still owns `$D021` from the first real frame onward.
+**Why border and bg0 are pinned on every path.** `$D020`/`$D021` are set to `0x00` everywhere, including REU-staged mhires. The REU bank-swap IRQ only starts writing `$D021` from the first *real* swap, since the frame tracker's ready flag starts zeroed (see `modes_irq.install_bank_swap_irq`). Without the setup-time write, every frame until that first swap showed whatever `$D021` the previous scene left behind — observed on hardware as a black border over a stale-blue screen. The setup write covers exactly that gap; the IRQ still owns `$D021` from the first real frame onward.
 
 **Per-caller differences are arguments, not forks:**
 
@@ -392,7 +392,7 @@ Any uncertainty — no REU, a failed query, `--skip-probe`, a non-REU backend �
 
 #### The two REU pipelines
 
-**Char modes (PETSCII/Blank) — single-buffer.** `push()` calls `modes._push_screen_via_reu(api, screen_bytes, $0400)`: REUWRITE the 1000-byte screen to `REU_VIDEO_SCREEN_BASE = $E00000` (bus-clean), configure REC `$DF02`/`$DF04`/`$DF07` for a one-shot REU→main DMA, then trigger via `$DF01 = $91`. Color RAM at `$D800` is not VIC-banked, so it stays on the delta-cached DMAWRITE path.
+**Char modes (PETSCII/Blank) — single-buffer.** `push()` calls `modes_irq.push_screen_via_reu(api, screen_bytes, $0400)`: REUWRITE the 1000-byte screen to `REU_VIDEO_SCREEN_BASE = $E00000` (bus-clean), configure REC `$DF02`/`$DF04`/`$DF07` for a one-shot REU→main DMA, then trigger via `$DF01 = $91`. Color RAM at `$D800` is not VIC-banked, so it stays on the delta-cached DMAWRITE path.
 
 **Bitmap modes (Hires/MultiHires) — double-buffer.** Bitmap and screen are REUWRITE-staged, then DMA'd into the *off-screen* VIC bank. A C64-side raster IRQ at `$0314` flips `$DD00` at vblank for a tear-free swap — this is what eliminates the scene-cut whole-screen flashes.
 
@@ -423,13 +423,19 @@ Explicit `true`/`false` pass through, still scoped to bitmap modes.
 
 #### Mechanism
 
-`setup()` zeroes both VIC banks' bitmap and screen, pins bank 0, and installs `HOSTDMA_SWAP_IRQ_HANDLER` — a ≈35-byte minimal handler at `$C500` with a 3-byte tracker `[bg0, bank, ready]` at `$C700` — via the shared `_install_bank_swap_irq`.
+`setup()` zeroes both VIC banks' bitmap and screen, pins bank 0, and installs `HOSTDMA_SWAP_IRQ_HANDLER` — a ≈35-byte minimal handler at `$C500` with a 3-byte tracker `[bg0, bank, ready]` at `$C700` — via the shared `modes_irq.install_bank_swap_irq`.
 
 `push()` writes bitmap and screen into the *off-screen* bank via `write_region`, using **per-bank** `RegionID`s: `BITMAP`/`SCREEN` for bank 0, `BITMAP_BANK2`/`SCREEN_BANK2` for bank 2. Each bank therefore diffs against its own prior content, not the other's. It then arms the tracker, and the next vblank IRQ flips `$DD00` and `$D021` for a whole, tear-free frame.
 
 **MHires color-RAM residual.** `$D800` is not VIC-banked, so the c3 slot still tears in a brief ≈9 ms window before each flip — color RAM is written last, just before arming. Bitmap and screen (the structure plus c1/c2) do go tear-free. Hires has no color RAM, and static-palette mhires (cheap, grayscale) does not churn it, so both are fully tear-free.
 
 NMI audio lives on the `$FFFA` vector, independent of this `$0314` raster IRQ, so the two coexist with no REU pump on the TR. The handler chains to `$EA31`, so kernal keyboard scan (`$028D`) keeps the pollers live.
+
+## `modes_irq.py` — C64-side IRQ handlers + REU push helpers
+
+Everything the tear-free bitmap pipelines upload to C64 RAM, split out of `modes.py` (2026-08) so the 6502 layer lives apart from the `DisplayMode` hierarchy that drives it: the `$C500` bank-swap raster IRQ handlers (hires 61 B, mhires 83 B, the chunked mhires+audio merged dispatcher 176 B, and the 35 B host-DMA page-flip sibling for no-REU backends), the `$C700` frame-tracker layouts each handler reads at vblank, the REU staging addresses near 14 MB (`REU_VIDEO_*`), the merged-dispatcher builder `_make_merged_handler`, and the `install_bank_swap_irq` / `uninstall_bank_swap_irq` bring-up/teardown plus the per-frame `push_screen_via_reu` / `push_bitmap_via_reu` / `push_mhires_via_reu` helpers.
+
+The module is pure Python over `C64Backend` — no numpy, no cv2 — which is what qualifies it for `mypy --strict` (it's in the pyproject strict-files list; `modes.py` itself stays out for those import reasons). The two `[video]` subsections above (`use_reu_staged`, `double_buffer`) describe when each pipeline engages; the byte-level rationale (branch-offset asserts, the NMI-collapse chunking math, the Cam Link FFT history behind the merged dispatcher) lives with the bytes in the module's own comments. Coverage: `tests/test_reu_video.py` and `tests/test_bitmap_compose.py` verify the handler bytes, tracker packing, and install/teardown sequences against `FakeAPI`'s write log — nothing about them changed in the split.
 
 ## `rolling_palette.py` + `palette.py` — forced-palette remap
 
