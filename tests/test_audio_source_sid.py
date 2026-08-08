@@ -13,7 +13,7 @@ from _fakes import FakeAPI
 
 from c64cast.audio.audio_source import SidFileAudioSource
 from c64cast.hw.backend import C64Backend
-from c64cast.sid_host_emu import (
+from c64cast.sid.sid_host_emu import (
     _play_bank_for_footprints,
     _sid_payload_extent,
     payload_overlaps_bank0_display,
@@ -399,8 +399,8 @@ class AudioSourceImportWeightTest(unittest.TestCase):
 
         code = (
             "import sys; import c64cast.audio.audio_source; "
-            "heavy=[m for m in ('c64cast.waveform','numpy','py65','c64cast.sid_host_emu',"
-            "'c64cast.voice_scope') if m in sys.modules]; "
+            "heavy=[m for m in ('c64cast.sid.waveform','numpy','py65','c64cast.sid.sid_host_emu',"
+            "'c64cast.sid.voice_scope') if m in sys.modules]; "
             "print(','.join(heavy))"
         )
         out = subprocess.check_output([sys.executable, "-c", code], text=True).strip()

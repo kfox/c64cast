@@ -1,6 +1,6 @@
 """Buffered C64-side ASID ring player — cycle-accurate high-multispeed playback.
 
-:class:`~c64cast.asid_scene.AsidScene`'s default path coalesces incoming ASID
+:class:`~c64cast.sid.asid_scene.AsidScene`'s default path coalesces incoming ASID
 register frames into per-chip shadows and flushes one block write per chip at
 ≤60 Hz (host-driven socket DMA). That drops intermediate frames on multispeed
 tunes (``0x31`` up to 16×) — arpeggios, fast vibrato, and gate-off→gate-on hard
@@ -64,7 +64,7 @@ from .asid import _ASID_REG_TO_OFFSET
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
 
-log = logging.getLogger("c64cast.asid_player")
+log = logging.getLogger("c64cast.sid.asid_player")
 
 # --------------------------------------------------------------------------
 # Memory map. AsidScene runs no DAC/NMI/pump, so $C000-$CFFF and the REU are
@@ -158,7 +158,7 @@ def serialize_frame(
     """Serialize one chip's frame into ``(abs_addr, value, wait_units)`` ops.
 
     ``regs`` maps SID register offset (0x00-0x18) → value for the registers this
-    frame writes (as decoded by :func:`c64cast.asid.decode`); the control regs'
+    frame writes (as decoded by :func:`c64cast.sid.asid.decode`); the control regs'
     *final* value wins there. ``control_first`` maps voice → the differing first
     control write (a gate-off→gate-on hard restart); those voices emit two
     control ops (first, then final). ``base_addr`` is the chip's ``$Dxxx`` base,

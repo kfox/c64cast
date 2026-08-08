@@ -8,11 +8,11 @@ drives SID playback via its hand-rolled 6502 player over DMA rather than the
 firmware's PSID player.
 
 A `.sid` file's PSID header can declare which chip model each voice expects
-(:func:`c64cast.sid_host_emu.parse_sid_header`'s `sid_models`). Without this
+(:func:`c64cast.sid.sid_host_emu.parse_sid_header`'s `sid_models`). Without this
 module, c64cast ignores that entirely — a tune tagged "needs 8580" just plays
 on whatever chip currently answers its address, silently wrong-sounding if
 that's a 6581. This module reads the header, compares it against what's
-actually socketed (via :mod:`c64cast.sid_hw_config`), and — best-effort, like
+actually socketed (via :mod:`c64cast.sid.sid_hw_config`), and — best-effort, like
 every other REST config helper in this codebase — reconfigures the U64 so the
 tune lands on a matching chip: swap to a physical socket with a matching chip
 if one exists, else fall back to an UltiSID FPGA core set to a representative
@@ -20,8 +20,8 @@ filter curve for that model, else warn and leave the chip on whatever answers
 its address already.
 
 Mirrors :mod:`c64cast.audio.dac_calibration`'s auto/explicit-override +
-snapshot/apply/restore shape, reusing :mod:`c64cast.sid_hw_config` (REST
-plumbing) and :mod:`c64cast.asid_sidmap` (category/item name constants)
+snapshot/apply/restore shape, reusing :mod:`c64cast.sid.sid_hw_config` (REST
+plumbing) and :mod:`c64cast.sid.asid_sidmap` (category/item name constants)
 rather than duplicating either.
 
 Hardware limitation inherited from firmware: a genuinely fixed physical
@@ -59,9 +59,9 @@ from .sid_hw_config import (
 )
 
 if TYPE_CHECKING:
+    from c64cast.config import Config
     from c64cast.hw.backend import C64Backend
 
-    from .config import Config
     from .sid_host_emu import SidHeader
 
 log = logging.getLogger(__name__)
@@ -83,8 +83,8 @@ _NO_REQUIREMENT = NO_MODEL_REQUIREMENT
 def _current_addr_map(api: C64Backend) -> dict[int, str]:
     """Which source answers each ``$Dxxx`` address, per the live SID config.
 
-    Thin back-compat alias for :func:`c64cast.sid_hw_config.current_source_map`
-    (the logic moved there so :mod:`c64cast.sid_panning` can share it). See that
+    Thin back-compat alias for :func:`c64cast.sid.sid_hw_config.current_source_map`
+    (the logic moved there so :mod:`c64cast.sid.sid_panning` can share it). See that
     function for the Auto-Address-Mirroring / split-core notes."""
     return current_source_map(api)
 
@@ -111,7 +111,7 @@ def plan_sid_model_config(
       2. The *other* physical socket reports the required model (and isn't
          already claimed by an earlier chip in this same pass) → remap that
          socket's address to this chip's address (same address-swap
-         mechanism :func:`c64cast.asid_sidmap.plan_sid_map_for_addresses`
+         mechanism :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses`
          uses for multi-SID routing).
       3. `ultisid_allowed` and a free UltiSID core remains → route this
          chip's address to that core and set its filter-curve item to the
@@ -212,7 +212,7 @@ def plan_model_config_for_header(
     decide the REST plan (if any) that makes the header's chip-model
     requirements match reality — but does not touch the hardware. Split out
     from :func:`apply_sid_autoconfig` so a caller that also plans multi-SID
-    *address* routing (:class:`~c64cast.waveform.WaveformScene`) can apply
+    *address* routing (:class:`~c64cast.sid.waveform.WaveformScene`) can apply
     that first, then call this against the now-current addressing (so a
     model swap doesn't fight an address remap decided moments earlier), all
     under one outer snapshot/apply/restore. Read-only; a REST read failure
@@ -252,7 +252,7 @@ def apply_sid_autoconfig(
     """Single entry point scenes call, immediately before `run_sid_player`:
     resolves `sid_model`, decides + applies any SID hardware reconfiguration
     the tune's header requires, and returns a snapshot dict for the caller to
-    restore via :func:`c64cast.sid_hw_config.restore_sid_config` at teardown.
+    restore via :func:`c64cast.sid.sid_hw_config.restore_sid_config` at teardown.
     Empty dict = nothing changed (also safe to pass to `restore_sid_config`
     unconditionally — restoring `{}` is a no-op).
 

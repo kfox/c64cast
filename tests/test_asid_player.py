@@ -1,4 +1,4 @@
-"""Unit tests for the buffered ASID ring player (c64cast/asid_player.py).
+"""Unit tests for the buffered ASID ring player (c64cast/sid/asid_player.py).
 
 Two layers, both hardware-free:
   * the pure wire-format + 6502 builders (serialize_frame / pack_slot /
@@ -20,9 +20,9 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast import asid_player as ap  # noqa: E402
 from c64cast.hw.backend import C64Backend  # noqa: E402
 from c64cast.hw.c64 import CLOCK_NTSC  # noqa: E402
+from c64cast.sid import asid_player as ap  # noqa: E402
 
 
 def _fake_backend() -> tuple[C64Backend, Any]:

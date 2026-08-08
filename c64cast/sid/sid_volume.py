@@ -1,7 +1,7 @@
 """SID mixer volume: make every chip a tune actually plays on audible, and
 everything else silent.
 
-The panning sibling of :mod:`c64cast.sid_panning`, and the reason it exists: the
+The panning sibling of :mod:`c64cast.sid.sid_panning`, and the reason it exists: the
 U64 mixes each audio *source* — physical SID socket 1/2, UltiSID FPGA core 1/2 —
 at an independent level, and the two UltiSID levels are commonly left at
 ``OFF``. Routing a chip onto an UltiSID core (which multi-SID address planning

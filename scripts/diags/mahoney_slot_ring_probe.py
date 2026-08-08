@@ -39,16 +39,6 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from c64cast.asid_sidmap import (
-    ADDR_UNMAPPED,
-    CAT_ADDRESSING,
-    CAT_SOCKETS,
-    ITEM_AUTO_MIRROR,
-    ITEM_SOCKET1_EN,
-    ITEM_SOCKET2_EN,
-    ITEM_ULTISID1_ADDR,
-    ITEM_ULTISID2_ADDR,
-)
 from c64cast.audio import dac_calibration as dc
 from c64cast.audio import dac_capture_device as dcap
 from c64cast.audio import dac_slot_ring as dsr
@@ -66,7 +56,17 @@ from c64cast.config import Config
 from c64cast.connect import apply_to_config, parse_connection_uri
 from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
-from c64cast.sid_hw_config import restore_sid_config, snapshot_sid_config
+from c64cast.sid.asid_sidmap import (
+    ADDR_UNMAPPED,
+    CAT_ADDRESSING,
+    CAT_SOCKETS,
+    ITEM_AUTO_MIRROR,
+    ITEM_SOCKET1_EN,
+    ITEM_SOCKET2_EN,
+    ITEM_ULTISID1_ADDR,
+    ITEM_ULTISID2_ADDR,
+)
+from c64cast.sid.sid_hw_config import restore_sid_config, snapshot_sid_config
 
 OUT = Path(__file__).resolve().parent / "out" / "slotring"
 SOURCES = ("socket1", "socket2", "ultisid1", "ultisid2")

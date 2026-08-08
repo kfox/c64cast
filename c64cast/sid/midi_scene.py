@@ -14,7 +14,7 @@ only the $D418 volume nibble and the MIDI scene reserves writes to
 that register for its own master-volume CC. (If you have both, the
 last writer wins.)
 
-Visualization is the shared :class:`~c64cast.voice_scope.VoiceScopeRenderer`
+Visualization is the shared :class:`~c64cast.sid.voice_scope.VoiceScopeRenderer`
 oscilloscope (the same one WaveformScene uses): three stacked voice strips
 in a 320×200 hires bitmap, with the per-voice waveforms + master volume on
 one bottom text row and the live controller state (pulse width / filter /
@@ -24,7 +24,7 @@ MIDI Program Change; MIDI channels can also be routed to fixed voices
 (multitimbral mode). See the c64cast README's MidiScene section. Unlike WaveformScene — which mirrors a write-only SID via a
 parallel py65 6502 — MidiScene *is* the writer: it keeps a 25-byte $D400-$D418
 register shadow updated alongside every SID write and feeds the host-side
-:class:`~c64cast.sidemu.SIDEmulator` directly. A light background poll thread
+:class:`~c64cast.sid.sidemu.SIDEmulator` directly. A light background poll thread
 advances the ADSR envelopes at the video rate so attack/decay/release tails
 evolve on screen between MIDI events.
 
@@ -41,11 +41,11 @@ import threading
 import time
 from typing import Any
 
+from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, RegionID, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
-from ._pollthread import PollThread
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
     D018_HIRES_BITMAP,

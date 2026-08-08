@@ -1658,7 +1658,7 @@ def _probe_sid_autoconfig_status(name: str, cfg: Config, api: object) -> list[Di
       * warn — REST query failed"""
     if not _wants_sid_autoconfig_check(cfg):
         return []
-    from . import sid_hw_config
+    from c64cast.sid import sid_hw_config
 
     subject = f"{name} (SID model autoconfig)"
     sid_model = cfg.ultimate64.sid_model

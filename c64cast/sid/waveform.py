@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from c64cast._pollthread import PollThread
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
@@ -57,7 +58,6 @@ from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
-from ._pollthread import PollThread
 from .sid_autoconfig import plan_model_config_for_header
 
 # SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
@@ -347,13 +347,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         duration_s: if None, looks up the subtune's length in the
                     SongLengths DB (if provided); else defaults to 180s.
         songlengths_db: optional preloaded LengthsDB instance for
-                    auto-duration lookup. See c64cast/songlengths.py.
+                    auto-duration lookup. See c64cast/sid/songlengths.py.
         time_base / auto_cycles / persistence / scroll_columns: see
                     PERSISTENCE_ECHOES and the per-voice render loop in
                     _render_hires(). Defaults match the redraw-from-scratch
                     wallclock-locked behavior of the prior implementation.
         """
-        from .scene_factory import SID_EXTS, resolve_file_spec
+        from c64cast.scene_factory import SID_EXTS, resolve_file_spec
         # Knob validation (color_mode/time_base/auto_cycles/persistence/
         # scroll_columns) now lives in VoiceScopeRenderer._init_scope_knobs,
         # called below after the file load + super().__init__.
@@ -506,7 +506,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _resolve_candidates(self) -> list[str]:
         """Re-resolve the spec at setup time so directory contents can
         change between iterations (newly dropped SIDs are picked up)."""
-        from .scene_factory import SID_EXTS, resolve_file_spec
+        from c64cast.scene_factory import SID_EXTS, resolve_file_spec
 
         return resolve_file_spec(self.file_spec, SID_EXTS, label="waveform")
 

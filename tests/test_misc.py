@@ -14,7 +14,7 @@ import unittest
 
 class SongLengthsTest(unittest.TestCase):
     def test_parse_and_lookup(self):
-        from c64cast.songlengths import LengthsDB, md5_of_sid
+        from c64cast.sid.songlengths import LengthsDB, md5_of_sid
 
         # Build a minimal SID; HVSC keys Songlengths.md5 by a plain MD5 of
         # the whole file (header included), not just the data payload.
@@ -46,7 +46,7 @@ class SongLengthsTest(unittest.TestCase):
         self.assertIsNone(db.lookup(sid_bytes, 99))
 
     def test_unknown_sid_returns_none(self):
-        from c64cast.songlengths import LengthsDB
+        from c64cast.sid.songlengths import LengthsDB
 
         with tempfile.NamedTemporaryFile("w", suffix=".md5", delete=False) as f:
             f.write("aaaa=1:00\n")

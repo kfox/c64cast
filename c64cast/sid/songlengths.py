@@ -13,7 +13,7 @@ The key is a plain MD5 of the whole SID file (header + data) — see
 libsidplayfp's `SidTune::createMD5()` computes.
 
 Usage:
-    from c64cast.songlengths import LengthsDB, song_length
+    from c64cast.sid.songlengths import LengthsDB, song_length
     db = LengthsDB.load("Songlengths.md5")
     secs = db.lookup(sid_bytes, song=1)   # → float or None
 """

@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from c64cast import paths
-from c64cast.asid_sidmap import (
+from c64cast.sid.asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
     ITEM_SOCKET1_ADDR,

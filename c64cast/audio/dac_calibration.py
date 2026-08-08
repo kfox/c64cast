@@ -22,7 +22,7 @@ potentially holding a different chip. ``run_calibration`` queries the live
 config (``sid_hw_config.detect_sockets`` — ``"SID Detected Socket N"``) and,
 for every socket reporting a real chip, isolates it to ``$D400`` (the fixed
 address the NMI DAC handler's hand-assembled ``STA $D418`` reaches — see
-:mod:`c64cast.asid_sidmap`'s "chip 0 must land at $D400" trick, reused here
+:mod:`c64cast.sid.asid_sidmap`'s "chip 0 must land at $D400" trick, reused here
 via ``_isolate_socket``) and measures it independently, restoring the
 original SID address/socket config afterward. This is purely config-driven —
 there's no U64-vs-U2+ model check — so it naturally measures 0, 1, or 2
@@ -65,7 +65,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from c64cast import paths
-from c64cast.asid_sidmap import (
+from c64cast.hw.c64 import CIA2
+from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
     CAT_SOCKETS,
@@ -79,10 +80,9 @@ from c64cast.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
-from c64cast.hw.c64 import CIA2
-from c64cast.sid_hw_config import detect_sockets, restore_sid_config, snapshot_sid_config
-from c64cast.sid_panning import CAT_MIXER
-from c64cast.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
+from c64cast.sid.sid_hw_config import detect_sockets, restore_sid_config, snapshot_sid_config
+from c64cast.sid.sid_panning import CAT_MIXER
+from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
 from .audio_handlers import (
     CIA2_CRA_STOP,

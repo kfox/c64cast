@@ -28,7 +28,7 @@ Usage:
 
 ASID frame format (spec https://github.com/thomasj/asid-protocol): F0 2D <cmd> <mask4>
 <msb4> <data...> F7 — cmd 0x4E = SID1, 0x50+k = SID(k+2). Register IDs per the
-spec table (see c64cast/asid.py::_ASID_REG_TO_OFFSET).
+spec table (see c64cast/sid/asid.py::_ASID_REG_TO_OFFSET).
 """
 
 from __future__ import annotations

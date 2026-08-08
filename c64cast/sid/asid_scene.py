@@ -3,7 +3,7 @@ visualizes the voices as a full-screen hires oscilloscope.
 
 Any ASID *host* — DeepSID (browser), SIDFactory II, Plogue chipsynth C64,
 Elektron ASID-XP — streams packed SID register writes over MIDI SysEx; this
-scene decodes them (see :mod:`c64cast.asid`), writes them to the real SID chip
+scene decodes them (see :mod:`c64cast.sid.asid`), writes them to the real SID chip
 over DMA, and drives the shared 3-voice oscilloscope. It turns c64cast into an
 ASID *client* whose SID happens to be genuine hardware on the U64/TeensyROM,
 with the scope on HDMI.
@@ -13,17 +13,17 @@ with the scope on HDMI.
 configured for up to 8 SIDs* across two physical sockets and two "UltiSID" FPGA
 cores — this scene detects the chip count from the stream, configures the U64's
 SID address map live over the REST config API (preferring socketed **physical**
-SIDs; see :mod:`c64cast.asid_sidmap`), and routes each chip's register writes to
+SIDs; see :mod:`c64cast.sid.asid_sidmap`), and routes each chip's register writes to
 its own address. The scope subdivides each of the three voice rows horizontally,
 one window per chip (voice 1 of every chip in row 1, side by side, etc.). The
 prior config is snapshotted and restored on teardown. On backends without the
 config API (TeensyROM) or with multi-SID disabled, extra chips are downmixed to
 the primary SID with a one-time warning.
 
-This is the sibling of :class:`~c64cast.midi_scene.MidiScene`: same
-:class:`~c64cast.voice_scope.VoiceScopeRenderer` visualization, same MIDI-port
+This is the sibling of :class:`~c64cast.sid.midi_scene.MidiScene`: same
+:class:`~c64cast.sid.voice_scope.VoiceScopeRenderer` visualization, same MIDI-port
 plumbing, same 25-byte ``$D400-$D418`` register shadow per chip feeding a
-host-side :class:`~c64cast.sidemu.SIDEmulator`. The difference is the input:
+host-side :class:`~c64cast.sid.sidemu.SIDEmulator`. The difference is the input:
 MidiScene *synthesizes* SID writes from notes/CCs, while AsidScene receives the
 finished register bytes and just relays them.
 
@@ -33,7 +33,7 @@ bounded rate (see ``_FLUSH_INTERVAL_S``); a within-frame gate-off→gate-on "har
 restart" additionally emits the first control value just before the block so the
 pulse reaches the chip. This is host-driven and drops intermediate frames on
 multispeed tunes. The *buffered* path (U64 only, ``asid_buffered_player``) hands
-frames to a C64-side REU ring player (:mod:`c64cast.asid_player`) that consumes
+frames to a C64-side REU ring player (:mod:`c64cast.sid.asid_player`) that consumes
 one frame per CIA #1 Timer A tick at the ASID cadence — cycle-accurate, no frames
 dropped (arps/vibrato/hard restarts survive multispeed). The reader still folds
 every frame into the shadows + host emulators so the oscilloscope tracks all
@@ -52,12 +52,12 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
+from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
 from c64cast.scenes.scenes import Scene
+from c64cast.sid import asid
 from c64cast.video.palette import C64_COLORS
 
-from . import asid
-from ._pollthread import PollThread
 from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
 from .sid_hw_config import (

@@ -31,15 +31,15 @@ sys.path.insert(0, str(d.Path(__file__).resolve().parents[2]))
 
 from c64cast.hw.api import Ultimate64API  # noqa: E402
 from c64cast.hw.c64 import CIA2, VIC_BANK_0, RegionID  # noqa: E402
+from c64cast.sid.voice_scope import (  # noqa: E402
+    D011_HIRES_ON,
+    D016_STANDARD,
+    D018_HIRES_BITMAP,
+)
 from c64cast.video.modes import (  # noqa: E402
     HiresDisplayMode,
     MultiHiresDisplayMode,
     engage_bitmap_mode,
-)
-from c64cast.voice_scope import (  # noqa: E402
-    D011_HIRES_ON,
-    D016_STANDARD,
-    D018_HIRES_BITMAP,
 )
 
 STALE = bytes([0xFF]) * 1000  # vivid stale $0400 (every cell's bg nibble = $F)

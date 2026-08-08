@@ -23,7 +23,7 @@ from c64cast.recording_metadata import (
     log_scene_recording_metadata,
     render_description,
 )
-from c64cast.sid_host_emu import SidHeader
+from c64cast.sid.sid_host_emu import SidHeader
 
 
 class _FakeVideoScene:

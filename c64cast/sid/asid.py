@@ -8,7 +8,7 @@ hands us the bytes between ``F0`` and ``F7`` as ``msg.data``, i.e.
 
 This module is a **pure** decoder — no mido, no hardware — so it's trivially
 unit-testable: feed a byte sequence, assert the resulting register map. The
-:class:`~c64cast.asid_scene.AsidScene` owns the MIDI port, the register shadow,
+:class:`~c64cast.sid.asid_scene.AsidScene` owns the MIDI port, the register shadow,
 the DMA writes, and the oscilloscope.
 
 Honored: ``0x4E`` register data (the workhorse — SID chip 0), the multi-SID
@@ -18,12 +18,12 @@ streams ``0x50``-``0x5F`` (SID2..SID17, same packed format → chips 1..16),
 ``0x30`` timing recipe (per-register write order + inter-write wait cycles,
 decoded into :attr:`AsidUpdate.timing_recipe`). OPL-FM (``0x60``) is recognized
 but dropped (no OPL). Every register/type update carries a ``chip_index`` so the
-scene can route it to the matching SID address (see :mod:`c64cast.asid_sidmap`
+scene can route it to the matching SID address (see :mod:`c64cast.sid.asid_sidmap`
 for the U64 address map). See docs/architecture.md for the rationale.
 
 The ``0x30`` recipe used to be dropped: the coalesced flush path applies the
 whole register image at once, so the plain write order sufficed. The buffered
-C64-side ring player (see :mod:`c64cast.asid_player`) *does* honor it — it
+C64-side ring player (see :mod:`c64cast.sid.asid_player`) *does* honor it — it
 replays each frame's writes on the real SID in the recipe's order with the
 recipe's inter-write waits — so the decoder now surfaces it.
 

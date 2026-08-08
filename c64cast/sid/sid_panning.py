@@ -14,11 +14,11 @@ most :data:`MAX_PANNED_SOURCES` (4) entries can ever apply, and fewer when the
 machine has no socketed SIDs — then only the 2 UltiSID cores are pannable, so a
 3+ chip tune necessarily doubles chips onto a shared pan (warned at apply time).
 
-This module is the panning sibling of :mod:`c64cast.sid_autoconfig` (chip-model
-matching) and :mod:`c64cast.asid_sidmap` (address routing): a **pure** planner
+This module is the panning sibling of :mod:`c64cast.sid.sid_autoconfig` (chip-model
+matching) and :mod:`c64cast.sid.asid_sidmap` (address routing): a **pure** planner
 (`plan_sid_panning`, `resolve_panning`, `default_pan_spread`, `window_order_for_pans`,
 label/int conversion) plus one best-effort impure entry point (`apply_panning`)
-that every SID-playing scene calls, reusing :mod:`c64cast.sid_hw_config`'s REST
+that every SID-playing scene calls, reusing :mod:`c64cast.sid.sid_hw_config`'s REST
 plumbing (`apply_config`, `current_source_map`) rather than duplicating it.
 
 `apply_panning` also reports the scope's column order, so the oscilloscope's
@@ -253,8 +253,8 @@ def plan_sid_panning(
 
 def sources_for_addresses(api: C64Backend, addresses: Sequence[int]) -> tuple[str | None, ...]:
     """Which mixer source currently answers each of `addresses` (tune-chip
-    order), via :func:`c64cast.sid_hw_config.current_source_map`. Used for the
-    non-remapped single-SID case, where no :class:`~c64cast.asid_sidmap.SidMap`
+    order), via :func:`c64cast.sid.sid_hw_config.current_source_map`. Used for the
+    non-remapped single-SID case, where no :class:`~c64cast.sid.asid_sidmap.SidMap`
     supplies the source ordering (best-effort; ``None`` per address on a read
     failure or an address nothing answers)."""
     src_map = current_source_map(api)

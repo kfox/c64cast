@@ -24,13 +24,13 @@ from typing import Any
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
+from c64cast.sid.sid_autoconfig import SID_MODEL_CHOICES
+from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
+from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 
 from . import paths
-from .sid_autoconfig import SID_MODEL_CHOICES
-from .sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
-from .sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 
 log = logging.getLogger(__name__)
 
@@ -333,7 +333,7 @@ class Ultimate64Cfg:
     # Applied live to the U64's Audio Mixer before playback and restored at
     # teardown, like sid_model. Panning is per audio SOURCE (socket / UltiSID
     # core), so each tune chip is panned wherever it was routed — see
-    # c64cast/sid_panning.py.
+    # c64cast/sid/sid_panning.py.
     sid_panning: list[int | str] = field(
         default_factory=list,
         metadata={
@@ -350,7 +350,7 @@ class Ultimate64Cfg:
     )
     # Applied live to the U64's Audio Mixer alongside sid_panning and restored
     # at teardown. Indexed by SOURCE exactly like sid_panning — see
-    # c64cast/sid_volume.py.
+    # c64cast/sid/sid_volume.py.
     sid_volume: list[int | str] = field(
         default_factory=list,
         metadata={

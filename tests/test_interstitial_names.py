@@ -129,7 +129,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
     a bare instance with the SID-loading internals stubbed."""
 
     def _bare_scene(self):
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene.__new__(WaveformScene)
         scene._candidates = ["a.sid", "b.sid"]

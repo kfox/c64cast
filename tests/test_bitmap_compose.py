@@ -181,7 +181,7 @@ class BitmapEngageFlashTest(unittest.TestCase):
         # write_region path (it relocates the VIC bank). This is the path that
         # used to clear AFTER the $D011 flip — the bug this unification fixes.
         # MidiScene is the simplest host (fixed bank 0, no SID payload / threads).
-        from c64cast.midi_scene import MidiScene
+        from c64cast.sid.midi_scene import MidiScene
 
         api = FakeAPI()
         scene = MidiScene(api, None)

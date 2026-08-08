@@ -240,7 +240,7 @@ Known limitations:
 the U64 — the FPGA SID is faithful to real hardware, so `$D400-$D418`
 is write-only and reads return open-bus zeros. The Socket DMA protocol
 has no general-memory-read opcode either. So
-[sid_host_emu.py](../c64cast/sid_host_emu.py) runs the same SID file
+[sid_host_emu.py](../c64cast/sid/sid_host_emu.py) runs the same SID file
 in parallel on a host-side [py65](https://github.com/mnaberez/py65)
 6502 emulator, trapping writes to `$D400-$D418` into a 25-byte shadow
 that the render thread consumes. Audio still comes from the real SID
@@ -273,14 +273,14 @@ the display is always correct regardless of hardware.
 writes only make sound where the U64 has a SID mapped to that exact address,
 so `_apply_sid_hw_config` maps the U64's UltiSID cores (and sockets) to the
 tune's own addresses before the player's INIT runs
-([asid_sidmap.plan_sid_map_for_addresses](../c64cast/asid_sidmap.py)). The
+([asid_sidmap.plan_sid_map_for_addresses](../c64cast/sid/asid_sidmap.py)). The
 firmware exposes ≤2 sockets (`$D400`/`$D420`) + 2 UltiSID cores sharing one
 range split (`1/2` → `$40`-aligned, `1/4` → `$80`-aligned; stride `$20`), so
 consecutive layouts (`$D400/$D420/$D440`) and two-page layouts
 (`$D400`+`$D500`) realize exactly; a scattered set needing three core windows
 (`$D400`+`$DE00`+`$DF00`) can't, and falls back to the canonical
 `plan_sid_map` layout (some chips silent — the scope stays correct). The prior
-config is snapshotted and restored on teardown ([sid_hw_config.py](../c64cast/sid_hw_config.py)).
+config is snapshotted and restored on teardown ([sid_hw_config.py](../c64cast/sid/sid_hw_config.py)).
 Backends without a SID config API (TeensyROM) skip this: every chip's scope
 still renders; only `$D400` is audible. Single-SID tunes never touch the
 config (one window, byte-identical to before). Verified on U64-II hardware:
@@ -339,7 +339,7 @@ It is the open-loop producer-ahead-of-read-head pattern the FPGA sampler uses
 playback** — it obeys the "don't rapid-poll the U64 during capture" rule) with
 an IRQ ring consumer modeled on the REU audio pump. `AsidScene` runs no `$D418`
 DAC, so the whole `$C000` page and the REU are free for it. See
-[asid_player.py](../c64cast/asid_player.py).
+[asid_player.py](../c64cast/sid/asid_player.py).
 
 **U64 only.** It needs a bus-clean `reu_write` (`profile.supports_reu`).
 `auto` engages it where an REU exists and stays coalesced otherwise; `on` forces

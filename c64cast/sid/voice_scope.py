@@ -1,11 +1,11 @@
 """Shared 3-voice SID oscilloscope renderer (hires bitmap).
 
-Extracted from :mod:`c64cast.waveform` so both :class:`~c64cast.waveform.WaveformScene`
-(SID-file playback) and :class:`~c64cast.midi_scene.MidiScene` (live MIDI input)
+Extracted from :mod:`c64cast.sid.waveform` so both :class:`~c64cast.sid.waveform.WaveformScene`
+(SID-file playback) and :class:`~c64cast.sid.midi_scene.MidiScene` (live MIDI input)
 can paint the same full-screen 320×200 hires oscilloscope of the three SID voices.
 
 The renderer is **SID-source-agnostic**: it reads per-voice state from a
-:class:`~c64cast.sidemu.SIDEmulator` the host scene owns, and draws three
+:class:`~c64cast.sid.sidemu.SIDEmulator` the host scene owns, and draws three
 vertically-stacked voice strips plus two bottom text rows. *How* that emulator's
 register state is kept current differs per host — WaveformScene mirrors a parallel
 py65 6502 (it can't read the U64's write-only SID back), MidiScene feeds its own

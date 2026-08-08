@@ -184,12 +184,12 @@ class WantsAudioLockFlagTest(unittest.TestCase):
     def test_waveform_scene_claims(self):
         # Local import — waveform pulls in songlengths which is heavier
         # than the live scenes.
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         self.assertTrue(WaveformScene.WANTS_AUDIO_LOCK)
 
     def test_midi_scene_claims(self):
-        from c64cast.midi_scene import MidiScene
+        from c64cast.sid.midi_scene import MidiScene
 
         self.assertTrue(MidiScene.WANTS_AUDIO_LOCK)
 
@@ -225,14 +225,14 @@ class CompetesForAudioLockTest(unittest.TestCase):
     def test_waveform_competes_even_without_streamer(self):
         # WaveformScene drives the SID directly, so it contends whether
         # or not an AudioStreamer was wired in (global [audio] off).
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         wf = WaveformScene.__new__(WaveformScene)
         wf.audio = None
         self.assertTrue(wf.competes_for_audio_lock())
 
     def test_midi_competes_even_without_streamer(self):
-        from c64cast.midi_scene import MidiScene
+        from c64cast.sid.midi_scene import MidiScene
 
         midi = MidiScene.__new__(MidiScene)
         midi.audio = None

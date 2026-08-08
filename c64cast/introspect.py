@@ -332,9 +332,8 @@ def _iter_live_holders() -> list[tuple[str, str, type]]:
     effects / generators / voice_scope pull in numpy/cv2) so this module stays
     import-light for the schema / --describe path, which never calls it."""
     from c64cast.scenes import effects, generators
+    from c64cast.sid import voice_scope
     from c64cast.video import modes as modesmod
-
-    from . import voice_scope
 
     out: list[tuple[str, str, type]] = []
 

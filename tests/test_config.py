@@ -252,7 +252,7 @@ hue_hi_deg = 195
 
 class SidPanningConfigTest(unittest.TestCase):
     """[ultimate64].sid_panning — a bad pan value must fail at load, not
-    mid-scene when the U64 mixer is configured (see c64cast/sid_panning.py)."""
+    mid-scene when the U64 mixer is configured (see c64cast/sid/sid_panning.py)."""
 
     def _load(self, toml):
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
@@ -291,7 +291,7 @@ class SidPanningConfigTest(unittest.TestCase):
 
 class SidVolumeConfigTest(unittest.TestCase):
     """[ultimate64].sid_volume — a level the mixer can't represent must fail at
-    load, not mid-scene when it is configured (see c64cast/sid_volume.py)."""
+    load, not mid-scene when it is configured (see c64cast/sid/sid_volume.py)."""
 
     def _load(self, toml):
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:

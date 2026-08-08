@@ -36,7 +36,7 @@ import numpy as np
 from c64cast.hw.c64 import CLOCK_NTSC, CLOCK_PAL, SID
 
 # Re-export the wave-select bit constants under their historical names so
-# existing imports (`from c64cast.sidemu import WAVE_NOISE, ...`) keep
+# existing imports (`from c64cast.sid.sidemu import WAVE_NOISE, ...`) keep
 # working. Authoritative definitions live in c64.SID.
 WAVE_TRIANGLE = SID.WAVE_TRIANGLE
 WAVE_SAWTOOTH = SID.WAVE_SAWTOOTH

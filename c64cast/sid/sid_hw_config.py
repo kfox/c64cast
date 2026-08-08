@@ -1,9 +1,9 @@
 """Shared U64 multi-SID hardware-config plumbing.
 
 The REST side of the multi-SID story: snapshot the SID address/socket config,
-apply a :class:`~c64cast.asid_sidmap.SidMap`, and restore the snapshot on
-teardown. Extracted from :class:`~c64cast.asid_scene.AsidScene` so
-:class:`~c64cast.waveform.WaveformScene` (playing a multi-SID `.sid` file) can
+apply a :class:`~c64cast.sid.asid_sidmap.SidMap`, and restore the snapshot on
+teardown. Extracted from :class:`~c64cast.sid.asid_scene.AsidScene` so
+:class:`~c64cast.sid.waveform.WaveformScene` (playing a multi-SID `.sid` file) can
 reuse it verbatim — both need the U64's extra SID cores mapped to the tune's
 chip addresses, and both must put the user's config back afterward.
 
@@ -78,8 +78,8 @@ def current_source_map(api: C64Backend) -> dict[int, str]:
     failure). Physical sockets are populated LAST so they win an
     ``Auto Address Mirroring`` collision (a socket's real chip is what a listener
     hears; an UltiSID core "at" the same address in that state is just
-    mirroring). Used by :mod:`c64cast.sid_autoconfig` (chip-model matching) and
-    :mod:`c64cast.sid_panning` (which mixer source to pan for a non-remapped
+    mirroring). Used by :mod:`c64cast.sid.sid_autoconfig` (chip-model matching) and
+    :mod:`c64cast.sid.sid_panning` (which mixer source to pan for a non-remapped
     single-SID tune).
 
     v1 simplification: an UltiSID core is tracked only at its own configured base
@@ -188,7 +188,7 @@ def apply_sid_map(api: C64Backend, sid_map: SidMap) -> None:
 def apply_config(api: C64Backend, mapping: dict[tuple[str, str], str]) -> None:
     """PUT an arbitrary ``(category, item) -> value`` mapping to the U64
     (best-effort per item). For config changes that aren't a full
-    :class:`~c64cast.asid_sidmap.SidMap` — e.g. sid_autoconfig's model/filter-
+    :class:`~c64cast.sid.asid_sidmap.SidMap` — e.g. sid_autoconfig's model/filter-
     curve plan. `apply_sid_map` remains the SidMap-specific entry point for
     multi-SID address planning."""
     _put_all(api, mapping, warn=True)

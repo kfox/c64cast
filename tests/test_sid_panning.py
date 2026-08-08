@@ -1,4 +1,4 @@
-"""Tests for SID stereo panning (c64cast/sid_panning.py): pan value/label
+"""Tests for SID stereo panning (c64cast/sid/sid_panning.py): pan value/label
 conversion, the default spreads, the pure plan_sid_panning mapping, and the
 live diff-only apply (FakeAPI — no real hardware)."""
 
@@ -11,8 +11,8 @@ import unittest
 
 from _fakes import FakeAPI
 
-from c64cast import sid_panning as sp
 from c64cast.hw.backend import HardwareProfile
+from c64cast.sid import sid_panning as sp
 
 CAT = sp.CAT_MIXER
 PAN_S1 = (CAT, "Pan Socket 1")
@@ -398,7 +398,7 @@ class LimitedSourceWarningTest(unittest.TestCase):
         return _ultimate_fake(mixer={"Pan UltiSID 1": "Center", "Pan UltiSID 2": "Center"})
 
     def test_warns_when_chips_outnumber_pannable_sources(self):
-        with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
+        with self.assertLogs("c64cast.sid.sid_panning", level="WARNING") as cm:
             sp.apply_panning(self._api(), ("ultisid1", "ultisid1", "ultisid2"), [])
         self.assertTrue(any("3 SID chips but only 2" in m for m in cm.output), cm.output)
 
@@ -406,18 +406,18 @@ class LimitedSourceWarningTest(unittest.TestCase):
         # "in use", not "present": model-aware routing skips a populated socket
         # whose chip is the wrong model, which is how a machine with two 6581s
         # ends up with only the two cores pannable.
-        with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
+        with self.assertLogs("c64cast.sid.sid_panning", level="WARNING") as cm:
             sp.apply_panning(self._api(), ("ultisid1", "ultisid1", "ultisid2"), [])
         self.assertTrue(any("no socketed SID in use" in m for m in cm.output), cm.output)
 
     def test_warns_when_config_has_more_entries_than_sources(self):
-        with self.assertLogs("c64cast.sid_panning", level="WARNING") as cm:
+        with self.assertLogs("c64cast.sid.sid_panning", level="WARNING") as cm:
             sp.apply_panning(self._api(), ("ultisid1", "ultisid2"), [-5, 5, 3, -3])
         self.assertTrue(any("extra entries are ignored" in m for m in cm.output), cm.output)
 
     def test_no_warning_when_every_chip_has_its_own_source(self):
         api = _ultimate_fake(mixer={"Pan Socket 1": "Center", "Pan Socket 2": "Center"})
-        with self.assertNoLogs("c64cast.sid_panning", level="WARNING"):
+        with self.assertNoLogs("c64cast.sid.sid_panning", level="WARNING"):
             sp.apply_panning(api, ("socket1", "socket2"), [])
 
 
@@ -429,7 +429,7 @@ class ScenePanningFoldTest(unittest.TestCase):
     def _waveform_self(self, api, *, n_sids, addresses, panning=(), saved=None):
         from types import SimpleNamespace
 
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         scene = SimpleNamespace(
             api=api,
@@ -463,8 +463,8 @@ class ScenePanningFoldTest(unittest.TestCase):
         return api
 
     def test_waveform_multi_sid_pans_from_the_map_and_records_originals(self):
-        from c64cast.asid_sidmap import SidMap
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.asid_sidmap import SidMap
+        from c64cast.sid.waveform import WaveformScene
 
         api = self._centered_socket_api()
         scene = self._waveform_self(api, n_sids=2, addresses=(0xD400, 0xD420))
@@ -479,8 +479,8 @@ class ScenePanningFoldTest(unittest.TestCase):
         self.assertEqual(scene._saved_sid_config, {PAN_S1: "Center", PAN_S2: "Center"})
 
     def test_waveform_sets_the_scope_column_order(self):
-        from c64cast.asid_sidmap import SidMap
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.asid_sidmap import SidMap
+        from c64cast.sid.waveform import WaveformScene
 
         api = self._centered_socket_api()
         scene = self._waveform_self(api, n_sids=3, addresses=(0xD400, 0xD420, 0xD440))
@@ -496,7 +496,7 @@ class ScenePanningFoldTest(unittest.TestCase):
         self.assertEqual(scene.window_order, (1, 0, 2))
 
     def test_waveform_single_sid_reads_the_live_source(self):
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         api = self._centered_socket_api()
         api.config_store[CAT]["Pan Socket 1"] = "Right 4"
@@ -508,7 +508,7 @@ class ScenePanningFoldTest(unittest.TestCase):
         self.assertEqual(scene._saved_sid_config, {PAN_S1: "Right 4"})
 
     def test_waveform_config_override_beats_the_auto_spread(self):
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         api = self._centered_socket_api()
         scene = self._waveform_self(
@@ -521,7 +521,7 @@ class ScenePanningFoldTest(unittest.TestCase):
         self.assertEqual(api.config_store[CAT]["Pan Socket 2"], "Right 5")
 
     def test_waveform_merges_into_an_existing_snapshot(self):
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         api = self._centered_socket_api()
         existing = {("SID Addressing", "UltiSID 1 Address"): "Unmapped"}
@@ -537,7 +537,7 @@ class ScenePanningFoldTest(unittest.TestCase):
         )
 
     def test_waveform_no_change_leaves_the_snapshot_alone(self):
-        from c64cast.waveform import WaveformScene
+        from c64cast.sid.waveform import WaveformScene
 
         api = self._centered_socket_api()
         scene = self._waveform_self(api, n_sids=1, addresses=(0xD400,))
@@ -550,8 +550,8 @@ class ScenePanningFoldTest(unittest.TestCase):
     def test_asid_pans_from_the_map_on_remap(self):
         from types import SimpleNamespace
 
-        from c64cast.asid_scene import AsidScene
-        from c64cast.asid_sidmap import SidMap
+        from c64cast.sid.asid_scene import AsidScene
+        from c64cast.sid.asid_sidmap import SidMap
 
         api = self._centered_socket_api()
         scene = SimpleNamespace(

@@ -1,4 +1,4 @@
-"""Host-side unit tests for MidiScene (c64cast/midi_scene.py).
+"""Host-side unit tests for MidiScene (c64cast/sid/midi_scene.py).
 
 These exercise the pure logic — note→frequency math, voice allocation /
 stealing, CC + pitch-wheel mapping, the SID register shadow + emulator feed,
@@ -36,10 +36,10 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast import midi_scene  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
-from c64cast.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
-from c64cast.sidemu import primary_waveform  # noqa: E402
+from c64cast.sid import midi_scene  # noqa: E402
+from c64cast.sid.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
+from c64cast.sid.sidemu import primary_waveform  # noqa: E402
 from c64cast.video.modes import DisplayMode  # noqa: E402
 
 # Control-register byte index within the 7-byte voice block written by

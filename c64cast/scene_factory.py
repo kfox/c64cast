@@ -52,6 +52,14 @@ from c64cast.scenes.scenes import (
     VideoScene,
     WebcamScene,
 )
+from c64cast.sid.asid_scene import AsidScene
+from c64cast.sid.midi_scene import MidiScene
+from c64cast.sid.sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
+from c64cast.sid.sid_host_emu import parse_sid_header, payload_overlaps_bank0_display
+from c64cast.sid.songlengths import LengthsDB
+from c64cast.sid.voice_scope import BITMAP_W as _SCOPE_BITMAP_W
+from c64cast.sid.voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
+from c64cast.sid.waveform import WaveformScene
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.modes import (
     BitmapDisplayMode,
@@ -66,7 +74,6 @@ from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_co
 from c64cast.video.video import WebcamSource, ensure_pyav
 
 from . import paths
-from .asid_scene import AsidScene
 from .config import (
     _ASPECT_MODE_CHOICES,
     _AUDIO_SOURCE_CHOICES,
@@ -87,14 +94,7 @@ from .config import (
     SceneCfg,
     _is_valid_param_holder,
 )
-from .midi_scene import MidiScene
 from .orchestrator import resolve_orchestrator
-from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
-from .sid_host_emu import parse_sid_header, payload_overlaps_bank0_display
-from .songlengths import LengthsDB
-from .voice_scope import BITMAP_W as _SCOPE_BITMAP_W
-from .voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
-from .waveform import WaveformScene
 from .wled_sink import WLEDSource
 
 if TYPE_CHECKING:

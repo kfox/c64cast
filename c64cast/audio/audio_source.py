@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
     from c64cast.scenes.modulation import MusicModulation
     from c64cast.scenes.music_features import SidFeatureStream
-    from c64cast.sid_host_emu import SidHeader
+    from c64cast.sid.sid_host_emu import SidHeader
     from c64cast.video.modes import DisplayMode
 
     from .audio import AudioStreamer
@@ -558,7 +558,7 @@ class SidFileAudioSource:
         one .sid. Raises ValueError on any rejection; returns (sid_bytes,
         resolved_song, header) on success. Shared by __init__'s early check
         and setup()'s authoritative pick."""
-        from c64cast.sid_host_emu import (
+        from c64cast.sid.sid_host_emu import (
             _sid_payload_extent,
             parse_sid_header,
             payload_overlaps_bank0_display,
@@ -639,7 +639,7 @@ class SidFileAudioSource:
         run_sid_player refuses the tune — RSID / load<$0820 / under KERNAL);
         SourceScene.setup converts that into an aborted scene so the playlist
         advances."""
-        from c64cast.sid_host_emu import (
+        from c64cast.sid.sid_host_emu import (
             _play_bank_for_footprints,
             ram_play_access_footprint,
             ram_write_footprint,
@@ -677,7 +677,7 @@ class SidFileAudioSource:
         # writes land on the matched chip. No-op on "off"/TeensyROM/already-
         # matching. Snapshot restored in teardown.
         assert self.header is not None  # set by _pick_and_load, called above
-        from c64cast.sid_autoconfig import apply_sid_autoconfig
+        from c64cast.sid.sid_autoconfig import apply_sid_autoconfig
 
         self._saved_sid_config = apply_sid_autoconfig(self._api, self.header, self._sid_model)
         self._apply_sid_mixer()
@@ -711,8 +711,8 @@ class SidFileAudioSource:
         each chip is whatever currently answers its address. Originals fold into
         the same snapshot teardown restores."""
         assert self.header is not None  # set by _pick_and_load, called by setup
-        from c64cast.sid_panning import apply_panning, sources_for_addresses
-        from c64cast.sid_volume import apply_volume
+        from c64cast.sid.sid_panning import apply_panning, sources_for_addresses
+        from c64cast.sid.sid_volume import apply_volume
 
         sources = sources_for_addresses(self._api, self.header.sid_addresses)
         panning = apply_panning(self._api, sources, self._sid_panning)
@@ -747,7 +747,7 @@ class SidFileAudioSource:
         except Exception:
             log.exception("sid audio: teardown silence/restore failed")
         if self._saved_sid_config:
-            from c64cast.sid_hw_config import restore_sid_config
+            from c64cast.sid.sid_hw_config import restore_sid_config
 
             restore_sid_config(self._api, self._saved_sid_config)
             self._saved_sid_config = None

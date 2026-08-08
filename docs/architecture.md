@@ -12,7 +12,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
-* **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `sid_panning.py`, `sid_volume.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
+* **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `keyboard.py`, `camera.py`, `vision.py`, `control_plane.py`, `midi_control.py`, `tempo.py`, `performance.py`, `perf_console.py`, `transport.py`, `midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled_sync.py`, `wled_device.py`, `wled_sink.py`
 * **[Config, CLI & ensemble](architecture/config.md)** — `ensemble.py`, `orchestrator.py`, `orchestrators/`, `paths.py`, `config.py`, `scene_factory.py`, `cli.py`, `recording_metadata.py`
@@ -26,10 +26,10 @@ the two lists account for every module in the tree.
 | Module | Notes |
 | --- | --- |
 | `hw/api.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
-| `asid.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
-| `asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
-| `asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
-| `asid_sidmap.py` | [SID playback & the oscilloscope](architecture/sid.md#multi-sid-on-the-u64-asid_sidmappy) |
+| `sid/asid.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
+| `sid/asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
+| `sid/asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
+| `sid/asid_sidmap.py` | [SID playback & the oscilloscope](architecture/sid.md#multi-sid-on-the-u64-asid_sidmappy) |
 | `audio/audio.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio/audio_rate.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio/audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |
@@ -59,7 +59,7 @@ the two lists account for every module in the tree.
 | `scenes/interstitial.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `keyboard.py` | [Control surfaces & live performance](architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle) |
 | `midi_control.py` | [Control surfaces & live performance](architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
-| `midi_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope) |
+| `sid/midi_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope) |
 | `midi_setup.py` | [Control surfaces & live performance](architecture/control.md#midi_setuppy--the---midi-setup-midi-learn-wizard-phase-5) |
 | `scenes/modulation.py` | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
 | `scenes/music_features.py` | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
@@ -79,12 +79,12 @@ the two lists account for every module in the tree.
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
 | `scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes/scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
-| `sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
+| `sid/sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
 | SID player PRG | [SID playback & the oscilloscope](architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
-| `sid_host_emu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
-| `sid_panning.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-panning) |
-| `sid_volume.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-volume) |
-| `sidemu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
+| `sid/sid_host_emu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
+| `sid/sid_panning.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-panning) |
+| `sid/sid_volume.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-volume) |
+| `sid/sidemu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | `hw/socket_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
 | `hw/teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
@@ -93,8 +93,8 @@ the two lists account for every module in the tree.
 | `video/video.py` | [Video input & the color pipeline](architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
 | `scenes/video_transport.py` | [Scenes, sources & overlays](architecture/scenes.md#videoscenes-transport-surface-midi-live-tune-phase-2) |
 | `vision.py` | [Control surfaces & live performance](architecture/control.md#visionpy--webcam-gesture-control-optional-camera-as-input) |
-| `voice_scope.py` | [SID playback & the oscilloscope](architecture/sid.md#voice_scopepy--shared-3-voice-oscilloscope-renderer) |
-| `waveform.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
+| `sid/voice_scope.py` | [SID playback & the oscilloscope](architecture/sid.md#voice_scopepy--shared-3-voice-oscilloscope-renderer) |
+| `sid/waveform.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | `wled_device.py` | [WLED bridge](architecture/wled.md#wled_devicepy--virtual-wled-device--control-surface-wled-bridge-mode-1) |
 | `wled_sink.py` | [WLED bridge](architecture/wled.md#wled_sinkpy--virtual-led-matrix--realtime-pixel-sink-wled-bridge-mode-2) |
 | `wled_sync.py` | [WLED bridge](architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3) |
@@ -125,7 +125,7 @@ rationale in the meantime — each of the ones below opens with one.
 | `profiler.py` | `--profile` per-frame timing harness |
 | `quickcast.py` | Positional-`MEDIA` quick-playback config builder |
 | `schema.py` | JSON Schema generator for the TOML config |
-| `sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore |
-| `songlengths.py` | HVSC `Songlengths.md5` lookup |
+| `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore |
+| `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |
 | `hw/teensyrom_api.py` | TeensyROM+ implementation of `C64Backend` |
 | `wizard.py` | `--init` interactive config builder |

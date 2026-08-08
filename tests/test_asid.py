@@ -1,4 +1,4 @@
-"""Unit tests for the pure ASID decoder (c64cast/asid.py).
+"""Unit tests for the pure ASID decoder (c64cast/sid/asid.py).
 
 The decoder has no mido / hardware dependencies, so these feed raw SysEx byte
 sequences and assert the resulting AsidUpdate — register map (incl. MSB
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from c64cast import asid
+from c64cast.sid import asid
 
 
 def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:

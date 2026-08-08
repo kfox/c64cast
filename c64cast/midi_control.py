@@ -8,7 +8,7 @@ live while that scene is on screen), this is a standalone service that runs
 for the whole process, mirroring :mod:`control_plane`'s "one server for the
 whole ensemble" shape. It opens its OWN ``mido.open_input()`` — mido ports
 are exclusive opens, so this is always a second port, never shared with a
-running :class:`~c64cast.midi_scene.MidiScene` even on the same physical
+running :class:`~c64cast.sid.midi_scene.MidiScene` even on the same physical
 controller (route the controller to two virtual MIDI ports, or use OS-level
 MIDI Thru, if you want one physical device to feed both).
 
@@ -25,7 +25,7 @@ Every action bottoms out in one of two cheap, already-existing mechanisms:
   the cheapest path in the system.
 
 Because neither path touches the DMA socket from this module's reader
-thread (unlike :class:`~c64cast.midi_scene.MidiScene`, which writes SID
+thread (unlike :class:`~c64cast.sid.midi_scene.MidiScene`, which writes SID
 registers directly), there is nothing to coalesce: every message is
 dispatched immediately. The 1ms poll interval mirrors ``MidiScene._reader``
 for the same reason it was chosen there — it keeps latency tight — but

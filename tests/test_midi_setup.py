@@ -287,8 +287,8 @@ class LiveTargetsDriftTests(unittest.TestCase):
     LIVE_CHOICES ↔ [color] metadata pin in test_live_tune.py."""
 
     def _declared(self) -> set[str]:
-        from c64cast import voice_scope
         from c64cast.scenes import effects, generators
+        from c64cast.sid import voice_scope
         from c64cast.video import modes as modesmod
 
         declared: set[str] = set()

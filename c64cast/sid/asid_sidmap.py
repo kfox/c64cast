@@ -1,7 +1,7 @@
-"""Pure U64 multi-SID address planner for :class:`~c64cast.asid_scene.AsidScene`.
+"""Pure U64 multi-SID address planner for :class:`~c64cast.sid.asid_scene.AsidScene`.
 
 An ASID stream can carry several SID chips (commands ``0x50``-``0x5F`` =
-SID2..SID17; see :mod:`c64cast.asid`). To play them on genuine hardware, the
+SID2..SID17; see :mod:`c64cast.sid.asid`). To play them on genuine hardware, the
 Ultimate 64 is **dynamically configured for multiple SIDs** — up to 8 across two
 physical sockets plus two "UltiSID" FPGA cores, each core splittable across
 address lines into 2 or 4 instances. This module decides, for *N* required chips
@@ -12,7 +12,7 @@ and which physical sockets carry a detected SID, the U64 **address map**: which
 This is a **pure** planner — no hardware, no REST — so it's unit-tested against a
 Python port of the firmware's address math (``_realize_addresses``, mirroring
 ``u64_config.cc``: ``u64_sid_offsets`` / ``split_bits`` / ``fix_splits``). The
-:class:`~c64cast.asid_scene.AsidScene` owns the actual REST calls + restore.
+:class:`~c64cast.sid.asid_scene.AsidScene` owns the actual REST calls + restore.
 
 Policy — **prefer physical socket SIDs** (the user's real chips sound better than
 the emulated cores for the primary voices):
@@ -140,7 +140,7 @@ def mirror_bases(split: str, core_bases: list[int], socket_bases: list[int]) -> 
     listening at those addresses. Pointing the spare cores at the socket
     addresses restores it — this is how the firmware ships by default
     (``UltiSID 1 = $D400``, ``UltiSID 2 = $D420``, both at ``Vol OFF``). The
-    mirrors stay muted, because :mod:`c64cast.sid_volume` only raises sources a
+    mirrors stay muted, because :mod:`c64cast.sid.sid_volume` only raises sources a
     tune actually plays on, so they contribute LEDs and no audio.
 
     Skipped unless the split is off: a split core answers a window of 2 or 4
@@ -179,7 +179,7 @@ class SidMap:
     ``sources[i]`` names the audio *source* — ``"socket1"``/``"socket2"``/
     ``"ultisid1"``/``"ultisid2"`` — realizing chip *i*, parallel to
     ``addresses``. The U64 mixes each source at its own stereo pan, so
-    :mod:`c64cast.sid_panning` needs the source (not the address) to pan a
+    :mod:`c64cast.sid.sid_panning` needs the source (not the address) to pan a
     chip. Two chips can share one source when a split core hosts both (≥5
     SIDs); they then share that source's pan."""
 
