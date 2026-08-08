@@ -1603,7 +1603,7 @@ class TargetFpsTest(unittest.TestCase):
             heartbeat_interval=0.0,
             interstitial_factory=lambda name: FakeScene(f"t:{name}", frames_until_done=1),
         )
-        ft = pl._frame_time_for(scenes[0])
+        ft = pl.frame_time_for(scenes[0])
         self.assertAlmostEqual(ft, 1.0 / 15.0)
 
     def test_bitmap_default_to_30fps(self):
@@ -1620,7 +1620,7 @@ class TargetFpsTest(unittest.TestCase):
             heartbeat_interval=0.0,
             interstitial_factory=lambda name: FakeScene(f"t:{name}", frames_until_done=1),
         )
-        ft = pl._frame_time_for(s)
+        ft = pl.frame_time_for(s)
         self.assertAlmostEqual(ft, 1.0 / 30.0)
 
     def test_non_bitmap_uses_default(self):
@@ -1636,7 +1636,7 @@ class TargetFpsTest(unittest.TestCase):
             heartbeat_interval=0.0,
             interstitial_factory=lambda name: FakeScene(f"t:{name}", frames_until_done=1),
         )
-        ft = pl._frame_time_for(s)
+        ft = pl.frame_time_for(s)
         self.assertAlmostEqual(ft, 1.0 / 60.0)
 
 

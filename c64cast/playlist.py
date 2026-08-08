@@ -9,7 +9,6 @@ InterstitialScene) or stub it out for tests."""
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import threading
 import time
@@ -18,6 +17,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from .backend import C64Backend
+from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
 from .profiler import FrameProfiler, NullProfiler
 from .scenes import Scene
 from .transport import LiveTuneTracker, TransportSession
@@ -25,7 +25,6 @@ from .transport import LiveTuneTracker, TransportSession
 if TYPE_CHECKING:
     from .config import SceneCfg
     from .ensemble import Ensemble
-    from .modes import DisplayMode
     from .modulation import MusicModulation
 
 InterstitialFactory = Callable[[str], Scene]
@@ -84,12 +83,9 @@ class Playlist:
         # Fade-in overlaps the opening live frames (the display mode's
         # fade_alpha ramps 0→1 as frames render); fade-out freezes the last
         # composed frame and dims it to black before teardown on a NORMAL end.
-        # A CTRL skip cancels both (see the skip branch in _run_one_frame and
+        # A CTRL skip cancels both (see the skip branch in run_one_frame and
         # the _ended_via_skip guard in _fade_out).
-        self.fade_duration_s = fade_duration_s
-        self._fade_in_remaining = 0
-        self._fade_in_total = 0
-        self._ended_via_skip = False
+        self.fades = SceneFades(self, duration_s=fade_duration_s)
         self.api = api
         self.audio = audio  # Optional AudioStreamer for pitch retune
         # Optional {display_mode_name: playback-rate multiplier} for servo pitch.
@@ -173,19 +169,13 @@ class Playlist:
                     port=broadcast_port,
                     rate_hz=config.wled.rate_hz,
                 )
-        self._menu_overlay: Any = None
-        # While the menu is open the background is frozen (not re-rendered every
-        # frame) so the post-render panel can't flicker against a per-frame
-        # scene redraw. This flag requests a one-shot re-render on open / nav /
-        # value-change so the live preview still updates. See _service_menu +
-        # the freeze gate in run().
-        self._menu_repaint = False
+        self.menu = PlaylistMenu(self)
 
         self.index = 0
         self.current: Scene | None = None
         # Persistent user brightness dim (WLED bridge Mode 1 `bri` slider),
         # 0 < user_dim <= 1.0. Owned here — not on the display mode — so it
-        # survives scene auto-advance: `_safe_setup` re-stamps it onto each
+        # survives scene auto-advance: `safe_setup` re-stamps it onto each
         # fresh scene's display mode (the mode instance is per-scene). The
         # bridge sets both this and the current mode's `user_dim` for an
         # instant effect that also outlasts the current scene.
@@ -225,7 +215,7 @@ class Playlist:
         # `self.tempo` as a MusicModulation source so an effect layer with
         # `mod_source = "clock"` locks to the tempo grid exactly as an audio-
         # reactive layer locks to the SID feature stream. Stamped onto each
-        # scene in _safe_setup; scenes read it in scenes._render_with_overlays.
+        # scene in safe_setup; scenes read it in scenes._render_with_overlays.
         self._clock_modulation = ClockModulationSource(self.tempo)
         # Clip-launch grid (Live-performance Phase 2). Built from
         # [[performance.clips]] (empty when none configured, so `service` is a
@@ -261,6 +251,7 @@ class Playlist:
         # follower Scene from a SceneCfg (the playlist itself doesn't
         # know about audio/source/cfg; the factory closes over them).
         self.ensemble: Ensemble | None = None
+        self.ensemble_coord = EnsembleCoordinator(self)
         self._broadcast_interrupt: threading.Event | None = None
         self._broadcast_resume: threading.Event | None = None
         self.build_follower_scene: FollowerSceneFactory | None = None
@@ -363,7 +354,7 @@ class Playlist:
             return
         self.log.info("playlist: reloading (%d → %d scenes)", len(self.scenes), len(new_scenes))
         if self.current is not None:
-            self._safe_teardown(self.current)
+            self.safe_teardown(self.current)
             self.current = None
         self.scenes = new_scenes
         self.single_scene = len(new_scenes) == 1
@@ -372,7 +363,7 @@ class Playlist:
         self.index = 0
         self.transitioning = False
 
-    def _perf_swap_scene(self, new_scene: Scene) -> bool:
+    def perf_swap_scene(self, new_scene: Scene) -> bool:
         """Single-scene hot-swap for the clip-launch engine (Phase 2): tear down
         the current scene and set up `new_scene` in its place, returning True on
         success. Generalizes `_apply_reload`'s teardown+setup seam to one scene
@@ -381,11 +372,11 @@ class Playlist:
         a lost claim / stop leaves `current` torn down and returns False. Runs on
         the playlist thread only (from PerformanceSession.service)."""
         if self.current is not None:
-            self._safe_teardown(self.current)
+            self.safe_teardown(self.current)
             self.current = None
-        if not self._wait_for_audio_claim(new_scene):
+        if not self.ensemble_coord.wait_for_audio_claim(new_scene):
             return False
-        self._safe_setup(new_scene)
+        self.safe_setup(new_scene)
         self.current = new_scene
         return True
 
@@ -397,7 +388,7 @@ class Playlist:
         api = self.api
         return lambda name: InterstitialScene(api, name)
 
-    def _frame_time_for(self, scene: Scene) -> float:
+    def frame_time_for(self, scene: Scene) -> float:
         """Resolve the scene's per-frame budget.
 
         Precedence:
@@ -415,162 +406,6 @@ class Playlist:
             return 1.0 / float(mode_fps)
         return 1.0 / self.default_target_fps
 
-    def _fade_frames(self, scene: Scene) -> int:
-        """How many frames a fade spans for `scene` at its current frame rate.
-        0 when fades are disabled (fade_duration_s <= 0)."""
-        if self.fade_duration_s <= 0:
-            return 0
-        return max(1, round(self.fade_duration_s / self._frame_time_for(scene)))
-
-    def _fade_mode(self, scene: Scene) -> DisplayMode | None:
-        """The compose-based display mode the fade can drive, or None. Non-compose
-        scenes (waveform/midi oscilloscope, native launcher) and scenes without a
-        display mode are left untouched."""
-        dm: DisplayMode | None = getattr(scene, "display_mode", None)
-        if dm is not None and getattr(dm, "supports_compose", False):
-            return dm
-        return None
-
-    def _begin_fade_in(self, scene: Scene) -> None:
-        """Arm a fade-in for `scene`: start its display mode fully black and let
-        _run_one_frame ramp fade_alpha 0→1 over the opening live frames. No-op
-        (and clears any stale fade) when fades are off or unsupported."""
-        self._ended_via_skip = False
-        self._fade_in_remaining = 0
-        dm = self._fade_mode(scene)
-        if dm is None:
-            return
-        n = self._fade_frames(scene)
-        if n <= 0:
-            dm.fade_alpha = 1.0
-            return
-        dm.fade_alpha = 0.0
-        self._fade_in_remaining = n
-        self._fade_in_total = n
-
-    def _advance_fade_in(self, scene: Scene) -> None:
-        """Step the fade-in ramp one frame, before the scene composes. Called at
-        the top of each rendered frame so the dimming overlaps live playback."""
-        if self._fade_in_remaining <= 0:
-            return
-        dm = getattr(scene, "display_mode", None)
-        if dm is None:
-            self._fade_in_remaining = 0
-            return
-        done = self._fade_in_total - self._fade_in_remaining + 1
-        dm.fade_alpha = min(1.0, done / self._fade_in_total)
-        self._fade_in_remaining -= 1
-
-    def _cancel_fade_in(self, scene: Scene) -> None:
-        """Snap to full brightness and stop the fade-in ramp (CTRL skip)."""
-        self._fade_in_remaining = 0
-        dm = getattr(scene, "display_mode", None)
-        if dm is not None:
-            dm.fade_alpha = 1.0
-
-    def _fade_out(self, scene: Scene) -> None:
-        """Freeze the scene's last composed frame and dim it to black over the
-        fade window, then leave the mode at full brightness for the next scene.
-        Aborts immediately on a CTRL skip (consuming the event so it doesn't
-        also skip the next scene) or a stop request. No-op when fades are off,
-        the scene ended via skip, the mode can't compose, or nothing was
-        rendered yet."""
-        if self._ended_via_skip:
-            return
-        dm = self._fade_mode(scene)
-        if dm is None or dm._last_buffers is None:
-            return
-        n = self._fade_frames(scene)
-        if n <= 0:
-            return
-        frame_time = self._frame_time_for(scene)
-        for i in range(1, n + 1):
-            if self.stop_event.is_set():
-                break
-            if self.skip_event.is_set():
-                self.skip_event.clear()  # satisfied by ending the fade early
-                break
-            try:
-                dm.repush_faded(self.api, 1.0 - i / n)
-            except Exception:
-                self.log.exception("fade-out push failed on %r — ending fade", scene.name)
-                break
-            self.stop_event.wait(timeout=frame_time)
-        dm.fade_alpha = 1.0
-
-    def _wait_for_audio_claim(self, scene: Scene) -> bool:
-        """If the playlist is part of an ensemble and `scene` actually
-        contends for audio (`competes_for_audio_lock()`), block until we
-        hold the ensemble's audio slot — or return False if stop_event
-        fires first. Stamps the scene with `_audio_lock_held = True` on
-        success so the matching `_safe_teardown` releases. Always
-        returns True for non-ensemble runs or scenes that don't
-        compete for audio (including a muted video).
-
-        Used by single-scene mode (which can't skip itself, so the
-        only sensible option is to wait). Multi-scene playlists use
-        `_resolve_next_index` instead — that one skips past gated
-        scenes to a runnable one before falling back to wait."""
-        if self.ensemble is None or not scene.competes_for_audio_lock():
-            return True
-        poll_interval = 0.1
-        first_wait = True
-        while not self.stop_event.is_set():
-            if self.ensemble.try_claim_audio(self.name):
-                scene.__dict__["_audio_lock_held"] = True
-                return True
-            if first_wait:
-                self.log.info(
-                    "audio-bearing scene %r waiting — slot held by %s",
-                    scene.name,
-                    self.ensemble.audio_holder,
-                )
-                first_wait = False
-            self.stop_event.wait(timeout=poll_interval)
-        return False
-
-    def _resolve_next_index(self) -> int | None:
-        """Walk forward from self.index in ensemble mode to find the
-        next scene we can actually run. Scenes that actually contend for
-        audio (`competes_for_audio_lock()`) whose lock is held by another
-        system are skipped; a muted video passes through like any
-        non-audio scene. If every scene is gated,
-        blocks (stop_event-aware) until the lock frees and a candidate
-        becomes claimable. Returns the resolved index, or None only if
-        stop_event fires while waiting.
-
-        Side effect: on a successful audio-bearing claim, marks the
-        chosen scene so its eventual `_safe_teardown` releases the slot.
-
-        In single-system mode (ensemble is None) returns self.index
-        directly — no gating possible."""
-        if self.ensemble is None:
-            return self.index
-        n = len(self.scenes)
-        poll_interval = 0.1
-        first_full_wait = True
-        while not self.stop_event.is_set():
-            first_pass_log = first_full_wait
-            for offset in range(n):
-                idx = (self.index + offset) % n
-                scene = self.scenes[idx]
-                if not scene.competes_for_audio_lock():
-                    return idx
-                if self.ensemble.try_claim_audio(self.name):
-                    scene.__dict__["_audio_lock_held"] = True
-                    return idx
-                if first_pass_log:
-                    self.log.info(
-                        "skipping audio-bearing %r — slot held by %s",
-                        scene.name,
-                        self.ensemble.audio_holder,
-                    )
-            if first_full_wait:
-                self.log.info("all scenes audio-gated; waiting for ensemble audio slot to free")
-                first_full_wait = False
-            self.stop_event.wait(timeout=poll_interval)
-        return None
-
     def _advance(self) -> None:
         # Clip-launch engine gets first refusal each frame (Phase 2): it drains
         # pad events, services background clip builds, performs the quantized
@@ -583,7 +418,7 @@ class Playlist:
         if self.single_scene:
             if self.current is None:
                 scene = self.scenes[0]
-                if not self._wait_for_audio_claim(scene):
+                if not self.ensemble_coord.wait_for_audio_claim(scene):
                     return
                 self.current = scene
                 self.log.info(
@@ -591,12 +426,12 @@ class Playlist:
                     self.current.name,
                     "looping" if self.loop else "once-through",
                 )
-                self._safe_setup(self.current)
+                self.safe_setup(self.current)
             elif self.current.is_done:
                 if not self.loop:
                     self.log.info("scene %r finished and loop=False — stopping", self.current.name)
-                    self._fade_out(self.current)
-                    self._safe_teardown(self.current)
+                    self.fades.fade_out(self.current)
+                    self.safe_teardown(self.current)
                     self.current = None
                     self.stop_event.set()
                     return
@@ -604,30 +439,30 @@ class Playlist:
                 # for every scene type — webcam re-reads source, video
                 # re-opens the file, waveform restarts the SID.
                 scene = self.current
-                self._fade_out(scene)
-                self._safe_teardown(scene)
-                if not self._wait_for_audio_claim(scene):
+                self.fades.fade_out(scene)
+                self.safe_teardown(scene)
+                if not self.ensemble_coord.wait_for_audio_claim(scene):
                     self.current = None
                     return
-                self._safe_setup(scene)
+                self.safe_setup(scene)
                 scene.is_done = False
             return
         if self.current is None:
-            resolved = self._resolve_next_index()
+            resolved = self.ensemble_coord.resolve_next_index()
             if resolved is None:
                 return  # stop_event fired during the gate wait
             self.index = resolved
             self._enter_interstitial()
         elif self.transitioning and self.current.is_done:
-            self._fade_out(self.current)
-            self._safe_teardown(self.current)
+            self.fades.fade_out(self.current)
+            self.safe_teardown(self.current)
             self.current = self.scenes[self.index]
             self.log.info("scene %d/%d → %r", self.index + 1, len(self.scenes), self.current.name)
-            self._safe_setup(self.current)
+            self.safe_setup(self.current)
             self.transitioning = False
         elif not self.transitioning and self.current.is_done:
-            self._fade_out(self.current)
-            self._safe_teardown(self.current)
+            self.fades.fade_out(self.current)
+            self.safe_teardown(self.current)
             with self._jump_lock:
                 jump_target = self._jump_target
                 jump_skip_interstitial = self._jump_skip_interstitial
@@ -636,17 +471,17 @@ class Playlist:
                 self.index = jump_target
                 if jump_skip_interstitial:
                     scene = self.scenes[self.index]
-                    if not self._wait_for_audio_claim(scene):
+                    if not self.ensemble_coord.wait_for_audio_claim(scene):
                         self.current = None
                         return
                     self.log.info(
                         "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
                     )
                     self.current = scene
-                    self._safe_setup(self.current)
+                    self.safe_setup(self.current)
                     self.transitioning = False
                     return
-                resolved = self._resolve_next_index()
+                resolved = self.ensemble_coord.resolve_next_index()
                 if resolved is None:
                     self.current = None
                     return
@@ -662,7 +497,7 @@ class Playlist:
                     return
                 next_index = 0
             self.index = next_index
-            resolved = self._resolve_next_index()
+            resolved = self.ensemble_coord.resolve_next_index()
             if resolved is None:
                 self.current = None
                 return
@@ -681,46 +516,8 @@ class Playlist:
         self._safe_prepare_next(nxt)
         self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
         self.current = self.interstitial_factory(nxt.name)
-        self._safe_setup(self.current)
+        self.safe_setup(self.current)
         self.transitioning = True
-
-    def _maybe_install_conductor(self, scene: Scene) -> None:
-        """If this scene's SceneCfg has `orchestrate = true` AND we're
-        running in ensemble mode, resolve the right Orchestrator
-        subclass, instantiate it, and stamp the scene so overlays can
-        find it. The overlay (e.g. big_text) is what actually calls
-        orch.begin() to fire the follower interrupts — we just put the
-        orchestrator in place + set the ensemble's active slot."""
-        if self.ensemble is None:
-            return
-        # Skip if the scene is already wired with an orchestrator —
-        # _handle_broadcast_interrupt stamps follower scenes before
-        # calling us, and we must not clobber the follower role with a
-        # fresh conductor (especially when the follower's fallback cfg
-        # IS the conductor's orchestrate=true cfg, which carries that
-        # flag with it).
-        if scene.__dict__.get("_orchestrator") is not None:
-            return
-        cfg = scene.__dict__.get("_cfg")
-        if cfg is None or not getattr(cfg, "orchestrate", False):
-            return
-        try:
-            from .orchestrator import resolve_orchestrator
-
-            orch_cls = resolve_orchestrator(cfg)
-        except Exception:
-            self.log.exception(
-                "orchestrate=true on scene %r: could not "
-                "resolve orchestrator subclass; running "
-                "scene as local-only",
-                scene.name,
-            )
-            return
-        orch = orch_cls(self.ensemble, self.name)
-        self.ensemble.active_orchestrator = orch
-        scene._orchestrator = orch
-        scene._is_conductor = True
-        scene._system_index = self.ensemble.system_names().index(self.name)
 
     def _safe_prepare_next(self, scene: Scene) -> None:
         """Invoke a scene's prepare_next() hook defensively. A failure here
@@ -734,8 +531,8 @@ class Playlist:
                 "prepare_next failed on %r — interstitial will show a stale name", scene.name
             )
 
-    def _safe_setup(self, scene: Scene) -> None:
-        self._maybe_install_conductor(scene)
+    def safe_setup(self, scene: Scene) -> None:
+        self.ensemble_coord.maybe_install_conductor(scene)
         # Give clock-locked effect layers (mod_source = "clock") this playlist's
         # beat-grid feeder before the scene renders a frame (Phase 3). Harmless
         # on scenes with no such layer.
@@ -749,8 +546,8 @@ class Playlist:
             if dm is not None:
                 dm.user_dim = self.user_dim
         # Arm the fade-in: the display mode starts black and ramps up over the
-        # opening live frames (driven by _advance_fade_in in _run_one_frame).
-        self._begin_fade_in(scene)
+        # opening live frames (driven by _advance_fade_in in run_one_frame).
+        self.fades.begin_fade_in(scene)
         # Adjust NMI latch for the new display mode (if audio is active and has
         # a calibration table). This restores pitch under the host-DMA servo by
         # boosting the NMI consumer rate back toward 8000 Hz after being throttled
@@ -785,7 +582,7 @@ class Playlist:
 
         log_scene_recording_metadata(scene, self.config, self.name)
 
-    def _safe_teardown(self, scene: Scene) -> None:
+    def safe_teardown(self, scene: Scene) -> None:
         for ov in getattr(scene, "overlays", ()):
             if getattr(ov, "_disabled", False):
                 continue
@@ -797,27 +594,10 @@ class Playlist:
             scene.teardown()
         except Exception:
             self.log.exception("teardown of %r failed", scene.name)
-        # Clear the ensemble's active-orchestrator slot if this teardown
-        # was for a conductor scene. Big_text.teardown already calls
-        # orch.end() defensively; here we release the slot so the next
-        # orchestrate=true scene can install a fresh orchestrator. Also
-        # clear the per-scene conductor stamps: the same Scene instance
-        # is reused across loop iterations and a stale _orchestrator
-        # would make _maybe_install_conductor short-circuit on the next
-        # setup, leaving ensemble.active_orchestrator unset — followers
-        # would then drop the broadcast interrupt as "no active orch".
-        if self.ensemble is not None and scene.__dict__.get("_is_conductor", False):
-            self.ensemble.active_orchestrator = None
-            scene.__dict__["_orchestrator"] = None
-            scene.__dict__["_is_conductor"] = False
-        # Release the ensemble audio lock if this scene held it. Runs
-        # even when teardown raised — a crashing VideoScene must
-        # not strand the slot. The flag is reset on the scene so a
-        # subsequent re-setup (single-scene loop) re-resolves the claim
-        # rather than thinking it still holds the previous one.
-        if self.ensemble is not None and scene.__dict__.get("_audio_lock_held", False):
-            self.ensemble.release_audio(self.name)
-            scene.__dict__["_audio_lock_held"] = False
+        # Conductor slot + ensemble audio lock release (no-op single-system);
+        # runs even when teardown raised so a crashing scene can't strand
+        # either. See EnsembleCoordinator.release_scene for the full story.
+        self.ensemble_coord.release_scene(scene)
 
     def _maybe_heartbeat(self, now: float) -> None:
         if self.heartbeat_interval <= 0:
@@ -857,13 +637,13 @@ class Playlist:
         events (nav keys, close, pause/skip) are still serviced each loop. The
         deadline advances by one frame_time so cadence resumes cleanly when the
         menu closes or an interaction forces a re-render."""
-        frame_time = self._frame_time_for(scene)
+        frame_time = self.frame_time_for(scene)
         now = time.time()
         if now < next_deadline:
             self.stop_event.wait(timeout=next_deadline - now)
         return max(next_deadline + frame_time, time.time())
 
-    def _run_one_frame(self, scene: Scene, next_deadline: float) -> float:
+    def run_one_frame(self, scene: Scene, next_deadline: float) -> float:
         """Render one frame of `scene`. Returns the new next_deadline.
 
         Extracted from the inner loop of run() so the broadcast-interrupt
@@ -871,7 +651,7 @@ class Playlist:
         overlay + heartbeat + frame-drop machinery without duplicating
         any of it. Skip/cycle events are honored against this scene
         (consistent with `self.current` being the active scene)."""
-        frame_time = self._frame_time_for(scene)
+        frame_time = self.frame_time_for(scene)
         with self.profiler.frame(scene.name):
             t0 = time.time()
             # Sleep until the deadline if we're early. Slow DMA pushes
@@ -886,7 +666,7 @@ class Playlist:
 
             # Step the fade-in ramp before the scene composes, so the opening
             # frames render progressively brighter (overlapping live playback).
-            self._advance_fade_in(scene)
+            self.fades.advance_fade_in(scene)
             # Apply any queued MIDI transport events (seek/pause/loop/rw/ff/jog)
             # against this scene before it renders, so a seek issued this tick
             # is reflected in the frame we're about to compose.
@@ -947,8 +727,8 @@ class Playlist:
                     scene.is_done = True
                     # A skip means "get to the next scene now" — abort any
                     # in-progress fade-in and suppress the fade-out.
-                    self._cancel_fade_in(scene)
-                    self._ended_via_skip = True
+                    self.fades.cancel_fade_in(scene)
+                    self.fades.ended_via_skip = True
                 self.skip_event.clear()
 
             # Cycle request (SHIFT key, or future POST /cycle):
@@ -991,85 +771,6 @@ class Playlist:
                 if self.audio is not None and dropped * frame_time >= _AUDIO_DISTURBANCE_DROP_S:
                     self.audio.note_playback_disturbance()
         return next_deadline
-
-    def _handle_broadcast_interrupt(self) -> None:
-        """Save current scene state, swap in a follower scene driven by
-        the ensemble's active orchestrator, run frames until the
-        orchestrator releases us, then restore the saved scene index.
-
-        Called from the run loop when `_broadcast_interrupt` is set
-        (only happens in ensemble mode where the orchestrator wired the
-        events). The actual orchestrator subclass + its protocol live
-        in c64cast/orchestrator.py + subclasses."""
-        assert self._broadcast_interrupt is not None
-        assert self._broadcast_resume is not None
-        self._broadcast_interrupt.clear()
-        if self.ensemble is None or self.ensemble.active_orchestrator is None:
-            # Stale event (orchestrator ended between set and our
-            # observation). Drop the interrupt and let the run loop
-            # continue normally.
-            return
-        if self.build_follower_scene is None:
-            self.log.error(
-                "broadcast interrupt arrived but no follower scene factory wired; ignoring"
-            )
-            return
-        orch = self.ensemble.active_orchestrator
-
-        # Force-resume if paused. The pause_event was set by the keyboard
-        # poller; we clear it + set resume_event so any concurrent
-        # _handle_pause loop exits cleanly. Per the design, paused
-        # systems get woken by a broadcast and are left un-paused after
-        # (matches user expectation: emergency broadcast overrides pause).
-        if self.pause_event.is_set():
-            self.log.info("broadcast: force-resuming paused playlist")
-            self.pause_event.clear()
-            self.resume_event.set()
-
-        # Save scene index; tear down the current scene cleanly so its
-        # overlays release threads/network state. The follower scene
-        # runs in its place until the orchestrator releases us.
-        saved_idx = self.index
-        if self.current is not None:
-            self._safe_teardown(self.current)
-            self.current = None
-
-        follower_cfg = orch.follower_scene_cfg_for(self.name)
-        try:
-            follower_scene = self.build_follower_scene(follower_cfg)
-        except Exception:
-            self.log.exception("broadcast: follower scene build failed; skipping interrupt")
-            return
-        # Stamp orchestrator + role + this system's index in the
-        # ensemble (left-to-right) onto the scene so overlays that
-        # participate in the broadcast (e.g. big_text) can find them in
-        # their setup(). Followers are not conductors; the index is
-        # used by span-mode orchestrators to compute each follower's
-        # slice of the global content.
-        follower_scene._orchestrator = orch
-        follower_scene._is_conductor = False
-        follower_scene._system_index = self.ensemble.system_names().index(self.name)
-        self._safe_setup(follower_scene)
-        self.current = follower_scene
-
-        self.log.info("broadcast: follower scene %r running until resume", follower_scene.name)
-
-        # Spin frames until the orchestrator releases us or stop fires.
-        next_deadline = time.time()
-        while not self._broadcast_resume.is_set() and not self.stop_event.is_set():
-            next_deadline = self._run_one_frame(follower_scene, next_deadline)
-        self._broadcast_resume.clear()
-
-        self.log.info(
-            "broadcast: resume — tearing down follower, restoring scene index %d", saved_idx
-        )
-        self._safe_teardown(follower_scene)
-        self.current = None
-        # Defensive: _advance() reads self.index on the next iteration
-        # and re-sets-up the scene at that index from scratch. We didn't
-        # touch self.index during the broadcast, but pin it anyway in
-        # case some future code path mutates it mid-flight.
-        self.index = saved_idx
 
     def _drive_tempo_from_audio(self, scene: Scene, now: float) -> None:
         """Forward the current scene's analyzer BPM into the process-wide beat
@@ -1154,7 +855,7 @@ class Playlist:
                     self._apply_reload()
                     next_deadline = time.time()
                 if self._broadcast_interrupt is not None and self._broadcast_interrupt.is_set():
-                    self._handle_broadcast_interrupt()
+                    self.ensemble_coord.handle_broadcast_interrupt()
                     next_deadline = time.time()
                     if self.stop_event.is_set():
                         break
@@ -1170,17 +871,17 @@ class Playlist:
                 if self.current is None:
                     break
 
-                self._service_menu()
+                self.menu.service()
                 # Freeze the background while the menu is open and idle: holding
                 # the last frame stops the post-render panel from flickering
                 # against a scene that redraws the whole frame every tick. A
                 # menu interaction (open / nav / value change) sets
-                # _menu_repaint, so the live preview still re-renders on demand.
-                if self.menu_active.is_set() and not self._menu_repaint:
+                # menu.repaint, so the live preview still re-renders on demand.
+                if self.menu_active.is_set() and not self.menu.repaint:
                     next_deadline = self._idle_pace(self.current, next_deadline)
                     continue
-                self._menu_repaint = False
-                next_deadline = self._run_one_frame(self.current, next_deadline)
+                self.menu.repaint = False
+                next_deadline = self.run_one_frame(self.current, next_deadline)
         except KeyboardInterrupt:
             self.log.info("interrupted")
         finally:
@@ -1190,112 +891,7 @@ class Playlist:
                 if controller is not None:
                     controller.stop()
             if self.current is not None:
-                self._safe_teardown(self.current)
-
-    def _service_menu(self) -> None:
-        """Open/close the on-C64 menu on SPACE (menu_event) and forward nav
-        keys to an open menu. Called each loop iteration before the frame
-        renders, so a value change previews on the same frame."""
-        scene = self.current
-        if scene is None:
-            self.menu_eligible.clear()
-            return
-        if self.menu_cfg is None or not getattr(self.menu_cfg, "enabled", False):
-            return
-        from .overlays.menu import can_show_menu
-
-        # Publish eligibility to the poller every frame: only an eligible scene
-        # lets it drain/clear the keyboard buffer (so SPACE-to-open is inert,
-        # and $00C6 untouched, on launcher/waveform/midi scenes).
-        if can_show_menu(scene):
-            self.menu_eligible.set()
-        else:
-            self.menu_eligible.clear()
-        # Defensive: if the scene changed out from under an open menu (reload,
-        # broadcast), drop the menu state cleanly.
-        if self._menu_overlay is not None and self._menu_overlay not in getattr(
-            scene, "overlays", ()
-        ):
-            self._menu_overlay = None
-            self.menu_active.clear()
-        if self.menu_event.is_set():
-            self.menu_event.clear()
-            if self._menu_overlay is None:
-                self._open_menu()
-            elif self._menu_overlay.on_toggle():
-                self._close_menu()
-            self._menu_repaint = True  # open / close / confirm changed the view
-        if self._menu_overlay is not None:
-            while self.nav_queue:
-                try:
-                    code = self.nav_queue.popleft()
-                except IndexError:
-                    break
-                self._menu_overlay.on_key(code)
-                self._menu_repaint = True  # nav / value change → preview update
-            if self._menu_overlay.closed:
-                self._close_menu()
-                self._menu_repaint = True
-
-    def _menu_can_save(self) -> bool:
-        """Save-back is available only when we know the source TOML path and
-        have the in-memory Config (single-system or a per-system ensemble
-        config; the serializer rejects an ensemble master)."""
-        return self.config is not None and bool(self.config_path)
-
-    def _open_menu(self) -> None:
-        from .overlays.menu import MenuOverlay, can_show_menu
-
-        scene = self.current
-        if scene is None or not can_show_menu(scene):
-            self.log.info("menu: not available for this scene")
-            return
-        overlay = MenuOverlay(
-            scene,
-            self.api,
-            can_save=self._menu_can_save(),
-            prompt_to_save=bool(getattr(self.menu_cfg, "prompt_to_save", True)),
-            save_fn=self._save_config,
-            logger=self.log,
-        )
-        scene.overlays = list(getattr(scene, "overlays", [])) + [overlay]
-        self._menu_overlay = overlay
-        self.menu_active.set()
-        self.nav_queue.clear()  # drop any keys queued before the menu opened
-        self.api.invalidate_cache()  # full repaint so the panel composites cleanly
-        self.log.info("menu: opened (%d options)", len(overlay.items))
-
-    def _close_menu(self) -> None:
-        scene = self.current
-        if scene is not None and self._menu_overlay is not None:
-            with contextlib.suppress(ValueError, AttributeError):
-                scene.overlays.remove(self._menu_overlay)
-        self._menu_overlay = None
-        self.menu_active.clear()
-        # Reclaim the panel cells: the scene's delta cache is unaware the menu
-        # overwrote them, so force a full repaint on the next frame.
-        self.api.invalidate_cache()
-        self.log.info("menu: closed")
-
-    def _save_config(self) -> bool:
-        """Write the (menu-mutated) Config back to its source path, keeping a
-        .bak of the original. Returns True on success."""
-        import os
-        import shutil
-
-        from . import config_serialize
-
-        if self.config is None or not self.config_path:
-            return False
-        try:
-            if os.path.exists(self.config_path):
-                shutil.copy2(self.config_path, self.config_path + ".bak")
-            config_serialize.dump(self.config, self.config_path)
-            self.log.info("menu: saved config → %s (backup .bak)", self.config_path)
-            return True
-        except Exception:
-            self.log.exception("menu: failed to save config")
-            return False
+                self.safe_teardown(self.current)
 
     def _handle_cycle(self) -> None:
         """Broadcast a style cycle to the current scene, its display mode,
@@ -1365,7 +961,7 @@ class Playlist:
         the next `_advance()` call when we leave this method."""
         self.log.info("paused — hold Commodore key to resume")
         if self.current is not None:
-            self._safe_teardown(self.current)
+            self.safe_teardown(self.current)
             self.current = None
         # Clear any stale resume signal BEFORE idling. The poller can set
         # resume_event the moment it sees a 3 s C= hold — which, if pause_idle

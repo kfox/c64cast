@@ -271,41 +271,41 @@ class PlaylistFadeInTest(unittest.TestCase):
     def test_begin_fade_in_starts_black_and_ramps(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._begin_fade_in(s)
+        pl.fades.begin_fade_in(s)
         self.assertEqual(s.display_mode.fade_alpha, 0.0)
-        n = pl._fade_in_remaining
+        n = pl.fades.fade_in_remaining
         self.assertGreater(n, 0)
         # Stepping n frames ramps fade_alpha monotonically up to exactly 1.0.
         last = 0.0
         for _ in range(n):
-            pl._advance_fade_in(s)
+            pl.fades.advance_fade_in(s)
             self.assertGreaterEqual(s.display_mode.fade_alpha, last)
             last = s.display_mode.fade_alpha
         self.assertEqual(last, 1.0)
-        self.assertEqual(pl._fade_in_remaining, 0)
+        self.assertEqual(pl.fades.fade_in_remaining, 0)
 
     def test_disabled_when_duration_zero(self):
         s = _FakeScene()
         pl = _playlist(s, fade_duration_s=0.0)
-        pl._begin_fade_in(s)
+        pl.fades.begin_fade_in(s)
         self.assertEqual(s.display_mode.fade_alpha, 1.0)
-        self.assertEqual(pl._fade_in_remaining, 0)
+        self.assertEqual(pl.fades.fade_in_remaining, 0)
 
     def test_cancel_fade_in_snaps_to_full(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._begin_fade_in(s)
-        pl._cancel_fade_in(s)
+        pl.fades.begin_fade_in(s)
+        pl.fades.cancel_fade_in(s)
         self.assertEqual(s.display_mode.fade_alpha, 1.0)
-        self.assertEqual(pl._fade_in_remaining, 0)
+        self.assertEqual(pl.fades.fade_in_remaining, 0)
 
 
 class PlaylistFadeOutTest(unittest.TestCase):
     def test_fade_out_dims_to_black_over_n_frames(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._fade_out(s)
-        n = pl._fade_frames(s)
+        pl.fades.fade_out(s)
+        n = pl.fades.fade_frames(s)
         self.assertEqual(len(s.display_mode.repush_calls), n)
         # alphas descend toward (and reach) 0, then mode left at full brightness.
         self.assertAlmostEqual(s.display_mode.repush_calls[-1], 0.0)
@@ -314,8 +314,8 @@ class PlaylistFadeOutTest(unittest.TestCase):
     def test_skip_before_fade_out_suppresses_it(self):
         s = _FakeScene()
         pl = _playlist(s)
-        pl._ended_via_skip = True
-        pl._fade_out(s)
+        pl.fades.ended_via_skip = True
+        pl.fades.fade_out(s)
         self.assertEqual(s.display_mode.repush_calls, [])
 
     def test_skip_during_fade_out_aborts_and_consumes_event(self):
@@ -331,7 +331,7 @@ class PlaylistFadeOutTest(unittest.TestCase):
                 pl.skip_event.set()
 
         s.display_mode.repush_faded = spy
-        pl._fade_out(s)
+        pl.fades.fade_out(s)
         self.assertEqual(len(s.display_mode.repush_calls), 2)
         self.assertFalse(pl.skip_event.is_set(), "skip must be consumed by the aborted fade")
 
@@ -339,7 +339,7 @@ class PlaylistFadeOutTest(unittest.TestCase):
         s = _FakeScene()
         s.display_mode._last_buffers = None
         pl = _playlist(s)
-        pl._fade_out(s)
+        pl.fades.fade_out(s)
         self.assertEqual(s.display_mode.repush_calls, [])
 
 

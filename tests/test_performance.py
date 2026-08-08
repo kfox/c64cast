@@ -1,7 +1,7 @@
 """Tests for the clip-launch grid (Live DJ/VJ Phase 2 — performance.py).
 
 Offline and deterministic: the launch engine (`PerformanceSession`) is driven
-against a lightweight fake playlist (a stand-in for the `_perf_swap_scene` /
+against a lightweight fake playlist (a stand-in for the `perf_swap_scene` /
 `build_performance_scene` / `pl.tempo` surface it actually uses) with a
 hand-controlled beat grid, so quantize boundaries and launch semantics are
 asserted without real time, mido, scenes, or hardware. The background build
@@ -77,7 +77,7 @@ class _FakePlaylist:
         slot = clip.get("slot", 0)
         return _FakeScene(self.clip_labels.get(slot, f"clip{slot}"))
 
-    def _perf_swap_scene(self, new_scene: _FakeScene) -> bool:
+    def perf_swap_scene(self, new_scene: _FakeScene) -> bool:
         if self.current is not None:
             self.current.teardown()
         new_scene.setups += 1

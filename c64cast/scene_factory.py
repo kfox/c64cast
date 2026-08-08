@@ -2033,7 +2033,7 @@ def build_scene(
     """Build a single Scene from a SceneCfg.
 
     Extracted from `scenes_from_config` so the playlist's broadcast
-    interrupt machinery (see Playlist._handle_broadcast_interrupt) can
+    interrupt machinery (see Playlist.EnsembleCoordinator.handle_broadcast_interrupt) can
     spin up follower scenes one at a time without re-iterating cfg.scenes.
 
     Needs the surrounding `Config` for context fields (ultimate64.system

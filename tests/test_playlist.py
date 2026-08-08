@@ -1147,19 +1147,19 @@ class FrameDropDisturbanceTest(unittest.TestCase):
         audio = _DisturbanceAudio()
         pl = self._playlist(audio)
         # Deadline ~1 s in the past → drops ≫ _AUDIO_DISTURBANCE_DROP_S of frames.
-        pl._run_one_frame(pl.scenes[0], time.time() - 1.0)
+        pl.run_one_frame(pl.scenes[0], time.time() - 1.0)
         self.assertEqual(audio.disturbances, 1)
 
     def test_small_drop_does_not_signal(self):
         audio = _DisturbanceAudio()
         pl = self._playlist(audio)
         # ~10 ms behind: a real (>2 frame) drop, but well under the 0.5 s bar.
-        pl._run_one_frame(pl.scenes[0], time.time() - 0.01)
+        pl.run_one_frame(pl.scenes[0], time.time() - 0.01)
         self.assertEqual(audio.disturbances, 0)
 
     def test_no_audio_is_safe(self):
         pl = self._playlist(None)
-        pl._run_one_frame(pl.scenes[0], time.time() - 1.0)  # must not raise
+        pl.run_one_frame(pl.scenes[0], time.time() - 1.0)  # must not raise
 
 
 class SceneRecordingMetadataTest(unittest.TestCase):
@@ -1182,14 +1182,14 @@ class SceneRecordingMetadataTest(unittest.TestCase):
 
         pl = self._playlist(Config())
         with self.assertLogs("c64cast.recording", level="INFO") as cap:
-            pl._safe_setup(pl.scenes[0])
+            pl.safe_setup(pl.scenes[0])
         self.assertEqual(len(cap.output), 1)
         self.assertIn(SCENE_CONFIG_MARKER, cap.output[0])
 
     def test_no_config_logs_nothing(self):
         pl = self._playlist(None)
         with self.assertNoLogs("c64cast.recording", level="INFO"):
-            pl._safe_setup(pl.scenes[0])
+            pl.safe_setup(pl.scenes[0])
 
 
 class PlaylistUserDimTest(unittest.TestCase):
@@ -1220,8 +1220,8 @@ class PlaylistUserDimTest(unittest.TestCase):
         b.display_mode = self._Mode()
         pl = self._playlist([a, b])
         pl.user_dim = 0.4
-        pl._safe_setup(a)
-        pl._safe_setup(b)  # a later auto-advance re-applies the same dim
+        pl.safe_setup(a)
+        pl.safe_setup(b)  # a later auto-advance re-applies the same dim
         self.assertEqual(a.display_mode.user_dim, 0.4)
         self.assertEqual(b.display_mode.user_dim, 0.4)
 
@@ -1231,7 +1231,7 @@ class PlaylistUserDimTest(unittest.TestCase):
         a = FakeScene("A")
         a.display_mode = self._Mode(user_dim=0.7)
         pl = self._playlist([a])  # user_dim stays 1.0
-        pl._safe_setup(a)
+        pl.safe_setup(a)
         self.assertEqual(a.display_mode.user_dim, 0.7)
 
 

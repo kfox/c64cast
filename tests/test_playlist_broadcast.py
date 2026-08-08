@@ -1,4 +1,4 @@
-"""Tests for Playlist._handle_broadcast_interrupt + _run_one_frame.
+"""Tests for Playlist.ensemble_coord.handle_broadcast_interrupt + _run_one_frame.
 
 These exercise the broadcast-interrupt path with a fake orchestrator
 and fake follower scene factory — no real ensemble, no real orchestrator
@@ -114,14 +114,14 @@ class RunOneFrameTest(unittest.TestCase):
     def test_calls_scene_process_frame(self):
         pl = _build_playlist()
         scene = _FakeScene("s")
-        pl._run_one_frame(scene, 0.0)
+        pl.run_one_frame(scene, 0.0)
         self.assertEqual(scene.process_calls, 1)
 
     def test_sets_is_done_when_scene_returns_false(self):
         pl = _build_playlist()
         scene = _FakeScene("s")
         scene._still_active = False
-        pl._run_one_frame(scene, 0.0)
+        pl.run_one_frame(scene, 0.0)
         self.assertTrue(scene.is_done)
 
     def test_skip_event_forces_is_done_even_when_active(self):
@@ -130,7 +130,7 @@ class RunOneFrameTest(unittest.TestCase):
         scene._still_active = True
         pl.skip_event.set()
         with self.assertLogs("c64cast.playlist", level="INFO"):
-            pl._run_one_frame(scene, 0.0)
+            pl.run_one_frame(scene, 0.0)
         self.assertTrue(scene.is_done)
         # skip_event is cleared after handling.
         self.assertFalse(pl.skip_event.is_set())
@@ -180,7 +180,7 @@ class BroadcastInterruptTest(unittest.TestCase):
 
         interrupt.set()
         with self.assertLogs("c64cast.playlist", level="INFO"):
-            pl._handle_broadcast_interrupt()
+            pl.ensemble_coord.handle_broadcast_interrupt()
         t.join(timeout=2.0)
 
         self.assertEqual(initial.teardown_calls, 1)
@@ -201,7 +201,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         resume.set()  # exit broadcast loop immediately
 
         with self.assertLogs("c64cast.playlist", level="INFO"):
-            pl._handle_broadcast_interrupt()
+            pl.ensemble_coord.handle_broadcast_interrupt()
 
         self.assertIs(follower._orchestrator, orch)
         self.assertFalse(follower._is_conductor)
@@ -218,7 +218,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         resume.set()
 
         with self.assertLogs("c64cast.playlist", level="INFO") as cap:
-            pl._handle_broadcast_interrupt()
+            pl.ensemble_coord.handle_broadcast_interrupt()
 
         self.assertFalse(pl.pause_event.is_set())
         # resume_event was set so a concurrent _handle_pause loop would
@@ -234,7 +234,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         pl._broadcast_resume = threading.Event()
         pl._broadcast_interrupt.set()
         # Should silently drop, not crash.
-        pl._handle_broadcast_interrupt()
+        pl.ensemble_coord.handle_broadcast_interrupt()
         self.assertFalse(pl._broadcast_interrupt.is_set())
 
     def test_no_factory_logs_error_and_returns(self):
@@ -247,7 +247,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         pl._broadcast_interrupt.set()
         # build_follower_scene is None — should log + bail without crash.
         with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
-            pl._handle_broadcast_interrupt()
+            pl.ensemble_coord.handle_broadcast_interrupt()
         self.assertTrue(any("no follower scene factory" in line for line in cap.output))
 
     def test_follower_with_orchestrate_cfg_does_not_re_install_conductor(self):
@@ -273,7 +273,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         scene._system_index = 0  # type: ignore[attr-defined]
         # Calling _maybe_install_conductor must be a no-op — the scene
         # already has an orchestrator and is in follower role.
-        pl._maybe_install_conductor(scene)
+        pl.ensemble_coord.maybe_install_conductor(scene)
         # _is_conductor must NOT have been flipped back to True.
         self.assertFalse(scene._is_conductor)
         # active_orchestrator must NOT have been touched.
@@ -300,7 +300,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         scene._is_conductor = True  # type: ignore[attr-defined]
         ens.active_orchestrator = orch  # type: ignore[assignment]
 
-        pl._safe_teardown(scene)
+        pl.safe_teardown(scene)
 
         self.assertIsNone(ens.active_orchestrator)
         self.assertIsNone(scene.__dict__.get("_orchestrator"))
@@ -337,20 +337,20 @@ class BroadcastInterruptTest(unittest.TestCase):
         orch_mod._REGISTRY.append(_TestOrch)
         try:
             # First setup: fresh install.
-            pl._maybe_install_conductor(scene)
+            pl.ensemble_coord.maybe_install_conductor(scene)
             first_orch = ens.active_orchestrator
             self.assertIsInstance(first_orch, _TestOrch)
             self.assertIs(scene.__dict__["_orchestrator"], first_orch)
             self.assertTrue(scene.__dict__["_is_conductor"])
 
             # Simulate end-of-broadcast teardown.
-            pl._safe_teardown(scene)
+            pl.safe_teardown(scene)
             self.assertIsNone(ens.active_orchestrator)
 
             # Second setup on the same Scene instance: must install a
             # FRESH orchestrator into the ensemble slot, not silently
             # leave it None.
-            pl._maybe_install_conductor(scene)
+            pl.ensemble_coord.maybe_install_conductor(scene)
             second_orch = ens.active_orchestrator
             self.assertIsInstance(second_orch, _TestOrch)
             self.assertIsNot(second_orch, first_orch)
@@ -367,7 +367,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         # Don't set resume; set stop_event instead.
         pl.stop_event.set()
         with self.assertLogs("c64cast.playlist", level="INFO"):
-            pl._handle_broadcast_interrupt()
+            pl.ensemble_coord.handle_broadcast_interrupt()
         # Follower was set up, ran zero or more frames, and was torn down.
         self.assertEqual(follower.setup_calls, 1)
         self.assertEqual(follower.teardown_calls, 1)

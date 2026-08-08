@@ -334,7 +334,7 @@ class Scene:
         # `effect` property below preserves the pre-chain single-effect API.
         self.effects: list[FrameEffect] = []
         # ClockModulationSource wrapping the playlist's beat grid, injected by
-        # Playlist._safe_setup. An effect layer with mod_source = "clock" reads
+        # Playlist.safe_setup. An effect layer with mod_source = "clock" reads
         # its snapshot in _render_with_overlays so it locks to MIDI/tap tempo
         # (Live DJ/VJ Phase 3). None until a playlist owns the scene (e.g. an
         # armed-but-not-yet-set-up clip), which just means clock layers fall

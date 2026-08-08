@@ -1581,7 +1581,7 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
         if pl.config is not None and pl.config_path:
             if overwrite:
                 applied = tracker.apply(pl.config)
-                if pl._save_config():
+                if pl.menu.save_config():
                     log.info(
                         "%slive-tune: saved %d change(s) → %s (backup .bak)",
                         tag,
@@ -1602,7 +1602,7 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
                 ans = ""
             if ans in ("y", "yes"):
                 applied = tracker.apply(pl.config)
-                ok = pl._save_config()
+                ok = pl.menu.save_config()
                 print(
                     f"{tag}Saved {len(applied)} change(s) (backup .bak)."
                     if ok
