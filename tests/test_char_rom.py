@@ -542,7 +542,7 @@ class DumpCharRomCliTest(_CharRomTestCase):
         from c64cast.cli import main
 
         buf = io.StringIO()
-        with mock.patch("c64cast.cli.make_backend", return_value=be):
+        with mock.patch("c64cast.cli_commands.make_backend", return_value=be):
             with redirect_stdout(buf):
                 rc = main(["--dump-char-rom", "-u", "u64://198.51.100.1"])
         return rc, buf.getvalue()

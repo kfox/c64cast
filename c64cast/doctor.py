@@ -1073,6 +1073,34 @@ def _probe_extras() -> list[Diagnostic]:
     return out
 
 
+# --doctor connectivity hints, hoisted so the probe code reads as logic and a
+# wording tweak is one edit (the same prose used to be inlined per Diagnostic).
+_HINT_DMA_SERVICE = (
+    "Enable F2 -> Network Settings -> Ultimate DMA Service. "
+    "If a password is set, supply it via "
+    "C64CAST_DMA_PASSWORD or [ultimate64].dma_password."
+)
+_HINT_TR_CONNECT = (
+    "Check the USB data cable to the TR's micro-USB-B port "
+    "(transport = serial) or 'Enable TCP Listener' + the "
+    "host IP (transport = tcp)."
+)
+_HINT_REST_RUNNER = (
+    "The SID player and .prg/.crt launcher use the "
+    "Ultimate's REST run_prg endpoint. Enable the "
+    "Ultimate's web/remote-control service (F2 -> "
+    "Network Settings), or use only DMA-rendered scenes "
+    "(video/slideshow/webcam/blank)."
+)
+_HINT_REST_OPTIONAL = (
+    "REST powers reads (keyboard control), machine "
+    "reset, and program launch; writes still work via "
+    "DMA so DMA-rendered scenes play. Enable the "
+    "Ultimate's web/remote-control service (F2 -> "
+    "Network Settings) if you need those."
+)
+
+
 def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
     """Try `Ultimate64API(...)` once per system. Catches SocketDMAError
     so doctor mode completes even when no U64 is powered on. Also probes
@@ -1080,140 +1108,134 @@ def _probe_connectivity(loaded: LoadResult) -> list[Diagnostic]:
     path (mic, video audio, or char-mode video) — those silently
     produce silent audio / garbled video when REU is disabled at the U64.
     """
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        out.extend(_probe_one_system(name, cfg))
+    return out
+
+
+def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
+    """Connect one system's backend, probe it, and run the per-service
+    probes that apply. Connection failures come back as diagnostics, not
+    exceptions, so one dead system doesn't hide the others' reports."""
     from .backend import make_backend
     from .socket_dma import SocketDMAError
     from .teensyrom_dma import TRError
 
-    out: list[Diagnostic] = []
-    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        is_tr = cfg.hardware.backend == "teensyrom"
-        url = cfg.ultimate64.url
-        try:
-            api = make_backend(cfg)
-        except SocketDMAError as e:
-            out.append(
-                Diagnostic(
-                    level="error",
-                    category="connectivity",
-                    subject=name,
-                    message=f"DMA connect to {url} failed: {e}",
-                    hint=(
-                        "Enable F2 -> Network Settings -> Ultimate DMA Service. "
-                        "If a password is set, supply it via "
-                        "C64CAST_DMA_PASSWORD or [ultimate64].dma_password."
-                    ),
-                )
+    url = cfg.ultimate64.url
+    try:
+        api = make_backend(cfg)
+    except SocketDMAError as e:
+        return [
+            Diagnostic(
+                level="error",
+                category="connectivity",
+                subject=name,
+                message=f"DMA connect to {url} failed: {e}",
+                hint=_HINT_DMA_SERVICE,
             )
-            continue
-        except TRError as e:
-            out.append(
-                Diagnostic(
-                    level="error",
-                    category="connectivity",
-                    subject=name,
-                    message=f"TeensyROM connect failed: {e}",
-                    hint=(
-                        "Check the USB data cable to the TR's micro-USB-B port "
-                        "(transport = serial) or 'Enable TCP Listener' + the "
-                        "host IP (transport = tcp)."
-                    ),
-                )
+        ]
+    except TRError as e:
+        return [
+            Diagnostic(
+                level="error",
+                category="connectivity",
+                subject=name,
+                message=f"TeensyROM connect failed: {e}",
+                hint=_HINT_TR_CONNECT,
             )
-            continue
-        try:
-            status = api.probe()
-            if is_tr:
-                # The TeensyROM has no REST surface; probe() is the ping/FW line.
-                # It also has no REU, so the REST REU/SID-enable probes below
-                # don't apply — instead just flag a REU opt-in as ignored.
-                if status is None:
-                    out.append(
-                        Diagnostic(
-                            level="warn",
-                            category="connectivity",
-                            subject=name,
-                            message="TeensyROM transport reachable but ping failed",
-                            hint="Writes may still work; check the firmware version.",
-                        )
-                    )
-                else:
-                    out.append(
-                        Diagnostic(
-                            level="ok",
-                            category="connectivity",
-                            subject=name,
-                            message=f"TeensyROM reachable ({status})",
-                        )
-                    )
-                    out.extend(_probe_reu_unavailable(name, cfg, api))
-            elif status is None:
-                wants_runner, runner_reasons = _wants_rest_runner(cfg)
-                if wants_runner:
-                    # SID playback + .prg/.crt launch start via the REST
-                    # run_prg endpoint, so a dead REST link means these scenes
-                    # cannot run at all — an error, not a warning.
-                    out.append(
-                        Diagnostic(
-                            level="error",
-                            category="connectivity",
-                            subject=name,
-                            message=(
-                                f"DMA reachable at {url} but REST probe failed "
-                                f"— scenes that launch a program cannot start "
-                                f"({', '.join(runner_reasons)})"
-                            ),
-                            hint="The SID player and .prg/.crt launcher use the "
-                            "Ultimate's REST run_prg endpoint. Enable the "
-                            "Ultimate's web/remote-control service (F2 -> "
-                            "Network Settings), or use only DMA-rendered scenes "
-                            "(video/slideshow/webcam/blank).",
-                        )
-                    )
-                else:
-                    out.append(
-                        Diagnostic(
-                            level="warn",
-                            category="connectivity",
-                            subject=name,
-                            message=f"DMA reachable at {url} but REST probe failed",
-                            hint="REST powers reads (keyboard control), machine "
-                            "reset, and program launch; writes still work via "
-                            "DMA so DMA-rendered scenes play. Enable the "
-                            "Ultimate's web/remote-control service (F2 -> "
-                            "Network Settings) if you need those.",
-                        )
-                    )
-            else:
-                out.append(
-                    Diagnostic(
-                        level="ok",
-                        category="connectivity",
-                        subject=name,
-                        message=f"DMA + REST reachable at {url} ({status})",
-                    )
-                )
-                # Probe REU status when the config opts into any REU-staged
-                # path. Skipped when REST already failed (the REU probe
-                # would just fail with the same error).
-                out.extend(_probe_reu_status(name, cfg, api))
-                # Probe SID enable state when the config drives the SID.
-                # Catches the U2+ "emulated SID disabled" case where every
-                # tune is silent while video + the oscilloscope still work.
-                out.extend(_probe_sid_status(name, cfg, api))
-                # Probe the Ultimate Audio sampler state when the config will
-                # use it for video audio (backend auto/sampler + video scene).
-                out.extend(_probe_sampler_status(name, cfg, api))
-                # Probe DAC calibration status live — the offline
-                # _validate_dac_curve check can't know which physical SID
-                # socket is currently mapped to $D400, so it's approximate;
-                # this one is precise.
-                out.extend(_probe_dac_calibration_status(name, cfg, api))
-                # Probe SID model autoconfig status live — offline validation
-                # can only check [ultimate64].sid_model is a known value; this
-                # reports what's actually socketed right now.
-                out.extend(_probe_sid_autoconfig_status(name, cfg, api))
-        finally:
-            api.close()
+        ]
+    try:
+        status = api.probe()
+        if cfg.hardware.backend == "teensyrom":
+            return _probe_tr_reachability(name, cfg, api, status)
+        if status is None:
+            return [_rest_down_diagnostic(name, cfg, url)]
+        return _probe_u64_services(name, cfg, api, url, status)
+    finally:
+        api.close()
+
+
+def _probe_tr_reachability(
+    name: str, cfg: Config, api: object, status: str | None
+) -> list[Diagnostic]:
+    """The TeensyROM has no REST surface; probe() is the ping/FW line. It
+    also has no REU, so the REST REU/SID-enable probes don't apply — instead
+    just flag a REU opt-in as ignored."""
+    if status is None:
+        return [
+            Diagnostic(
+                level="warn",
+                category="connectivity",
+                subject=name,
+                message="TeensyROM transport reachable but ping failed",
+                hint="Writes may still work; check the firmware version.",
+            )
+        ]
+    out = [
+        Diagnostic(
+            level="ok",
+            category="connectivity",
+            subject=name,
+            message=f"TeensyROM reachable ({status})",
+        )
+    ]
+    out.extend(_probe_reu_unavailable(name, cfg, api))
+    return out
+
+
+def _rest_down_diagnostic(name: str, cfg: Config, url: str) -> Diagnostic:
+    """DMA answered but REST didn't. SID playback + .prg/.crt launch start via
+    the REST run_prg endpoint, so a config that needs the runner turns this
+    into an error (those scenes cannot run at all); otherwise it's a warning
+    (writes still work via DMA, so DMA-rendered scenes play)."""
+    wants_runner, runner_reasons = _wants_rest_runner(cfg)
+    if wants_runner:
+        return Diagnostic(
+            level="error",
+            category="connectivity",
+            subject=name,
+            message=(
+                f"DMA reachable at {url} but REST probe failed "
+                f"— scenes that launch a program cannot start "
+                f"({', '.join(runner_reasons)})"
+            ),
+            hint=_HINT_REST_RUNNER,
+        )
+    return Diagnostic(
+        level="warn",
+        category="connectivity",
+        subject=name,
+        message=f"DMA reachable at {url} but REST probe failed",
+        hint=_HINT_REST_OPTIONAL,
+    )
+
+
+def _probe_u64_services(
+    name: str, cfg: Config, api: object, url: str, status: str
+) -> list[Diagnostic]:
+    """Both links up: report OK, then run the live per-service probes. REU
+    status when the config opts into a REU-staged path; SID enable state when
+    the config drives the SID (catches the U2+ "emulated SID disabled" case
+    where every tune is silent while video + the oscilloscope still work);
+    the Ultimate Audio sampler when video audio will use it; DAC calibration
+    live (the offline _validate_dac_curve check can't know which physical SID
+    socket is mapped to $D400 — this one is precise); and SID model
+    autoconfig live (offline validation can only check the config names a
+    known value; this reports what's actually socketed right now)."""
+    out = [
+        Diagnostic(
+            level="ok",
+            category="connectivity",
+            subject=name,
+            message=f"DMA + REST reachable at {url} ({status})",
+        )
+    ]
+    out.extend(_probe_reu_status(name, cfg, api))
+    out.extend(_probe_sid_status(name, cfg, api))
+    out.extend(_probe_sampler_status(name, cfg, api))
+    out.extend(_probe_dac_calibration_status(name, cfg, api))
+    out.extend(_probe_sid_autoconfig_status(name, cfg, api))
     return out
 
 

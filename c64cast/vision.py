@@ -43,7 +43,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import cv2
 import numpy as np
@@ -310,6 +310,31 @@ class MediaPipeHandRecognizer:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _GestureState:
+    """Mutable per-tick state of the gesture poll loop (one per _loop run)."""
+
+    last_tick: float
+    t0: float
+    held_since: float | None = None  # pinch-hold timer (resume)
+    last_static: Gesture = Gesture.NONE  # for the dwell run-length
+    static_run: int = 0  # consecutive STILL ticks of the pose
+    static_fired: bool = False  # one fire per held pose
+    swipe_run: int = 0  # consecutive swipe-eligible ticks
+    last_fire: float = 0.0  # cooldown timer
+    prev_wrist: tuple[float, float] | None = None
+    hand_frames: int = 0  # consecutive ticks a hand is present
+
+
+class _WristMotion(NamedTuple):
+    """One tick's wrist-motion measurement (see VisionController._wrist_motion)."""
+
+    cur: tuple[float, float] | None
+    horiz_speed: float
+    horizontal: bool
+    still: bool
+
+
 class VisionController:
     """Watches the camera for gestures and drives the playlist control events.
 
@@ -439,114 +464,125 @@ class VisionController:
     def _loop(self, stop: threading.Event):
         assert self._pause_event is not None
         assert self._resume_event is not None
-        held_since: float | None = None  # pinch-hold timer (resume)
-        last_static = Gesture.NONE  # for the dwell run-length
-        static_run = 0  # consecutive STILL ticks of the pose
-        static_fired = False  # one fire per held pose
-        swipe_run = 0  # consecutive swipe-eligible ticks
-        last_fire = 0.0  # cooldown timer
-        prev_wrist: tuple[float, float] | None = None
-        hand_frames = 0  # consecutive ticks a hand is present
-        last_tick = time.monotonic()
-        # detect_for_video requires monotonically increasing ms timestamps.
-        t0 = time.monotonic()
-
+        now = time.monotonic()
+        # t0: detect_for_video requires monotonically increasing ms timestamps.
+        state = _GestureState(last_tick=now, t0=now)
         while not stop.wait(self.poll_interval_s):
-            now = time.monotonic()
-            dt = now - last_tick
-            last_tick = now
-            hand = self._read_hand(int((now - t0) * 1000))
-            hand_frames = hand_frames + 1 if hand is not None else 0
-            static = (
-                classify_static(hand, pinch_threshold=self.pinch_threshold)
-                if hand is not None
-                else Gesture.NONE
-            )
+            self._tick(state)
 
-            # Wrist motion since the last tick.
-            cur = self._wrist_xy(hand)
-            if cur is not None and prev_wrist is not None and dt > 0:
-                dx, dy = cur[0] - prev_wrist[0], cur[1] - prev_wrist[1]
-                speed = (dx * dx + dy * dy) ** 0.5 / dt
-                horiz_speed = abs(dx) / dt
-                horizontal = abs(dx) > abs(dy)  # sideways, not a vertical raise
-            else:
-                speed = horiz_speed = 0.0
-                horizontal = False
-            still = cur is not None and speed < STILL_SPEED
+    def _tick(self, st: _GestureState) -> None:
+        """One gesture-poll tick: read the hand, classify pose + wrist motion,
+        then dispatch to the paused or running handler."""
+        assert self._pause_event is not None
+        now = time.monotonic()
+        dt = now - st.last_tick
+        st.last_tick = now
+        hand = self._read_hand(int((now - st.t0) * 1000))
+        st.hand_frames = st.hand_frames + 1 if hand is not None else 0
+        static = (
+            classify_static(hand, pinch_threshold=self.pinch_threshold)
+            if hand is not None
+            else Gesture.NONE
+        )
+        motion = self._wrist_motion(self._wrist_xy(hand), st.prev_wrist, dt)
+        if self._pause_event.is_set():
+            self._tick_paused(st, static, motion.cur, now)
+        else:
+            self._tick_running(st, static, motion, now)
 
-            if self._pause_event.is_set():
-                # PAUSED: only the pinch hold-to-resume gesture matters
-                # (mirrors keyboard.py — CTRL/SHIFT analogs are ignored).
-                if static == Gesture.PINCH:
-                    if held_since is None:
-                        held_since = now
-                    elif now - held_since >= self.hold_threshold_s:
-                        self.log.info(
-                            "pinch held %.1fs while paused — resuming", self.hold_threshold_s
-                        )
-                        self._resume_event.set()
-                        held_since = None
-                else:
-                    held_since = None
-                prev_wrist, swipe_run = cur, 0
-                continue
+    @staticmethod
+    def _wrist_motion(
+        cur: tuple[float, float] | None, prev: tuple[float, float] | None, dt: float
+    ) -> _WristMotion:
+        """Wrist motion since the last tick."""
+        if cur is not None and prev is not None and dt > 0:
+            dx, dy = cur[0] - prev[0], cur[1] - prev[1]
+            speed = (dx * dx + dy * dy) ** 0.5 / dt
+            horiz_speed = abs(dx) / dt
+            horizontal = abs(dx) > abs(dy)  # sideways, not a vertical raise
+        else:
+            speed = horiz_speed = 0.0
+            horizontal = False
+        still = cur is not None and speed < STILL_SPEED
+        return _WristMotion(cur=cur, horiz_speed=horiz_speed, horizontal=horizontal, still=still)
 
-            # RUNNING.
-            #  * Swipe = SUSTAINED (>= SWIPE_MIN_FRAMES ticks), horizontally-
-            #    dominant, fast wrist motion. A vertical raise (|dy|>|dx|) or a
-            #    one-frame spike doesn't count.
-            #  * Pinch / open-hand are HELD poses: they only accrue dwell while
-            #    the hand is STILL, so a busy/moving hand (reaching, gesturing
-            #    while talking) doesn't rack up cycles, and a hand passing
-            #    through "open" on the way to a pinch/swipe can't flicker one.
-            #  Priority: a moving hand is a swipe, a still hand is a pose. One
-            #  fire per tick; a shared cooldown debounces.
-            settled = hand_frames > SWIPE_SETTLE_FRAMES
-            swipe_frame = settled and horizontal and horiz_speed >= self.swipe_velocity
-            swipe_run = swipe_run + 1 if swipe_frame else 0
-            is_swipe = swipe_run >= SWIPE_MIN_FRAMES
+    def _tick_paused(
+        self, st: _GestureState, static: Gesture, cur: tuple[float, float] | None, now: float
+    ) -> None:
+        """PAUSED: only the pinch hold-to-resume gesture matters (mirrors
+        keyboard.py — CTRL/SHIFT analogs are ignored)."""
+        assert self._resume_event is not None
+        if static == Gesture.PINCH:
+            if st.held_since is None:
+                st.held_since = now
+            elif now - st.held_since >= self.hold_threshold_s:
+                self.log.info("pinch held %.1fs while paused — resuming", self.hold_threshold_s)
+                self._resume_event.set()
+                st.held_since = None
+        else:
+            st.held_since = None
+        st.prev_wrist, st.swipe_run = cur, 0
 
-            if static != last_static:
-                static_run = 0
-                static_fired = False
-            static_run = static_run + 1 if (static != Gesture.NONE and still) else 0
-            last_static = static
-            held = static_run >= self._dwell_frames and not static_fired
+    def _tick_running(
+        self, st: _GestureState, static: Gesture, m: _WristMotion, now: float
+    ) -> None:
+        """RUNNING-state gesture dispatch.
 
-            cooled = now - last_fire >= self.gesture_cooldown_s
-            perf = self._perf  # snapshot once (bind_performance may set it live)
+        * Swipe = SUSTAINED (>= SWIPE_MIN_FRAMES ticks), horizontally-
+          dominant, fast wrist motion. A vertical raise (|dy|>|dx|) or a
+          one-frame spike doesn't count.
+        * Pinch / open-hand are HELD poses: they only accrue dwell while
+          the hand is STILL, so a busy/moving hand (reaching, gesturing
+          while talking) doesn't rack up cycles, and a hand passing
+          through "open" on the way to a pinch/swipe can't flicker one.
+        Priority: a moving hand is a swipe, a still hand is a pose. One
+        fire per tick; a shared cooldown debounces."""
+        assert self._pause_event is not None
+        settled = st.hand_frames > SWIPE_SETTLE_FRAMES
+        swipe_frame = settled and m.horizontal and m.horiz_speed >= self.swipe_velocity
+        st.swipe_run = st.swipe_run + 1 if swipe_frame else 0
+        is_swipe = st.swipe_run >= SWIPE_MIN_FRAMES
 
-            if cooled and is_swipe and perf is not None:
-                slot = perf.performance.advance_clip()
-                self.log.info("swipe detected — launching next clip (slot %s)", slot)
-                last_fire = now
-                swipe_run = 0
-            elif cooled and is_swipe and self._skip_event is not None:
-                self.log.info("swipe detected — skipping to next scene")
-                self._skip_event.set()
-                last_fire = now
-                swipe_run = 0
-            elif cooled and held and static == Gesture.PINCH and perf is not None:
-                enabled = perf.toggle_effect_layer(0)
-                self.log.info("pinch held — fx layer 0 %s", "on" if enabled else "bypass")
-                last_fire = now
-                static_fired = True
-            elif cooled and held and static == Gesture.PINCH:
-                self.log.info("pinch held — pausing")
-                self._pause_event.set()
-                last_fire = now
-                static_fired = True
-            elif cooled and held and static == Gesture.OPEN_HAND and perf is not None:
-                enabled = perf.toggle_effect_layer(1)
-                self.log.info("open hand held — fx layer 1 %s", "on" if enabled else "bypass")
-                last_fire = now
-                static_fired = True
-            elif cooled and held and static == Gesture.OPEN_HAND and self._cycle_event is not None:
-                self.log.info("open hand held — cycling display style")
-                self._cycle_event.set()
-                last_fire = now
-                static_fired = True
+        if static != st.last_static:
+            st.static_run = 0
+            st.static_fired = False
+        st.static_run = st.static_run + 1 if (static != Gesture.NONE and m.still) else 0
+        st.last_static = static
+        held = st.static_run >= self._dwell_frames and not st.static_fired
 
-            prev_wrist = cur
-            held_since = None
+        cooled = now - st.last_fire >= self.gesture_cooldown_s
+        perf = self._perf  # snapshot once (bind_performance may set it live)
+
+        if cooled and is_swipe and perf is not None:
+            slot = perf.performance.advance_clip()
+            self.log.info("swipe detected — launching next clip (slot %s)", slot)
+            st.last_fire = now
+            st.swipe_run = 0
+        elif cooled and is_swipe and self._skip_event is not None:
+            self.log.info("swipe detected — skipping to next scene")
+            self._skip_event.set()
+            st.last_fire = now
+            st.swipe_run = 0
+        elif cooled and held and static == Gesture.PINCH and perf is not None:
+            enabled = perf.toggle_effect_layer(0)
+            self.log.info("pinch held — fx layer 0 %s", "on" if enabled else "bypass")
+            st.last_fire = now
+            st.static_fired = True
+        elif cooled and held and static == Gesture.PINCH:
+            self.log.info("pinch held — pausing")
+            self._pause_event.set()
+            st.last_fire = now
+            st.static_fired = True
+        elif cooled and held and static == Gesture.OPEN_HAND and perf is not None:
+            enabled = perf.toggle_effect_layer(1)
+            self.log.info("open hand held — fx layer 1 %s", "on" if enabled else "bypass")
+            st.last_fire = now
+            st.static_fired = True
+        elif cooled and held and static == Gesture.OPEN_HAND and self._cycle_event is not None:
+            self.log.info("open hand held — cycling display style")
+            self._cycle_event.set()
+            st.last_fire = now
+            st.static_fired = True
+
+        st.prev_wrist = m.cur
+        st.held_since = None

@@ -1124,18 +1124,49 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if n <= 1:
             return None
 
-        # Silence the outgoing subtune FIRST, before the (CPU-bound) candidate
-        # footprinting below. cycle_style runs on the main render thread, so
-        # that footprinting blocks process_frame and the scope visibly freezes
-        # the instant SHIFT is handled — silencing here cuts the audio in
-        # lockstep with that freeze instead of letting the old tune sound
-        # through the footprint + cue / hard-relaunch work (the lingering audio
-        # the user hears otherwise). Order mirrors teardown: unhook our IRQ
-        # first (else the next PLAY tick rewrites the SID), flush so the vector
-        # lands, then zero $D418 + gates. cue_song_reinit / setup()'s
-        # run_sid_player re-installs the vector and restarts PLAY for the new
-        # subtune. The host-emu poll thread keeps ticking until _poll.stop()
-        # below — harmless, since the blocked main thread paints nothing.
+        self._cycle_silence_current()
+        new_song, chosen_duration, chosen_layout, chosen_access_fp = self._cycle_pick_candidate(n)
+
+        # Decide the new subtune's PLAY $01 bank (only for a chosen,
+        # renderable candidate — the write footprint run is skipped for the
+        # degenerate all-rejected fallback, where cue restores the heuristic
+        # default). $36 when PLAY reads RAM the tune wrote under BASIC ROM.
+        chosen_play_bank: int | None = None
+        if chosen_access_fp is not None:
+            write_fp = ram_write_footprint(self.sid_bytes, song=new_song)
+            chosen_play_bank = _play_bank_for_footprints(write_fp, chosen_access_fp)
+
+        # Stop the poll thread so it can't tick the host emulator while we
+        # rebuild it. (The outgoing subtune was already silenced first, before
+        # the candidate footprinting.)
+        self._poll.stop()
+
+        new_needs_basic_out = chosen_play_bank == CPU.PORT_BASIC_OUT
+        if new_needs_basic_out and not self._current_needs_basic_out:
+            return self._cycle_hard_relaunch(new_song, chosen_duration, n)
+
+        if not self._cycle_cue(api, new_song, chosen_play_bank):
+            return None
+        self._current_needs_basic_out = new_needs_basic_out
+        self._cycle_rebuild_emulator(new_song, chosen_duration)
+        self._cycle_reset_render_state()
+        self._cycle_repoint_display(chosen_layout)
+        return f"song {self.song}/{n}"
+
+    def _cycle_silence_current(self) -> None:
+        """Silence the outgoing subtune FIRST, before the (CPU-bound) candidate
+        footprinting. cycle_style runs on the main render thread, so that
+        footprinting blocks process_frame and the scope visibly freezes the
+        instant SHIFT is handled — silencing here cuts the audio in lockstep
+        with that freeze instead of letting the old tune sound through the
+        footprint + cue / hard-relaunch work (the lingering audio the user
+        hears otherwise). Order mirrors teardown: unhook our IRQ first (else
+        the next PLAY tick rewrites the SID), flush so the vector lands, then
+        zero $D418 + gates. cue_song_reinit / setup()'s run_sid_player
+        re-installs the vector and restarts PLAY for the new subtune. The
+        host-emu poll thread keeps ticking until the _poll.stop() that follows
+        the candidate walk — harmless, since the blocked main thread paints
+        nothing."""
         try:
             self.api.restore_kernal_irq_vector()
             self.api.flush()
@@ -1144,14 +1175,18 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         except Exception:
             log.exception("waveform: cycle pre-silence failed")
 
+    def _cycle_pick_candidate(
+        self, n: int
+    ) -> tuple[int, float | None, tuple[int, int, int, int] | None, bytearray | None]:
+        """Walk candidates from the next subtune, skipping ones that are too
+        short (SFX, when the DB knows) or un-renderable (no free VIC bank for
+        this subtune's PLAY footprint). Returns ``(new_song, duration, layout,
+        access_footprint)``; the chosen subtune's layout is captured so the
+        caller doesn't re-footprint it. Bounded at n-1 attempts: if every
+        candidate is rejected, the first is returned with layout=None so SHIFT
+        still changes the song and keeps the current display bank (the new
+        subtune may render imperfectly, but audio plays)."""
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
-
-        # Walk candidates from the next subtune, skipping ones that are too
-        # short (SFX, when the DB knows) or un-renderable (no free VIC bank
-        # for this subtune's PLAY footprint). Capture the chosen subtune's
-        # display layout so we don't re-footprint it below. Bounded at n-1
-        # attempts: if every candidate is rejected, land on the first so
-        # SHIFT still changes the song (audio plays even if the scope can't).
         first_candidate = (self.song % n) + 1
         new_song = first_candidate
         chosen_duration: float | None = None
@@ -1188,10 +1223,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             chosen_layout = layout
             chosen_access_fp = fp
             break
-        # No `else`: if every candidate was rejected, new_song stays at
-        # first_candidate with chosen_layout=None; we keep the current
-        # display bank below (the new subtune may render imperfectly, but
-        # the SHIFT still takes effect and audio plays).
 
         for sn, sl in skipped_short:
             log.info(
@@ -1207,86 +1238,77 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 sn,
                 n,
             )
+        return new_song, chosen_duration, chosen_layout, chosen_access_fp
 
-        # Decide the new subtune's PLAY $01 bank (only for a chosen,
-        # renderable candidate — the write footprint run is skipped for the
-        # degenerate all-rejected fallback, where cue restores the heuristic
-        # default). $36 when PLAY reads RAM the tune wrote under BASIC ROM.
-        chosen_play_bank: int | None = None
-        if chosen_access_fp is not None:
-            write_fp = ram_write_footprint(self.sid_bytes, song=new_song)
-            chosen_play_bank = _play_bank_for_footprints(write_fp, chosen_access_fp)
-
-        # Stop the poll thread so it can't tick the host emulator while we
-        # rebuild it. (The outgoing subtune was already silenced at the top of
-        # cycle_style, before the footprinting above.)
-        self._poll.stop()
-
-        # A hard relaunch is needed only when ENTERING the under-BASIC-ROM
-        # group ($36) from a song that didn't need it. HW-verified on Times of
-        # Lore: cueing song 1 ($37, payload-based data) → song 2 ($36, reads
-        # $B400) only beeps then goes silent — song 1's fresh INIT leaves the
-        # machine in a state the in-place re-INIT into the $B400 mechanism
-        # can't recover. But once inside the group, cueing $36→$36 (2→3) and
-        # even back out $36→$37 (→song 1) both play fine. So relaunch only on
-        # the $37→$36 crossing: clear low RAM (what a reset's RAMTAS zeroes),
-        # then let setup() re-DMA a pristine payload + re-run the full player
-        # startup + rebuild display/emu/poll. NOT a machine reset — just a
-        # brief VIC-mode flash from run_prg. Everything else uses the fast,
-        # flicker-free cue below.
-        new_needs_basic_out = chosen_play_bank == CPU.PORT_BASIC_OUT
-        if new_needs_basic_out and not self._current_needs_basic_out:
-            self.song = new_song
-            try:
-                self.api.write_memory_file(
-                    f"{_LOW_RAM_CLEAR_LO:04X}", bytes(_LOW_RAM_CLEAR_HI - _LOW_RAM_CLEAR_LO)
-                )
-                self.api.flush()
-            except Exception:
-                log.exception("waveform: cycle low-RAM clear failed")
-            # _prepared keeps self.song (no pool re-pick). setup() re-chooses
-            # the display bank + play_bank, re-DMAs payload, re-runs player,
-            # rebuilds host emu + poll, and resets start_time (full duration).
-            self._prepared = True
-            self.setup()
-            if self.is_done:
-                return None
-            if self._explicit_duration_s is not None:
-                self.duration_s = float(self._explicit_duration_s)
-            elif chosen_duration is not None:
-                self.duration_s = float(chosen_duration)
-            log.info(
-                "waveform: cycle hard-relaunched song %d/%d (reads RAM "
-                "under BASIC ROM — needs $36 + a clean INIT)",
-                self.song,
-                n,
-            )
-            return f"song {self.song}/{n}"
-
-        # Fast flicker-free path for normal subtunes: cue the C64-side re-INIT
-        # stub. Patches the song operand at $C401, patches the player MC's
-        # playBank for the new subtune (cue_song_reinit doesn't rebuild the
-        # MC, so a $36-needing subtune would otherwise keep the prior song's
-        # $37 and play silent — though those go through the relaunch path
-        # above), then atomically swaps $0314/$0315 → $C400; the very next
-        # kernal IRQ tick runs the stub (JSR init / restore $D418 / restore
-        # $0314 → $C31D / chain to $EA31). PLAY resumes on the new subtune.
+    def _cycle_hard_relaunch(
+        self, new_song: int, chosen_duration: float | None, n: int
+    ) -> str | None:
+        """The $37→$36 crossing: a hard relaunch, needed only when ENTERING the
+        under-BASIC-ROM group ($36) from a song that didn't need it.
+        HW-verified on Times of Lore: cueing song 1 ($37, payload-based data) →
+        song 2 ($36, reads $B400) only beeps then goes silent — song 1's fresh
+        INIT leaves the machine in a state the in-place re-INIT into the $B400
+        mechanism can't recover. But once inside the group, cueing $36→$36
+        (2→3) and even back out $36→$37 (→song 1) both play fine. So: clear low
+        RAM (what a reset's RAMTAS zeroes), then let setup() re-DMA a pristine
+        payload + re-run the full player startup + rebuild display/emu/poll.
+        NOT a machine reset — just a brief VIC-mode flash from run_prg.
+        Everything else uses the fast, flicker-free cue path."""
+        self.song = new_song
         try:
-            api.cue_song_reinit(new_song, play_bank=chosen_play_bank)
+            self.api.write_memory_file(
+                f"{_LOW_RAM_CLEAR_LO:04X}", bytes(_LOW_RAM_CLEAR_HI - _LOW_RAM_CLEAR_LO)
+            )
+            self.api.flush()
+        except Exception:
+            log.exception("waveform: cycle low-RAM clear failed")
+        # _prepared keeps self.song (no pool re-pick). setup() re-chooses
+        # the display bank + play_bank, re-DMAs payload, re-runs player,
+        # rebuilds host emu + poll, and resets start_time (full duration).
+        self._prepared = True
+        self.setup()
+        if self.is_done:
+            return None
+        if self._explicit_duration_s is not None:
+            self.duration_s = float(self._explicit_duration_s)
+        elif chosen_duration is not None:
+            self.duration_s = float(chosen_duration)
+        log.info(
+            "waveform: cycle hard-relaunched song %d/%d (reads RAM "
+            "under BASIC ROM — needs $36 + a clean INIT)",
+            self.song,
+            n,
+        )
+        return f"song {self.song}/{n}"
+
+    def _cycle_cue(self, api: C64Backend, new_song: int, play_bank: int | None) -> bool:
+        """Fast flicker-free path for normal subtunes: cue the C64-side re-INIT
+        stub. Patches the song operand at $C401, patches the player MC's
+        playBank for the new subtune (cue_song_reinit doesn't rebuild the MC,
+        so a $36-needing subtune would otherwise keep the prior song's $37 and
+        play silent — though those go through the relaunch path), then
+        atomically swaps $0314/$0315 → $C400; the very next kernal IRQ tick
+        runs the stub (JSR init / restore $D418 / restore $0314 → $C31D /
+        chain to $EA31). PLAY resumes on the new subtune. Returns False (with
+        is_done set) when the cue write fails."""
+        try:
+            api.cue_song_reinit(new_song, play_bank=play_bank)
         except Exception:
             log.exception("waveform: cycle_style cue_song_reinit failed for song %d", new_song)
             self.is_done = True
-            return None
-
+            return False
         self.song = new_song
-        self._current_needs_basic_out = new_needs_basic_out
+        return True
+
+    def _cycle_rebuild_emulator(self, new_song: int, chosen_duration: float | None) -> None:
+        """Rebuild the host emulator on the new song and re-resolve duration.
+        Explicit user value always wins. Otherwise use the length the skip
+        loop already looked up (so we don't re-query the DB for the same
+        song). On a DB miss or all-skipped fall-through, keep the prior
+        duration_s — per-song lookup miss shouldn't truncate, and the
+        all-skipped case is rare enough that "use whatever we had" is the
+        least-surprising fallback."""
         self._host_emu = SidHostEmu(self.sid_bytes, song=self.song, sid_bases=self._sid_addresses)
-        # Re-resolve duration. Explicit user value always wins. Otherwise
-        # use the length the skip loop already looked up (so we don't
-        # re-query the DB for the same song). On a DB miss or all-skipped
-        # fall-through, keep the prior duration_s — per-song lookup miss
-        # shouldn't truncate, and the all-skipped case is rare enough
-        # that "use whatever we had" is the least-surprising fallback.
         if self._explicit_duration_s is not None:
             self.duration_s = float(self._explicit_duration_s)
         elif chosen_duration is not None:
@@ -1298,18 +1320,23 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 self.duration_s,
             )
 
-        # Reset clocks so the new song gets its full duration and the
-        # envelope dt doesn't accumulate the cycle-induced gap.
+    def _cycle_reset_render_state(self) -> None:
+        """Reset clocks so the new song gets its full duration and the
+        envelope dt doesn't accumulate the cycle-induced gap; zero per-voice
+        persistent state so a scroll trail or echo history from the prior
+        subtune doesn't ghost-merge into the new one (only the in-memory
+        buffers — the U64 bitmap catches up on the next _render_hires());
+        re-anchor the host-emu clock (the re-INIT stub runs on the next
+        kernal IRQ, ~1 frame, so the new subtune's PLAY tick 0 lines up with
+        now; see _poll_regs); and rebuild + restart the poll thread at the
+        new subtune's PLAY rate (it may be vsync vs the old one's CIA
+        multispeed — _resolve_poll_rate builds a fresh PollThread; stop+start
+        is the supported restart pattern)."""
         now = time.time()
         self.start_time = now
         self._last_window_wave = [[-1] * self._n_sids for _ in range(3)]
         self._ever_sounded = False
         self._silence_since = None
-
-        # Zero per-voice persistent state so a scroll trail or echo
-        # history from the prior subtune doesn't ghost-merge into the new
-        # one. Only the in-memory buffers — the U64 bitmap will catch up
-        # on the next _render_hires() call.
         if self._strips is not None:
             for s in self._strips:
                 if s is not None:
@@ -1320,30 +1347,20 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if self._last_y is not None:
             for i in range(len(self._last_y)):
                 self._last_y[i] = None
-
-        # Re-anchor the host-emu clock: the re-INIT stub runs on the next
-        # kernal IRQ (~1 frame) so the new subtune's PLAY tick 0 lines up
-        # with now. Reset the tick counter so the poll thread's wall-clock
-        # catch-up starts fresh for this subtune. See _poll_regs.
         self._sid_start_time = now
         self._ticks_done = 0
-
-        # Re-resolve the PLAY rate (the new subtune may be vsync vs the old
-        # one's CIA multispeed, or a different multispeed rate) and rebuild
-        # the poll thread, then start it. _resolve_poll_rate builds a fresh
-        # PollThread; stop+start is the supported restart pattern.
         self._resolve_poll_rate()
         self._poll.start()
 
-        # Re-point the display if the new subtune needs a different VIC bank
-        # than the current one (e.g. Times of Lore: song 1 → bank 2, songs
-        # 2-11 → bank 1). cue_song_reinit doesn't touch VIC, so we move
-        # $DD00/$D018, clear the new bank, and repaint via _apply_display_bank.
-        # When the bank is unchanged (or no renderable candidate was found),
-        # just repaint the metadata row so the song number updates — the delta
-        # cache is still valid (bitmap + screen RAM weren't disturbed). The
-        # title row (name/composer) is identical across subtunes, so it isn't
-        # touched.
+    def _cycle_repoint_display(self, chosen_layout: tuple[int, int, int, int] | None) -> None:
+        """Re-point the display if the new subtune needs a different VIC bank
+        than the current one (e.g. Times of Lore: song 1 → bank 2, songs 2-11
+        → bank 1). cue_song_reinit doesn't touch VIC, so we move $DD00/$D018,
+        clear the new bank, and repaint via _apply_display_bank. When the bank
+        is unchanged (or no renderable candidate was found), just repaint the
+        metadata row so the song number updates — the delta cache is still
+        valid (bitmap + screen RAM weren't disturbed). The title row
+        (name/composer) is identical across subtunes, so it isn't touched."""
         if chosen_layout is not None and chosen_layout != (
             self._screen_base,
             self._bitmap_base,
@@ -1364,8 +1381,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self._apply_display_bank()
         else:
             self._paint_metadata_row()
-
-        return f"song {self.song}/{n}"
 
     def _detect_play_rate_hz(self) -> float:
         """Return the current subtune's effective PLAY rate in Hz.

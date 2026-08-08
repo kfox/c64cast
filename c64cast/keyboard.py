@@ -50,6 +50,7 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 
 from ._pollthread import PollThread
 from .backend import C64Backend
@@ -72,6 +73,23 @@ _NAV_CODES = frozenset(
 # Debounce window for SPACE→toggle, so a held SPACE (the kernal repeats it)
 # doesn't flutter the menu open/closed. A deliberate tap is well clear of this.
 _SPACE_COOLDOWN_S = 0.4
+
+
+@dataclass
+class _KeyPollState:
+    """Mutable per-tick state of the key poll loop (one per _loop run).
+    Mirrors vision._GestureState — the two pollers share this shape."""
+
+    held_since: float | None = None  # C= hold-to-resume timer
+    last_cbm_seen: bool = False  # edge detect for pause trigger
+    last_ctrl_seen: bool = False  # edge detect for skip trigger
+    last_shift_seen: bool = False  # edge detect for cycle trigger
+    last_space_toggle: float = 0.0  # monotonic time of the last SPACE menu toggle
+
+    def set_baselines(self, cbm: bool, ctrl: bool, shift: bool) -> None:
+        self.last_cbm_seen = cbm
+        self.last_ctrl_seen = ctrl
+        self.last_shift_seen = shift
 
 
 class CommodoreKeyPoller:
@@ -188,106 +206,115 @@ class CommodoreKeyPoller:
     def _loop(self, stop: threading.Event):
         assert self._pause_event is not None
         assert self._resume_event is not None
-        held_since: float | None = None
-        last_cbm_seen = False  # edge detect for pause trigger
-        last_ctrl_seen = False  # edge detect for skip trigger
-        last_shift_seen = False  # edge detect for cycle trigger
-        last_space_toggle = 0.0  # monotonic time of the last SPACE menu toggle
-
+        state = _KeyPollState()
         while not stop.wait(self.poll_interval_s):
-            mod = self._read_modifiers()
-            if mod is None:
-                # Read failed — keep prior state, try again next tick.
-                continue
-            cbm = bool(mod & BIT_COMMODORE)
-            ctrl = bool(mod & BIT_CONTROL)
-            shift = bool(mod & BIT_SHIFT)
+            self._tick(state)
 
-            # Drain decoded keystrokes from the kernal buffer — only when the
-            # menu is wired AND it's open or the current scene is eligible, so
-            # the read stays $028D-only for non-menu runs and the buffer's
-            # $00C6 is never zeroed under a kernal-input launcher scene.
-            menu_open = self._menu_active is not None and self._menu_active.is_set()
-            eligible = self._menu_eligible is not None and self._menu_eligible.is_set()
-            keys: list[int] = []
-            if self._menu_event is not None and (menu_open or eligible):
-                keys = self._drain_kbbuf()
+    def _tick(self, st: _KeyPollState) -> None:
+        """One poll tick: read $028D, drain the kernal key buffer when the
+        menu wants it, then dispatch to the menu-open / paused / running
+        handler. A failed read keeps prior state (try again next tick)."""
+        assert self._pause_event is not None
+        mod = self._read_modifiers()
+        if mod is None:
+            return
+        cbm = bool(mod & BIT_COMMODORE)
+        ctrl = bool(mod & BIT_CONTROL)
+        shift = bool(mod & BIT_SHIFT)
 
-            if menu_open:
-                # MENU OPEN: suspend pause/skip/cycle entirely. SPACE toggles
-                # the menu closed (debounced); cursor/RETURN codes are nav
-                # events. The kernal already folded SHIFT into the cursor codes
-                # (CRSR-up/left = $91/$9D), so direction rides on the code.
-                now = time.monotonic()
-                for code in keys:
-                    if code == KEYBUF.SPACE and self._menu_event is not None:
-                        if now - last_space_toggle >= _SPACE_COOLDOWN_S:
-                            self._menu_event.set()
-                            last_space_toggle = now
-                    elif code in _NAV_CODES and self._nav_queue is not None:
-                        self._nav_queue.append(code)
-                # Keep the modifier edge baselines current so a SHIFT/C=/CTRL
-                # held across the menu session can't fire a phantom event the
-                # tick the menu closes.
-                last_cbm_seen = cbm
-                last_ctrl_seen = ctrl
-                last_shift_seen = shift
-                held_since = None
-                continue
+        # Drain decoded keystrokes from the kernal buffer — only when the
+        # menu is wired AND it's open or the current scene is eligible, so
+        # the read stays $028D-only for non-menu runs and the buffer's
+        # $00C6 is never zeroed under a kernal-input launcher scene.
+        menu_open = self._menu_active is not None and self._menu_active.is_set()
+        eligible = self._menu_eligible is not None and self._menu_eligible.is_set()
+        keys: list[int] = []
+        if self._menu_event is not None and (menu_open or eligible):
+            keys = self._drain_kbbuf()
 
-            if (
-                keys
-                and KEYBUF.SPACE in keys
-                and self._menu_event is not None
-                and not self._pause_event.is_set()
-            ):
-                # SPACE while running opens the menu. (While paused the scene is
-                # torn down to the BASIC screen, so a menu would be meaningless;
-                # the run loop is blocked in _handle_pause and wouldn't see it.)
-                now = time.monotonic()
-                if now - last_space_toggle >= _SPACE_COOLDOWN_S:
-                    self.log.info("SPACE press detected — opening menu")
+        if menu_open:
+            self._tick_menu_open(st, keys, cbm, ctrl, shift)
+            return
+        self._maybe_open_menu(st, keys)
+        if self._pause_event.is_set():
+            self._tick_paused(st, cbm, ctrl, shift)
+        else:
+            self._tick_running(st, cbm, ctrl, shift)
+
+    def _tick_menu_open(
+        self, st: _KeyPollState, keys: list[int], cbm: bool, ctrl: bool, shift: bool
+    ) -> None:
+        """MENU OPEN: suspend pause/skip/cycle entirely. SPACE toggles the
+        menu closed (debounced); cursor/RETURN codes are nav events. The
+        kernal already folded SHIFT into the cursor codes (CRSR-up/left =
+        $91/$9D), so direction rides on the code."""
+        now = time.monotonic()
+        for code in keys:
+            if code == KEYBUF.SPACE and self._menu_event is not None:
+                if now - st.last_space_toggle >= _SPACE_COOLDOWN_S:
                     self._menu_event.set()
-                    last_space_toggle = now
+                    st.last_space_toggle = now
+            elif code in _NAV_CODES and self._nav_queue is not None:
+                self._nav_queue.append(code)
+        # Keep the modifier edge baselines current so a SHIFT/C=/CTRL
+        # held across the menu session can't fire a phantom event the
+        # tick the menu closes.
+        st.set_baselines(cbm, ctrl, shift)
+        st.held_since = None
 
-            if self._pause_event.is_set():
-                # PAUSED: only the C= hold-to-resume gesture matters.
-                # CTRL and SHIFT are explicitly ignored per the UI contract.
-                if cbm:
-                    if held_since is None:
-                        held_since = time.monotonic()
-                    elif time.monotonic() - held_since >= self.hold_threshold_s:
-                        self.log.info(
-                            "C= held %.1fs while paused — resuming", self.hold_threshold_s
-                        )
-                        self._resume_event.set()
-                        held_since = None
-                else:
-                    held_since = None
-                last_cbm_seen = cbm
-                last_ctrl_seen = ctrl
-                last_shift_seen = shift
-            else:
-                # RUNNING: edge-trigger C= press → pause, CTRL press → skip,
-                # SHIFT press → cycle. Chord rules:
-                #   C= + CTRL same tick → pause wins, skip dropped (user is
-                #     trying to freeze the scene; don't skip past it).
-                #   SHIFT held with C= or CTRL → SHIFT dropped (user reaching
-                #     for pause/skip with thumb on shift shouldn't phantom-
-                #     cycle the style).
-                cbm_edge = cbm and not last_cbm_seen
-                ctrl_edge = ctrl and not last_ctrl_seen
-                shift_edge = shift and not last_shift_seen
-                if cbm_edge:
-                    self.log.info("C= press detected — pausing")
-                    self._pause_event.set()
-                elif ctrl_edge and self._skip_event is not None:
-                    self.log.info("CTRL press detected — skipping to next scene")
-                    self._skip_event.set()
-                elif shift_edge and not cbm and not ctrl and self._cycle_event is not None:
-                    self.log.info("SHIFT press detected — cycling display style")
-                    self._cycle_event.set()
-                last_cbm_seen = cbm
-                last_ctrl_seen = ctrl
-                last_shift_seen = shift
-                held_since = None
+    def _maybe_open_menu(self, st: _KeyPollState, keys: list[int]) -> None:
+        """SPACE while running opens the menu. (While paused the scene is
+        torn down to the BASIC screen, so a menu would be meaningless;
+        the run loop is blocked in _handle_pause and wouldn't see it.)"""
+        assert self._pause_event is not None
+        if not (
+            keys
+            and KEYBUF.SPACE in keys
+            and self._menu_event is not None
+            and not self._pause_event.is_set()
+        ):
+            return
+        now = time.monotonic()
+        if now - st.last_space_toggle >= _SPACE_COOLDOWN_S:
+            self.log.info("SPACE press detected — opening menu")
+            self._menu_event.set()
+            st.last_space_toggle = now
+
+    def _tick_paused(self, st: _KeyPollState, cbm: bool, ctrl: bool, shift: bool) -> None:
+        """PAUSED: only the C= hold-to-resume gesture matters. CTRL and SHIFT
+        are explicitly ignored per the UI contract."""
+        assert self._resume_event is not None
+        if cbm:
+            if st.held_since is None:
+                st.held_since = time.monotonic()
+            elif time.monotonic() - st.held_since >= self.hold_threshold_s:
+                self.log.info("C= held %.1fs while paused — resuming", self.hold_threshold_s)
+                self._resume_event.set()
+                st.held_since = None
+        else:
+            st.held_since = None
+        st.set_baselines(cbm, ctrl, shift)
+
+    def _tick_running(self, st: _KeyPollState, cbm: bool, ctrl: bool, shift: bool) -> None:
+        """RUNNING: edge-trigger C= press → pause, CTRL press → skip, SHIFT
+        press → cycle. Chord rules:
+          C= + CTRL same tick → pause wins, skip dropped (user is
+            trying to freeze the scene; don't skip past it).
+          SHIFT held with C= or CTRL → SHIFT dropped (user reaching
+            for pause/skip with thumb on shift shouldn't phantom-
+            cycle the style)."""
+        assert self._pause_event is not None
+        cbm_edge = cbm and not st.last_cbm_seen
+        ctrl_edge = ctrl and not st.last_ctrl_seen
+        shift_edge = shift and not st.last_shift_seen
+        if cbm_edge:
+            self.log.info("C= press detected — pausing")
+            self._pause_event.set()
+        elif ctrl_edge and self._skip_event is not None:
+            self.log.info("CTRL press detected — skipping to next scene")
+            self._skip_event.set()
+        elif shift_edge and not cbm and not ctrl and self._cycle_event is not None:
+            self.log.info("SHIFT press detected — cycling display style")
+            self._cycle_event.set()
+        st.set_baselines(cbm, ctrl, shift)
+        st.held_since = None

@@ -9,12 +9,9 @@ Every overridable option uses ``default=None`` so the merge step can tell
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import os
-import shutil
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -24,7 +21,6 @@ from typing import TYPE_CHECKING
 from . import (
     __version__,
     char_rom,
-    dac_calibration,
     dac_curve_resolve,
     hw_provision,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
@@ -32,12 +28,19 @@ from . import (
     scene_factory,
 )
 from . import config as cfgmod
-from ._native_io import silence_native_stderr
 from .api import SocketDMAError
-from .audio import AUDIO_AVAILABLE, AudioStreamer, resolve_audio_input_device
+from .audio import AUDIO_AVAILABLE, AudioStreamer
 from .backend import C64Backend, make_backend
-from .dac_capture_device import CaptureUnavailableError
-from .dac_slot_ring import MeasurementError
+from .cli_commands import (
+    configure_logging,
+    list_devices,
+    run_calibrate_dac,
+    run_doctor,
+    run_dump_char_rom,
+    run_install_char_rom,
+    run_introspection,
+    run_save_settings,
+)
 from .ensemble import Ensemble, SystemStack
 from .interstitial import default_factory as interstitial_factory
 from .keyboard import CommodoreKeyPoller
@@ -427,69 +430,6 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def configure_logging(verbosity: int, log_file: str | None = None) -> None:
-    """Wire up the root logger.
-
-    Terminal: RichHandler (color + columns) when `rich` is installed; plain
-    StreamHandler otherwise. File: when `log_file` is given, also append to
-    that path with a verbose plain-text format. Safe to call more than once
-    — clears any existing handlers first so a re-call (e.g. after config
-    load) doesn't double up."""
-    # Default level is INFO so the user sees lifecycle messages (scene
-    # transitions, audio bring-up, keypress detection, resets) without
-    # needing -v. -v / -vv bumps to DEBUG.
-    level = logging.INFO
-    if verbosity >= 1:
-        level = logging.DEBUG
-
-    root = logging.getLogger()
-    for h in list(root.handlers):
-        root.removeHandler(h)
-    root.setLevel(level)
-
-    try:
-        # rich is an optional [logging] extra; pyright doesn't see it unless installed.
-        from rich.logging import RichHandler  # pyright: ignore[reportMissingImports]
-
-        terminal: logging.Handler = RichHandler(
-            level=level,
-            show_path=False,
-            rich_tracebacks=True,
-            log_time_format="%H:%M:%S",
-        )
-        terminal.setFormatter(logging.Formatter("%(name)s: %(message)s"))
-    except ImportError:
-        terminal = logging.StreamHandler()
-        terminal.setLevel(level)
-        terminal.setFormatter(
-            logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s", datefmt="%H:%M:%S")
-        )
-    root.addHandler(terminal)
-
-    if log_file:
-        try:
-            fh = logging.FileHandler(paths.expand_user(log_file), encoding="utf-8")
-        except OSError as e:
-            # Don't let a bad --log-file path kill the run; surface and
-            # continue with just the terminal handler.
-            log.warning("could not open log file %s: %s", log_file, e)
-        else:
-            fh.setLevel(level)
-            fh.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s %(name)s %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-                )
-            )
-            root.addHandler(fh)
-
-    # Third-party loggers that spam at DEBUG and drown our own output under -vv.
-    # urllib3 logs every REST request/connection to the U64 (probe, config
-    # reads, run_prg) — pin it to WARNING so -vv stays about c64cast, not the
-    # HTTP transport. (Requests reuse the connection pool, so this is pure noise.)
-    for noisy in ("urllib3.connectionpool", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
-
-
 def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) -> None:
     """Emit a multi-line, user-actionable error covering both the
     'service disabled' and 'auth' cases. The role label disambiguates
@@ -514,116 +454,6 @@ def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) ->
         "C64CAST_DMA_PASSWORD env var or [ultimate64] dma_password."
     )
     log.error("Save and reboot the U64 after changing either toggle.")
-
-
-def list_devices() -> int:
-    print("Audio input devices (use with -D / --audio-device — an index or a name substring):")
-    if AUDIO_AVAILABLE:
-        import sounddevice as sd
-
-        try:
-            default_in = sd.default.device[0]
-        except Exception:
-            default_in = None
-        any_input = False
-        for idx, d in enumerate(sd.query_devices()):
-            if d["max_input_channels"] <= 0:
-                continue
-            any_input = True
-            marker = " *" if idx == default_in else "  "
-            print(
-                f" {marker}[{idx}] {d['name']} "
-                f"({d['max_input_channels']}ch @ {int(d['default_samplerate'])} Hz)"
-            )
-        if not any_input:
-            print("    (no input-capable audio devices found)")
-    else:
-        print("    (sounddevice not installed)")
-
-    print()
-    print("Video input devices (use with -d / --device — an index, a name substring, or VID:PID):")
-    import cv2
-
-    from . import camera
-
-    # Best-effort resolution probe (indices 0-7), merged into whichever listing
-    # we print below. Probing past the highest valid index makes OpenCV (and the
-    # AVFoundation / FFmpeg backends underneath it) print to stderr at the C
-    # level, so mute that for the probe via fd-level redirection.
-    res_by_index: dict[int, tuple[int, int]] = {}
-    sys.stdout.flush()
-    with silence_native_stderr():
-        for idx in range(8):
-            cap = cv2.VideoCapture(idx)
-            try:
-                if cap is not None and cap.isOpened():
-                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    res_by_index[idx] = (w, h)
-            finally:
-                if cap is not None:
-                    cap.release()
-
-    # Rich path (the `camera` extra): name + USB VID:PID + the correct backend
-    # index cross-platform. This makes system_profiler's index-guessing dance
-    # unnecessary, so we return before the macOS fallback below.
-    cams = camera.enumerate_cameras()
-    if cams:
-        for c in cams:
-            line = f"   [{c.index}] {c.name}"
-            vp = c.vidpid_str()
-            if vp:
-                line += f"  ({vp})"
-            res = res_by_index.get(c.index)
-            if res:
-                line += f"  {res[0]}x{res[1]}"
-            print(line)
-        return 0
-
-    if not camera.camera_enumeration_available():
-        print(
-            "    (install the 'camera' extra for names + VID:PID: "
-            "uv tool install --force 'c64cast[all]')"
-        )
-    if res_by_index:
-        for idx in sorted(res_by_index):
-            w, h = res_by_index[idx]
-            print(f"   [{idx}] {w}x{h}")
-    else:
-        print("    (no webcams responded to OpenCV probe)")
-
-    if sys.platform == "darwin":
-        # Prefer the jq pipeline when jq is on PATH — it collapses
-        # system_profiler's verbose multi-line dump into a clean
-        # `index:name` listing that lines up with AVFoundation's (and
-        # therefore OpenCV's) device enumeration. Falls back to the raw
-        # dump when jq isn't installed.
-        cmd = (
-            [
-                "sh",
-                "-c",
-                "system_profiler -json SPCameraDataType 2>/dev/null | "
-                "jq -r '.SPCameraDataType[]._name' | nl -v0 -w1 -s:",
-            ]
-            if shutil.which("jq")
-            else ["system_profiler", "SPCameraDataType"]
-        )
-        try:
-            out = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            out = None
-        if out is not None and out.returncode == 0 and out.stdout.strip():
-            print()
-            print("macOS cameras (system_profiler SPCameraDataType):")
-            for line in out.stdout.splitlines():
-                if line.strip():
-                    print(f"    {line.rstrip()}")
-    return 0
 
 
 def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
@@ -792,6 +622,169 @@ def _coerce_reu_for_transport(cfg: cfgmod.Config, midi_cfg: cfgmod.MidiControlCf
         cfg.audio.use_reu_pump = False
 
 
+def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) -> C64Backend:
+    """Connect the hardware backend and (unless --skip-probe) verify it is
+    reachable. On failure, releases the already-open camera and raises
+    StackBuildError with the exit code build_stack's caller expects."""
+    try:
+        api = make_backend(cfg)
+    except SocketDMAError as e:
+        _log_dma_setup_error(cfg, e, role="render")
+        if source is not None:
+            source.release()
+        raise StackBuildError(4) from e
+    except TRError as e:
+        log.error(
+            "TeensyROM connect failed (%s): %s. Check the cable / "
+            "serial port (transport=serial) or 'Enable TCP Listener' "
+            "+ host (transport=tcp).",
+            name,
+            e,
+        )
+        if source is not None:
+            source.release()
+        raise StackBuildError(4) from e
+
+    if not cfg.debug.skip_probe:
+        status = api.probe()
+        if status is None:
+            log.error(
+                "Could not reach the C64 hardware (%s backend) — check "
+                "power, connection, and config. (use --skip-probe to "
+                "bypass)",
+                cfg.hardware.backend,
+            )
+            api.close()
+            if source is not None:
+                source.release()
+            raise StackBuildError(2)
+        log.info("%s reachable: %s", cfg.hardware.backend, status)
+    return api
+
+
+def _build_audio(cfg: cfgmod.Config, api: C64Backend) -> AudioStreamer | None:
+    """The shared $D418 DAC streamer, or None with audio disabled. Resolves
+    the system-aware [audio].dac_curve ("auto"/"calibrated") to a concrete
+    (label, table) for this backend + any per-unit calibration first."""
+    dac_curve_label, dac_table = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
+    if cfg.audio.enabled and dac_curve_label != cfg.audio.dac_curve:
+        log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve_label)
+    if not cfg.audio.enabled:
+        return None
+    return AudioStreamer(
+        api,
+        cfg.audio.sample_rate,
+        cfg.ultimate64.system,
+        dither=cfg.audio.dither,
+        digi_boost=cfg.audio.digi_boost,
+        dac_curve=dac_curve_label,
+        dac_table=dac_table,
+        sid_filter_cutoff=cfg.audio.sid_filter_cutoff,
+        use_reu_pump=cfg.audio.use_reu_pump,
+        reu_pump_governor=cfg.audio.reu_pump_governor,
+        host_dma_servo=cfg.audio.host_dma_servo,
+        nmi_rate_adaptive=cfg.audio.nmi_rate_adaptive,
+        dsp_params=cfg.dsp.to_params(),
+    )
+
+
+def _build_input_controls(
+    cfg: cfgmod.Config, api: C64Backend, source: WebcamSource | None, name: str
+) -> tuple[CommodoreKeyPoller | None, VisionController | None]:
+    """The two physical control surfaces: the Commodore-key poller (needs a
+    read-capable backend) and the optional webcam gesture controller."""
+    # The Commodore-key poller reads $028D over the wire. A backend that can't
+    # read C64 memory (an older TeensyROM firmware without ReadC64Mem) has no
+    # physical-keyboard control — skip the poller; the HTTP control plane is
+    # the read-free equivalent. (The Ultimate and cycle-clean TR+ both read.)
+    key_poller = CommodoreKeyPoller(api, name=name) if api.profile.supports_read else None
+    if key_poller is None:
+        log.info(
+            "%s: physical-keyboard control unavailable (no memory read) "
+            "— use the control plane for pause/resume/skip",
+            name,
+        )
+
+    # Optional: webcam hand-gesture control. Reads the shared camera (not C64
+    # memory), so it works on any backend. A missing mediapipe dep / model
+    # file degrades to "no gesture control" rather than killing the stream.
+    vision_controller: VisionController | None = None
+    if cfg.vision.enabled:
+        assert source is not None  # needs_camera guaranteed it in build_stack
+        try:
+            recognizer = MediaPipeHandRecognizer(
+                cfg.vision.model_path,
+                num_hands=cfg.vision.num_hands,
+                min_detection_confidence=cfg.vision.min_detection_confidence,
+                min_tracking_confidence=cfg.vision.min_tracking_confidence,
+            )
+            vision_controller = VisionController(
+                source,
+                recognizer,
+                poll_interval_s=cfg.vision.poll_interval_s,
+                hold_threshold_s=cfg.vision.hold_threshold_s,
+                gesture_cooldown_s=cfg.vision.gesture_cooldown_s,
+                gesture_dwell_s=cfg.vision.gesture_dwell_s,
+                pinch_threshold=cfg.vision.pinch_threshold,
+                swipe_velocity=cfg.vision.swipe_velocity,
+                mirror=cfg.vision.mirror,
+                name=name,
+            )
+            log.info("%s: vision gesture control enabled", name)
+        except RuntimeError as e:
+            log.error("vision control disabled: %s", e)
+    return key_poller, vision_controller
+
+
+def _build_preview_and_recording(
+    cfg: cfgmod.Config, api: C64Backend, name: str, *, is_ensemble: bool
+) -> tuple[Framebuffer | None, PreviewWindow | None, StreamRecorder | None]:
+    """Optional local preview window + stream recorder. Both share a
+    Framebuffer that shadows U64 memory writes via api listeners."""
+    framebuffer: Framebuffer | None = None
+    preview_window: PreviewWindow | None = None
+    recorder: StreamRecorder | None = None
+    if cfg.preview.enabled or cfg.recording.enabled:
+        from .framebuffer import Framebuffer as _FB
+
+        framebuffer = _FB(charset_path=cfg.preview.charset_path)
+        api.add_write_listener(framebuffer.on_write)
+    if cfg.preview.enabled:
+        assert framebuffer is not None
+        from .preview import PreviewWindow as _PW
+
+        # Constructed here but not opened: the window has to be created and
+        # serviced on the main thread (see preview.py), which happens in
+        # _pump_previews_until_done once the playlist threads are running.
+        # HighGUI keys windows by title, so an ensemble needs one title per
+        # system to get one window per system rather than N systems fighting
+        # over a single window.
+        preview_window = _PW(
+            framebuffer,
+            fps=cfg.preview.fps,
+            scale=cfg.preview.scale,
+            title=f"c64cast preview - {name}" if is_ensemble else "c64cast preview",
+        )
+    if cfg.recording.enabled:
+        assert framebuffer is not None
+        try:
+            from .preview import StreamRecorder as _SR
+
+            recorder = _SR(
+                framebuffer,
+                paths.expand_user(
+                    cfgmod.resolve_recording_path(cfg.recording, name, is_ensemble=is_ensemble)
+                ),
+                fps=cfg.recording.fps,
+                scale=cfg.recording.scale,
+                fourcc=cfg.recording.fourcc,
+            )
+            recorder.start()
+        except RuntimeError as e:
+            log.error("recording disabled: %s", e)
+    return framebuffer, preview_window, recorder
+
+
 def build_stack(
     cfg: cfgmod.Config,
     name: str,
@@ -829,39 +822,7 @@ def build_stack(
     else:
         log.debug("no webcam or vision scenes — skipping video device init")
 
-    try:
-        api = make_backend(cfg)
-    except SocketDMAError as e:
-        _log_dma_setup_error(cfg, e, role="render")
-        if source is not None:
-            source.release()
-        raise StackBuildError(4) from e
-    except TRError as e:
-        log.error(
-            "TeensyROM connect failed (%s): %s. Check the cable / "
-            "serial port (transport=serial) or 'Enable TCP Listener' "
-            "+ host (transport=tcp).",
-            name,
-            e,
-        )
-        if source is not None:
-            source.release()
-        raise StackBuildError(4) from e
-
-    if not cfg.debug.skip_probe:
-        status = api.probe()
-        if status is None:
-            log.error(
-                "Could not reach the C64 hardware (%s backend) — check "
-                "power, connection, and config. (use --skip-probe to "
-                "bypass)",
-                cfg.hardware.backend,
-            )
-            api.close()
-            if source is not None:
-                source.release()
-            raise StackBuildError(2)
-        log.info("%s reachable: %s", cfg.hardware.backend, status)
+    api = _open_backend(cfg, name, source)
 
     # Drop REU-staged opt-ins on a backend with no REU, before the AudioStreamer
     # + scenes are built (so the host-DMA paths are used instead).
@@ -879,31 +840,7 @@ def build_stack(
     # _resolve_sampler_available so the probe sees it on; restored at teardown.
     sampler_restore = hw_provision.provision_sampler(api, cfg)
 
-    # Resolve the system-aware [audio].dac_curve ("auto"/"calibrated") to a
-    # concrete (label, table) for this backend + any per-unit calibration.
-    dac_curve_label, dac_table = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
-    if cfg.audio.enabled and dac_curve_label != cfg.audio.dac_curve:
-        log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve_label)
-
-    audio = (
-        AudioStreamer(
-            api,
-            cfg.audio.sample_rate,
-            cfg.ultimate64.system,
-            dither=cfg.audio.dither,
-            digi_boost=cfg.audio.digi_boost,
-            dac_curve=dac_curve_label,
-            dac_table=dac_table,
-            sid_filter_cutoff=cfg.audio.sid_filter_cutoff,
-            use_reu_pump=cfg.audio.use_reu_pump,
-            reu_pump_governor=cfg.audio.reu_pump_governor,
-            host_dma_servo=cfg.audio.host_dma_servo,
-            nmi_rate_adaptive=cfg.audio.nmi_rate_adaptive,
-            dsp_params=cfg.dsp.to_params(),
-        )
-        if cfg.audio.enabled
-        else None
-    )
+    audio = _build_audio(cfg, api)
 
     reu_available = _resolve_reu_available(cfg, api)
     sampler_available = _resolve_sampler_available(cfg, api)
@@ -949,90 +886,11 @@ def build_stack(
 
     api.disable_case_switch()
 
-    # The Commodore-key poller reads $028D over the wire. A backend that can't
-    # read C64 memory (an older TeensyROM firmware without ReadC64Mem) has no
-    # physical-keyboard control — skip the poller; the HTTP control plane is
-    # the read-free equivalent. (The Ultimate and cycle-clean TR+ both read.)
-    key_poller = CommodoreKeyPoller(api, name=name) if api.profile.supports_read else None
-    if key_poller is None:
-        log.info(
-            "%s: physical-keyboard control unavailable (no memory read) "
-            "— use the control plane for pause/resume/skip",
-            name,
-        )
+    key_poller, vision_controller = _build_input_controls(cfg, api, source, name)
 
-    # Optional: webcam hand-gesture control. Reads the shared camera (not C64
-    # memory), so it works on any backend. A missing mediapipe dep / model
-    # file degrades to "no gesture control" rather than killing the stream.
-    vision_controller: VisionController | None = None
-    if cfg.vision.enabled:
-        assert source is not None  # needs_camera guaranteed it above
-        try:
-            recognizer = MediaPipeHandRecognizer(
-                cfg.vision.model_path,
-                num_hands=cfg.vision.num_hands,
-                min_detection_confidence=cfg.vision.min_detection_confidence,
-                min_tracking_confidence=cfg.vision.min_tracking_confidence,
-            )
-            vision_controller = VisionController(
-                source,
-                recognizer,
-                poll_interval_s=cfg.vision.poll_interval_s,
-                hold_threshold_s=cfg.vision.hold_threshold_s,
-                gesture_cooldown_s=cfg.vision.gesture_cooldown_s,
-                gesture_dwell_s=cfg.vision.gesture_dwell_s,
-                pinch_threshold=cfg.vision.pinch_threshold,
-                swipe_velocity=cfg.vision.swipe_velocity,
-                mirror=cfg.vision.mirror,
-                name=name,
-            )
-            log.info("%s: vision gesture control enabled", name)
-        except RuntimeError as e:
-            log.error("vision control disabled: %s", e)
-
-    # Optional: local preview window + stream recorder. Both share a
-    # Framebuffer that shadows U64 memory writes via api listeners.
-    framebuffer: Framebuffer | None = None
-    preview_window: PreviewWindow | None = None
-    recorder: StreamRecorder | None = None
-    if cfg.preview.enabled or cfg.recording.enabled:
-        from .framebuffer import Framebuffer as _FB
-
-        framebuffer = _FB(charset_path=cfg.preview.charset_path)
-        api.add_write_listener(framebuffer.on_write)
-    if cfg.preview.enabled:
-        assert framebuffer is not None
-        from .preview import PreviewWindow as _PW
-
-        # Constructed here but not opened: the window has to be created and
-        # serviced on the main thread (see preview.py), which happens in
-        # _pump_previews_until_done once the playlist threads are running.
-        # HighGUI keys windows by title, so an ensemble needs one title per
-        # system to get one window per system rather than N systems fighting
-        # over a single window.
-        preview_window = _PW(
-            framebuffer,
-            fps=cfg.preview.fps,
-            scale=cfg.preview.scale,
-            title=f"c64cast preview - {name}" if is_ensemble else "c64cast preview",
-        )
-    if cfg.recording.enabled:
-        assert framebuffer is not None
-        try:
-            from .preview import StreamRecorder as _SR
-
-            recorder = _SR(
-                framebuffer,
-                paths.expand_user(
-                    cfgmod.resolve_recording_path(cfg.recording, name, is_ensemble=is_ensemble)
-                ),
-                fps=cfg.recording.fps,
-                scale=cfg.recording.scale,
-                fourcc=cfg.recording.fourcc,
-            )
-            recorder.start()
-        except RuntimeError as e:
-            log.error("recording disabled: %s", e)
+    framebuffer, preview_window, recorder = _build_preview_and_recording(
+        cfg, api, name, is_ensemble=is_ensemble
+    )
 
     playlist = Playlist(
         playlist_scenes,
@@ -1221,145 +1079,6 @@ def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> No
                 log.error("[%s] did not exit within 5s; abandoning", t.name)
 
 
-def _collect_lab_samples(path: str):
-    """Decode ``path`` (image or video/URL) into the CIE-Lab sample reservoir
-    `suggest_palette` ranks over. Returns the (N, 3) float32 array, or None when
-    the file can't be read. Images load via cv2; videos/URLs reuse the shared
-    color pre-scan (`video.scan_video_samples`), so the same sampling that
-    feeds force_palette/auto_fit feeds the suggestion."""
-    import cv2
-
-    from .palette import ColorMapAccumulator
-    from .scene_factory import VIDEO_EXTS
-    from .video import scan_video_samples
-
-    acc = ColorMapAccumulator()  # accumulate only; we want its raw lab_samples()
-    ext = os.path.splitext(path)[1].lower()
-    is_url = path.lower().startswith(("http://", "https://"))
-    if not is_url and ext not in VIDEO_EXTS:
-        # Treat anything non-video (and non-URL) as an image.
-        img = cv2.imread(path, cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-        acc.add(img)
-    elif not scan_video_samples(path, [acc]):
-        return None
-    samples = acc.lab_samples()
-    return samples if samples.size else None
-
-
-def _format_suggest_palette(path: str, ranked: list[tuple[int, float]]) -> str:
-    """Render the `suggest_palette` ranking as a table plus a paste-ready
-    `force_palette_colors` line (top-8, a reasonable default the user can trim)."""
-    from .palette import C64_COLOR_NAMES
-
-    lines = [
-        f"Best-fit C64 palette for {os.path.basename(path)} (faithful subset, ranked by value):",
-        "",
-        "  rank  idx  color          mean Lab err",
-        "  ----  ---  -------------  ------------",
-    ]
-    for rank, (idx, err) in enumerate(ranked, start=1):
-        lines.append(f"  {rank:>4}  {idx:>3}  {C64_COLOR_NAMES[idx]:<13}  {err:>10.1f}")
-    top = [idx for idx, _ in ranked[:8]]
-    lines += [
-        "",
-        "Mean Lab error falls as colors are added; its knee shows where extra colors stop helping.",
-        "Pick a prefix for [color].force_palette_colors, e.g. top 8:",
-        "",
-        f"    force_palette_colors = {top}",
-    ]
-    return "\n".join(lines)
-
-
-def run_suggest_palette(path: str) -> int:
-    """`--suggest-palette FILE`: rank the C64 colors that best (faithfully)
-    represent an image/video and print them for `force_palette_colors`. No
-    config, no hardware."""
-    from .palette import suggest_palette
-
-    if not path.lower().startswith(("http://", "https://")) and not os.path.exists(path):
-        print(f"suggest-palette: file not found: {path}", file=sys.stderr)
-        return 2
-    samples = _collect_lab_samples(path)
-    if samples is None:
-        print(
-            f"suggest-palette: could not read color samples from {path} "
-            "(unsupported/corrupt file, or the 'video' extra is missing for video input)",
-            file=sys.stderr,
-        )
-        return 2
-    print(_format_suggest_palette(path, suggest_palette(samples)))
-    return 0
-
-
-def run_introspection(args: argparse.Namespace) -> int | None:
-    """Handle the config-introspection commands (--list-*, --describe,
-    --compat, --print-schema, --suggest-palette). Returns an exit code when one
-    fired, else None so main() continues to the normal run path. These need no
-    config file or hardware."""
-    from . import introspect
-
-    if args.list_scenes:
-        print(introspect.render_list_scenes())
-        return 0
-    if args.list_overlays:
-        print(introspect.render_list_overlays())
-        return 0
-    if args.list_modes:
-        print(introspect.render_list_modes())
-        return 0
-    if args.compat:
-        print(introspect.render_compat())
-        return 0
-    if args.list_examples:
-        print(introspect.render_list_examples())
-        return 0
-    if args.print_example is not None:
-        # Straight to stdout so `> c64cast.toml` makes an editable copy — the
-        # packaged original lives inside the install and isn't meant to be
-        # edited in place. A bad name must NOT exit 0: the caller is usually
-        # redirecting, and a happy exit would leave them an empty config.
-        try:
-            text = paths.resolve_example(args.print_example).read_text(encoding="utf-8")
-        except ValueError as e:
-            configure_logging(args.verbose or 0, args.log_file)
-            log.error("%s", e)
-            return 2
-        print(text, end="")
-        return 0
-    if args.describe is not None:
-        print(introspect.render_describe(args.describe))
-        return 0
-    if args.print_schema:
-        import json
-
-        from . import schema
-
-        print(json.dumps(schema.build_schema(), indent=2))
-        return 0
-    if args.suggest_palette is not None:
-        return run_suggest_palette(args.suggest_palette)
-    if getattr(args, "midi_setup", False):
-        from . import midi_setup
-
-        return midi_setup.run_setup()
-    if args.init is not None:
-        from . import wizard
-
-        result = wizard.run_init(args.init or None)
-        if result is None:
-            return 2  # canceled, or the 'wizard' extra is missing
-        out_path, launch = result
-        if launch:
-            # Fall through to the normal run path against the file we just
-            # wrote (returning None lets main() continue to load_master).
-            args.config = out_path
-            return None
-        return 0
-    return None
-
-
 def _connection_is_builtin_default(cfg: cfgmod.Config) -> bool:
     """True when `cfg`'s connection fields still match a fresh dataclass Config
     — i.e. neither a CLI target nor machine settings supplied one. Lets the
@@ -1373,126 +1092,6 @@ def _connection_is_builtin_default(cfg: cfgmod.Config) -> bool:
         and cfg.teensyrom.serial_port == d.teensyrom.serial_port
         and cfg.teensyrom.host == d.teensyrom.host
     )
-
-
-def run_save_settings(args: argparse.Namespace) -> int:
-    """Persist this invocation's machine-relevant flags into the machine-
-    settings file, then exit.
-
-    Savable whitelist (v1): the ``-u/--url`` connection target (decomposed via
-    :func:`connect.parse_connection_uri` exactly as the run path does),
-    ``-d/--device`` → ``[video].device``, ``-D/--audio-device`` →
-    ``[audio].device``, ``--sid-model`` → ``[ultimate64].sid_model``,
-    ``--system`` → ``[ultimate64].system``. ``$C64CAST_URL`` deliberately does
-    NOT auto-save (explicit flags only).
-
-    Merges onto the existing file (start from a machine-overlaid Config, apply
-    this invocation's flags on top), writes it sparsely (only non-default
-    fields) and atomically, prints the path + contents, and returns 0. If
-    nothing savable was provided, prints what's savable and returns 2. The DMA
-    password can never be written (``config_serialize`` suppresses it)."""
-    from . import config_serialize, paths, transport
-    from .connect import apply_to_config, parse_connection_uri
-
-    provided = (
-        args.url is not None
-        or args.device is not None
-        or args.audio_device is not None
-        or args.sid_model is not None
-        or args.system is not None
-    )
-    if not provided:
-        log.error(
-            "--save-settings: nothing to save. Provide at least one of: "
-            "-u/--url (connection), -d/--device, -D/--audio-device, --sid-model, "
-            "--system. Other fields: hand-edit %s (annotated TOML).",
-            paths.settings_path(),
-        )
-        return 2
-
-    # Start from the existing file's values so a save merges rather than
-    # replaces (defaults → existing machine settings → this invocation).
-    cfg = cfgmod.Config()
-    cfgmod.apply_machine_settings(cfg)
-
-    if args.url is not None:
-        apply_to_config(cfg, parse_connection_uri(args.url))
-    if args.device is not None:
-        cfg.video.device = args.device
-    if args.audio_device is not None:
-        cfg.audio.device = args.audio_device
-    if args.sid_model is not None:
-        cfg.ultimate64.sid_model = args.sid_model
-    if args.system is not None:
-        cfg.ultimate64.system = args.system
-
-    text = config_serialize.dumps(cfg, minimal=True, schema_path=None)
-    dest = paths.settings_path()
-    transport.atomic_write_text(dest, text)
-    print(f"Saved machine settings → {dest}\n")
-    print(text, end="" if text.endswith("\n") else "\n")
-    return 0
-
-
-def run_install_char_rom(path: str) -> int:
-    """Install an existing character-ROM dump from `path`, then exit.
-
-    Config-free and hardware-free — the fallback for a machine c64cast can't
-    dump from (an emulator-only setup, a backend without read support, an
-    exotic firmware). Returns 2 for an unreadable file or one that doesn't
-    verify as a charset: both are user-fixable input problems, and writing an
-    unverified file would poison every later run."""
-    try:
-        dest = char_rom.install(path)
-    except OSError as e:
-        log.error("--install-char-rom: could not read %s (%s)", path, e)
-        return 2
-    except ValueError as e:
-        log.error("--install-char-rom: %s (%s)", e, path)
-        return 2
-    print(f"Installed the character ROM → {dest}")
-    print(f"  {char_rom.verify(dest.read_bytes()).describe()}")
-    return 0
-
-
-def run_dump_char_rom(cfg: cfgmod.Config) -> int:
-    """Read the character ROM off the connected C64 and cache it, then exit.
-
-    Unconditional — re-dumping over an existing file is the entire point of the
-    flag (the auto path only ever fires when nothing is installed). Resets the
-    machine on the way out, like every other hardware-touching command, so it
-    isn't left parked wherever the dump stub ran."""
-    from .backend import BackendCapabilityError
-
-    be = make_backend(cfg)
-    try:
-        be.reset()
-        time.sleep(1)
-        be.run_basic_clear_loop()
-        data = char_rom.dump(be)
-    except BackendCapabilityError as e:
-        log.error(
-            "--dump-char-rom: this backend can't run the dump (%s). Install an "
-            "existing dump instead: c64cast --install-char-rom PATH",
-            e,
-        )
-        return 3
-    except (OSError, RuntimeError) as e:
-        log.error(
-            "--dump-char-rom: %s. Check the machine is powered and responsive, "
-            "or install an existing dump with --install-char-rom PATH.",
-            e,
-        )
-        return 4
-    finally:
-        with contextlib.suppress(Exception):
-            be.reset()
-        be.close()
-
-    dest = char_rom.install_data(data)
-    print(f"Dumped the character ROM from the C64 → {dest}")
-    print(f"  {char_rom.verify(data).describe()}")
-    return 0
 
 
 def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[cfgmod.Config]]:
@@ -1619,148 +1218,15 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
                 )
 
 
-def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
-
-    if args.list_devices:
-        # Logging at default level; list-devices skips config load entirely.
-        configure_logging(args.verbose or 0, args.log_file)
-        return list_devices()
-
-    # Introspection commands describe the config surface itself — no config
-    # file, no hardware. Dispatch before load_master so they work anywhere.
-    intro_rc = run_introspection(args)
-    if intro_rc is not None:
-        return intro_rc
-
-    # --save-settings is a config-free command like the introspection ones:
-    # it persists this invocation's machine-relevant flags and exits, never
-    # touching hardware or loading a playlist.
-    if args.save_settings:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_save_settings(args)
-
-    # --install-char-rom is likewise config-free: it takes a file the user
-    # already has and caches it, no hardware and no playlist involved.
-    if args.install_char_rom is not None:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_install_char_rom(args.install_char_rom)
-
-    try:
-        loaded, cfgs = _resolve_configs(args)
-    except cfgmod.ConfigError as e:
-        # Logging may not be set up yet (verbose/log_file live in [debug]).
-        # Set up a minimal default handler so the error reaches the user
-        # whether or not they passed -v.
-        configure_logging(args.verbose or 0, args.log_file)
-        log.error("%s", e)
-        return 5
-    except (_CliUsageError, ValueError, RuntimeError) as e:
-        configure_logging(args.verbose or 0, args.log_file)
-        log.error("%s", e)
-        return 2
-    # Logging is process-wide; use the first stack's debug settings (they
-    # already share defaults via the master cascade unless explicitly
-    # overridden).
-    configure_logging(cfgs[0].debug.verbose, cfgs[0].debug.log_file)
-
-    # Quick-playback feedback: warn only when we're really on the built-in
-    # default (no -u/env AND machine settings didn't supply a connection);
-    # otherwise note the connection came from machine settings. Then log which
-    # backend we resolved.
-    if args.inputs:
-        if not (args.url or os.environ.get("C64CAST_URL")):
-            if _connection_is_builtin_default(cfgs[0]):
-                log.warning(
-                    "no connection target given (-u/--url or C64CAST_URL) — using "
-                    "the built-in default %s. Point at your hardware with e.g. "
-                    "-u u64://192.168.2.64 or -u tr://.",
-                    cfgs[0].ultimate64.url,
-                )
-            else:
-                log.info(
-                    "no -u/--url given — using the connection from machine settings (%s backend)",
-                    cfgs[0].hardware.backend,
-                )
-        log.info(
-            "cast: %d scene(s) on the %s backend",
-            len(cfgs[0].scenes),
-            cfgs[0].hardware.backend,
-        )
-
-    if args.dump_char_rom:
-        # Needs hardware, so it dispatches here (with configs resolved) rather
-        # than up with the config-free commands. Single-system operation.
-        if len(cfgs) > 1:
-            log.warning(
-                "--dump-char-rom operates on one system; dumping from the first (%s)",
-                loaded.names[0],
-            )
-        return run_dump_char_rom(cfgs[0])
-
-    if args.calibrate_dac:
-        # Measure the connected SID's Mahoney $D418 transfer curve + persist a
-        # per-system calibrated table, then exit. Single-system operation.
-        cfg = cfgs[0]
-        if len(cfgs) > 1:
-            log.warning(
-                "--calibrate-dac operates on one system; calibrating the first (%s)",
-                loaded.names[0],
-            )
-        if not AUDIO_AVAILABLE:
-            log.error(
-                "--calibrate-dac needs audio capture (sounddevice). Install the "
-                "'mic' extra: uv tool install --force 'c64cast[all]'"
-            )
-            return 3
-        # Resolve a name substring / index to a concrete input index (-1 → None
-        # = system default). find_capture_device wants int | None.
-        dev: int | None = None
-        if args.audio_device is not None:
-            idx = resolve_audio_input_device(args.audio_device)
-            dev = idx if idx >= 0 else None
-        be = make_backend(cfg)
-        try:
-            run = dac_calibration.run_calibration(
-                be, cfg, device=dev, log_fn=lambda m: log.info("%s", m)
-            )
-        # A rig that can't be measured (no capture device, or a capture that
-        # doesn't contain the ring) is a user-fixable setup problem, not a bug —
-        # both carry actionable text, so print it and exit rather than traceback.
-        except (CaptureUnavailableError, MeasurementError) as e:
-            log.error("%s", e)
-            return 3
-        finally:
-            be.close()
-        # A run that measured every SID but trusted none of them still wrote a
-        # file (raw levels, for diagnosis) — but it produced no usable table, so
-        # it must not look like a success.
-        if not any(r.sidtable is not None for r in run.entries.values()):
-            log.error(
-                "no usable DAC table was produced: every measured SID failed its "
-                "volume-0 self-test. Playback keeps the existing curve. The raw "
-                "levels were saved to %s for diagnosis.",
-                run.path,
-            )
-            return 4
-        return 0
-
-    if args.doctor:
-        # Doctor uses the merged configs so CLI flags (e.g. --skip-probe) and
-        # the C64CAST_DMA_PASSWORD env var take effect on the probe.
-        from .doctor import print_report, validate_load_result
-
-        merged = cfgmod.LoadResult(
-            cfgs=cfgs,
-            names=loaded.names,
-            paths=loaded.paths,
-            is_ensemble=loaded.is_ensemble,
-            master_control=loaded.master_control,
-            master_midi_control=loaded.master_midi_control,
-        )
-        diagnostics = validate_load_result(merged, probe_u64=not cfgs[0].debug.skip_probe)
-        return print_report(diagnostics)
-
+def _run_session(
+    args: argparse.Namespace, loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]
+) -> int:
+    """The playlist session: validate the per-system configs, build every
+    SystemStack, wire the ensemble + signal handlers + optional control
+    surfaces (HTTP control plane, MIDI listener, WLED device), run the
+    playlists, and tear everything down (including the live-tune save-back).
+    Everything before this — flag parsing + the single-shot commands — is
+    main()'s job."""
     # [midi_control] is process-wide (see _coerce_reu_for_transport's
     # docstring), so resolve the one MidiControlCfg that actually drives the
     # listener once, before the per-cfg loop below applies it to each
@@ -2051,6 +1517,101 @@ def main(argv=None) -> int:
     for st in stacks:
         log.info("[%s] %s stats: %s", st.name, st.api.profile.name, st.api.stats)
     return 0
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.list_devices:
+        # Logging at default level; list-devices skips config load entirely.
+        configure_logging(args.verbose or 0, args.log_file)
+        return list_devices()
+
+    # Introspection commands describe the config surface itself — no config
+    # file, no hardware. Dispatch before load_master so they work anywhere.
+    intro_rc = run_introspection(args)
+    if intro_rc is not None:
+        return intro_rc
+
+    # --save-settings is a config-free command like the introspection ones:
+    # it persists this invocation's machine-relevant flags and exits, never
+    # touching hardware or loading a playlist.
+    if args.save_settings:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_save_settings(args)
+
+    # --install-char-rom is likewise config-free: it takes a file the user
+    # already has and caches it, no hardware and no playlist involved.
+    if args.install_char_rom is not None:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_install_char_rom(args.install_char_rom)
+
+    try:
+        loaded, cfgs = _resolve_configs(args)
+    except cfgmod.ConfigError as e:
+        # Logging may not be set up yet (verbose/log_file live in [debug]).
+        # Set up a minimal default handler so the error reaches the user
+        # whether or not they passed -v.
+        configure_logging(args.verbose or 0, args.log_file)
+        log.error("%s", e)
+        return 5
+    except (_CliUsageError, ValueError, RuntimeError) as e:
+        configure_logging(args.verbose or 0, args.log_file)
+        log.error("%s", e)
+        return 2
+    # Logging is process-wide; use the first stack's debug settings (they
+    # already share defaults via the master cascade unless explicitly
+    # overridden).
+    configure_logging(cfgs[0].debug.verbose, cfgs[0].debug.log_file)
+
+    # Quick-playback feedback: warn only when we're really on the built-in
+    # default (no -u/env AND machine settings didn't supply a connection);
+    # otherwise note the connection came from machine settings. Then log which
+    # backend we resolved.
+    if args.inputs:
+        if not (args.url or os.environ.get("C64CAST_URL")):
+            if _connection_is_builtin_default(cfgs[0]):
+                log.warning(
+                    "no connection target given (-u/--url or C64CAST_URL) — using "
+                    "the built-in default %s. Point at your hardware with e.g. "
+                    "-u u64://192.168.2.64 or -u tr://.",
+                    cfgs[0].ultimate64.url,
+                )
+            else:
+                log.info(
+                    "no -u/--url given — using the connection from machine settings (%s backend)",
+                    cfgs[0].hardware.backend,
+                )
+        log.info(
+            "cast: %d scene(s) on the %s backend",
+            len(cfgs[0].scenes),
+            cfgs[0].hardware.backend,
+        )
+
+    if args.dump_char_rom:
+        # Needs hardware, so it dispatches here (with configs resolved) rather
+        # than up with the config-free commands. Single-system operation.
+        if len(cfgs) > 1:
+            log.warning(
+                "--dump-char-rom operates on one system; dumping from the first (%s)",
+                loaded.names[0],
+            )
+        return run_dump_char_rom(cfgs[0])
+
+    if args.calibrate_dac:
+        # Measure + persist the per-system DAC table, then exit.
+        # Single-system operation.
+        if len(cfgs) > 1:
+            log.warning(
+                "--calibrate-dac operates on one system; calibrating the first (%s)",
+                loaded.names[0],
+            )
+        return run_calibrate_dac(cfgs[0], args)
+
+    if args.doctor:
+        return run_doctor(loaded, cfgs)
+
+    return _run_session(args, loaded, cfgs)
 
 
 if __name__ == "__main__":

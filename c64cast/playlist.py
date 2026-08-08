@@ -416,36 +416,7 @@ class Playlist:
         if self.performance.service(self):
             return
         if self.single_scene:
-            if self.current is None:
-                scene = self.scenes[0]
-                if not self.ensemble_coord.wait_for_audio_claim(scene):
-                    return
-                self.current = scene
-                self.log.info(
-                    "scene %r (single-scene mode, %s)",
-                    self.current.name,
-                    "looping" if self.loop else "once-through",
-                )
-                self.safe_setup(self.current)
-            elif self.current.is_done:
-                if not self.loop:
-                    self.log.info("scene %r finished and loop=False — stopping", self.current.name)
-                    self.fades.fade_out(self.current)
-                    self.safe_teardown(self.current)
-                    self.current = None
-                    self.stop_event.set()
-                    return
-                # Loop the same scene back-to-back: teardown + setup. Works
-                # for every scene type — webcam re-reads source, video
-                # re-opens the file, waveform restarts the SID.
-                scene = self.current
-                self.fades.fade_out(scene)
-                self.safe_teardown(scene)
-                if not self.ensemble_coord.wait_for_audio_claim(scene):
-                    self.current = None
-                    return
-                self.safe_setup(scene)
-                scene.is_done = False
+            self._advance_single_scene()
             return
         if self.current is None:
             resolved = self.ensemble_coord.resolve_next_index()
@@ -461,48 +432,88 @@ class Playlist:
             self.safe_setup(self.current)
             self.transitioning = False
         elif not self.transitioning and self.current.is_done:
-            self.fades.fade_out(self.current)
-            self.safe_teardown(self.current)
-            with self._jump_lock:
-                jump_target = self._jump_target
-                jump_skip_interstitial = self._jump_skip_interstitial
-                self._jump_target = None
-            if jump_target is not None:
-                self.index = jump_target
-                if jump_skip_interstitial:
-                    scene = self.scenes[self.index]
-                    if not self.ensemble_coord.wait_for_audio_claim(scene):
-                        self.current = None
-                        return
-                    self.log.info(
-                        "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
-                    )
-                    self.current = scene
-                    self.safe_setup(self.current)
-                    self.transitioning = False
-                    return
-                resolved = self.ensemble_coord.resolve_next_index()
-                if resolved is None:
-                    self.current = None
-                    return
-                self.index = resolved
-                self._enter_interstitial()
+            self._advance_after_scene()
+
+    def _advance_single_scene(self) -> None:
+        """Single-scene mode: first setup, then loop the one scene back-to-back
+        via teardown + setup on is_done (works for every scene type — webcam
+        re-reads source, video re-opens the file, waveform restarts the SID) —
+        or stop cleanly when loop=False."""
+        if self.current is None:
+            scene = self.scenes[0]
+            if not self.ensemble_coord.wait_for_audio_claim(scene):
                 return
-            next_index = self.index + 1
-            if next_index >= len(self.scenes):
-                if not self.loop:
-                    self.log.info("playlist finished and loop=False — stopping")
+            self.current = scene
+            self.log.info(
+                "scene %r (single-scene mode, %s)",
+                self.current.name,
+                "looping" if self.loop else "once-through",
+            )
+            self.safe_setup(self.current)
+        elif self.current.is_done:
+            if not self.loop:
+                self.log.info("scene %r finished and loop=False — stopping", self.current.name)
+                self.fades.fade_out(self.current)
+                self.safe_teardown(self.current)
+                self.current = None
+                self.stop_event.set()
+                return
+            scene = self.current
+            self.fades.fade_out(scene)
+            self.safe_teardown(scene)
+            if not self.ensemble_coord.wait_for_audio_claim(scene):
+                self.current = None
+                return
+            self.safe_setup(scene)
+            scene.is_done = False
+
+    def _advance_after_scene(self) -> None:
+        """A non-transition scene finished: fade + tear it down, then honor a
+        pending jump request (hard cut or via the interstitial), or walk to
+        the next index — stopping at end-of-list when loop=False."""
+        assert self.current is not None
+        self.fades.fade_out(self.current)
+        self.safe_teardown(self.current)
+        with self._jump_lock:
+            jump_target = self._jump_target
+            jump_skip_interstitial = self._jump_skip_interstitial
+            self._jump_target = None
+        if jump_target is not None:
+            self.index = jump_target
+            if jump_skip_interstitial:
+                scene = self.scenes[self.index]
+                if not self.ensemble_coord.wait_for_audio_claim(scene):
                     self.current = None
-                    self.stop_event.set()
                     return
-                next_index = 0
-            self.index = next_index
+                self.log.info(
+                    "scene %d/%d → %r (jump)", self.index + 1, len(self.scenes), scene.name
+                )
+                self.current = scene
+                self.safe_setup(self.current)
+                self.transitioning = False
+                return
             resolved = self.ensemble_coord.resolve_next_index()
             if resolved is None:
                 self.current = None
                 return
             self.index = resolved
             self._enter_interstitial()
+            return
+        next_index = self.index + 1
+        if next_index >= len(self.scenes):
+            if not self.loop:
+                self.log.info("playlist finished and loop=False — stopping")
+                self.current = None
+                self.stop_event.set()
+                return
+            next_index = 0
+        self.index = next_index
+        resolved = self.ensemble_coord.resolve_next_index()
+        if resolved is None:
+            self.current = None
+            return
+        self.index = resolved
+        self._enter_interstitial()
 
     def _enter_interstitial(self) -> None:
         """Set up the interstitial "UP NEXT" card for the scene at
@@ -676,29 +687,7 @@ class Playlist:
             if self._tempo_audio_drive:
                 self._drive_tempo_from_audio(scene, t0)
 
-            with self.profiler.stage("cpu_render"):
-                try:
-                    still_active = scene.process_frame(t0)
-                except Exception:
-                    self.log.exception("scene %r raised; advancing", scene.name)
-                    still_active = False
-                # Run process_frame for overlays that still write directly
-                # to the U64. Overlays with PAINTS_INTO_BUFFERS were
-                # already composed into the scene's screen+color buffers
-                # during scene.process_frame — calling process_frame
-                # again would race the scene write.
-                for ov in getattr(scene, "overlays", ()):
-                    if getattr(ov, "_disabled", False):
-                        continue
-                    if getattr(ov, "PAINTS_INTO_BUFFERS", False):
-                        continue
-                    try:
-                        ov.process_frame(self.api, scene, t0)
-                    except Exception:
-                        self.log.exception(
-                            "overlay %r raised on %r — disabling", ov.name, scene.name
-                        )
-                        ov._disabled = True
+            still_active = self._render_scene_frame(scene, t0)
 
             stats_after = self.api.stats
             self.profiler.record_counts(
@@ -706,40 +695,7 @@ class Playlist:
                 bytes_=stats_after["bytes"] - stats_before["bytes"],
             )
 
-            scene.is_done = not still_active
-            # Defer auto-advance while any overlay reports busy (e.g.
-            # BigText with an unfinished scroll-off). CTRL skip below
-            # still wins — it forces is_done = True regardless.
-            if scene.is_done and any(
-                not getattr(ov, "_disabled", False) and ov.is_busy()
-                for ov in getattr(scene, "overlays", ())
-            ):
-                scene.is_done = False
-            # Skip request (CTRL key from poller, or POST /skip from
-            # the control plane): force is_done so the next iteration
-            # advances. Race-free because we apply *after* the
-            # is_done = not still_active assignment.
-            if self.skip_event.is_set():
-                if self.single_scene:
-                    self.log.debug("skip ignored — single-scene mode")
-                else:
-                    self.log.info("skip requested — advancing past %r", scene.name)
-                    scene.is_done = True
-                    # A skip means "get to the next scene now" — abort any
-                    # in-progress fade-in and suppress the fade-out.
-                    self.fades.cancel_fade_in(scene)
-                    self.fades.ended_via_skip = True
-                self.skip_event.clear()
-
-            # Cycle request (SHIFT key, or future POST /cycle):
-            # rotate the current scene's display style. Ignored
-            # during an interstitial transition — cycling the
-            # interstitial mid-flight would be confusing and the
-            # interstitial doesn't implement cycle_style anyway.
-            if self.cycle_event.is_set():
-                if not self.transitioning:
-                    self._handle_cycle()
-                self.cycle_event.clear()
+            self._apply_frame_events(scene, still_active)
 
             self._maybe_heartbeat(t0)
             if self.profiler.emit_if_due(t0, self.log):
@@ -751,9 +707,74 @@ class Playlist:
                 if latency_line is not None:
                     self.log.info(latency_line)
 
+        return self._advance_deadline(scene, next_deadline, frame_time)
+
+    def _render_scene_frame(self, scene: Scene, t0: float) -> bool:
+        """Render one frame of `scene` plus its direct-write overlays, under
+        the cpu_render profiler stage. Returns the scene's still-active flag
+        (False also when process_frame raised — a crashing scene advances).
+
+        Overlays with PAINTS_INTO_BUFFERS are skipped here: they were already
+        composed into the scene's screen+color buffers during
+        scene.process_frame — calling process_frame again would race the
+        scene write."""
+        with self.profiler.stage("cpu_render"):
+            try:
+                still_active = scene.process_frame(t0)
+            except Exception:
+                self.log.exception("scene %r raised; advancing", scene.name)
+                still_active = False
+            for ov in getattr(scene, "overlays", ()):
+                if getattr(ov, "_disabled", False):
+                    continue
+                if getattr(ov, "PAINTS_INTO_BUFFERS", False):
+                    continue
+                try:
+                    ov.process_frame(self.api, scene, t0)
+                except Exception:
+                    self.log.exception("overlay %r raised on %r — disabling", ov.name, scene.name)
+                    ov._disabled = True
+        return still_active
+
+    def _apply_frame_events(self, scene: Scene, still_active: bool) -> None:
+        """Resolve the scene's is_done for this frame, then honor the skip and
+        cycle events against it.
+
+        is_done defers while any overlay reports busy (e.g. BigText with an
+        unfinished scroll-off) — but a CTRL skip still wins, forcing is_done
+        regardless. The skip apply is race-free because it runs *after* the
+        is_done = not still_active assignment. Cycle is ignored during an
+        interstitial transition — cycling the interstitial mid-flight would be
+        confusing and it doesn't implement cycle_style anyway."""
+        scene.is_done = not still_active
+        if scene.is_done and any(
+            not getattr(ov, "_disabled", False) and ov.is_busy()
+            for ov in getattr(scene, "overlays", ())
+        ):
+            scene.is_done = False
+        if self.skip_event.is_set():
+            if self.single_scene:
+                self.log.debug("skip ignored — single-scene mode")
+            else:
+                self.log.info("skip requested — advancing past %r", scene.name)
+                scene.is_done = True
+                # A skip means "get to the next scene now" — abort any
+                # in-progress fade-in and suppress the fade-out.
+                self.fades.cancel_fade_in(scene)
+                self.fades.ended_via_skip = True
+            self.skip_event.clear()
+        if self.cycle_event.is_set():
+            if not self.transitioning:
+                self._handle_cycle()
+            self.cycle_event.clear()
+
+    def _advance_deadline(self, scene: Scene, next_deadline: float, frame_time: float) -> float:
+        """Advance the pace deadline one frame; if we fell more than 2 frames
+        behind, snap it forward (drop frames) so we don't burst to catch up.
+        A large snap (seek catch-up / stream rebuffer) abnormally loads the
+        bus, so the audio loop is told to hold its NMI rate steady through it
+        instead of chasing the transient and gliding the pitch."""
         next_deadline += frame_time
-        # If we fell more than 2 frames behind, snap the deadline
-        # forward (drop frames) so we don't burst to catch up.
         now = time.time()
         if now > next_deadline + 2 * frame_time:
             dropped = int((now - next_deadline) / frame_time)
@@ -765,9 +786,6 @@ class Playlist:
                     dropped,
                     (now - next_deadline + frame_time) * 1000,
                 )
-                # A large snap (seek catch-up / stream rebuffer) abnormally loads
-                # the bus; tell the audio loop to hold its NMI rate steady through
-                # it instead of chasing the transient and gliding the pitch.
                 if self.audio is not None and dropped * frame_time >= _AUDIO_DISTURBANCE_DROP_S:
                     self.audio.note_playback_disturbance()
         return next_deadline
