@@ -7,7 +7,9 @@ import time
 import unittest
 from collections import deque
 from typing import cast
+from unittest import mock
 
+from c64cast import keyboard as keyboard_mod
 from c64cast.api import Ultimate64API
 from c64cast.c64 import KEYBUF
 from c64cast.keyboard import (
@@ -16,6 +18,20 @@ from c64cast.keyboard import (
     ADDR_MODIFIERS,
     CommodoreKeyPoller,
 )
+
+
+class _TickClock:
+    """A `time` stand-in for driving CommodoreKeyPoller._tick synchronously:
+    monotonic() returns a hand-advanced value, so a scripted press/release
+    schedule means exactly what it says regardless of host load. Bound over
+    the keyboard module's own `time` name (see _fakes.FrozenClock's warning
+    about never patching the stdlib module itself)."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
 
 
 class FakeApi:
@@ -92,8 +108,8 @@ class CommodoreKeyPollerTest(unittest.TestCase):
 
     def test_release_resets_hold_timer(self):
         api = FakeApi()
-        # Pressed for 0.1s, released, then pressed again — must NOT resume
-        # because the hold timer reset.
+        # Pressed for 5 ticks, released, then pressed again — must NOT resume
+        # because the hold timer reset on the release.
         seq = ([b"\x02"] * 5) + ([b"\x00"] * 3) + ([b"\x02"] * 2)
         api.set_script(seq)
         pause = threading.Event()
@@ -102,12 +118,24 @@ class CommodoreKeyPollerTest(unittest.TestCase):
         poller = CommodoreKeyPoller(
             cast(Ultimate64API, api), poll_interval_s=0.02, hold_threshold_s=0.30
         )
-        poller.start(pause, resume)
-        # Total script time ~ 10 × 20 ms = 200 ms, less than the 300 ms
-        # threshold AFTER the release. Resume should not fire.
-        time.sleep(0.25)
+        # Drive the tick state machine synchronously on a virtual clock, one
+        # scripted sample per tick, instead of racing a real poll thread
+        # against wall time. The threaded version flaked on loaded CI boxes
+        # (main's own runs went red on it): the hold decision compares
+        # against wall-clock hold_threshold_s, so when the first five
+        # "pressed" ticks stretched past 300 ms of real time, resume fired
+        # legitimately before the release sample was ever read. Virtual
+        # ticks advance exactly poll_interval_s apiece, so the schedule the
+        # script encodes is the schedule the state machine sees.
+        poller._pause_event = pause
+        poller._resume_event = resume
+        state = keyboard_mod._KeyPollState()
+        clock = _TickClock()
+        with mock.patch.object(keyboard_mod, "time", clock):
+            for _ in seq:
+                poller._tick(state)
+                clock.now += 0.02
         self.assertFalse(resume.is_set(), "release in the middle should reset the hold timer")
-        poller.stop()
 
     def test_read_failure_does_not_trigger_pause(self):
         class BadApi(FakeApi):
