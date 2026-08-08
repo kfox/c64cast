@@ -365,7 +365,7 @@ class C64Backend(ABC):
         """Read device identity (Ultimate REST: ``GET /v1/info`` —
         ``product``/``hostname``/``unique_id``/firmware+fpga versions).
         Default raises — only the Ultimate exposes this endpoint. Used by
-        :mod:`c64cast.dac_calibration` to key a per-unit calibration file by
+        :mod:`c64cast.dac_calibration_store` to key a per-unit calibration file by
         the device's stable ``unique_id`` instead of its (DHCP-mutable) host
         address."""
         raise BackendCapabilityError("get_device_info")
@@ -701,7 +701,7 @@ def make_backend(cfg: Config) -> C64Backend:
                     # Write the resolved device back into the config. Anything
                     # downstream that identifies the link reads it from there,
                     # not from the transport — most importantly
-                    # dac_calibration.resolve_calibration_key, which only looks
+                    # dac_calibration_store.resolve_calibration_key, which only looks
                     # up the board's USB serial number when serial_port is set.
                     # Left empty, an auto-detected run silently degrades to the
                     # generic "tr-serial-auto" key and records an empty port in

@@ -124,7 +124,7 @@ def detect_socket_models(api: C64Backend) -> tuple[str | None, str | None]:
     """Which chip model each physical SID socket reports (e.g. "6581"/"8580"),
     or None for an empty/undetected socket (best-effort; (None, None) on any
     read failure). Same read as detect_sockets, un-collapsed to the string
-    identity — dac_calibration._active_socket_at_d400 already treats these
+    identity — dac_calibration_store.active_socket_at_d400 already treats these
     values as chip identity strings."""
     try:
         sockets = api.get_config_category(CAT_SOCKETS)

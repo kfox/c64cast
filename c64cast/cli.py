@@ -25,6 +25,7 @@ from . import (
     __version__,
     char_rom,
     dac_calibration,
+    dac_curve_resolve,
     hw_provision,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
     paths,
@@ -880,7 +881,7 @@ def build_stack(
 
     # Resolve the system-aware [audio].dac_curve ("auto"/"calibrated") to a
     # concrete (label, table) for this backend + any per-unit calibration.
-    dac_curve_label, dac_table = dac_calibration.resolve_dac_curve_for_backend(cfg, be=api)
+    dac_curve_label, dac_table = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
     if cfg.audio.enabled and dac_curve_label != cfg.audio.dac_curve:
         log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve_label)
 

@@ -34,6 +34,7 @@ import numpy as np
 import sounddevice as sd
 
 from c64cast import dac_calibration as dc
+from c64cast import dac_calibration_store as dcs
 from c64cast import dac_capture_device as dcap
 from c64cast import dac_slot_ring as dsr
 from c64cast.audio import AudioStreamer
@@ -107,13 +108,13 @@ def main() -> int:
     def as_table(raw: bytes | None) -> np.ndarray | None:
         return None if raw is None else np.frombuffer(raw, dtype=np.uint8)
 
-    calibrated = dc.load_calibrated_table(cfg, be=be)
+    calibrated = dcs.load_calibrated_table(cfg, be=be)
     curves: list[tuple[str, np.ndarray | None]] = [
         ("linear (4-bit)", None),
         ("mahoney_ultisid", as_table(resolve_dac_curve("mahoney_ultisid"))),
     ]
     if calibrated is not None:
-        key = dc.resolve_calibration_key(cfg, be)
+        key = dcs.resolve_calibration_key(cfg, be)
         curves.append((f"calibrated:{key}", as_table(calibrated)))
     else:
         print("!! no calibrated table applies here — comparing the two baked curves only")

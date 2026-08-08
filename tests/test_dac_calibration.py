@@ -24,7 +24,9 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast import dac_calibration as dc
+from c64cast import dac_calibration_store as dcs
 from c64cast import dac_capture_device as dcap
+from c64cast import dac_curve_resolve as dcr
 from c64cast import dac_slot_ring as dsr
 from c64cast.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
 from c64cast.backend import HardwareProfile
@@ -58,8 +60,8 @@ def _ultimate_fake() -> FakeAPI:
     return api
 
 
-def _result(fill: int) -> dc.CalibrationResult:
-    return dc.CalibrationResult(sidtable=[fill & 0xFF] * 256, metrics={"ladder_bits": 6.5})
+def _result(fill: int) -> dcs.CalibrationResult:
+    return dcs.CalibrationResult(sidtable=[fill & 0xFF] * 256, metrics={"ladder_bits": 6.5})
 
 
 RING = 0x2000  # audio.RING_BUFFER_SIZE, without importing the audio stack
@@ -119,36 +121,36 @@ def _signed_levels(lmax: float = 0.5) -> list[tuple[int, float]]:
 class ResolveKeyTest(unittest.TestCase):
     def test_ultimate_offline_key_uses_host(self):
         self.assertEqual(
-            dc.resolve_calibration_key(_u64_cfg("192.168.2.64")), "ultimate-192.168.2.64"
+            dcs.resolve_calibration_key(_u64_cfg("192.168.2.64")), "ultimate-192.168.2.64"
         )
 
     def test_ultimate_live_key_uses_unique_id(self):
         cfg = _u64_cfg()
         api = _ultimate_fake()
         api.device_info = {"product": "C64 Ultimate", "unique_id": "5D327C"}
-        self.assertEqual(dc.resolve_calibration_key(cfg, api), "ultimate-5D327C")
+        self.assertEqual(dcs.resolve_calibration_key(cfg, api), "ultimate-5D327C")
 
     def test_ultimate_live_lookup_failure_falls_back_to_host(self):
         cfg = _u64_cfg("192.168.2.64")
         api = _ultimate_fake()  # device_info left None -> get_device_info() raises
-        self.assertEqual(dc.resolve_calibration_key(cfg, api), "ultimate-192.168.2.64")
+        self.assertEqual(dcs.resolve_calibration_key(cfg, api), "ultimate-192.168.2.64")
 
     def test_tr_serial_key_offline_sanitizes_device(self):
-        key = dc.resolve_calibration_key(_tr_serial_cfg("/dev/cu.usbmodem1234"))
+        key = dcs.resolve_calibration_key(_tr_serial_cfg("/dev/cu.usbmodem1234"))
         self.assertEqual(key, "tr-serial-_dev_cu.usbmodem1234")
 
     def test_tr_serial_key_uses_live_usb_serial_number(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
         with patch("c64cast.teensyrom_dma.usb_serial_number", return_value="TR12345"):
-            key = dc.resolve_calibration_key(cfg, api)
+            key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-TR12345")
 
     def test_tr_serial_key_falls_back_when_no_usb_serial(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
         with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
-            key = dc.resolve_calibration_key(cfg, api)
+            key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-serial-_dev_cu.usbmodem1234")
 
     def test_tr_tcp_key(self):
@@ -157,12 +159,12 @@ class ResolveKeyTest(unittest.TestCase):
         cfg.teensyrom.transport = "tcp"
         cfg.teensyrom.host = "teensy.lan"
         cfg.teensyrom.tcp_port = 2112
-        self.assertEqual(dc.resolve_calibration_key(cfg), "tr-tcp-teensy.lan-2112")
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "tr-tcp-teensy.lan-2112")
 
     def test_distinct_hosts_distinct_keys(self):
         self.assertNotEqual(
-            dc.resolve_calibration_key(_u64_cfg("a.lan")),
-            dc.resolve_calibration_key(_u64_cfg("b.lan")),
+            dcs.resolve_calibration_key(_u64_cfg("a.lan")),
+            dcs.resolve_calibration_key(_u64_cfg("b.lan")),
         )
 
     def test_profile_override_wins_over_everything(self):
@@ -170,12 +172,12 @@ class ResolveKeyTest(unittest.TestCase):
         cfg.audio.dac_calibration_profile = "My Breadbin!"
         api = _ultimate_fake()
         api.device_info = {"unique_id": "5D327C"}
-        self.assertEqual(dc.resolve_calibration_key(cfg, api), "profile-My_Breadbin_")
+        self.assertEqual(dcs.resolve_calibration_key(cfg, api), "profile-My_Breadbin_")
 
     def test_profile_override_applies_to_teensyrom_too(self):
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "breadbin"
-        self.assertEqual(dc.resolve_calibration_key(cfg), "profile-breadbin")
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-breadbin")
 
     def test_a_bare_name_matching_an_existing_file_is_not_re_prefixed(self):
         """The auto-keyed files --calibrate-dac writes are named for the device
@@ -189,8 +191,8 @@ class ResolveKeyTest(unittest.TestCase):
                 (d / "ultimate-DEV123.json").write_text("{}")
                 cfg = _tr_serial_cfg()
                 cfg.audio.dac_calibration_profile = "ultimate-DEV123"
-                self.assertEqual(dc.resolve_calibration_key(cfg), "ultimate-DEV123")
-                self.assertEqual(dc.calibration_path(cfg), d / "ultimate-DEV123.json")
+                self.assertEqual(dcs.resolve_calibration_key(cfg), "ultimate-DEV123")
+                self.assertEqual(dcs.calibration_path(cfg), d / "ultimate-DEV123.json")
 
     def test_a_bare_name_still_prefixes_when_no_such_file_exists(self):
         """A run calibrating *under* a new profile name must keep writing
@@ -200,7 +202,7 @@ class ResolveKeyTest(unittest.TestCase):
             with patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
                 cfg = _tr_serial_cfg()
                 cfg.audio.dac_calibration_profile = "breadbin"
-                self.assertEqual(dc.resolve_calibration_key(cfg), "profile-breadbin")
+                self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-breadbin")
 
     def test_a_prefixed_file_wins_over_an_unprefixed_one(self):
         """Both spellings on disk is ambiguous; the profile spelling is the one
@@ -213,7 +215,7 @@ class ResolveKeyTest(unittest.TestCase):
                 (d / "x.json").write_text("{}")
                 cfg = _tr_serial_cfg()
                 cfg.audio.dac_calibration_profile = "x"
-                self.assertEqual(dc.resolve_calibration_key(cfg), "profile-x")
+                self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-x")
 
     def test_profile_naming_a_file_is_used_as_a_path(self):
         # A path is the only way to point one backend's run at a calibration
@@ -223,22 +225,22 @@ class ResolveKeyTest(unittest.TestCase):
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "/data/c64cast/calibration/dac/ultimate-5D327C.json"
         self.assertEqual(
-            dc.calibration_path(cfg),
+            dcs.calibration_path(cfg),
             Path("/data/c64cast/calibration/dac/ultimate-5D327C.json"),
         )
-        self.assertEqual(dc.resolve_calibration_key(cfg), "ultimate-5D327C")
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "ultimate-5D327C")
 
     def test_profile_path_expands_user(self):
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "~/cal/breadbin.json"
-        self.assertEqual(dc.calibration_path(cfg), Path.home() / "cal/breadbin.json")
+        self.assertEqual(dcs.calibration_path(cfg), Path.home() / "cal/breadbin.json")
 
     def test_bare_name_is_never_treated_as_a_path(self):
         # A name with no separator and no .json suffix stays a key, dots and all.
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "my.rig"
-        self.assertIsNone(dc.profile_path_override(cfg))
-        self.assertEqual(dc.resolve_calibration_key(cfg), "profile-my.rig")
+        self.assertIsNone(dcs.profile_path_override(cfg))
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-my.rig")
 
 
 class DataDirIsolated(unittest.TestCase):
@@ -265,18 +267,18 @@ class DataDirIsolated(unittest.TestCase):
 class PersistenceTest(DataDirIsolated):
     def test_save_load_default_entry_round_trip(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        path = dc.save_calibration(cfg, key, {"default": _result(0)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        path = dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
         self.assertTrue(path.exists())
-        got = dc.load_calibrated_table(cfg)
+        got = dcs.load_calibrated_table(cfg)
         self.assertEqual(got, bytes(256))
 
     def test_raw_levels_persisted_when_present(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
+        key = dcs.resolve_calibration_key(cfg)
         raw = [(c, (c - 128) / 300.0) for c in range(256)]
-        res = dc.CalibrationResult(list(range(256)), {}, "6581", raw)
-        path = dc.save_calibration(cfg, key, {"default": res}, {})
+        res = dcs.CalibrationResult(list(range(256)), {}, "6581", raw)
+        path = dcs.save_calibration(cfg, key, {"default": res}, {})
         entry = json.loads(path.read_text())["sids"]["default"]
         self.assertEqual(len(entry["raw_signed_levels"]), 256)
         self.assertEqual(entry["raw_signed_levels"][1], [1, round(-127 / 300.0, 8)])
@@ -285,11 +287,11 @@ class PersistenceTest(DataDirIsolated):
         # raw_signed_levels is additive under the same schema: a result carrying none
         # writes the pre-existing key set, and readers only need `sidtable`.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        path = dc.save_calibration(cfg, key, {"default": _result(0)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        path = dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
         entry = json.loads(path.read_text())["sids"]["default"]
         self.assertNotIn("raw_signed_levels", entry)
-        self.assertEqual(dc.load_calibrated_table(cfg), bytes(256))
+        self.assertEqual(dcs.load_calibrated_table(cfg), bytes(256))
 
     def test_default_entry_says_the_sid_was_never_identified(self):
         # Only the Ultimate exposes the socket map, so every other link files its
@@ -299,9 +301,9 @@ class PersistenceTest(DataDirIsolated):
         # the assumption has to be stated where the table is chosen.
         cfg = _tr_serial_cfg()
         be = FakeAPI()  # profile.supports_config False, like the real TR
-        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
-        with self.assertLogs("c64cast.dac_calibration", level="INFO") as logs:
-            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes(256))
+        dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
+        with self.assertLogs("c64cast.dac_calibration_store", level="INFO") as logs:
+            self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
         self.assertIn("assumes one SID", "\n".join(logs.output))
 
     def test_default_entry_from_a_link_that_can_identify_stays_quiet(self):
@@ -311,19 +313,19 @@ class PersistenceTest(DataDirIsolated):
         cfg = _u64_cfg()
         be = FakeAPI()
         be.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
-        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes(256))
+        dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
+        with self.assertNoLogs("c64cast.dac_calibration_store", level="INFO"):
+            self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
 
     def test_load_ignores_raw_levels(self):
         # A file written by a newer run stays loadable by the table reader.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
+        key = dcs.resolve_calibration_key(cfg)
         raw = [(c, 0.0) for c in range(256)]
-        dc.save_calibration(
-            cfg, key, {"default": dc.CalibrationResult(list(range(256)), {}, None, raw)}, {}
+        dcs.save_calibration(
+            cfg, key, {"default": dcs.CalibrationResult(list(range(256)), {}, None, raw)}, {}
         )
-        self.assertEqual(dc.load_calibrated_table(cfg), bytes(range(256)))
+        self.assertEqual(dcs.load_calibrated_table(cfg), bytes(range(256)))
 
     def test_save_honours_a_path_profile_and_loads_back(self):
         # --calibrate-dac and playback must agree on where the file lives, so a
@@ -331,42 +333,42 @@ class PersistenceTest(DataDirIsolated):
         cfg = _u64_cfg()
         dest = Path(self._tmp.name) / "elsewhere" / "breadbin.json"
         cfg.audio.dac_calibration_profile = str(dest)
-        path = dc.save_calibration(
-            cfg, dc.resolve_calibration_key(cfg), {"default": _result(0)}, {}
+        path = dcs.save_calibration(
+            cfg, dcs.resolve_calibration_key(cfg), {"default": _result(0)}, {}
         )
         self.assertEqual(path, dest)
-        self.assertEqual(dc.load_calibrated_table(cfg), bytes(256))
+        self.assertEqual(dcs.load_calibrated_table(cfg), bytes(256))
 
     def test_load_missing_returns_none(self):
-        self.assertIsNone(dc.load_calibrated_table(_u64_cfg("nope.lan")))
+        self.assertIsNone(dcs.load_calibrated_table(_u64_cfg("nope.lan")))
 
     def test_load_wrong_length_returns_none(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        bad = dc.CalibrationResult(sidtable=list(range(10)), metrics={})
-        dc.save_calibration(cfg, key, {"default": bad}, {})
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        key = dcs.resolve_calibration_key(cfg)
+        bad = dcs.CalibrationResult(sidtable=list(range(10)), metrics={})
+        dcs.save_calibration(cfg, key, {"default": bad}, {})
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_load_corrupt_file_returns_none(self):
         cfg = _u64_cfg()
-        dc.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
-        dc.calibration_path(cfg).write_text("{ not json")
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        dcs.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+        dcs.calibration_path(cfg).write_text("{ not json")
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_load_old_schema_returns_none(self):
         # Clean cutover: an old schema=1 single-sidtable file is never read
         # under the new (also-renamed) key scheme; guard the shape too.
         cfg = _u64_cfg()
-        dc.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
-        dc.calibration_path(cfg).write_text(
+        dcs.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+        dcs.calibration_path(cfg).write_text(
             '{"schema": 1, "key": "u64-192.168.2.64", "sidtable": ' + str(list(range(256))) + "}"
         )
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_multi_socket_selection_uses_live_active_socket(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {"unique_id": "5D327C"})
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {"unique_id": "5D327C"})
         api = _ultimate_fake()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
@@ -378,13 +380,13 @@ class PersistenceTest(DataDirIsolated):
             "SID Detected Socket 1": "6581",
             "SID Detected Socket 2": "6581",
         }
-        got = dc.load_calibrated_table(cfg, be=api)
+        got = dcs.load_calibrated_table(cfg, be=api)
         self.assertEqual(got, bytes([2] * 256))
 
     def test_multi_socket_selection_none_when_ultisid_owns_d400(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
         api = _ultimate_fake()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
@@ -396,14 +398,14 @@ class PersistenceTest(DataDirIsolated):
             "SID Detected Socket 1": "6581",
             "SID Detected Socket 2": "6581",
         }
-        self.assertIsNone(dc.load_calibrated_table(cfg, be=api))
+        self.assertIsNone(dcs.load_calibrated_table(cfg, be=api))
 
     def test_default_entry_used_even_with_live_api_when_no_socket_keys(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(7)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, key, {"default": _result(7)}, {})
         api = _ultimate_fake()
-        got = dc.load_calibrated_table(cfg, be=api)
+        got = dcs.load_calibrated_table(cfg, be=api)
         self.assertEqual(got, bytes([7] * 256))
 
 
@@ -441,27 +443,27 @@ class IsolateSocketTest(unittest.TestCase):
 
 class ResolveCurveTest(DataDirIsolated):
     def test_auto_ultimate_no_cal_uses_baked_mahoney(self):
-        label, table = dc.resolve_dac_curve_for_backend(_u64_cfg())
+        label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
     def test_auto_teensyrom_no_cal_uses_linear(self):
-        label, table = dc.resolve_dac_curve_for_backend(_tr_serial_cfg())
+        label, table = dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
 
     def test_auto_prefers_calibration_when_present(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(0)}, {})
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
 
     def test_auto_yields_to_digi_boost(self):
         cfg = _u64_cfg()
         cfg.audio.digi_boost = True
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
 
@@ -469,23 +471,23 @@ class ResolveCurveTest(DataDirIsolated):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "calibrated"
         with self.assertRaises(ValueError):
-            dc.resolve_dac_curve_for_backend(cfg)
+            dcr.resolve_dac_curve_for_backend(cfg)
 
     def test_calibrated_present_returns_table(self):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "calibrated"
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(0)}, {})
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
 
     def test_explicit_linear_and_mahoney_pass_through(self):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "linear"
-        self.assertEqual(dc.resolve_dac_curve_for_backend(cfg), ("linear", None))
+        self.assertEqual(dcr.resolve_dac_curve_for_backend(cfg), ("linear", None))
         cfg.audio.dac_curve = "mahoney_ultisid"
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -498,8 +500,8 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_ultimate_live_no_cal_logs_info(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_calibration", level="INFO") as cm:
-            label, table = dc.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+        with self.assertLogs("c64cast.dac_curve_resolve", level="INFO") as cm:
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
         joined = "\n".join(cm.output)
@@ -509,8 +511,8 @@ class MissingCalibrationLogTest(DataDirIsolated):
     def test_teensyrom_live_no_cal_logs_warning(self):
         cfg = _tr_serial_cfg()
         with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
-            with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-                label, table = dc.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+            with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+                label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
         joined = "\n".join(cm.output)
@@ -519,18 +521,18 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_offline_no_cal_is_silent(self):
         # be=None → no log (assertNoLogs raises if anything is emitted).
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            dc.resolve_dac_curve_for_backend(_u64_cfg())
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            dc.resolve_dac_curve_for_backend(_tr_serial_cfg())
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            dcr.resolve_dac_curve_for_backend(_u64_cfg())
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
 
     def test_live_calibration_present_is_silent(self):
         # A hit doesn't warn.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(0)}, {})
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            label, _ = dc.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, key, {"default": _result(0)}, {})
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
         self.assertTrue(label.startswith("calibrated:"))
 
 
@@ -563,8 +565,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
     def test_physical_socket_at_d400_without_calibration_falls_back_to_linear(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-            label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
         joined = "\n".join(cm.output)
@@ -573,8 +575,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
     def test_socket_2_at_d400_is_named_in_the_warning(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-            label, _ = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2))
+        with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2))
         self.assertEqual(label, "linear")
         self.assertIn("socket 2", "\n".join(cm.output))
 
@@ -591,7 +593,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "6581",
         }
-        label, table = dc.resolve_dac_curve_for_backend(cfg, be=api)
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=api)
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -604,23 +606,23 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "None",
         }
-        label, _ = dc.resolve_dac_curve_for_backend(cfg, be=api)
+        label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=api)
         self.assertEqual(label, "mahoney_ultisid")
 
     def test_calibration_for_that_socket_still_wins(self):
         # The guard is a fallback, not a veto: a table measured on the chip
         # that owns $D400 is exactly what should be used.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
-        label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
 
     def test_offline_resolution_is_unchanged_and_silent(self):
         # be=None can't read who owns $D400; --doctor reports that separately.
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            label, table = dc.resolve_dac_curve_for_backend(_u64_cfg())
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -628,7 +630,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         # The guard only shapes "auto". A user who named the curve meant it.
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "mahoney_ultisid"
-        label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -645,7 +647,7 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         return cfg, FakeAPI()  # profile.supports_config False, like the real TR
 
     def _save(self, cfg, be, entries, d400=None) -> Path:
-        return dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), entries, {}, d400)
+        return dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, be), entries, {}, d400)
 
     def test_a_two_socket_file_is_not_discarded_by_a_link_that_cannot_ask(self):
         # The regression: "can't read who owns $D400" was treated as the same
@@ -653,16 +655,16 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         # playback silently dropped to the 4-bit linear DAC.
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)})
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING"):
-            label, table = dc.resolve_dac_curve_for_backend(cfg, be=be)
+        with self.assertLogs("c64cast.dac_calibration_store", level="WARNING"):
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=be)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
 
     def test_the_assumed_socket_is_stated_and_says_how_to_make_it_certain(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)})
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-            dc.load_calibrated_table(cfg, be=be)
+        with self.assertLogs("c64cast.dac_calibration_store", level="WARNING") as cm:
+            dcs.load_calibrated_table(cfg, be=be)
         joined = "\n".join(cm.output)
         self.assertIn("socket 1", joined)
         self.assertIn("--calibrate-dac", joined)
@@ -670,8 +672,8 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
     def test_the_recorded_owner_wins_over_the_assumption(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)}, d400=2)
-        with self.assertNoLogs("c64cast.dac_calibration", level="WARNING"):
-            table = dc.load_calibrated_table(cfg, be=be)
+        with self.assertNoLogs("c64cast.dac_calibration_store", level="WARNING"):
+            table = dcs.load_calibrated_table(cfg, be=be)
         self.assertEqual(table, bytes([2] * 256))
 
     def test_a_file_holding_no_table_for_the_recorded_owner_applies_none(self):
@@ -679,13 +681,13 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         # present is the *other* chip, so no table here is the right one.
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1)}, d400=2)
-        self.assertIsNone(dc.load_calibrated_table(cfg, be=be))
+        self.assertIsNone(dcs.load_calibrated_table(cfg, be=be))
 
     def test_a_single_socket_file_still_loads_without_an_assumption(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1)})
-        with self.assertNoLogs("c64cast.dac_calibration", level="WARNING"):
-            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes([1] * 256))
+        with self.assertNoLogs("c64cast.dac_calibration_store", level="WARNING"):
+            self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes([1] * 256))
 
     def test_the_ultimate_still_refuses_a_physical_table_when_an_ultisid_owns_d400(self):
         # The live answer stays authoritative, including its None. Guarding this
@@ -701,18 +703,18 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "6581",
         }
-        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, api), {"1": _result(1)}, {})
-        self.assertIsNone(dc.load_calibrated_table(cfg, be=api))
+        dcs.save_calibration(cfg, dcs.resolve_calibration_key(cfg, api), {"1": _result(1)}, {})
+        self.assertIsNone(dcs.load_calibrated_table(cfg, be=api))
 
     def test_offline_selection_is_unchanged(self):
         # be=None can't confirm the identity key either; --doctor reports that
         # separately, so an offline miss must stay a miss rather than acquiring
         # an assumption of its own.
         cfg = _u64_cfg()
-        dc.save_calibration(
-            cfg, dc.resolve_calibration_key(cfg), {"1": _result(1), "2": _result(2)}, {}
+        dcs.save_calibration(
+            cfg, dcs.resolve_calibration_key(cfg), {"1": _result(1), "2": _result(2)}, {}
         )
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_the_owner_is_recorded_in_the_file(self):
         cfg = _u64_cfg()
@@ -1124,19 +1126,19 @@ class Volume0SelfTestTest(DataDirIsolated):
 
     def test_rejection_writes_no_sidtable_and_reads_back_as_no_calibration(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
+        key = dcs.resolve_calibration_key(cfg)
         raw = [(c, v + 0.3 if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
         sidtable, metrics = dsr.build_sidtable_from_levels(raw)
         self.assertIsNone(sidtable)
-        path = dc.save_calibration(
-            cfg, key, {"default": dc.CalibrationResult(sidtable, metrics, None, raw)}, {}
+        path = dcs.save_calibration(
+            cfg, key, {"default": dcs.CalibrationResult(sidtable, metrics, None, raw)}, {}
         )
         doc = json.loads(path.read_text())
         entry = doc["sids"]["default"]
         self.assertNotIn("sidtable", entry)
         # The raw levels are kept so the failure can be investigated offline.
         self.assertEqual(len(entry["raw_signed_levels"]), 256)
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
 
 class LadderMetricsTest(unittest.TestCase):
