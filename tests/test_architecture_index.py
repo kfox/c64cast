@@ -34,10 +34,10 @@ _REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _INDEX = _REPO_ROOT / "docs" / "architecture.md"
 _PACKAGE = _REPO_ROOT / "c64cast"
 
-# Subpackages the index lists whole, as directories: their files are small
-# members of one registry apiece, and a per-file row would say the same thing
-# forty times.
-_PACKAGE_DIRS = ("generators/", "modes/", "orchestrators/", "overlays/")
+# Registry subpackages the index lists whole, as directories: their files are
+# small members of one registry apiece, and a per-file row would say the same
+# thing forty times. Paths are relative to the package root.
+_REGISTRY_DIRS = ("generators/", "modes/", "orchestrators/", "overlays/")
 
 
 def _load_bookdoc():
@@ -55,8 +55,15 @@ _bookdoc = _load_bookdoc()
 
 
 def _modules() -> set[str]:
-    names = {p.name for p in _PACKAGE.glob("*.py") if p.name != "__init__.py"}
-    return names | set(_PACKAGE_DIRS)
+    names = set()
+    for path in _PACKAGE.rglob("*.py"):
+        rel = path.relative_to(_PACKAGE).as_posix()
+        if path.name == "__init__.py" or "__pycache__" in rel:
+            continue
+        if any(rel.startswith(prefix) for prefix in _REGISTRY_DIRS):
+            continue
+        names.add(rel)
+    return names | set(_REGISTRY_DIRS)
 
 
 def _table_rows(text: str, heading: str) -> list[tuple[str, str]]:
