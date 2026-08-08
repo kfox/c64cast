@@ -34,12 +34,13 @@ from typing import TYPE_CHECKING, Any
 import cv2
 import numpy as np
 
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import CIA1, SCREEN
+
 from ._pollthread import PollThread
 from .audio import AudioStreamer
 from .audio_handlers import INT16_FULL_SCALE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS, encode_floats_to_dac
-from .backend import C64Backend
 from .bitmap_text import glyphs_to_mask, load_glyphs
-from .c64 import CIA1, SCREEN
 from .modes import BitmapDisplayMode, DisplayMode
 from .palette import ColorFitAccumulator, ColorMapAccumulator
 from .profiler import get_profiler
@@ -176,7 +177,7 @@ def _blit_c64_text(
     buffer, so we never mutate it in place).
 
     The glyphs come from :func:`bitmap_text.load_glyphs` (the uppercase charset
-    :mod:`c64cast.char_rom` resolves, with a builtin fallback), so the
+    :mod:`c64cast.hw.char_rom` resolves, with a builtin fallback), so the
     pre-quantization overlays share the same font the on-C64 renderers use. The
     8×8 cells are nearest-neighbor upscaled by an integer factor chosen so the
     block spans ~`width_frac` of the frame width regardless of source resolution

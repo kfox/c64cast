@@ -33,12 +33,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from c64cast.hw.c64 import KEYBUF, SCREEN, RegionID
+
 from .. import bitmap_text, introspect
-from ..c64 import KEYBUF, SCREEN, RegionID
 from . import Overlay, ascii_to_screen
 
 if TYPE_CHECKING:
-    from ..backend import C64Backend
+    from c64cast.hw.backend import C64Backend
+
     from ..scenes import Scene
 
 log = logging.getLogger("c64cast.menu")

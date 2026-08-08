@@ -5,8 +5,9 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from ..backend import C64Backend
-from ..c64 import RegionID
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import RegionID
+
 from ..dither import DITHER_METHODS, error_diffuse_cells
 from ..palette import (
     C64_PALETTE_BGR,

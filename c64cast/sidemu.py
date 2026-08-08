@@ -33,7 +33,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .c64 import CLOCK_NTSC, CLOCK_PAL, SID
+from c64cast.hw.c64 import CLOCK_NTSC, CLOCK_PAL, SID
 
 # Re-export the wave-select bit constants under their historical names so
 # existing imports (`from c64cast.sidemu import WAVE_NOISE, ...`) keep

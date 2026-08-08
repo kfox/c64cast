@@ -16,7 +16,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 from _fakes import FakeAPI
 
-from c64cast.backend import C64Backend
+from c64cast.hw.backend import C64Backend
 from c64cast.overlays import (
     Overlay,
     ascii_to_screen,

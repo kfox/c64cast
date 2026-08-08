@@ -52,11 +52,12 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
+from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
+
 from . import asid
 from ._pollthread import PollThread
 from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
-from .c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
 from .palette import C64_COLORS
 from .scenes import Scene
 from .sid_hw_config import (

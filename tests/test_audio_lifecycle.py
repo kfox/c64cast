@@ -24,7 +24,6 @@ from _fakes import FakeAPI
 
 from c64cast import audio as audio_mod
 from c64cast import audio_rate as audio_rate_mod
-from c64cast.api import Ultimate64API
 from c64cast.audio import AudioStreamer
 from c64cast.audio_handlers import (
     NEUTRAL_SAMPLE,
@@ -33,7 +32,8 @@ from c64cast.audio_handlers import (
     encode_floats_to_dac,
     nmi_rate_step,
 )
-from c64cast.c64 import CIA2, SID
+from c64cast.hw.api import Ultimate64API
+from c64cast.hw.c64 import CIA2, SID
 
 
 def _make(**kw: Any) -> AudioStreamer:
@@ -658,22 +658,22 @@ class NmiRateSafetyTest(unittest.TestCase):
     slower clock = tighter ceiling than NTSC. See [[project-nmi-rate-intelligibility]]."""
 
     def test_default_rate_is_safe_both_standards(self):
-        from c64cast.c64 import nmi_rate_safety
         from c64cast.config import AudioCfg
+        from c64cast.hw.c64 import nmi_rate_safety
 
         self.assertEqual(AudioCfg().sample_rate, 12000)
         for system in ("NTSC", "PAL"):
             self.assertEqual(nmi_rate_safety(system, 12000)[0], "ok")
 
     def test_legacy_and_candidate_rates_ok(self):
-        from c64cast.c64 import nmi_rate_safety
+        from c64cast.hw.c64 import nmi_rate_safety
 
         self.assertEqual(nmi_rate_safety("NTSC", 8000)[0], "ok")
         self.assertEqual(nmi_rate_safety("NTSC", 11025)[0], "ok")  # NTSC headroom
         self.assertEqual(nmi_rate_safety("PAL", 10500)[0], "ok")
 
     def test_overrun_is_error(self):
-        from c64cast.c64 import nmi_rate_safety
+        from c64cast.hw.c64 import nmi_rate_safety
 
         for system in ("NTSC", "PAL"):
             level, msg = nmi_rate_safety(system, 16000)
@@ -681,7 +681,7 @@ class NmiRateSafetyTest(unittest.TestCase):
             self.assertIn("queue", msg.lower())
 
     def test_marginal_rate_warns(self):
-        from c64cast.c64 import nmi_rate_safety
+        from c64cast.hw.c64 import nmi_rate_safety
 
         # 14000 → period ~73 (NTSC) / ~70 (PAL): above the 68-cycle handler
         # onset but inside the 75-cycle safety margin → warn, not error.
@@ -689,12 +689,12 @@ class NmiRateSafetyTest(unittest.TestCase):
             self.assertEqual(nmi_rate_safety(system, 14000)[0], "warn")
 
     def test_pal_ceiling_below_ntsc(self):
-        from c64cast.c64 import max_safe_sample_rate
+        from c64cast.hw.c64 import max_safe_sample_rate
 
         self.assertLess(max_safe_sample_rate("PAL"), max_safe_sample_rate("NTSC"))
 
     def test_nonpositive_rate_is_error(self):
-        from c64cast.c64 import nmi_rate_safety
+        from c64cast.hw.c64 import nmi_rate_safety
 
         self.assertEqual(nmi_rate_safety("NTSC", 0)[0], "error")
 

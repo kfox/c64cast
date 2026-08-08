@@ -10,8 +10,8 @@ from typing import cast
 from unittest import mock
 
 from c64cast import keyboard as keyboard_mod
-from c64cast.api import Ultimate64API
-from c64cast.c64 import KEYBUF
+from c64cast.hw.api import Ultimate64API
+from c64cast.hw.c64 import KEYBUF
 from c64cast.keyboard import (
     ADDR_KB_BUFFER,
     ADDR_KB_BUFFER_LEN,

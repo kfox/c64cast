@@ -13,7 +13,6 @@ from typing import cast
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast.api import Ultimate64API
 from c64cast.audio import AudioStreamer
 from c64cast.audio_handlers import (
     NEUTRAL_SAMPLE,
@@ -32,6 +31,7 @@ from c64cast.audio_handlers import (
     RING_BUFFER_END_HI,
     RING_BUFFER_HI,
 )
+from c64cast.hw.api import Ultimate64API
 
 
 def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:

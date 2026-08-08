@@ -21,8 +21,9 @@ from typing import cast
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast.api import Ultimate64API
-from c64cast.c64 import (
+from c64cast.config import Config, VideoCfg
+from c64cast.hw.api import Ultimate64API
+from c64cast.hw.c64 import (
     CIA2,
     KERNAL,
     REU,
@@ -31,7 +32,6 @@ from c64cast.c64 import (
     VIC_BANK_0,
     VIC_BANK_2,
 )
-from c64cast.config import Config, VideoCfg
 from c64cast.modes import (
     BlankDisplayMode,
     HiresDisplayMode,

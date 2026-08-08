@@ -28,6 +28,14 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from c64cast.hw.c64 import (
+    CIA2,
+    CLOCK_NTSC,
+    CLOCK_PAL,
+    NMI_SAFE_MIN_PERIOD_CYCLES,
+    VECTORS,
+)
+
 from .audio_handlers import (
     CIA2_ICR_ENABLE_TIMER_A_NMI,
     CIA2_TIMER_A_CONTINUOUS,
@@ -43,13 +51,6 @@ from .audio_handlers import (
     RING_BUFFER_SIZE,
     nmi_rate_step,
     servo_period,
-)
-from .c64 import (
-    CIA2,
-    CLOCK_NTSC,
-    CLOCK_PAL,
-    NMI_SAFE_MIN_PERIOD_CYCLES,
-    VECTORS,
 )
 
 if TYPE_CHECKING:

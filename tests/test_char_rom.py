@@ -21,16 +21,16 @@ from unittest import mock
 
 from py65.devices.mpu6502 import MPU
 
-from c64cast import char_rom
-from c64cast.api import (
+from c64cast.hw import char_rom
+from c64cast.hw.api import (
     CHAR_ROM_DUMP_BYTES,
     CHAR_ROM_DUMP_DEST,
     CHAR_ROM_DUMP_STUB_ADDR,
     build_char_rom_dump_stub,
     char_rom_flag_addr,
 )
-from c64cast.backend import BackendCapabilityError
-from c64cast.c64 import CPU, KERNAL, VECTORS
+from c64cast.hw.backend import BackendCapabilityError
+from c64cast.hw.c64 import CPU, KERNAL, VECTORS
 
 # --------------------------------------------------------------------------
 # Fixtures
@@ -245,7 +245,7 @@ class LoadGlyphsTest(_CharRomTestCase):
         from c64cast.framebuffer import _builtin_charset
 
         short = self.write_file("short.bin", b"\xff" * 100)
-        with self.assertLogs("c64cast.char_rom", level="WARNING"):
+        with self.assertLogs("c64cast.hw.char_rom", level="WARNING"):
             glyphs = char_rom.load_glyphs(str(short))
         self.assertEqual(glyphs, _builtin_charset())
 
@@ -424,7 +424,7 @@ class EnsureInstalledTest(_CharRomTestCase):
 
     def test_dumps_and_installs_on_the_first_run(self):
         be = _FakeBackend(_synth_charset())
-        with self.assertLogs("c64cast.char_rom", level="INFO"):
+        with self.assertLogs("c64cast.hw.char_rom", level="INFO"):
             self.assertTrue(char_rom.ensure_installed(be, self._cfg()))
         self.assertEqual(char_rom.installed_path().read_bytes(), _synth_charset())
 
@@ -471,7 +471,7 @@ class EnsureInstalledTest(_CharRomTestCase):
             OSError("link died"),
         ):
             with self.subTest(err=type(err).__name__):
-                with self.assertLogs("c64cast.char_rom", level="WARNING") as logs:
+                with self.assertLogs("c64cast.hw.char_rom", level="WARNING") as logs:
                     self.assertFalse(
                         char_rom.ensure_installed(_FakeBackend(error=err), self._cfg())
                     )
@@ -482,7 +482,7 @@ class EnsureInstalledTest(_CharRomTestCase):
         from c64cast.framebuffer import _builtin_charset
 
         garbage = bytes((i * 37 + 11) & 0xFF for i in range(4096))
-        with self.assertLogs("c64cast.char_rom", level="WARNING"):
+        with self.assertLogs("c64cast.hw.char_rom", level="WARNING"):
             self.assertFalse(char_rom.ensure_installed(_FakeBackend(garbage), self._cfg()))
         self.assertFalse(char_rom.installed_path().exists())
         self.assertEqual(char_rom.load_glyphs(), _builtin_charset())
@@ -528,7 +528,9 @@ class InstallCharRomCliTest(_CharRomTestCase):
         # It must dispatch before anything resolves a config or opens a link —
         # this runs in a tmp cwd with no c64cast.toml and no machine present.
         src = self.write_file("src.bin", _synth_charset())
-        with mock.patch("c64cast.backend.make_backend", side_effect=AssertionError("no hardware")):
+        with mock.patch(
+            "c64cast.hw.backend.make_backend", side_effect=AssertionError("no hardware")
+        ):
             self.assertEqual(self._main(["--install-char-rom", str(src)])[0], 0)
 
 

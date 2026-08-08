@@ -29,9 +29,9 @@ from c64cast import dac_capture_device as dcap
 from c64cast import dac_curve_resolve as dcr
 from c64cast import dac_slot_ring as dsr
 from c64cast.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
-from c64cast.backend import HardwareProfile
 from c64cast.config import Config
 from c64cast.dac_curves import MAHONEY_ULTISID
+from c64cast.hw.backend import HardwareProfile
 
 
 def _u64_cfg(host: str = "192.168.2.64") -> Config:
@@ -142,14 +142,14 @@ class ResolveKeyTest(unittest.TestCase):
     def test_tr_serial_key_uses_live_usb_serial_number(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
-        with patch("c64cast.teensyrom_dma.usb_serial_number", return_value="TR12345"):
+        with patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value="TR12345"):
             key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-TR12345")
 
     def test_tr_serial_key_falls_back_when_no_usb_serial(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
-        with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
+        with patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value=None):
             key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-serial-_dev_cu.usbmodem1234")
 
@@ -531,7 +531,7 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_teensyrom_live_no_cal_logs_warning(self):
         cfg = _tr_serial_cfg()
-        with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
+        with patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value=None):
             with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
                 label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
         self.assertEqual(label, "linear")

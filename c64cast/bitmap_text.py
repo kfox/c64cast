@@ -20,10 +20,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .c64 import SCREEN
+from c64cast.hw.c64 import SCREEN
 
 if TYPE_CHECKING:
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
 
 log = logging.getLogger("c64cast.bitmap_text")
 
@@ -34,12 +34,12 @@ COLOR_NIBBLE_MASK = 0x0F
 
 
 def load_glyphs() -> bytes:
-    """The 2 KB uppercase charset — see :func:`c64cast.char_rom.load_glyphs`,
+    """The 2 KB uppercase charset — see :func:`c64cast.hw.char_rom.load_glyphs`,
     which owns resolution, caching and the cv2 fallback for every consumer.
 
     Kept as a forwarder because the glyph consumers (`text_surface`,
     `voice_scope`, `scenes`, the on-C64 menu) reach for it here."""
-    from .char_rom import load_glyphs as _load
+    from c64cast.hw.char_rom import load_glyphs as _load
 
     return _load()
 

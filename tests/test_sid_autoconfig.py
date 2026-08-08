@@ -26,8 +26,8 @@ from c64cast.asid_sidmap import (
     ITEM_ULTISID1_FILTER,
     ITEM_ULTISID2_ADDR,
 )
-from c64cast.backend import HardwareProfile
 from c64cast.config import Config
+from c64cast.hw.backend import HardwareProfile
 from c64cast.sid_host_emu import SidHeader
 
 

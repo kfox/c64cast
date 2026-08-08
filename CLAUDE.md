@@ -50,7 +50,7 @@ Then either let direnv activate `.venv` (it does, via `layout uv`) or prefix one
 
 Type-checking is two-tiered: `pyright` runs across the whole tree (and tests) in basic mode — matches Pylance's VS Code defaults so editor diagnostics align with CI. `mypy --strict` runs on the state-bearing modules (`api.py`, `audio.py`, `playlist.py`, `socket_dma.py`, `scenes.py`, `config.py`) where a type slip would actually corrupt state. The strict list lives in `[tool.mypy] files = [...]` in [pyproject.toml](pyproject.toml). Both run under `make typecheck` and in CI.
 
-Target hardware: an [Ultimate 64](https://ultimate64.com/) on the LAN. Writes go over the **Ultimate DMA Service** (TCP port 64, persistent socket); reads, reset, run_prg, and probe go over REST. SID playback DMAs the SID payload + a tiny 6502 player into C64 RAM and kicks a `SYS` BASIC stub through `run_prg` — the firmware's `runners:sidplay` endpoint is deliberately avoided because it hijacks HDMI with its own player UI. See [api.run_sid_player](c64cast/api.py) and the "SID playback uses a C64-side player PRG" section of [docs/caveats.md](docs/caveats.md) for the design + limitations.
+Target hardware: an [Ultimate 64](https://ultimate64.com/) on the LAN. Writes go over the **Ultimate DMA Service** (TCP port 64, persistent socket); reads, reset, run_prg, and probe go over REST. SID playback DMAs the SID payload + a tiny 6502 player into C64 RAM and kicks a `SYS` BASIC stub through `run_prg` — the firmware's `runners:sidplay` endpoint is deliberately avoided because it hijacks HDMI with its own player UI. See [api.run_sid_player](c64cast/hw/api.py) and the "SID playback uses a C64-side player PRG" section of [docs/caveats.md](docs/caveats.md) for the design + limitations.
 
 ## Configuration
 

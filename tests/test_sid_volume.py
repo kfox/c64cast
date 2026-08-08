@@ -12,7 +12,7 @@ import unittest
 from _fakes import FakeAPI
 
 from c64cast import sid_volume as sv
-from c64cast.backend import HardwareProfile
+from c64cast.hw.backend import HardwareProfile
 
 CAT = sv.CAT_MIXER
 VOL_S1 = (CAT, "Vol Socket 1")

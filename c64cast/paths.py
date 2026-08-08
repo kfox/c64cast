@@ -132,7 +132,7 @@ def loop_presets_dir() -> Path:
 def roms_dir() -> Path:
     """Directory holding ROM images dumped off the user's own machine
     (``<data root>/roms``; today just ``chargen.bin``, the character ROM
-    :mod:`c64cast.char_rom` reads back over DMA). Under the data root rather
+    :mod:`c64cast.hw.char_rom` reads back over DMA). Under the data root rather
     than the package because the bytes belong to the user's hardware — nothing
     here is ever shipped."""
     return data_root() / "roms"

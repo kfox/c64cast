@@ -3,8 +3,9 @@ bring-up choreography) + BitmapDisplayMode."""
 
 from __future__ import annotations
 
-from ..backend import C64Backend
-from ..c64 import CIA2, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import CIA2, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
+
 from ..modes_irq import (
     DD00_BANK_0,
     DD00_BANK_2,

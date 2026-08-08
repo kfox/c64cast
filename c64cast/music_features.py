@@ -34,8 +34,9 @@ import math
 import threading
 import time
 
+from c64cast.hw.c64 import SID, cpu_clock
+
 from ._pollthread import PollThread
-from .c64 import SID, cpu_clock
 from .modulation import MusicModulation, TempoEstimator
 from .sid_host_emu import SidHostEmu
 from .sidemu import ACCUMULATOR_RANGE, SIDEmulator

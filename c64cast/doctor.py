@@ -27,8 +27,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Literal
 
-from . import hw_provision
-from .c64 import max_safe_sample_rate, nmi_rate_safety
+from c64cast.hw import hw_provision
+from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
+
 from .config import ColorCfg, Config, ConfigError, LoadResult, resolve_recording_path
 from .orchestrator import OrchestratorError
 from .paths import expand_user
@@ -417,7 +418,7 @@ def _probe_char_rom() -> list[Diagnostic]:
     text in a cv2-rendered ASCII font instead of the real thing — which is
     exactly the "the scrolling text looks bad" report this whole path exists to
     answer, and it is invisible unless someone says so out loud."""
-    from . import char_rom
+    from c64cast.hw import char_rom
 
     path = char_rom.resolve()
     if path is None:
@@ -1118,9 +1119,9 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
     """Connect one system's backend, probe it, and run the per-service
     probes that apply. Connection failures come back as diagnostics, not
     exceptions, so one dead system doesn't hide the others' reports."""
-    from .backend import make_backend
-    from .socket_dma import SocketDMAError
-    from .teensyrom_dma import TRError
+    from c64cast.hw.backend import make_backend
+    from c64cast.hw.socket_dma import SocketDMAError
+    from c64cast.hw.teensyrom_dma import TRError
 
     url = cfg.ultimate64.url
     try:

@@ -22,11 +22,13 @@ import subprocess
 import sys
 import time
 
-from . import char_rom, dac_calibration, paths
+from c64cast.hw import char_rom
+from c64cast.hw.backend import make_backend
+
 from . import config as cfgmod
+from . import dac_calibration, paths
 from ._native_io import silence_native_stderr
 from .audio import AUDIO_AVAILABLE, resolve_audio_input_device
-from .backend import make_backend
 from .dac_capture_device import CaptureUnavailableError
 from .dac_slot_ring import MeasurementError
 
@@ -432,7 +434,7 @@ def run_dump_char_rom(cfg: cfgmod.Config) -> int:
     flag (the auto path only ever fires when nothing is installed). Resets the
     machine on the way out, like every other hardware-touching command, so it
     isn't left parked wherever the dump stub ran."""
-    from .backend import BackendCapabilityError
+    from c64cast.hw.backend import BackendCapabilityError
 
     be = make_backend(cfg)
     try:

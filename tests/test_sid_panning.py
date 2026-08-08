@@ -12,7 +12,7 @@ import unittest
 from _fakes import FakeAPI
 
 from c64cast import sid_panning as sp
-from c64cast.backend import HardwareProfile
+from c64cast.hw.backend import HardwareProfile
 
 CAT = sp.CAT_MIXER
 PAN_S1 = (CAT, "Pan Socket 1")

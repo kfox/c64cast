@@ -29,7 +29,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from c64cast.api import Ultimate64API  # noqa: E402
+from c64cast.hw.api import Ultimate64API  # noqa: E402
 
 
 class _Handler(BaseHTTPRequestHandler):

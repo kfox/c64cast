@@ -35,8 +35,9 @@ from .asid_sidmap import (
 )
 
 if TYPE_CHECKING:
+    from c64cast.hw.backend import C64Backend
+
     from .asid_sidmap import SidMap
-    from .backend import C64Backend
 
 log = logging.getLogger(__name__)
 

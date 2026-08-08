@@ -64,6 +64,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from c64cast.hw.c64 import CIA2
+
 from . import paths
 from .asid_sidmap import (
     ADDR_UNMAPPED,
@@ -85,7 +87,6 @@ from .audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
 )
-from .c64 import CIA2
 from .dac_calibration_store import (
     CalibrationDocument,
     CalibrationResult,
@@ -124,8 +125,9 @@ from .sid_panning import CAT_MIXER
 from .sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
+    from c64cast.hw.backend import C64Backend
+
     from .audio import AudioStreamer
-    from .backend import C64Backend
     from .config import Config
 
 log = logging.getLogger(__name__)

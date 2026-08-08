@@ -25,8 +25,9 @@ from typing import TYPE_CHECKING
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from c64cast.hw.backend import C64Backend
+
     from .audio import AudioStreamer
-    from .backend import C64Backend
     from .config import Config
     from .framebuffer import Framebuffer
     from .keyboard import CommodoreKeyPoller

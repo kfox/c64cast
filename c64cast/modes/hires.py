@@ -7,8 +7,9 @@ import logging
 import cv2
 import numpy as np
 
-from ..backend import C64Backend
-from ..c64 import CIA2, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import CIA2, VIC_BANK_0, VIC_BANK_2, RegionID
+
 from ..dither import DITHER_METHODS, error_diffuse_cells
 from ..modes_irq import (
     BANK_SWAP_IRQ_HANDLER,

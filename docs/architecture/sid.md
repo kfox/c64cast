@@ -20,7 +20,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 
 ## SID player PRG — 6502 player, relocation, and per-call banking
 
-SID playback uses a hand-encoded 6502 player (73 bytes) plus a SHIFT-driven re-INIT stub (35 bytes), both relocated per tune by `_choose_player_layout` in [api.py](../../c64cast/api.py).
+SID playback uses a hand-encoded 6502 player (73 bytes) plus a SHIFT-driven re-INIT stub (35 bytes), both relocated per tune by `_choose_player_layout` in [api.py](../../c64cast/hw/api.py).
 
 ### Layout and relocation
 

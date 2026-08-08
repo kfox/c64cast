@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import unittest
 
-from c64cast.c64 import SID
+from c64cast.hw.c64 import SID
 from c64cast.modulation import MusicModulation
 from c64cast.music_features import SidFeatureStream
 

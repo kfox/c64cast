@@ -32,8 +32,9 @@ from typing import Protocol
 
 import numpy as np
 
+from c64cast.hw.c64 import SCREEN
+
 from . import bitmap_text
-from .c64 import SCREEN
 
 _NIBBLE = 0x0F
 CELL_PX = bitmap_text.CELL_PX  # 8

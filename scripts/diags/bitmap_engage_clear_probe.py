@@ -29,8 +29,8 @@ import _diaglib as d
 
 sys.path.insert(0, str(d.Path(__file__).resolve().parents[2]))
 
-from c64cast.api import Ultimate64API  # noqa: E402
-from c64cast.c64 import CIA2, VIC_BANK_0, RegionID  # noqa: E402
+from c64cast.hw.api import Ultimate64API  # noqa: E402
+from c64cast.hw.c64 import CIA2, VIC_BANK_0, RegionID  # noqa: E402
 from c64cast.modes import (  # noqa: E402
     HiresDisplayMode,
     MultiHiresDisplayMode,

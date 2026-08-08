@@ -15,7 +15,7 @@ from _fakes import FakeAPI
 import c64cast
 from c64cast import config as cfgmod
 from c64cast import dac_calibration_store, doctor
-from c64cast.backend import HardwareProfile
+from c64cast.hw.backend import HardwareProfile
 
 
 def _write(path: str, body: str) -> None:
@@ -235,14 +235,15 @@ class ExtrasProbeTest(unittest.TestCase):
 
 class ConnectivityProbeTest(unittest.TestCase):
     def test_socket_dma_error_becomes_diagnostic_not_exception(self):
-        from c64cast.socket_dma import SocketDMAError
+        from c64cast.hw.socket_dma import SocketDMAError
 
         loaded = _load("""
             [ultimate64]
             url = "http://unreachable.example"
         """)
         with mock.patch(
-            "c64cast.api.Ultimate64API.__init__", side_effect=SocketDMAError("connection refused")
+            "c64cast.hw.api.Ultimate64API.__init__",
+            side_effect=SocketDMAError("connection refused"),
         ):
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         conn = [d for d in diags if d.category == "connectivity"]
@@ -260,7 +261,7 @@ class ConnectivityProbeTest(unittest.TestCase):
     def _probe_with_dead_rest(self, toml: str) -> list:
         """DMA connects (Ultimate64API.__init__ mocked to no-op) but the REST
         probe returns None (web server down). Returns the connectivity diags."""
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         loaded = _load(toml)
         with mock.patch.object(Ultimate64API, "__init__", return_value=None):
@@ -269,7 +270,7 @@ class ConnectivityProbeTest(unittest.TestCase):
             api_instance.session = mock.MagicMock()
             api_instance.probe = mock.MagicMock(return_value=None)
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+            with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
         return [d for d in diags if d.category == "connectivity"]
 
@@ -330,7 +331,7 @@ class ReuStatusProbeTest(unittest.TestCase):
         for "RAM Expansion Unit". Wire shape matches Ultimate firmware
         3.x: top-level dict with the category name as a key wrapping the
         actual setting dict."""
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         fake_response = mock.MagicMock()
         fake_response.json.return_value = {
@@ -350,7 +351,7 @@ class ReuStatusProbeTest(unittest.TestCase):
             api_instance.session.get.return_value = fake_response
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+            with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
                 return doctor.validate_load_result(loaded, probe_u64=True)
 
     def test_no_reu_request_skips_reu_probe(self):
@@ -473,7 +474,7 @@ class ReuStatusProbeTest(unittest.TestCase):
     def test_rest_failure_during_reu_probe_warns(self):
         import requests
 
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         loaded = _load("""
             [ultimate64]
@@ -492,7 +493,7 @@ class ReuStatusProbeTest(unittest.TestCase):
             api_instance.session.get.side_effect = requests.Timeout("read timeout")
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+            with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
         reu = [d for d in diags if d.subject.endswith("(REU)")]
         self.assertEqual(len(reu), 1)
@@ -506,7 +507,7 @@ class ReuStatusProbeTest(unittest.TestCase):
         """When the DMA connect itself fails, we never reach REST, so no
         REU diagnostic. The single DMA error is the right user feedback —
         adding a redundant REU warn would just be noise."""
-        from c64cast.socket_dma import SocketDMAError
+        from c64cast.hw.socket_dma import SocketDMAError
 
         loaded = _load("""
             [ultimate64]
@@ -519,7 +520,8 @@ class ReuStatusProbeTest(unittest.TestCase):
             display = "petscii"
         """)
         with mock.patch(
-            "c64cast.api.Ultimate64API.__init__", side_effect=SocketDMAError("connection refused")
+            "c64cast.hw.api.Ultimate64API.__init__",
+            side_effect=SocketDMAError("connection refused"),
         ):
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         reu = [d for d in diags if d.subject.endswith("(REU)")]
@@ -536,7 +538,7 @@ class SidStatusProbeTest(unittest.TestCase):
         """Drive _probe_connectivity end-to-end with mocks. `left`/`right`
         are the values the REST endpoint returns for "SID Left"/"SID Right".
         Wire shape matches Ultimate firmware 3.x."""
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         fake_response = mock.MagicMock()
         fake_response.json.return_value = {
@@ -556,7 +558,7 @@ class SidStatusProbeTest(unittest.TestCase):
             api_instance.session.get.return_value = fake_response
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+            with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
                 return doctor.validate_load_result(loaded, probe_u64=True)
 
     def test_no_sid_request_skips_sid_probe(self):
@@ -629,7 +631,7 @@ class SidStatusProbeTest(unittest.TestCase):
     def test_rest_failure_during_sid_probe_warns(self):
         import requests
 
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         loaded = _load("""
             [ultimate64]
@@ -647,7 +649,7 @@ class SidStatusProbeTest(unittest.TestCase):
             api_instance.session.get.side_effect = requests.Timeout("read timeout")
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+            with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(len(sid), 1)
@@ -666,7 +668,7 @@ class SidStatusProbeTest(unittest.TestCase):
             type = "webcam"
             display = "petscii"
         """)
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         fake_response = mock.MagicMock()
         fake_response.json.return_value = {"Audio Output Settings": {}, "errors": []}
@@ -678,7 +680,7 @@ class SidStatusProbeTest(unittest.TestCase):
             api_instance.session.get.return_value = fake_response
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+            with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(sid, [])
@@ -926,7 +928,7 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
         report: `--doctor` without --skip-probe still showed the offline
         'resolves to mahoney_ultisid' AUDIO-section line even though the
         CONNECTIVITY section already had the precise live answer."""
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         loaded = self._loaded("auto")
 
@@ -940,7 +942,7 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
             api_instance.session.get.return_value = fake_response
             api_instance.probe = mock.MagicMock(return_value="HTTP 200")
             api_instance.close = mock.MagicMock()
-            with mock.patch("c64cast.api.Ultimate64API", return_value=api_instance):
+            with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
                 diags = doctor.validate_load_result(loaded, probe_u64=True)
 
         offline_audio_line = [

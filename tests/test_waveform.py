@@ -125,7 +125,7 @@ class DisplayLayoutTest(unittest.TestCase):
         return _choose_display_layout(lo, hi, fp)
 
     def test_default_bank0_when_clear(self):
-        from c64cast.c64 import CIA2, VIC_BANK_0
+        from c64cast.hw.c64 import CIA2, VIC_BANK_0
         from c64cast.waveform import D018_HIRES_BITMAP
 
         s, b, d, d018 = self._layout(0x1000, 0x1800)
@@ -135,7 +135,7 @@ class DisplayLayoutTest(unittest.TestCase):
         )
 
     def test_bank2_when_payload_overlaps_bank0_bitmap(self):
-        from c64cast.c64 import CIA2, VIC_BANK_2
+        from c64cast.hw.c64 import CIA2, VIC_BANK_2
         from c64cast.waveform import D018_HIRES_BITMAP
 
         s, b, d, d018 = self._layout(0x1000, 0x2F00)  # crosses $2000
@@ -146,7 +146,7 @@ class DisplayLayoutTest(unittest.TestCase):
 
     def test_bank2_when_footprint_dirties_bank0(self):
         # Payload clears bank 0, but the tune writes $2000 at runtime.
-        from c64cast.c64 import CIA2
+        from c64cast.hw.c64 import CIA2
 
         fp = bytearray(65536)
         fp[0x2000] = 1
@@ -156,7 +156,7 @@ class DisplayLayoutTest(unittest.TestCase):
     def test_bank1_when_banks_0_and_2_blocked(self):
         # Times of Lore subtunes 2-11: payload covers bank 0's bitmap, and
         # the PLAY footprint reads bank 2's $B400 — only bank 1 is free.
-        from c64cast.c64 import CIA2
+        from c64cast.hw.c64 import CIA2
         from c64cast.waveform import _BANK1_BITMAP, _BANK1_SCREEN, D018_BANK1
 
         fp = bytearray(65536)
@@ -200,7 +200,7 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
     def test_tol_like_union_pins_bank1(self):
         # Song 1 footprint clears bank 2; songs 2-11 read bank 2's $B400.
         # The union blocks bank 2, payload blocks bank 0 → bank 1 for ALL.
-        from c64cast.c64 import CIA2
+        from c64cast.hw.c64 import CIA2
         from c64cast.waveform import _BANK1_BITMAP, _BANK1_SCREEN, D018_BANK1
 
         per_song = {1: ()}
@@ -212,7 +212,7 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
     def test_union_prefers_earliest_free_bank(self):
         # Nothing dirty + tiny payload → union leaves bank 0 free → bank 0
         # (the unified bank must respect the same preference order).
-        from c64cast.c64 import CIA2
+        from c64cast.hw.c64 import CIA2
 
         layout = self._run({1: (), 2: ()}, 0x1000, 0x1800)
         assert layout is not None
@@ -221,7 +221,7 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
     def test_returns_none_when_no_single_bank_fits_union(self):
         # One subtune dirties bank 2's display, another dirties bank 1's —
         # with the payload covering bank 0, the union blocks every bank.
-        from c64cast.c64 import VIC_BANK_2
+        from c64cast.hw.c64 import VIC_BANK_2
         from c64cast.waveform import _BANK1_BITMAP
 
         per_song = {1: (VIC_BANK_2.BITMAP,), 2: (_BANK1_BITMAP,)}
@@ -238,7 +238,7 @@ class PlayBankForFootprintsTest(unittest.TestCase):
         return _play_bank_for_footprints(write, access)
 
     def test_play_reads_written_ram_under_rom_needs_basic_out(self):
-        from c64cast.c64 import CPU
+        from c64cast.hw.c64 import CPU
 
         write = bytearray(65536)
         access = bytearray(65536)
@@ -736,7 +736,7 @@ class WaveformSceneTest(unittest.TestCase):
         leaves bank 2 free is now ACCEPTED — the display relocates to bank 2
         ($8400/$A000, $DD00=$95) instead of being refused. Model it with a
         2 KB payload at $2700 (the old LN2-style refusal case)."""
-        from c64cast.c64 import CIA2, VIC_BANK_2
+        from c64cast.hw.c64 import CIA2, VIC_BANK_2
         from c64cast.waveform import WaveformScene
 
         with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
@@ -821,7 +821,7 @@ class WaveformSceneTest(unittest.TestCase):
     def test_setup_hires_paints_text_rows(self):
         # Hires setup must write the title-row + metadata-row strips into
         # the bitmap (320 bytes each at cell rows 22 and 23).
-        from c64cast.c64 import SCREEN
+        from c64cast.hw.c64 import SCREEN
         from c64cast.waveform import META_ROW, TITLE_ROW, WaveformScene
 
         api = FakeAPI()
@@ -846,7 +846,7 @@ class WaveformSceneTest(unittest.TestCase):
         # SHIFT-cycling the subtune must re-push the metadata row so the
         # displayed song number reflects the new subtune (the song number
         # lives on the metadata row; the title row stays fixed across subtunes).
-        from c64cast.c64 import SCREEN
+        from c64cast.hw.c64 import SCREEN
         from c64cast.waveform import META_ROW, WaveformScene
 
         api = FakeAPI()
@@ -1063,7 +1063,7 @@ class WaveformSceneTest(unittest.TestCase):
         # hires re-setup. Verifies the flicker fix: the old
         # cycle_style called _setup_hires which re-wrote the bitmap
         # zero-fill + per-voice color strips on every SHIFT.
-        from c64cast.c64 import SCREEN
+        from c64cast.hw.c64 import SCREEN
         from c64cast.waveform import BITMAP_STRIPS, WaveformScene
 
         api = FakeAPI()

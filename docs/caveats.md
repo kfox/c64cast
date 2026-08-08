@@ -187,7 +187,7 @@ The player banks the 6510 CPU port at `$0001` **per call**, matching the
 U64's own player: it rests at `$37`, switches to the right bank around
 `JSR init`, restores `$37`, then switches again around `JSR play` and
 restores `$37` before chaining to the kernal IRQ tail. `_init_bank_for`
-and `_play_bank_for` in [api.py](../c64cast/api.py) pick each value
+and `_play_bank_for` in [api.py](../c64cast/hw/api.py) pick each value
 independently (init-bank from the load-end page, play-bank from the
 play-addr page):
 
@@ -378,7 +378,7 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
 
 The host-side orchestration above (parse / layout / build / divider
 auto-tune / subtune re-INIT) is backend-agnostic and shared via
-`_SidPlayerMixin` in [api.py](../c64cast/api.py); only the **kick** —
+`_SidPlayerMixin` in [api.py](../c64cast/hw/api.py); only the **kick** —
 how control reaches the player — differs per backend, behind the abstract
 `_launch_sid_player`. The Ultimate POSTs the `SYS` stub to `run_prg`
 (a synchronous soft reset that preserves RAM, then RUNs). The TeensyROM

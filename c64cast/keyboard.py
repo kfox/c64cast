@@ -52,9 +52,10 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import KEYBUF, SCREEN
+
 from ._pollthread import PollThread
-from .backend import C64Backend
-from .c64 import KEYBUF, SCREEN
 
 ADDR_MODIFIERS = SCREEN.MODIFIERS
 ADDR_KB_BUFFER_LEN = SCREEN.KB_BUFFER_LEN

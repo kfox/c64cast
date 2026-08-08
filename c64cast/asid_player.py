@@ -57,11 +57,12 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from c64cast.hw.c64 import CIA1, KERNAL, REU, VECTORS, cpu_clock
+
 from .asid import _ASID_REG_TO_OFFSET
-from .c64 import CIA1, KERNAL, REU, VECTORS, cpu_clock
 
 if TYPE_CHECKING:
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
 
 log = logging.getLogger("c64cast.asid_player")
 

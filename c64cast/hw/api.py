@@ -1121,7 +1121,7 @@ class _SidPlayerMixin(BufferedWriteBackend):
 # read time. So the only way to get the charset off a machine is to run code
 # ON it — bank CHAREN out, copy the ROM down into plain RAM, restore the bank,
 # and let the host read the copy back. That is this stub. Consumers:
-# [c64cast.char_rom], `--dump-char-rom`, and the first-run auto-dump.
+# [c64cast.hw.char_rom], `--dump-char-rom`, and the first-run auto-dump.
 #
 # PLACEMENT — both addresses are load-bearing:
 #

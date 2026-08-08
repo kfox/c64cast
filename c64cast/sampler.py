@@ -38,7 +38,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
+
     from .dsp import AudioDSP
 
 log = logging.getLogger("c64cast.sampler")

@@ -19,7 +19,8 @@ import logging
 
 import numpy as np
 
-from ..c64 import SCREEN
+from c64cast.hw.c64 import SCREEN
+
 from . import SC_FULL, Overlay, register
 from ._spectrum import BAND_COLORS, N_BANDS, _SpectrumBands
 

@@ -21,7 +21,8 @@ from .dac_calibration_store import (
 from .dac_curves import resolve_dac_curve
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
+
     from .config import Config
 
 log = logging.getLogger(__name__)

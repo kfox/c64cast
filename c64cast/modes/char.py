@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from ..backend import C64Backend
-from ..c64 import SCREEN
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import SCREEN
+
 from ..palette import build_fade_lut
 from .base import ComposeBuffers, DisplayMode
 

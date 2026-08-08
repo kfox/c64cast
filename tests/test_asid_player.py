@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
 from c64cast import asid_player as ap  # noqa: E402
-from c64cast.backend import C64Backend  # noqa: E402
-from c64cast.c64 import CLOCK_NTSC  # noqa: E402
+from c64cast.hw.backend import C64Backend  # noqa: E402
+from c64cast.hw.c64 import CLOCK_NTSC  # noqa: E402
 
 
 def _fake_backend() -> tuple[C64Backend, Any]:
@@ -227,7 +227,7 @@ class BringUpTeardownTest(unittest.TestCase):
         p.push_frame(ap.hold_slot(p.slot_size))
         p.start(60.0)
         p.stop()
-        from c64cast.c64 import KERNAL
+        from c64cast.hw.c64 import KERNAL
 
         self.assertEqual(
             api.regs["0314"], (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)

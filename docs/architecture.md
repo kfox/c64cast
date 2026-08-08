@@ -8,7 +8,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 ## Topic areas
 
-* **[Hardware I/O & transports](architecture/hardware-io.md)** — `api.py`, `teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `char_rom.py`
+* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/api.py`, `hw/teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio.py`, `audio_handlers.py`, `sampler.py`, `dsp.py`, `audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes/`, `modes_irq.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
@@ -25,7 +25,7 @@ the two lists account for every module in the tree.
 
 | Module | Notes |
 | --- | --- |
-| `api.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
+| `hw/api.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
 | `asid.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
 | `asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
@@ -37,7 +37,7 @@ the two lists account for every module in the tree.
 | `audio_source.py` | [Audio output](architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source) |
 | `backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
-| `char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
+| `hw/char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
 | `cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
 | `cli_commands.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
 | Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
@@ -85,9 +85,9 @@ the two lists account for every module in the tree.
 | `sid_panning.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-panning) |
 | `sid_volume.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-volume) |
 | `sidemu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
-| `socket_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
+| `hw/socket_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
-| `teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
+| `hw/teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
 | `text_surface.py` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
 | `transport.py` | [Control surfaces & live performance](architecture/control.md#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5) |
 | `video.py` | [Video input & the color pipeline](architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
@@ -110,14 +110,14 @@ rationale in the meantime — each of the ones below opens with one.
 | `_native_io.py` | Process-level stderr muting for native-library chatter |
 | `_pollthread.py` | Background daemon thread with start/stop boilerplate |
 | `audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
-| `backend.py` | The `C64Backend` hardware abstraction the whole app is duck-typed on |
+| `hw/backend.py` | The `C64Backend` hardware abstraction the whole app is duck-typed on |
 | `bitmap_text.py` | Shared hires bitmap text rasterizer (char-ROM glyphs) |
-| `c64.py` | Centralized C64 hardware constants — addresses, registers, magic numbers |
+| `hw/c64.py` | Centralized C64 hardware constants — addresses, registers, magic numbers |
 | `config_serialize.py` | `Config` → annotated TOML, the inverse of `config.load` |
 | `connect.py` | `-u/--url` connection-target URI parsing |
 | `doctor.py` | `--doctor` configuration + environment diagnostics |
 | `framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
-| `hw_provision.py` | Live U64 REU + Ultimate Audio sampler auto-provisioning (volatile, restored at teardown) |
+| `hw/hw_provision.py` | Live U64 REU + Ultimate Audio sampler auto-provisioning (volatile, restored at teardown) |
 | `introspect.py` | The single rendering surface over config metadata |
 | `playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
 | `playlist_support.py` | Playlist collaborators — scene fades, on-C64 menu driver, ensemble coordination |
@@ -127,5 +127,5 @@ rationale in the meantime — each of the ones below opens with one.
 | `schema.py` | JSON Schema generator for the TOML config |
 | `sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore |
 | `songlengths.py` | HVSC `Songlengths.md5` lookup |
-| `teensyrom_api.py` | TeensyROM+ implementation of `C64Backend` |
+| `hw/teensyrom_api.py` | TeensyROM+ implementation of `C64Backend` |
 | `wizard.py` | `--init` interactive config builder |

@@ -33,9 +33,10 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from c64cast.hw.backend import C64Backend
+
     from .audio import AudioStreamer
     from .audio_features import AudioFeatureStream
-    from .backend import C64Backend
     from .config import AudioCfg, AudioFeaturesCfg
     from .modes import DisplayMode
     from .modulation import MusicModulation
@@ -650,7 +651,7 @@ class SidFileAudioSource:
         # used by a SID source, so it isn't reserved — the payload may freely
         # live there.
         footprint = ram_write_footprint(self.sid_bytes, song=self.song)
-        from .c64 import SCREEN, VIC_BANK_0
+        from c64cast.hw.c64 import SCREEN, VIC_BANK_0
 
         avoid = bytearray(footprint)
         avoid[VIC_BANK_0.SCREEN : VIC_BANK_0.SCREEN + SCREEN.N_CELLS] = b"\x01" * SCREEN.N_CELLS

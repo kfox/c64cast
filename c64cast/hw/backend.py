@@ -50,7 +50,7 @@ import numpy as np
 from .c64 import KERNAL, SCREEN, SID, VECTORS, VIC
 
 if TYPE_CHECKING:
-    from .config import Config
+    from c64cast.config import Config
 
 log = logging.getLogger(__name__)
 
@@ -335,7 +335,7 @@ class C64Backend(ABC):
         Needs both `supports_read` and `supports_run_prg`: the ROM is invisible
         to a host read (`$D000` is I/O until the *C64* clears CHAREN), so this
         runs a copy stub on the 6510 and reads its landing zone back. See
-        :mod:`c64cast.char_rom` for what the bytes are for and
+        :mod:`c64cast.hw.char_rom` for what the bytes are for and
         `api.build_char_rom_dump_stub` for the stub."""
         raise BackendCapabilityError("dump_char_rom")
 

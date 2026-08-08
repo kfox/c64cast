@@ -30,6 +30,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from c64cast.hw.c64 import nmi_rate_safety
+
 from . import paths
 from .asid_scene import AsidScene
 from .audio_source import (
@@ -39,7 +41,6 @@ from .audio_source import (
     NullAudioSource,
     SidFileAudioSource,
 )
-from .c64 import nmi_rate_safety
 from .config import (
     _ASPECT_MODE_CHOICES,
     _AUDIO_SOURCE_CHOICES,
@@ -97,8 +98,9 @@ from .waveform import WaveformScene
 from .wled_sink import WLEDSource
 
 if TYPE_CHECKING:
+    from c64cast.hw.backend import C64Backend
+
     from .audio import AudioStreamer
-    from .backend import C64Backend
 
 log = logging.getLogger(__name__)
 

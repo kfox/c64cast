@@ -303,15 +303,15 @@ default-groups = ["dev"]
 [tool.mypy]
 python_version = "3.11"
 files = [
-    "c64cast/api.py",
-    "c64cast/backend.py",
-    "c64cast/teensyrom_api.py",
+    "c64cast/hw/api.py",
+    "c64cast/hw/backend.py",
+    "c64cast/hw/teensyrom_api.py",
     "c64cast/audio.py",
     "c64cast/audio_rate.py",
     "c64cast/audio_handlers.py",
     "c64cast/playlist.py",
-    "c64cast/socket_dma.py",
-    "c64cast/teensyrom_dma.py",
+    "c64cast/hw/socket_dma.py",
+    "c64cast/hw/teensyrom_dma.py",
     "c64cast/scenes.py",
     "c64cast/modes_irq.py",
     "c64cast/config.py",

@@ -46,6 +46,17 @@ from typing import Any
 
 import numpy as np
 
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import (
+    CIA1,
+    CIA2,
+    KERNAL,
+    REU,
+    SID,
+    VECTORS,
+    halt_quantum_bytes,
+)
+
 from .audio_handlers import (
     AUDIO_HEALTH_LOG_INTERVAL_S,
     AUDIO_QUEUE_MAX_BLOBS,
@@ -101,16 +112,6 @@ from .audio_handlers import (
     stomp_spans,
 )
 from .audio_rate import NmiTimer, RateServo
-from .backend import C64Backend
-from .c64 import (
-    CIA1,
-    CIA2,
-    KERNAL,
-    REU,
-    SID,
-    VECTORS,
-    halt_quantum_bytes,
-)
 from .dac_curves import NEUTRAL_INDEX, resolve_dac_curve
 from .dsp import AudioDSP, DSPParams
 

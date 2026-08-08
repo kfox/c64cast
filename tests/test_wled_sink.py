@@ -14,8 +14,8 @@ import time
 import unittest
 from typing import cast
 
-from c64cast.backend import C64Backend, HardwareProfile
 from c64cast.config import Config, SceneCfg
+from c64cast.hw.backend import C64Backend, HardwareProfile
 from c64cast.scene_factory import build_scene, resolve_scene_display, validate_scene_cfg
 from c64cast.scenes import SourceScene
 from c64cast.wled_sink import (

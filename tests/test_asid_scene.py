@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
 from c64cast import asid  # noqa: E402
-from c64cast.c64 import SID  # noqa: E402
+from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.modes import DisplayMode  # noqa: E402
 
 
@@ -130,7 +130,7 @@ class AsidSceneTest(unittest.TestCase):
 
     def test_speed_switches_emulator_clock(self):
         scene, _ = self._make(system="NTSC")
-        from c64cast.c64 import CLOCK_PAL
+        from c64cast.hw.c64 import CLOCK_PAL
 
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x00))  # PAL
         self.assertEqual(scene.system, "PAL")
@@ -165,7 +165,7 @@ class AsidSceneTest(unittest.TestCase):
         """A scene on a config-capable (Ultimate-like) backend. `sockets` seeds
         the detected-socket category, e.g. {"SID Detected Socket 1": "6581"}."""
         from c64cast.asid_scene import AsidScene
-        from c64cast.backend import HardwareProfile
+        from c64cast.hw.backend import HardwareProfile
 
         api = FakeAPI()
         api.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
@@ -273,7 +273,7 @@ class AsidBufferedPlayerTest(unittest.TestCase):
 
     def test_on_without_reu_warns_and_falls_back(self):
         from c64cast.asid_scene import AsidScene
-        from c64cast.backend import HardwareProfile
+        from c64cast.hw.backend import HardwareProfile
 
         api = FakeAPI()
         api.profile = HardwareProfile(name="Fake", family="fake", supports_reu=False)
@@ -328,7 +328,7 @@ class AsidBufferedPlayerTest(unittest.TestCase):
 
     def test_wants_reu_flags_buffered_asid(self):
         from c64cast.config import Config, SceneCfg
-        from c64cast.hw_provision import wants_reu
+        from c64cast.hw.hw_provision import wants_reu
 
         cfg = Config()
         cfg.scenes = [SceneCfg(type="asid", asid_buffered_player="on")]

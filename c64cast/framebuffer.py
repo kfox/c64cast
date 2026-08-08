@@ -26,8 +26,9 @@ from pathlib import Path
 
 import numpy as np
 
+from c64cast.hw.c64 import SCREEN, VIC
+
 from . import paths
-from .c64 import SCREEN, VIC
 from .palette import C64_PALETTE_BGR
 
 log = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ class Framebuffer:
         # A configured-but-unreadable path degrades to the builtin font with a
         # warning: this window is a mirror, and killing the whole run over a
         # mistyped preview path would be a spectacularly bad trade.
-        from .char_rom import load_glyphs
+        from c64cast.hw.char_rom import load_glyphs
 
         if charset_path and not Path(paths.expand_user(charset_path)).is_file():
             log.warning(

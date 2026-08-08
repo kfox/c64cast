@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
 from c64cast import midi_scene  # noqa: E402
-from c64cast.c64 import SID  # noqa: E402
+from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
 from c64cast.modes import DisplayMode  # noqa: E402
 from c64cast.sidemu import primary_waveform  # noqa: E402

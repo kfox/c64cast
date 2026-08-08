@@ -7,7 +7,7 @@ existing config fields — ``[hardware].backend``, ``[ultimate64].url`` /
 ``dma_port``, ``[teensyrom].transport`` / ``serial_port`` / ``host`` /
 ``tcp_port`` / ``baud`` / ``storage`` — which remain the canonical store a TOML
 config sets directly. This module is the CLI/env front-end that fills them in;
-:func:`c64cast.backend.make_backend` reads them unchanged.
+:func:`c64cast.hw.backend.make_backend` reads them unchanged.
 
 Schemes::
 

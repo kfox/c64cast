@@ -10,7 +10,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from c64cast.api import (
+from c64cast.hw.api import (
     _REINIT_PATCH_BANK,
     _REINIT_PATCH_INIT_HI,
     _REINIT_PATCH_INIT_LO,
@@ -58,9 +58,9 @@ from c64cast.api import (
     build_char_rom_dump_stub,
     parse_psid_for_player,
 )
-from c64cast.backend import BackendCapabilityError
-from c64cast.c64 import CPU, VECTORS, VIC
-from c64cast.socket_dma import SocketDMAError
+from c64cast.hw.backend import BackendCapabilityError
+from c64cast.hw.c64 import CPU, VECTORS, VIC
+from c64cast.hw.socket_dma import SocketDMAError
 
 
 class DmaLatencyTest(unittest.TestCase):
@@ -68,7 +68,7 @@ class DmaLatencyTest(unittest.TestCase):
         # Patch connect() so the constructor doesn't try to open a real
         # TCP socket. dmawrite/flush are also stubbed on the instance
         # below for tests that need to drive latency samples directly.
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -121,7 +121,7 @@ class DmaWriteErrorHandlingTest(unittest.TestCase):
     crash the active scene and abort the playlist."""
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -175,7 +175,7 @@ class RunSidPlayerTest(unittest.TestCase):
     """
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -776,12 +776,12 @@ class TunePlayDividerTest(unittest.TestCase):
     """
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
         # Make the test fast: no settle sleep, no real CIA reads.
-        patch("c64cast.api.time.sleep").start()
+        patch("c64cast.hw.api.time.sleep").start()
         patch.object(self.api, "flush").start()
         self.divider_writes: list[tuple[str, str]] = []
 
@@ -808,7 +808,7 @@ class TunePlayDividerTest(unittest.TestCase):
     def test_default_50hz_latch_divides_to_1(self):
         # Kernal-default PAL latch ~$4292 = 50 Hz PLAY → divider 1
         # (50 / 30 = 1, kernal chain every tick — no change from legacy).
-        from c64cast.api import _PlayerLayout
+        from c64cast.hw.api import _PlayerLayout
 
         self.api._sid_player_layout = _PlayerLayout(
             player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
@@ -824,7 +824,7 @@ class TunePlayDividerTest(unittest.TestCase):
     def test_fast_play_rate_divides_above_1(self):
         # Galway/Wizball-style ~151 Hz PLAY (latch ~$196E ≈ 6510 cycles).
         # rate ≈ 1e6 / 6510 ≈ 154 Hz; 154 / 30 = 5.
-        from c64cast.api import _PlayerLayout
+        from c64cast.hw.api import _PlayerLayout
 
         self.api._sid_player_layout = _PlayerLayout(
             player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
@@ -838,7 +838,7 @@ class TunePlayDividerTest(unittest.TestCase):
     def test_divider_capped_at_max(self):
         # An absurd PLAY rate (latch=$0100, ~3900 Hz) must clamp to
         # _DIVIDER_MAX so a misread can't starve kernal services entirely.
-        from c64cast.api import _PlayerLayout
+        from c64cast.hw.api import _PlayerLayout
 
         self.api._sid_player_layout = _PlayerLayout(
             player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
@@ -850,7 +850,7 @@ class TunePlayDividerTest(unittest.TestCase):
     def test_read_failure_returns_1_without_patching(self):
         # A REST failure must NOT raise — the player keeps running with
         # whatever divider was already in place (template seeds 1).
-        from c64cast.api import _PlayerLayout
+        from c64cast.hw.api import _PlayerLayout
 
         self.api._sid_player_layout = _PlayerLayout(
             player_base=SID_PLAYER_MC_ADDR, stub_base=REINIT_STUB_ADDR
@@ -865,7 +865,7 @@ class LaunchProgramTest(unittest.TestCase):
     file as multipart, re-raising failures so LauncherScene can advance."""
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -886,7 +886,7 @@ class LaunchProgramTest(unittest.TestCase):
     def test_prg_uses_run_prg_endpoint(self):
         import tempfile
 
-        from c64cast.c64 import U64_API
+        from c64cast.hw.c64 import U64_API
 
         with tempfile.TemporaryDirectory() as tmp:
             self.api.launch_program(self._write(tmp, "game.prg"))
@@ -895,7 +895,7 @@ class LaunchProgramTest(unittest.TestCase):
     def test_crt_uses_run_crt_endpoint_case_insensitive(self):
         import tempfile
 
-        from c64cast.c64 import U64_API
+        from c64cast.hw.c64 import U64_API
 
         with tempfile.TemporaryDirectory() as tmp:
             self.api.launch_program(self._write(tmp, "cart.CRT"))
@@ -926,7 +926,7 @@ class PutConfigItemTest(unittest.TestCase):
     category/item path percent-encoded, value passed as a query param."""
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -963,7 +963,7 @@ class DumpCharRomTest(unittest.TestCase):
     `SYS` has finished."""
 
     def setUp(self):
-        patcher = patch("c64cast.socket_dma.SocketDMAClient.connect", autospec=True)
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
@@ -994,10 +994,10 @@ class DumpCharRomTest(unittest.TestCase):
             return self.rom
 
         patch.object(self.api, "read_memory", side_effect=_fake_read).start()
-        patch("c64cast.api.time.sleep").start()
+        patch("c64cast.hw.api.time.sleep").start()
         # The deadline is real wall clock, and with sleep stubbed out the
         # never-signals case would busy-spin the full production budget.
-        patch("c64cast.api._CHAR_ROM_FLAG_TIMEOUT_S", 0.2).start()
+        patch("c64cast.hw.api._CHAR_ROM_FLAG_TIMEOUT_S", 0.2).start()
 
     def tearDown(self):
         patch.stopall()

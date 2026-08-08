@@ -10,7 +10,8 @@ from typing import TypedDict
 
 import numpy as np
 
-from ..backend import C64Backend
+from c64cast.hw.backend import C64Backend
+
 from ..dither import bayer_offset, blue_noise_offset
 from ..palette import (
     CELL_STRATEGIES,

@@ -17,8 +17,9 @@ import os
 
 import numpy as np
 
+from c64cast.hw.c64 import SCREEN
+
 from .. import paths
-from ..c64 import SCREEN
 from ..palette import C64_COLORS, resolve_color
 from ..text_surface import corner_origin as _surface_corner_origin
 from . import Overlay, ascii_to_screen, register

@@ -1,4 +1,4 @@
-"""Tests for c64cast.hw_provision — live U64 REU auto-provisioning + the
+"""Tests for c64cast.hw.hw_provision — live U64 REU auto-provisioning + the
 REST read-side helpers. No hardware: a minimal fake Ultimate64API records
 put_config_item calls and serves canned REST config sections.
 
@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from c64cast import config as cfgmod
-from c64cast import hw_provision
+from c64cast.hw import hw_provision
 
 
 def _write(path: str, body: str) -> None:
@@ -228,7 +228,7 @@ class ProvisionReuTest(unittest.TestCase):
         import requests
 
         api = _FakeApi(reu_status="Disabled", reu_size="2 MB", put_error=requests.Timeout("nope"))
-        with self.assertLogs("c64cast.hw_provision", level="WARNING"):
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING"):
             restore = hw_provision.provision_reu(api, _cfg(_PUMP_TOML))
         # Enable PUT raised before anything stuck → nothing to restore.
         self.assertIsNone(restore)
@@ -238,7 +238,7 @@ class ProvisionReuTest(unittest.TestCase):
 
         api = _FakeApi()
         api.session.get.side_effect = requests.Timeout("read timeout")
-        with self.assertLogs("c64cast.hw_provision", level="WARNING"):
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING"):
             restore = hw_provision.provision_reu(api, _cfg(_PUMP_TOML))
         self.assertIsNone(restore)
         self.assertEqual(api.put_calls, [])
@@ -265,7 +265,7 @@ class RestoreReuTest(unittest.TestCase):
         import requests
 
         api = _FakeApi(put_error=requests.Timeout("nope"))
-        with self.assertLogs("c64cast.hw_provision", level="WARNING"):
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING"):
             hw_provision.restore_reu(api, {"RAM Expansion Unit": "Disabled"})
 
 

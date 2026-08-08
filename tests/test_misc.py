@@ -110,8 +110,8 @@ class FramebufferTest(unittest.TestCase):
         # reverse-space glyph — solid in the real character ROM and in the
         # builtin fallback alike, so this pins render behavior rather than
         # whichever charset happens to resolve on the machine running the test.
-        from c64cast.c64 import SCREEN
         from c64cast.framebuffer import Framebuffer
+        from c64cast.hw.c64 import SCREEN
         from c64cast.palette import C64_PALETTE_BGR
 
         fb = Framebuffer()
@@ -124,8 +124,8 @@ class FramebufferTest(unittest.TestCase):
 
     def test_render_mcm_mono_cell(self):
         # MCM with color-RAM bit 3 clear behaves like standard text.
-        from c64cast.c64 import SCREEN
         from c64cast.framebuffer import Framebuffer
+        from c64cast.hw.c64 import SCREEN
         from c64cast.palette import C64_PALETTE_BGR
 
         fb = Framebuffer()
@@ -139,8 +139,8 @@ class FramebufferTest(unittest.TestCase):
     def test_render_mcm_multicolor_cell(self):
         # MCM with color-RAM bit 3 set: a 0xFF glyph is all '11' bit-pairs,
         # which selects color3 = color RAM low 3 bits.
-        from c64cast.c64 import SCREEN
         from c64cast.framebuffer import Framebuffer
+        from c64cast.hw.c64 import SCREEN
         from c64cast.palette import C64_PALETTE_BGR
 
         fb = Framebuffer()
@@ -184,8 +184,8 @@ class FramebufferTest(unittest.TestCase):
         # A truncated file is not usable as glyphs — zero-padding it would show
         # 1900 blank cells and look like a render bug. Fall back to the builtin
         # font instead, loudly.
-        from c64cast import char_rom
         from c64cast.framebuffer import Framebuffer, _builtin_charset
+        from c64cast.hw import char_rom
 
         char_rom.invalidate_cache()
         self.addCleanup(char_rom.invalidate_cache)
@@ -193,7 +193,7 @@ class FramebufferTest(unittest.TestCase):
             f.write(b"\xff" * 100)  # far short of 2KB
             path = f.name
         try:
-            with self.assertLogs("c64cast.char_rom", level="WARNING"):
+            with self.assertLogs("c64cast.hw.char_rom", level="WARNING"):
                 fb = Framebuffer(charset_path=path)
             self.assertEqual(fb.charset, _builtin_charset())
         finally:
@@ -202,8 +202,8 @@ class FramebufferTest(unittest.TestCase):
     def test_missing_charset_path_warns_and_falls_back(self):
         # A configured-but-missing path used to raise FileNotFoundError out of
         # __init__ and kill the run; the preview is a mirror, it degrades.
-        from c64cast import char_rom
         from c64cast.framebuffer import Framebuffer
+        from c64cast.hw import char_rom
 
         char_rom.invalidate_cache()
         self.addCleanup(char_rom.invalidate_cache)

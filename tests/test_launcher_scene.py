@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
-from c64cast.c64 import CIA1
+from c64cast.hw.c64 import CIA1
 from c64cast.scenes import LauncherScene
 
 

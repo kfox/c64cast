@@ -21,9 +21,8 @@ from __future__ import annotations
 
 import logging
 
-from .audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
-from .backend import C64Backend
-from .c64 import (
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import (
     CIA1,
     CIA2,
     KERNAL,
@@ -34,6 +33,8 @@ from .c64 import (
     VIC_BANK_0,
     VIC_BANK_2,
 )
+
+from .audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 
 log = logging.getLogger(__name__)
 

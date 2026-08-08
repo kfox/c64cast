@@ -57,7 +57,8 @@ from typing import Any
 
 import numpy as np
 
-from ..c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN
+from c64cast.hw.c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN
+
 from ..palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
 from . import (
     Overlay,
@@ -304,8 +305,8 @@ class BigTextOverlay(Overlay):
     def _load_charset(path: str | None) -> bytes:
         """The 2 KB charset this scroller expands into cells. `path` overrides
         the automatic resolution (a dumped ROM under the data dir, else the cv2
-        fallback) — see :mod:`c64cast.char_rom`."""
-        from ..char_rom import load_glyphs
+        fallback) — see :mod:`c64cast.hw.char_rom`."""
+        from c64cast.hw.char_rom import load_glyphs
 
         return load_glyphs(path)
 

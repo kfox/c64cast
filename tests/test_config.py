@@ -15,7 +15,7 @@ from _fakes import FakeAPI, MachineSettingsIsolation
 
 from c64cast import config as cfgmod
 from c64cast import scene_factory
-from c64cast.backend import C64Backend
+from c64cast.hw.backend import C64Backend
 from c64cast.modes import BlankDisplayMode
 
 # Tests here assert config defaults / precedence; isolate the module from any
@@ -1426,8 +1426,8 @@ class SceneAudioAttachmentTest(unittest.TestCase):
         import sys
         from typing import cast
 
-        from c64cast.api import Ultimate64API
         from c64cast.audio import AudioStreamer
+        from c64cast.hw.api import Ultimate64API
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
         from _fakes import FakeAPI
@@ -1503,7 +1503,7 @@ class SceneDurationDefaultTest(unittest.TestCase):
         import sys
         from typing import cast
 
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
         from c64cast.video import WebcamSource
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
@@ -1561,7 +1561,7 @@ class FollowerOnlyRotationFilterTest(unittest.TestCase):
         import sys
         from typing import cast
 
-        from c64cast.api import Ultimate64API
+        from c64cast.hw.api import Ultimate64API
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
         from _fakes import FakeAPI

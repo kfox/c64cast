@@ -37,7 +37,7 @@ def main() -> int:
         return 1
     print(f"pyserial    : {getattr(serial, '__version__', '?')}")
 
-    from c64cast.teensyrom_dma import (
+    from c64cast.hw.teensyrom_dma import (
         _TEENSY_USB_VID,
         _TEENSYROM_USB_PID,
         _is_teensyrom_port,

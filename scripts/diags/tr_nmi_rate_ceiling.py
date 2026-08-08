@@ -55,11 +55,11 @@ from c64cast.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
 )
-from c64cast.backend import make_backend
-from c64cast.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 from c64cast.config import Config
 from c64cast.connect import apply_to_config, parse_connection_uri
 from c64cast.dsp import DSPParams
+from c64cast.hw.backend import make_backend
+from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 
 CAP_SR = 48000
 CAP_DEVICE = 1  # Cam Link 4K audio (sounddevice idx)

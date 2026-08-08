@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Final
 from .sid_hw_config import apply_config, current_source_map
 
 if TYPE_CHECKING:
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
 
 log = logging.getLogger(__name__)
 

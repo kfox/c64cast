@@ -45,12 +45,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from c64cast.api import BASIC_CLEAR_LOOP_PRG  # noqa: E402
-from c64cast.backend import make_backend  # noqa: E402
-from c64cast.c64 import SCREEN  # noqa: E402
 from c64cast.config import Config  # noqa: E402
 from c64cast.connect import apply_to_config, parse_connection_uri  # noqa: E402
-from c64cast.teensyrom_api import _RUN_RETURN  # noqa: E402
+from c64cast.hw.api import BASIC_CLEAR_LOOP_PRG  # noqa: E402
+from c64cast.hw.backend import make_backend  # noqa: E402
+from c64cast.hw.c64 import SCREEN  # noqa: E402
+from c64cast.hw.teensyrom_api import _RUN_RETURN  # noqa: E402
 
 _STEPS = ("connect", "reset", "launch", "repair")
 

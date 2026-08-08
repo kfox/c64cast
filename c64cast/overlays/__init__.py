@@ -22,7 +22,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
-    from ..backend import C64Backend
+    from c64cast.hw.backend import C64Backend
+
     from ..modes import ComposeBuffers
     from ..scenes import Scene
 

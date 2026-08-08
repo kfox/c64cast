@@ -51,7 +51,7 @@ from .sid_hw_config import apply_config
 from .sid_panning import CAT_MIXER, distinct_sources
 
 if TYPE_CHECKING:
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
 
 log = logging.getLogger(__name__)
 

@@ -61,11 +61,11 @@ from c64cast.audio_handlers import (
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
 )
-from c64cast.backend import make_backend
-from c64cast.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 from c64cast.config import Config
 from c64cast.connect import apply_to_config, parse_connection_uri
 from c64cast.dsp import DSPParams
+from c64cast.hw.backend import make_backend
+from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 from c64cast.sid_hw_config import restore_sid_config, snapshot_sid_config
 
 OUT = Path(__file__).resolve().parent / "out" / "slotring"

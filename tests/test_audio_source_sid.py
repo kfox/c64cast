@@ -12,7 +12,7 @@ from typing import cast
 from _fakes import FakeAPI
 
 from c64cast.audio_source import SidFileAudioSource
-from c64cast.backend import C64Backend
+from c64cast.hw.backend import C64Backend
 from c64cast.sid_host_emu import (
     _play_bank_for_footprints,
     _sid_payload_extent,

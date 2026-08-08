@@ -39,13 +39,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import paths
+from c64cast import paths
+from c64cast.transport import atomic_write_bytes
+
 from .c64 import SCREEN
-from .transport import atomic_write_bytes
 
 if TYPE_CHECKING:
+    from c64cast.config import Config
+
     from .backend import C64Backend
-    from .config import Config
 
 log = logging.getLogger(__name__)
 
@@ -226,7 +228,7 @@ def _read_glyphs(configured: str | None) -> bytes:
             log.warning("char_rom: %s is shorter than 2 KB; using the builtin charset", path)
     # Deferred: framebuffer imports this module for its own glyphs, so a
     # top-level import here is a cycle.
-    from .framebuffer import _builtin_charset
+    from c64cast.framebuffer import _builtin_charset
 
     return _builtin_charset()
 
@@ -280,7 +282,7 @@ def install(src: str | os.PathLike[str]) -> Path:
 def dump(be: C64Backend) -> bytes:
     """Read the character ROM off the connected machine and return the raw
     4 KB, verified. Raises RuntimeError if the read failed or didn't verify,
-    and :class:`~c64cast.backend.BackendCapabilityError` if the backend can't
+    and :class:`~c64cast.hw.backend.BackendCapabilityError` if the backend can't
     run the stub at all."""
     data = be.dump_char_rom()
     result = verify(data)

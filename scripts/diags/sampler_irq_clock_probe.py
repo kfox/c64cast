@@ -50,9 +50,9 @@ def _probe(
     import numpy as np
 
     import c64cast.config as cfgmod
-    import c64cast.hw_provision as hw_provision
-    from c64cast.backend import make_backend
+    import c64cast.hw.hw_provision as hw_provision
     from c64cast.connect import apply_to_config, parse_connection_uri
+    from c64cast.hw.backend import make_backend
     from c64cast.sampler import (
         DEFAULT_RING_BASE,
         SAMPLER_PAN_CENTER,

@@ -31,10 +31,10 @@ import argparse
 import sys
 import time
 
-from c64cast.backend import make_backend
-from c64cast.c64 import REU
 from c64cast.config import Config
 from c64cast.connect import apply_to_config, parse_connection_uri
+from c64cast.hw.backend import make_backend
+from c64cast.hw.c64 import REU
 
 SCRATCH = 0x0340  # cassette buffer area — safe scratch, untouched by the clear loop
 NBYTES = 16

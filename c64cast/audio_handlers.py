@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .c64 import REU
+from c64cast.hw.c64 import REU
 
 # $D418 DAC NMI routine assembled at $C020 (32 bytes).
 # Saves/restores only A (X and Y are not touched), saving 8 cycles vs the

@@ -47,9 +47,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from c64cast.hw.c64 import SCREEN, RegionID
+
 from .bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from .bitmap_text import load_glyphs as _load_glyphs
-from .c64 import SCREEN, RegionID
 from .modes import engage_bitmap_mode
 from .palette import C64_COLORS, resolve_color
 from .sidemu import (
@@ -64,7 +65,8 @@ from .sidemu import (
 if TYPE_CHECKING:
     import threading
 
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
+
     from .sidemu import SIDEmulator
 
 log = logging.getLogger(__name__)

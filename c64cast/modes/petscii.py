@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import cv2
 
-from ..backend import C64Backend
-from ..c64 import SCREEN, RegionID
+from c64cast.hw.backend import C64Backend
+from c64cast.hw.c64 import SCREEN, RegionID
+
 from ..modes_irq import push_screen_via_reu
 from ..palette import COLOR_MATCH_MODES, apply_color_fit
 from ..petscii_styles import (

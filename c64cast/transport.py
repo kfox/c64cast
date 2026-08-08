@@ -77,7 +77,7 @@ def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
     parent directory is created if missing.
 
     :func:`atomic_write_text` is the UTF-8 flavor of this; the character-ROM
-    installer (:mod:`c64cast.char_rom`) is the binary caller."""
+    installer (:mod:`c64cast.hw.char_rom`) is the binary caller."""
     p = os.fspath(path)
     parent = os.path.dirname(p) or "."
     os.makedirs(parent, exist_ok=True)

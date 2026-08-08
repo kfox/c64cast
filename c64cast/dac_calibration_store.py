@@ -9,9 +9,9 @@ A calibration file is keyed by a *stable device identity*, not the connection
 target, so a DHCP re-lease or a USB replug doesn't orphan it:
 
 * **Ultimate (U64 or U2+)** — the REST ``GET /v1/info`` ``unique_id`` (e.g.
-  ``"5D327C"``), fetched live via :meth:`~c64cast.api.Ultimate64API.get_device_info`.
+  ``"5D327C"``), fetched live via :meth:`~c64cast.hw.api.Ultimate64API.get_device_info`.
 * **TeensyROM, serial transport** — the attached board's USB serial number
-  (:func:`c64cast.teensyrom_dma.usb_serial_number`), which identifies the
+  (:func:`c64cast.hw.teensyrom_dma.usb_serial_number`), which identifies the
   *cartridge*, not whichever host machine it's plugged into.
 * **Fallback** (no live backend — e.g. offline ``--doctor --skip-probe`` — or
   the live lookup fails): the pre-existing host/serial-device-path key.
@@ -64,7 +64,8 @@ from .asid_sidmap import (
 from .transport import atomic_write_text
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
+
     from .config import Config
 
 log = logging.getLogger(__name__)
@@ -160,7 +161,7 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
     if tr.transport == "tcp":
         return f"tr-tcp-{_sanitize(tr.host or 'unknown')}-{tr.tcp_port}"
     if be is not None and tr.serial_port:
-        from .teensyrom_dma import usb_serial_number
+        from c64cast.hw.teensyrom_dma import usb_serial_number
 
         sn = usb_serial_number(tr.serial_port)
         if sn:

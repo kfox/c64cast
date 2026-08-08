@@ -31,8 +31,9 @@ from dataclasses import dataclass
 
 from py65.devices.mpu6502 import MPU
 
-from .api import parse_psid_for_player
-from .c64 import CIA1, CPU, ROM, SCREEN, SID, VIC_BANK_0
+from c64cast.hw.api import parse_psid_for_player
+from c64cast.hw.c64 import CIA1, CPU, ROM, SCREEN, SID, VIC_BANK_0
+
 from .sidemu import SID_REG_COUNT
 
 log = logging.getLogger(__name__)

@@ -18,19 +18,20 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from c64cast.hw import char_rom, hw_provision
+from c64cast.hw.api import SocketDMAError
+from c64cast.hw.backend import C64Backend, make_backend
+from c64cast.hw.teensyrom_dma import TRError
+
 from . import (
     __version__,
-    char_rom,
     dac_curve_resolve,
-    hw_provision,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
     paths,
     scene_factory,
 )
 from . import config as cfgmod
-from .api import SocketDMAError
 from .audio import AUDIO_AVAILABLE, AudioStreamer
-from .backend import C64Backend, make_backend
 from .cli_commands import (
     configure_logging,
     list_devices,
@@ -46,7 +47,6 @@ from .interstitial import default_factory as interstitial_factory
 from .keyboard import CommodoreKeyPoller
 from .playlist import Playlist
 from .profiler import FrameProfiler, NullProfiler, set_profiler
-from .teensyrom_dma import TRError
 from .video import WebcamSource
 from .vision import MediaPipeHandRecognizer, VisionController
 

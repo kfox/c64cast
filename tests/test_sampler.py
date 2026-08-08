@@ -13,8 +13,9 @@ from unittest import mock
 import numpy as np
 
 from c64cast import config as cfgmod
-from c64cast import hw_provision, scene_factory
 from c64cast import sampler as s
+from c64cast import scene_factory
+from c64cast.hw import hw_provision
 
 
 # ---------------------------------------------------------------------------

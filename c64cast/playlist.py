@@ -16,7 +16,8 @@ from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from .backend import C64Backend
+from c64cast.hw.backend import C64Backend
+
 from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
 from .profiler import FrameProfiler, NullProfiler
 from .scenes import Scene

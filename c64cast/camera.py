@@ -5,7 +5,7 @@ That index is unstable across reboots/replugs and opaque (which capture stick is
 index 1 today?). This module lets ``device`` also be a **string** resolved by
 camera *name substring* or *USB ``VID:PID``* — the same "identify hardware by its
 USB identity, not by an OS-assigned slot" idea the TeensyROM+ serial auto-detect
-already uses (:func:`c64cast.teensyrom_dma.autodetect_serial_port`), applied to
+already uses (:func:`c64cast.hw.teensyrom_dma.autodetect_serial_port`), applied to
 the video-input side.
 
 Enumeration (name + VID/PID + the *correct backend index*) comes from the
@@ -14,7 +14,7 @@ here degrades gracefully when it is absent: integer indices keep working exactly
 as before, ``--list-devices`` falls back to its probe, and a *string* device
 raises an actionable "install the ``camera`` extra" error.
 
-Design mirrors :mod:`c64cast.teensyrom_dma`: a lazy import behind a best-effort
+Design mirrors :mod:`c64cast.hw.teensyrom_dma`: a lazy import behind a best-effort
 enumerator, a pure duck-typed matcher (VID/PID primary, name substring
 fallback), and a resolver that warns (never silently guesses) on ambiguity.
 
@@ -99,7 +99,7 @@ def enumerate_cameras() -> list[CameraInfo]:
 
     Returns ``[]`` when the ``camera`` extra is absent or enumeration fails
     (logged at debug) — same never-raises contract as
-    :func:`c64cast.teensyrom_dma._list_comports`. Reads the package's result via
+    :func:`c64cast.hw.teensyrom_dma._list_comports`. Reads the package's result via
     ``getattr`` so a fake list can drive tests without the extra installed."""
     try:
         from cv2_enumerate_cameras import enumerate_cameras as _enum
@@ -187,7 +187,7 @@ def resolve_camera_index(device: int | str) -> tuple[int, int | None]:
 
     Raises ``RuntimeError`` (actionable message) when the ``camera`` extra is
     missing or no camera matches. Warns and takes the first on multiple matches
-    (mirrors :func:`c64cast.teensyrom_dma.autodetect_serial_port`)."""
+    (mirrors :func:`c64cast.hw.teensyrom_dma.autodetect_serial_port`)."""
     if isinstance(device, int):
         return (0 if device < 0 else device, None)
     token = device.strip()

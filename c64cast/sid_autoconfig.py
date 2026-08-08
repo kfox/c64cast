@@ -59,7 +59,8 @@ from .sid_hw_config import (
 )
 
 if TYPE_CHECKING:
-    from .backend import C64Backend
+    from c64cast.hw.backend import C64Backend
+
     from .config import Config
     from .sid_host_emu import SidHeader
 
