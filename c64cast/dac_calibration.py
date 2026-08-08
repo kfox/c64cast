@@ -79,6 +79,13 @@ from .asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
+from .audio_handlers import (
+    CIA2_CRA_STOP,
+    CIA2_ICR_DISABLE_ALL,
+    RING_BUFFER_ADDR,
+    RING_BUFFER_SIZE,
+)
+from .c64 import CIA2
 from .dac_calibration_store import (
     CalibrationResult,
     active_socket_at_d400,
@@ -116,6 +123,7 @@ from .sid_panning import CAT_MIXER
 from .sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
+    from .audio import AudioStreamer
     from .backend import C64Backend
     from .config import Config
 
@@ -296,6 +304,306 @@ def _isolate_socket(be: C64Backend, socket: int) -> None:
     be.put_config_item(CAT_ADDRESSING, ITEM_AUTO_MIRROR, "Disabled")
 
 
+def _require_sounddevice() -> None:
+    """Fail before the machine is touched when the optional capture dep is
+    absent — nothing below can produce a measurement without it, and the
+    advice names the extra to install."""
+    try:
+        import sounddevice  # noqa: F401
+    except Exception as e:  # noqa: BLE001 — optional dep
+        raise CaptureUnavailableError(
+            "audio capture (sounddevice) is required for --calibrate-dac. Install "
+            "the 'mic' extra: uv tool install --force 'c64cast[all]'"
+        ) from e
+
+
+def _device_provenance(
+    cfg: Config, be: C64Backend, log_fn: Callable[[str], None]
+) -> dict[str, str]:
+    """What the calibration file records about the measured device: the
+    Ultimate's REST info when the link has it, the transport endpoint for a
+    TeensyROM, else nothing."""
+    if getattr(be.profile, "supports_config", False):
+        try:
+            return be.get_device_info()
+        except Exception:  # noqa: BLE001 — best-effort provenance only
+            log_fn("[calib] could not read device info (product/unique_id)")
+            return {}
+    if cfg.hardware.backend == "teensyrom":
+        tr = cfg.teensyrom
+        if tr.transport == "tcp":
+            return {"transport": "tcp", "host": tr.host or "", "port": str(tr.tcp_port)}
+        return {"transport": "serial", "port": tr.serial_port or ""}
+    return {}
+
+
+def _bring_up_dac_env(be: C64Backend, cfg: Config, log_fn: Callable[[str], None]) -> AudioStreamer:
+    """Reset once (HDMI renegotiates), leave the IRQ clear loop running, then
+    install the NMI DAC handler + neutral ring + the Mahoney SID env (the env
+    lands via ``_upload_nmi_and_buffers`` when the curve is a companding one)."""
+    from .audio import AudioStreamer
+    from .dsp import DSPParams
+
+    log_fn("[calib] resetting + bringing up NMI DAC + Mahoney env…")
+    be.reset()
+    time.sleep(1.5)
+    be.run_basic_clear_loop()
+    st = AudioStreamer(
+        be,
+        NMI_RATE,
+        cfg.ultimate64.system,
+        dither=False,
+        digi_boost=False,
+        dac_curve="mahoney_ultisid",
+        host_dma_servo=False,
+        nmi_rate_adaptive=False,
+        dsp_params=DSPParams(enabled=False),
+    )
+    st.running = True
+    st._upload_nmi_and_buffers()
+    # The streamer's own arm, so a dropped CIA write is retried here too: a
+    # silent NMI is one of the three causes capture_fault_message has to
+    # guess between after 50 s of measuring nothing.
+    st._start_nmi_timer()
+    return st
+
+
+def _open_capture(device: int | None, log_fn: Callable[[str], None]) -> tuple[int, CaptureFormat]:
+    """(Re)initialize PortAudio and resolve the capture device + format,
+    saying immediately when the auto-pick fell through to the system default
+    (a laptop's microphone would record room noise for ~50 s and fail)."""
+    import sounddevice as sd
+
+    log_fn("[calib] settling HDMI + (re)initializing capture…")
+    time.sleep(3.0)
+    sd._terminate()
+    sd._initialize()
+    dev = find_capture_device(device)
+    fmt = resolve_capture_format(dev)
+    dev_name = str(sd.query_devices(dev)["name"])
+    log_fn(
+        f"[calib] capture device idx {dev}: {dev_name} ({fmt.channels} ch @ {fmt.samplerate} Hz)"
+    )
+    if device is None and not looks_like_capture_input(dev_name):
+        log_fn(
+            f"[calib] warning: {dev_name!r} doesn't look like a video-capture "
+            "input — this is the system default, picked because no capture "
+            "device was recognized. If the C64's audio doesn't arrive on it, "
+            + pick_device_hint("stop now and pick with")
+        )
+    return dev, fmt
+
+
+@dataclass(frozen=True)
+class _RunContext:
+    """One calibration run's fixed context, frozen once capture is up — what
+    lets the per-ring and per-socket steps live at module level (where they
+    are testable) instead of as closures over ``run_calibration`` locals."""
+
+    be: C64Backend
+    key: str
+    device: int
+    fmt: CaptureFormat
+    secs: float
+    settle: float
+    log_fn: Callable[[str], None]
+
+
+def _capture_ring(ctx: _RunContext, codes: Sequence[int]) -> SlotLevels:
+    """Record one ring and read its levels, retrying a spoiled capture.
+
+    The ring is written once; only the recording repeats
+    (:data:`RING_ATTEMPTS`), so a ring spoiled by a transient costs one
+    capture window rather than the run. :func:`read_ring_capture` decides
+    what counts as usable; a rig that never produces one fails here with the
+    device named, instead of merging noise into the table and falling over
+    at whichever later ring happens to be unreadable.
+    """
+    import sounddevice as sd
+
+    ctx.be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", build_slot_ring(codes, RING_BUFFER_SIZE))
+    reason = "no capture was taken"
+    peak = 0.0
+    unsteady: UnsteadyRingError | None = None
+    last: np.ndarray | None = None
+    for attempt in range(1, RING_ATTEMPTS + 1):
+        time.sleep(ctx.settle)
+        rec = sd.rec(
+            int(ctx.secs * ctx.fmt.samplerate),
+            samplerate=ctx.fmt.samplerate,
+            channels=ctx.fmt.channels,
+            device=ctx.device,
+            dtype="float32",
+        )
+        sd.wait()
+        # (N, channels) → mono; a 1-channel capture folds to itself.
+        mono = rec.mean(axis=1).astype(np.float64)
+        last = mono
+        peak = float(np.max(np.abs(mono))) if mono.size else 0.0
+        try:
+            return read_ring_capture(mono, len(codes), RING_BUFFER_SIZE, sr=ctx.fmt.samplerate)
+        except MeasurementError as e:
+            reason = str(e)
+            unsteady = e if isinstance(e, UnsteadyRingError) else None
+        if attempt < RING_ATTEMPTS:
+            ctx.log_fn(f"[calib]   unusable capture ({reason}) — retrying")
+    # Keep the waveform that was refused. It is the whole evidence for the
+    # refusal, and re-creating it costs a fresh hardware run that may not
+    # reproduce the fault.
+    diag = unsteady.diagnostics if unsteady is not None else {}
+    saved = (
+        None if last is None else _save_unusable_capture(last, codes, ctx.fmt, ctx.key, dict(diag))
+    )
+    if unsteady is not None:
+        raise UnsteadyRingError(_unsteady_ring_message(reason, diag, saved), diag)
+    raise MeasurementError(capture_fault_message(ctx.device, reason, peak, saved))
+
+
+def _measure_one(
+    ctx: _RunContext, label: str
+) -> tuple[list[int] | None, dict[str, Any], list[tuple[int, float]]]:
+    """Measure all 256 codes through whatever SID answers $D400 right now:
+    every ring of every rotation round, then the fold into a sidtable (or the
+    self-test rejection) plus the run's metrics."""
+    rounds = plan_capture_rounds(codes_per_ring(RING_BUFFER_SIZE) - 1)
+    total = sum(len(r) for r in rounds)
+    ctx.log_fn(
+        f"[calib] measuring {label}: 256 codes × {len(rounds)} rotations = "
+        f"{total} slot rings ({ctx.secs:.1f}s each, ~{total * (ctx.secs + ctx.settle) / 60:.1f} min)…"
+    )
+    measured: list[tuple[Sequence[int], SlotLevels]] = []
+    n = 0
+    for rnd, batches in enumerate(rounds, 1):
+        for codes in batches:
+            n += 1
+            got = _capture_ring(ctx, [ANCHOR_CODE, *codes])
+            measured.append((codes, got))
+            d = got.diagnostics
+            # Marginal spread is called out rather than left as a bare
+            # number: a run whose rings all sit just under the gate is the
+            # one whose table is quietly poor, and nothing else in the
+            # progress output says what "good" looks like.
+            # A marginal ring also says which *kind* of marginal it is, so a
+            # run that is drifting can be recognized while it is still
+            # running rather than from the table it produces.
+            marginal = ""
+            if d["pass_spread_p95_frac"] > RING_SPREAD_HEALTHY:
+                kind = (
+                    f"level drift, span {d['pass_gain_span_frac'] * 100:.1f}%"
+                    if is_level_drift(d)
+                    else f"ring differs, residual {d['pass_residual_frac'] * 100:.2f}%"
+                )
+                marginal = f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%; {kind})"
+            ctx.log_fn(
+                f"[calib]   {label} ring {n}/{total} (rotation {rnd}): "
+                f"{d['passes']} passes, L($0F)={got.levels[0]:+.5f}, "
+                f"pass spread {d['pass_spread_p95_frac'] * 100:.3f}% (worst slot {d['pass_spread_frac'] * 100:.2f}%){marginal}"
+            )
+    spreads = [m.diagnostics["pass_spread_p95_frac"] for _, m in measured]
+    n_marginal, note = _marginal_run_summary(spreads, label)
+    if note:
+        ctx.log_fn(note)
+
+    raw, merge_metrics = merge_measurements(measured)
+    sidtable, metrics = build_sidtable_from_levels(raw)
+    metrics.update(merge_metrics)
+    metrics["capture"] = [m.diagnostics for _, m in measured]
+    metrics["rings_marginal"] = n_marginal
+    if sidtable is None:
+        ctx.log_fn(
+            f"[calib] {label}: REJECTED — the volume-0 self-test is off by "
+            f"{metrics['volume0_selftest_worst'] * 100:.1f}% (tolerance "
+            f"{SELFTEST_TOLERANCE * 100:.0f}%). Codes $h0 set the master volume "
+            "to 0, so they must measure as silence; that they don't means these "
+            "are not consistent output levels, and any ladder folded from them "
+            f"would be wrong. No table written for {label} — playback keeps the "
+            "baked/linear curve, which is better than a bad table. The raw "
+            "levels are saved for diagnosis."
+        )
+    return sidtable, metrics, raw
+
+
+def _populated_sockets(be: C64Backend, log_fn: Callable[[str], None]) -> list[tuple[int, str]]:
+    """Which physical SID sockets report a detected chip, as (socket, type)
+    pairs — empty on detection failure, which falls back to the single
+    unlabeled measurement."""
+    out: list[tuple[int, str]] = []
+    try:
+        s1, s2 = detect_sockets(be)
+        if s1 or s2:
+            sockets_info = be.get_config_category(CAT_SOCKETS)
+            if s1:
+                out.append((1, sockets_info.get(ITEM_SOCKET1_TYPE, "")))
+            if s2:
+                out.append((2, sockets_info.get(ITEM_SOCKET2_TYPE, "")))
+    except Exception:  # noqa: BLE001 — best-effort; fall back to single measurement
+        log_fn("[calib] socket detection failed — falling back to a single measurement")
+    return out
+
+
+def _measure_each_socket(
+    ctx: _RunContext, st: AudioStreamer, sockets: list[tuple[int, str]]
+) -> dict[str, CalibrationResult]:
+    """Isolate each populated socket at $D400 in turn and measure it, restoring
+    the machine's own SID address/socket/mixer config afterward."""
+    entries: dict[str, CalibrationResult] = {}
+    # Mixer levels snapshot once, before the loop: _isolate_mixer
+    # rewrites them per socket, so a per-iteration snapshot would
+    # capture its own previous edit rather than the user's setting.
+    saved_sid_config = {**snapshot_sid_config(ctx.be), **_snapshot_mixer(ctx.be)}
+    try:
+        for socket, detected in sockets:
+            ctx.log_fn(
+                f"[calib] isolating SID socket {socket} ({detected or 'detected'}) at $D400…"
+            )
+            _isolate_socket(ctx.be, socket)
+            _isolate_mixer(ctx.be, f"socket{socket}")
+            # Re-park AFTER the routing change, not once at bring-up.
+            # The env is a series of writes to $D400-$D418, so it lands
+            # on whichever chip owned that window at the time — the
+            # first socket measured. Every socket after it would be
+            # measured with unparked voices, i.e. no DC for the volume
+            # nibble to scale, which reads as a near-silent capture
+            # rather than an obviously wrong one.
+            st._enable_mahoney_env()
+            time.sleep(0.2)
+            sidtable, metrics, raw = _measure_one(ctx, f"socket {socket}")
+            entries[str(socket)] = CalibrationResult(sidtable, metrics, detected or None, raw)
+    finally:
+        restore_sid_config(ctx.be, saved_sid_config)
+    return entries
+
+
+def _silence_and_reset(be: C64Backend, log_fn: Callable[[str], None]) -> None:
+    """Best-effort teardown: stop the CIA #2 NMI source, silence the SID,
+    reset — a failure here must not mask the measurement's own outcome."""
+    try:
+        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
+        be.silence_sid()
+        be.reset()
+    except Exception as e:  # noqa: BLE001 — best-effort cleanup
+        log_fn(f"[calib] cleanup warning: {e}")
+
+
+def _report_run(
+    entries: dict[str, CalibrationResult], path: Path, log_fn: Callable[[str], None]
+) -> None:
+    """The end-of-run summary: per-SID ladder quality, or why no table."""
+    for name, r in entries.items():
+        if r.sidtable is None:
+            log_fn(
+                f"[calib] {name}: no table — self-test off by "
+                f"{r.metrics['volume0_selftest_worst'] * 100:.1f}%"
+            )
+            continue
+        log_fn(
+            f"[calib] {name}: ~{r.metrics['ladder_bits']} ladder bits, span "
+            f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
+            f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
+        )
+    log_fn(f"[calib] wrote {path}")
+
+
 def run_calibration(
     be: C64Backend,
     cfg: Config,
@@ -322,266 +630,33 @@ def run_calibration(
 
     Raises :class:`CaptureUnavailableError` if capture can't be set up.
     """
-    try:
-        import sounddevice as sd
-    except Exception as e:  # noqa: BLE001 — optional dep
-        raise CaptureUnavailableError(
-            "audio capture (sounddevice) is required for --calibrate-dac. Install "
-            "the 'mic' extra: uv tool install --force 'c64cast[all]'"
-        ) from e
-
-    from .audio import AudioStreamer
-    from .audio_handlers import (
-        CIA2_CRA_STOP,
-        CIA2_ICR_DISABLE_ALL,
-        RING_BUFFER_ADDR,
-        RING_BUFFER_SIZE,
-    )
-    from .c64 import CIA2
-    from .dsp import DSPParams
-
-    system = cfg.ultimate64.system
+    _require_sounddevice()
 
     key = resolve_calibration_key(cfg, be)
     supports_config = bool(getattr(be.profile, "supports_config", False))
-    device_info: dict[str, str] = {}
-    if supports_config:
-        try:
-            device_info = be.get_device_info()
-        except Exception:  # noqa: BLE001 — best-effort provenance only
-            log_fn("[calib] could not read device info (product/unique_id)")
-    elif cfg.hardware.backend == "teensyrom":
-        tr = cfg.teensyrom
-        device_info = (
-            {"transport": "tcp", "host": tr.host or "", "port": str(tr.tcp_port)}
-            if tr.transport == "tcp"
-            else {"transport": "serial", "port": tr.serial_port or ""}
-        )
-
-    def capture_ring(codes: Sequence[int], dev: int, fmt: CaptureFormat) -> SlotLevels:
-        """Record one ring and read its levels, retrying a spoiled capture.
-
-        The ring is written once; only the recording repeats
-        (:data:`RING_ATTEMPTS`), so a ring spoiled by a transient costs one
-        capture window rather than the run. :func:`read_ring_capture` decides
-        what counts as usable; a rig that never produces one fails here with the
-        device named, instead of merging noise into the table and falling over
-        at whichever later ring happens to be unreadable.
-        """
-        be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", build_slot_ring(codes, RING_BUFFER_SIZE))
-        reason = "no capture was taken"
-        peak = 0.0
-        unsteady: UnsteadyRingError | None = None
-        last: np.ndarray | None = None
-        for attempt in range(1, RING_ATTEMPTS + 1):
-            time.sleep(settle)
-            rec = sd.rec(
-                int(secs * fmt.samplerate),
-                samplerate=fmt.samplerate,
-                channels=fmt.channels,
-                device=dev,
-                dtype="float32",
-            )
-            sd.wait()
-            # (N, channels) → mono; a 1-channel capture folds to itself.
-            mono = rec.mean(axis=1).astype(np.float64)
-            last = mono
-            peak = float(np.max(np.abs(mono))) if mono.size else 0.0
-            try:
-                return read_ring_capture(mono, len(codes), RING_BUFFER_SIZE, sr=fmt.samplerate)
-            except MeasurementError as e:
-                reason = str(e)
-                unsteady = e if isinstance(e, UnsteadyRingError) else None
-            if attempt < RING_ATTEMPTS:
-                log_fn(f"[calib]   unusable capture ({reason}) — retrying")
-        # Keep the waveform that was refused. It is the whole evidence for the
-        # refusal, and re-creating it costs a fresh hardware run that may not
-        # reproduce the fault.
-        diag = unsteady.diagnostics if unsteady is not None else {}
-        saved = None if last is None else _save_unusable_capture(last, codes, fmt, key, dict(diag))
-        if unsteady is not None:
-            raise UnsteadyRingError(_unsteady_ring_message(reason, diag, saved), diag)
-        raise MeasurementError(capture_fault_message(dev, reason, peak, saved))
-
-    def measure_one(
-        dev: int, fmt: CaptureFormat, label: str
-    ) -> tuple[list[int] | None, dict[str, Any], list[tuple[int, float]]]:
-        rounds = plan_capture_rounds(codes_per_ring(RING_BUFFER_SIZE) - 1)
-        total = sum(len(r) for r in rounds)
-        log_fn(
-            f"[calib] measuring {label}: 256 codes × {len(rounds)} rotations = "
-            f"{total} slot rings ({secs:.1f}s each, ~{total * (secs + settle) / 60:.1f} min)…"
-        )
-        measured: list[tuple[Sequence[int], SlotLevels]] = []
-        n = 0
-        for rnd, batches in enumerate(rounds, 1):
-            for codes in batches:
-                n += 1
-                got = capture_ring([ANCHOR_CODE, *codes], dev, fmt)
-                measured.append((codes, got))
-                d = got.diagnostics
-                # Marginal spread is called out rather than left as a bare
-                # number: a run whose rings all sit just under the gate is the
-                # one whose table is quietly poor, and nothing else in the
-                # progress output says what "good" looks like.
-                # A marginal ring also says which *kind* of marginal it is, so a
-                # run that is drifting can be recognized while it is still
-                # running rather than from the table it produces.
-                marginal = ""
-                if d["pass_spread_p95_frac"] > RING_SPREAD_HEALTHY:
-                    kind = (
-                        f"level drift, span {d['pass_gain_span_frac'] * 100:.1f}%"
-                        if is_level_drift(d)
-                        else f"ring differs, residual {d['pass_residual_frac'] * 100:.2f}%"
-                    )
-                    marginal = f" (marginal — healthy is ≤{RING_SPREAD_HEALTHY * 100:.1f}%; {kind})"
-                log_fn(
-                    f"[calib]   {label} ring {n}/{total} (rotation {rnd}): "
-                    f"{d['passes']} passes, L($0F)={got.levels[0]:+.5f}, "
-                    f"pass spread {d['pass_spread_p95_frac'] * 100:.3f}% (worst slot {d['pass_spread_frac'] * 100:.2f}%){marginal}"
-                )
-        spreads = [m.diagnostics["pass_spread_p95_frac"] for _, m in measured]
-        n_marginal, note = _marginal_run_summary(spreads, label)
-        if note:
-            log_fn(note)
-
-        raw, merge_metrics = merge_measurements(measured)
-        sidtable, metrics = build_sidtable_from_levels(raw)
-        metrics.update(merge_metrics)
-        metrics["capture"] = [m.diagnostics for _, m in measured]
-        metrics["rings_marginal"] = n_marginal
-        if sidtable is None:
-            log_fn(
-                f"[calib] {label}: REJECTED — the volume-0 self-test is off by "
-                f"{metrics['volume0_selftest_worst'] * 100:.1f}% (tolerance "
-                f"{SELFTEST_TOLERANCE * 100:.0f}%). Codes $h0 set the master volume "
-                "to 0, so they must measure as silence; that they don't means these "
-                "are not consistent output levels, and any ladder folded from them "
-                f"would be wrong. No table written for {label} — playback keeps the "
-                "baked/linear curve, which is better than a bad table. The raw "
-                "levels are saved for diagnosis."
-            )
-        return sidtable, metrics, raw
-
-    sockets_present: list[tuple[int, str]] = []
-    saved_sid_config: dict[tuple[str, str], str] = {}
-    entries: dict[str, CalibrationResult] = {}
+    device_info = _device_provenance(cfg, be, log_fn)
+    normal_d400: int | None = None
     try:
-        # Bring-up: reset once (HDMI renegotiates), running IRQ clear loop, then
-        # the NMI handler + neutral ring + the Mahoney SID env (installed by
-        # _upload_nmi_and_buffers when the curve is a companding one).
-        log_fn("[calib] resetting + bringing up NMI DAC + Mahoney env…")
-        be.reset()
-        time.sleep(1.5)
-        be.run_basic_clear_loop()
-        st = AudioStreamer(
-            be,
-            NMI_RATE,
-            system,
-            dither=False,
-            digi_boost=False,
-            dac_curve="mahoney_ultisid",
-            host_dma_servo=False,
-            nmi_rate_adaptive=False,
-            dsp_params=DSPParams(enabled=False),
+        st = _bring_up_dac_env(be, cfg, log_fn)
+        dev, fmt = _open_capture(device, log_fn)
+        ctx = _RunContext(
+            be=be, key=key, device=dev, fmt=fmt, secs=secs, settle=settle, log_fn=log_fn
         )
-        st.running = True
-        st._upload_nmi_and_buffers()
-        # The streamer's own arm, so a dropped CIA write is retried here too: a
-        # silent NMI is one of the three causes capture_fault_message has to
-        # guess between after 50 s of measuring nothing.
-        st._start_nmi_timer()
 
-        log_fn("[calib] settling HDMI + (re)initializing capture…")
-        time.sleep(3.0)
-        sd._terminate()
-        sd._initialize()
-        dev = find_capture_device(device)
-        fmt = resolve_capture_format(dev)
-        dev_name = str(sd.query_devices(dev)["name"])
-        log_fn(
-            f"[calib] capture device idx {dev}: {dev_name} "
-            f"({fmt.channels} ch @ {fmt.samplerate} Hz)"
-        )
-        # An auto-pick that matched nothing landed on the system default input,
-        # which on a laptop is the built-in microphone — it will record room
-        # noise for ~50 s and fail. Say so now, while the run is 5 s old.
-        if device is None and not looks_like_capture_input(dev_name):
-            log_fn(
-                f"[calib] warning: {dev_name!r} doesn't look like a video-capture "
-                "input — this is the system default, picked because no capture "
-                "device was recognized. If the C64's audio doesn't arrive on it, "
-                + pick_device_hint("stop now and pick with")
-            )
-
-        if supports_config:
-            try:
-                s1, s2 = detect_sockets(be)
-                if s1 or s2:
-                    sockets_info = be.get_config_category(CAT_SOCKETS)
-                    if s1:
-                        sockets_present.append((1, sockets_info.get(ITEM_SOCKET1_TYPE, "")))
-                    if s2:
-                        sockets_present.append((2, sockets_info.get(ITEM_SOCKET2_TYPE, "")))
-            except Exception:  # noqa: BLE001 — best-effort; fall back to single measurement
-                log_fn("[calib] socket detection failed — falling back to a single measurement")
-
-        # Read before the loop: _isolate_socket remaps every socket to $D400 in
-        # turn, so asking afterwards answers with c64cast's own edit rather than
-        # the mapping this machine actually runs under.
+        sockets = _populated_sockets(be, log_fn) if supports_config else []
+        # Read before the measurement loop: _isolate_socket remaps every socket
+        # to $D400 in turn, so asking afterwards answers with c64cast's own
+        # edit rather than the mapping this machine actually runs under.
         normal_d400 = active_socket_at_d400(be) if supports_config else None
 
-        if sockets_present:
-            # Mixer levels snapshot once, before the loop: _isolate_mixer
-            # rewrites them per socket, so a per-iteration snapshot would
-            # capture its own previous edit rather than the user's setting.
-            saved_sid_config = {**snapshot_sid_config(be), **_snapshot_mixer(be)}
-            try:
-                for socket, detected in sockets_present:
-                    log_fn(
-                        f"[calib] isolating SID socket {socket} "
-                        f"({detected or 'detected'}) at $D400…"
-                    )
-                    _isolate_socket(be, socket)
-                    _isolate_mixer(be, f"socket{socket}")
-                    # Re-park AFTER the routing change, not once at bring-up.
-                    # The env is a series of writes to $D400-$D418, so it lands
-                    # on whichever chip owned that window at the time — the
-                    # first socket measured. Every socket after it would be
-                    # measured with unparked voices, i.e. no DC for the volume
-                    # nibble to scale, which reads as a near-silent capture
-                    # rather than an obviously wrong one.
-                    st._enable_mahoney_env()
-                    time.sleep(0.2)
-                    sidtable, metrics, raw = measure_one(dev, fmt, f"socket {socket}")
-                    entries[str(socket)] = CalibrationResult(
-                        sidtable, metrics, detected or None, raw
-                    )
-            finally:
-                restore_sid_config(be, saved_sid_config)
+        if sockets:
+            entries = _measure_each_socket(ctx, st, sockets)
         else:
-            sidtable, metrics, raw = measure_one(dev, fmt, "SID")
-            entries["default"] = CalibrationResult(sidtable, metrics, None, raw)
+            sidtable, metrics, raw = _measure_one(ctx, "SID")
+            entries = {"default": CalibrationResult(sidtable, metrics, None, raw)}
     finally:
-        try:
-            be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
-            be.silence_sid()
-            be.reset()
-        except Exception as e:  # noqa: BLE001 — best-effort cleanup
-            log_fn(f"[calib] cleanup warning: {e}")
+        _silence_and_reset(be, log_fn)
 
     path = save_calibration(cfg, key, entries, device_info, normal_d400)
-    for name, r in entries.items():
-        if r.sidtable is None:
-            log_fn(
-                f"[calib] {name}: no table — self-test off by "
-                f"{r.metrics['volume0_selftest_worst'] * 100:.1f}%"
-            )
-            continue
-        log_fn(
-            f"[calib] {name}: ~{r.metrics['ladder_bits']} ladder bits, span "
-            f"{r.metrics['signed_span']}, worst gap {r.metrics['worst_gap_frac'] * 100:.1f}% "
-            f"of span at {r.metrics['worst_gap_from_zero_frac']:+.2f} from silence"
-        )
-    log_fn(f"[calib] wrote {path}")
+    _report_run(entries, path, log_fn)
     return CalibrationRun(key=key, path=path, entries=entries)
