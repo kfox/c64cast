@@ -40,6 +40,8 @@ import numpy as np
 import sounddevice as sd
 
 from c64cast import dac_calibration as dc
+from c64cast import dac_capture_device as dcap
+from c64cast import dac_slot_ring as dsr
 from c64cast.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -101,29 +103,29 @@ def isolate_source(be, source: str) -> dict[tuple[str, str], str]:
     return saved
 
 
-def report(codes: list[int], levels: dc.SlotLevels) -> None:
+def report(codes: list[int], levels: dsr.SlotLevels) -> None:
     d = levels.diagnostics
     print(f"  diagnostics: {d}")
     anchor = levels.levels[0]
-    print(f"  L(${dc.ANCHOR_CODE:02X}) anchor = {anchor:+.6f}")
+    print(f"  L(${dsr.ANCHOR_CODE:02X}) anchor = {anchor:+.6f}")
     pairs = zip(codes[1:], levels.levels[1:], strict=True)
     vol0 = [(c, v) for c, v in pairs if (c & 0x0F) == 0]
     if vol0:
         worst = max(abs(v / anchor) for _, v in vol0)
         shown = ", ".join(f"${c:02X}={v / anchor:+.4f}" for c, v in vol0)
         print(f"  volume-0 codes in this ring: {shown}")
-        print(f"  worst |L($h0)/L($0F)| = {worst:.4f}  (want ≪ {dc.SELFTEST_TOLERANCE})")
+        print(f"  worst |L($h0)/L($0F)| = {worst:.4f}  (want ≪ {dsr.SELFTEST_TOLERANCE})")
 
 
-def merge(batches: list[tuple[list[int], dc.SlotLevels]]) -> list[tuple[int, float]]:
-    raw, metrics = dc.merge_measurements(batches)
+def merge(batches: list[tuple[list[int], dsr.SlotLevels]]) -> list[tuple[int, float]]:
+    raw, metrics = dsr.merge_measurements(batches)
     print(f"\nanchor levels per ring: {[round(m.levels[0], 6) for _, m in batches]}")
     print(f"merge: {metrics}")
     return raw
 
 
 def summarize(raw: list[tuple[int, float]]) -> None:
-    table, metrics = dc.build_sidtable_from_levels(raw)
+    table, metrics = dsr.build_sidtable_from_levels(raw)
     lv = np.array([v for _, v in raw])
     print("\n--- merged 256-code ladder ---")
     for hi in range(16):
@@ -133,19 +135,19 @@ def summarize(raw: list[tuple[int, float]]) -> None:
     print(f"volume-0 self-test per nibble: {metrics['volume0_selftest']}")
     print(
         f"\nvolume-0 self-test worst = {metrics['volume0_selftest_worst']:.4f} "
-        f"(tolerance {dc.SELFTEST_TOLERANCE}) → "
+        f"(tolerance {dsr.SELFTEST_TOLERANCE}) → "
         + ("PASS, table built" if table else "FAIL, table rejected")
     )
 
 
-def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dc.SlotLevels]]:
+def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dsr.SlotLevels]]:
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
     be = make_backend(cfg)
     saved: dict[tuple[str, str], str] = {}
-    rounds = dc.plan_capture_rounds(dc.codes_per_ring(RING_BUFFER_SIZE) - 1, rounds=args.rounds)
+    rounds = dsr.plan_capture_rounds(dsr.codes_per_ring(RING_BUFFER_SIZE) - 1, rounds=args.rounds)
     plan = [(r, b) for r, batches in enumerate(rounds) for b in batches]
-    out: list[tuple[list[int], dc.SlotLevels]] = []
+    out: list[tuple[list[int], dsr.SlotLevels]] = []
     out_dir = args.out or OUT.with_name(f"{OUT.name}-{args.source}")
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -155,7 +157,7 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dc.SlotL
         be.run_basic_clear_loop()
         st = AudioStreamer(
             be,
-            dc.NMI_RATE,
+            dsr.NMI_RATE,
             args.system,
             dither=False,
             digi_boost=False,
@@ -167,7 +169,7 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dc.SlotL
         st.running = True
         st._upload_nmi_and_buffers()
         clock = CLOCK_NTSC if args.system == "NTSC" else CLOCK_PAL
-        latch = max(1, round(clock / dc.NMI_RATE) - 1)
+        latch = max(1, round(clock / dsr.NMI_RATE) - 1)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
@@ -177,7 +179,7 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dc.SlotL
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        dev = dc.find_capture_device(args.device)
+        dev = dcap.find_capture_device(args.device)
         print(f"[cap] device idx {dev}: {sd.query_devices(dev)['name']}")
 
         saved = snapshot_sid_config(be)
@@ -190,14 +192,14 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dc.SlotL
         time.sleep(0.3)
 
         for n, (rnd, batch) in enumerate(plan):
-            codes = [dc.ANCHOR_CODE, *batch]
+            codes = [dsr.ANCHOR_CODE, *batch]
             be.write_memory_file(
-                f"{RING_BUFFER_ADDR:04X}", dc.build_slot_ring(codes, RING_BUFFER_SIZE)
+                f"{RING_BUFFER_ADDR:04X}", dsr.build_slot_ring(codes, RING_BUFFER_SIZE)
             )
             time.sleep(args.settle)
             rec = sd.rec(
-                int(args.secs * dc.CAP_SR),
-                samplerate=dc.CAP_SR,
+                int(args.secs * dsr.CAP_SR),
+                samplerate=dsr.CAP_SR,
                 channels=2,
                 device=dev,
                 dtype="float32",
@@ -211,7 +213,7 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dc.SlotL
                 f"peak |x| = {np.abs(mono).max():.4f}, "
                 f"saved {out_dir / f'ring{n}.npy'}"
             )
-            got = dc.extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE)
+            got = dsr.extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE)
             report(codes, got)
             out.append((batch, got))
     finally:
@@ -228,13 +230,13 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dc.SlotL
     return out
 
 
-def replay(path: Path) -> list[tuple[list[int], dc.SlotLevels]]:
-    out: list[tuple[list[int], dc.SlotLevels]] = []
+def replay(path: Path) -> list[tuple[list[int], dsr.SlotLevels]]:
+    out: list[tuple[list[int], dsr.SlotLevels]] = []
     for n, cap_file in enumerate(sorted(path.glob("ring*[0-9].npy"))):
         mono = np.load(cap_file)
         codes = np.load(cap_file.with_suffix(".codes.npy")).tolist()
         print(f"\n[ring {n}] {cap_file.name}: {mono.size} samples, {len(codes)} codes")
-        got = dc.extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE)
+        got = dsr.extract_slot_levels(mono, len(codes), RING_BUFFER_SIZE)
         report(codes, got)
         out.append((codes[1:], got))
     return out
@@ -255,7 +257,7 @@ def main() -> int:
     ap.add_argument(
         "--rounds",
         type=int,
-        default=dc.MEASURE_ROUNDS,
+        default=dsr.MEASURE_ROUNDS,
         help="how many rotations of the slot order to average (see MEASURE_ROUNDS)",
     )
     ap.add_argument(

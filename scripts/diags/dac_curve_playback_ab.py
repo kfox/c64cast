@@ -34,6 +34,8 @@ import numpy as np
 import sounddevice as sd
 
 from c64cast import dac_calibration as dc
+from c64cast import dac_capture_device as dcap
+from c64cast import dac_slot_ring as dsr
 from c64cast.audio import AudioStreamer
 from c64cast.audio_handlers import (
     CIA2_CRA_STOP,
@@ -55,7 +57,7 @@ from c64cast.sid_hw_config import restore_sid_config, snapshot_sid_config
 # Tone cycles per ring: an integer, so the ring tiles seamlessly and the NMI
 # loops it with no discontinuity to smear the spectrum.
 TONE_CYCLES = 128
-TONE_HZ = dc.NMI_RATE * TONE_CYCLES / RING_BUFFER_SIZE  # 125 Hz at 8 kHz / 8192
+TONE_HZ = dsr.NMI_RATE * TONE_CYCLES / RING_BUFFER_SIZE  # 125 Hz at 8 kHz / 8192
 
 
 def make_tone(amp: float) -> np.ndarray:
@@ -123,7 +125,7 @@ def main() -> int:
         be.run_basic_clear_loop()
         st = AudioStreamer(
             be,
-            dc.NMI_RATE,
+            dsr.NMI_RATE,
             args.system,
             dither=False,
             digi_boost=False,
@@ -135,7 +137,7 @@ def main() -> int:
         st.running = True
         st._upload_nmi_and_buffers()  # installs the Mahoney SID env
         clock = CLOCK_NTSC if args.system == "NTSC" else CLOCK_PAL
-        latch = max(1, round(clock / dc.NMI_RATE) - 1)
+        latch = max(1, round(clock / dsr.NMI_RATE) - 1)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
         be.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
         be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
@@ -143,7 +145,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        dev = dc.find_capture_device(args.device)
+        dev = dcap.find_capture_device(args.device)
         print(f"[cap] device idx {dev}: {sd.query_devices(dev)['name']}")
         print(f"[cap] test tone {TONE_HZ:.1f} Hz, {args.secs}s per curve\n")
 
@@ -160,14 +162,14 @@ def main() -> int:
                 be.write_memory_file(f"{RING_BUFFER_ADDR:04X}", ring.tobytes())
                 time.sleep(0.4)
                 rec = sd.rec(
-                    int(args.secs * dc.CAP_SR),
-                    samplerate=dc.CAP_SR,
+                    int(args.secs * dsr.CAP_SR),
+                    samplerate=dsr.CAP_SR,
                     channels=2,
                     device=dev,
                     dtype="float32",
                 )
                 sd.wait()
-                m = analyze(rec.mean(axis=1).astype(np.float64), dc.CAP_SR, TONE_HZ)
+                m = analyze(rec.mean(axis=1).astype(np.float64), dsr.CAP_SR, TONE_HZ)
                 print(
                     f"  {name:34s} SNDR {m['sndr_db']:6.2f} dB   THD {m['thd_db']:7.2f} dB"
                     f"   level {m['level']:.4f} ({20 * np.log10(max(m['level'], 1e-9)):+.1f} dBFS)"
