@@ -99,7 +99,7 @@ class Overlay:
     # Flipped by the scene's render loop when compose() raises; once True the
     # Playlist skips this overlay for the rest of the scene so a broken
     # overlay doesn't spam errors every frame.
-    _disabled: bool = False
+    disabled: bool = False
 
     def setup(self, api: C64Backend, scene: Scene) -> None:
         pass
@@ -170,6 +170,14 @@ def known_overlays() -> list[str]:
     # Force-load submodules so all @register decorators have run.
     _load_all()
     return sorted(_REGISTRY)
+
+
+def overlay_types() -> dict[str, type[Overlay]]:
+    """Name → class for every registered overlay (submodules force-loaded).
+    The public read surface over the registry — introspection renders
+    --list-overlays / --describe / the reference appendix from this."""
+    _load_all()
+    return dict(_REGISTRY)
 
 
 def paints_into_buffers(type_name: str) -> bool:

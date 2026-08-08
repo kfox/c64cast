@@ -252,8 +252,8 @@ class Playlist:
         # know about audio/source/cfg; the factory closes over them).
         self.ensemble: Ensemble | None = None
         self.ensemble_coord = EnsembleCoordinator(self)
-        self._broadcast_interrupt: threading.Event | None = None
-        self._broadcast_resume: threading.Event | None = None
+        self.broadcast_interrupt: threading.Event | None = None
+        self.broadcast_resume: threading.Event | None = None
         self.build_follower_scene: FollowerSceneFactory | None = None
 
     def request_reload(
@@ -267,6 +267,25 @@ class Playlist:
             self._pending_scenes = list(new_scenes)
             self._pending_interstitial = new_interstitial
             self.reload_event.set()
+
+    def bind_ensemble(
+        self,
+        ensemble: Ensemble,
+        *,
+        interrupt: threading.Event,
+        resume: threading.Event,
+        build_follower_scene: FollowerSceneFactory,
+    ) -> None:
+        """Wire this playlist into a multi-system ensemble: the shared
+        Ensemble, its per-system broadcast interrupt/resume events, and the
+        follower-scene factory (which closes over the stack's
+        api/audio/source/cfg — the playlist can't build follower scenes
+        itself). Called once by cli after Ensemble construction; see
+        EnsembleCoordinator for what consumes each piece."""
+        self.ensemble = ensemble
+        self.broadcast_interrupt = interrupt
+        self.broadcast_resume = resume
+        self.build_follower_scene = build_follower_scene
 
     def post_osd(self, text: str, duration_s: float = 2.5) -> None:
         """Show a brief on-screen message on the current scene (live-tune
@@ -579,7 +598,7 @@ class Playlist:
                 # Overlay failure mustn't strand the scene — log and drop
                 # the offending overlay from the run list for this scene.
                 self.log.exception("overlay %r setup failed on %r — disabling", ov.name, scene.name)
-                ov._disabled = True  # checked in process_frame loop
+                ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
 
     def _log_scene_recording_metadata(self, scene: Scene) -> None:
@@ -595,7 +614,7 @@ class Playlist:
 
     def safe_teardown(self, scene: Scene) -> None:
         for ov in getattr(scene, "overlays", ()):
-            if getattr(ov, "_disabled", False):
+            if getattr(ov, "disabled", False):
                 continue
             try:
                 ov.teardown(self.api, scene)
@@ -725,7 +744,7 @@ class Playlist:
                 self.log.exception("scene %r raised; advancing", scene.name)
                 still_active = False
             for ov in getattr(scene, "overlays", ()):
-                if getattr(ov, "_disabled", False):
+                if getattr(ov, "disabled", False):
                     continue
                 if getattr(ov, "PAINTS_INTO_BUFFERS", False):
                     continue
@@ -733,7 +752,7 @@ class Playlist:
                     ov.process_frame(self.api, scene, t0)
                 except Exception:
                     self.log.exception("overlay %r raised on %r — disabling", ov.name, scene.name)
-                    ov._disabled = True
+                    ov.disabled = True
         return still_active
 
     def _apply_frame_events(self, scene: Scene, still_active: bool) -> None:
@@ -748,7 +767,7 @@ class Playlist:
         confusing and it doesn't implement cycle_style anyway."""
         scene.is_done = not still_active
         if scene.is_done and any(
-            not getattr(ov, "_disabled", False) and ov.is_busy()
+            not getattr(ov, "disabled", False) and ov.is_busy()
             for ov in getattr(scene, "overlays", ())
         ):
             scene.is_done = False
@@ -872,7 +891,7 @@ class Playlist:
                 if self.reload_event.is_set():
                     self._apply_reload()
                     next_deadline = time.time()
-                if self._broadcast_interrupt is not None and self._broadcast_interrupt.is_set():
+                if self.broadcast_interrupt is not None and self.broadcast_interrupt.is_set():
                     self.ensemble_coord.handle_broadcast_interrupt()
                     next_deadline = time.time()
                     if self.stop_event.is_set():
@@ -954,7 +973,7 @@ class Playlist:
             if new_style is not None:
                 labels.append(f"display={new_style}")
         for ov in getattr(self.current, "overlays", ()):
-            if getattr(ov, "_disabled", False):
+            if getattr(ov, "disabled", False):
                 continue
             try:
                 ov_style = ov.cycle_style(self.api, self.current)

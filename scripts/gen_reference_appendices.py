@@ -152,7 +152,7 @@ def code(text: str) -> str:
 
 def fmt_default(value: object) -> str:
     """A field's default, as a code span -- or a summary when it is enormous."""
-    if value is introspect._REQUIRED:
+    if value is introspect.REQUIRED:
         return "*(required)*"
     text = repr(value)
     if len(text) <= _MAX_DEFAULT:
@@ -319,7 +319,7 @@ def toml_literal(value: object) -> str | None:
     are all the same case -- the program has no answer, and the alternative is
     to invent one.
     """
-    if value is introspect._REQUIRED or value is None:
+    if value is introspect.REQUIRED or value is None:
         return None
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -369,7 +369,7 @@ def snippet(
 
 def required_names(fields: Iterable[introspect.FieldDoc | introspect.ParamDoc]) -> list[str]:
     """The keys with no default, which a fragment has to name rather than set."""
-    return [fd.name for fd in fields if fd.default is introspect._REQUIRED]
+    return [fd.name for fd in fields if fd.default is introspect.REQUIRED]
 
 
 def sample_rows(

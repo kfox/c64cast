@@ -351,6 +351,23 @@ class Scene:
         self._is_conductor: bool = False
         self._system_index: int = 0
 
+    def bind_orchestrator(self, orch: Any, *, conductor: bool, index: int) -> None:
+        """Stamp the cross-ensemble orchestrator role onto this scene, before
+        setup() runs, so participating overlays (big_text) can find it. The
+        playlist's ensemble coordinator calls this for conductor and follower
+        scenes alike; `index` is this system's left-to-right position in the
+        ensemble (span-mode orchestrators slice global content with it)."""
+        self._orchestrator = orch
+        self._is_conductor = conductor
+        self._system_index = index
+
+    def clear_orchestrator(self) -> None:
+        """Drop the orchestrator stamp at teardown. The same Scene instance is
+        reused across loop iterations, and a stale stamp would make the next
+        conductor install short-circuit (see EnsembleCoordinator)."""
+        self._orchestrator = None
+        self._is_conductor = False
+
     @property
     def effect(self) -> FrameEffect | None:
         """Back-compat single-effect accessor over the `effects` chain: reads the
@@ -684,7 +701,7 @@ def _render_with_overlays(
         for ov in overlays:
             if not getattr(ov, "PAINTS_INTO_BUFFERS", False):
                 continue
-            if getattr(ov, "_disabled", False):
+            if getattr(ov, "disabled", False):
                 continue
             try:
                 ov.compose(buffers, scene, t)
@@ -694,13 +711,13 @@ def _render_with_overlays(
                     getattr(ov, "name", ov),
                     scene.name,
                 )
-                ov._disabled = True
+                ov.disabled = True
     # Cache the full-brightness, post-overlay frame so a freeze+dim fade-out can
     # re-push it without re-composing; then dim toward black if a fade is active.
     # apply_fade never mutates the cached buffers, so the fade-out ramp always
     # dims from the pristine frame. The fade folds over overlays too — they're
     # part of the composed frame at this point.
-    display_mode._last_buffers = buffers
+    display_mode.last_buffers = buffers
     # Dim when a transient scene fade OR a persistent user brightness (WLED
     # bridge `bri`) is active; apply_fade folds both (fade_alpha × user_dim).
     if display_mode.fade_alpha < 1.0 or display_mode.user_dim < 1.0:

@@ -710,7 +710,7 @@ class PlaylistTest(unittest.TestCase):
         class FakeOverlay:
             name = "fake"
             PAINTS_INTO_BUFFERS = False
-            _disabled = False
+            disabled = False
             _busy = True
             setup_count = 0
             teardown_count = 0
@@ -762,7 +762,7 @@ class PlaylistTest(unittest.TestCase):
         class StuckOverlay:
             name = "stuck"
             PAINTS_INTO_BUFFERS = False
-            _disabled = False
+            disabled = False
 
             def setup(self, api, scene):
                 pass
@@ -901,7 +901,7 @@ class PlaylistTest(unittest.TestCase):
         class CycleOverlay:
             name = "decorated"
             PAINTS_INTO_BUFFERS = False
-            _disabled = False
+            disabled = False
             cycle_calls = 0
 
             def setup(self, api, scene):

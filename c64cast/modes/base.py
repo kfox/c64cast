@@ -460,13 +460,13 @@ class DisplayMode:
 
     # Scene fade (set/teardown transitions, driven by the Playlist). 1.0 = no
     # fade; < 1.0 dims the composed frame's color-bearing fields toward black
-    # via a palette remap (see palette.build_fade_lut). `_last_buffers` caches
+    # via a palette remap (see palette.build_fade_lut). `last_buffers` caches
     # the most recent full-brightness composed frame so the freeze+dim fade-out
     # can re-push it at decreasing alpha without re-composing. Only the
     # compose-based families (Char/Bitmap) implement apply_fade; the base is a
     # no-op so non-compose modes are unaffected.
     fade_alpha: float = 1.0
-    _last_buffers: ComposeBuffers | None = None
+    last_buffers: ComposeBuffers | None = None
 
     # Persistent user brightness (WLED bridge Mode 1 `bri` slider). 1.0 = full
     # brightness; < 1.0 dims the composed frame the same way a fade does, but it
@@ -494,12 +494,12 @@ class DisplayMode:
         """Re-push the last composed frame dimmed to ``alpha`` — the freeze+dim
         fade-out. No-op when nothing has been composed yet (e.g. a scene torn
         down before its first frame)."""
-        if self._last_buffers is None:
+        if self.last_buffers is None:
             return
         saved = self.fade_alpha
         self.fade_alpha = alpha
         try:
-            self.push(api, self.apply_fade(self._last_buffers))
+            self.push(api, self.apply_fade(self.last_buffers))
         finally:
             self.fade_alpha = saved
 

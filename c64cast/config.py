@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 # …) but are duplicated here so config.py stays import-light (no numpy / cv2
 # pulled in just to load a TOML). tests/test_introspect.py asserts each list
 # stays in sync with its source of truth, so the duplication can't drift.
-_SYSTEM_CHOICES = ("NTSC", "PAL")
+SYSTEM_CHOICES = ("NTSC", "PAL")
 # Mirrors backend.BACKENDS; duplicated here so config.py stays import-light
 # (it doesn't pull in api.py). tests/test_introspect.py asserts they match.
 _BACKEND_CHOICES = ("ultimate", "teensyrom")
@@ -162,7 +162,7 @@ _AUDIO_SOURCE_CHOICES = ("none", "mic", "listen", "file", "sid")
 # FPGA PCM sampler (high fidelity, off the C64 bus; U64 only — see sampler.py).
 # "auto" = sampler on a sampler-capable U64 with the feature available, else
 # dac. A drift test pins this list.
-_AUDIO_BACKEND_CHOICES = ("auto", "dac", "sampler")
+AUDIO_BACKEND_CHOICES = ("auto", "dac", "sampler")
 
 # The scene types (mirrors validate_scene_cfg). Used by the introspection
 # layer's `applies_to` filtering; declared here so SceneCfg metadata can name
@@ -277,7 +277,7 @@ class Ultimate64Cfg:
         default="NTSC",
         metadata={
             "help": "Target video system timing (affects frame rate + SID PLAY rate).",
-            "choices": _SYSTEM_CHOICES,
+            "choices": SYSTEM_CHOICES,
         },
     )
     # See docs/guide/04-setting-up.md for how to enable the DMA service on the
@@ -494,7 +494,7 @@ class AudioCfg:
             "help": "Video-audio backend: 'auto' (sampler on a capable U64, else "
             "DAC), 'dac' (4-bit $D418 NMI DAC, all backends, lo-fi), or 'sampler' "
             "(U64 'Ultimate Audio' FPGA PCM, high fidelity, off the C64 bus).",
-            "choices": _AUDIO_BACKEND_CHOICES,
+            "choices": AUDIO_BACKEND_CHOICES,
         },
     )
     sampler_sample_rate: int = field(

@@ -148,7 +148,7 @@ class RepushFadedTest(unittest.TestCase):
         mode = HiresDisplayMode("normal")
         api = FakeAPI()
         mode.setup(api)
-        mode._last_buffers = mode.compose(_frame())
+        mode.last_buffers = mode.compose(_frame())
         api.regions.clear()
         mode.repush_faded(api, 0.0)  # fully black
         # A full re-push happened (bitmap + screen regions written).
@@ -160,7 +160,7 @@ class RepushFadedTest(unittest.TestCase):
     def test_repush_noop_without_cache(self):
         mode = HiresDisplayMode("normal")
         api = FakeAPI()
-        mode._last_buffers = None
+        mode.last_buffers = None
         mode.repush_faded(api, 0.5)
         self.assertEqual(api.regions, {})
 
@@ -216,7 +216,7 @@ class UserDimTest(unittest.TestCase):
         api = FakeAPI()
         mode.setup(api)
         cached = mode.compose(_frame())
-        mode._last_buffers = cached
+        mode.last_buffers = cached
         mode.user_dim = 0.5
         expected_screen = fade_nibbles(cached["screen"], build_fade_lut(0.6 * 0.5)).tobytes()
         api.regions.clear()
@@ -239,7 +239,7 @@ class _FakeMode:
 
     def __init__(self):
         self.fade_alpha = 1.0
-        self._last_buffers = object()  # non-None: a frame was "composed"
+        self.last_buffers = object()  # non-None: a frame was "composed"
         self.repush_calls: list[float] = []
 
     def repush_faded(self, api, alpha):
@@ -337,7 +337,7 @@ class PlaylistFadeOutTest(unittest.TestCase):
 
     def test_fade_out_noop_without_rendered_frame(self):
         s = _FakeScene()
-        s.display_mode._last_buffers = None
+        s.display_mode.last_buffers = None
         pl = _playlist(s)
         pl.fades.fade_out(s)
         self.assertEqual(s.display_mode.repush_calls, [])

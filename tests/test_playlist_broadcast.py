@@ -66,6 +66,17 @@ class _FakeScene:
         self.process_calls += 1
         return self._still_active
 
+    def bind_orchestrator(self, orch, *, conductor: bool, index: int) -> None:
+        # Mirrors Scene.bind_orchestrator — the coordinator stamps roles
+        # through this method now, not by poking privates.
+        self._orchestrator = orch
+        self._is_conductor = conductor
+        self._system_index = index
+
+    def clear_orchestrator(self) -> None:
+        self._orchestrator = None
+        self._is_conductor = False
+
 
 class _FakeOrchestrator:
     """Minimal Orchestrator-shaped fake. We don't import the real ABC
@@ -152,8 +163,8 @@ class BroadcastInterruptTest(unittest.TestCase):
         ens = Ensemble(stacks=[_fake_ensemble_stack(pl.name)], stop_event=pl.stop_event)
         ens.active_orchestrator = orch  # type: ignore[assignment]
         pl.ensemble = ens
-        pl._broadcast_interrupt = interrupt
-        pl._broadcast_resume = resume
+        pl.broadcast_interrupt = interrupt
+        pl.broadcast_resume = resume
         pl.build_follower_scene = lambda cfg: follower_scene
         return interrupt, resume
 
@@ -230,21 +241,21 @@ class BroadcastInterruptTest(unittest.TestCase):
         pl = _build_playlist()
         # Ensemble exists but active_orchestrator is None (stale event).
         pl.ensemble = Ensemble(stacks=[], stop_event=pl.stop_event)
-        pl._broadcast_interrupt = threading.Event()
-        pl._broadcast_resume = threading.Event()
-        pl._broadcast_interrupt.set()
+        pl.broadcast_interrupt = threading.Event()
+        pl.broadcast_resume = threading.Event()
+        pl.broadcast_interrupt.set()
         # Should silently drop, not crash.
         pl.ensemble_coord.handle_broadcast_interrupt()
-        self.assertFalse(pl._broadcast_interrupt.is_set())
+        self.assertFalse(pl.broadcast_interrupt.is_set())
 
     def test_no_factory_logs_error_and_returns(self):
         pl = _build_playlist()
         ens = Ensemble(stacks=[], stop_event=pl.stop_event)
         ens.active_orchestrator = _FakeOrchestrator()  # type: ignore[assignment]
         pl.ensemble = ens
-        pl._broadcast_interrupt = threading.Event()
-        pl._broadcast_resume = threading.Event()
-        pl._broadcast_interrupt.set()
+        pl.broadcast_interrupt = threading.Event()
+        pl.broadcast_resume = threading.Event()
+        pl.broadcast_interrupt.set()
         # build_follower_scene is None — should log + bail without crash.
         with self.assertLogs("c64cast.playlist", level="ERROR") as cap:
             pl.ensemble_coord.handle_broadcast_interrupt()

@@ -105,7 +105,7 @@ class SceneFades:
         if self.ended_via_skip:
             return
         dm = self.fade_mode(scene)
-        if dm is None or dm._last_buffers is None:
+        if dm is None or dm.last_buffers is None:
             return
         n = self.fade_frames(scene)
         if n <= 0:
@@ -371,9 +371,9 @@ class EnsembleCoordinator:
             return
         orch = orch_cls(pl.ensemble, pl.name)
         pl.ensemble.active_orchestrator = orch
-        scene._orchestrator = orch
-        scene._is_conductor = True
-        scene._system_index = pl.ensemble.system_names().index(pl.name)
+        scene.bind_orchestrator(
+            orch, conductor=True, index=pl.ensemble.system_names().index(pl.name)
+        )
 
     def release_scene(self, scene: Scene) -> None:
         """The teardown-side counterpart: clear the ensemble's active-
@@ -391,8 +391,7 @@ class EnsembleCoordinator:
         pl = self._pl
         if pl.ensemble is not None and scene.__dict__.get("_is_conductor", False):
             pl.ensemble.active_orchestrator = None
-            scene.__dict__["_orchestrator"] = None
-            scene.__dict__["_is_conductor"] = False
+            scene.clear_orchestrator()
         if pl.ensemble is not None and scene.__dict__.get("_audio_lock_held", False):
             pl.ensemble.release_audio(pl.name)
             scene.__dict__["_audio_lock_held"] = False
@@ -407,9 +406,9 @@ class EnsembleCoordinator:
         events). The actual orchestrator subclass + its protocol live
         in c64cast/orchestrator.py + subclasses."""
         pl = self._pl
-        assert pl._broadcast_interrupt is not None
-        assert pl._broadcast_resume is not None
-        pl._broadcast_interrupt.clear()
+        assert pl.broadcast_interrupt is not None
+        assert pl.broadcast_resume is not None
+        pl.broadcast_interrupt.clear()
         if pl.ensemble is None or pl.ensemble.active_orchestrator is None:
             # Stale event (orchestrator ended between set and our
             # observation). Drop the interrupt and let the run loop
@@ -452,9 +451,9 @@ class EnsembleCoordinator:
         # their setup(). Followers are not conductors; the index is
         # used by span-mode orchestrators to compute each follower's
         # slice of the global content.
-        follower_scene._orchestrator = orch
-        follower_scene._is_conductor = False
-        follower_scene._system_index = pl.ensemble.system_names().index(pl.name)
+        follower_scene.bind_orchestrator(
+            orch, conductor=False, index=pl.ensemble.system_names().index(pl.name)
+        )
         pl.safe_setup(follower_scene)
         pl.current = follower_scene
 
@@ -462,9 +461,9 @@ class EnsembleCoordinator:
 
         # Spin frames until the orchestrator releases us or stop fires.
         next_deadline = time.time()
-        while not pl._broadcast_resume.is_set() and not pl.stop_event.is_set():
+        while not pl.broadcast_resume.is_set() and not pl.stop_event.is_set():
             next_deadline = pl.run_one_frame(follower_scene, next_deadline)
-        pl._broadcast_resume.clear()
+        pl.broadcast_resume.clear()
 
         pl.log.info(
             "broadcast: resume — tearing down follower, restoring scene index %d", saved_idx

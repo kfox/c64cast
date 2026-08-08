@@ -1314,11 +1314,11 @@ def _run_session(
         # captures via lambda default-arg to avoid the late-binding loop
         # bug.
         for st, cfg in zip(stacks, cfgs, strict=True):
-            st.playlist.ensemble = ensemble
-            st.playlist._broadcast_interrupt = ensemble.broadcast_interrupt[st.name]
-            st.playlist._broadcast_resume = ensemble.broadcast_resume[st.name]
-            st.playlist.build_follower_scene = lambda scene_cfg, _st=st, _cfg=cfg: (
-                scene_factory.build_scene(
+            st.playlist.bind_ensemble(
+                ensemble,
+                interrupt=ensemble.broadcast_interrupt[st.name],
+                resume=ensemble.broadcast_resume[st.name],
+                build_follower_scene=lambda scene_cfg, _st=st, _cfg=cfg: scene_factory.build_scene(
                     scene_cfg,
                     _cfg,
                     _st.api,
@@ -1327,7 +1327,7 @@ def _run_session(
                     is_ensemble=True,
                     reu_available=_st.reu_available,
                     sampler_available=_st.sampler_available,
-                )
+                ),
             )
 
     control_server = None
