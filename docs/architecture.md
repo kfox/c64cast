@@ -2,7 +2,7 @@
 
 This is the per-module reference for the `c64cast/` tree: the design rationale, hardware constraints, and edge-case history behind each module — the *why*, and the dead ends, that the code alone doesn't carry. Read the relevant section before modifying a module, and update it in the same change set when you change that module's behavior.
 
-The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules.
+The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules. Since 2026-08 the package tree mirrors these topic areas on disk — one subpackage per area (`hw/`, `audio/`, `video/`, `scenes/`, `sid/`, `control/`, `wled/`, `app/`), with only the entry point and two private cross-cutting utilities (`_pollthread.py`, `_native_io.py`) at the package root. Section headings keep the module's bare filename, so anchors predate — and survive — the move.
 
 For end-user configuration see [the Programmer’s Reference Guide](reference/README.md), for known limitations [caveats.md](caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](extending.md).
 

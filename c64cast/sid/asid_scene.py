@@ -55,9 +55,9 @@ from typing import Any
 from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
 from c64cast.scenes.scenes import Scene
-from c64cast.sid import asid
 from c64cast.video.palette import C64_COLORS
 
+from . import asid
 from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
 from .sid_hw_config import (

@@ -34,9 +34,10 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
-from c64cast.app import config as cfgmod
-from c64cast.app import paths as pathsmod
 from c64cast.scenes import overlays as ovmod
+
+from . import config as cfgmod
+from . import paths as pathsmod
 
 # ---------------------------------------------------------------------------
 # Model

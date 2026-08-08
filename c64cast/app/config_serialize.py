@@ -30,8 +30,9 @@ import math
 import re
 
 from c64cast import __version__
-from c64cast.app import config as cfgmod
-from c64cast.app import introspect
+
+from . import config as cfgmod
+from . import introspect
 
 
 def _published_schema_url(version: str) -> str:

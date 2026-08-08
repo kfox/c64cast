@@ -237,7 +237,7 @@ class PlaylistMenu:
         import os
         import shutil
 
-        from c64cast.app import config_serialize
+        from . import config_serialize
 
         pl = self._pl
         if pl.config is None or not pl.config_path:

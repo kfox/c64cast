@@ -361,7 +361,7 @@ def _probe_machine_settings() -> list[Diagnostic]:
     section's one-stop "where everything lives" answer."""
     import tomllib
 
-    from c64cast.app import paths
+    from . import paths
 
     path = paths.settings_path()
     if not path.is_file():
@@ -404,7 +404,7 @@ def _probe_data_dirs() -> list[Diagnostic]:
     ``dac_curve_resolve.resolve_dac_curve_for_backend`` (at curve resolution),
     orphaned presets by ``transport.warn_if_legacy_presets_orphaned`` (at
     preset-store load)."""
-    from c64cast.app import paths
+    from . import paths
 
     return [
         Diagnostic("ok", "environment", "data dir", str(paths.data_root())),

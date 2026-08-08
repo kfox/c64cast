@@ -23,14 +23,15 @@ import sys
 import time
 
 from c64cast._native_io import silence_native_stderr
-from c64cast.app import config as cfgmod
-from c64cast.app import paths
 from c64cast.audio import dac_calibration
 from c64cast.audio.audio import AUDIO_AVAILABLE, resolve_audio_input_device
 from c64cast.audio.dac_capture_device import CaptureUnavailableError
 from c64cast.audio.dac_slot_ring import MeasurementError
 from c64cast.hw import char_rom
 from c64cast.hw.backend import make_backend
+
+from . import config as cfgmod
+from . import paths
 
 log = logging.getLogger("c64cast")
 
@@ -286,7 +287,7 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     --compat, --print-schema, --suggest-palette). Returns an exit code when one
     fired, else None so main() continues to the normal run path. These need no
     config file or hardware."""
-    from c64cast.app import introspect
+    from . import introspect
 
     if args.list_scenes:
         print(introspect.render_list_scenes())
@@ -322,7 +323,7 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     if args.print_schema:
         import json
 
-        from c64cast.app import schema
+        from . import schema
 
         print(json.dumps(schema.build_schema(), indent=2))
         return 0
@@ -333,7 +334,7 @@ def run_introspection(args: argparse.Namespace) -> int | None:
 
         return midi_setup.run_setup()
     if args.init is not None:
-        from c64cast.app import wizard
+        from . import wizard
 
         result = wizard.run_init(args.init or None)
         if result is None:
@@ -364,9 +365,9 @@ def run_save_settings(args: argparse.Namespace) -> int:
     fields) and atomically, prints the path + contents, and returns 0. If
     nothing savable was provided, prints what's savable and returns 2. The DMA
     password can never be written (``config_serialize`` suppresses it)."""
-    from c64cast.app import config_serialize, paths
     from c64cast.control import transport
 
+    from . import config_serialize, paths
     from .connect import apply_to_config, parse_connection_uri
 
     provided = (
