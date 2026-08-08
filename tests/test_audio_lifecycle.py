@@ -24,12 +24,13 @@ from _fakes import FakeAPI
 
 from c64cast import audio as audio_mod
 from c64cast.api import Ultimate64API
-from c64cast.audio import (
+from c64cast.audio import AudioStreamer
+from c64cast.audio_handlers import (
     NEUTRAL_SAMPLE,
     PREBUFFER_CHUNKS,
     SAMPLE_TAP_SIZE,
-    AudioStreamer,
     encode_floats_to_dac,
+    nmi_rate_step,
 )
 from c64cast.c64 import CIA2, SID
 
@@ -725,7 +726,7 @@ class NmiRateSafetyTest(unittest.TestCase):
 
 
 class NmiRateAdaptiveStepTest(unittest.TestCase):
-    """The pure adaptive-rate control step (`audio._nmi_rate_step`) + its wiring.
+    """The pure adaptive-rate control step (`audio_handlers.nmi_rate_step`) + its wiring.
 
     Drives the measured consumer rate toward target by stepping the CIA #2 latch.
     Rate/latch are inverse, so R too slow → SMALLER latch (faster). NTSC@10500:
@@ -737,7 +738,7 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
     TARGET = 10500.0
 
     def _step(self, r_rate: float, latch: int) -> int:
-        return audio_mod._nmi_rate_step(
+        return nmi_rate_step(
             r_rate,
             latch,
             nominal_latch=self.NOMINAL,

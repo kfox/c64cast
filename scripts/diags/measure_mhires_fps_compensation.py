@@ -21,7 +21,7 @@ from pathlib import Path
 
 import _diaglib as d
 
-from c64cast.audio import (
+from c64cast.audio_handlers import (
     NMI_ROUTINE_ADDR,
     RING_BUFFER_ADDR,
     RING_BUFFER_END,

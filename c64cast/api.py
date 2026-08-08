@@ -90,7 +90,7 @@ BASIC_CLEAR_LOOP_PRG = bytes(
     ]
 )
 
-# C64-side SID player. Default base $C300 (just past audio.py's
+# C64-side SID player. Default base $C300 (just past audio_handlers.py's
 # $C000-$C2FF allocation for the NMI DAC + REU pump handlers); per-tune
 # relocated by [_choose_player_layout] when the SID payload would overlap
 # the default. 61 bytes; the IRQ handler entry sits at base + 38.
@@ -388,8 +388,8 @@ REINIT_STUB_TEMPLATE = bytes(
     ]
 )
 
-# Audio handler region — audio.py installs NMI DAC at $C020 and REU pump
-# handlers at $C100-$C2FF. Refuse player layouts that would overlap so
+# Audio handler region — audio.AudioStreamer installs the NMI DAC at $C020
+# and REU pump handlers at $C100-$C2FF (handler bytes in audio_handlers.py). Refuse player layouts that would overlap so
 # we don't clobber bytes the audio path may read/write under us.
 _AUDIO_REGION_LO = 0xC000
 _AUDIO_REGION_HI = 0xC300  # exclusive
@@ -455,7 +455,7 @@ def _layout_fits(
     layout: _PlayerLayout, parsed: ParsedPsid, avoid: bytes | bytearray | None = None
 ) -> bool:
     """True when the layout's player + stub blocks both land in legal
-    free RAM (above $0820, below $D000), don't overlap audio.py's
+    free RAM (above $0820, below $D000), don't overlap audio_handlers.py's
     $C000-$C2FF region, don't overlap the SID payload, don't overlap
     each other, and (when `avoid` is given) don't overlap any RAM byte the
     tune writes / the caller reserved.
@@ -491,7 +491,7 @@ def _find_free_layout(parsed: ParsedPsid, avoid: bytes | bytearray) -> _PlayerLa
 
     `avoid` is the union of the tune's observed write footprint and the
     scene-reserved regions. We scan $0820-$D000 for runs of bytes that are
-    free of `avoid`, the SID payload, and audio.py's $C000-$C2FF region,
+    free of `avoid`, the SID payload, and audio_handlers.py's $C000-$C2FF region,
     and pick the largest such run that can hold the 115-byte bundle (player
     MC 73 + re-INIT stub at player_base+80). Largest-first (tie-break
     lowest address) puts the player deep in genuinely-unused RAM, which

@@ -14,15 +14,16 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.api import Ultimate64API
-from c64cast.audio import (
+from c64cast.audio import AudioStreamer
+from c64cast.audio_handlers import (
     NEUTRAL_SAMPLE,
+    REU_AUDIO_SRC_TRACKER_ADDR,
     REU_MIC_BASE,
     REU_MIC_BASE_HI,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_END_HI,
     REU_MIC_IRQ_HANDLER,
     REU_MIC_SIZE,
-    REU_MIC_SRC_TRACKER_ADDR,
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_CIA1_LATCH,
     REU_PUMP_HANDLER_ADDR,
@@ -30,7 +31,6 @@ from c64cast.audio import (
     RING_BUFFER_ADDR,
     RING_BUFFER_END_HI,
     RING_BUFFER_HI,
-    AudioStreamer,
 )
 
 
@@ -96,11 +96,11 @@ class ReuMicIrqHandlerTest(unittest.TestCase):
         # operand low byte = tracker offset; operand high byte = tracker page.
         # LDA tracker_lo at offset 11:
         self.assertEqual(REU_MIC_IRQ_HANDLER[11], 0xAD)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[12], REU_MIC_SRC_TRACKER_ADDR & 0xFF)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[13], REU_MIC_SRC_TRACKER_ADDR >> 8)
+        self.assertEqual(REU_MIC_IRQ_HANDLER[12], REU_AUDIO_SRC_TRACKER_ADDR & 0xFF)
+        self.assertEqual(REU_MIC_IRQ_HANDLER[13], REU_AUDIO_SRC_TRACKER_ADDR >> 8)
         # LDA tracker_hi at offset 23:
         self.assertEqual(REU_MIC_IRQ_HANDLER[23], 0xAD)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[24], (REU_MIC_SRC_TRACKER_ADDR + 2) & 0xFF)
+        self.assertEqual(REU_MIC_IRQ_HANDLER[24], (REU_AUDIO_SRC_TRACKER_ADDR + 2) & 0xFF)
 
     def test_src_wrap_check_uses_mic_ring_end(self):
         # The wrap check at offset 59-63 reads tracker_hi and compares
@@ -117,7 +117,7 @@ class ReuMicIrqHandlerTest(unittest.TestCase):
         self.assertEqual(REU_MIC_IRQ_HANDLER[67], REU_MIC_BASE_HI)
         # STA tracker_hi at offset 68:
         self.assertEqual(REU_MIC_IRQ_HANDLER[68], 0x8D)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[69], (REU_MIC_SRC_TRACKER_ADDR + 2) & 0xFF)
+        self.assertEqual(REU_MIC_IRQ_HANDLER[69], (REU_AUDIO_SRC_TRACKER_ADDR + 2) & 0xFF)
 
     def test_dst_wrap_uses_audio_ring(self):
         # The dst wrap reads $DF03 (this side IS reliable on the U64's REU)
@@ -244,7 +244,7 @@ class StartMicForReuPumpTest(unittest.TestCase):
         self.assertEqual(fake.memories["DF02"], expected)
 
     def test_main_ram_tracker_seeded_to_mic_base(self):
-        # The 3-byte src tracker at REU_MIC_SRC_TRACKER_ADDR ($C200) gets
+        # The 3-byte src tracker at REU_AUDIO_SRC_TRACKER_ADDR ($C200) gets
         # seeded with REU_MIC_BASE at bring-up; the handler reads it
         # (not $DF06) on every IRQ. If this seed is wrong, the first
         # transfer reads from a bogus REU offset.
@@ -255,7 +255,7 @@ class StartMicForReuPumpTest(unittest.TestCase):
             f"{(REU_MIC_BASE >> 8) & 0xFF:02X}"
             f"{(REU_MIC_BASE >> 16) & 0xFF:02X}"
         )
-        key = f"{REU_MIC_SRC_TRACKER_ADDR:04X}"
+        key = f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}"
         self.assertEqual(fake.memories[key], expected)
 
     def test_reu_length_matches_chunk_size(self):

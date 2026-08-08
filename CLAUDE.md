@@ -171,7 +171,7 @@ Where the per-subsystem detail lives (the [architecture reference](docs/architec
 |---|---|
 | `[color]` shaping, `dither`, `color_match`, `cell_strategy`, `motion_smoothing`, `palette_mode`, fades | [`modes.py`](docs/architecture/video-color.md#modespy--displaymode-hierarchy) |
 | Forced-palette remap + rolling palette (`force_palette`) | [`rolling_palette.py` + `palette.py`](docs/architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
-| DAC curves, Mahoney `$D418`, per-system calibration, REU pump | [`audio.py`, `dsp.py`](docs/architecture/audio.md#audiopy--audiostreamer) |
+| DAC curves, Mahoney `$D418`, per-system calibration, REU pump | [`audio.py`, `audio_handlers.py`, `dsp.py`](docs/architecture/audio.md#audiopy--audiostreamer) |
 | Ultimate Audio FPGA sampler | [`sampler.py`](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
 | Audio-input music features (reactive visuals from live input), `[audio_features]` | [`audio_features.py`](docs/architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
 | Bitmap + `$D418`-DAC tempo compensation (`tempo_scale`) | [`video.py`](docs/architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |

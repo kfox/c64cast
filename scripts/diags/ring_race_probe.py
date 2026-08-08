@@ -32,7 +32,7 @@ TWO PHASES, both backend-comparable:
 
   race  The production condition. A feeder mirrors the audio worker's schedule
         exactly — 1024-byte chunks at a servoed pace, dripped as 128-byte quanta
-        spread across the chunk period, running the real ``_servo_period`` — but
+        spread across the chunk period, running the real ``servo_period`` — but
         writes **lap markers** instead of audio, so the ring's own contents say
         where the write head got to. Periodically read the whole ring back and
         compare:
@@ -64,7 +64,8 @@ import time
 
 import _diaglib as d
 
-from c64cast.audio import (
+from c64cast.audio import AudioStreamer
+from c64cast.audio_handlers import (
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
     CIA2_ICR_ENABLE_TIMER_A_NMI,
@@ -74,8 +75,7 @@ from c64cast.audio import (
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
     RING_BUFFER_SIZE,
-    AudioStreamer,
-    _servo_period,
+    servo_period,
 )
 from c64cast.backend import make_backend
 from c64cast.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
@@ -226,7 +226,7 @@ class MarkerFeeder:
 
     Mirrors ``AudioStreamer._drip_chunk`` + ``_next_pace_increment``: quanta
     spread at the *nominal* chunk period (the servo moves the chunk boundary, not
-    the intra-chunk spacing), absolute pacing, and the real ``_servo_period`` on
+    the intra-chunk spacing), absolute pacing, and the real ``servo_period`` on
     the real ``(w_head - R) % RING_BUFFER_SIZE``. It imports that private
     controller deliberately — a reimplementation here would be measuring a
     different loop from the one that ships.
@@ -292,7 +292,7 @@ class MarkerFeeder:
                     gap = (self.w_head - r) % RING_BUFFER_SIZE
                     self.gap_min = gap if self.gap_min < 0 else min(self.gap_min, gap)
                     self.gap_max = max(self.gap_max, gap)
-                    increment, integ = _servo_period(gap, integ, chunk_period=self.chunk_period)
+                    increment, integ = servo_period(gap, integ, chunk_period=self.chunk_period)
             next_write += increment
 
     def start(self) -> None:

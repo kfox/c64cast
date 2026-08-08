@@ -53,7 +53,7 @@ import _diaglib as d
 import numpy as np
 
 # c64cast imports work because _diaglib put the repo root on sys.path.
-from c64cast.audio import encode_floats_to_dac
+from c64cast.audio_handlers import encode_floats_to_dac
 from c64cast.config import DSPCfg
 from c64cast.config import load as load_config
 from c64cast.dsp import AudioDSP, DSPParams

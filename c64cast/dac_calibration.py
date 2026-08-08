@@ -1757,12 +1757,12 @@ def run_calibration(
             "the 'mic' extra: uv tool install --force 'c64cast[all]'"
         ) from e
 
-    from .audio import (
+    from .audio import AudioStreamer
+    from .audio_handlers import (
         CIA2_CRA_STOP,
         CIA2_ICR_DISABLE_ALL,
         RING_BUFFER_ADDR,
         RING_BUFFER_SIZE,
-        AudioStreamer,
     )
     from .c64 import CIA2
     from .dsp import DSPParams

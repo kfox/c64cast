@@ -105,7 +105,7 @@ OP_BYTES = 4  # addr_lo, addr_hi, value, wait
 _SLOT_ALIGN = 16  # round slot size up to this so single-SID → 128 (plan pins it)
 
 # NTSC kernal default CIA #1 Timer A latch ($4025 → ~60.0 Hz), restored on
-# teardown so the next kernal IRQ runs at the stock jiffy rate (see audio.py's
+# teardown so the next kernal IRQ runs at the stock jiffy rate (see audio_handlers.py's
 # identically-named constant; PAL differs but the timer keeps running and a
 # reset clears it either way).
 KERNAL_CIA1_TIMER_A_LATCH_NTSC = 0x4025

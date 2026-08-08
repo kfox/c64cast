@@ -15,7 +15,7 @@ from typing import TypedDict
 import cv2
 import numpy as np
 
-from .audio import REU_PUMP_BODY_SUBROUTINE_ADDR
+from .audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 from .backend import C64Backend
 from .c64 import (
     CIA1,
@@ -436,7 +436,7 @@ REU_VIDEO_BITMAP_SCREEN_LEN = SCREEN.N_CELLS
 REU_VIDEO_BITMAP_COLOR_BASE = 0xE13000  # 1000-byte color RAM staging
 REU_VIDEO_BITMAP_COLOR_LEN = SCREEN.N_CELLS
 
-# C64-side bank-swap raster IRQ handler. Lives at $C500 (audio.py owns
+# C64-side bank-swap raster IRQ handler. Lives at $C500 (audio_handlers.py owns
 # $C000-$C2FF for NMI DAC + REU pump handlers; api.py uses $C300/$C400
 # for the SID player + re-INIT stub; big_text.py uses $C000 — but
 # big_text is only valid on `blank`/`mcm` scenes, and HiresDisplayMode
@@ -495,7 +495,7 @@ TRACKER_OFF_READY_FLAG = 15  # 1 byte
 # A/X/Y survive: kernal $FF48 saved A/X/Y before vectoring through
 # $0314; our handler uses A + X, both of which $EA81 restores via PLA.
 # Same convention as big_text.py's raster IRQ ([overlays/big_text.py:104])
-# and audio.py's REU pump ([audio.py REU_IRQ_HANDLER]).
+# and the REU pump ([audio_handlers.py REU_IRQ_HANDLER]).
 #
 # Offsets must be exact: BEQ at offset 5 (+51 → 58), BEQ at offset 13
 # (+43 → 58), BPL at offsets 24 + 40 (-9 → 17 + 33). The assert below
@@ -716,8 +716,8 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 # can't preempt IRQ handlers (I flag), so audio + bank-swap serialize
 # naturally — each fully completes its REC ($DF02-$DF08) use before
 # returning. The audio handler at $C100 stays byte-for-byte identical
-# (audio.py owns its bytes; this side only routes execution there).
-AUDIO_HANDLER_INSTALL_ADDR = 0xC100  # where audio.py uploads its REU pump
+# (audio_handlers.py owns its bytes; this side only routes execution there).
+AUDIO_HANDLER_INSTALL_ADDR = 0xC100  # where audio.AudioStreamer uploads its REU pump
 AUDIO_HANDLER_STUB = bytes([0x4C, 0x31, 0xEA])  # JMP $EA31
 
 
@@ -1081,8 +1081,8 @@ assert len(MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER) == 176, (
 )
 # Sanity-check the cross-module address coupling between the chunked
 # dispatcher (constructed here from raw bytes) and the pump body
-# subroutine address (imported from audio.py at the top of the module).
-# If audio.py ever relocates REU_PUMP_BODY_SUBROUTINE_ADDR away from
+# subroutine address (imported from audio_handlers.py at the top of the
+# module). If audio_handlers.py ever relocates REU_PUMP_BODY_SUBROUTINE_ADDR away from
 # $C180, the JSR operands inside the dispatcher above must move with it.
 assert REU_PUMP_BODY_SUBROUTINE_ADDR == 0xC180
 assert _PUMP_BODY_LO == (REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF)

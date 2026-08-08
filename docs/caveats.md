@@ -230,7 +230,7 @@ invisible in an oscilloscope view. The PSID validation above is
 shared, so if `run_sid_player` refuses a tune, `SidHostEmu` refuses
 the same tune with the same error.
 
-The player MC defaults to `$C300` because [audio.py](../c64cast/audio.py)
+The player MC defaults to `$C300` because [audio_handlers.py](../c64cast/audio_handlers.py)
 owns `$C000-$C2FF` (NMI DAC at `$C020`, REU pump at `$C100`, REU mic
 tracker at `$C200`); the relocation picker refuses any layout that would
 overlap that region. `WaveformScene.setup()` calls `audio.stop()` before
