@@ -425,7 +425,7 @@ NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY
 # (halt + the handler's own ~68 cycles) under the two periods it would take to
 # swallow an underflow.
 #
-# This is the host-side twin of modes.BANK_SWAP_CHUNK_SIZE, which splits C64-side
+# This is the host-side twin of modes_irq.BANK_SWAP_CHUNK_SIZE, which splits C64-side
 # REC DMA for exactly the same reason and took NMI capture from 67% to 97%.
 # Measured payoff at the 12 kHz NTSC default (85-cycle period): a 1024-byte write
 # freezes the CPU ~1064 us = 12.8 periods and costs 27.3 Hz of FM deviation on a

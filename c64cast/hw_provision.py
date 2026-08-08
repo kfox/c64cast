@@ -117,7 +117,7 @@ REU_SIZE_FIELD = "REU Size"
 # reu_size[]) → capacity in bytes. Used to (a) decide whether the U64's current
 # REU is large enough for c64cast's staged offsets and (b) pick the size to
 # provision. c64cast's highest REU offset is the video staging region near
-# 14 MB (modes.REU_VIDEO_BITMAP_COLOR_BASE = $E13000); the audio mic ring sits
+# 14 MB (modes_irq.REU_VIDEO_BITMAP_COLOR_BASE = $E13000); the audio mic ring sits
 # near 1 MB. 16 MB covers every offset and is FPGA-backed (free), so the
 # provisioner always sizes to the max when it enables the REU.
 _REU_SIZE_BYTES: dict[str, int] = {

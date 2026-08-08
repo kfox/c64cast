@@ -311,6 +311,7 @@ files = [
     "c64cast/socket_dma.py",
     "c64cast/teensyrom_dma.py",
     "c64cast/scenes.py",
+    "c64cast/modes_irq.py",
     "c64cast/config.py",
     "c64cast/scene_factory.py",
     "c64cast/ensemble.py",

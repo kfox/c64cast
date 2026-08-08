@@ -33,6 +33,12 @@ from c64cast.c64 import (
 )
 from c64cast.config import Config, VideoCfg
 from c64cast.modes import (
+    BlankDisplayMode,
+    HiresDisplayMode,
+    MultiHiresDisplayMode,
+    PETSCIIDisplayMode,
+)
+from c64cast.modes_irq import (
     AUDIO_HANDLER_INSTALL_ADDR,
     AUDIO_HANDLER_STUB,
     BANK_SWAP_CHUNK_SIZE,
@@ -63,10 +69,6 @@ from c64cast.modes import (
     TRACKER_OFF_BITMAP_REGS,
     TRACKER_OFF_READY_FLAG,
     TRACKER_OFF_SCREEN_REGS,
-    BlankDisplayMode,
-    HiresDisplayMode,
-    MultiHiresDisplayMode,
-    PETSCIIDisplayMode,
 )
 from c64cast.scene_factory import _build_display_mode
 
@@ -1039,7 +1041,7 @@ class ReuMHiresSetupTest(unittest.TestCase):
 
 
 class ReuMHiresTeardownTest(unittest.TestCase):
-    """teardown() shares _uninstall_bank_swap_irq with hires; verify the
+    """teardown() shares modes_irq.uninstall_bank_swap_irq with hires; verify the
     same reverse-of-install behavior fires for mhires."""
 
     def _setup_then_teardown(self):
@@ -1288,7 +1290,7 @@ class MergedDispatcherIntegrityTest(unittest.TestCase):
     handler fallthrough (for non-raster path). The first BEQ is
     retargeted from chain to the audio JMP.
 
-    See _make_merged_handler in modes.py for the empirical rationale
+    See _make_merged_handler in modes_irq.py for the empirical rationale
     behind not inserting a CIA #1 ICR check between chain and
     fallthrough (Cam Link envelope FFT confirmed the check itself
     drove a 60 Hz envelope harmonic that's not present when the
@@ -1386,7 +1388,7 @@ class MergedDispatcherSetupTest(unittest.TestCase):
     def test_mhires_uses_chunked_merged_handler_when_audio_active(self):
         # 2026-05-27: mhires + REU audio defaults to the CHUNKED merged
         # variant (146 B). The monolithic merged variant (86 B) is kept in
-        # modes.py for documentation / A/B testing but is no longer used
+        # modes_irq.py for documentation / A/B testing but is no longer used
         # at runtime — chunked is the only way to keep NMI alive across
         # the bitmap's 8 ms REC DMA.
         fake = FakeAPI()

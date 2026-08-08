@@ -2,7 +2,7 @@
 
 Pure data + pure functions only: the handler byte arrays audio.AudioStreamer
 uploads to C64 RAM (the $C020 NMI DAC routine, the $C100 REU pump IRQ
-handlers, the $C180 pump-body subroutine that modes.py's chunked bank-swap
+handlers, the $C180 pump-body subroutine that modes_irq.py's chunked bank-swap
 dispatcher JSRs into), the ring/pump memory-map constants those bytes are
 assembled against, the control-loop tuning constants, and the pure pacing
 helpers (stomp_spans, servo_period, nmi_rate_step) that keep the control
@@ -852,7 +852,7 @@ REU_PUMP_BODY_SUBROUTINE = (
 )
 assert len(REU_PUMP_BODY_SUBROUTINE) == 105, (
     "REU_PUMP_BODY_SUBROUTINE length changed — the chunked bank-swap "
-    "dispatcher in modes.py JSRs to a fixed address ($C180) and the "
+    "dispatcher in modes_irq.py JSRs to a fixed address ($C180) and the "
     "subroutine must end with RTS at offset 104 so the BCC at offset "
     "92 (displacement +10) lands on it correctly."
 )

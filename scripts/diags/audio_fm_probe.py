@@ -13,7 +13,7 @@ This tool measures both, and — the reason it exists — measures how they scal
 both far *above* one NMI period, and the per-write halt duration for a host
 DMAWRITE is nowhere measured in the tree (every µs/cycle halt figure in c64cast is
 for C64-side REC DMA). The C64-side fix for exactly this problem is already shipped
-and measured — ``modes.BANK_SWAP_CHUNK_SIZE = 100`` splits each REC DMA so its halt
+and measured — ``modes_irq.BANK_SWAP_CHUNK_SIZE = 100`` splits each REC DMA so its halt
 stays under one NMI period, taking NMI capture from 67% to 97% — but it was never
 applied to the host write path, where the audio worker still pushes 1024 bytes in
 one command.
