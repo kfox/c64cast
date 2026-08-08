@@ -334,7 +334,7 @@ NEUTRAL_INDEX: Final = 128
 
 # Config choices for the introspection/schema layer (single source of truth).
 # "auto" (default) and "calibrated" are *system-aware* choices resolved at
-# runtime by dac_calibration.resolve_dac_curve_for_backend (they depend on the
+# runtime by dac_curve_resolve.resolve_dac_curve_for_backend (they depend on the
 # connected backend and whether a per-unit calibration exists); the baked-table
 # names ("linear", "mahoney_ultisid") resolve here in resolve_dac_curve.
 DAC_CURVE_CHOICES: Final[list[str]] = ["auto", "linear", *_DAC_CURVE_TABLES, "calibrated"]
@@ -349,7 +349,7 @@ def resolve_dac_curve(name: str) -> bytes | None:
     typo surfaces at config/construction time rather than silently falling back
     to linear. The system-aware ``"auto"``/``"calibrated"`` values are NOT baked
     tables — resolve them via
-    :func:`c64cast.dac_calibration.resolve_dac_curve_for_backend` before calling
+    :func:`c64cast.dac_curve_resolve.resolve_dac_curve_for_backend` before calling
     this; passing them here raises.
     """
     if name == "linear":

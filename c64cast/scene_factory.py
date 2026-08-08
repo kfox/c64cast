@@ -957,7 +957,7 @@ def validate_dac_curve_cfg(cfg: Config) -> None:
     # An EXPLICIT non-linear curve conflicts with digi_boost (both park the 3 SID
     # voices as DC sources for different DAC schemes). "auto" is not a conflict:
     # it yields to digi_boost by resolving to linear (see
-    # dac_calibration.resolve_dac_curve_for_backend).
+    # dac_curve_resolve.resolve_dac_curve_for_backend).
     if cfg.audio.dac_curve in ("mahoney_ultisid", "calibrated") and cfg.audio.digi_boost:
         raise ConfigError(
             "[audio].dac_curve and [audio].digi_boost are mutually exclusive "

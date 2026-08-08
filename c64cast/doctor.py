@@ -399,7 +399,7 @@ def _probe_data_dirs() -> list[Diagnostic]:
     dir — the one-stop "where does everything live". There is no legacy-repo
     migration nudge here any more: stale files from the pre-canonical-data-dir
     layout are surfaced at use time instead — DAC calibration by
-    ``dac_calibration.resolve_dac_curve_for_backend`` (at curve resolution),
+    ``dac_curve_resolve.resolve_dac_curve_for_backend`` (at curve resolution),
     orphaned presets by ``transport.warn_if_legacy_presets_orphaned`` (at
     preset-store load)."""
     from . import paths
@@ -590,12 +590,12 @@ def _validate_dac_curve_resolution(
     (be=None), so on the Ultimate / a serial TeensyROM (no
     dac_calibration_profile override) it can only use the offline fallback
     key, not the live device identity (unique_id / USB serial) a real run
-    would use — see dac_calibration.offline_key_is_authoritative. A miss
+    would use — see dac_calibration_store.offline_key_is_authoritative. A miss
     against that fallback key doesn't prove no calibration applies, so when
     calibration files exist on disk for this backend that the fallback key
     can't confirm or rule out, the message/error is hedged rather than
     asserting a possibly-wrong resolution."""
-    from . import dac_calibration
+    from . import dac_calibration_store, dac_curve_resolve
 
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
@@ -607,11 +607,11 @@ def _validate_dac_curve_resolution(
             continue  # already reported by _validate_dac_curve_cfg
         if not cfg.audio.enabled or cfg.audio.dac_curve not in ("auto", "calibrated"):
             continue
-        authoritative = dac_calibration.offline_key_is_authoritative(cfg)
+        authoritative = dac_calibration_store.offline_key_is_authoritative(cfg)
         try:
-            label, _ = dac_calibration.resolve_dac_curve_for_backend(cfg)
+            label, _ = dac_curve_resolve.resolve_dac_curve_for_backend(cfg)
             if not authoritative and not label.startswith("calibrated:"):
-                on_disk = dac_calibration.list_calibration_files(cfg.hardware.backend)
+                on_disk = dac_calibration_store.list_calibration_files(cfg.hardware.backend)
                 if on_disk:
                     out.append(
                         Diagnostic(
@@ -639,7 +639,7 @@ def _validate_dac_curve_resolution(
             )
         except ValueError as e:
             if not authoritative:
-                on_disk = dac_calibration.list_calibration_files(cfg.hardware.backend)
+                on_disk = dac_calibration_store.list_calibration_files(cfg.hardware.backend)
                 if on_disk:
                     out.append(
                         Diagnostic(
@@ -1581,12 +1581,12 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
     """
     if not _wants_dac_calibration_check(cfg):
         return []
-    from . import dac_calibration
+    from . import dac_calibration_store, dac_curve_resolve
 
     subject = f"{name} (DAC calibration)"
     curve = cfg.audio.dac_curve
     try:
-        label, table = dac_calibration.resolve_dac_curve_for_backend(
+        label, table = dac_curve_resolve.resolve_dac_curve_for_backend(
             cfg,
             be=api,  # type: ignore[arg-type]
         )
@@ -1601,7 +1601,7 @@ def _probe_dac_calibration_status(name: str, cfg: Config, api: object) -> list[D
                 "[audio].dac_curve = 'auto'.",
             )
         ]
-    key = dac_calibration.resolve_calibration_key(cfg, api)  # type: ignore[arg-type]
+    key = dac_calibration_store.resolve_calibration_key(cfg, api)  # type: ignore[arg-type]
     if table is not None:
         message = f"[audio].dac_curve = {curve!r} resolves to {label!r} (key {key!r})."
     else:

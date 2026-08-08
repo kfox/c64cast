@@ -802,6 +802,20 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
 # ---------------------------------------------------------------------------
 # SID player — host-side orchestration
 # ---------------------------------------------------------------------------
+class _SidLaunch(NamedTuple):
+    """One SID-player launch, bundled for the backend-specific kick: the
+    parsed tune, the resolved layout, the built player MC + re-INIT stub
+    blobs, and the caller's launch options."""
+
+    parsed: ParsedPsid
+    layout: _PlayerLayout
+    mc: bytes
+    reinit: bytes
+    timeout: float
+    avoid: bytes | bytearray | None = None
+    defer_audio: bool = False
+
+
 class _SidPlayerMixin(BufferedWriteBackend):
     """SID-player state + the host-side work of running a tune on the 6510.
 
@@ -848,20 +862,11 @@ class _SidPlayerMixin(BufferedWriteBackend):
 
     # ---- backend-specific kick (subclass implements) ----------------------
     @abstractmethod
-    def _launch_sid_player(
-        self,
-        parsed: ParsedPsid,
-        layout: _PlayerLayout,
-        mc: bytes,
-        reinit: bytes,
-        timeout: float,
-        avoid: bytes | bytearray | None,
-        defer_audio: bool,
-    ) -> bool:
+    def _launch_sid_player(self, launch: _SidLaunch) -> bool:
         """DMA the SID payload + player MC + re-INIT stub into C64 RAM and hand
         control to the player MC. Use `_write_sid_blobs` for the standard
-        three-blob upload. `avoid` is the caller's RAM footprint bitmap (or
-        None), forwarded for backends that need it.
+        three-blob upload. `launch.avoid` is the caller's RAM footprint bitmap
+        (or None), forwarded for backends that need it.
 
         Returns True to have `run_sid_player` run the standard post-start
         finalize — record the audio-start instant + auto-tune the PLAY-rate
@@ -873,9 +878,7 @@ class _SidPlayerMixin(BufferedWriteBackend):
         `run_sid_player` finalize before the swap)."""
         ...
 
-    def _write_sid_blobs(
-        self, parsed: ParsedPsid, layout: _PlayerLayout, mc: bytes, reinit: bytes
-    ) -> None:
+    def _write_sid_blobs(self, launch: _SidLaunch) -> None:
         """DMA the SID payload + patched player MC + re-INIT stub to their C64
         addresses. Invalidates the delta cache first (the payload + player MC
         overlap arbitrary RAM regions; a clean baseline keeps the next scene's
@@ -884,9 +887,9 @@ class _SidPlayerMixin(BufferedWriteBackend):
         trampoline) have been queued, so they all land before the BASIC SYS
         fires."""
         self.invalidate_cache()
-        self.write_memory_file(f"{parsed.load_addr:04X}", parsed.payload)
-        self.write_memory_file(f"{layout.player_base:04X}", mc)
-        self.write_memory_file(f"{layout.stub_base:04X}", reinit)
+        self.write_memory_file(f"{launch.parsed.load_addr:04X}", launch.parsed.payload)
+        self.write_memory_file(f"{launch.layout.player_base:04X}", launch.mc)
+        self.write_memory_file(f"{launch.layout.stub_base:04X}", launch.reinit)
 
     def run_sid_player(
         self,
@@ -953,7 +956,10 @@ class _SidPlayerMixin(BufferedWriteBackend):
 
         mc = _build_player_mc(parsed, layout, play_bank=play_bank)
         reinit = _build_reinit_stub(parsed, layout)
-        finalize = self._launch_sid_player(parsed, layout, mc, reinit, timeout, avoid, defer_audio)
+        launch = _SidLaunch(
+            parsed, layout, mc, reinit, timeout=timeout, avoid=avoid, defer_audio=defer_audio
+        )
+        finalize = self._launch_sid_player(launch)
 
         if finalize:
             # The backend started audio synchronously here (the Ultimate's
@@ -1585,16 +1591,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         except requests.RequestException as e:
             log.warning("U64 reset failed: %s", e)
 
-    def _launch_sid_player(
-        self,
-        parsed: ParsedPsid,
-        layout: _PlayerLayout,
-        mc: bytes,
-        reinit: bytes,
-        timeout: float,
-        avoid: bytes | bytearray | None = None,
-        defer_audio: bool = False,
-    ) -> bool:
+    def _launch_sid_player(self, launch: _SidLaunch) -> bool:
         """Ultimate kick: DMA the SID payload + player MC + re-INIT stub, flush
         so all three land, then POST a `10 SYS <player_base>` PRG to the REST
         run_prg runner. run_prg soft-resets the C64 (RAM preserved — the player
@@ -1616,15 +1613,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         WaveformScene's `begin_sid_audio()` is then a no-op, and it (re)asserts the
         bitmap display *after* this call as it always has."""
         self.blank_display()
-        self._write_sid_blobs(parsed, layout, mc, reinit)
+        self._write_sid_blobs(launch)
         self.flush()
-        basic_stub = _build_basic_sys_stub(layout.player_base)
+        basic_stub = _build_basic_sys_stub(launch.layout.player_base)
         url = f"{self.base_url}{U64_API.RUN_PRG}"
         try:
             r = self.session.post(
                 url,
                 files={"file": ("sidplayer.prg", basic_stub)},
-                timeout=timeout,
+                timeout=launch.timeout,
             )
             r.raise_for_status()
         except requests.HTTPError as e:

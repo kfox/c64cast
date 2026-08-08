@@ -25,6 +25,7 @@ from . import (
     __version__,
     char_rom,
     dac_calibration,
+    dac_curve_resolve,
     hw_provision,
     orchestrators,  # noqa: F401 — registers built-in orchestrator subclasses
     paths,
@@ -35,6 +36,8 @@ from ._native_io import silence_native_stderr
 from .api import SocketDMAError
 from .audio import AUDIO_AVAILABLE, AudioStreamer, resolve_audio_input_device
 from .backend import C64Backend, make_backend
+from .dac_capture_device import CaptureUnavailableError
+from .dac_slot_ring import MeasurementError
 from .ensemble import Ensemble, SystemStack
 from .interstitial import default_factory as interstitial_factory
 from .keyboard import CommodoreKeyPoller
@@ -878,7 +881,7 @@ def build_stack(
 
     # Resolve the system-aware [audio].dac_curve ("auto"/"calibrated") to a
     # concrete (label, table) for this backend + any per-unit calibration.
-    dac_curve_label, dac_table = dac_calibration.resolve_dac_curve_for_backend(cfg, be=api)
+    dac_curve_label, dac_table = dac_curve_resolve.resolve_dac_curve_for_backend(cfg, be=api)
     if cfg.audio.enabled and dac_curve_label != cfg.audio.dac_curve:
         log.info("audio: dac_curve %s → %s", cfg.audio.dac_curve, dac_curve_label)
 
@@ -1724,7 +1727,7 @@ def main(argv=None) -> int:
         # A rig that can't be measured (no capture device, or a capture that
         # doesn't contain the ring) is a user-fixable setup problem, not a bug —
         # both carry actionable text, so print it and exit rather than traceback.
-        except (dac_calibration.CaptureUnavailableError, dac_calibration.MeasurementError) as e:
+        except (CaptureUnavailableError, MeasurementError) as e:
             log.error("%s", e)
             return 3
         finally:

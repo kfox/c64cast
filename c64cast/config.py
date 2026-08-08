@@ -563,7 +563,7 @@ class AudioCfg:
     # + 3-off bits) for ~6-7 effective bits, using a baked table measured on the
     # U64's emulated UltiSID. "calibrated" forces this system's calibrated table
     # (errors if none). Non-linear curves are mutually exclusive with digi_boost.
-    # See dac_curves.py, dac_calibration.py + docs/architecture.md.
+    # See dac_curves.py, dac_curve_resolve.py + docs/architecture.md.
     dac_curve: str = field(
         default="auto",
         metadata={
@@ -583,7 +583,7 @@ class AudioCfg:
     # so it can't tell which physical SID it's currently plugged into — naming
     # a profile at --calibrate-dac time and passing the same name on every
     # playback run against that host is the only way to keep calibrations
-    # straight when the cartridge moves between machines. See dac_calibration.py.
+    # straight when the cartridge moves between machines. See dac_calibration_store.py.
     dac_calibration_profile: str | None = field(
         default=None,
         metadata={

@@ -14,7 +14,7 @@ from _fakes import FakeAPI
 
 import c64cast
 from c64cast import config as cfgmod
-from c64cast import dac_calibration, doctor
+from c64cast import dac_calibration_store, doctor
 from c64cast.backend import HardwareProfile
 
 
@@ -861,7 +861,7 @@ class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _write_calibration(self, filename: str, backend: str = "ultimate") -> None:
-        cal_dir = dac_calibration.paths.calibration_dir()
+        cal_dir = dac_calibration_store.paths.calibration_dir()
         cal_dir.mkdir(parents=True, exist_ok=True)
         _write(
             str(cal_dir / filename),

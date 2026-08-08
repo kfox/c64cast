@@ -42,7 +42,11 @@ the two lists account for every module in the tree.
 | `config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
 | `control_plane.py` | [Control surfaces & live performance](architecture/control.md#control_planepy--http-control-plane-optional) |
 | `dac_calibration.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
+| `dac_calibration_store.py` | [Audio output](architecture/audio.md#the-calibration-file) |
+| `dac_capture_device.py` | [Audio output](architecture/audio.md#picking-the-capture-device) |
+| `dac_curve_resolve.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
 | `dac_curves.py` | [Audio output](architecture/audio.md#audiodac_curve--mahoney-8-bit-d418-companding) |
+| `dac_slot_ring.py` | [Audio output](architecture/audio.md#the-slot-ring-reading-signed-levels-directly) |
 | `dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |
 | `dsp.py` | [Audio output](architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path) |
 | `effects.py` | [Scenes, sources & overlays](architecture/scenes.md#effectspy--the-frameeffect-registry) |

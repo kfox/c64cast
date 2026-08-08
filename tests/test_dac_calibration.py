@@ -24,6 +24,10 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast import dac_calibration as dc
+from c64cast import dac_calibration_store as dcs
+from c64cast import dac_capture_device as dcap
+from c64cast import dac_curve_resolve as dcr
+from c64cast import dac_slot_ring as dsr
 from c64cast.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
 from c64cast.backend import HardwareProfile
 from c64cast.config import Config
@@ -56,8 +60,8 @@ def _ultimate_fake() -> FakeAPI:
     return api
 
 
-def _result(fill: int) -> dc.CalibrationResult:
-    return dc.CalibrationResult(sidtable=[fill & 0xFF] * 256, metrics={"ladder_bits": 6.5})
+def _result(fill: int) -> dcs.CalibrationResult:
+    return dcs.CalibrationResult(sidtable=[fill & 0xFF] * 256, metrics={"ladder_bits": 6.5})
 
 
 RING = 0x2000  # audio.RING_BUFFER_SIZE, without importing the audio stack
@@ -73,7 +77,7 @@ def _simulate(
     drop_frac: float = 0.0,
     phase: float = 0.31,
     seed: int = 7,
-    sr: int = dc.CAP_SR,
+    sr: int = dsr.CAP_SR,
 ) -> tuple[np.ndarray, np.ndarray]:
     """A synthetic Cam Link capture of the slot ring `codes` would produce, and
     the true levels it encodes.
@@ -90,7 +94,7 @@ def _simulate(
     for c in range(256):
         true[c] = (c & 0x0F) / 15.0 * mode[c >> 4] * 0.45  # vol 0 == silence
 
-    ring = np.frombuffer(dc.build_slot_ring(codes, RING), dtype=np.uint8)
+    ring = np.frombuffer(dsr.build_slot_ring(codes, RING), dtype=np.uint8)
     n = int(secs * sr)
     idx = np.floor(np.arange(n) * (NMI_TRUE / sr) + phase * RING).astype(np.int64)
     v = true[ring[idx % RING]]
@@ -103,50 +107,50 @@ def _simulate(
         acc = a * (acc + v[i] - prev)
         prev = v[i]
         y[i] = acc
-    return y + rng.normal(0, noise, y.size), true[codes] - true[dc.REF_ZERO]
+    return y + rng.normal(0, noise, y.size), true[codes] - true[dsr.REF_ZERO]
 
 
 def _signed_levels(lmax: float = 0.5) -> list[tuple[int, float]]:
     """A consistent set of measured signed levels: codes with volume nibble 0
     output silence (master volume 0), the rest spread negative→positive."""
     levels = {c: 0.0 if (c & 0x0F) == 0 else (c - 128) / 256.0 for c in range(256)}
-    levels[dc.ANCHOR_CODE] = lmax
+    levels[dsr.ANCHOR_CODE] = lmax
     return [(c, levels[c]) for c in range(256)]
 
 
 class ResolveKeyTest(unittest.TestCase):
     def test_ultimate_offline_key_uses_host(self):
         self.assertEqual(
-            dc.resolve_calibration_key(_u64_cfg("192.168.2.64")), "ultimate-192.168.2.64"
+            dcs.resolve_calibration_key(_u64_cfg("192.168.2.64")), "ultimate-192.168.2.64"
         )
 
     def test_ultimate_live_key_uses_unique_id(self):
         cfg = _u64_cfg()
         api = _ultimate_fake()
         api.device_info = {"product": "C64 Ultimate", "unique_id": "5D327C"}
-        self.assertEqual(dc.resolve_calibration_key(cfg, api), "ultimate-5D327C")
+        self.assertEqual(dcs.resolve_calibration_key(cfg, api), "ultimate-5D327C")
 
     def test_ultimate_live_lookup_failure_falls_back_to_host(self):
         cfg = _u64_cfg("192.168.2.64")
         api = _ultimate_fake()  # device_info left None -> get_device_info() raises
-        self.assertEqual(dc.resolve_calibration_key(cfg, api), "ultimate-192.168.2.64")
+        self.assertEqual(dcs.resolve_calibration_key(cfg, api), "ultimate-192.168.2.64")
 
     def test_tr_serial_key_offline_sanitizes_device(self):
-        key = dc.resolve_calibration_key(_tr_serial_cfg("/dev/cu.usbmodem1234"))
+        key = dcs.resolve_calibration_key(_tr_serial_cfg("/dev/cu.usbmodem1234"))
         self.assertEqual(key, "tr-serial-_dev_cu.usbmodem1234")
 
     def test_tr_serial_key_uses_live_usb_serial_number(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
         with patch("c64cast.teensyrom_dma.usb_serial_number", return_value="TR12345"):
-            key = dc.resolve_calibration_key(cfg, api)
+            key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-TR12345")
 
     def test_tr_serial_key_falls_back_when_no_usb_serial(self):
         cfg = _tr_serial_cfg("/dev/cu.usbmodem1234")
         api = FakeAPI()
         with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
-            key = dc.resolve_calibration_key(cfg, api)
+            key = dcs.resolve_calibration_key(cfg, api)
         self.assertEqual(key, "tr-serial-_dev_cu.usbmodem1234")
 
     def test_tr_tcp_key(self):
@@ -155,12 +159,12 @@ class ResolveKeyTest(unittest.TestCase):
         cfg.teensyrom.transport = "tcp"
         cfg.teensyrom.host = "teensy.lan"
         cfg.teensyrom.tcp_port = 2112
-        self.assertEqual(dc.resolve_calibration_key(cfg), "tr-tcp-teensy.lan-2112")
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "tr-tcp-teensy.lan-2112")
 
     def test_distinct_hosts_distinct_keys(self):
         self.assertNotEqual(
-            dc.resolve_calibration_key(_u64_cfg("a.lan")),
-            dc.resolve_calibration_key(_u64_cfg("b.lan")),
+            dcs.resolve_calibration_key(_u64_cfg("a.lan")),
+            dcs.resolve_calibration_key(_u64_cfg("b.lan")),
         )
 
     def test_profile_override_wins_over_everything(self):
@@ -168,12 +172,12 @@ class ResolveKeyTest(unittest.TestCase):
         cfg.audio.dac_calibration_profile = "My Breadbin!"
         api = _ultimate_fake()
         api.device_info = {"unique_id": "5D327C"}
-        self.assertEqual(dc.resolve_calibration_key(cfg, api), "profile-My_Breadbin_")
+        self.assertEqual(dcs.resolve_calibration_key(cfg, api), "profile-My_Breadbin_")
 
     def test_profile_override_applies_to_teensyrom_too(self):
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "breadbin"
-        self.assertEqual(dc.resolve_calibration_key(cfg), "profile-breadbin")
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-breadbin")
 
     def test_a_bare_name_matching_an_existing_file_is_not_re_prefixed(self):
         """The auto-keyed files --calibrate-dac writes are named for the device
@@ -187,8 +191,8 @@ class ResolveKeyTest(unittest.TestCase):
                 (d / "ultimate-DEV123.json").write_text("{}")
                 cfg = _tr_serial_cfg()
                 cfg.audio.dac_calibration_profile = "ultimate-DEV123"
-                self.assertEqual(dc.resolve_calibration_key(cfg), "ultimate-DEV123")
-                self.assertEqual(dc.calibration_path(cfg), d / "ultimate-DEV123.json")
+                self.assertEqual(dcs.resolve_calibration_key(cfg), "ultimate-DEV123")
+                self.assertEqual(dcs.calibration_path(cfg), d / "ultimate-DEV123.json")
 
     def test_a_bare_name_still_prefixes_when_no_such_file_exists(self):
         """A run calibrating *under* a new profile name must keep writing
@@ -198,7 +202,7 @@ class ResolveKeyTest(unittest.TestCase):
             with patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
                 cfg = _tr_serial_cfg()
                 cfg.audio.dac_calibration_profile = "breadbin"
-                self.assertEqual(dc.resolve_calibration_key(cfg), "profile-breadbin")
+                self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-breadbin")
 
     def test_a_prefixed_file_wins_over_an_unprefixed_one(self):
         """Both spellings on disk is ambiguous; the profile spelling is the one
@@ -211,7 +215,7 @@ class ResolveKeyTest(unittest.TestCase):
                 (d / "x.json").write_text("{}")
                 cfg = _tr_serial_cfg()
                 cfg.audio.dac_calibration_profile = "x"
-                self.assertEqual(dc.resolve_calibration_key(cfg), "profile-x")
+                self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-x")
 
     def test_profile_naming_a_file_is_used_as_a_path(self):
         # A path is the only way to point one backend's run at a calibration
@@ -221,22 +225,22 @@ class ResolveKeyTest(unittest.TestCase):
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "/data/c64cast/calibration/dac/ultimate-5D327C.json"
         self.assertEqual(
-            dc.calibration_path(cfg),
+            dcs.calibration_path(cfg),
             Path("/data/c64cast/calibration/dac/ultimate-5D327C.json"),
         )
-        self.assertEqual(dc.resolve_calibration_key(cfg), "ultimate-5D327C")
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "ultimate-5D327C")
 
     def test_profile_path_expands_user(self):
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "~/cal/breadbin.json"
-        self.assertEqual(dc.calibration_path(cfg), Path.home() / "cal/breadbin.json")
+        self.assertEqual(dcs.calibration_path(cfg), Path.home() / "cal/breadbin.json")
 
     def test_bare_name_is_never_treated_as_a_path(self):
         # A name with no separator and no .json suffix stays a key, dots and all.
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "my.rig"
-        self.assertIsNone(dc.profile_path_override(cfg))
-        self.assertEqual(dc.resolve_calibration_key(cfg), "profile-my.rig")
+        self.assertIsNone(dcs.profile_path_override(cfg))
+        self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-my.rig")
 
 
 class DataDirIsolated(unittest.TestCase):
@@ -263,18 +267,18 @@ class DataDirIsolated(unittest.TestCase):
 class PersistenceTest(DataDirIsolated):
     def test_save_load_default_entry_round_trip(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        path = dc.save_calibration(cfg, key, {"default": _result(0)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        path = dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         self.assertTrue(path.exists())
-        got = dc.load_calibrated_table(cfg)
+        got = dcs.load_calibrated_table(cfg)
         self.assertEqual(got, bytes(256))
 
     def test_raw_levels_persisted_when_present(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
+        key = dcs.resolve_calibration_key(cfg)
         raw = [(c, (c - 128) / 300.0) for c in range(256)]
-        res = dc.CalibrationResult(list(range(256)), {}, "6581", raw)
-        path = dc.save_calibration(cfg, key, {"default": res}, {})
+        res = dcs.CalibrationResult(list(range(256)), {}, "6581", raw)
+        path = dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": res}, {}))
         entry = json.loads(path.read_text())["sids"]["default"]
         self.assertEqual(len(entry["raw_signed_levels"]), 256)
         self.assertEqual(entry["raw_signed_levels"][1], [1, round(-127 / 300.0, 8)])
@@ -283,11 +287,11 @@ class PersistenceTest(DataDirIsolated):
         # raw_signed_levels is additive under the same schema: a result carrying none
         # writes the pre-existing key set, and readers only need `sidtable`.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        path = dc.save_calibration(cfg, key, {"default": _result(0)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        path = dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         entry = json.loads(path.read_text())["sids"]["default"]
         self.assertNotIn("raw_signed_levels", entry)
-        self.assertEqual(dc.load_calibrated_table(cfg), bytes(256))
+        self.assertEqual(dcs.load_calibrated_table(cfg), bytes(256))
 
     def test_default_entry_says_the_sid_was_never_identified(self):
         # Only the Ultimate exposes the socket map, so every other link files its
@@ -297,9 +301,14 @@ class PersistenceTest(DataDirIsolated):
         # the assumption has to be stated where the table is chosen.
         cfg = _tr_serial_cfg()
         be = FakeAPI()  # profile.supports_config False, like the real TR
-        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
-        with self.assertLogs("c64cast.dac_calibration", level="INFO") as logs:
-            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes(256))
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {}
+            ),
+        )
+        with self.assertLogs("c64cast.dac_calibration_store", level="INFO") as logs:
+            self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
         self.assertIn("assumes one SID", "\n".join(logs.output))
 
     def test_default_entry_from_a_link_that_can_identify_stays_quiet(self):
@@ -309,19 +318,27 @@ class PersistenceTest(DataDirIsolated):
         cfg = _u64_cfg()
         be = FakeAPI()
         be.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
-        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), {"default": _result(0)}, {})
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes(256))
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                dcs.resolve_calibration_key(cfg, be), {"default": _result(0)}, {}
+            ),
+        )
+        with self.assertNoLogs("c64cast.dac_calibration_store", level="INFO"):
+            self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes(256))
 
     def test_load_ignores_raw_levels(self):
         # A file written by a newer run stays loadable by the table reader.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
+        key = dcs.resolve_calibration_key(cfg)
         raw = [(c, 0.0) for c in range(256)]
-        dc.save_calibration(
-            cfg, key, {"default": dc.CalibrationResult(list(range(256)), {}, None, raw)}, {}
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                key, {"default": dcs.CalibrationResult(list(range(256)), {}, None, raw)}, {}
+            ),
         )
-        self.assertEqual(dc.load_calibrated_table(cfg), bytes(range(256)))
+        self.assertEqual(dcs.load_calibrated_table(cfg), bytes(range(256)))
 
     def test_save_honours_a_path_profile_and_loads_back(self):
         # --calibrate-dac and playback must agree on where the file lives, so a
@@ -329,42 +346,48 @@ class PersistenceTest(DataDirIsolated):
         cfg = _u64_cfg()
         dest = Path(self._tmp.name) / "elsewhere" / "breadbin.json"
         cfg.audio.dac_calibration_profile = str(dest)
-        path = dc.save_calibration(
-            cfg, dc.resolve_calibration_key(cfg), {"default": _result(0)}, {}
+        path = dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(dcs.resolve_calibration_key(cfg), {"default": _result(0)}, {}),
         )
         self.assertEqual(path, dest)
-        self.assertEqual(dc.load_calibrated_table(cfg), bytes(256))
+        self.assertEqual(dcs.load_calibrated_table(cfg), bytes(256))
 
     def test_load_missing_returns_none(self):
-        self.assertIsNone(dc.load_calibrated_table(_u64_cfg("nope.lan")))
+        self.assertIsNone(dcs.load_calibrated_table(_u64_cfg("nope.lan")))
 
     def test_load_wrong_length_returns_none(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        bad = dc.CalibrationResult(sidtable=list(range(10)), metrics={})
-        dc.save_calibration(cfg, key, {"default": bad}, {})
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        key = dcs.resolve_calibration_key(cfg)
+        bad = dcs.CalibrationResult(sidtable=list(range(10)), metrics={})
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": bad}, {}))
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_load_corrupt_file_returns_none(self):
         cfg = _u64_cfg()
-        dc.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
-        dc.calibration_path(cfg).write_text("{ not json")
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        dcs.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+        dcs.calibration_path(cfg).write_text("{ not json")
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_load_old_schema_returns_none(self):
         # Clean cutover: an old schema=1 single-sidtable file is never read
         # under the new (also-renamed) key scheme; guard the shape too.
         cfg = _u64_cfg()
-        dc.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
-        dc.calibration_path(cfg).write_text(
+        dcs.calibration_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+        dcs.calibration_path(cfg).write_text(
             '{"schema": 1, "key": "u64-192.168.2.64", "sidtable": ' + str(list(range(256))) + "}"
         )
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_multi_socket_selection_uses_live_active_socket(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {"unique_id": "5D327C"})
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                key, {"1": _result(1), "2": _result(2)}, {"unique_id": "5D327C"}
+            ),
+        )
         api = _ultimate_fake()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
@@ -376,13 +399,15 @@ class PersistenceTest(DataDirIsolated):
             "SID Detected Socket 1": "6581",
             "SID Detected Socket 2": "6581",
         }
-        got = dc.load_calibrated_table(cfg, be=api)
+        got = dcs.load_calibrated_table(cfg, be=api)
         self.assertEqual(got, bytes([2] * 256))
 
     def test_multi_socket_selection_none_when_ultisid_owns_d400(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(
+            cfg, dcs.CalibrationDocument(key, {"1": _result(1), "2": _result(2)}, {})
+        )
         api = _ultimate_fake()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
@@ -394,14 +419,14 @@ class PersistenceTest(DataDirIsolated):
             "SID Detected Socket 1": "6581",
             "SID Detected Socket 2": "6581",
         }
-        self.assertIsNone(dc.load_calibrated_table(cfg, be=api))
+        self.assertIsNone(dcs.load_calibrated_table(cfg, be=api))
 
     def test_default_entry_used_even_with_live_api_when_no_socket_keys(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(7)}, {})
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(7)}, {}))
         api = _ultimate_fake()
-        got = dc.load_calibrated_table(cfg, be=api)
+        got = dcs.load_calibrated_table(cfg, be=api)
         self.assertEqual(got, bytes([7] * 256))
 
 
@@ -439,27 +464,27 @@ class IsolateSocketTest(unittest.TestCase):
 
 class ResolveCurveTest(DataDirIsolated):
     def test_auto_ultimate_no_cal_uses_baked_mahoney(self):
-        label, table = dc.resolve_dac_curve_for_backend(_u64_cfg())
+        label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
     def test_auto_teensyrom_no_cal_uses_linear(self):
-        label, table = dc.resolve_dac_curve_for_backend(_tr_serial_cfg())
+        label, table = dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
 
     def test_auto_prefers_calibration_when_present(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(0)}, {})
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
 
     def test_auto_yields_to_digi_boost(self):
         cfg = _u64_cfg()
         cfg.audio.digi_boost = True
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
 
@@ -467,23 +492,23 @@ class ResolveCurveTest(DataDirIsolated):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "calibrated"
         with self.assertRaises(ValueError):
-            dc.resolve_dac_curve_for_backend(cfg)
+            dcr.resolve_dac_curve_for_backend(cfg)
 
     def test_calibrated_present_returns_table(self):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "calibrated"
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(0)}, {})
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes(256))
 
     def test_explicit_linear_and_mahoney_pass_through(self):
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "linear"
-        self.assertEqual(dc.resolve_dac_curve_for_backend(cfg), ("linear", None))
+        self.assertEqual(dcr.resolve_dac_curve_for_backend(cfg), ("linear", None))
         cfg.audio.dac_curve = "mahoney_ultisid"
-        label, table = dc.resolve_dac_curve_for_backend(cfg)
+        label, table = dcr.resolve_dac_curve_for_backend(cfg)
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -496,8 +521,8 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_ultimate_live_no_cal_logs_info(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_calibration", level="INFO") as cm:
-            label, table = dc.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+        with self.assertLogs("c64cast.dac_curve_resolve", level="INFO") as cm:
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
         joined = "\n".join(cm.output)
@@ -507,8 +532,8 @@ class MissingCalibrationLogTest(DataDirIsolated):
     def test_teensyrom_live_no_cal_logs_warning(self):
         cfg = _tr_serial_cfg()
         with patch("c64cast.teensyrom_dma.usb_serial_number", return_value=None):
-            with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-                label, table = dc.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
+            with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+                label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI())
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
         joined = "\n".join(cm.output)
@@ -517,18 +542,18 @@ class MissingCalibrationLogTest(DataDirIsolated):
 
     def test_offline_no_cal_is_silent(self):
         # be=None → no log (assertNoLogs raises if anything is emitted).
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            dc.resolve_dac_curve_for_backend(_u64_cfg())
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            dc.resolve_dac_curve_for_backend(_tr_serial_cfg())
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            dcr.resolve_dac_curve_for_backend(_u64_cfg())
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
 
     def test_live_calibration_present_is_silent(self):
         # A hit doesn't warn.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"default": _result(0)}, {})
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            label, _ = dc.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
         self.assertTrue(label.startswith("calibrated:"))
 
 
@@ -561,8 +586,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
     def test_physical_socket_at_d400_without_calibration_falls_back_to_linear(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-            label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertEqual(label, "linear")
         self.assertIsNone(table)
         joined = "\n".join(cm.output)
@@ -571,8 +596,8 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
 
     def test_socket_2_at_d400_is_named_in_the_warning(self):
         cfg = _u64_cfg()
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-            label, _ = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2))
+        with self.assertLogs("c64cast.dac_curve_resolve", level="WARNING") as cm:
+            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(2))
         self.assertEqual(label, "linear")
         self.assertIn("socket 2", "\n".join(cm.output))
 
@@ -589,7 +614,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "6581",
         }
-        label, table = dc.resolve_dac_curve_for_backend(cfg, be=api)
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=api)
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -602,23 +627,25 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "None",
         }
-        label, _ = dc.resolve_dac_curve_for_backend(cfg, be=api)
+        label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=api)
         self.assertEqual(label, "mahoney_ultisid")
 
     def test_calibration_for_that_socket_still_wins(self):
         # The guard is a fallback, not a veto: a table measured on the chip
         # that owns $D400 is exactly what should be used.
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
-        dc.save_calibration(cfg, key, {"1": _result(1), "2": _result(2)}, {})
-        label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        key = dcs.resolve_calibration_key(cfg)
+        dcs.save_calibration(
+            cfg, dcs.CalibrationDocument(key, {"1": _result(1), "2": _result(2)}, {})
+        )
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
 
     def test_offline_resolution_is_unchanged_and_silent(self):
         # be=None can't read who owns $D400; --doctor reports that separately.
-        with self.assertNoLogs("c64cast.dac_calibration", level="INFO"):
-            label, table = dc.resolve_dac_curve_for_backend(_u64_cfg())
+        with self.assertNoLogs("c64cast.dac_curve_resolve", level="INFO"):
+            label, table = dcr.resolve_dac_curve_for_backend(_u64_cfg())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -626,7 +653,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         # The guard only shapes "auto". A user who named the curve meant it.
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "mahoney_ultisid"
-        label, table = dc.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
+        label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
 
@@ -643,7 +670,9 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         return cfg, FakeAPI()  # profile.supports_config False, like the real TR
 
     def _save(self, cfg, be, entries, d400=None) -> Path:
-        return dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, be), entries, {}, d400)
+        return dcs.save_calibration(
+            cfg, dcs.CalibrationDocument(dcs.resolve_calibration_key(cfg, be), entries, {}, d400)
+        )
 
     def test_a_two_socket_file_is_not_discarded_by_a_link_that_cannot_ask(self):
         # The regression: "can't read who owns $D400" was treated as the same
@@ -651,16 +680,16 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         # playback silently dropped to the 4-bit linear DAC.
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)})
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING"):
-            label, table = dc.resolve_dac_curve_for_backend(cfg, be=be)
+        with self.assertLogs("c64cast.dac_calibration_store", level="WARNING"):
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=be)
         self.assertTrue(label.startswith("calibrated:"))
         self.assertEqual(table, bytes([1] * 256))
 
     def test_the_assumed_socket_is_stated_and_says_how_to_make_it_certain(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)})
-        with self.assertLogs("c64cast.dac_calibration", level="WARNING") as cm:
-            dc.load_calibrated_table(cfg, be=be)
+        with self.assertLogs("c64cast.dac_calibration_store", level="WARNING") as cm:
+            dcs.load_calibrated_table(cfg, be=be)
         joined = "\n".join(cm.output)
         self.assertIn("socket 1", joined)
         self.assertIn("--calibrate-dac", joined)
@@ -668,8 +697,8 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
     def test_the_recorded_owner_wins_over_the_assumption(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1), "2": _result(2)}, d400=2)
-        with self.assertNoLogs("c64cast.dac_calibration", level="WARNING"):
-            table = dc.load_calibrated_table(cfg, be=be)
+        with self.assertNoLogs("c64cast.dac_calibration_store", level="WARNING"):
+            table = dcs.load_calibrated_table(cfg, be=be)
         self.assertEqual(table, bytes([2] * 256))
 
     def test_a_file_holding_no_table_for_the_recorded_owner_applies_none(self):
@@ -677,13 +706,13 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         # present is the *other* chip, so no table here is the right one.
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1)}, d400=2)
-        self.assertIsNone(dc.load_calibrated_table(cfg, be=be))
+        self.assertIsNone(dcs.load_calibrated_table(cfg, be=be))
 
     def test_a_single_socket_file_still_loads_without_an_assumption(self):
         cfg, be = self._tr()
         self._save(cfg, be, {"1": _result(1)})
-        with self.assertNoLogs("c64cast.dac_calibration", level="WARNING"):
-            self.assertEqual(dc.load_calibrated_table(cfg, be=be), bytes([1] * 256))
+        with self.assertNoLogs("c64cast.dac_calibration_store", level="WARNING"):
+            self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes([1] * 256))
 
     def test_the_ultimate_still_refuses_a_physical_table_when_an_ultisid_owns_d400(self):
         # The live answer stays authoritative, including its None. Guarding this
@@ -699,18 +728,24 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
             "SID Socket 1": "Enabled",
             "SID Detected Socket 1": "6581",
         }
-        dc.save_calibration(cfg, dc.resolve_calibration_key(cfg, api), {"1": _result(1)}, {})
-        self.assertIsNone(dc.load_calibrated_table(cfg, be=api))
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(dcs.resolve_calibration_key(cfg, api), {"1": _result(1)}, {}),
+        )
+        self.assertIsNone(dcs.load_calibrated_table(cfg, be=api))
 
     def test_offline_selection_is_unchanged(self):
         # be=None can't confirm the identity key either; --doctor reports that
         # separately, so an offline miss must stay a miss rather than acquiring
         # an assumption of its own.
         cfg = _u64_cfg()
-        dc.save_calibration(
-            cfg, dc.resolve_calibration_key(cfg), {"1": _result(1), "2": _result(2)}, {}
+        dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                dcs.resolve_calibration_key(cfg), {"1": _result(1), "2": _result(2)}, {}
+            ),
         )
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
     def test_the_owner_is_recorded_in_the_file(self):
         cfg = _u64_cfg()
@@ -727,26 +762,26 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
 
 class SlotRingLayoutTest(unittest.TestCase):
     def test_ring_is_sync_gap_then_code_ref_pairs(self):
-        ring = np.frombuffer(dc.build_slot_ring([0x0F, 0x37], RING), dtype=np.uint8)
+        ring = np.frombuffer(dsr.build_slot_ring([0x0F, 0x37], RING), dtype=np.uint8)
         self.assertEqual(ring.size, RING)
-        slots = ring.reshape(-1, dc.SLOT_SAMPLES)
+        slots = ring.reshape(-1, dsr.SLOT_SAMPLES)
         # Every slot holds one constant code — that is what makes a plateau.
         self.assertTrue((slots == slots[:, :1]).all())
         seq = slots[:, 0]
-        self.assertTrue((seq[: dc.SYNC_SLOTS] == dc.REF_ZERO).all())
-        self.assertEqual(seq[dc.SYNC_SLOTS], 0x0F)
-        self.assertEqual(seq[dc.SYNC_SLOTS + 1], dc.REF_ZERO)
-        self.assertEqual(seq[dc.SYNC_SLOTS + 2], 0x37)
-        self.assertTrue((seq[dc.SYNC_SLOTS + 4 :] == dc.REF_ZERO).all())
+        self.assertTrue((seq[: dsr.SYNC_SLOTS] == dsr.REF_ZERO).all())
+        self.assertEqual(seq[dsr.SYNC_SLOTS], 0x0F)
+        self.assertEqual(seq[dsr.SYNC_SLOTS + 1], dsr.REF_ZERO)
+        self.assertEqual(seq[dsr.SYNC_SLOTS + 2], 0x37)
+        self.assertTrue((seq[dsr.SYNC_SLOTS + 4 :] == dsr.REF_ZERO).all())
 
     def test_too_many_codes_is_refused(self):
         with self.assertRaises(ValueError):
-            dc.build_slot_ring(range(dc.codes_per_ring(RING) + 1), RING)
+            dsr.build_slot_ring(range(dsr.codes_per_ring(RING) + 1), RING)
 
     def test_batches_cover_every_code_exactly_once(self):
-        batches = dc.plan_code_batches(dc.codes_per_ring(RING) - 1)
+        batches = dsr.plan_code_batches(dsr.codes_per_ring(RING) - 1)
         self.assertEqual(sorted(c for b in batches for c in b), list(range(256)))
-        self.assertTrue(all(len(b) <= dc.codes_per_ring(RING) - 1 for b in batches))
+        self.assertTrue(all(len(b) <= dsr.codes_per_ring(RING) - 1 for b in batches))
 
     def test_batches_stride_so_no_ring_holds_a_long_same_nibble_run(self):
         """Slicing 0-110 / 111-221 / 222-255 would put all sixteen codes sharing
@@ -755,13 +790,13 @@ class SlotRingLayoutTest(unittest.TestCase):
         exactly what the sync-gap detector looks for. Striding caps the run at
         16/rings, well under the ~12 consecutive silent codes it would take to
         fake a gap."""
-        batches = dc.plan_code_batches(dc.codes_per_ring(RING) - 1)
+        batches = dsr.plan_code_batches(dsr.codes_per_ring(RING) - 1)
         for batch in batches:
             runs = [len(list(g)) for _, g in itertools.groupby(c >> 4 for c in batch)]
             self.assertLessEqual(max(runs), -(-16 // len(batches)))
 
     def test_rounds_give_every_code_evenly_spaced_positions(self):
-        rounds = dc.plan_capture_rounds(dc.codes_per_ring(RING) - 1, rounds=3)
+        rounds = dsr.plan_capture_rounds(dsr.codes_per_ring(RING) - 1, rounds=3)
         self.assertEqual(len(rounds), 3)
         for r in rounds:
             self.assertEqual(sorted(c for b in r for c in b), list(range(256)))
@@ -776,9 +811,9 @@ class SlotRingExtractionTest(unittest.TestCase):
     capture with a known answer."""
 
     def test_recovers_known_levels_through_ac_coupling(self):
-        codes = [dc.ANCHOR_CODE, *range(40)]
+        codes = [dsr.ANCHOR_CODE, *range(40)]
         levels, want = _simulate(codes)
-        got = dc.extract_slot_levels(levels, len(codes), RING)
+        got = dsr.extract_slot_levels(levels, len(codes), RING)
         scale = got.levels[0] / want[0]
         err = np.abs(got.levels / scale - want).max() / np.abs(want).max()
         self.assertLess(err, 0.01)
@@ -789,9 +824,9 @@ class SlotRingExtractionTest(unittest.TestCase):
         commonly 96 kHz-only. Every timing constant in the extraction comes from
         the `sr` it is handed, so the rate the device forces on us costs nothing
         as long as it is threaded through instead of assumed."""
-        codes = [dc.ANCHOR_CODE, *range(40)]
+        codes = [dsr.ANCHOR_CODE, *range(40)]
         cap, want = _simulate(codes, sr=96000)
-        got = dc.extract_slot_levels(cap, len(codes), RING, sr=96000)
+        got = dsr.extract_slot_levels(cap, len(codes), RING, sr=96000)
         scale = got.levels[0] / want[0]
         err = np.abs(got.levels / scale - want).max() / np.abs(want).max()
         self.assertLess(err, 0.01)
@@ -801,9 +836,9 @@ class SlotRingExtractionTest(unittest.TestCase):
         """A slot is 192.24 capture samples, not 192: the NMI runs at
         1022727/128 = 7990.05 Hz, not the 8000 Hz it is asked for. Tracking that
         is the difference between a correct grid and a slowly walking one."""
-        codes = [dc.ANCHOR_CODE, *range(40)]
+        codes = [dsr.ANCHOR_CODE, *range(40)]
         cap, _ = _simulate(codes)
-        got = dc.extract_slot_levels(cap, len(codes), RING)
+        got = dsr.extract_slot_levels(cap, len(codes), RING)
         self.assertAlmostEqual(got.diagnostics["nmi_rate_implied_hz"], NMI_TRUE, delta=2.0)
         self.assertAlmostEqual(got.diagnostics["ac_coupling_hz"], 12.0, delta=1.0)
 
@@ -812,9 +847,9 @@ class SlotRingExtractionTest(unittest.TestCase):
         grid tracks edge by edge rather than stepping a nominal pitch, so a
         heavily stretched capture still reads the right levels — and says so in
         the implied NMI rate."""
-        codes = [dc.ANCHOR_CODE, *range(40)]
+        codes = [dsr.ANCHOR_CODE, *range(40)]
         cap, want = _simulate(codes, drop_frac=0.12)
-        got = dc.extract_slot_levels(cap, len(codes), RING)
+        got = dsr.extract_slot_levels(cap, len(codes), RING)
         scale = got.levels[0] / want[0]
         self.assertLess(np.abs(got.levels / scale - want).max() / np.abs(want).max(), 0.02)
         self.assertGreater(got.diagnostics["nmi_rate_implied_hz"], NMI_TRUE * 1.05)
@@ -822,15 +857,15 @@ class SlotRingExtractionTest(unittest.TestCase):
     def test_pass_spread_flags_a_capture_the_grid_could_not_hold(self):
         # Every pass measures the same levels, so disagreement between them is
         # the one symptom that separates a mistracked capture from a real curve.
-        codes = [dc.ANCHOR_CODE, *range(40)]
+        codes = [dsr.ANCHOR_CODE, *range(40)]
         cap, _ = _simulate(codes)
         self.assertLess(
-            dc.extract_slot_levels(cap, len(codes), RING).diagnostics["pass_spread_frac"], 0.01
+            dsr.extract_slot_levels(cap, len(codes), RING).diagnostics["pass_spread_frac"], 0.01
         )
 
     def test_silent_capture_raises_rather_than_inventing_levels(self):
-        with self.assertRaises(dc.MeasurementError):
-            dc.extract_slot_levels(np.zeros(4 * dc.CAP_SR), 40, RING)
+        with self.assertRaises(dsr.MeasurementError):
+            dsr.extract_slot_levels(np.zeros(4 * dsr.CAP_SR), 40, RING)
 
 
 class RingCaptureGateTest(unittest.TestCase):
@@ -841,37 +876,37 @@ class RingCaptureGateTest(unittest.TestCase):
     recording is of the ring is decided per ring, before its levels go anywhere."""
 
     def test_a_real_capture_passes_the_gate(self):
-        codes = [dc.ANCHOR_CODE, *range(40)]
+        codes = [dsr.ANCHOR_CODE, *range(40)]
         cap, want = _simulate(codes)
-        got = dc.read_ring_capture(cap, len(codes), RING)
+        got = dsr.read_ring_capture(cap, len(codes), RING)
         scale = got.levels[0] / want[0]
         self.assertLess(np.abs(got.levels / scale - want).max() / np.abs(want).max(), 0.01)
 
     def test_silence_is_refused_before_anything_is_extracted(self):
-        with self.assertRaises(dc.MeasurementError) as ctx:
-            dc.read_ring_capture(np.zeros(4 * dc.CAP_SR), 40, RING)
+        with self.assertRaises(dsr.MeasurementError) as ctx:
+            dsr.read_ring_capture(np.zeros(4 * dsr.CAP_SR), 40, RING)
         self.assertIn("silence", str(ctx.exception))
 
     def test_a_capture_that_is_mostly_noise_is_refused(self):
         """The reported failure verbatim: enough noise on top of the ring that
         only one sync marker survives. It used to escape as a traceback."""
-        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)], noise=0.1)
-        with self.assertRaises(dc.MeasurementError):
-            dc.read_ring_capture(cap, 41, RING)
+        cap, _ = _simulate([dsr.ANCHOR_CODE, *range(40)], noise=0.1)
+        with self.assertRaises(dsr.MeasurementError):
+            dsr.read_ring_capture(cap, 41, RING)
 
     def test_levels_the_passes_disagree_about_are_refused(self):
         """The subtler half: the extraction found a grid and returned levels,
         but the passes contradict each other, so the levels are noise. Hardware
         reads 0.01-0.2% here, so anything near 100% must not reach the table."""
-        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)])
-        bad = dc.SlotLevels(
+        cap, _ = _simulate([dsr.ANCHOR_CODE, *range(40)])
+        bad = dsr.SlotLevels(
             levels=np.full(41, 1e-5),
             per_pass=np.zeros((2, 41)),
             diagnostics={"pass_spread_frac": 1.0008, "pass_spread_p95_frac": 1.0008, "passes": 2},
         )
-        with patch.object(dc, "extract_slot_levels", return_value=bad):
-            with self.assertRaises(dc.MeasurementError) as ctx:
-                dc.read_ring_capture(cap, 41, RING)
+        with patch.object(dsr, "extract_slot_levels", return_value=bad):
+            with self.assertRaises(dsr.MeasurementError) as ctx:
+                dsr.read_ring_capture(cap, 41, RING)
         self.assertIn("100.1%", str(ctx.exception))
 
     def test_a_ring_that_does_not_replay_the_same_levels_is_refused(self):
@@ -880,15 +915,15 @@ class RingCaptureGateTest(unittest.TestCase):
         the grid tracks, the levels are plausible — and they move between passes,
         so the ladder fitted to them is wrong. A link that read 1.85% here wrote
         a table agreeing with the same chip's on 95 of 256 entries."""
-        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)])
-        wobbly = dc.SlotLevels(
+        cap, _ = _simulate([dsr.ANCHOR_CODE, *range(40)])
+        wobbly = dsr.SlotLevels(
             levels=np.linspace(-0.5, 0.5, 41),
             per_pass=np.zeros((3, 41)),
             diagnostics={"pass_spread_frac": 0.0185, "pass_spread_p95_frac": 0.0185, "passes": 3},
         )
-        with patch.object(dc, "extract_slot_levels", return_value=wobbly):
-            with self.assertRaises(dc.UnsteadyRingError) as ctx:
-                dc.read_ring_capture(cap, 41, RING)
+        with patch.object(dsr, "extract_slot_levels", return_value=wobbly):
+            with self.assertRaises(dsr.UnsteadyRingError) as ctx:
+                dsr.read_ring_capture(cap, 41, RING)
         msg = str(ctx.exception)
         self.assertIn("1.85%", msg)
         # Distinct from the noise message: this one has to say the ring is real
@@ -942,13 +977,13 @@ class RingCaptureGateTest(unittest.TestCase):
         absorb laps that genuinely differ."""
         levels = np.linspace(-0.5, 0.5, 41)
         drift = levels * np.array([0.97, 1.0, 1.03])[:, None]
-        gains, resid = dc._pass_gain_decomposition(drift, drift.mean(axis=0), 0.5)
+        gains, resid = dsr._pass_gain_decomposition(drift, drift.mean(axis=0), 0.5)
         self.assertAlmostEqual(float(np.max(gains) - np.min(gains)), 0.06, places=3)
         self.assertLess(resid, 1e-9)  # a pure gain change leaves nothing behind
 
         rng = np.random.default_rng(1)
         noisy = levels + rng.normal(0, 0.01, (3, 41))
-        _, resid_noisy = dc._pass_gain_decomposition(noisy, noisy.mean(axis=0), 0.5)
+        _, resid_noisy = dsr._pass_gain_decomposition(noisy, noisy.mean(axis=0), 0.5)
         self.assertGreater(resid_noisy, 0.005)
 
     def test_passes_that_agree_exactly_are_not_classified_as_drift(self):
@@ -956,7 +991,7 @@ class RingCaptureGateTest(unittest.TestCase):
         to implement the discriminator separately and only one carried this
         guard; the shared predicate keeps it for both."""
         self.assertFalse(
-            dc._is_level_drift({"pass_spread_p95_frac": 0.0, "pass_residual_frac": 0.0})
+            dsr.is_level_drift({"pass_spread_p95_frac": 0.0, "pass_residual_frac": 0.0})
         )
 
     def test_a_run_of_marginal_rings_is_called_out_though_each_ring_passed(self):
@@ -987,8 +1022,8 @@ class RingCaptureGateTest(unittest.TestCase):
         scale = float(np.max(np.abs(np.median(pp, axis=0))))
         p95 = float(np.percentile(pp.std(axis=0), 95)) / scale
         worst = float(np.max(pp.std(axis=0))) / scale
-        self.assertGreater(worst, dc.RING_TRUST_MAX_SPREAD)  # the old gate refused it
-        self.assertLess(p95, dc.RING_TRUST_MAX_SPREAD)  # the robust one does not
+        self.assertGreater(worst, dsr.RING_TRUST_MAX_SPREAD)  # the old gate refused it
+        self.assertLess(p95, dsr.RING_TRUST_MAX_SPREAD)  # the robust one does not
 
     def test_a_glitched_slot_is_discarded_rather_than_averaged_in(self):
         """A mean folds the outlier into that code's level and the error survives
@@ -1008,7 +1043,7 @@ class RingCaptureGateTest(unittest.TestCase):
         pp = levels + rng.normal(0, 0.02, (3, 41))
         scale = float(np.max(np.abs(np.median(pp, axis=0))))
         self.assertGreater(
-            float(np.percentile(pp.std(axis=0), 95)) / scale, dc.RING_TRUST_MAX_SPREAD
+            float(np.percentile(pp.std(axis=0), 95)) / scale, dsr.RING_TRUST_MAX_SPREAD
         )
 
     def test_the_refused_capture_is_saved_for_diagnosis(self):
@@ -1017,39 +1052,39 @@ class RingCaptureGateTest(unittest.TestCase):
         calibration has been rejected on a number that could not be gone back to.
         The codes and rate travel with the waveform because extraction needs them."""
         cap = np.linspace(-1.0, 1.0, 512)
-        fmt = dc.CaptureFormat(channels=2, samplerate=48000)
+        fmt = dcap.CaptureFormat(channels=2, samplerate=48000)
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
                 path = dc._save_unusable_capture(
-                    cap, [dc.ANCHOR_CODE, 1, 2], fmt, "tr-abc", {"pass_spread_frac": 0.013}
+                    cap, [dsr.ANCHOR_CODE, 1, 2], fmt, "tr-abc", {"pass_spread_frac": 0.013}
                 )
             self.assertIsNotNone(path)
             assert path is not None
             self.assertTrue(path.exists())
             with np.load(path) as z:
                 np.testing.assert_allclose(z["capture"], cap, atol=1e-6)
-                self.assertEqual(z["codes"].tolist(), [dc.ANCHOR_CODE, 1, 2])
+                self.assertEqual(z["codes"].tolist(), [dsr.ANCHOR_CODE, 1, 2])
                 self.assertEqual(int(z["samplerate"]), 48000)
                 self.assertEqual(json.loads(str(z["diagnostics"]))["pass_spread_frac"], 0.013)
 
     def test_saving_the_capture_never_masks_the_real_failure(self):
         """It is a diagnosis aid. A full disk or a read-only data dir must still
         surface the measurement failure, not replace it with an OSError."""
-        fmt = dc.CaptureFormat(channels=2, samplerate=48000)
+        fmt = dcap.CaptureFormat(channels=2, samplerate=48000)
         with patch.object(dc.paths, "unusable_capture_dir", side_effect=OSError("read-only")):
             self.assertIsNone(dc._save_unusable_capture(np.zeros(8), [1], fmt, "k", {}))
 
     def test_the_healthy_band_still_passes_untouched(self):
         """The gate moved by 20x, so the case it must not start refusing is the
         ordinary one: hardware reads 0.01-0.2%."""
-        cap, _ = _simulate([dc.ANCHOR_CODE, *range(40)])
-        fine = dc.SlotLevels(
+        cap, _ = _simulate([dsr.ANCHOR_CODE, *range(40)])
+        fine = dsr.SlotLevels(
             levels=np.linspace(-0.5, 0.5, 41),
             per_pass=np.zeros((3, 41)),
             diagnostics={"pass_spread_frac": 0.002, "pass_spread_p95_frac": 0.002, "passes": 3},
         )
-        with patch.object(dc, "extract_slot_levels", return_value=fine):
-            self.assertIs(dc.read_ring_capture(cap, 41, RING), fine)
+        with patch.object(dsr, "extract_slot_levels", return_value=fine):
+            self.assertIs(dsr.read_ring_capture(cap, 41, RING), fine)
 
     def test_the_failure_names_the_device_and_the_alternatives(self):
         """Every reason above reads like a bug in the measurement; it is almost
@@ -1057,7 +1092,7 @@ class RingCaptureGateTest(unittest.TestCase):
         recorded from, and which ones they could pick instead."""
         fake = _FakeSD([_dev("Microphone (2- Realtek(R) Audio", 2), _dev("Cam Link 4K", 2)])
         with patch.dict("sys.modules", {"sounddevice": fake}):
-            msg = dc._capture_fault_message(0, "it recorded silence", 1e-5)
+            msg = dcap.capture_fault_message(0, "it recorded silence", 1e-5)
         self.assertIn("Realtek", msg)
         self.assertIn("microphone", msg)
         self.assertIn("Cam Link 4K", msg)
@@ -1068,9 +1103,9 @@ class MergeMeasurementsTest(unittest.TestCase):
     def test_rings_are_rescaled_onto_the_common_anchor(self):
         # Two rings whose capture gain differs by 2x must still merge to one
         # consistent set of levels — the anchor code is what ties them together.
-        a = dc.SlotLevels(np.array([1.0, 0.5, 0.25]), np.zeros((2, 3)), {})
-        b = dc.SlotLevels(np.array([2.0, 1.0, -1.0]), np.zeros((2, 3)), {})
-        raw, metrics = dc.merge_measurements([([1, 2], a), ([3, 4], b)])
+        a = dsr.SlotLevels(np.array([1.0, 0.5, 0.25]), np.zeros((2, 3)), {})
+        b = dsr.SlotLevels(np.array([2.0, 1.0, -1.0]), np.zeros((2, 3)), {})
+        raw, metrics = dsr.merge_measurements([([1, 2], a), ([3, 4], b)])
         self.assertEqual([c for c, _ in raw], [1, 2, 3, 4])
         vals = [v for _, v in raw]
         # Half of ring a's anchor and half of ring b's must land on one level.
@@ -1078,16 +1113,16 @@ class MergeMeasurementsTest(unittest.TestCase):
         self.assertEqual(metrics["rings"], 2)
 
     def test_repeated_codes_are_averaged_and_their_spread_reported(self):
-        a = dc.SlotLevels(np.array([1.0, 0.4]), np.zeros((2, 2)), {})
-        b = dc.SlotLevels(np.array([1.0, 0.6]), np.zeros((2, 2)), {})
-        raw, metrics = dc.merge_measurements([([7], a), ([7], b)])
+        a = dsr.SlotLevels(np.array([1.0, 0.4]), np.zeros((2, 2)), {})
+        b = dsr.SlotLevels(np.array([1.0, 0.6]), np.zeros((2, 2)), {})
+        raw, metrics = dsr.merge_measurements([([7], a), ([7], b)])
         self.assertAlmostEqual(raw[0][1], 0.5)
         self.assertAlmostEqual(metrics["context_spread_frac"], 0.2, places=4)
 
 
 class BuildSidtableTest(unittest.TestCase):
     def test_reconstruct_from_synthetic_signed_curve(self):
-        sidtable, metrics = dc.build_sidtable_from_levels(_signed_levels())
+        sidtable, metrics = dsr.build_sidtable_from_levels(_signed_levels())
         assert sidtable is not None
         self.assertEqual(len(sidtable), 256)
         self.assertTrue(all(0 <= v <= 255 for v in sidtable))
@@ -1104,7 +1139,7 @@ class Volume0SelfTestTest(DataDirIsolated):
     sound measurement from one whose numbers are not output levels at all."""
 
     def test_consistent_measurement_passes_and_yields_a_table(self):
-        sidtable, metrics = dc.build_sidtable_from_levels(_signed_levels())
+        sidtable, metrics = dsr.build_sidtable_from_levels(_signed_levels())
         self.assertIsNotNone(sidtable)
         self.assertAlmostEqual(metrics["volume0_selftest_worst"], 0.0, places=6)
         self.assertEqual(len(metrics["volume0_selftest"]), 16)
@@ -1113,28 +1148,31 @@ class Volume0SelfTestTest(DataDirIsolated):
         # Master-volume-0 codes coming back with an upper-nibble-dependent level
         # is impossible for any real set of levels.
         raw = [(c, v + 0.02 * (c >> 4) if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
-        sidtable, metrics = dc.build_sidtable_from_levels(raw)
+        sidtable, metrics = dsr.build_sidtable_from_levels(raw)
         self.assertIsNone(sidtable)
-        self.assertGreater(metrics["volume0_selftest_worst"], dc.SELFTEST_TOLERANCE)
+        self.assertGreater(metrics["volume0_selftest_worst"], dsr.SELFTEST_TOLERANCE)
         # Still fully diagnosable: the metrics survive the rejection.
         self.assertIn("signed_span", metrics)
         self.assertEqual(len(metrics["volume0_selftest"]), 16)
 
     def test_rejection_writes_no_sidtable_and_reads_back_as_no_calibration(self):
         cfg = _u64_cfg()
-        key = dc.resolve_calibration_key(cfg)
+        key = dcs.resolve_calibration_key(cfg)
         raw = [(c, v + 0.3 if (c & 0x0F) == 0 else v) for c, v in _signed_levels()]
-        sidtable, metrics = dc.build_sidtable_from_levels(raw)
+        sidtable, metrics = dsr.build_sidtable_from_levels(raw)
         self.assertIsNone(sidtable)
-        path = dc.save_calibration(
-            cfg, key, {"default": dc.CalibrationResult(sidtable, metrics, None, raw)}, {}
+        path = dcs.save_calibration(
+            cfg,
+            dcs.CalibrationDocument(
+                key, {"default": dcs.CalibrationResult(sidtable, metrics, None, raw)}, {}
+            ),
         )
         doc = json.loads(path.read_text())
         entry = doc["sids"]["default"]
         self.assertNotIn("sidtable", entry)
         # The raw levels are kept so the failure can be investigated offline.
         self.assertEqual(len(entry["raw_signed_levels"]), 256)
-        self.assertIsNone(dc.load_calibrated_table(cfg))
+        self.assertIsNone(dcs.load_calibrated_table(cfg))
 
 
 class LadderMetricsTest(unittest.TestCase):
@@ -1143,13 +1181,13 @@ class LadderMetricsTest(unittest.TestCase):
         noise floor, so a quieter rig scored more "effective bits" on identical
         hardware — it once rated a chip degraded to ~4 bits above a working one.
         Scaling the whole capture must not change the ladder's quality figures."""
-        _, m1 = dc.build_sidtable_from_levels(_signed_levels())
-        _, m2 = dc.build_sidtable_from_levels([(c, v * 10.0) for c, v in _signed_levels()])
+        _, m1 = dsr.build_sidtable_from_levels(_signed_levels())
+        _, m2 = dsr.build_sidtable_from_levels([(c, v * 10.0) for c, v in _signed_levels()])
         for k in ("ladder_bits", "worst_gap_frac", "ladder_rms_err_frac"):
             self.assertAlmostEqual(m1[k], m2[k], places=3, msg=k)
 
     def test_worst_gap_position_is_reported_relative_to_silence(self):
-        sidtable, metrics = dc.build_sidtable_from_levels(_signed_levels())
+        sidtable, metrics = dsr.build_sidtable_from_levels(_signed_levels())
         self.assertIsNotNone(sidtable)
         # 0 = the gap straddles silence (crossover distortion), ±0.5 = it sits
         # out at an extreme, where the same gap is benign.
@@ -1195,17 +1233,17 @@ class ResolveCaptureFormatTest(unittest.TestCase):
 
     def _run(self, fake, dev=0):
         with patch.dict("sys.modules", {"sounddevice": fake}):
-            return dc.resolve_capture_format(dev)
+            return dcap.resolve_capture_format(dev)
 
     def test_prefers_stereo_at_the_nominal_rate(self):
         fake = _FakeSD([_dev("Cam Link 4K", 2)])
-        self.assertEqual(self._run(fake), (2, dc.CAP_SR))
+        self.assertEqual(self._run(fake), (2, dsr.CAP_SR))
 
     def test_falls_back_to_mono_on_a_mono_only_device(self):
         fake = _FakeSD([_dev("Mono Capture", 1)])
-        self.assertEqual(self._run(fake), (1, dc.CAP_SR))
+        self.assertEqual(self._run(fake), (1, dsr.CAP_SR))
         # 2 is never even probed on a device that reports a single channel.
-        self.assertEqual(fake.checked, [(0, 1, dc.CAP_SR)])
+        self.assertEqual(fake.checked, [(0, 1, dsr.CAP_SR)])
 
     def test_falls_back_when_a_device_lies_about_its_channel_count(self):
         """max_input_channels is what the driver advertises; PortAudio can still
@@ -1232,11 +1270,11 @@ class ResolveCaptureFormatTest(unittest.TestCase):
 
     def test_multichannel_device_captures_the_first_pair(self):
         fake = _FakeSD([_dev("8-in Interface", 8)])
-        self.assertEqual(self._run(fake), (2, dc.CAP_SR))
+        self.assertEqual(self._run(fake), (2, dsr.CAP_SR))
 
     def test_output_only_device_raises_actionable_error(self):
         fake = _FakeSD([_dev("Speakers", 0), _dev("Cam Link 4K", 2)])
-        with self.assertRaises(dc.CaptureUnavailableError) as ctx:
+        with self.assertRaises(dcap.CaptureUnavailableError) as ctx:
             self._run(fake, dev=0)
         # The message must name a device the user can actually pass instead.
         self.assertIn("Cam Link 4K", str(ctx.exception))
@@ -1244,7 +1282,7 @@ class ResolveCaptureFormatTest(unittest.TestCase):
 
     def test_no_workable_format_raises_capture_unavailable(self):
         fake = _FakeSD([_dev("Hostile Capture", 2)], accept={0: set()})
-        with self.assertRaises(dc.CaptureUnavailableError):
+        with self.assertRaises(dcap.CaptureUnavailableError):
             self._run(fake)
 
 
@@ -1255,7 +1293,7 @@ class FindCaptureDeviceTest(unittest.TestCase):
 
     def _run(self, fake, preferred=None):
         with patch.dict("sys.modules", {"sounddevice": fake}):
-            return dc.find_capture_device(preferred)
+            return dcap.find_capture_device(preferred)
 
     def test_an_explicit_device_is_used_as_given(self):
         fake = _FakeSD([_dev("Microphone (Realtek)", 2), _dev("Cam Link 4K", 2)])
@@ -1280,8 +1318,8 @@ class FindCaptureDeviceTest(unittest.TestCase):
         fake = _FakeSD([_dev("Speakers", 0), _dev("Line In", 2)], default_input=1)
         self.assertEqual(self._run(fake), 1)
         # …and that fallback is exactly what run_calibration warns about.
-        self.assertFalse(dc.looks_like_capture_input("Line In"))
-        self.assertTrue(dc.looks_like_capture_input("Cam Link 4K"))
+        self.assertFalse(dcap.looks_like_capture_input("Line In"))
+        self.assertTrue(dcap.looks_like_capture_input("Cam Link 4K"))
 
 
 if __name__ == "__main__":
