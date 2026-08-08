@@ -93,7 +93,7 @@ That proactive push matters because real WLED pushes state proactively. Without 
 
 **The self-served `GET /` control page** (`_INDEX_HTML`, a dependency-free fetch-driven page for third-party WebView shell apps and any browser) mirrors exactly the functional controls: power, and per-system scene select, **palette select**, a per-segment **brightness slider**, speed/intensity sliders, and a **color picker**. The DOM is built client-side from `/json`, and each segment is titled by its `seg[].n` — the system name, with a single-system run using the configurable `[wled].name`, so it is never a bare "System 1".
 
-The brightness slider earns its place because `bri` is a **real screen dim** (`_apply_dim` → `user_dim`, see the [`modes.py`](video-color.md#modespy--displaymode-hierarchy) note) and not merely an echo of power: `bri=0` means off (pause), and any nonzero value darkens the C64 output.
+The brightness slider earns its place because `bri` is a **real screen dim** (`_apply_dim` → `user_dim`, see the [`modes/`](video-color.md#modes--displaymode-hierarchy) note) and not merely an echo of power: `bri=0` means off (pause), and any nonzero value darkens the C64 output.
 
 **Serving and discovery.** `WledDeviceServer` runs the app on `control_plane.ControlServer` — the shared uvicorn-on-a-background-thread wrapper, which takes a `label` so its log line reads "WLED device …" rather than "control plane". It registers and unregisters a `ServiceInfo` for `_wled._tcp.local.`, advertising the real LAN IP via `_local_ip` (a UDP-connect trick) even when bound to `0.0.0.0`; the SRV record carries the actual port, so discovery works on a non-privileged bind. An mDNS registration failure is logged but never takes down the already-serving HTTP API.
 
@@ -104,7 +104,7 @@ The brightness slider earns its place because `bri` is a **real screen dim** (`_
 
 #### `bri` → a real dim, decoupled from transport
 
-`WledBridge._apply_dim` maps `bri` to the effective brightness `(master/255)*(seg/255)` and pushes it onto `Playlist.user_dim` and the live mode's `user_dim` (see the `modes.py` fade note). A top-level `bri` change re-dims every system.
+`WledBridge._apply_dim` maps `bri` to the effective brightness `(master/255)*(seg/255)` and pushes it onto `Playlist.user_dim` and the live mode's `user_dim` (see the `modes/` fade note). A top-level `bri` change re-dims every system.
 
 Brightness is **independent of transport**: pause/resume is the Power (`on`) toggle alone, and `bri=0` dims fully to black (`user_dim=0`) but does *not* pause.
 

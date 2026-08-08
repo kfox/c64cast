@@ -7,7 +7,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 **Contents**
 
 * [`video.py` — WebcamSource (shared broker) + AVFileSource (PyAV)](#videopy--webcamsource-shared-broker--avfilesource-pyav)
-* [`modes.py` — DisplayMode hierarchy](#modespy--displaymode-hierarchy)
+* [`modes/` — DisplayMode hierarchy](#modes--displaymode-hierarchy)
 * [`rolling_palette.py` + `palette.py` — forced-palette remap](#rolling_palettepy--palettepy--forced-palette-remap)
 * [Framerate pacing & frame-dropping](#framerate-pacing--frame-dropping)
 
@@ -158,9 +158,11 @@ The actual queue retraction lives in `AudioStreamer.flush()` / `UltimateAudioSam
 
 No other demux-side change is needed: `_apply_pending_seek` already clears `_eof`, rebuilds the resampler and atempo graph, and re-anchors PTS to the target.
 
-## `modes.py` — DisplayMode hierarchy
+## `modes/` — DisplayMode hierarchy
 
 Each mode does VIC register setup + frame quantization + push to the right addresses. All uploads go through `write_region` so the delta cache applies.
+
+**Package layout** (split from the single `modes.py`, 2026-08): one module per mode (`petscii`/`blank`/`mcm`/`hires`/`mhires`) over two mid-bases (`char.py` — `CharDisplayMode` + `clear_char_screen`; `bitmap.py` — `engage_bitmap_mode` + `BitmapDisplayMode`), with the compose-buffer TypedDicts, cell-color pickers, palette-mode shaping helpers and the `DisplayMode` base in `base.py`. `__init__.py` re-exports the whole public surface, so `from c64cast.modes import X` resolves exactly as before — but its submodule import order is `isort: off`-guarded because it **is** `DisplayMode.__subclasses__()` creation order, which introspect's live-target walk, the MIDI-setup wizard's pick lists, and generated reference appendix F all render in. Two things to know when editing: the live-tunable pick knobs (`PALETTE_PICK_EMA_ALPHA`, the `PERCELL_*` trio) are rebindable **on `modes.base` only** — the mode classes read them as `base.<NAME>` at call time so a runtime retune (the `mhires_ema_ghost_ab.py` diag) takes effect, while the `modes.<NAME>` re-exports are import-time value snapshots; and the helpers that went public in the split (`pick_cell_colors`, `ema_counts`, `fade_nibbles`, `clear_char_screen`, the `validate_*`/`*_palette_*` family) did so because the split made them cross-module — don't re-privatize them.
 
 ### `frame_target_size`
 
@@ -435,7 +437,7 @@ NMI audio lives on the `$FFFA` vector, independent of this `$0314` raster IRQ, s
 
 Everything the tear-free bitmap pipelines upload to C64 RAM, split out of `modes.py` (2026-08) so the 6502 layer lives apart from the `DisplayMode` hierarchy that drives it: the `$C500` bank-swap raster IRQ handlers (hires 61 B, mhires 83 B, the chunked mhires+audio merged dispatcher 176 B, and the 35 B host-DMA page-flip sibling for no-REU backends), the `$C700` frame-tracker layouts each handler reads at vblank, the REU staging addresses near 14 MB (`REU_VIDEO_*`), the merged-dispatcher builder `_make_merged_handler`, and the `install_bank_swap_irq` / `uninstall_bank_swap_irq` bring-up/teardown plus the per-frame `push_screen_via_reu` / `push_bitmap_via_reu` / `push_mhires_via_reu` helpers.
 
-The module is pure Python over `C64Backend` — no numpy, no cv2 — which is what qualifies it for `mypy --strict` (it's in the pyproject strict-files list; `modes.py` itself stays out for those import reasons). The two `[video]` subsections above (`use_reu_staged`, `double_buffer`) describe when each pipeline engages; the byte-level rationale (branch-offset asserts, the NMI-collapse chunking math, the Cam Link FFT history behind the merged dispatcher) lives with the bytes in the module's own comments. Coverage: `tests/test_reu_video.py` and `tests/test_bitmap_compose.py` verify the handler bytes, tracker packing, and install/teardown sequences against `FakeAPI`'s write log — nothing about them changed in the split.
+The module is pure Python over `C64Backend` — no numpy, no cv2 — which is what qualifies it for `mypy --strict` (it's in the pyproject strict-files list; the `modes/` renderers stay out for those import reasons). The two `[video]` subsections above (`use_reu_staged`, `double_buffer`) describe when each pipeline engages; the byte-level rationale (branch-offset asserts, the NMI-collapse chunking math, the Cam Link FFT history behind the merged dispatcher) lives with the bytes in the module's own comments. Coverage: `tests/test_reu_video.py` and `tests/test_bitmap_compose.py` verify the handler bytes, tracker packing, and install/teardown sequences against `FakeAPI`'s write log — nothing about them changed in the split.
 
 ## `rolling_palette.py` + `palette.py` — forced-palette remap
 

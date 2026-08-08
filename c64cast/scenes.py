@@ -29,7 +29,7 @@ import os
 import random
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
@@ -45,7 +45,7 @@ from .palette import ColorFitAccumulator, ColorMapAccumulator
 from .profiler import get_profiler
 from .rolling_palette import RollingForcePalette
 from .sampler import UltimateAudioSampler
-from .transport import LoopPresetStore, make_loop_preset_store
+from .transport import make_loop_preset_store, timecode
 from .video import (
     AVFileSource,
     WebcamSource,
@@ -54,6 +54,7 @@ from .video import (
     ensure_pyav,
     prescan_source_color,
 )
+from .video_transport import VideoTransportControls
 
 if TYPE_CHECKING:
     from .audio_source import AudioSource
@@ -89,7 +90,6 @@ AV_LAG_LOG_INTERVAL_S = 2.0
 # Border color while a MIDI live-tune loop is armed (Record pressed / first
 # loop_toggle press, awaiting Stop/second press to close it) — C64 palette
 # index 2 = red. See VideoScene._set_record_border.
-_RECORD_BORDER_COLOR = 2
 
 
 def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.ndarray:
@@ -222,12 +222,6 @@ def _annotate_frame_number(img: np.ndarray, label: str) -> np.ndarray:
     survives the downscale to 160/320-wide C64 output legibly. Diagnostic aid
     only (see [debug].frame_numbers). See :func:`_blit_c64_text`."""
     return _blit_c64_text(img, label, width_frac=0.55, vpos="top", margin_y_frac=0.10)
-
-
-def _timecode(seconds: float) -> str:
-    """Format seconds as M:SS for the frame-number debug overlay."""
-    s = max(0, int(seconds))
-    return f"{s // 60}:{s % 60:02d}"
 
 
 class OsdState:
@@ -583,7 +577,7 @@ class WebcamScene(Scene):
             _apply_rolling_palette(self._rolling_fp, self.display_mode, img)
             if self.show_frame_numbers:
                 self._frame_count += 1
-                label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
+                label = f"{timecode(current_time - self.start_time)} f{self._frame_count}"
                 img = _annotate_frame_number(img, label)
             img = self._apply_osd(img)
             assert self.display_mode is not None
@@ -823,7 +817,7 @@ class SourceScene(Scene):
             _apply_rolling_palette(self._rolling_fp, self.display_mode, frame)
             if self.show_frame_numbers:
                 self._frame_count += 1
-                label = f"{_timecode(current_time - self.start_time)} f{self._frame_count}"
+                label = f"{timecode(current_time - self.start_time)} f{self._frame_count}"
                 frame = _annotate_frame_number(frame, label)
             frame = self._apply_osd(frame)
             assert self.display_mode is not None
@@ -1161,7 +1155,7 @@ class SlideshowScene(Scene):
         img = self._current_img
         if self.show_frame_numbers:
             label = (
-                f"{_timecode(current_time - self.start_time)} "
+                f"{timecode(current_time - self.start_time)} "
                 f"{os.path.basename(self._current_path or '')}"
             )
             img = _annotate_frame_number(img, label)
@@ -1232,7 +1226,7 @@ class VideoScene(Scene):
         # overwrite this in setup().
         self.filepath = candidates[0]
         self.source: AVFileSource | None = None
-        self._start_time = 0.0
+        self.wall_start_time = 0.0
         # Seconds into the file to begin playback (0 = from the start). Passed
         # to AVFileSource at setup(), which seeks + rebases PTS. Quick playback
         # derives this from a URL's t=/start= timestamp.
@@ -1242,7 +1236,7 @@ class VideoScene(Scene):
         # preserving) and scale video PTS by tempo_scale, canceling the ~1/s
         # bitmap+DAC slowdown so content plays at real time. Resolved in
         # config.build_scene (gated to the host-DMA DAC path over bitmap modes).
-        self._tempo_scale = tempo_scale
+        self.tempo_scale = tempo_scale
         self._last_rendered_img: np.ndarray | None = None
         # The OSD text baked into the last rendered frame (None = none). Compared
         # each tick so an OSD post/expiry busts the identity-skip for one render.
@@ -1279,39 +1273,11 @@ class VideoScene(Scene):
         # truncate playback partway through long files); the config layer
         # rejects any user-supplied `duration_s` so this stays consistent.
         self.duration_s = math.inf
-        # Transport (MIDI live-tune Phase 2 — DJ-style seek/pause/loop from
-        # [midi_control]). Reset in setup() so a repeated/looped scene starts
-        # fresh. Once _transport_touched flips True (first seek/pause/loop/
-        # jog/rw/ff), _clock_s() switches from the audio-position clock to
-        # this wall-clock anchor and the source plays muted for the rest of
-        # the scene's run (see _touch_transport + _clock_s).
-        self._transport_touched = False
-        self._paused = False
-        self._wall_anchor_clock_s = 0.0
-        self._wall_anchor_time = 0.0
-        # Audio resync policy once transport is touched (MIDI live-tune Phase 4):
-        # "on" keeps audio playing and re-syncs it across every seek/pause/loop
-        # splice; "mute" is the Phase-2 escape valve (mute + wall clock for the
-        # rest of the run). Resolved to _transport_resync at touch time — "on"
-        # degrades to the mute/wall path when the scene has no audio (stream).
-        self._loop_audio = loop_audio
-        self._transport_resync = False
-        # Audio-anchored post-touch clock (resync path): playback clock =
-        # _audio_anchor_clock_s + (audio.position_seconds() - _audio_anchor_pos),
-        # frozen at _audio_anchor_clock_s while paused. Re-anchored at
-        # touch/pause/resume/seek. Lives in the scaled/PTS domain (see the
-        # _clock_to_content/_content_to_clock helpers + the tempo §3 rationale).
-        self._audio_anchor_clock_s = 0.0
-        self._audio_anchor_pos = 0.0
-        self._loop_a: float | None = None
-        self._loop_b: float | None = None
-        self._loop_state: Literal["none", "armed", "active"] = "none"
-        # Record workflow (MIDI live-tune Phase 3): the red border while a
-        # loop is armed, and the per-video loop preset store (rebuilt every
-        # setup() since a directory/glob-backed scene picks a new file each
-        # loop iteration). See _set_record_border / transport_loop_slot.
-        self._record_border_active = False
-        self._loop_store: LoopPresetStore | None = None
+        # DJ transport collaborator (MIDI live-tune Phases 2-4). Owns the
+        # touched/paused flags, both post-touch clocks, the A/B loop machine,
+        # the record border, and the per-video loop preset store; reset in
+        # setup() so a repeated/looped scene starts fresh.
+        self.transport = VideoTransportControls(self, loop_audio=loop_audio)
 
     def _resolve_candidates(self) -> list[str]:
         from .scene_factory import VIDEO_EXTS, resolve_file_spec
@@ -1361,18 +1327,8 @@ class VideoScene(Scene):
         # Reset transport state so a repeated/looped scene starts back on the
         # audio-master clock, untouched, rather than inheriting a prior run's
         # pause/seek/loop/mute.
-        self._transport_touched = False
-        self._paused = False
-        self._wall_anchor_clock_s = 0.0
-        self._wall_anchor_time = 0.0
-        self._transport_resync = False
-        self._audio_anchor_clock_s = 0.0
-        self._audio_anchor_pos = 0.0
-        self._loop_a = None
-        self._loop_b = None
-        self._loop_state = "none"
-        self._record_border_active = False
-        self._loop_store = make_loop_preset_store(self.filepath)
+        self.transport.reset()
+        self.transport.loop_store = make_loop_preset_store(self.filepath)
         if not ensure_pyav():
             log.warning(
                 "PyAV unavailable; video scene cannot play %s "
@@ -1409,7 +1365,7 @@ class VideoScene(Scene):
                 scan_audio_peak=will_push_audio,
                 start_s=self.start_s,
                 decode_target_size=decode_target,
-                tempo_scale=self._tempo_scale,
+                tempo_scale=self.tempo_scale,
             )
         except PermissionError as e:
             log.error("video: permission denied opening %s (%s)", self.filepath, e)
@@ -1544,7 +1500,7 @@ class VideoScene(Scene):
             self.source.start(audio_push=self.audio.push_samples)
         else:
             self.source.start(audio_push=None)
-        self._start_time = time.time()
+        self.wall_start_time = time.time()
 
     def _preencode_audio_for_reu(self) -> bytes:
         """Decode the entire audio track to mono int16, apply the same
@@ -1608,279 +1564,48 @@ class VideoScene(Scene):
             encoded = marker + encoded
         return encoded
 
-    def _clock_to_content(self, clk: float) -> float:
-        """Map an internal clock value (scaled/PTS domain) to content seconds.
-        Identity except on the resync path over the DAC+bitmap tempo scale (§3):
-        there the clock advances at s×content-seconds, so divide by s to recover
-        content seconds for the transport surface (seek targets, loop A/B, OSD)."""
-        if self._transport_touched and self._transport_resync and self._tempo_scale != 1.0:
-            return clk / self._tempo_scale
-        return clk
-
-    def _content_to_clock(self, s: float) -> float:
-        """Inverse of _clock_to_content: content seconds → internal clock domain."""
-        if self._transport_touched and self._transport_resync and self._tempo_scale != 1.0:
-            return s * self._tempo_scale
-        return s
-
-    def _clock_s(self) -> float:
-        # Once transport is touched, the playback clock comes from a transport
-        # anchor rather than the free-running audio-position clock.
-        #  - Resync path (loop_audio="on" with audio): audio-anchored — the
-        #    anchor plus the audio consumer's position delta, frozen while
-        #    paused. This inherits the shipped pre-touch clock's drift behavior
-        #    on every backend (crucially the ~0.88x drain rate on DAC+bitmap,
-        #    where a wall clock would desync ~7 s/min). Lives in the scaled/PTS
-        #    domain — see the conversion helpers + §3.
-        #  - Mute path (loop_audio="mute", or no audio): the Phase-2 wall-clock
-        #    anchor, verbatim (audio is muted, so its position is meaningless).
-        if self._transport_touched:
-            if self._transport_resync:
-                assert self.audio is not None
-                if self._paused:
-                    return self._audio_anchor_clock_s
-                return self._audio_anchor_clock_s + (
-                    self.audio.position_seconds() - self._audio_anchor_pos
-                )
-            if self._paused:
-                return self._wall_anchor_clock_s
-            return self._wall_anchor_clock_s + (time.time() - self._wall_anchor_time)
-        if self.audio and self.audio.sample_rate:
-            return self.audio.position_seconds()
-        return time.time() - self._start_time
-
-    def _touch_transport(self) -> None:
-        """First call latches transport control for the rest of this scene's run
-        and resolves the audio policy (loop_audio):
-          - "on" with a live audio stream → resync path: keep audio playing,
-            switch the clock to the audio-anchored delta, do NOT mute.
-          - "mute" (or no audio / no audio stream) → the Phase-2 escape valve:
-            freeze the wall-clock anchor and mute the source permanently.
-        No-op on subsequent calls."""
-        if self._transport_touched:
-            return
-        # Read the pre-touch clock BEFORE flipping the flag — _clock_s() branches
-        # on _transport_touched, so a read taken after the flip would return the
-        # anchor's own not-yet-seeded default instead of the real position.
-        clock_s = self._clock_s()
-        self._transport_touched = True
-        self._transport_resync = (
-            self._loop_audio == "on"
-            and self.audio is not None
-            and self.source is not None
-            and self.source.a_stream is not None
-            and not getattr(self.audio, "use_reu_pump", False)
-        )
-        if self._transport_resync:
-            assert self.audio is not None
-            # Pre-touch clock == audio position in the scaled domain, so the
-            # anchor delta starts at zero and playback continues seamlessly.
-            self._audio_anchor_clock_s = clock_s
-            self._audio_anchor_pos = self.audio.position_seconds()
-        else:
-            self._wall_anchor_clock_s = clock_s
-            self._wall_anchor_time = time.time()
-            if self.source is not None:
-                self.source.set_muted(True)
-
-    def _splice(self, target_s: float) -> None:
-        """Resync-path splice primitive (target_s in content seconds): re-anchor
-        the audio clock to the target, arm the demuxer's stale-audio guard, then
-        drop everything already queued. Order is load-bearing — request_seek sets
-        the _emit_audio pending-seek guard live FIRST, then flush() drains; the
-        flush epoch handles any pusher already blocked inside push_samples."""
-        assert self.audio is not None and self.source is not None
-        self._audio_anchor_clock_s = self._content_to_clock(target_s)
-        self._audio_anchor_pos = self.audio.position_seconds()
-        self.source.request_seek(target_s)
-        self.audio.flush()
-
+    # ---- DJ transport (MIDI live-tune Phases 2-4) ----------------------------
+    # TransportSession getattr-probes the transport_* names on whatever scene
+    # is current — the duck-typed contract lives on the scene — so these stay
+    # as one-line delegators; the state machine (clocks, anchors, A/B loop,
+    # record border, preset slots) is video_transport.VideoTransportControls.
     def transport_pause(self) -> None:
-        self._touch_transport()
-        if self._transport_resync:
-            # Freeze the audio-anchored clock at the current reading (BEFORE
-            # setting _paused, which changes _clock_s's branch), mute output, and
-            # ask the consumer to silence the ring fast (sampler: $DF21 volume 0;
-            # DAC: worker ring stomp). flush() drops queued audio so resume
-            # starts clean.
-            assert self.audio is not None and self.source is not None
-            self._audio_anchor_clock_s = self._clock_s()
-            self._paused = True
-            self.source.set_muted(True)
-            self.audio.flush(silence_output=True)
-        else:
-            self._wall_anchor_clock_s = self._clock_s()
-            self._paused = True
-        self.osd.post("PAUSED")
+        self.transport.pause()
 
     def transport_resume(self) -> None:
-        if not self._paused:
-            return
-        if self._transport_resync:
-            # Splice back to the paused position first (re-anchors + flushes +
-            # restores the sampler's volume via the plain flush()), THEN unmute —
-            # this ordering closes the resume audio-leak window. During pause the
-            # sampler's wall position kept advancing; the fresh _audio_anchor_pos
-            # in _splice absorbs it (the DAC's position froze on its own).
-            assert self.source is not None
-            self._paused = False
-            self._splice(self._clock_to_content(self._audio_anchor_clock_s))
-            self.source.set_muted(False)
-        else:
-            self._paused = False
-            self._wall_anchor_time = time.time()
-        self.osd.post("PLAY")
+        self.transport.resume()
 
     def transport_toggle_pause(self) -> None:
-        if not self._transport_touched:
-            self.transport_pause()
-        elif self._paused:
-            self.transport_resume()
-        else:
-            self.transport_pause()
+        self.transport.toggle_pause()
 
     def transport_seek(self, target_s: float) -> None:
-        self._touch_transport()
-        # Clamp against the duration in CONTENT seconds (transport_duration is
-        # the file duration, unscaled) — target_s is a content-seconds position.
-        duration = self.transport_duration()
-        hi = duration if duration is not None else max(target_s, 0.0)
-        target_s = max(0.0, min(target_s, hi))
-        if self._transport_resync:
-            self._splice(target_s)
-        else:
-            self._wall_anchor_clock_s = target_s
-            self._wall_anchor_time = time.time()
-            if self.source is not None:
-                self.source.request_seek(target_s)
-        self.osd.post(f"SEEK {_timecode(target_s)}")
+        self.transport.seek(target_s)
 
     def transport_loop_toggle(self) -> None:
-        """3-state cycle: mark A -> mark B + start looping -> clear. Drives
-        the same _loop_a/_loop_b/_loop_state machine as the Record/Stop pair
-        (transport_record/transport_stop) — the red border/pad-slot
-        persistence added there (MIDI live-tune Phase 3) apply here too, so
-        the single-button and Record/Stop workflows give identical feedback."""
-        self._touch_transport()
-        pos = self.transport_position()
-        if self._loop_state == "none":
-            self._loop_a = pos
-            self._loop_b = None
-            self._loop_state = "armed"
-            self._set_record_border(True)
-            self.osd.post(f"LOOP A {_timecode(pos)}")
-        elif self._loop_state == "armed":
-            self._loop_b = pos
-            self._loop_state = "active"
-            self._set_record_border(False)
-            assert self._loop_a is not None
-            self.osd.post(f"LOOP {_timecode(self._loop_a)}-{_timecode(pos)}")
-        else:
-            self._loop_a = None
-            self._loop_b = None
-            self._loop_state = "none"
-            self.osd.post("LOOP OFF")
-
-    def _set_record_border(self, active: bool) -> None:
-        """Red border while a loop is armed (MIDI live-tune Phase 3). The
-        bitmap/char display modes VideoScene uses engage with a hardcoded
-        black ($00) border and never rewrite $D020 per frame afterward (see
-        modes.engage_bitmap_mode's docstring), so 0 is always the correct
-        value to restore to — no per-mode border state to preserve."""
-        if active == self._record_border_active:
-            return
-        self._record_border_active = active
-        self.api.write_regs("d020", _RECORD_BORDER_COLOR if active else 0)
+        self.transport.loop_toggle()
 
     def transport_record(self) -> None:
-        """Record button: arm a loop at the current position (first step of
-        the Record -> Stop workflow; see transport_stop). A no-op beyond the
-        usual transport touch if a loop is already armed or active — Stop
-        governs every subsequent transition."""
-        self._touch_transport()
-        if self._loop_state != "none":
-            return
-        pos = self.transport_position()
-        self._loop_a = pos
-        self._loop_b = None
-        self._loop_state = "armed"
-        self._set_record_border(True)
-        self.osd.post(f"REC ● {_timecode(pos)}")
+        self.transport.record()
 
     def transport_stop(self) -> bool:
-        """Stop button: context-sensitive 3-way action.
-
-        - Recording (loop armed): close B, start looping.
-        - Playing (not paused, looping or not): pause in place.
-        - Already paused: request a full app exit — returns True, and the
-          caller (TransportSession._dispatch) sets Playlist.stop_event.
-
-        Held simultaneously with a loop_slot pad press, this SAVES the
-        current loop into that slot (see transport_loop_slot) — the plain
-        press here still fires its own action first; a performer holds Stop
-        a beat longer to reach the pad."""
-        self._touch_transport()
-        if self._loop_state == "armed":
-            assert self._loop_a is not None
-            pos = self.transport_position()
-            self._loop_b = pos
-            self._loop_state = "active"
-            self._set_record_border(False)
-            self.osd.post(f"LOOP {_timecode(self._loop_a)}-{_timecode(pos)}")
-            return False
-        if not self._paused:
-            self.transport_pause()
-            return False
-        return True
+        return self.transport.stop()
 
     def transport_loop_slot(self, slot: int, *, save: bool, clear: bool) -> None:
-        """Pad press. `save`/`clear` are the Stop-held/Record-held chord
-        flags TransportSession resolves before calling this — mutually
-        exclusive, both False on a plain press (recall)."""
-        if clear:
-            if self._loop_store is not None:
-                self._loop_store.delete(slot)
-            self.osd.post(f"{slot} CLEARED")
-            return
-        if save:
-            if self._loop_a is None:
-                self.osd.post("NO LOOP")
-                return
-            if self._loop_store is not None:
-                self._loop_store.save(slot, self._loop_a, self._loop_b)
-            self.osd.post(f"SAVED {slot}")
-            return
-        entry = self._loop_store.load().get(str(slot)) if self._loop_store is not None else None
-        if entry is not None:
-            a = entry["a"]
-            assert a is not None, "a stored loop entry always has a non-null 'a'"
-            b = entry["b"]
-        else:
-            a, b = 0.0, None
-        self._loop_a = a
-        self._loop_b = b
-        self._loop_state = "active"
-        self._set_record_border(False)
-        if self._paused:
-            self.transport_resume()
-        self.transport_seek(a)
-        self.osd.post(f"LOOP {slot}")
+        self.transport.loop_slot(slot, save=save, clear=clear)
 
     def transport_position(self) -> float:
-        # The transport surface speaks content seconds; the internal clock is in
-        # the scaled/PTS domain on the resync tempo path (identity elsewhere).
-        return self._clock_to_content(self._clock_s())
+        return self.transport.position()
 
     def transport_duration(self) -> float | None:
-        return self.source.duration_s if self.source is not None else None
+        return self.transport.duration()
 
     def transport_is_paused(self) -> bool:
-        return self._paused
+        return self.transport.is_paused()
 
     def process_frame(self, current_time: float) -> bool:
         # A source at EOF while an A/B loop is active isn't "done" — it's
         # about to wrap to A (below) — so it doesn't end the scene.
-        if self.source is None or (self.source.finished and self._loop_state != "active"):
+        if self.source is None or (self.source.finished and self.transport.loop_state != "active"):
             # Tell a sampler the source is exhausted so position_seconds()
             # clamps to the pushed total (no-op for the DAC streamer). Idempotent.
             if self.audio is not None:
@@ -1889,18 +1614,19 @@ class VideoScene(Scene):
                     mark_eof()
             return False
 
-        clock_s = self._clock_s()
-        if self._loop_state == "active" and self._loop_a is not None:
-            # _loop_b is stored in content seconds; the clock is in the scaled
+        tr = self.transport
+        clock_s = tr.clock_s()
+        if tr.loop_state == "active" and tr.loop_a is not None:
+            # loop_b is stored in content seconds; the clock is in the scaled
             # domain on the resync tempo path, so compare against the scaled B.
-            at_b = self._loop_b is not None and clock_s >= self._content_to_clock(self._loop_b)
+            at_b = tr.loop_b is not None and clock_s >= tr.content_to_clock(tr.loop_b)
             if at_b or self.source.finished:
                 # On the resync path the source.finished wrap re-fires every
                 # frame until the demuxer clears _eof; guard so we flush + seek A
                 # only once (each re-fire would drop the first fresh post-A
                 # audio). The mute path keeps today's re-fire behavior verbatim.
-                if not (self._transport_resync and self.source.seek_pending):
-                    self.transport_seek(self._loop_a)
+                if not (tr.resync and self.source.seek_pending):
+                    tr.seek(tr.loop_a)
                 return True
         img = self.source.current_frame(clock_s)
         if img is None:
@@ -1954,12 +1680,8 @@ class VideoScene(Scene):
             # which case clock_s is already an absolute file position (the
             # wall-clock anchor tracks transport_seek's target_s directly;
             # see design decision 2) and adding start_s again would double-count.
-            file_s = (
-                self._clock_to_content(clock_s)
-                if self._transport_touched
-                else clock_s + self.start_s
-            )
-            label = f"{_timecode(file_s)} f{int(round(file_s * fps))}"
+            file_s = tr.clock_to_content(clock_s) if tr.touched else clock_s + self.start_s
+            label = f"{timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
         if osd_now:
             img = _annotate_osd(img, osd_now, self.osd.position)
@@ -1992,7 +1714,7 @@ class VideoScene(Scene):
         # with tempo compensation ON (that pre-compresses CONTENT, not the drain
         # clock), so it's the calibration gauge for [audio].dac_bitmap_tempo_*
         # (see scripts/diags/mhires_tempo_clock_ab.py + mhires_dac_tempo_stretch).
-        wall = current_time - self._start_time
+        wall = current_time - self.wall_start_time
         clock_wall = clock_s / wall if wall > 0 else 0.0
         if log.isEnabledFor(logging.DEBUG) and (
             current_time - self._av_last_log_t >= AV_LAG_LOG_INTERVAL_S
@@ -2014,11 +1736,11 @@ class VideoScene(Scene):
         super().teardown()
         # Idempotent no-op if a loop was never armed — restores the border
         # if the scene ends (or is interrupted) mid-record so a red border
-        # never lingers into the next scene. See _set_record_border.
-        self._set_record_border(False)
+        # never lingers into the next scene. See VideoTransportControls.
+        self.transport.set_record_border(False)
         if self._av_lag_count:
-            wall = time.time() - self._start_time
-            clock_wall = self._clock_s() / wall if wall > 0 else 0.0
+            wall = time.time() - self.wall_start_time
+            clock_wall = self.transport.clock_s() / wall if wall > 0 else 0.0
             log.info(
                 "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
                 "min buffer depth=%d, clock/wall=%.4f over %d displayed frames",

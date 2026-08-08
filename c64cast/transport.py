@@ -63,6 +63,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def timecode(seconds: float) -> str:
+    """Format seconds as M:SS — the transport OSD posts and the video
+    frame-number debug overlay share this."""
+    s = max(0, int(seconds))
+    return f"{s // 60}:{s % 60:02d}"
+
+
 def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
     """Write `data` to `path` atomically: a temp file in the same directory,
     fsync'd, then ``os.replace``d onto the target (rename is atomic within a

@@ -1,6 +1,6 @@
 """Tests for the mhires per-cell color-selection strategies.
 
-Covers the pure picker (modes._pick_cell_colors) semantics for each strategy,
+Covers the pure picker (modes.pick_cell_colors) semantics for each strategy,
 the key invariant that error-min never loses to frequency in reconstruction
 error, and the end-to-end wiring through MultiHiresDisplayMode.compose().
 """
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from c64cast.modes import (  # noqa: E402
     ERROR_MIN_POOL_SIZE,
     MultiHiresDisplayMode,
-    _pick_cell_colors,
+    pick_cell_colors,
 )
 from c64cast.palette import PALETTE_LUMA  # noqa: E402
 
@@ -51,26 +51,26 @@ class PickCellColorsSemanticsTest(unittest.TestCase):
 
     def test_frequency_picks_the_three_highest_counts(self):
         counts = _cell_counts_from_present({6: 10, 12: 8, 1: 6, 9: 1}, bg0=0)
-        picks = _pick_cell_colors(counts, self.d_cell, 0, "frequency")
+        picks = pick_cell_colors(counts, self.d_cell, 0, "frequency")
         self.assertEqual(set(picks[0].tolist()), {6, 12, 1})
 
     def test_luminance_picks_darkest_median_brightest(self):
         # luma: 6=19.4 (dark), 11=51, 9=70.4 (median of 5), 4=124.2, 1=255 (bright)
         counts = _cell_counts_from_present({6: 5, 11: 5, 9: 5, 4: 5, 1: 5}, bg0=0)
-        picks = _pick_cell_colors(counts, self.d_cell, 0, "luminance")
+        picks = pick_cell_colors(counts, self.d_cell, 0, "luminance")
         # darkest=6, brightest=1, median (index 2 of the 5 sorted by luma)=9
         self.assertEqual(set(picks[0].tolist()), {6, 9, 1})
 
     def test_contrast_picks_extremes_plus_farthest(self):
         counts = _cell_counts_from_present({6: 5, 11: 5, 9: 5, 4: 5, 1: 5}, bg0=0)
-        picks = _pick_cell_colors(counts, self.d_cell, 0, "contrast")
+        picks = pick_cell_colors(counts, self.d_cell, 0, "contrast")
         # extremes 6 & 1; farthest-from-both in luma among {11,9,4} is 4 (124.2)
         self.assertEqual(set(picks[0].tolist()), {6, 4, 1})
 
     def test_luminance_and_contrast_can_differ(self):
         counts = _cell_counts_from_present({6: 5, 11: 5, 9: 5, 4: 5, 1: 5}, bg0=0)
-        lum = _pick_cell_colors(counts, self.d_cell, 0, "luminance")
-        con = _pick_cell_colors(counts, self.d_cell, 0, "contrast")
+        lum = pick_cell_colors(counts, self.d_cell, 0, "luminance")
+        con = pick_cell_colors(counts, self.d_cell, 0, "contrast")
         self.assertNotEqual(set(lum[0].tolist()), set(con[0].tolist()))
 
     def test_absent_slots_fall_back_to_bg0(self):
@@ -82,7 +82,7 @@ class PickCellColorsSemanticsTest(unittest.TestCase):
         for strat in ("frequency", "luminance", "contrast", "error-min"):
             with self.subTest(strat=strat):
                 counts = _cell_counts_from_present({5: 7}, bg0=0)
-                picks = _pick_cell_colors(counts, d_cell, 0, strat)
+                picks = pick_cell_colors(counts, d_cell, 0, strat)
                 vals = picks[0].tolist()
                 self.assertIn(5, vals)
                 self.assertEqual(sum(v == 0 for v in vals), 2)  # two bg0 fillers
@@ -91,7 +91,7 @@ class PickCellColorsSemanticsTest(unittest.TestCase):
         # Guards the darkest/brightest identification against a PALETTE_LUMA
         # regression: the min/max-luma present colors must be the picks.
         counts = _cell_counts_from_present({3: 5, 6: 5, 10: 5}, bg0=0)
-        picks = set(_pick_cell_colors(counts, self.d_cell, 0, "contrast")[0].tolist())
+        picks = set(pick_cell_colors(counts, self.d_cell, 0, "contrast")[0].tolist())
         idxs = [3, 6, 10]
         darkest = min(idxs, key=lambda k: float(PALETTE_LUMA[k]))
         brightest = max(idxs, key=lambda k: float(PALETTE_LUMA[k]))
@@ -112,8 +112,8 @@ class ErrorMinInvariantTest(unittest.TestCase):
         bg0 = 0
         cc = cell_counts.copy()
         cc[:, bg0] = -1.0
-        freq = _pick_cell_colors(cc, d_cell, bg0, "frequency")
-        emin = _pick_cell_colors(cc, d_cell, bg0, "error-min")
+        freq = pick_cell_colors(cc, d_cell, bg0, "frequency")
+        emin = pick_cell_colors(cc, d_cell, bg0, "error-min")
         freq_err = _cell_error(freq, d_cell, bg0)
         emin_err = _cell_error(emin, d_cell, bg0)
         # Allow a hair of fp slack; error-min must be ≤ frequency everywhere.

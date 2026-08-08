@@ -27,7 +27,7 @@ from c64cast.modes import (  # noqa: E402
     MCMDisplayMode,
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
-    _fade_nibbles,
+    fade_nibbles,
 )
 from c64cast.palette import build_fade_lut  # noqa: E402
 from c64cast.playlist import Playlist  # noqa: E402
@@ -79,7 +79,7 @@ class FadeNibbleTest(unittest.TestCase):
         lut = build_fade_lut(0.5)
         # hi=white(1), lo=red(2) packed as one screen byte per cell.
         arr = np.array([(1 << 4) | 2, (15 << 4) | 0], dtype=np.uint8)
-        out = _fade_nibbles(arr, lut)
+        out = fade_nibbles(arr, lut)
         self.assertEqual(int(out[0] >> 4), int(lut[1]))
         self.assertEqual(int(out[0] & 0x0F), int(lut[2]))
         self.assertEqual(int(out[1] >> 4), int(lut[15]))
@@ -218,7 +218,7 @@ class UserDimTest(unittest.TestCase):
         cached = mode.compose(_frame())
         mode._last_buffers = cached
         mode.user_dim = 0.5
-        expected_screen = _fade_nibbles(cached["screen"], build_fade_lut(0.6 * 0.5)).tobytes()
+        expected_screen = fade_nibbles(cached["screen"], build_fade_lut(0.6 * 0.5)).tobytes()
         api.regions.clear()
         mode.repush_faded(api, 0.6)
         self.assertEqual(api.regions[0x0400], expected_screen)

@@ -656,7 +656,7 @@ Five stateful processors, wired by `AudioDSP` in a source-appropriate order: **p
 
 The **second producer** of `modulation.MusicModulation`, alongside [`music_features.SidFeatureStream`](sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene). The SID stream reads envelope/gate/frequency out of a host-side 6502 running the same tune the chip plays; this one analyzes **actual audio samples**, so a generative scene reacts to music c64cast has no symbolic knowledge of — an instrument or mixer feed through an audio interface, a phone into an iRig, a mic in the room.
 
-Everything downstream of `MusicModulation` was already source-agnostic (`generators.py`, the effect chain, `wled_sync.py`), so this module *is* the whole feature: an analyzer, a ring the audio path pushes into, and a poll thread between them. `MicAudioSource.features()` returns that analyzer's snapshot.
+Everything downstream of `MusicModulation` was already source-agnostic (`generators/`, the effect chain, `wled_sync.py`), so this module *is* the whole feature: an analyzer, a ring the audio path pushes into, and a poll thread between them. `MicAudioSource.features()` returns that analyzer's snapshot.
 
 ### Why a separate pre-DSP tap (the non-obvious constraint)
 

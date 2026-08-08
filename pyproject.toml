@@ -285,6 +285,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["E402"]   # allow late imports inside test methods
 "c64cast/overlays/__init__.py" = ["E402"]   # late-block re-export of backgrounds
+"c64cast/generators/__init__.py" = ["E402"]   # ordered submodule imports after the base class
 "c64cast/scenes.py" = ["E741"]   # `l` for LAB-color split is canonical opencv idiom
 
 # --- uv --------------------------------------------------------------------
@@ -296,8 +297,8 @@ default-groups = ["dev"]
 # the two backends' transports + clients (api/backend/teensyrom_api,
 # socket_dma/teensyrom_dma), the playlist/scene/config state machines, the
 # ensemble audio-slot coordinator, and the audio/dsp paths. The rest of the
-# codebase is gradually-typed and would explode under --strict; modes.py
-# especially mixes numpy with cv2 in ways that don't survive strict checking
+# codebase is gradually-typed and would explode under --strict; the modes/
+# renderers especially mix numpy with cv2 in ways that don't survive strict checking
 # without heavy annotation noise. Run with `make typecheck`.
 [tool.mypy]
 python_version = "3.11"

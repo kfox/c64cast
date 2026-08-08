@@ -169,7 +169,7 @@ Where the per-subsystem detail lives (the [architecture reference](docs/architec
 
 | Topic | Section |
 |---|---|
-| `[color]` shaping, `dither`, `color_match`, `cell_strategy`, `motion_smoothing`, `palette_mode`, fades | [`modes.py`](docs/architecture/video-color.md#modespy--displaymode-hierarchy) |
+| `[color]` shaping, `dither`, `color_match`, `cell_strategy`, `motion_smoothing`, `palette_mode`, fades | [`modes/`](docs/architecture/video-color.md#modes--displaymode-hierarchy) |
 | Forced-palette remap + rolling palette (`force_palette`) | [`rolling_palette.py` + `palette.py`](docs/architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | DAC curves, Mahoney `$D418`, per-system calibration, REU pump | [`audio.py`, `audio_handlers.py`, `dsp.py`](docs/architecture/audio.md#audiopy--audiostreamer) |
 | Ultimate Audio FPGA sampler | [`sampler.py`](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |

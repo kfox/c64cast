@@ -1881,7 +1881,7 @@ class MotionSmoothingWiringTest(unittest.TestCase):
 
 
 class BuildSceneTempoScaleTest(unittest.TestCase):
-    """build_scene resolves VideoScene._tempo_scale: the observed bitmap+DAC
+    """build_scene resolves VideoScene.tempo_scale: the observed bitmap+DAC
     speed fraction on the host-DMA DAC path over a bitmap mode, else 1.0 (off)
     for the sampler, the REU pump, char modes, and muted scenes."""
 
@@ -1917,35 +1917,35 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
 
     def test_dac_mhires_uses_mhires_factor(self):
         scene = self._scene(self._dac_cfg(), display="mhires", audio=self.audio)
-        self.assertEqual(scene._tempo_scale, 0.80)
+        self.assertEqual(scene.tempo_scale, 0.80)
 
     def test_dac_hires_uses_hires_factor(self):
         scene = self._scene(self._dac_cfg(), display="hires", audio=self.audio)
-        self.assertEqual(scene._tempo_scale, 0.90)
+        self.assertEqual(scene.tempo_scale, 0.90)
 
     def test_dac_hires_edges_uses_hires_factor(self):
         # hires_edges shares the Hires VIC fetch → the hires factor.
         scene = self._scene(self._dac_cfg(), display="hires_edges", audio=self.audio)
-        self.assertEqual(scene._tempo_scale, 0.90)
+        self.assertEqual(scene.tempo_scale, 0.90)
 
     def test_dac_petscii_is_off(self):
         scene = self._scene(self._dac_cfg(), display="petscii", audio=self.audio)
-        self.assertEqual(scene._tempo_scale, 1.0)
+        self.assertEqual(scene.tempo_scale, 1.0)
 
     def test_dac_mcm_is_off(self):
         scene = self._scene(self._dac_cfg(), display="mcm", audio=self.audio)
-        self.assertEqual(scene._tempo_scale, 1.0)
+        self.assertEqual(scene.tempo_scale, 1.0)
 
     def test_muted_bitmap_is_off(self):
         # No audio streamer → nothing to compensate.
         scene = self._scene(self._dac_cfg(), display="mhires", audio=None)
-        self.assertEqual(scene._tempo_scale, 1.0)
+        self.assertEqual(scene.tempo_scale, 1.0)
 
     def test_reu_pump_bitmap_is_off(self):
         cfg = self._dac_cfg()
         cfg.audio.use_reu_pump = True
         scene = self._scene(cfg, display="mhires", audio=self.audio)
-        self.assertEqual(scene._tempo_scale, 1.0)
+        self.assertEqual(scene.tempo_scale, 1.0)
 
     def test_sampler_bitmap_is_off(self):
         # Sampler path (off the C64 bus) never stretches → no compensation.
@@ -1963,7 +1963,7 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
                 s, cfg, cast(C64Backend, api), self.audio, None, sampler_available=True
             )
         assert isinstance(scene, VideoScene)
-        self.assertEqual(scene._tempo_scale, 1.0)
+        self.assertEqual(scene.tempo_scale, 1.0)
 
 
 if __name__ == "__main__":

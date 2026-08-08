@@ -397,11 +397,13 @@ class BuildSceneLoopAudioStampTests(unittest.TestCase):
 
     def test_on_round_trips(self):
         scene = self._build_video("on")
-        self.assertEqual(scene._loop_audio, "on")  # type: ignore[attr-defined]
+        assert isinstance(scene, scenes.VideoScene)
+        self.assertEqual(scene.transport.loop_audio, "on")
 
     def test_mute_round_trips(self):
         scene = self._build_video("mute")
-        self.assertEqual(scene._loop_audio, "mute")  # type: ignore[attr-defined]
+        assert isinstance(scene, scenes.VideoScene)
+        self.assertEqual(scene.transport.loop_audio, "mute")
 
 
 class AtomicWriteTests(unittest.TestCase):
