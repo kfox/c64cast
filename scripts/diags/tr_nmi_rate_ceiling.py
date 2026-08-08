@@ -114,7 +114,7 @@ def find_camlink(fallback: int) -> int:
 
 def latch_for(rate: int, system: str) -> int:
     """CIA #2 Timer A latch (period = latch+1 cycles) for `rate` — the nominal
-    consumer latch, same math as AudioStreamer._nmi_latch_value."""
+    consumer latch, same math as NmiTimer.nominal_latch."""
     clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
     return max(1, round(clock / rate) - 1)
 

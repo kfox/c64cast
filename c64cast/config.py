@@ -706,7 +706,7 @@ class AudioCfg:
     # below (time-domain pre-compression), not by these NMI-rate multipliers.
     #
     # THESE KNOBS ARE QUANTIZED — they look continuous and are not. The NMI
-    # period is an integer PHI2 cycle count, so _compensated_latch rounds:
+    # period is an integer PHI2 cycle count, so NmiTimer.compensated_latch rounds:
     # period = round((nominal+1) / mult). At the default 12 kHz the nominal
     # NTSC period is 85 cycles, so ONE STEP IS ~1.2% and every request lands on
     # that grid:

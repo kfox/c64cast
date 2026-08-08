@@ -54,25 +54,16 @@ from .audio_handlers import (
     CIA1_TIMER_A_LATCH_KERNAL_NTSC,
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
-    CIA2_ICR_ENABLE_TIMER_A_NMI,
-    CIA2_TIMER_A_CONTINUOUS,
     HOST_DMA_SERVO_TARGET_GAP,
     INT16_FULL_SCALE,
     MAX_QUEUED_SAMPLES,
     NEUTRAL_SAMPLE,
-    NMI_ARM_MAX_ATTEMPTS,
-    NMI_ARM_VERIFY_DELAY_S,
-    NMI_BITMAP_SEED_MODES,
-    NMI_RATE_LOOP_ACQUIRE_ALPHA,
-    NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS,
-    NMI_RATE_LOOP_EMA_ALPHA,
     NMI_RATE_LOOP_WARMUP_S,
     NMI_ROUTINE,
     NMI_ROUTINE_ADDR,
     NMI_ROUTINE_PATCH_OFFSET_READ_HI,
     NMI_ROUTINE_PATCH_OFFSET_RESET_HI,
     NMI_ROUTINE_PATCH_OFFSET_WRAP_HI,
-    NMI_STALL_WARN_CHUNKS,
     PREBUFFER_CHUNKS,
     QUEUE_PUT_TIMEOUT_S,
     READ_PTR_LO_ADDR,
@@ -107,18 +98,14 @@ from .audio_handlers import (
     SID_MAHONEY_RES_FILT,
     SID_MAHONEY_SR,
     encode_floats_to_dac,
-    nmi_rate_step,
-    servo_period,
     stomp_spans,
 )
+from .audio_rate import NmiTimer, RateServo
 from .backend import C64Backend
 from .c64 import (
     CIA1,
     CIA2,
-    CLOCK_NTSC,
-    CLOCK_PAL,
     KERNAL,
-    NMI_SAFE_MIN_PERIOD_CYCLES,
     REU,
     SID,
     VECTORS,
@@ -299,42 +286,19 @@ class AudioStreamer:
         # (original drift/echo) for A/B. Does not affect the REU pump path.
         self.host_dma_servo = host_dma_servo
         # Adaptive NMI-rate compensation (closed loop on measured R rate). When
-        # True, the worker runs the slow outer loop (_update_nmi_rate_loop) that
+        # True, the worker runs the slow outer loop (RateServo.update_rate_loop) that
         # raises the nominal NMI rate so the bus-halt-throttled consumer lands at
         # sample_rate — fixing the content-dependent video slowdown while keeping
         # full bandwidth. Mutually exclusive with the static pitch_mult_* path:
-        # in adaptive mode set_nmi_latch_for_mode no-ops so _pitch_multiplier
+        # in adaptive mode set_nmi_latch_for_mode no-ops so nmi.pitch_multiplier
         # stays 1.0 and the loop owns the latch from nominal. See the
         # NMI_RATE_LOOP_* constants + nmi_rate_step.
         self.nmi_rate_adaptive = nmi_rate_adaptive
-        # PI integrator state for the host-DMA servo (worker-thread-only, so no
-        # lock needed). Reset to 0 each time the NMI consumer starts.
-        self._servo_integ = 0.0
-        # Adaptive NMI-rate loop state (worker-thread-only). _r_rate_ema = -1.0
-        # is the unseeded sentinel; all reset with _servo_integ at consumer start.
-        self._r_rate_ema = -1.0
-        self._last_r_addr = -1
-        self._last_r_time = 0.0
-        self._nmi_loop_chunk_count = 0
-        self._nmi_loop_acquiring = True
-        # Warm-up gate deadline (monotonic). While now < this, the loop measures R
-        # into the EMA but holds the latch (see NMI_RATE_LOOP_WARMUP_S). 0.0 = open
-        # (no warm-up pending), so direct _update_nmi_rate_loop calls act at once.
-        # Armed at consumer start and re-armed by note_playback_disturbance().
-        self._nmi_warmup_until = 0.0
-        # Current display mode (set by set_nmi_latch_for_mode) + an in-session
-        # cache of each mode's converged latch. The loop SEEDS the starting latch
-        # from these so playback begins at ~the right rate (no start-of-playback
-        # pitch glide) and re-converges fast on a mode change. The cache persists
-        # across scenes/loops (deliberately NOT reset in stop()); per-process only.
-        self._nmi_mode: str | None = None
-        self._nmi_learned_latch: dict[str, int] = {}
-        # Host-DMA servo gap telemetry (write head's lead over R, in bytes),
-        # for non-ears verification via the drift probe / stop() summary. -1 =
-        # no servo sample taken yet this session.
-        self._servo_gap_min = -1
-        self._servo_gap_max = -1
-        self._servo_gap_last = -1
+        # NMI timer + rate-control collaborators (see audio_rate.py): the
+        # CIA #2 latch machinery and the worker-thread closed loops. Their
+        # state lives on them; the streamer orchestrates.
+        self.nmi = NmiTimer(self)
+        self.servo = RateServo(self, self.nmi)
         # REU pump state: tracked so stop() can do the right teardown.
         # _reu_pump_armed flips True between arm_reu_pump and disarm_reu_pump.
         # _reu_pump_start_time supports position_seconds() in REU mode where
@@ -343,26 +307,6 @@ class AudioStreamer:
         self._reu_pump_armed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
-        # _nmi_latch is the CIA #2 Timer A latch the NMI consumer runs at (set
-        # by _start_nmi_timer); the pump's nominal CIA #1 latch derives from it
-        # so the producer/consumer period ratio stays exact.
-        self._nmi_latch = 0
-        # Host-DMA-servo pitch compensation: a sticky per-display-mode playback-
-        # rate multiplier (>1.0 = faster). set_nmi_latch_for_mode updates it, and
-        # _start_nmi_timer applies it when the timer first arms — so a multiplier
-        # set at scene setup (before the worker prebuffers and starts the timer)
-        # survives the timer start instead of being clobbered back to nominal.
-        # _nmi_timer_started gates whether a mid-stream update writes immediately.
-        self._pitch_multiplier = 1.0
-        self._nmi_timer_started = False
-        # NMI arm verification + stall watchdog state. _nmi_arm_attempts is how
-        # many arms the last bring-up needed (1 = clean, or an unverifiable
-        # backend); the rest track the servo's consecutive-identical-R count so
-        # the mid-session stall warning fires once. All reset in stop().
-        self._nmi_arm_attempts = 0
-        self._last_r_reading = -1
-        self._r_stall_chunks = 0
-        self._nmi_stall_warned = False
         self._reu_cia1_latch_nominal = REU_PUMP_CIA1_LATCH
         # REU mic mode: tracks the host's REU write position (wraps at
         # REU_MIC_SIZE). 0 until _start_mic_for_reu_pump() seeds it with
@@ -398,12 +342,6 @@ class AudioStreamer:
         # servo gap's excursion within the window.
         self._health_last_log = 0.0
         self._health_mark: tuple[int, int, int, int] = (0, 0, 0, 0)
-        self._health_gap_min = -1
-        self._health_gap_max = -1
-        # Instantaneous consumer-rate excursion within the health window (the
-        # EMA alone smooths away exactly the wander worth seeing).
-        self._r_rate_min = -1.0
-        self._r_rate_max = -1.0
         # Bytes-per-item queue: each item is a pre-encoded bytes blob of
         # 4-bit volume codes (one byte per sample). This collapses the old
         # per-sample put/get (which hit ~88K lock acquisitions/sec on a
@@ -549,22 +487,6 @@ class AudioStreamer:
             except Exception as e:
                 log.debug("digi-boost teardown voice %d failed: %s", v, e)
 
-    def _nmi_latch_value(self) -> int:
-        """CIA #2 Timer A latch for the NMI DAC consumer at sample_rate.
-
-        Timer A counts N→0 inclusive = N+1 PHI2 ticks per fire, so the NMI
-        period is (latch+1) cycles. Pick the integer latch whose (latch+1)
-        period brings the consumer rate closest to sample_rate. NTSC@8kHz:
-        latch=127 (7990 Hz, -0.12%); PAL@8kHz: latch=122 (8010 Hz, +0.13%).
-        The REU pump's CIA #1 latch and the servo's feed-forward both derive
-        from this so the producer/consumer ratio stays exact.
-
-        The rate that latch actually yields is `effective_rate` — read that,
-        not `sample_rate`, whenever the number means real time.
-        """
-        clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
-        return max(1, round(clock / self.sample_rate) - 1)
-
     @property
     def effective_rate(self) -> float:
         """The rate the C64 NMI consumer *actually* runs at, in Hz.
@@ -594,47 +516,7 @@ class AudioStreamer:
         divider's achieved rate rather than the request; that class exposes
         `effective_rate` too so scenes can read either sink the same way.
         """
-        if not self.sample_rate:
-            # Callers treat a falsy rate as "no audio clock" (see
-            # position_seconds); _nmi_latch_value would divide by zero.
-            return 0.0
-        clock = CLOCK_NTSC if self.system == "NTSC" else CLOCK_PAL
-        return clock / (self._nmi_latch_value() + 1)
-
-    def _ceiling_latch(self) -> int:
-        """Smallest (fastest) CIA #2 Timer A latch the adaptive loop may use: the
-        latch whose NMI period equals the safe handler budget
-        (c64.NMI_SAFE_MIN_PERIOD_CYCLES). period = latch+1, so latch = budget-1.
-        Bounds how far the loop can speed the NMI to overcome bus-halt tick loss
-        without overrunning the handler. System-independent (a cycle count)."""
-        return max(1, NMI_SAFE_MIN_PERIOD_CYCLES - 1)
-
-    def _seed_latch_for_mode(self, mode: str | None) -> int:
-        """Starting CIA #2 latch for the adaptive loop, chosen so playback begins
-        near the converged rate (minimal start glide). Uses the in-session learned
-        value for `mode` if known; else a per-mode-class default — bitmap modes
-        (heavy bus-halt loss) seed at the ceiling, char/light/unknown modes at
-        nominal. Clamped to the safe [ceiling, nominal] range."""
-        nominal = self._nmi_latch_value()
-        ceiling = self._ceiling_latch()
-        if mode is not None and mode in self._nmi_learned_latch:
-            seed = self._nmi_learned_latch[mode]
-        elif mode in NMI_BITMAP_SEED_MODES:
-            seed = ceiling
-        else:
-            seed = nominal
-        return max(ceiling, min(nominal, seed))
-
-    def _compensated_latch(self) -> int:
-        """The CIA #2 Timer A latch for the current pitch multiplier.
-
-        Rate and latch are inverse — NMI period = (latch+1) cycles — so a >1.0
-        (faster) multiplier shortens the nominal period: period =
-        round((nominal+1) / mult), latch = period − 1. Multiplier 1.0 → nominal.
-        """
-        nominal_latch = self._nmi_latch_value()
-        adjusted_period = max(2, round((nominal_latch + 1) / self._pitch_multiplier))
-        return max(1, adjusted_period - 1)
+        return self.nmi.effective_rate
 
     def _collect_until(
         self, chunk_buf: bytearray, n: int, leftover: bytes, deadline: float
@@ -751,13 +633,14 @@ class AudioStreamer:
         d_full, d_part, d_late, d_slots = (
             a - b for a, b in zip(mark, self._health_mark, strict=True)
         )
+        servo = self.servo
         gap = (
-            "n/a" if self._health_gap_min < 0 else f"{self._health_gap_min}..{self._health_gap_max}"
+            "n/a" if servo.health_gap_min < 0 else f"{servo.health_gap_min}..{servo.health_gap_max}"
         )
         r = (
             "n/a"
-            if self._r_rate_ema < 0
-            else f"{self._r_rate_ema:.0f}({self._r_rate_min:.0f}..{self._r_rate_max:.0f})"
+            if servo.r_rate_ema < 0
+            else f"{servo.r_rate_ema:.0f}({servo.r_rate_min:.0f}..{servo.r_rate_max:.0f})"
         )
         log.info(
             "audio: gap=%s late=%d/%d (worst +%.1fms) under=%d/%d writes=%.0f/s "
@@ -771,14 +654,14 @@ class AudioStreamer:
             d_slots / dt,
             self._halt_quantum(),
             r,
-            self._nmi_latch,
+            self.nmi.latch,
         )
         self._health_last_log = now
         self._health_mark = mark
-        self._health_gap_min = -1
-        self._health_gap_max = -1
-        self._r_rate_min = -1.0
-        self._r_rate_max = -1.0
+        servo.health_gap_min = -1
+        servo.health_gap_max = -1
+        servo.r_rate_min = -1.0
+        servo.r_rate_max = -1.0
         self._late_worst_s = 0.0
 
     def _halt_quantum(self) -> int:
@@ -800,7 +683,7 @@ class AudioStreamer:
         slightly *better* — because what matters most is the write cadence
         clearing that band at all, not how far past it lands.
         """
-        period_cycles = (self._nmi_latch or self._compensated_latch()) + 1
+        period_cycles = (self.nmi.latch or self.nmi.compensated_latch()) + 1
         quantum = halt_quantum_bytes(period_cycles)
         max_hz = getattr(getattr(self.api, "profile", None), "max_write_rate_hz", None)
         if max_hz:
@@ -809,7 +692,7 @@ class AudioStreamer:
             quantum = max(quantum, -(-self.chunk_size // max_slots))
         return min(self.chunk_size, quantum)
 
-    def _read_read_ptr(self) -> int | None:
+    def read_consumer_ptr(self) -> int | None:
         """The NMI consumer's read pointer R — the self-modifying LDA operand at
         ``$C025`` — or None when the read failed or came back outside the ring.
 
@@ -830,73 +713,6 @@ class AudioStreamer:
         if not (RING_BUFFER_ADDR <= r_addr < RING_BUFFER_END):
             return None
         return r_addr
-
-    def _arm_nmi_once(self, latch: int) -> None:
-        """One full arm of the NMI audio consumer, idempotent so a retry is just
-        another call.
-
-        The `$0318` vector is re-landed here, not only in _upload_nmi_and_buffers:
-        if *that* write is the one the transport dropped, the KERNAL NMI handler
-        is still installed, and its `#$7F` → `$DD0D` kills CIA #2 interrupts —
-        indistinguishable from a dropped CIA write.
-
-        The `$DD0D` read is how the latched ICR flags get cleared (a write can't),
-        deasserting the CIA's interrupt line so the next Timer A underflow is a
-        clean 0→1 transition. Best-effort: a backend that can't read still arms.
-        """
-        self.api.write_regs(
-            f"{VECTORS.NMI:04X}", NMI_ROUTINE_ADDR & 0xFF, (NMI_ROUTINE_ADDR >> 8) & 0xFF
-        )
-        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
-        try:
-            self.api.read_memory(CIA2.ICR, 1)
-        except Exception as e:
-            log.debug("ICR flag clear read failed: %s", e)
-        # Arm + start timer A, set NMI source.
-        self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
-
-    def _start_nmi_timer(self) -> None:
-        # Adaptive mode: arm at the per-mode seed (learned value or class default)
-        # so playback starts near the converged rate — the loop trims from there
-        # instead of gliding up from nominal. Static mode: apply the pitch
-        # multiplier chosen for this scene (the timer arms from the worker after
-        # prebuffer, i.e. AFTER set_nmi_latch_for_mode, so honoring it here is what
-        # makes the static compensation stick instead of resetting to nominal).
-        if getattr(self, "nmi_rate_adaptive", False):
-            latch = self._seed_latch_for_mode(self._nmi_mode)
-        else:
-            latch = self._compensated_latch()
-        self._nmi_latch = latch
-        self._nmi_timer_started = True
-        before = self._read_read_ptr()
-        if before is None:
-            # No R to check against, so a retry would be indistinguishable from
-            # arming five times for nothing. Fire once and accept the risk.
-            self._nmi_arm_attempts = 1
-            self._arm_nmi_once(latch)
-            return
-        for attempt in range(1, NMI_ARM_MAX_ATTEMPTS + 1):
-            self._nmi_arm_attempts = attempt
-            self._arm_nmi_once(latch)
-            time.sleep(NMI_ARM_VERIFY_DELAY_S)
-            after = self._read_read_ptr()
-            if after is None or after != before:
-                # R advanced (or went unreadable, which is not evidence of a dead
-                # consumer) — the arm took.
-                if attempt > 1:
-                    log.warning(
-                        "audio: NMI arm took %d attempts (a CIA write was dropped)", attempt
-                    )
-                else:
-                    log.debug("audio: NMI arm verified first attempt (R was $%04X)", before)
-                return
-        log.warning(
-            "audio: NMI consumer never started after %d arm attempts — audio will be "
-            "silent this session (R frozen at $%04X). The CIA #2 / NMI-vector writes "
-            "are not reaching the machine.",
-            NMI_ARM_MAX_ATTEMPTS,
-            before,
-        )
 
     def set_nmi_latch_for_mode(
         self, display_mode: str, calibration: dict[str, float] | None = None
@@ -929,42 +745,38 @@ class AudioStreamer:
             # multiplier stays 1.0. But record the mode here so the loop SEEDS its
             # starting latch from a close per-mode estimate (no start glide). On a
             # mid-stream mode change (timer already running), re-seed + re-acquire.
-            self._nmi_mode = display_mode.lower()
-            if self._nmi_timer_started:
-                seed = self._seed_latch_for_mode(self._nmi_mode)
-                if seed != self._nmi_latch:
-                    self._nmi_latch = seed
-                    self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", seed & 0xFF, (seed >> 8) & 0xFF)
-                self._nmi_loop_acquiring = True
+            self.nmi.mode = display_mode.lower()
+            if self.nmi.started:
+                seed = self.nmi.seed_latch_for_mode(self.nmi.mode)
+                if seed != self.nmi.latch:
+                    self.nmi.write_latch(seed)
+                self.servo.loop_acquiring = True
                 # A mode change shifts the bus-halt profile (hence R); hold the
                 # latch at the new seed until the new mode's load settles.
-                self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
+                self.servo.warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
             return
 
         # `hires_edges` scenes report display_mode.name == "hires" (same VIC
         # fetch), so they already resolve to the `hires` multiplier here.
         multiplier = 1.0 if calibration is None else calibration.get(display_mode.lower(), 1.0)
-        # Remember it so _start_nmi_timer applies it when the timer first arms.
+        # Remember it so NmiTimer.start applies it when the timer first arms.
         # At scene setup the worker is usually still prebuffering (timer not
         # started yet), so we just stash the value and let the timer pick it up.
-        self._pitch_multiplier = multiplier
-        if not self._nmi_timer_started:
+        self.nmi.pitch_multiplier = multiplier
+        if not self.nmi.started:
             return
 
-        adjusted_latch = self._compensated_latch()
+        adjusted_latch = self.nmi.compensated_latch()
         # Only write if it changed (avoid spurious bus traffic).
-        if adjusted_latch == self._nmi_latch:
+        if adjusted_latch == self.nmi.latch:
             return
 
         log.debug(
             f"[audio] retune NMI for {display_mode}: latch "
-            f"{self._nmi_latch} → {adjusted_latch} "
+            f"{self.nmi.latch} → {adjusted_latch} "
             f"(rate ×{multiplier:.4f})"
         )
-        self._nmi_latch = adjusted_latch
-        self.api.write_regs(
-            f"{CIA2.TIMER_A_LO:04X}", adjusted_latch & 0xFF, (adjusted_latch >> 8) & 0xFF
-        )
+        self.nmi.write_latch(adjusted_latch)
 
     # ---- worker --------------------------------------------------------------
     def _worker(self) -> None:
@@ -995,7 +807,7 @@ class AudioStreamer:
         absorbs occasional overshoots without lapping NMI.
 
         With `host_dma_servo` on (default), the per-chunk increment is the
-        closed-loop `_next_pace_increment(...)` (a PI controller on the gap
+        closed-loop `servo.next_pace_increment(...)` (a PI controller on the gap
         to R) instead of the bare `chunk_period`. This still adds to the
         *absolute* `next_write_time` — the no-snap-forward property above is
         preserved — but lets W's average rate track the (bus-halt-throttled)
@@ -1143,7 +955,7 @@ class AudioStreamer:
                     write_addr += n
                     if write_addr >= RING_BUFFER_END:
                         write_addr = RING_BUFFER_ADDR
-                    next_write_time += self._next_pace_increment(w_head, chunk_period)
+                    next_write_time += self.servo.next_pace_increment(w_head, chunk_period)
                     self._maybe_log_health(time.monotonic())
                     continue
 
@@ -1161,27 +973,15 @@ class AudioStreamer:
 
                 bytes_prebuffered += n
                 if bytes_prebuffered >= prebuffer_bytes:
-                    self._start_nmi_timer()
+                    self.nmi.start(adaptive=self.nmi_rate_adaptive)
                     prebuffered = True
                     # R only becomes meaningful now that the NMI consumes;
-                    # start the servo integrator + adaptive-rate loop clean.
-                    self._servo_integ = 0.0
-                    self._r_rate_ema = -1.0
-                    self._last_r_addr = -1
-                    self._last_r_time = 0.0
+                    # start the servo integrator + adaptive-rate loop clean
+                    # (warm-up gate armed inside — see reset_for_consumer_start).
+                    self.servo.reset_for_consumer_start()
                     # Health windows measure the consuming phase only — the
                     # prebuffer fill writes unsplit and has no slots to be late.
                     self._health_last_log = 0.0
-                    self._health_gap_min = -1
-                    self._health_gap_max = -1
-                    self._nmi_loop_chunk_count = 0
-                    self._nmi_loop_acquiring = True
-                    # Hold the rate loop at the seed until the start/seek
-                    # transient settles (post-seek decode catch-up + the
-                    # playlist's frame-drop snap), so it acquires from a steady
-                    # R instead of chasing the spin-up reading. See
-                    # NMI_RATE_LOOP_WARMUP_S.
-                    self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
                     # Pace the next write one chunk_period out so the
                     # PREBUFFER_CHUNKS slack stays steady instead of
                     # getting eaten up immediately.
@@ -1191,178 +991,6 @@ class AudioStreamer:
             # main loop has no clue why. Mark not-running so callers can detect.
             log.exception("audio worker crashed")
             self.running = False
-
-    def _next_pace_increment(self, write_addr: int, chunk_period: float) -> float:
-        """Per-chunk pace increment for the prebuffered worker.
-
-        Open-loop (host_dma_servo off, or a failed/insane R read) returns the
-        bare ``chunk_period`` — the original strict wall-clock schedule. With the
-        servo on, reads the NMI read pointer R over REST, computes the ring gap
-        ``(write_addr - R) % RING_BUFFER_SIZE`` (write_addr is the live W head —
-        already advanced past the byte just written), and runs the PI controller
-        (``servo_period``) so W's pace tracks R and the gap locks near half a
-        ring instead of lapping. A flaky read degrades to open-loop for that one
-        chunk; it never crashes or freezes the schedule. The increment is added
-        to the *absolute* ``next_write_time`` by the caller, so REST read latency
-        only shortens the next sleep — it does not snap the schedule forward.
-
-        Also the only place a consumer that dies *mid*-session becomes visible —
-        see ``_note_r_reading``.
-        """
-        if not self.host_dma_servo:
-            return chunk_period
-        r_addr = self._read_read_ptr()
-        if r_addr is None:
-            return chunk_period
-        self._note_r_reading(r_addr)
-        gap = (write_addr - r_addr) % RING_BUFFER_SIZE
-        self._servo_gap_last = gap
-        self._servo_gap_min = gap if self._servo_gap_min < 0 else min(self._servo_gap_min, gap)
-        self._servo_gap_max = max(self._servo_gap_max, gap)
-        self._health_gap_min = gap if self._health_gap_min < 0 else min(self._health_gap_min, gap)
-        self._health_gap_max = max(self._health_gap_max, gap)
-        # Slow outer loop: track R's *rate* and retune the NMI latch so the
-        # consumer lands at sample_rate (correct speed/pitch). Reuses the r_addr
-        # already read above — no extra REST traffic. Reads the rate, not the gap
-        # (the gap servo below nulls the gap, so it carries no rate signal).
-        # getattr-guarded so __new__-built test streamers read as adaptive-off.
-        # The rate estimate is taken either way — it is the only view of
-        # content-dependent tick loss, and it costs nothing on top of the read
-        # the gap servo just did. Only the latch *steering* is opt-in.
-        if getattr(self, "nmi_rate_adaptive", False):
-            self._update_nmi_rate_loop(r_addr)
-        else:
-            self._observe_r_rate(r_addr)
-        period, self._servo_integ = servo_period(gap, self._servo_integ, chunk_period=chunk_period)
-        return period
-
-    def _note_r_reading(self, r_addr: int) -> None:
-        """Watch for an NMI consumer that stopped after a verified start.
-
-        A consumer killed mid-session (a stray `#$7F` to `$DD0D`, a reset behind
-        our back) otherwise presents as unexplained silence plus the fast
-        playback the servo produces while chasing a dead reader — the servo has
-        this reading in hand either way, so saying so costs nothing. Warns once
-        per session; the pacing behavior is untouched.
-        """
-        # getattr-guarded so __new__-built test streamers still pace normally.
-        if r_addr == getattr(self, "_last_r_reading", -1):
-            self._r_stall_chunks = getattr(self, "_r_stall_chunks", 0) + 1
-        else:
-            self._last_r_reading = r_addr
-            self._r_stall_chunks = 0
-        if self._r_stall_chunks >= NMI_STALL_WARN_CHUNKS and not getattr(
-            self, "_nmi_stall_warned", False
-        ):
-            self._nmi_stall_warned = True
-            log.warning(
-                "audio: NMI consumer stalled — R has not moved from $%04X for %d chunks. "
-                "Audio is silent and playback pace is unreliable from here.",
-                r_addr,
-                self._r_stall_chunks,
-            )
-
-    def _observe_r_rate(self, r_addr: int) -> None:
-        """Track the NMI consumer's byte rate dR/dt, from the R the gap servo
-        already read. Observation only — nothing here steers anything.
-
-        Split out of ``_update_nmi_rate_loop`` because that loop is off by
-        default (steering on R is a closed dead end: R is a biased estimator
-        under bus load, measured biased in *both* directions depending on read
-        method). Gating the measurement on the disabled controller meant the one
-        quantity that shows content-dependent tick loss read zero in every log,
-        which is a diagnostic hole rather than a safety property — the guardrail
-        is against controlling on R, not against looking at it.
-
-        The instantaneous per-chunk rate is kept alongside the EMA: the EMA says
-        where the consumer sits, the spread between successive instantaneous
-        values says how much it is *moving*, and a consumer whose rate wanders
-        drags playback pitch with it through the gap servo, which faithfully
-        follows R by design.
-        """
-        alpha = (
-            NMI_RATE_LOOP_ACQUIRE_ALPHA
-            if getattr(self, "_nmi_loop_acquiring", False)
-            else NMI_RATE_LOOP_EMA_ALPHA
-        )
-        now = time.monotonic()
-        if self._last_r_addr >= 0 and self._last_r_time > 0.0:
-            dt = now - self._last_r_time
-            dr = (r_addr - self._last_r_addr) % RING_BUFFER_SIZE
-            # Discard a torn/backward read (half-ring jump = a read tear mid
-            # self-modify, not real advance) — same guard as hostdma_drift_probe.
-            if dt > 0 and dr < RING_BUFFER_SIZE // 2:
-                inst = dr / dt
-                if self._r_rate_ema < 0:
-                    self._r_rate_ema = inst  # seed (no ramp-from-zero)
-                else:
-                    self._r_rate_ema += alpha * (inst - self._r_rate_ema)
-                self._r_rate_min = inst if self._r_rate_min < 0 else min(self._r_rate_min, inst)
-                self._r_rate_max = max(self._r_rate_max, inst)
-        self._last_r_addr = r_addr
-        self._last_r_time = now
-
-    def _update_nmi_rate_loop(self, r_addr: int) -> None:
-        """Estimate the NMI consumer's byte rate (dR/dt) and step the CIA #2
-        Timer A latch toward making it equal sample_rate — fast at first
-        (acquisition, ~0.5 s, so the start glide is brief), then ~once per second.
-
-        Called per chunk from _next_pace_increment with the already-read R
-        address, so it adds no REST traffic and only runs on the host-DMA path
-        (the REU pump never starts the worker; open-loop returns before this).
-        The rate estimate itself comes from _observe_r_rate, which runs whether
-        or not this loop does. The actual latch move is the pure nmi_rate_step
-        (clamped to the handler budget)."""
-        self._observe_r_rate(r_addr)
-        acquiring = self._nmi_loop_acquiring
-        # Warm-up gate: during the post-start / post-disturbance settle window the
-        # EMA keeps warming (in _observe_r_rate) but the latch is held at the seed
-        # — the seed is already near-converged, so this plays at ~the right rate
-        # instead of chasing the unrepresentative spin-up R and gliding back. The
-        # chunk counter is not advanced, so the decide cadence resumes cleanly.
-        if time.monotonic() < self._nmi_warmup_until:
-            return
-
-        self._nmi_loop_chunk_count += 1
-        decide_every = (
-            NMI_RATE_LOOP_ACQUIRE_DECIDE_CHUNKS
-            if acquiring
-            else max(1, round(self.sample_rate / self.chunk_size))
-        )
-        if self._nmi_loop_chunk_count < decide_every or self._r_rate_ema < 0:
-            return
-        self._nmi_loop_chunk_count = 0
-        if not self._nmi_timer_started:
-            return
-        new_latch = nmi_rate_step(
-            self._r_rate_ema,
-            self._nmi_latch,
-            nominal_latch=self._nmi_latch_value(),
-            ceiling_latch=self._ceiling_latch(),
-            # The loop drives the measured consumer rate R toward this. R
-            # physically runs on the latch grid, so targeting the *request*
-            # would walk the latch off nominal by the quantization error.
-            target_rate=self.effective_rate,
-        )
-        if new_latch == self._nmi_latch:
-            # No change → within deadband or clamped at the ceiling: converged.
-            # Leave fast acquisition for the gentle fine loop (slow ±1 steps), and
-            # remember this mode's converged latch so the next scene/loop in this
-            # mode seeds dead-on (no start glide).
-            self._nmi_loop_acquiring = False
-            if self._nmi_mode is not None:
-                self._nmi_learned_latch[self._nmi_mode] = self._nmi_latch
-            return
-        log.debug(
-            "[audio] adaptive NMI rate%s: R≈%.0f / %d Hz target, latch %d → %d",
-            " (acquire)" if acquiring else "",
-            self._r_rate_ema,
-            self.sample_rate,
-            self._nmi_latch,
-            new_latch,
-        )
-        self._nmi_latch = new_latch
-        self.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", new_latch & 0xFF, (new_latch >> 8) & 0xFF)
 
     def note_playback_disturbance(self) -> None:
         """Re-arm the adaptive NMI-rate loop's warm-up gate after a large playback
@@ -1374,7 +1002,7 @@ class AudioStreamer:
         the pitch. The EMA is left intact (not re-seeded) so it keeps tracking
         across the gap. Cheap + thread-safe: a single monotonic write. A no-op in
         effect when the rate loop isn't running (open-loop / REU pump / static)."""
-        self._nmi_warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
+        self.servo.note_disturbance()
 
     # ---- sample tap ----------------------------------------------------------
     def _push_to_analysis(self, mono_floats: np.ndarray) -> None:
@@ -1775,7 +1403,7 @@ class AudioStreamer:
         # 5. Arm NMI (CIA #2 Timer A). NMI now consumes the prebuilt
         # NEUTRAL ring at the consume rate.
         self._reu_pump_start_time = time.monotonic()
-        self._start_nmi_timer()
+        self.nmi.start(adaptive=self.nmi_rate_adaptive)
         time.sleep(0.05)  # let NMI catch a few samples before IRQ arms
 
         # 6. Patch IRQ vector → REU mic pump handler. Pump starts on next
@@ -2018,7 +1646,7 @@ class AudioStreamer:
         # (NMI latch + 1) cycles — derive it from the actual consumer latch
         # rather than hardcoding 128, so a non-default sample_rate still gets a
         # matched pump rate. (At 8 kHz this is the historical chunk × 128 - 1.)
-        nmi_period = self._nmi_latch_value() + 1
+        nmi_period = self.nmi.nominal_latch() + 1
         cia1_latch = chunk * nmi_period - 1
         self._reu_cia1_latch_nominal = cia1_latch
         # Pump start pointers: seed the write pointer half a ring behind the
@@ -2182,7 +1810,7 @@ class AudioStreamer:
         # audio" rather than "time since IRQ vector was patched 100 ms
         # later" (which would put video sync 100 ms behind audio).
         self._reu_pump_start_time = time.monotonic()
-        self._start_nmi_timer()
+        self.nmi.start(adaptive=self.nmi_rate_adaptive)
 
         # Brief settle so NMI is already firing before the REU pump arms;
         # otherwise the first pump DMA could overwrite ring positions NMI
@@ -2321,7 +1949,7 @@ class AudioStreamer:
         pause fast mute. On a bad R read it just returns (the drained queue pads
         the ring to silence within ~1 s regardless). Called only from the worker
         thread, so write_addr is the live worker-local W."""
-        r_addr = self._read_read_ptr()
+        r_addr = self.read_consumer_ptr()
         if r_addr is None:
             return
         neutral = bytes([self._neutral_byte])
@@ -2389,22 +2017,12 @@ class AudioStreamer:
         self._pushed_count = 0
         self._queued_samples = 0
         self._stomp_requested = False
-        # Clear pitch-comp state so the next scene's bring-up re-arms from
-        # nominal (a scene with no display_mode never calls set_nmi_latch_for_
-        # mode, so a stale multiplier must not leak across scenes).
-        self._nmi_timer_started = False
-        self._pitch_multiplier = 1.0
-        self._nmi_arm_attempts = 0
-        self._last_r_reading = -1
-        self._r_stall_chunks = 0
-        self._nmi_stall_warned = False
-        # Clear adaptive-rate loop state too, so the next consumer re-acquires
-        # from nominal rather than carrying a stale R-rate estimate.
-        self._r_rate_ema = -1.0
-        self._last_r_addr = -1
-        self._last_r_time = 0.0
-        self._nmi_loop_chunk_count = 0
-        self._nmi_loop_acquiring = True
+        # Clear the timer's pitch-comp/arm state and the servo's watchdog +
+        # adaptive-rate state, so the next scene's bring-up re-arms and
+        # re-acquires from nominal (the per-mode learned-latch cache survives
+        # by design — see NmiTimer.reset_after_stop).
+        self.nmi.reset_after_stop()
+        self.servo.reset_after_stop()
         # Report underrun telemetry for the run that just ended. Each full
         # underrun is an audible click; partials are less audible but still
         # indicate producer stalls. Deterministic, source-correlated counts
@@ -2450,18 +2068,18 @@ class AudioStreamer:
         # ring gap near half a ring (4096) and never approached a lap (0) or an
         # underrun (RING_BUFFER_SIZE). The external drift probe can't see this
         # (it assumes a fixed wall-clock W), so this is the non-ears check.
-        if self._servo_gap_last >= 0:
+        if self.servo.gap_last >= 0:
             log.info(
                 "audio: host-DMA servo gap last=%d min=%d max=%d (target=%d, lap at 0/%d)",
-                self._servo_gap_last,
-                self._servo_gap_min,
-                self._servo_gap_max,
+                self.servo.gap_last,
+                self.servo.gap_min,
+                self.servo.gap_max,
                 HOST_DMA_SERVO_TARGET_GAP,
                 RING_BUFFER_SIZE,
             )
-        self._servo_gap_min = -1
-        self._servo_gap_max = -1
-        self._servo_gap_last = -1
+        self.servo.gap_min = -1
+        self.servo.gap_max = -1
+        self.servo.gap_last = -1
 
     def close(self) -> None:
         # AudioStreamer doesn't own its API — it shares the render path's

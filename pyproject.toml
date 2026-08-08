@@ -307,6 +307,7 @@ files = [
     "c64cast/backend.py",
     "c64cast/teensyrom_api.py",
     "c64cast/audio.py",
+    "c64cast/audio_rate.py",
     "c64cast/audio_handlers.py",
     "c64cast/playlist.py",
     "c64cast/socket_dma.py",

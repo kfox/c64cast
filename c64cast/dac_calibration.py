@@ -365,7 +365,7 @@ def _bring_up_dac_env(be: C64Backend, cfg: Config, log_fn: Callable[[str], None]
     # The streamer's own arm, so a dropped CIA write is retried here too: a
     # silent NMI is one of the three causes capture_fault_message has to
     # guess between after 50 s of measuring nothing.
-    st._start_nmi_timer()
+    st.nmi.start(adaptive=st.nmi_rate_adaptive)
     return st
 
 
