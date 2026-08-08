@@ -60,12 +60,7 @@ from c64cast.video.palette import C64_COLORS
 from . import asid
 from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
-from .sid_hw_config import (
-    apply_sid_map,
-    detect_sockets,
-    restore_sid_config,
-    snapshot_sid_config,
-)
+from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
@@ -240,8 +235,8 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # thread (avoids mutating display state from the reader).
         self._max_chip_seen = 0
         # Snapshot of the SID-address config taken before the first remap, for
-        # restore on teardown. None until a remap happens.
-        self._saved_config: dict[tuple[str, str], str] | None = None
+        # restore on teardown. Empty until a remap happens.
+        self._sid_session = SidHwSession(api)
         self._socket_present = (False, False)
         # [ultimate64].sid_panning — empty means the auto spread. Applied at
         # setup for the initial single chip and re-applied on every remap.
@@ -481,19 +476,12 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._pending_flush = bool(self._dirty_chips) or bool(self._pending_ctrl_first)
 
     # ---- multi-SID configuration ---------------------------------------------
-    def _snapshot_config(self) -> None:
-        """Snapshot the SID-address config we're about to change, once, so
-        teardown can restore it (best-effort)."""
-        if self._saved_config is not None:
-            return
-        self._saved_config = snapshot_sid_config(self.api)
-
     def _reconfigure_chips(self, n: int) -> None:
         """Grow the active SID map to `n` chips: configure the U64 address map
         live, update routing, and reflow the split scope. Runs on the main
         (render) thread from process_frame."""
         n = max(1, min(n, self._max_sids))
-        self._snapshot_config()
+        self._sid_session.snapshot()
         sid_map = plan_sid_map(
             n, socket1_present=self._socket_present[0], socket2_present=self._socket_present[1]
         )
@@ -533,14 +521,6 @@ class AsidScene(VoiceScopeRenderer, Scene):
         n = sid_map.n if sid_map is not None else self._active_chips
         return sources_for_addresses(self.api, self._chip_addresses[:n])
 
-    def _fold_into_restore(self, originals: dict[tuple[str, str], str]) -> None:
-        """Merge mixer originals into the snapshot teardown restores."""
-        if not originals:
-            return
-        if self._saved_config is None:
-            self._saved_config = {}
-        self._saved_config.update(originals)
-
     def _apply_sid_mixer(self, sid_map: SidMap | None = None) -> None:
         """Pan the active SID chips across the U64 mixer's stereo field and make
         every source they landed on audible ([ultimate64].sid_panning /
@@ -553,12 +533,11 @@ class AsidScene(VoiceScopeRenderer, Scene):
         sources = self._sid_sources(sid_map)
         panning = apply_panning(self.api, sources, self._sid_panning)
         self.set_window_chip_order(panning.window_order)
-        self._fold_into_restore(panning.originals)
-        self._fold_into_restore(apply_volume(self.api, sources, self._sid_volume))
+        self._sid_session.fold(panning.originals)
+        self._sid_session.fold(apply_volume(self.api, sources, self._sid_volume))
 
     def _restore_config(self) -> None:
-        if self._saved_config:
-            restore_sid_config(self.api, self._saved_config)
+        self._sid_session.restore()
 
     # ---- info text rows ------------------------------------------------------
     def _build_title_line(self) -> str:

@@ -133,9 +133,9 @@ Each entry is gated on the same version and address-byte conditions that make it
 
 **Where the pass still runs.** Single-SID tunes (nothing to route, but a tune requesting 8580 on a 6581-socketed `$D400` still needs remapping) and the canonical fallback layout `plan_sid_map`, which is chosen only when the tune's exact addresses aren't realizable and is model-blind. `WaveformScene._plan_multi_sid_map` reports which case applied; the fallback re-derives the model plan **after** applying the map, against the now-current addressing.
 
-**The single-snapshot rule.** Address routing, model correction and the mixer changes all merge under **one** snapshot taken before any is applied. Two sequential `snapshot_sid_config` calls would capture the first change as if it were the original state, corrupting the teardown restore.
+**The single-snapshot rule.** Address routing, model correction and the mixer changes all merge under **one** snapshot taken before any is applied. Two sequential `snapshot_sid_config` calls would capture the first change as if it were the original state, corrupting the teardown restore. `sid_hw_config.SidHwSession` enforces this mechanically: every consumer (WaveformScene, AsidScene, SidFileAudioSource, dac_calibration's per-socket loop) holds one session whose `snapshot()` is first-call-wins, `fold(originals)` merges the mixer/model values a change overwrote, and `restore()` puts the whole set back and resets the session — replacing the per-scene `_saved_config` dict + three identical `_fold_into_restore` copies it grew out of. It's also a context manager (restore on `with`-exit) for function-scoped uses.
 
-**The other call site.** `SidFileAudioSource` — the `generative` + `audio_source = "sid"` path in `audio_source.py` — has no address-routing counterpart, so it calls the simpler `sid_autoconfig.apply_sid_autoconfig` wrapper directly, with its own snapshot and apply, restored in `teardown()`.
+**The other call site.** `SidFileAudioSource` — the `generative` + `audio_source = "sid"` path in `audio_source.py` — has no address-routing counterpart, so it calls the simpler `sid_autoconfig.apply_sid_autoconfig` wrapper directly, folding the returned originals into its own `SidHwSession`, restored in `teardown()`.
 
 Both call sites are best-effort, and no-op on a backend without a SID config API (TeensyROM).
 

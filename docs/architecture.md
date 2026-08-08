@@ -126,7 +126,7 @@ rationale in the meantime — each of the ones below opens with one.
 | `app/profiler.py` | `--profile` per-frame timing harness |
 | `app/quickcast.py` | Positional-`MEDIA` quick-playback config builder |
 | `app/schema.py` | JSON Schema generator for the TOML config |
-| `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore |
+| `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore + the `SidHwSession` restore tracker |
 | `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |
 | `hw/teensyrom_api.py` | TeensyROM+ implementation of `C64Backend` |
 | `app/wizard.py` | `--init` interactive config builder |

@@ -80,7 +80,7 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
-from c64cast.sid.sid_hw_config import detect_sockets, restore_sid_config, snapshot_sid_config
+from c64cast.sid.sid_hw_config import SidHwSession, detect_sockets
 from c64cast.sid.sid_panning import CAT_MIXER
 from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
@@ -553,8 +553,9 @@ def _measure_each_socket(
     # Mixer levels snapshot once, before the loop: _isolate_mixer
     # rewrites them per socket, so a per-iteration snapshot would
     # capture its own previous edit rather than the user's setting.
-    saved_sid_config = {**snapshot_sid_config(ctx.be), **_snapshot_mixer(ctx.be)}
-    try:
+    with SidHwSession(ctx.be) as session:
+        session.snapshot()
+        session.fold(_snapshot_mixer(ctx.be))
         for socket, detected in sockets:
             ctx.log_fn(
                 f"[calib] isolating SID socket {socket} ({detected or 'detected'}) at $D400…"
@@ -572,8 +573,6 @@ def _measure_each_socket(
             time.sleep(0.2)
             sidtable, metrics, raw = _measure_one(ctx, f"socket {socket}")
             entries[str(socket)] = CalibrationResult(sidtable, metrics, detected or None, raw)
-    finally:
-        restore_sid_config(ctx.be, saved_sid_config)
     return entries
 
 
