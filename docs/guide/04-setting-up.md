@@ -130,6 +130,23 @@ command-line flag for it: anything you type as an argument ends up in your
 shell history and is visible to anyone who can list processes on your
 machine.
 
+## If Your TeensyROM+ Lives in an Ultimate
+
+A TeensyROM+ works in any Commodore 64, and that includes a C64U or an
+Ultimate 64: the Ultimate supplies the machine, the TeensyROM+ supplies the
+link. That pairing needs one setting changed on the *Ultimate* side; without
+it, what you play may come out with a steady hiss underneath.
+
+Open the Ultimate's menu, press <kbd>F2</kbd>, and under **Cartridge and ROM
+Settings** set **Bus Operation Mode** to **Writes**. Press <kbd>RUN/STOP</kbd>
+to back out, and say yes when it offers to save.
+
+The setting governs how much of what the machine does reaches the cartridge
+port. Its default, **Quiet**, keeps that port quiet; **Writes** — or **Dyn. &
+Writes**, which includes it — is what the TeensyROM+ needs. This one is worth
+doing before you go looking for an audio option, because there isn't one: no
+amount of shaping in c64cast will clear a hiss that comes from the bus.
+
 ## Installing c64cast
 
 c64cast is a Python program, but you do not have to think of it as one. It

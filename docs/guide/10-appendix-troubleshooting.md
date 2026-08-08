@@ -74,6 +74,10 @@ sampler instead.
 picture and the sound are competing for the same connection. Try a wired
 network connection, a lower frame rate, or a character display mode.
 
+**A steady hiss under everything, on a TeensyROM+.** If the TeensyROM+ is in a
+C64U or an Ultimate 64, check the Ultimate's **Bus Operation Mode**, which
+defaults to **Quiet**. Set it to **Writes**; Chapter 1 has the steps.
+
 **No audio at all.** Check that `[audio] enabled` is true and that you did
 not pass `--no-audio`. For microphone input, check that the `mic` feature is
 installed and that `-D` names the right device.

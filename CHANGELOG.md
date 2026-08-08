@@ -14,6 +14,15 @@ the version and stamps it with the date.
 
 ### Added
 
+- **A TeensyROM+ inside an Ultimate needs `Bus Operation Mode = Writes`, and the
+  documentation now says so.** On the firmware's `Quiet` default the pairing may
+  play with a constant hiss under the audio, which reads as a c64cast audio
+  problem and is not one — the fix is F2 → Cartridge and ROM Settings on the
+  Ultimate, and no `[audio]` or `[dsp]` knob substitutes for it. c64cast can't
+  provision this the way it does the REU and the sampler, because on that rig the
+  connection is `tr://` to the TeensyROM+ and there is no link to the Ultimate
+  whose setting it is. Documented in the User's Guide setup chapter, the
+  reference guide's DAC section, `caveats.md` and `troubleshooting.md`.
 - **`--calibrate-dac` now says which *kind* of unsteady a refused ring was.** A
   spread number alone cannot distinguish a capture whose level was still settling
   — where the ring replayed faithfully and only the level moved — from laps that
