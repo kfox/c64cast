@@ -64,6 +64,14 @@ them.
 > signal, and at 16 kHz the VIC-II's badlines steal enough cycles that a
 > 440 Hz test tone comes out at 421 Hz.
 
+A TeensyROM+ has no sampler and is therefore always on this path. In the
+cartridge port of a C64U or an Ultimate 64 it also needs that machine's own
+**F2 → Cartridge and ROM Settings → Bus Operation Mode** set to `Writes` (or
+`Dyn. & Writes`) rather than its `Quiet` default, saved in the Ultimate's
+settings; on `Quiet` the stream can carry a constant hiss that no shaping in the
+next section touches. c64cast cannot set it during a run, because the run's
+connection is to the TeensyROM+ and not to the Ultimate.
+
 ### The Ultimate Audio Sampler
 
 The Ultimate's FPGA carries a PCM sampler that plays straight out of REU

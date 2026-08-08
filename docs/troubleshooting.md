@@ -67,6 +67,18 @@ picture and the knobs that actually help:
 
 See [caveats.md → "Audio is intentionally lo-fi"](caveats.md#audio-is-intentionally-lo-fi-the-4-bit-d418-dac).
 
+### "Constant hiss under everything on a TeensyROM+"
+
+If the TeensyROM+ is in the cartridge port of a C64U / Ultimate 64, check the
+**Ultimate's** setting before any c64cast one: **F2 → Cartridge and ROM Settings
+→ Bus Operation Mode**, which defaults to `Quiet`. Set it to `Writes` (or
+`Dyn. & Writes`), back out with <kbd>RUN/STOP</kbd> and save. Nothing under
+`[audio]` or `[dsp]` clears it, and c64cast can't set it for you — the run's
+connection is to the TeensyROM+, not to the Ultimate.
+
+See [caveats.md → "A TeensyROM+ in an Ultimate needs Bus Operation Mode set to
+Writes"](caveats.md#a-teensyrom-in-an-ultimate-needs-bus-operation-mode-set-to-writes).
+
 ### "Audio cuts in and out / drops to a steady `writes=4/s` trickle"
 
 The audio worker can't get fresh samples onto the U64's ring buffer fast

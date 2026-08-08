@@ -118,6 +118,27 @@ TR+ PAL/NTSC) have different `s` — measure per platform with
 `[audio].pitch_mult_*` NMI-rate knobs (which correct *pitch*, not tempo). See the
 `video.py` tempo-compensation note in [architecture.md](architecture.md).
 
+## A TeensyROM+ in an Ultimate needs Bus Operation Mode set to Writes
+
+A TeensyROM+ in the cartridge port of a C64 Ultimate or Ultimate 64 can play
+with a constant hiss under the audio until one setting is changed on the
+**Ultimate** side. It is not a c64cast knob, and no `[audio]` / `[dsp]` shaping
+substitutes for it:
+
+**F2 → Cartridge and ROM Settings → Bus Operation Mode = `Writes`**
+
+The choices are `Quiet` (the firmware default), `Writes`, `Dynamic` and
+`Dyn. & Writes`; the last also serves, since it includes writes. Back out with
+<kbd>RUN/STOP</kbd> and save when asked — this one has to persist in the
+machine's own settings, because c64cast cannot provision it live the way it does
+the REU and the sampler: on this rig the connection is `tr://` to the
+TeensyROM+, and c64cast has no link to the Ultimate whose setting it is.
+
+Worth setting whenever a TeensyROM+ shares a machine with an Ultimate, not only
+when audio is enabled — the always-DAC `$D418` stream (see the tempo section
+above) is where the difference is loudest, not the only thing crossing that port.
+Verified on C64 Ultimate firmware 1.1.0.
+
 ## SID playback uses a C64-side player PRG, not `runners:sidplay`
 
 `WaveformScene` deliberately avoids the U64 firmware's
