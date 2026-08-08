@@ -54,11 +54,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import paths
+from c64cast import paths
 
 if TYPE_CHECKING:
-    from .config import Config
-    from .playlist import Playlist
+    from c64cast.config import Config
+    from c64cast.playlist import Playlist
 
 log = logging.getLogger(__name__)
 
@@ -621,7 +621,7 @@ class ControllerProfileStore:
         """The optional grid-controller LED-feedback block (Live DJ/VJ Phase 4):
         the per-controller velocity->color convention + an output `port`. An empty
         dict when the file is missing/corrupt or carries no `feedback` table —
-        :meth:`c64cast.midi_control.FeedbackMap.from_dict` then falls back to the
+        :meth:`c64cast.control.midi_control.FeedbackMap.from_dict` then falls back to the
         shipped defaults, so a bad block can never break feedback."""
         raw = self._load_raw().get("feedback")
         return dict(raw) if isinstance(raw, dict) else {}

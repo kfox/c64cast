@@ -137,7 +137,7 @@ def resolve_audio_input_device(device: int | str) -> int:
 
     Returns ``-1`` ("use the system default input") for a negative/empty value,
     when sounddevice is unavailable, or when a name matches nothing. Unlike the
-    camera resolver (:func:`c64cast.camera.resolve_camera_index`) this never
+    camera resolver (:func:`c64cast.control.camera.resolve_camera_index`) this never
     raises: audio degrades to the default input with a warning, matching
     :meth:`AudioStreamer._resolve_input_device`'s forgiving fallback. PortAudio
     exposes no USB VID:PID, so the only string form is a name substring, matched

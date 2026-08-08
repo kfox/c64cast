@@ -4,9 +4,9 @@ patched with fake CameraInfo objects, so these run without the `camera` extra)."
 import unittest
 from unittest import mock
 
-from c64cast import camera
-from c64cast.camera import CameraInfo
 from c64cast.config import ConfigError
+from c64cast.control import camera
+from c64cast.control.camera import CameraInfo
 
 
 def _cam(index, name, vid=None, pid=None, backend=1200):
@@ -51,8 +51,10 @@ class ResolveCameraIndexTest(unittest.TestCase):
     def _patch(self, cams, available=True):
         # Patch the isolated wrappers so tests don't need the extra installed.
         return (
-            mock.patch("c64cast.camera.enumerate_cameras", return_value=cams),
-            mock.patch("c64cast.camera.camera_enumeration_available", return_value=available),
+            mock.patch("c64cast.control.camera.enumerate_cameras", return_value=cams),
+            mock.patch(
+                "c64cast.control.camera.camera_enumeration_available", return_value=available
+            ),
         )
 
     def test_int_passthrough_backend_none(self):
@@ -90,7 +92,7 @@ class ResolveCameraIndexTest(unittest.TestCase):
         dup = _cam(4, "Cam Link 4K #2", vid=0x0FD9, pid=0x0066)
         enum_p, avail_p = self._patch([CAMLINK, dup])
         with enum_p, avail_p:
-            with self.assertLogs("c64cast.camera", level="WARNING"):
+            with self.assertLogs("c64cast.control.camera", level="WARNING"):
                 self.assertEqual(camera.resolve_camera_index("Cam Link"), (1, 1200))
 
 

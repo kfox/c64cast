@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 from c64cast.audio import dac_curve_resolve
 from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
+from c64cast.control.keyboard import CommodoreKeyPoller
+from c64cast.control.vision import MediaPipeHandRecognizer, VisionController
 from c64cast.hw import char_rom, hw_provision
 from c64cast.hw.api import SocketDMAError
 from c64cast.hw.backend import C64Backend, make_backend
@@ -45,10 +47,8 @@ from .cli_commands import (
     run_save_settings,
 )
 from .ensemble import Ensemble, SystemStack
-from .keyboard import CommodoreKeyPoller
 from .playlist import Playlist
 from .profiler import FrameProfiler, NullProfiler, set_profiler
-from .vision import MediaPipeHandRecognizer, VisionController
 
 if TYPE_CHECKING:
     from c64cast.video.framebuffer import Framebuffer
@@ -1404,7 +1404,7 @@ def _run_session(
         control_cfg = loaded.master_control if loaded.is_ensemble else cfgs[0].control
         if control_cfg.enabled:
             try:
-                from .control_plane import start_control_server
+                from c64cast.control.control_plane import start_control_server
 
                 # Per-system reload closures. Default-arg `st=st, p=p`
                 # captures by value to avoid the late-binding bug where
@@ -1449,7 +1449,7 @@ def _run_session(
         if midi_cfg.enabled:
             try:
                 scene_factory.validate_midi_control_cfg(midi_cfg)
-                from .midi_control import build_midi_control_listener
+                from c64cast.control.midi_control import build_midi_control_listener
 
                 midi_control_listener = build_midi_control_listener(
                     playlists={st.name: st.playlist for st in stacks},

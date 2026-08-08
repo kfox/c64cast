@@ -25,9 +25,8 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from c64cast.playlist import Playlist
 from c64cast.scenes.scenes import Scene
-
-from .playlist import Playlist
 
 log = logging.getLogger(__name__)
 

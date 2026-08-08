@@ -61,8 +61,8 @@ from typing import TYPE_CHECKING, Any
 from .transport import TransportEvent
 
 if TYPE_CHECKING:
-    from .config import MidiControlCfg
-    from .playlist import Playlist
+    from c64cast.config import MidiControlCfg
+    from c64cast.playlist import Playlist
 
 log = logging.getLogger(__name__)
 
@@ -285,7 +285,7 @@ def classify_message(msg: Any) -> tuple[str, int, int, bool] | None:
     - ``pressed`` is False only for a note release (note_off or note_on vel 0).
 
     Shared by :meth:`MidiControlListener._dispatch` and the ``--midi-setup``
-    learn loop (:mod:`c64cast.midi_setup`) so the two read a controller
+    learn loop (:mod:`c64cast.control.midi_setup`) so the two read a controller
     identically — a learned mapping can't disagree with how the listener will
     later interpret the same message."""
     if msg.type == "sysex":
@@ -303,7 +303,7 @@ def classify_message(msg: Any) -> tuple[str, int, int, bool] | None:
 
 
 def _matching_profile_store(opened_port_name: str, profiles_dir: Path) -> Any:
-    """Return the :class:`~c64cast.transport.ControllerProfileStore` whose learned
+    """Return the :class:`~c64cast.control.transport.ControllerProfileStore` whose learned
     port name matches the currently-opened MIDI port (case-insensitive substring,
     either direction — OS port names sometimes gain/lose an index suffix between
     runs). The most-specific match (longest stored port name) wins; no match →
@@ -345,7 +345,8 @@ def _load_profile_feedback(
     (feedback then falls back to the shipped :class:`FeedbackMap` defaults)."""
     if controller_profile == "off":
         return {}
-    from . import paths
+    from c64cast import paths
+
     from .transport import ControllerProfileStore
 
     base = profiles_dir if profiles_dir is not None else paths.controllers_dir()
@@ -367,7 +368,8 @@ def _load_profile_mappings(
     Any lookup problem (no port yet, missing file, corrupt JSON) yields ``[]``."""
     if controller_profile == "off":
         return []
-    from . import paths
+    from c64cast import paths
+
     from .transport import ControllerProfileStore
 
     base = profiles_dir if profiles_dir is not None else paths.controllers_dir()
@@ -926,7 +928,7 @@ class MidiControlListener:
 
     def _feed_tempo(self, msg: Any) -> bool:
         """Fast path for MIDI real-time clock / transport / song-position
-        messages: update every playlist's :class:`~c64cast.tempo.TempoClock`.
+        messages: update every playlist's :class:`~c64cast.control.tempo.TempoClock`.
         Returns True when the message was a clock message (so `_dispatch` skips
         the normal mapping lookup — these carry no channel and aren't mappable
         actions). In-memory GIL-cheap writes only, never DMA — the same rule the

@@ -13,8 +13,7 @@ from unittest import mock
 
 import numpy as np
 
-from c64cast.video.video import WebcamSource
-from c64cast.vision import (
+from c64cast.control.vision import (
     INDEX_PIP,
     INDEX_TIP,
     MIDDLE_PIP,
@@ -33,6 +32,7 @@ from c64cast.vision import (
     count_extended_fingers,
     is_pinch,
 )
+from c64cast.video.video import WebcamSource
 
 
 def make_hand(points: dict[int, tuple[float, float]]) -> HandState:

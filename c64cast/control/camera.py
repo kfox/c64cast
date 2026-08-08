@@ -152,11 +152,11 @@ def parse_camera_device(value: int | str, *, field_name: str) -> None:
         return
     token = str(value).strip()
     if not token:
-        from .config import ConfigError  # lazy: avoid config<->camera import cycle
+        from c64cast.config import ConfigError  # lazy: avoid config<->camera import cycle
 
         raise ConfigError(f"{field_name}: empty camera device string")
     if _looks_like_vidpid_attempt(token) and _parse_vidpid(token) is None:
-        from .config import ConfigError
+        from c64cast.config import ConfigError
 
         raise ConfigError(
             f"{field_name}: {token!r} looks like a USB VID:PID but isn't two hex "

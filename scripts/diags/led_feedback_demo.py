@@ -6,8 +6,8 @@ docs/architecture/control.md → "Grid-controller LED feedback").
 c64cast's live LED feedback lights a pad by sending it a ``note_on`` at the pad's
 own note number, with the *velocity* selecting the color (the Launchpad/APC
 convention). This tool sends exactly those messages — the same
-:class:`c64cast.midi_control.FeedbackMap` velocities and
-:func:`c64cast.midi_control.compute_pad_leds` mapping the running listener uses —
+:class:`c64cast.control.midi_control.FeedbackMap` velocities and
+:func:`c64cast.control.midi_control.compute_pad_leds` mapping the running listener uses —
 so what you see here is what a live show will light, with no c64cast run, no
 tempo grid, and no clip grid needed.
 
@@ -43,7 +43,7 @@ import time
 # midi_control pulls in mido lazily; compute_pad_leds / FeedbackMap themselves are
 # dependency-light, so --verify works without a MIDI backend.
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from c64cast.midi_control import FeedbackMap, compute_pad_leds  # noqa: E402
+from c64cast.control.midi_control import FeedbackMap, compute_pad_leds  # noqa: E402
 
 
 def _parse_pads(spec: str) -> list[int]:

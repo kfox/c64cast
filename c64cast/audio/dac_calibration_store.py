@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from c64cast import paths
+from c64cast.control.transport import atomic_write_text
 from c64cast.sid.asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
@@ -61,7 +62,6 @@ from c64cast.sid.asid_sidmap import (
     ITEM_SOCKET2_EN,
     ITEM_SOCKET2_TYPE,
 )
-from c64cast.transport import atomic_write_text
 
 if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
     from c64cast.config import Config

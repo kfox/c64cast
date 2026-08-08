@@ -19,8 +19,9 @@ from typing import cast
 
 import numpy as np
 
-from c64cast import midi_control as mc
 from c64cast.config import Config, SceneCfg, _is_valid_param_holder
+from c64cast.control import midi_control as mc
+from c64cast.control.tempo import ClockModulationSource, TempoClock
 from c64cast.hw.backend import HardwareProfile
 from c64cast.scene_factory import build_scene, validate_scene_cfg
 from c64cast.scenes.effects import (
@@ -33,7 +34,6 @@ from c64cast.scenes.effects import (
 )
 from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.scenes import Scene, SourceScene, _apply_effect_chain
-from c64cast.tempo import ClockModulationSource, TempoClock
 
 _SILENT_VOICES = (0.0, 0.0, 0.0)
 _GATES = (False, False, False)

@@ -19,8 +19,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import c64cast.transport as transport
-from c64cast.transport import (
+import c64cast.control.transport as transport
+from c64cast.control.transport import (
     LoopPresetStore,
     TransportEvent,
     TransportSession,
@@ -492,11 +492,11 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         data = os.path.join(self._tmp.name, "data")  # canonical does NOT exist
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
             with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
-                with self.assertLogs("c64cast.transport", level="WARNING") as cm:
+                with self.assertLogs("c64cast.control.transport", level="WARNING") as cm:
                     warn_if_legacy_presets_orphaned()
                 # Second call is a no-op (the one-shot flag is set) — assertLogs
                 # would fail on an empty log, so assert via assertNoLogs.
-                with self.assertNoLogs("c64cast.transport", level="WARNING"):
+                with self.assertNoLogs("c64cast.control.transport", level="WARNING"):
                     warn_if_legacy_presets_orphaned()
         joined = "\n".join(cm.output)
         self.assertIn("old repo location", joined)
@@ -508,7 +508,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         os.makedirs(os.path.join(data, "presets"))  # already migrated
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
             with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
-                with self.assertNoLogs("c64cast.transport", level="WARNING"):
+                with self.assertNoLogs("c64cast.control.transport", level="WARNING"):
                     warn_if_legacy_presets_orphaned()
 
     def test_silent_for_installed_package(self):
@@ -516,7 +516,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         data = os.path.join(self._tmp.name, "data")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
             with mock.patch("c64cast.paths.legacy_data_root", return_value=None):
-                with self.assertNoLogs("c64cast.transport", level="WARNING"):
+                with self.assertNoLogs("c64cast.control.transport", level="WARNING"):
                     warn_if_legacy_presets_orphaned()
 
     def test_make_loop_preset_store_triggers_the_check(self):
@@ -524,7 +524,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
         data = os.path.join(self._tmp.name, "data")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
             with mock.patch("c64cast.paths.legacy_data_root", return_value=Path(legacy)):
-                with self.assertLogs("c64cast.transport", level="WARNING"):
+                with self.assertLogs("c64cast.control.transport", level="WARNING"):
                     make_loop_preset_store("clip.mp4")
 
 

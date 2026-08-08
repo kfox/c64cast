@@ -42,10 +42,10 @@ from c64cast.audio.audio_handlers import (
     encode_floats_to_dac,
 )
 from c64cast.audio.sampler import UltimateAudioSampler
+from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.profiler import get_profiler
-from c64cast.transport import make_loop_preset_store, timecode
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
 from c64cast.video.palette import ColorFitAccumulator, ColorMapAccumulator
 from c64cast.video.rolling_palette import RollingForcePalette

@@ -334,7 +334,7 @@ override-able flag, or you'll permanently shadow the TOML value.
 ## Adding a control-plane endpoint
 
 The FastAPI app in
-[control_plane.py](../c64cast/control_plane.py) speaks to the
+[control_plane.py](../c64cast/control/control_plane.py) speaks to the
 `Playlist` via threading.Events. To add an action:
 
 1. Add an `Event` to `Playlist.__init__` and a handler in the run loop.
@@ -348,7 +348,7 @@ The FastAPI app in
    ```
 
 3. If the action should also be triggerable from the C64 keyboard,
-   extend [keyboard.py](../c64cast/keyboard.py) (you'd need a new
+   extend [keyboard.py](../c64cast/control/keyboard.py) (you'd need a new
    modifier-key edge or a chord).
 
 Keep `pause` / `resume` / `skip` / `reload` semantics — they're the
@@ -385,5 +385,5 @@ per surface, fakes at the top, three-to-six small `test_*` methods.
 | DisplayMode                | [c64cast/video/modes/](../c64cast/video/modes/)                      | branch in `config._build_display_mode`                                  |
 | Background                 | [c64cast/scenes/backgrounds.py](../c64cast/scenes/backgrounds.py)      | `@register("yours")` decorator                                          |
 | CLI flag                   | [c64cast/cli.py](../c64cast/cli.py)                      | `default=None` + entry in `config.CLI_TO_CFG`                           |
-| Control-plane endpoint     | [c64cast/control_plane.py](../c64cast/control_plane.py)  | new event on `Playlist` + handler in the run loop                       |
+| Control-plane endpoint     | [c64cast/control/control_plane.py](../c64cast/control/control_plane.py)  | new event on `Playlist` + handler in the run loop                       |
 | Test                       | [tests/test_*.py](../tests/)                                 | `FakeAPI` (`tests/_fakes.py`) + `FakeAudio` (`tests/test_overlays.py`) reusable |

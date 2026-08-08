@@ -14,10 +14,10 @@ from unittest import mock
 import numpy as np
 from _fakes import FrozenClock
 
+from c64cast.control.transport import LoopPresetStore, timecode
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.scenes.video_transport import VideoTransportControls
-from c64cast.transport import LoopPresetStore, timecode
 from c64cast.video.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,

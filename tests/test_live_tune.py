@@ -21,8 +21,8 @@ from c64cast.scenes import scenes
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast.midi_control import MidiControlListener
-from c64cast.transport import LiveTuneTracker, atomic_write_text
+from c64cast.control.midi_control import MidiControlListener
+from c64cast.control.transport import LiveTuneTracker, atomic_write_text
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.modes import (
     HiresDisplayMode,

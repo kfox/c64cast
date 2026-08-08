@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 from c64cast.scenes.modulation import MusicModulation
 
 if TYPE_CHECKING:
-    from .config import PerformanceCfg
+    from c64cast.config import PerformanceCfg
 
 # Plausible tempo band. A pulse-derived or tap-derived BPM outside this range is
 # treated as noise (a dropped/duplicated clock byte, a stray double-tap) and

@@ -825,7 +825,7 @@ class AudioCfg:
 class VisionCfg:
     """Camera-as-input: hand-gesture control via MediaPipe HandLandmarker.
 
-    See [c64cast/vision.py](c64cast/vision.py). Needs the `vision` extra
+    See [c64cast/control/vision.py](c64cast/control/vision.py). Needs the `vision` extra
     (mediapipe) + a downloaded HandLandmarker model. The camera is shared with
     any webcam scene through the WebcamSource broker, so no second device is
     needed; gestures work over any scene (blank/video/waveform/webcam)."""
@@ -2235,7 +2235,7 @@ _CLIP_SCENE_FIELD_DENY: frozenset[str] = frozenset({"overlays", "orchestrate", "
 class PerformanceCfg:
     """Live-performance tempo/beat grid (Phase 1 of the Live DJ/VJ arc).
 
-    Drives a process-wide :class:`~c64cast.tempo.TempoClock` — a musical beat
+    Drives a process-wide :class:`~c64cast.control.tempo.TempoClock` — a musical beat
     grid every performance consumer reads GIL-atomically (launch quantization,
     effect tempo-lock, WLED). The grid takes tempo from an external MIDI clock
     (fed by [midi_control]'s reader thread, so `[midi_control].enabled` must be
@@ -2561,7 +2561,9 @@ def _validate_video_device(video: VideoCfg) -> None:
     matched by camera name substring / USB VID:PID. Rejects a malformed VID:PID
     at load time; actual name/VID resolution (which enumerates hardware and
     needs the 'camera' extra) is deferred to WebcamSource construction."""
-    from . import camera  # local: keep the optional-feature module off the hot import path
+    from c64cast.control import (
+        camera,  # local: keep the optional-feature module off the hot import path
+    )
 
     camera.parse_camera_device(video.device, field_name="[video].device")
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from c64cast.perf_console import PerfBridge, _beats_remaining, _system_state
+from c64cast.control.perf_console import PerfBridge, _beats_remaining, _system_state
 from c64cast.scenes.effects import TrailsEffect
 
 try:
@@ -250,7 +250,7 @@ class PerfEndpointsTest(unittest.TestCase):
     """Drive the perf routes through the real control-plane app."""
 
     def _client(self) -> tuple[Any, _FakePlaylist]:
-        from c64cast.control_plane import build_app
+        from c64cast.control.control_plane import build_app
 
         pl = _FakePlaylist(
             clips=[{"slot": 1, "name": "A", "launch": "trigger", "quantize": "bar", "loop": True}],

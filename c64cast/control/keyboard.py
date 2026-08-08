@@ -52,10 +52,9 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+from c64cast._pollthread import PollThread
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import KEYBUF, SCREEN
-
-from ._pollthread import PollThread
 
 ADDR_MODIFIERS = SCREEN.MODIFIERS
 ADDR_KB_BUFFER_LEN = SCREEN.KB_BUFFER_LEN
@@ -104,10 +103,10 @@ class CommodoreKeyPoller:
         self.api = api
         self.name = name
         # Per-instance logger so ensemble runs can tell which system a
-        # given press came from. Child of the existing c64cast.keyboard
-        # logger, so assertLogs("c64cast.keyboard", ...) in tests still
+        # given press came from. Child of the existing c64cast.control.keyboard
+        # logger, so assertLogs("c64cast.control.keyboard", ...) in tests still
         # matches via the logging hierarchy.
-        self.log = logging.getLogger(f"c64cast.keyboard.{name}")
+        self.log = logging.getLogger(f"c64cast.control.keyboard.{name}")
         self.poll_interval_s = poll_interval_s
         self.hold_threshold_s = hold_threshold_s
         self._poll = PollThread(self._loop, name="cbm-key-poll", manual=True, join_timeout=1.0)

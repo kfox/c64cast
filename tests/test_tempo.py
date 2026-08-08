@@ -26,7 +26,7 @@ except ImportError:
     HAVE_MIDI = False
 
 from c64cast import config as cfgmod
-from c64cast.tempo import ClockModulationSource, TempoClock, build_tempo_clock
+from c64cast.control.tempo import ClockModulationSource, TempoClock, build_tempo_clock
 
 
 class _Msg:
@@ -306,7 +306,7 @@ class MidiControlIntegrationTest(unittest.TestCase):
     socket, on the reader thread."""
 
     def _listener(self, playlists, cc_map=None):
-        from c64cast.midi_control import MidiControlListener
+        from c64cast.control.midi_control import MidiControlListener
 
         return MidiControlListener(
             {pl.name: pl for pl in playlists},

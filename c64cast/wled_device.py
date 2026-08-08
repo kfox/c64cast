@@ -74,11 +74,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from c64cast.control.transport import atomic_write_text
 from c64cast.video.modes import PALETTE_MODES
 
 from . import paths
 from .playlist import Playlist
-from .transport import atomic_write_text
 
 # NOTE: this module deliberately does NOT use `from __future__ import
 # annotations`. The FastAPI route handlers below annotate params with types
@@ -743,7 +743,7 @@ class WledBridge:
         self._started = time.monotonic()
         # Persisted WLED presets (one file per device name) + the currently
         # active preset id (state.ps; -1 = none / a manual change since recall).
-        from .transport import warn_if_legacy_presets_orphaned
+        from c64cast.control.transport import warn_if_legacy_presets_orphaned
 
         warn_if_legacy_presets_orphaned()
         self._presets = PresetStore(paths.presets_dir() / f"wled-{_sanitize_name(name)}.json")
@@ -1284,7 +1284,7 @@ class WledDeviceServer:
         self._name = name
         self._bridge = bridge
         self._app = build_wled_app(bridge, port=port)  # RuntimeError if fastapi missing
-        from .control_plane import ControlServer
+        from c64cast.control.control_plane import ControlServer
 
         self._server = ControlServer(host, port, self._app, label=f"WLED device '{name}'")
         self._zc: Any = None

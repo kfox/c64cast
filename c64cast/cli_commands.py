@@ -127,7 +127,7 @@ def list_devices() -> int:
     print("Video input devices (use with -d / --device — an index, a name substring, or VID:PID):")
     import cv2
 
-    from . import camera
+    from c64cast.control import camera
 
     # Best-effort resolution probe (indices 0-7), merged into whichever listing
     # we print below. Probing past the highest valid index makes OpenCV (and the
@@ -330,7 +330,7 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     if args.suggest_palette is not None:
         return run_suggest_palette(args.suggest_palette)
     if getattr(args, "midi_setup", False):
-        from . import midi_setup
+        from c64cast.control import midi_setup
 
         return midi_setup.run_setup()
     if args.init is not None:
@@ -365,7 +365,9 @@ def run_save_settings(args: argparse.Namespace) -> int:
     fields) and atomically, prints the path + contents, and returns 0. If
     nothing savable was provided, prints what's savable and returns 2. The DMA
     password can never be written (``config_serialize`` suppresses it)."""
-    from . import config_serialize, paths, transport
+    from c64cast.control import transport
+
+    from . import config_serialize, paths
     from .connect import apply_to_config, parse_connection_uri
 
     provided = (

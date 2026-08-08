@@ -16,12 +16,12 @@ from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from c64cast.control.transport import LiveTuneTracker, TransportSession
 from c64cast.hw.backend import C64Backend
 from c64cast.scenes.scenes import Scene
 
 from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
 from .profiler import FrameProfiler, NullProfiler
-from .transport import LiveTuneTracker, TransportSession
 
 if TYPE_CHECKING:
     from c64cast.scenes.modulation import MusicModulation
@@ -198,7 +198,7 @@ class Playlist:
         # Always present like `transport` so consumers (launch quantize,
         # tempo-locked effects — later phases) can read `pl.tempo` unguarded.
         # In-memory only — the reader thread never touches DMA to update it.
-        from .tempo import ClockModulationSource, build_tempo_clock
+        from c64cast.control.tempo import ClockModulationSource, build_tempo_clock
 
         self.tempo = build_tempo_clock(performance)
         # Live-audio tempo drive (tempo_source = "audio"). When set, `_run_one_
@@ -227,7 +227,7 @@ class Playlist:
         # reader thread. `build_performance_scene` is the injected factory
         # (cli.build_stack) that turns a clip dict into a Scene — None until
         # wired, which makes the grid inert.
-        from .performance import PerformanceSession, default_look_store
+        from c64cast.control.performance import PerformanceSession, default_look_store
 
         self.performance = PerformanceSession(
             getattr(performance, "clips", None) if performance is not None else None,

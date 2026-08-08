@@ -1,6 +1,6 @@
 """Camera-as-input: turn the webcam into a gesture/landmark input device.
 
-Architectural sibling to [keyboard.py](c64cast/keyboard.py)'s
+Architectural sibling to [keyboard.py](c64cast/control/keyboard.py)'s
 `CommodoreKeyPoller`. A background thread reads frames from the shared
 `WebcamSource` broker, runs hand tracking, and translates hand *gestures* into
 the same `pause`/`resume`/`skip`/`cycle` thread events the keyboard poller and
@@ -48,9 +48,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 import cv2
 import numpy as np
 
-from . import paths
-from ._native_io import silence_native_stderr
-from ._pollthread import PollThread
+from c64cast import paths
+from c64cast._native_io import silence_native_stderr
+from c64cast._pollthread import PollThread
 
 if TYPE_CHECKING:
     from c64cast.video.video import WebcamSource
@@ -358,9 +358,9 @@ class VisionController:
         self.source = source
         self.recognizer = recognizer
         self.name = name
-        # Child of the c64cast.vision logger so ensemble runs can tell which
+        # Child of the c64cast.control.vision logger so ensemble runs can tell which
         # system a gesture came from (same convention as keyboard.py).
-        self.log = logging.getLogger(f"c64cast.vision.{name}")
+        self.log = logging.getLogger(f"c64cast.control.vision.{name}")
         self.poll_interval_s = poll_interval_s
         self.hold_threshold_s = hold_threshold_s
         self.gesture_cooldown_s = gesture_cooldown_s

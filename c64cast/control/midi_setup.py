@@ -5,7 +5,7 @@ Everything ``[midi_control]`` can do live today requires hand-authoring a
 internal target vocabulary (``effect.decay``, ``mode.dither_strength``,
 ``transport.jog``, …). This wizard removes both: it watches the controller,
 you press/twist each control when prompted, and it writes a reusable
-:class:`~c64cast.transport.ControllerProfileStore` profile so a plain
+:class:`~c64cast.control.transport.ControllerProfileStore` profile so a plain
 ``c64cast --config …`` run (with ``[midi_control].controller_profile = "auto"``,
 the default) picks the mappings up with zero TOML edits.
 
@@ -15,7 +15,7 @@ messages) plus a **thin questionary shell** (:func:`run_setup`). Runs *instead
 of* playback, like ``--init``. Needs the ``midi`` + ``wizard`` extras.
 
 The learn loop reads a controller identically to the live listener by reusing
-:func:`c64cast.midi_control.classify_message` — a learned mapping can't disagree
+:func:`c64cast.control.midi_control.classify_message` — a learned mapping can't disagree
 with how the listener will later interpret the same message. The target picker
 is driven by :func:`c64cast.introspect.live_targets`, the single source of truth
 over the ``LIVE_PARAMS``/``LIVE_CHOICES`` registries.
@@ -27,7 +27,8 @@ import time
 from collections import Counter
 from typing import Any
 
-from . import introspect
+from c64cast import introspect
+
 from .midi_control import MIDI_AVAILABLE, FeedbackMap, classify_message, mido
 from .transport import make_controller_profile_store
 
@@ -113,7 +114,7 @@ def build_feedback_block(
     """Assemble a profile `feedback` block (Live DJ/VJ Phase 4): the LED
     velocity->color convention (Launchpad-X defaults via :class:`FeedbackMap`,
     with any `overrides` applied) plus an optional MIDI-OUT `port` name. What
-    :meth:`c64cast.midi_control.FeedbackMap.from_dict` reads back at runtime."""
+    :meth:`c64cast.control.midi_control.FeedbackMap.from_dict` reads back at runtime."""
     block: dict[str, Any] = dict(FeedbackMap().to_dict())
     for k, v in (overrides or {}).items():
         if k in block and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 127:
@@ -125,7 +126,7 @@ def build_feedback_block(
 
 def dedupe_mappings(mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Last-wins dedupe by ``(type, number)`` — mirrors the runtime cc_map
-    layering (:func:`c64cast.midi_control._parse_cc_map`), so what the wizard
+    layering (:func:`c64cast.control.midi_control._parse_cc_map`), so what the wizard
     previews is what the listener will resolve."""
     out: dict[tuple[Any, Any], dict[str, Any]] = {}
     for m in mappings:

@@ -93,7 +93,7 @@ def data_root() -> Path:
 
     ``$C64CAST_DATA_DIR`` (if set) overrides it; otherwise
     ``<data base>/c64cast``. Subdirectories are created lazily by the
-    writers (via :func:`c64cast.transport.atomic_write_text` /
+    writers (via :func:`c64cast.control.transport.atomic_write_text` /
     ``mkdir(parents=True)``), so this never touches the filesystem."""
     override = _env_path("C64CAST_DATA_DIR")
     if override is not None:
@@ -261,7 +261,7 @@ def legacy_presets_dir() -> Path | None:
     preset files (``*.json``) *and* the canonical :func:`presets_dir` does not
     yet exist — i.e. a source checkout predating the canonical data dir that
     was never migrated. Used solely to emit a one-time heads-up
-    (:func:`c64cast.transport.warn_if_legacy_presets_orphaned`); there is no
+    (:func:`c64cast.control.transport.warn_if_legacy_presets_orphaned`); there is no
     implicit migration. Returns None for an installed package, a clean
     checkout, or once the canonical dir exists (already migrated)."""
     root = legacy_data_root()

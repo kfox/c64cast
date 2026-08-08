@@ -468,7 +468,7 @@ class WebcamSource:
     reads the newest frame, and hands out independent *copies* to any number of
     consumers via `read()`. That lets the webcam scene (when active) and the
     vision controller (always) share a single physical camera with no
-    contention — see [c64cast/vision.py](c64cast/vision.py).
+    contention — see [c64cast/control/vision.py](c64cast/control/vision.py).
 
     Returning the latest grabbed frame (rather than blocking for the next one)
     also keeps the live-webcam path low-latency: a consumer always gets the
@@ -487,7 +487,7 @@ class WebcamSource:
         # against (the enumerated index is only valid for that apiPreference); an
         # int device resolves to backend=None so we keep the historical
         # single-arg CAP_ANY open, byte-identical for existing configs.
-        from c64cast import camera
+        from c64cast.control import camera
 
         index, backend = camera.resolve_camera_index(device)
         self.cap: cv2.VideoCapture | None = (

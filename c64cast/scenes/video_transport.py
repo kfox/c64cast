@@ -21,7 +21,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Literal
 
-from c64cast.transport import LoopPresetStore, timecode
+from c64cast.control.transport import LoopPresetStore, timecode
 
 if TYPE_CHECKING:
     from .scenes import VideoScene
