@@ -58,6 +58,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
+
 from .transport import TransportEvent
 
 if TYPE_CHECKING:
@@ -66,17 +68,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Typed as Any so Pyright doesn't flag every mido.XXX as accessing attributes
-# of None — the MIDI_AVAILABLE flag is the runtime guard. Mirrors
-# midi_scene.py's import-guard pattern exactly.
-try:
-    import mido as _mido
-
-    mido: Any = _mido
-    MIDI_AVAILABLE = True
-except ImportError:
-    mido = None
-    MIDI_AVAILABLE = False
+# mido + the availability flag come from the shared guarded import
+# (c64cast._midi); the clock/output port openers below still use the module
+# handle directly.
 
 _CC_TYPES = ("cc", "note", "pc", "mmc")
 _ACTIONS = (
@@ -576,24 +570,9 @@ class MidiControlListener:
 
     # ---- MIDI plumbing --------------------------------------------------
     def _open_port(self) -> None:
-        assert mido is not None
-        if self.port_name in (None, "", "default"):
-            names = mido.get_input_names()
-            if not names:
-                raise RuntimeError("midi_control: no MIDI input ports available")
-            self._midi_port = mido.open_input(names[0])
-            self._opened_port_name = names[0]
-            log.info("midi_control: opened MIDI port %r", names[0])
-            return
-        names = mido.get_input_names()
-        match = next((n for n in names if self.port_name.lower() in n.lower()), None)
-        if match is None:
-            raise RuntimeError(
-                f"midi_control: no MIDI input port matches {self.port_name!r}; available: {names}"
-            )
-        self._midi_port = mido.open_input(match)
-        self._opened_port_name = match
-        log.info("midi_control: opened MIDI port %r", match)
+        self._midi_port, self._opened_port_name = open_input_port(
+            self.port_name, label="midi_control"
+        )
 
     def start(self) -> None:
         if mido is None:

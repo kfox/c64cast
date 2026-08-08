@@ -774,7 +774,9 @@ class PortSelectionTests(_MidiTestCase):
         fake = mock.MagicMock()
         fake.get_input_names.return_value = names
         fake.open_input.side_effect = lambda n: opened.append(n) or _FakePort()
-        return mock.patch.object(midi_scene, "mido", fake)
+        # Port resolution lives in the shared c64cast._midi.open_input_port,
+        # so the fake goes there, not on the scene's module.
+        return mock.patch("c64cast._midi.mido", fake)
 
     def test_empty_port_picks_first(self):
         scene, _ = _make_scene(port="")

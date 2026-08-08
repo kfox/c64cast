@@ -593,7 +593,9 @@ class PortSelectionTests(_MidiControlTestCase):
         fake = mock.MagicMock()
         fake.get_input_names.return_value = names
         fake.open_input.side_effect = lambda n: opened.append(n) or _FakePort()
-        return mock.patch.object(midi_control, "mido", fake)
+        # Port resolution lives in the shared c64cast._midi.open_input_port,
+        # so the fake goes there, not on midi_control itself.
+        return mock.patch("c64cast._midi.mido", fake)
 
     def _listener(self, port=None):
         pl = _fake_playlist("system")

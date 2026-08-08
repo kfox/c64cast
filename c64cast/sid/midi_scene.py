@@ -39,8 +39,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any
 
+from c64cast._midi import MIDI_AVAILABLE, open_input_port
 from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, RegionID, cpu_clock
 from c64cast.scenes.scenes import Scene
@@ -58,19 +58,6 @@ from .voice_scope import (
 )
 
 log = logging.getLogger(__name__)
-
-# Typed as Any so Pyright doesn't flag every mido.XXX as accessing attributes
-# of None — the MIDI_AVAILABLE flag is the runtime guard. Also sidesteps
-# pyright not seeing mido.open_input / mido.get_input_names through stubs.
-try:
-    import mido as _mido
-
-    mido: Any = _mido
-    MIDI_AVAILABLE = True
-except ImportError:
-    mido = None
-    MIDI_AVAILABLE = False
-
 
 # SID waveform-select control bits (high nibble of voice control register).
 _WAVEFORM_BITS = {
@@ -398,24 +385,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
 
     # ---- MIDI plumbing -------------------------------------------------------
     def _open_port(self):
-        assert mido is not None
-        if self.port_name in (None, "", "default"):
-            names = mido.get_input_names()
-            if not names:
-                raise RuntimeError("MidiScene: no MIDI input ports available")
-            self._midi_port = mido.open_input(names[0])
-            log.info("MidiScene: opened MIDI port %r", names[0])
-            return
-        # Allow partial-name matching so users don't need to paste the
-        # exact rtmidi string.
-        names = mido.get_input_names()
-        match = next((n for n in names if self.port_name.lower() in n.lower()), None)
-        if match is None:
-            raise RuntimeError(
-                f"MidiScene: no MIDI input port matches {self.port_name!r}; available: {names}"
-            )
-        self._midi_port = mido.open_input(match)
-        log.info("MidiScene: opened MIDI port %r", match)
+        self._midi_port, _ = open_input_port(self.port_name, label="MidiScene")
 
     def _reader(self):
         port = self._midi_port
