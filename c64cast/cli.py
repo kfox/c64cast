@@ -24,6 +24,7 @@ from c64cast.hw import char_rom, hw_provision
 from c64cast.hw.api import SocketDMAError
 from c64cast.hw.backend import C64Backend, make_backend
 from c64cast.hw.teensyrom_dma import TRError
+from c64cast.video.video import WebcamSource
 
 from . import (
     __version__,
@@ -47,12 +48,11 @@ from .interstitial import default_factory as interstitial_factory
 from .keyboard import CommodoreKeyPoller
 from .playlist import Playlist
 from .profiler import FrameProfiler, NullProfiler, set_profiler
-from .video import WebcamSource
 from .vision import MediaPipeHandRecognizer, VisionController
 
 if TYPE_CHECKING:
-    from .framebuffer import Framebuffer
-    from .preview import PreviewWindow, StreamRecorder
+    from c64cast.video.framebuffer import Framebuffer
+    from c64cast.video.preview import PreviewWindow, StreamRecorder
 
 log = logging.getLogger("c64cast")
 
@@ -745,13 +745,13 @@ def _build_preview_and_recording(
     preview_window: PreviewWindow | None = None
     recorder: StreamRecorder | None = None
     if cfg.preview.enabled or cfg.recording.enabled:
-        from .framebuffer import Framebuffer as _FB
+        from c64cast.video.framebuffer import Framebuffer as _FB
 
         framebuffer = _FB(charset_path=cfg.preview.charset_path)
         api.add_write_listener(framebuffer.on_write)
     if cfg.preview.enabled:
         assert framebuffer is not None
-        from .preview import PreviewWindow as _PW
+        from c64cast.video.preview import PreviewWindow as _PW
 
         # Constructed here but not opened: the window has to be created and
         # serviced on the main thread (see preview.py), which happens in
@@ -768,7 +768,7 @@ def _build_preview_and_recording(
     if cfg.recording.enabled:
         assert framebuffer is not None
         try:
-            from .preview import StreamRecorder as _SR
+            from c64cast.video.preview import StreamRecorder as _SR
 
             recorder = _SR(
                 framebuffer,

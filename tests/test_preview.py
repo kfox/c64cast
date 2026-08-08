@@ -2,7 +2,7 @@
 
 cv2 is a hard dep, so the window needs no optional extra — but it does need a
 desktop session, which CI hasn't got. Every test here patches
-`c64cast.preview.cv2`, so nothing opens a real window.
+`c64cast.video.preview.cv2`, so nothing opens a real window.
 
 The pump contract these lock down (see docs/caveats.md → "Preview window
 fidelity + limits"): drawing is rate-limited to `fps` while `waitKey` runs on
@@ -19,8 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from c64cast import preview as preview_mod
-from c64cast.preview import PreviewWindow
+from c64cast.video import preview as preview_mod
+from c64cast.video.preview import PreviewWindow
 
 
 def _fake_cv2() -> MagicMock:
@@ -167,7 +167,7 @@ class PreviewWindowPumpTest(unittest.TestCase):
         with patch.object(preview_mod, "cv2", cv2):
             win = PreviewWindow(fb)
             win.open()
-            with self.assertLogs("c64cast.preview", level="ERROR"):
+            with self.assertLogs("c64cast.video.preview", level="ERROR"):
                 win.pump()  # must not raise
         self.assertFalse(win.is_open)
         # Disabled means disabled: no further work on later pumps.

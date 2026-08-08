@@ -20,7 +20,8 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .modes import DisplayMode
+    from c64cast.video.modes import DisplayMode
+
     from .playlist import Playlist
     from .scenes import Scene
 

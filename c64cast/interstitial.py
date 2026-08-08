@@ -15,11 +15,11 @@ import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, RegionID
+from c64cast.video.palette import C64_COLORS, resolve_color
 
 from .backgrounds import build as build_background
 from .config import InterstitialCfg
 from .overlays import ascii_to_screen
-from .palette import C64_COLORS, resolve_color
 from .scenes import Scene
 
 log = logging.getLogger(__name__)

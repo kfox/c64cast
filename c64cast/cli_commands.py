@@ -217,9 +217,10 @@ def _collect_lab_samples(path: str):
     feeds force_palette/auto_fit feeds the suggestion."""
     import cv2
 
-    from .palette import ColorMapAccumulator
+    from c64cast.video.palette import ColorMapAccumulator
+    from c64cast.video.video import scan_video_samples
+
     from .scene_factory import VIDEO_EXTS
-    from .video import scan_video_samples
 
     acc = ColorMapAccumulator()  # accumulate only; we want its raw lab_samples()
     ext = os.path.splitext(path)[1].lower()
@@ -239,7 +240,7 @@ def _collect_lab_samples(path: str):
 def _format_suggest_palette(path: str, ranked: list[tuple[int, float]]) -> str:
     """Render the `suggest_palette` ranking as a table plus a paste-ready
     `force_palette_colors` line (top-8, a reasonable default the user can trim)."""
-    from .palette import C64_COLOR_NAMES
+    from c64cast.video.palette import C64_COLOR_NAMES
 
     lines = [
         f"Best-fit C64 palette for {os.path.basename(path)} (faithful subset, ranked by value):",
@@ -264,7 +265,7 @@ def run_suggest_palette(path: str) -> int:
     """`--suggest-palette FILE`: rank the C64 colors that best (faithfully)
     represent an image/video and print them for `force_palette_colors`. No
     config, no hardware."""
-    from .palette import suggest_palette
+    from c64cast.video.palette import suggest_palette
 
     if not path.lower().startswith(("http://", "https://")) and not os.path.exists(path):
         print(f"suggest-palette: file not found: {path}", file=sys.stderr)

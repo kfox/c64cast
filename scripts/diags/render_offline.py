@@ -29,11 +29,11 @@ from types import SimpleNamespace
 import cv2
 
 from c64cast.effects import build_effect
-from c64cast.framebuffer import Framebuffer
 from c64cast.generators import build_generator
 from c64cast.hw.backend import BufferedWriteBackend
 from c64cast.scene_factory import _build_display_mode
 from c64cast.scenes import _render_with_overlays
+from c64cast.video.framebuffer import Framebuffer
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
 

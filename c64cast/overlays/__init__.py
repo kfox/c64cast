@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
+    from c64cast.video.modes import ComposeBuffers
 
-    from ..modes import ComposeBuffers
     from ..scenes import Scene
 
 log = logging.getLogger(__name__)

@@ -127,7 +127,7 @@ def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
 
 
 def _load_source(path: str, sr: int, secs: float | None) -> np.ndarray:
-    from c64cast.video import decode_audio_full
+    from c64cast.video.video import decode_audio_full
 
     int16 = decode_audio_full(path, sr)
     if int16.size == 0:
@@ -138,7 +138,7 @@ def _load_source(path: str, sr: int, secs: float | None) -> np.ndarray:
 
 
 def _peak_normalize(floats: np.ndarray) -> np.ndarray:
-    from c64cast.video import _compute_normalization_gain
+    from c64cast.video.video import _compute_normalization_gain
 
     gain = _compute_normalization_gain(int(np.max(np.abs(floats)) * 32768))
     return np.clip(floats * gain, -1.0, 1.0).astype(np.float32)

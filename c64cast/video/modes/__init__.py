@@ -14,7 +14,7 @@ here install and drive it per frame.
 The live-tunable pick knobs (`PALETTE_PICK_EMA_ALPHA`, `PERCELL_*`) are
 re-exported here as value snapshots; their *rebindable* home is
 `modes.base`, which the mode classes read at call time — a diag that wants
-to retune them at runtime must set them on `c64cast.modes.base`.
+to retune them at runtime must set them on `c64cast.video.modes.base`.
 """
 
 from .base import (

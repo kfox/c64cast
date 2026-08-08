@@ -20,7 +20,7 @@ from typing import TypeVar
 
 import numpy as np
 
-from .palette import C64_COLORS
+from c64cast.video.palette import C64_COLORS
 
 # Screen codes for commonly-useful glyphs. (Screen code, not PETSCII.)
 SC_SPACE = 0x20

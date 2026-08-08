@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast.modes import MCMDisplayMode  # noqa: E402
+from c64cast.video.modes import MCMDisplayMode  # noqa: E402
 
 
 def _expected_charset() -> bytes:

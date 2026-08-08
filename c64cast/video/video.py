@@ -22,10 +22,10 @@ from typing import Any
 import cv2
 import numpy as np
 
+from c64cast._native_io import silence_native_stderr
+from c64cast._pollthread import PollThread
 from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 
-from ._native_io import silence_native_stderr
-from ._pollthread import PollThread
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator
 
 log = logging.getLogger(__name__)
@@ -487,7 +487,7 @@ class WebcamSource:
         # against (the enumerated index is only valid for that apiPreference); an
         # int device resolves to backend=None so we keep the historical
         # single-arg CAP_ANY open, byte-identical for existing configs.
-        from . import camera
+        from c64cast import camera
 
         index, backend = camera.resolve_camera_index(device)
         self.cap: cv2.VideoCapture | None = (

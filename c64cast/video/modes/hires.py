@@ -9,9 +9,9 @@ import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, VIC_BANK_0, VIC_BANK_2, RegionID
-
-from ..dither import DITHER_METHODS, error_diffuse_cells
-from ..modes_irq import (
+from c64cast.text_surface import HiresTextSurface
+from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
+from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
     BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER,
@@ -23,8 +23,8 @@ from ..modes_irq import (
     push_bitmap_via_reu,
     uninstall_bank_swap_irq,
 )
-from ..palette import C64_PALETTE_BGR, COLOR_MATCH_MODES, quantize_flat_for
-from ..text_surface import HiresTextSurface
+from c64cast.video.palette import C64_PALETTE_BGR, COLOR_MATCH_MODES, quantize_flat_for
+
 from .base import ORDERED_DITHER_OFFSET_FNS, BitmapComposeBuffers
 from .bitmap import BitmapDisplayMode, engage_bitmap_mode
 

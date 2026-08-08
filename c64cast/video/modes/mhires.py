@@ -9,9 +9,9 @@ import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, VIC_BANK_0, VIC_BANK_2, RegionID
-
-from ..dither import DITHER_METHODS, error_diffuse_cells
-from ..modes_irq import (
+from c64cast.text_surface import MHiresTextSurface
+from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
+from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER_ADDR,
     DD00_BANK_0,
     FRAME_TRACKER_ADDR,
@@ -24,7 +24,7 @@ from ..modes_irq import (
     push_mhires_via_reu,
     uninstall_bank_swap_irq,
 )
-from ..palette import (
+from c64cast.video.palette import (
     C64_PALETTE_BGR,
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -37,7 +37,7 @@ from ..palette import (
     quantize_distances,
     quantize_distances_for,
 )
-from ..text_surface import MHiresTextSurface
+
 from . import base
 from .base import (
     BG0_HYSTERESIS_MARGIN,

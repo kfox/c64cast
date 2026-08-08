@@ -32,7 +32,7 @@ import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work)
 import numpy as np
 
 from c64cast.config import VisionCfg
-from c64cast.video import WebcamSource
+from c64cast.video.video import WebcamSource
 from c64cast.vision import (
     INDEX_TIP,
     THUMB_TIP,

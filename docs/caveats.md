@@ -427,7 +427,7 @@ reports the same.)
 ## Preview window fidelity + limits
 
 `[preview] enabled = true` opens a desktop window mirroring the C64. It is a
-*reconstruction*, not a capture: [`framebuffer.py`](../c64cast/framebuffer.py)
+*reconstruction*, not a capture: [`framebuffer.py`](../c64cast/video/framebuffer.py)
 shadows the memory writes c64cast sends and re-renders them host-side. What
 that costs you:
 
@@ -893,7 +893,7 @@ painting the "wrong" character, that's the gap. Convert it.
 
 ## `C64_PALETTE_BGR` is OpenCV BGR order
 
-[palette.py](../c64cast/palette.py) stores the C64 palette as BGR
+[palette.py](../c64cast/video/palette.py) stores the C64 palette as BGR
 (blue, green, red) tuples because OpenCV's frame format is BGR. If you
 ever extract a color from this table to display somewhere that expects
 RGB (matplotlib, PIL, a web page), swap channels first or you'll get

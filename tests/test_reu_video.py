@@ -32,13 +32,14 @@ from c64cast.hw.c64 import (
     VIC_BANK_0,
     VIC_BANK_2,
 )
-from c64cast.modes import (
+from c64cast.scene_factory import _build_display_mode
+from c64cast.video.modes import (
     BlankDisplayMode,
     HiresDisplayMode,
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
 )
-from c64cast.modes_irq import (
+from c64cast.video.modes_irq import (
     AUDIO_HANDLER_INSTALL_ADDR,
     AUDIO_HANDLER_STUB,
     BANK_SWAP_CHUNK_SIZE,
@@ -70,7 +71,6 @@ from c64cast.modes_irq import (
     TRACKER_OFF_READY_FLAG,
     TRACKER_OFF_SCREEN_REGS,
 )
-from c64cast.scene_factory import _build_display_mode
 
 
 class ReuStagedFlagDefaultTest(unittest.TestCase):

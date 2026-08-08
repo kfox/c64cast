@@ -13,9 +13,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from c64cast.modes import BlankDisplayMode, MCMDisplayMode, PETSCIIDisplayMode
 from c64cast.overlays import validate_for_scene
 from c64cast.overlays.big_text import BigTextOverlay
+from c64cast.video.modes import BlankDisplayMode, MCMDisplayMode, PETSCIIDisplayMode
 
 
 def _make_buffers():
@@ -322,7 +322,7 @@ class ColorCycleTest(unittest.TestCase):
             ov.compose(buffers, scene, t)
         # Without any cycle press, the strip's color RAM should contain
         # yellow (palette index 7). MCM masking doesn't apply for blank.
-        from c64cast.palette import C64_COLORS
+        from c64cast.video.palette import C64_COLORS
 
         yellow = C64_COLORS["yellow"]
         # The strip starts at the middle row and spans 8 rows × 40 cols.
@@ -426,7 +426,7 @@ class FollowerComposeTest(unittest.TestCase):
     def test_follower_uses_published_solid_color(self):
         # Conductor publishes a specific color (yellow). Follower's local
         # message says white. Follower must paint yellow.
-        from c64cast.palette import C64_COLORS
+        from c64cast.video.palette import C64_COLORS
 
         yellow = C64_COLORS["yellow"]
         white = C64_COLORS["white"]

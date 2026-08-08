@@ -13,7 +13,7 @@ from unittest import mock
 
 import numpy as np
 
-from c64cast.video import WebcamSource
+from c64cast.video.video import WebcamSource
 from c64cast.vision import (
     INDEX_PIP,
     INDEX_TIP,
@@ -393,7 +393,7 @@ class WebcamSourceBrokerTest(unittest.TestCase):
         return cap
 
     def test_read_returns_independent_copies(self):
-        from c64cast import video
+        from c64cast.video import video
 
         frame = np.arange(48, dtype=np.uint8).reshape(4, 4, 3)
         cap = self._fake_cap(frame)

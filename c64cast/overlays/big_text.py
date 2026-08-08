@@ -58,8 +58,8 @@ from typing import Any
 import numpy as np
 
 from c64cast.hw.c64 import KERNAL, RASTER_VBLANK_LINE, SCREEN
+from c64cast.video.palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
 
-from ..palette import C64_COLORS, C64_SPECTRUM_INDICES, resolve_color
 from . import (
     Overlay,
     ascii_to_screen,

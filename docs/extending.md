@@ -237,7 +237,7 @@ overlay calls; your scene doesn't need to know overlays exist.
 
 Display modes are how a frame becomes VIC bytes. Adding one is rare;
 when needed, subclass `DisplayMode` from
-[modes/base.py](../c64cast/modes/base.py):
+[modes/base.py](../c64cast/video/modes/base.py):
 
 ```python
 class MyDisplayMode(DisplayMode):
@@ -382,7 +382,7 @@ per surface, fakes at the top, three-to-six small `test_*` methods.
 |----------------------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
 | Overlay                    | [c64cast/overlays/yours.py](../c64cast/overlays/)        | `@register("yours")` + add to `_load_all()` in `overlays/__init__.py`   |
 | Scene                      | [c64cast/scenes.py](../c64cast/scenes.py) (or new file)  | branch in `config.scenes_from_config` + optional `SceneCfg` fields      |
-| DisplayMode                | [c64cast/modes/](../c64cast/modes/)                      | branch in `config._build_display_mode`                                  |
+| DisplayMode                | [c64cast/video/modes/](../c64cast/video/modes/)                      | branch in `config._build_display_mode`                                  |
 | Background                 | [c64cast/backgrounds.py](../c64cast/backgrounds.py)      | `@register("yours")` decorator                                          |
 | CLI flag                   | [c64cast/cli.py](../c64cast/cli.py)                      | `default=None` + entry in `config.CLI_TO_CFG`                           |
 | Control-plane endpoint     | [c64cast/control_plane.py](../c64cast/control_plane.py)  | new event on `Playlist` + handler in the run loop                       |

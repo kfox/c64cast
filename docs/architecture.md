@@ -10,7 +10,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 * **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/api.py`, `hw/teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
-* **[Video input & the color pipeline](architecture/video-color.md)** — `video.py`, `modes/`, `modes_irq.py`, `rolling_palette.py`, `palette.py`, Framerate pacing & frame-dropping
+* **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes.py`, Composable scenes, `overlays/`, `interstitial.py`, `backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `voice_scope.py`, SID player PRG, `waveform.py`, `sidemu.py`, `sid_host_emu.py`, `sid_panning.py`, `sid_volume.py`, `midi_scene.py`, `asid.py`, `asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `keyboard.py`, `camera.py`, `vision.py`, `control_plane.py`, `midi_control.py`, `tempo.py`, `performance.py`, `perf_console.py`, `transport.py`, `midi_setup.py`
@@ -49,7 +49,7 @@ the two lists account for every module in the tree.
 | `audio/dac_curve_resolve.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
 | `audio/dac_curves.py` | [Audio output](architecture/audio.md#audiodac_curve--mahoney-8-bit-d418-companding) |
 | `audio/dac_slot_ring.py` | [Audio output](architecture/audio.md#the-slot-ring-reading-signed-levels-directly) |
-| `dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |
+| `video/dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |
 | `audio/dsp.py` | [Audio output](architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path) |
 | `effects.py` | [Scenes, sources & overlays](architecture/scenes.md#effectspy--the-frameeffect-registry) |
 | `ensemble.py` | [Config, CLI & ensemble](architecture/config.md#ensemblepy--audio-slot-coordination) |
@@ -66,16 +66,16 @@ the two lists account for every module in the tree.
 | `tempo.py` | [Control surfaces & live performance](architecture/control.md#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1) |
 | `performance.py` | [Control surfaces & live performance](architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2) |
 | `perf_console.py` | [Control surfaces & live performance](architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5) |
-| `modes/` | [Video input & the color pipeline](architecture/video-color.md#modes--displaymode-hierarchy) |
-| `modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
+| `video/modes/` | [Video input & the color pipeline](architecture/video-color.md#modes--displaymode-hierarchy) |
+| `video/modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
 | `orchestrator.py` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `orchestrators/` | [Config, CLI & ensemble](architecture/config.md#orchestratorpy--orchestrators--cross-ensemble-scene-coordination) |
 | `overlays/` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
-| `palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
+| `video/palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | `paths.py` | [Config, CLI & ensemble](architecture/config.md#pathspy) |
-| `petscii_styles.py` | [Video input & the color pipeline](architecture/video-color.md#petscii_stylespy) |
+| `video/petscii_styles.py` | [Video input & the color pipeline](architecture/video-color.md#petscii_stylespy) |
 | `recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
-| `rolling_palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
+| `video/rolling_palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
 | `scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
@@ -90,7 +90,7 @@ the two lists account for every module in the tree.
 | `hw/teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
 | `text_surface.py` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
 | `transport.py` | [Control surfaces & live performance](architecture/control.md#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5) |
-| `video.py` | [Video input & the color pipeline](architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
+| `video/video.py` | [Video input & the color pipeline](architecture/video-color.md#videopy--webcamsource-shared-broker--avfilesource-pyav) |
 | `video_transport.py` | [Scenes, sources & overlays](architecture/scenes.md#videoscenes-transport-surface-midi-live-tune-phase-2) |
 | `vision.py` | [Control surfaces & live performance](architecture/control.md#visionpy--webcam-gesture-control-optional-camera-as-input) |
 | `voice_scope.py` | [SID playback & the oscilloscope](architecture/sid.md#voice_scopepy--shared-3-voice-oscilloscope-renderer) |
@@ -116,12 +116,12 @@ rationale in the meantime — each of the ones below opens with one.
 | `config_serialize.py` | `Config` → annotated TOML, the inverse of `config.load` |
 | `connect.py` | `-u/--url` connection-target URI parsing |
 | `doctor.py` | `--doctor` configuration + environment diagnostics |
-| `framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
+| `video/framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
 | `hw/hw_provision.py` | Live U64 REU + Ultimate Audio sampler auto-provisioning (volatile, restored at teardown) |
 | `introspect.py` | The single rendering surface over config metadata |
 | `playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
 | `playlist_support.py` | Playlist collaborators — scene fades, on-C64 menu driver, ensemble coordination |
-| `preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
+| `video/preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
 | `profiler.py` | `--profile` per-frame timing harness |
 | `quickcast.py` | Positional-`MEDIA` quick-playback config builder |
 | `schema.py` | JSON Schema generator for the TOML config |

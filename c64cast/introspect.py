@@ -330,8 +330,9 @@ def _iter_live_holders() -> list[tuple[str, str, type]]:
     ``LIVE_PARAMS``/``LIVE_CHOICES`` live-tune surface. Imported lazily (modes /
     effects / generators / voice_scope pull in numpy/cv2) so this module stays
     import-light for the schema / --describe path, which never calls it."""
+    from c64cast.video import modes as modesmod
+
     from . import effects, generators, voice_scope
-    from . import modes as modesmod
 
     out: list[tuple[str, str, type]] = []
 

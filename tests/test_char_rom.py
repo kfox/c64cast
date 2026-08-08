@@ -225,7 +225,7 @@ class LoadGlyphsTest(_CharRomTestCase):
         self.assertEqual(char_rom.load_glyphs(), data[:2048])
 
     def test_falls_back_to_builtin_when_nothing_resolves(self):
-        from c64cast.framebuffer import _builtin_charset
+        from c64cast.video.framebuffer import _builtin_charset
 
         with mock.patch.object(char_rom, "LEGACY_CHARGEN_PATH", "/nonexistent/chargen.bin"):
             self.assertEqual(char_rom.load_glyphs(), _builtin_charset())
@@ -242,7 +242,7 @@ class LoadGlyphsTest(_CharRomTestCase):
         self.assertEqual(first, a.read_bytes()[:2048])
 
     def test_short_file_falls_back_to_builtin(self):
-        from c64cast.framebuffer import _builtin_charset
+        from c64cast.video.framebuffer import _builtin_charset
 
         short = self.write_file("short.bin", b"\xff" * 100)
         with self.assertLogs("c64cast.hw.char_rom", level="WARNING"):
@@ -250,7 +250,7 @@ class LoadGlyphsTest(_CharRomTestCase):
         self.assertEqual(glyphs, _builtin_charset())
 
     def test_invalidate_cache_re_resolves(self):
-        from c64cast.framebuffer import _builtin_charset
+        from c64cast.video.framebuffer import _builtin_charset
 
         with mock.patch.object(char_rom, "LEGACY_CHARGEN_PATH", "/nonexistent/chargen.bin"):
             self.assertEqual(char_rom.load_glyphs(), _builtin_charset())
@@ -429,7 +429,7 @@ class EnsureInstalledTest(_CharRomTestCase):
         self.assertEqual(char_rom.installed_path().read_bytes(), _synth_charset())
 
     def test_primed_fallback_is_dropped_so_this_run_benefits(self):
-        from c64cast.framebuffer import _builtin_charset
+        from c64cast.video.framebuffer import _builtin_charset
 
         self.assertEqual(char_rom.load_glyphs(), _builtin_charset())  # primes the cache
         char_rom.ensure_installed(_FakeBackend(_synth_charset()), self._cfg())
@@ -479,7 +479,7 @@ class EnsureInstalledTest(_CharRomTestCase):
                 self.assertIn("--install-char-rom", "".join(logs.output))
 
     def test_garbage_dump_writes_nothing_and_leaves_the_fallback(self):
-        from c64cast.framebuffer import _builtin_charset
+        from c64cast.video.framebuffer import _builtin_charset
 
         garbage = bytes((i * 37 + 11) & 0xFF for i in range(4096))
         with self.assertLogs("c64cast.hw.char_rom", level="WARNING"):

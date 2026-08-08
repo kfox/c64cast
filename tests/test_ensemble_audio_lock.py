@@ -120,7 +120,7 @@ class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
     def setUp(self):
         from c64cast.audio.audio import AudioStreamer
         from c64cast.hw.api import Ultimate64API
-        from c64cast.video import WebcamSource
+        from c64cast.video.video import WebcamSource
 
         self.api = cast(Ultimate64API, FakeAPI())
         self.audio_sentinel = cast(AudioStreamer, object())

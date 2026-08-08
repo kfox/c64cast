@@ -32,7 +32,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from c64cast.palette import C64_PALETTE_BGR  # noqa: E402
+from c64cast.video.palette import C64_PALETTE_BGR  # noqa: E402
 
 IMG_DIR = REPO_ROOT / "docs" / "guide" / "img"
 SOURCE_LOGO = REPO_ROOT / "assets" / "logo.png"

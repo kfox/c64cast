@@ -32,8 +32,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
 from c64cast.hw.c64 import VIC_BANK_0, VIC_BANK_2  # noqa: E402
-from c64cast.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
-from c64cast.modes_irq import (  # noqa: E402
+from c64cast.scenes import Scene, _render_with_overlays  # noqa: E402
+from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
+from c64cast.video.modes_irq import (  # noqa: E402
     BANK_SWAP_IRQ_HANDLER_ADDR,
     FRAME_TRACKER_ADDR,
     FRAME_TRACKER_LEN,
@@ -45,7 +46,6 @@ from c64cast.modes_irq import (  # noqa: E402
     REU_VIDEO_BITMAP_COLOR_BASE,
     REU_VIDEO_BITMAP_SCREEN_BASE,
 )
-from c64cast.scenes import Scene, _render_with_overlays  # noqa: E402
 
 BITMAP_ADDR = 0x2000
 SCREEN_ADDR = 0x0400
@@ -89,7 +89,7 @@ class FrameTargetSizeTest(unittest.TestCase):
         self.assertEqual(MultiHiresDisplayMode("percell").frame_target_size, (160, 200))
 
     def test_blank_has_no_target(self):
-        from c64cast.modes import BlankDisplayMode
+        from c64cast.video.modes import BlankDisplayMode
 
         self.assertIsNone(BlankDisplayMode().frame_target_size)
 
@@ -194,7 +194,7 @@ class BitmapEngageFlashTest(unittest.TestCase):
         # field (a flip-first order would fetch the bitmap from a stale $D018
         # for one frame). Guards the clear-then-flip ordering the modes + scope
         # both now rely on.
-        from c64cast.modes import engage_bitmap_mode
+        from c64cast.video.modes import engage_bitmap_mode
 
         api = FakeAPI()
         engage_bitmap_mode(api, d011="3b", d018="18", d016="08")

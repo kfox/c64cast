@@ -33,7 +33,7 @@ from _fakes import FakeAPI  # noqa: E402
 
 from c64cast import asid  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
-from c64cast.modes import DisplayMode  # noqa: E402
+from c64cast.video.modes import DisplayMode  # noqa: E402
 
 
 def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:

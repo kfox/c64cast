@@ -40,6 +40,18 @@ from c64cast.audio.audio_source import (
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.hw.c64 import nmi_rate_safety
+from c64cast.video.dither import DITHER_METHODS
+from c64cast.video.modes import (
+    BitmapDisplayMode,
+    BlankDisplayMode,
+    DisplayMode,
+    HiresDisplayMode,
+    MCMDisplayMode,
+    MultiHiresDisplayMode,
+    PETSCIIDisplayMode,
+)
+from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
+from c64cast.video.video import WebcamSource, ensure_pyav
 
 from . import paths
 from .asid_scene import AsidScene
@@ -63,22 +75,11 @@ from .config import (
     SceneCfg,
     _is_valid_param_holder,
 )
-from .dither import DITHER_METHODS
 from .effects import build_effect
 from .generators import GenerativeSource, build_generator
 from .midi_scene import MidiScene
-from .modes import (
-    BitmapDisplayMode,
-    BlankDisplayMode,
-    DisplayMode,
-    HiresDisplayMode,
-    MCMDisplayMode,
-    MultiHiresDisplayMode,
-    PETSCIIDisplayMode,
-)
 from .orchestrator import resolve_orchestrator
 from .overlays import build_overlay, paints_into_buffers, validate_for_scene
-from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 from .scenes import (
     BlankScene,
     LauncherScene,
@@ -91,7 +92,6 @@ from .scenes import (
 from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
 from .sid_host_emu import parse_sid_header, payload_overlaps_bank0_display
 from .songlengths import LengthsDB
-from .video import WebcamSource, ensure_pyav
 from .voice_scope import BITMAP_W as _SCOPE_BITMAP_W
 from .voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
 from .waveform import WaveformScene

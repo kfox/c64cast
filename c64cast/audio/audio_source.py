@@ -35,10 +35,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from c64cast.config import AudioCfg, AudioFeaturesCfg
     from c64cast.hw.backend import C64Backend
-    from c64cast.modes import DisplayMode
     from c64cast.modulation import MusicModulation
     from c64cast.music_features import SidFeatureStream
     from c64cast.sid_host_emu import SidHeader
+    from c64cast.video.modes import DisplayMode
 
     from .audio import AudioStreamer
     from .audio_features import AudioFeatureStream
@@ -284,7 +284,7 @@ class AudioFileSource:
         """Re-resolve the spec, shuffle, and probe the first file that opens.
         Sets self._path + self.duration_s. Raises if none open."""
         from c64cast.scene_factory import AUDIO_EXTS, resolve_file_spec
-        from c64cast.video import av_open, ensure_pyav
+        from c64cast.video.video import av_open, ensure_pyav
 
         if not ensure_pyav():
             raise RuntimeError(
@@ -398,7 +398,7 @@ class AudioFileSource:
         push_samples' queue-full block. Ends at EOF or when `_stop` is set."""
         import numpy as np
 
-        from c64cast.video import av_open
+        from c64cast.video.video import av_open
 
         try:
             container = av_open(self._path)

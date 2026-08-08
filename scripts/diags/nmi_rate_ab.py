@@ -62,7 +62,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.dsp import DSPParams
 from c64cast.hw.api import Ultimate64API
-from c64cast.video import _compute_normalization_gain, decode_audio_full
+from c64cast.video.video import _compute_normalization_gain, decode_audio_full
 
 CAP_SR = 48000
 CAP_DEVICE = 1  # Cam Link 4K audio (sounddevice idx); override with --device

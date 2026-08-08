@@ -22,7 +22,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from c64cast.modes import HiresDisplayMode, MCMDisplayMode, MultiHiresDisplayMode  # noqa: E402
+from c64cast.video.modes import (  # noqa: E402
+    HiresDisplayMode,
+    MCMDisplayMode,
+    MultiHiresDisplayMode,
+)
 
 
 def _gradient(h: int = 240, w: int = 320) -> np.ndarray:

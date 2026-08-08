@@ -53,10 +53,10 @@ from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, CPU, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.video.palette import C64_COLORS
 
 from ._pollthread import PollThread
 from .modulation import MusicModulation
-from .palette import C64_COLORS
 from .scenes import Scene
 from .sid_autoconfig import plan_model_config_for_header
 

@@ -1,4 +1,4 @@
-"""Tests for c64cast.petscii_styles + PETSCIIDisplayMode style cycling.
+"""Tests for c64cast.video.petscii_styles + PETSCIIDisplayMode style cycling.
 
 Each PetsciiStyle.compose() takes a 25×40 BGR image and returns 1000-byte
 screen + color buffers. Tests cover registration, shape correctness,
@@ -15,9 +15,9 @@ import unittest
 
 import numpy as np
 
-from c64cast import petscii_styles as ps
-from c64cast.modes import PETSCIIDisplayMode
-from c64cast.palette import CHANNEL_BOOST, DEFAULT_HUE_CORRECTIONS
+from c64cast.video import petscii_styles as ps
+from c64cast.video.modes import PETSCIIDisplayMode
+from c64cast.video.palette import CHANNEL_BOOST, DEFAULT_HUE_CORRECTIONS
 
 # The global [color] shaping PETSCIIDisplayMode passes into every style.compose.
 _BOOST = CHANNEL_BOOST
@@ -99,7 +99,7 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
             self.assertIn(int(c), pop, f"inverse_pop produced non-pop FG {int(c)}")
 
     def test_neon_color_avoids_gray_axis(self):
-        from c64cast.palette import GRAY_INDICES
+        from c64cast.video.palette import GRAY_INDICES
 
         _, color = ps.NeonStyle().compose(_frame(), _BOOST, _HUE)
         for c in np.unique(color):

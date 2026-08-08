@@ -28,7 +28,7 @@ from c64cast.interstitial import (
     default_factory,
 )
 from c64cast.overlays import ascii_to_screen
-from c64cast.palette import C64_COLORS
+from c64cast.video.palette import C64_COLORS
 
 
 def _api() -> C64Backend:

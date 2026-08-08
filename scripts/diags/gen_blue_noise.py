@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate the blue-noise ordered-dither threshold matrix baked into
-c64cast/dither.py as `_BLUE_NOISE_B64`.
+c64cast/video/dither.py as `_BLUE_NOISE_B64`.
 
 Void-and-cluster (Ulichney 1993): starting from a random binary pattern,
 repeatedly swap the "tightest cluster" (a 1 with the most 1-neighbors, found
@@ -23,7 +23,7 @@ resulting matrix tiles seamlessly, matching `bayer_offset`'s tiling contract
 Usage:
     uv run python scripts/diags/gen_blue_noise.py [--size 64] [--sigma 1.9] [--seed 0]
 
-Prints the `_BLUE_NOISE_B64` literal to paste into c64cast/dither.py.
+Prints the `_BLUE_NOISE_B64` literal to paste into c64cast/video/dither.py.
 """
 
 from __future__ import annotations

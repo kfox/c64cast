@@ -26,8 +26,8 @@ from typing import cast
 
 from c64cast import config as cfgmod
 from c64cast import scene_factory
-from c64cast.modes import DisplayMode
 from c64cast.scene_factory import _frame_push_default_fps
+from c64cast.video.modes import DisplayMode
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402
@@ -117,7 +117,7 @@ class _BuildSceneFpsBase(unittest.TestCase):
     def setUp(self):
         from c64cast.audio.audio import AudioStreamer
         from c64cast.hw.api import Ultimate64API
-        from c64cast.video import WebcamSource
+        from c64cast.video.video import WebcamSource
 
         self.api = cast(Ultimate64API, FakeAPI())
         # The streamer is only stored on the scene here (setup() is never
@@ -317,7 +317,7 @@ class InterleavedVideoFpsTest(_BuildSceneFpsBase):
         ]
         # Pretend PyAV is present so interleaving runs without the extra.
         # Patched on scene_factory, which binds ensure_pyav at import time —
-        # patching it in c64cast.video wouldn't reach the factory's copy.
+        # patching it in c64cast.video.video wouldn't reach the factory's copy.
         with mock.patch.object(scene_factory, "ensure_pyav", return_value=True):
             built = scene_factory.scenes_from_config(cfg, self.api, audio, None)
         return [s for s in built if isinstance(s, VideoScene)]

@@ -228,7 +228,7 @@ def _read_glyphs(configured: str | None) -> bytes:
             log.warning("char_rom: %s is shorter than 2 KB; using the builtin charset", path)
     # Deferred: framebuffer imports this module for its own glyphs, so a
     # top-level import here is a cycle.
-    from c64cast.framebuffer import _builtin_charset
+    from c64cast.video.framebuffer import _builtin_charset
 
     return _builtin_charset()
 

@@ -24,10 +24,10 @@ from typing import Any
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
+from c64cast.video.dither import DITHER_METHODS
+from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 
 from . import paths
-from .dither import DITHER_METHODS
-from .palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
 from .sid_autoconfig import SID_MODEL_CHOICES
 from .sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from .sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec

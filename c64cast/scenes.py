@@ -43,15 +43,10 @@ from c64cast.audio.audio_handlers import (
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
-
-from ._pollthread import PollThread
-from .bitmap_text import glyphs_to_mask, load_glyphs
-from .modes import BitmapDisplayMode, DisplayMode
-from .palette import ColorFitAccumulator, ColorMapAccumulator
-from .profiler import get_profiler
-from .rolling_palette import RollingForcePalette
-from .transport import make_loop_preset_store, timecode
-from .video import (
+from c64cast.video.modes import BitmapDisplayMode, DisplayMode
+from c64cast.video.palette import ColorFitAccumulator, ColorMapAccumulator
+from c64cast.video.rolling_palette import RollingForcePalette
+from c64cast.video.video import (
     AVFileSource,
     WebcamSource,
     _compute_normalization_gain,
@@ -59,6 +54,11 @@ from .video import (
     ensure_pyav,
     prescan_source_color,
 )
+
+from ._pollthread import PollThread
+from .bitmap_text import glyphs_to_mask, load_glyphs
+from .profiler import get_profiler
+from .transport import make_loop_preset_store, timecode
 from .video_transport import VideoTransportControls
 
 if TYPE_CHECKING:

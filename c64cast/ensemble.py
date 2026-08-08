@@ -27,14 +27,14 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from c64cast.audio.audio import AudioStreamer
     from c64cast.hw.backend import C64Backend
+    from c64cast.video.framebuffer import Framebuffer
+    from c64cast.video.preview import PreviewWindow, StreamRecorder
+    from c64cast.video.video import WebcamSource
 
     from .config import Config
-    from .framebuffer import Framebuffer
     from .keyboard import CommodoreKeyPoller
     from .orchestrator import Orchestrator
     from .playlist import Playlist
-    from .preview import PreviewWindow, StreamRecorder
-    from .video import WebcamSource
     from .vision import VisionController
 
 

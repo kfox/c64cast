@@ -74,8 +74,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from c64cast.video.modes import PALETTE_MODES
+
 from . import paths
-from .modes import PALETTE_MODES
 from .playlist import Playlist
 from .transport import atomic_write_text
 
@@ -604,7 +605,7 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
         or not hasattr(mode, "set_palette_mode")
     ):
         return
-    from .palette import build_fixed_color_map, nearest_palette_index
+    from c64cast.video.palette import build_fixed_color_map, nearest_palette_index
 
     indices: list[int] = []
     for slot in cols[:3]:

@@ -7,9 +7,9 @@ import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import RegionID
-
-from ..dither import DITHER_METHODS, error_diffuse_cells
-from ..palette import (
+from c64cast.text_surface import CharTextSurface
+from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
+from c64cast.video.palette import (
     C64_PALETTE_BGR,
     COLOR_MATCH_MODES,
     PERCEPTUAL_DIST_SCALE,
@@ -21,7 +21,7 @@ from ..palette import (
     quantize_distances,
     quantize_distances_for,
 )
-from ..text_surface import CharTextSurface
+
 from .base import (
     GRAYSCALE_MCM_BGS,
     ORDERED_DITHER_OFFSET_FNS,

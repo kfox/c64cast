@@ -18,8 +18,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from c64cast.hw.c64 import SCREEN
+from c64cast.video.palette import C64_COLORS, resolve_color
 
-from ..palette import C64_COLORS, resolve_color
 from . import (
     SC_SPACE,
     Overlay,

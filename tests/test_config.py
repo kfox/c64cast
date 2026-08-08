@@ -16,7 +16,7 @@ from _fakes import FakeAPI, MachineSettingsIsolation
 from c64cast import config as cfgmod
 from c64cast import scene_factory
 from c64cast.hw.backend import C64Backend
-from c64cast.modes import BlankDisplayMode
+from c64cast.video.modes import BlankDisplayMode
 
 # Tests here assert config defaults / precedence; isolate the module from any
 # real ~/.config/c64cast/settings.toml on the dev machine (config.load applies
@@ -1438,7 +1438,7 @@ class SceneAudioAttachmentTest(unittest.TestCase):
         self.audio_sentinel = cast(AudioStreamer, object())
         # WebcamSource is similarly only stored on the scene; the webcam
         # branch checks `source is None`, anything truthy passes.
-        from c64cast.video import WebcamSource
+        from c64cast.video.video import WebcamSource
 
         self.source = cast(WebcamSource, object())
         self.cfg = cfgmod.Config()
@@ -1504,7 +1504,7 @@ class SceneDurationDefaultTest(unittest.TestCase):
         from typing import cast
 
         from c64cast.hw.api import Ultimate64API
-        from c64cast.video import WebcamSource
+        from c64cast.video.video import WebcamSource
 
         sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
         from _fakes import FakeAPI
@@ -1841,12 +1841,12 @@ class MotionSmoothingWiringTest(unittest.TestCase):
     (EMA passthrough, zero hysteresis) so the render tracks the source exactly."""
 
     def _mode(self, s):
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         return MultiHiresDisplayMode(motion_smoothing=s, perceptual=True)
 
     def test_full_smoothing_matches_legacy(self):
-        from c64cast import modes
+        from c64cast.video import modes
 
         m = self._mode(1.0)
         self.assertAlmostEqual(m._ema_alpha, modes.PERCELL_PICK_EMA_ALPHA)
@@ -1872,7 +1872,7 @@ class MotionSmoothingWiringTest(unittest.TestCase):
     def test_config_path_forwards_value(self):
         from typing import cast
 
-        from c64cast.modes import MultiHiresDisplayMode
+        from c64cast.video.modes import MultiHiresDisplayMode
 
         mode = scene_factory._build_display_mode(
             "mhires", color=cfgmod.ColorCfg(motion_smoothing=0.0)

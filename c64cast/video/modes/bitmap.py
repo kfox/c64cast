@@ -5,8 +5,7 @@ from __future__ import annotations
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
-
-from ..modes_irq import (
+from c64cast.video.modes_irq import (
     DD00_BANK_0,
     DD00_BANK_2,
     FRAME_TRACKER_ADDR,
@@ -16,7 +15,8 @@ from ..modes_irq import (
     REU_VIDEO_BITMAP_SCREEN_LEN,
     install_bank_swap_irq,
 )
-from ..palette import build_fade_lut
+from c64cast.video.palette import build_fade_lut
+
 from .base import BitmapComposeBuffers, DisplayMode, fade_nibbles
 
 

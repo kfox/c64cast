@@ -7,8 +7,8 @@ import unittest
 
 import numpy as np
 
-from c64cast.palette import C64_PALETTE_BGR, ColorMap
-from c64cast.rolling_palette import RollingForcePalette
+from c64cast.video.palette import C64_PALETTE_BGR, ColorMap
+from c64cast.video.rolling_palette import RollingForcePalette
 
 
 def _solid(idx: int, h: int = 64, w: int = 64) -> np.ndarray:

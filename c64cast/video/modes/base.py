@@ -11,9 +11,9 @@ from typing import TypedDict
 import numpy as np
 
 from c64cast.hw.backend import C64Backend
-
-from ..dither import bayer_offset, blue_noise_offset
-from ..palette import (
+from c64cast.text_surface import TextSurface
+from c64cast.video.dither import bayer_offset, blue_noise_offset
+from c64cast.video.palette import (
     CELL_STRATEGIES,
     DEFAULT_HUE_CORRECTIONS,
     GRAYSCALE_CHROMATIC_PENALTY,
@@ -25,7 +25,6 @@ from ..palette import (
     parse_channel_boost,
     parse_hue_corrections,
 )
-from ..text_surface import TextSurface
 
 # Both are pure additive (h, w) offsets with the same strength semantics
 # (see dither.py) — dispatch table for the three compose() call sites below

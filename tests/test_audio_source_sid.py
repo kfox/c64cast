@@ -295,8 +295,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         return build_scene(s, cfg or self.cfg, cast(C64Backend, FakeAPI()), None, None)
 
     def test_sid_scene_is_host_dma_and_competes(self):
-        from c64cast.modes import PETSCIIDisplayMode
         from c64cast.scenes import SourceScene
+        from c64cast.video.modes import PETSCIIDisplayMode
 
         scene = self._build(display="petscii")
         assert isinstance(scene, SourceScene)
@@ -308,7 +308,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
 
     def test_force_host_dma_overrides_explicit_reu_true(self):
         from c64cast.config import Config
-        from c64cast.modes import PETSCIIDisplayMode
+        from c64cast.video.modes import PETSCIIDisplayMode
 
         cfg = Config()
         cfg.video.use_reu_staged = True

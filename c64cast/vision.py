@@ -53,7 +53,7 @@ from ._native_io import silence_native_stderr
 from ._pollthread import PollThread
 
 if TYPE_CHECKING:
-    from .video import WebcamSource
+    from c64cast.video.video import WebcamSource
 
 log = logging.getLogger(__name__)
 

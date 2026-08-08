@@ -31,7 +31,7 @@ sys.path.insert(0, str(d.Path(__file__).resolve().parents[2]))
 
 from c64cast.hw.api import Ultimate64API  # noqa: E402
 from c64cast.hw.c64 import CIA2, VIC_BANK_0, RegionID  # noqa: E402
-from c64cast.modes import (  # noqa: E402
+from c64cast.video.modes import (  # noqa: E402
     HiresDisplayMode,
     MultiHiresDisplayMode,
     engage_bitmap_mode,

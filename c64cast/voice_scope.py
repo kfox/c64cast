@@ -48,11 +48,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from c64cast.hw.c64 import SCREEN, RegionID
+from c64cast.video.modes import engage_bitmap_mode
+from c64cast.video.palette import C64_COLORS, resolve_color
 
 from .bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from .bitmap_text import load_glyphs as _load_glyphs
-from .modes import engage_bitmap_mode
-from .palette import C64_COLORS, resolve_color
 from .sidemu import (
     ACCUMULATOR_RANGE,
     WAVE_NOISE,

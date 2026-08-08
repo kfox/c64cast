@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 from _fakes import FakeAPI
 
-from c64cast.modes import BlankDisplayMode, MCMDisplayMode
+from c64cast.video.modes import BlankDisplayMode, MCMDisplayMode
 
 
 class BlankDisplayModeTest(unittest.TestCase):

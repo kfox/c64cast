@@ -288,7 +288,7 @@ class LiveTargetsDriftTests(unittest.TestCase):
 
     def _declared(self) -> set[str]:
         from c64cast import effects, generators, voice_scope
-        from c64cast import modes as modesmod
+        from c64cast.video import modes as modesmod
 
         declared: set[str] = set()
 

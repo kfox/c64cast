@@ -6,9 +6,9 @@ import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import SCREEN, RegionID
+from c64cast.text_surface import CharTextSurface
+from c64cast.video.modes_irq import push_screen_via_reu
 
-from ..modes_irq import push_screen_via_reu
-from ..text_surface import CharTextSurface
 from .base import ComposeBuffers
 from .char import CharDisplayMode, clear_char_screen
 

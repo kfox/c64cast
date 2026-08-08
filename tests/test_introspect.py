@@ -129,12 +129,12 @@ class ChoiceVocabSyncTest(unittest.TestCase):
     each matches its authoritative source of truth."""
 
     def test_palette_modes(self):
-        from c64cast import modes
+        from c64cast.video import modes
 
         self.assertEqual(cfgmod._PALETTE_MODE_CHOICES, modes.PALETTE_MODES)
 
     def test_styles(self):
-        from c64cast import petscii_styles as ps
+        from c64cast.video import petscii_styles as ps
 
         self.assertEqual(cfgmod._STYLE_CHOICES, ps.STYLE_NAMES + (ps.RANDOM_STYLE,))
 
