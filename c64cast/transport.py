@@ -13,7 +13,7 @@ performance") shipped the pieces that don't need a transport engine:
   pasteable snippet for a quick-playback run that has no file.
 
 Phase 2 adds the actual transport session — DJ-style control of a playing
-:class:`~c64cast.scenes.VideoScene` (pause in place, seek/scrub, RW/FF with
+:class:`~c64cast.scenes.scenes.VideoScene` (pause in place, seek/scrub, RW/FF with
 acceleration, an A/B loop) driven from the same ``[midi_control]`` surface
 Phase 1 built:
 
@@ -22,7 +22,7 @@ Phase 1 built:
   never the playlist thread) and :meth:`TransportSession.tick` drains once per
   frame from :meth:`~c64cast.playlist.Playlist.run_one_frame`, dispatching
   against whatever scene is current via a duck-typed ``transport_*`` surface
-  (see :class:`~c64cast.scenes.VideoScene`). Held rw/ff notes accelerate over
+  (see :class:`~c64cast.scenes.scenes.VideoScene`). Held rw/ff notes accelerate over
   time; this keeps all scene/DMA-adjacent mutation on the playlist thread,
   matching the module's existing rule for :class:`LiveTuneTracker`.
 
@@ -296,7 +296,7 @@ class TransportSession:
 
     Dispatch is duck-typed against ``pl.current`` — a scene that doesn't
     declare the ``transport_*`` surface (see
-    :class:`~c64cast.scenes.VideoScene`) is a silent no-op, exactly like a
+    :class:`~c64cast.scenes.scenes.VideoScene`) is a silent no-op, exactly like a
     ``LIVE_PARAMS``/``LIVE_CHOICES`` target that doesn't exist on the
     current holder."""
 

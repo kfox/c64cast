@@ -42,10 +42,10 @@ import time
 from typing import Any
 
 from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, RegionID, cpu_clock
+from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from ._pollthread import PollThread
-from .scenes import Scene
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
     D018_HIRES_BITMAP,

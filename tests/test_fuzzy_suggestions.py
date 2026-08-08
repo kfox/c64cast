@@ -10,7 +10,7 @@ import logging
 import unittest
 
 from c64cast import config as cfgmod
-from c64cast import overlays as ovmod
+from c64cast.scenes import overlays as ovmod
 
 
 class SectionKeySuggestionTest(unittest.TestCase):

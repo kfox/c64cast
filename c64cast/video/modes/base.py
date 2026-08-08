@@ -11,7 +11,7 @@ from typing import TypedDict
 import numpy as np
 
 from c64cast.hw.backend import C64Backend
-from c64cast.text_surface import TextSurface
+from c64cast.scenes.text_surface import TextSurface
 from c64cast.video.dither import bayer_offset, blue_noise_offset
 from c64cast.video.palette import (
     CELL_STRATEGIES,

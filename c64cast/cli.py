@@ -24,6 +24,7 @@ from c64cast.hw import char_rom, hw_provision
 from c64cast.hw.api import SocketDMAError
 from c64cast.hw.backend import C64Backend, make_backend
 from c64cast.hw.teensyrom_dma import TRError
+from c64cast.scenes.interstitial import default_factory as interstitial_factory
 from c64cast.video.video import WebcamSource
 
 from . import (
@@ -44,7 +45,6 @@ from .cli_commands import (
     run_save_settings,
 )
 from .ensemble import Ensemble, SystemStack
-from .interstitial import default_factory as interstitial_factory
 from .keyboard import CommodoreKeyPoller
 from .playlist import Playlist
 from .profiler import FrameProfiler, NullProfiler, set_profiler

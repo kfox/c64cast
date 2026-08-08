@@ -9,7 +9,7 @@ rightmost system, exiting off the leftmost.
 This module ships the orchestrator subclass. The big_text overlay's
 conductor + follower hooks — which drive `publish_bits`/`advance` from
 the rightmost system's render path, and consume `snapshot()` from the
-followers' — live in `c64cast/overlays/big_text.py`.
+followers' — live in `c64cast/scenes/overlays/big_text.py`.
 """
 
 from __future__ import annotations
@@ -19,9 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from c64cast.scenes.overlays.big_text import SCREEN_W_PX
+
 from ..ensemble import Ensemble
 from ..orchestrator import Orchestrator, OrchestratorError, register_orchestrator
-from ..overlays.big_text import SCREEN_W_PX
 
 if TYPE_CHECKING:
     from ..config import SceneCfg

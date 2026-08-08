@@ -17,14 +17,14 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.hw.backend import C64Backend
-from c64cast.overlays import (
+from c64cast.scenes.overlays import (
     Overlay,
     ascii_to_screen,
     build_overlay,
     known_overlays,
     validate_for_scene,
 )
-from c64cast.scenes import Scene
+from c64cast.scenes.scenes import Scene
 
 
 class _RequiresAudioOverlay(Overlay):
@@ -42,7 +42,7 @@ class _RequiresAudioOverlay(Overlay):
 @contextmanager
 def _registered(name: str, cls: type[Overlay]):
     """Temporarily put `cls` in the overlay registry under `name`."""
-    from c64cast import overlays as overlays_mod
+    from c64cast.scenes import overlays as overlays_mod
 
     overlays_mod._load_all()
     with patch.dict(overlays_mod._REGISTRY, {name: cls}):
@@ -62,8 +62,8 @@ def _make_buffers():
     including the CharTextSurface text overlays now paint through (its writes
     pass through to the same screen/color arrays, so the assertions below
     still inspect buffers["screen"]/["color"] directly)."""
-    from c64cast.overlays import SC_SPACE
-    from c64cast.text_surface import CharTextSurface
+    from c64cast.scenes.overlays import SC_SPACE
+    from c64cast.scenes.text_surface import CharTextSurface
 
     screen = np.full(40 * 25, SC_SPACE, dtype=np.uint8)
     color = np.zeros(40 * 25, dtype=np.uint8)
@@ -108,7 +108,7 @@ def _scene(features=None) -> Scene:
 def _sid_features(freqs, gates, level=0.8):
     """A SID-shaped MusicModulation: voices and level, but no `bands` (the SID
     feature producers read envelopes, not a spectrum)."""
-    from c64cast.modulation import MusicModulation
+    from c64cast.scenes.modulation import MusicModulation
 
     return MusicModulation(
         level=level,
@@ -237,7 +237,7 @@ class ScreenCodeTest(unittest.TestCase):
 
 class ScrollingTextTest(unittest.TestCase):
     def test_renders_screen_row_after_setup(self):
-        from c64cast.overlays.scrolling_text import ScrollingTextOverlay
+        from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
 
         ov = ScrollingTextOverlay(
             messages=[
@@ -263,13 +263,13 @@ class ScrollingTextTest(unittest.TestCase):
         self.assertEqual(len(buffers["color"][base : base + 40]), 40)
 
     def test_empty_messages_raises(self):
-        from c64cast.overlays.scrolling_text import ScrollingTextOverlay
+        from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
 
         with self.assertRaises(ValueError):
             ScrollingTextOverlay(messages=[])
 
     def test_bad_row_raises(self):
-        from c64cast.overlays.scrolling_text import ScrollingTextOverlay
+        from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay
 
         with self.assertRaises(ValueError):
             ScrollingTextOverlay(messages=[{"text": "x"}], row=99)
@@ -282,8 +282,8 @@ class ScrollingTextTest(unittest.TestCase):
 
 class SpectrumPetsciiTest(unittest.TestCase):
     def test_zero_samples_produce_no_bars(self):
-        from c64cast.overlays import SC_SPACE
-        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+        from c64cast.scenes.overlays import SC_SPACE
+        from c64cast.scenes.overlays.spectrum_petscii import PetsciiSpectrumOverlay
 
         audio = FakeAudio(np.zeros(2048, dtype=np.float32))
         ov = PetsciiSpectrumOverlay(audio=audio, placement="bottom", height_rows=8)
@@ -297,8 +297,8 @@ class SpectrumPetsciiTest(unittest.TestCase):
         )
 
     def test_loud_tone_lights_bars(self):
-        from c64cast.overlays import SC_FULL
-        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+        from c64cast.scenes.overlays import SC_FULL
+        from c64cast.scenes.overlays.spectrum_petscii import PetsciiSpectrumOverlay
 
         # 1 kHz tone (well within band range at 8 kHz sample rate).
         sr = 8000
@@ -315,9 +315,9 @@ class SpectrumPetsciiTest(unittest.TestCase):
     def test_scene_features_drive_bars_without_any_streamer(self):
         # The retrofit's headline case: a scene reporting `bands` paints bars
         # with no AudioStreamer in sight (a SID/waveform scene has none).
-        from c64cast.modulation import MusicModulation
-        from c64cast.overlays import SC_FULL, SC_SPACE
-        from c64cast.overlays.spectrum_petscii import COLS_PER_BAND, PetsciiSpectrumOverlay
+        from c64cast.scenes.modulation import MusicModulation
+        from c64cast.scenes.overlays import SC_FULL, SC_SPACE
+        from c64cast.scenes.overlays.spectrum_petscii import COLS_PER_BAND, PetsciiSpectrumOverlay
 
         # 8 bands: only the last one has energy.
         feat = MusicModulation(
@@ -344,8 +344,8 @@ class SpectrumPetsciiTest(unittest.TestCase):
     def test_sid_voices_synthesize_bars(self):
         # SID features carry no `bands` at all — the voice-synthesis tier turns
         # gated oscillator frequencies into bars so a tune isn't blank.
-        from c64cast.overlays import SC_FULL
-        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+        from c64cast.scenes.overlays import SC_FULL
+        from c64cast.scenes.overlays.spectrum_petscii import PetsciiSpectrumOverlay
 
         feat = _sid_features(freqs=(80.0, 1200.0, 0.0), gates=(True, True, False))
         ov = PetsciiSpectrumOverlay(audio=None, placement="bottom", height_rows=10)
@@ -354,12 +354,12 @@ class SpectrumPetsciiTest(unittest.TestCase):
         self.assertTrue((buffers["screen"] == SC_FULL).any(), "gated SID voices should light bars")
 
     def test_no_source_paints_nothing(self):
-        from c64cast.overlays import SC_SPACE
-        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+        from c64cast.scenes.overlays import SC_SPACE
+        from c64cast.scenes.overlays.spectrum_petscii import PetsciiSpectrumOverlay
 
         ov = PetsciiSpectrumOverlay(audio=None, placement="bottom", height_rows=10)
         buffers = _make_buffers()
-        with self.assertLogs("c64cast.overlays._spectrum", level="WARNING"):
+        with self.assertLogs("c64cast.scenes.overlays._spectrum", level="WARNING"):
             ov.compose(buffers, scene=_scene(), t=0.0)
         self.assertTrue((buffers["screen"] == SC_SPACE).all())
 
@@ -368,12 +368,12 @@ class SpectrumBandsSourceTest(unittest.TestCase):
     """Precedence of the shared `bands_now` tiers."""
 
     def _overlay(self, audio=None):
-        from c64cast.overlays.spectrum_petscii import PetsciiSpectrumOverlay
+        from c64cast.scenes.overlays.spectrum_petscii import PetsciiSpectrumOverlay
 
         return PetsciiSpectrumOverlay(audio=audio)
 
     def test_features_bands_win_over_streamer(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         loud = 0.8 * np.sin(2 * np.pi * 1000 * np.arange(2048) / 8000).astype(np.float32)
         audio = FakeAudio(loud)
@@ -398,13 +398,13 @@ class SpectrumBandsSourceTest(unittest.TestCase):
 
     def test_zeros_with_neither(self):
         ov = self._overlay(audio=None)
-        with self.assertLogs("c64cast.overlays._spectrum", level="WARNING"):
+        with self.assertLogs("c64cast.scenes.overlays._spectrum", level="WARNING"):
             bands = ov.bands_now(_scene())
         self.assertEqual(bands.shape, (8,))
         self.assertTrue((bands == 0).all())
 
     def test_rebin_resamples_to_overlay_band_count(self):
-        from c64cast.overlays._spectrum import rebin
+        from c64cast.scenes.overlays._spectrum import rebin
 
         # Ends stay pinned; the count changes.
         out = rebin((0.0, 1.0), 5)
@@ -417,20 +417,20 @@ class SpectrumBandsSourceTest(unittest.TestCase):
         np.testing.assert_allclose(same, [0.1, 0.2, 0.3], rtol=1e-6)
 
     def test_voice_bands_place_frequencies_low_to_high(self):
-        from c64cast.overlays._spectrum import voice_bands
+        from c64cast.scenes.overlays._spectrum import voice_bands
 
         low = voice_bands(_sid_features((60.0, 0.0, 0.0), (True, False, False)), 8)
         high = voice_bands(_sid_features((6000.0, 0.0, 0.0), (True, False, False)), 8)
         self.assertLess(int(np.argmax(low)), int(np.argmax(high)))
 
     def test_voice_bands_ignore_ungated_voices(self):
-        from c64cast.overlays._spectrum import voice_bands
+        from c64cast.scenes.overlays._spectrum import voice_bands
 
         out = voice_bands(_sid_features((440.0, 440.0, 440.0), (False, False, False)), 8)
         self.assertTrue((out == 0).all())
 
     def test_voice_bands_silent_at_zero_level(self):
-        from c64cast.overlays._spectrum import voice_bands
+        from c64cast.scenes.overlays._spectrum import voice_bands
 
         out = voice_bands(_sid_features((440.0, 0.0, 0.0), (True, False, False), level=0.0), 8)
         self.assertTrue((out == 0).all())
@@ -443,11 +443,11 @@ class SpectrumBandsSourceTest(unittest.TestCase):
 
 class ClockTest(unittest.TestCase):
     def test_renders_time_string_to_top_right(self):
-        from c64cast.overlays.clock import ClockOverlay
+        from c64cast.scenes.overlays.clock import ClockOverlay
 
         ov = ClockOverlay(corner="top-right", format="%H:%M", fg_color="white", bg_color="black")
         buffers = _make_buffers()
-        with patch("c64cast.overlays.clock.datetime") as dt_mock:
+        with patch("c64cast.scenes.overlays.clock.datetime") as dt_mock:
             dt_mock.now.return_value.strftime.return_value = "12:34"
             ov.compose(buffers, scene=MagicMock(), t=0.0)
         # Top-right of 40-col screen for a 5-char string → cols 35..39, row 0.
@@ -462,16 +462,18 @@ class ClockTest(unittest.TestCase):
 
 class WeatherTest(unittest.TestCase):
     def test_uses_cache_when_fetch_fails(self):
-        from c64cast.overlays.weather import WeatherOverlay
+        from c64cast.scenes.overlays.weather import WeatherOverlay
 
-        with patch("c64cast.overlays.weather._fetch_open_meteo", side_effect=Exception("boom")):
+        with patch(
+            "c64cast.scenes.overlays.weather._fetch_open_meteo", side_effect=Exception("boom")
+        ):
             ov = WeatherOverlay(provider="open-meteo", lat=0.0, lon=0.0, refresh_minutes=10)
             api = _fake_api()
             # The unexpected-exception path calls log.exception — capture it
             # so the traceback doesn't spam stderr, and verify it fired.
             # Teardown is inside assertLogs so the bg-thread join guarantees
             # the fetch (and its log) completed before the context exits.
-            with self.assertLogs("c64cast.overlays.weather", level="ERROR") as cap:
+            with self.assertLogs("c64cast.scenes.overlays.weather", level="ERROR") as cap:
                 ov.setup(api, scene=MagicMock())
                 buffers = _make_buffers()
                 ov.compose(buffers, scene=MagicMock(), t=0.0)
@@ -482,9 +484,9 @@ class WeatherTest(unittest.TestCase):
         )
 
     def test_renders_cached_value(self):
-        from c64cast.overlays.weather import WeatherOverlay
+        from c64cast.scenes.overlays.weather import WeatherOverlay
 
-        with patch("c64cast.overlays.weather._fetch_open_meteo", return_value="72F CLEAR"):
+        with patch("c64cast.scenes.overlays.weather._fetch_open_meteo", return_value="72F CLEAR"):
             ov = WeatherOverlay(provider="open-meteo", lat=0.0, lon=0.0, refresh_minutes=10)
             api = _fake_api()
             ov.setup(api, scene=MagicMock())
@@ -500,13 +502,13 @@ class WeatherTest(unittest.TestCase):
         self.assertTrue((buffers["color"] != 0).any())
 
     def test_bad_provider_raises(self):
-        from c64cast.overlays.weather import WeatherOverlay
+        from c64cast.scenes.overlays.weather import WeatherOverlay
 
         with self.assertRaises(ValueError):
             WeatherOverlay(provider="nope")
 
     def test_open_meteo_requires_lat_lon(self):
-        from c64cast.overlays.weather import WeatherOverlay
+        from c64cast.scenes.overlays.weather import WeatherOverlay
 
         with self.assertRaises(ValueError):
             WeatherOverlay(provider="open-meteo")
@@ -519,7 +521,7 @@ class WeatherTest(unittest.TestCase):
 
 class CallsignTest(unittest.TestCase):
     def test_renders_text(self):
-        from c64cast.overlays.callsign import CallsignOverlay
+        from c64cast.scenes.overlays.callsign import CallsignOverlay
 
         ov = CallsignOverlay(text="W5ABC", corner="bottom-left")
         buffers = _make_buffers()
@@ -532,7 +534,7 @@ class CallsignTest(unittest.TestCase):
         )
 
     def test_empty_text_raises(self):
-        from c64cast.overlays.callsign import CallsignOverlay
+        from c64cast.scenes.overlays.callsign import CallsignOverlay
 
         with self.assertRaises(ValueError):
             CallsignOverlay(text="")
@@ -542,7 +544,7 @@ class CountdownTest(unittest.TestCase):
     def test_remaining_string_includes_seconds(self):
         from datetime import datetime, timedelta
 
-        from c64cast.overlays.countdown import CountdownOverlay
+        from c64cast.scenes.overlays.countdown import CountdownOverlay
 
         future = (datetime.now() + timedelta(seconds=125)).isoformat()
         ov = CountdownOverlay(target=future, corner="bottom-left")
@@ -555,7 +557,7 @@ class CountdownTest(unittest.TestCase):
     def test_done_after_target(self):
         from datetime import datetime, timedelta
 
-        from c64cast.overlays.countdown import CountdownOverlay
+        from c64cast.scenes.overlays.countdown import CountdownOverlay
 
         past = (datetime.now() - timedelta(seconds=60)).isoformat()
         ov = CountdownOverlay(target=past, done_text="DONE")
@@ -564,13 +566,13 @@ class CountdownTest(unittest.TestCase):
     def test_bad_format_falls_back(self):
         from datetime import datetime, timedelta
 
-        from c64cast.overlays.countdown import CountdownOverlay
+        from c64cast.scenes.overlays.countdown import CountdownOverlay
 
         future = (datetime.now() + timedelta(hours=1)).isoformat()
         ov = CountdownOverlay(target=future, format="{nope}")
         # Should not crash; fallback format applies. The bad-format warning
         # fires inside compute_strings on first call — capture + verify.
-        with self.assertLogs("c64cast.overlays.countdown", level="WARNING") as cap:
+        with self.assertLogs("c64cast.scenes.overlays.countdown", level="WARNING") as cap:
             result = ov.compute_strings(t=0.0)
         self.assertTrue(
             any("bad format" in line for line in cap.output),
@@ -581,13 +583,13 @@ class CountdownTest(unittest.TestCase):
 
 class NetworkTest(unittest.TestCase):
     def test_bad_items_raises(self):
-        from c64cast.overlays.network import NetworkOverlay
+        from c64cast.scenes.overlays.network import NetworkOverlay
 
         with self.assertRaises(ValueError):
             NetworkOverlay(items=["ip", "garbage"])
 
     def test_compute_strings_returns_cached(self):
-        from c64cast.overlays.network import NetworkOverlay
+        from c64cast.scenes.overlays.network import NetworkOverlay
 
         ov = NetworkOverlay(items=["ip"])
         # Without setup() the poll thread doesn't run; cached defaults apply.
@@ -602,7 +604,7 @@ class NetworkTest(unittest.TestCase):
 
 class MarqueeTest(unittest.TestCase):
     def test_scrolls_text_across_row(self):
-        from c64cast.overlays.marquee import MarqueeOverlay
+        from c64cast.scenes.overlays.marquee import MarqueeOverlay
 
         ov = MarqueeOverlay(text="ABC", row=5, speed_cells_per_s=10.0)
         ov.setup(api=_fake_api(), scene=MagicMock())
@@ -616,7 +618,7 @@ class MarqueeTest(unittest.TestCase):
         self.assertEqual(row[:3], bytes([0x01, 0x02, 0x03]))
 
     def test_empty_text_raises(self):
-        from c64cast.overlays.marquee import MarqueeOverlay
+        from c64cast.scenes.overlays.marquee import MarqueeOverlay
 
         with self.assertRaises(ValueError):
             MarqueeOverlay(text="")
@@ -624,7 +626,7 @@ class MarqueeTest(unittest.TestCase):
 
 class RssTitleExtractionTest(unittest.TestCase):
     def test_extracts_rss20_titles(self):
-        from c64cast.overlays.rss import _extract_titles
+        from c64cast.scenes.overlays.rss import _extract_titles
 
         xml = """<?xml version="1.0"?><rss><channel>
         <item><title>First</title></item>
@@ -635,7 +637,7 @@ class RssTitleExtractionTest(unittest.TestCase):
         self.assertEqual(_extract_titles(xml, 10), ["First", "Second", "Third"])
 
     def test_extracts_atom_titles(self):
-        from c64cast.overlays.rss import _extract_titles
+        from c64cast.scenes.overlays.rss import _extract_titles
 
         xml = """<?xml version="1.0"?>
         <feed xmlns="http://www.w3.org/2005/Atom">
@@ -655,7 +657,7 @@ class LogoTest(unittest.TestCase):
         import os
         import tempfile
 
-        from c64cast.overlays.logo import LogoOverlay
+        from c64cast.scenes.overlays.logo import LogoOverlay
 
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write("AB\nCD\n")
@@ -673,9 +675,9 @@ class LogoTest(unittest.TestCase):
     def test_missing_file_uses_placeholder(self):
         # Documented behavior: missing file → placeholder render so the
         # example config can ship with a hint path that still works.
-        from c64cast.overlays.logo import LogoOverlay
+        from c64cast.scenes.overlays.logo import LogoOverlay
 
-        with self.assertLogs("c64cast.overlays.logo", level="WARNING") as cap:
+        with self.assertLogs("c64cast.scenes.overlays.logo", level="WARNING") as cap:
             ov = LogoOverlay(file="/nonexistent/path.txt", corner="top-left")
         self.assertTrue(
             any("not found" in line for line in cap.output),
@@ -692,7 +694,7 @@ class LogoTest(unittest.TestCase):
         import os
         import tempfile
 
-        from c64cast.overlays.logo import LogoOverlay
+        from c64cast.scenes.overlays.logo import LogoOverlay
 
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write("X\n")
@@ -711,12 +713,12 @@ class LogoTest(unittest.TestCase):
 
 class NetworkCollectTest(unittest.TestCase):
     def _ov(self, items):
-        from c64cast.overlays.network import NetworkOverlay
+        from c64cast.scenes.overlays.network import NetworkOverlay
 
         return NetworkOverlay(items=items)
 
     def test_collect_gathers_each_item(self):
-        import c64cast.overlays.network as net
+        import c64cast.scenes.overlays.network as net
 
         ov = self._ov(["ip", "hostname", "ping"])
         ov._target_host = "10.0.0.5"
@@ -732,20 +734,20 @@ class NetworkCollectTest(unittest.TestCase):
         self.assertEqual(lines[2], "PING  12MS")
 
     def test_collect_preserves_previous_value_on_failure(self):
-        import c64cast.overlays.network as net
+        import c64cast.scenes.overlays.network as net
 
         ov = self._ov(["ip"])
         ov._cached_lines = ["GOOD-IP"]
         with (
             patch.object(net, "_outbound_ip", side_effect=OSError("network down")),
-            self.assertLogs("c64cast.overlays.network", level="DEBUG"),
+            self.assertLogs("c64cast.scenes.overlays.network", level="DEBUG"),
         ):
             lines = ov._collect()
         # The error branch keeps the last good value rather than clobbering.
         self.assertEqual(lines, ["GOOD-IP"])
 
     def test_poll_once_publishes_to_cache(self):
-        import c64cast.overlays.network as net
+        import c64cast.scenes.overlays.network as net
 
         ov = self._ov(["ip"])
         with patch.object(net, "_outbound_ip", return_value="1.2.3.4"):
@@ -806,7 +808,7 @@ class _FakeOBSClient:
 
 def _obs_overlay(**kw):
     """Build an OBSStatusOverlay bypassing the obsws-python import guard."""
-    import c64cast.overlays.obs_status as obs
+    import c64cast.scenes.overlays.obs_status as obs
 
     with patch.object(obs, "OBSWS_AVAILABLE", True):
         return obs.OBSStatusOverlay(**kw)
@@ -814,7 +816,7 @@ def _obs_overlay(**kw):
 
 class OBSStatusTest(unittest.TestCase):
     def test_construction_requires_extra(self):
-        import c64cast.overlays.obs_status as obs
+        import c64cast.scenes.overlays.obs_status as obs
 
         with patch.object(obs, "OBSWS_AVAILABLE", False):
             with self.assertRaises(RuntimeError):
@@ -851,7 +853,7 @@ class OBSStatusTest(unittest.TestCase):
 
         ov._poll_once = flaky
         ov.poll_interval = 0.0
-        with self.assertLogs("c64cast.overlays.obs_status", level="DEBUG"):
+        with self.assertLogs("c64cast.scenes.overlays.obs_status", level="DEBUG"):
             ov._worker(stop)
         # Final state reflects the failure → OFFLINE banner, client dropped.
         self.assertEqual(ov.compute_strings(t=0.0), ["OBS OFFLINE"])

@@ -35,8 +35,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from c64cast.config import AudioCfg, AudioFeaturesCfg
     from c64cast.hw.backend import C64Backend
-    from c64cast.modulation import MusicModulation
-    from c64cast.music_features import SidFeatureStream
+    from c64cast.scenes.modulation import MusicModulation
+    from c64cast.scenes.music_features import SidFeatureStream
     from c64cast.sid_host_emu import SidHeader
     from c64cast.video.modes import DisplayMode
 
@@ -690,7 +690,7 @@ class SidFileAudioSource:
         # _validate_candidate), so this shouldn't fail — but a startup failure
         # must not take down playback, so degrade to non-reactive on error.
         if self._reactive:
-            from c64cast.music_features import SidFeatureStream
+            from c64cast.scenes.music_features import SidFeatureStream
 
             try:
                 self._features = SidFeatureStream(

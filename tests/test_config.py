@@ -1103,7 +1103,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
         # No shipped overlay sets REQUIRES_AUDIO (the spectrum overlays only
         # WANT audio — they read the scene's music features first), but the
         # gate is a live framework facility, so cover it with a stub.
-        from c64cast import overlays as overlays_mod
+        from c64cast.scenes import overlays as overlays_mod
 
         class _NeedsAudio(overlays_mod.Overlay):
             name = "_needs_audio"
@@ -1600,7 +1600,7 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
     network/dep is needed."""
 
     def _build(self, file: str, **kw):
-        from c64cast.scenes import VideoScene
+        from c64cast.scenes.scenes import VideoScene
 
         s = cfgmod.SceneCfg(type="video", display="mhires", file=file, **kw)
         scene = scene_factory.build_scene(
@@ -1898,7 +1898,7 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _scene(self, cfg: cfgmod.Config, *, display: str, audio, **build_kw):
-        from c64cast.scenes import VideoScene
+        from c64cast.scenes.scenes import VideoScene
 
         s = cfgmod.SceneCfg(type="video", display=display, file=self.clip)
         scene = scene_factory.build_scene(
@@ -1956,7 +1956,7 @@ class BuildSceneTempoScaleTest(unittest.TestCase):
         api = FakeAPI()
         api.profile = dataclasses.replace(api.profile, supports_sampler=True)
         with mock.patch("c64cast.scene_factory.UltimateAudioSampler", return_value=object()):
-            from c64cast.scenes import VideoScene
+            from c64cast.scenes.scenes import VideoScene
 
             s = cfgmod.SceneCfg(type="video", display="mhires", file=self.clip)
             scene = scene_factory.build_scene(

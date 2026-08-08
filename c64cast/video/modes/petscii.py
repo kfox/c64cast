@@ -6,7 +6,7 @@ import cv2
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import SCREEN, RegionID
-from c64cast.text_surface import CharTextSurface
+from c64cast.scenes.text_surface import CharTextSurface
 from c64cast.video.modes_irq import push_screen_via_reu
 from c64cast.video.palette import COLOR_MATCH_MODES, apply_color_fit
 from c64cast.video.petscii_styles import (

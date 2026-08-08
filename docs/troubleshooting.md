@@ -425,7 +425,7 @@ uv tool install --force 'c64cast[all]'
 `c64cast --doctor` prints an EXTRAS section listing exactly which ones the
 running install can import.
 
-### "ImportError from `c64cast.overlays`, or mypy / ruff not found"
+### "ImportError from `c64cast.scenes.overlays`, or mypy / ruff not found"
 
 Both are development-environment symptoms — a stale editable install and
 missing dev tooling respectively. Neither can happen to an installed release.

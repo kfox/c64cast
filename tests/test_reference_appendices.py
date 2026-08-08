@@ -28,7 +28,8 @@ import sys
 import unittest
 from pathlib import Path
 
-from c64cast import effects, generators, introspect
+from c64cast import introspect
+from c64cast.scenes import effects, generators
 
 _REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

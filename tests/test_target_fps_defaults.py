@@ -305,7 +305,7 @@ class InterleavedVideoFpsTest(_BuildSceneFpsBase):
     def _interleaved_videos(self, cfg, audio):
         import unittest.mock as mock
 
-        from c64cast.scenes import VideoScene
+        from c64cast.scenes.scenes import VideoScene
 
         cfg.playlist.interleave_videos = True
         cfg.playlist.videos_dir = self.tmpdir

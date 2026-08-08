@@ -17,16 +17,17 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from c64cast.hw.backend import C64Backend
+from c64cast.scenes.scenes import Scene
 
 from .playlist_support import EnsembleCoordinator, PlaylistMenu, SceneFades
 from .profiler import FrameProfiler, NullProfiler
-from .scenes import Scene
 from .transport import LiveTuneTracker, TransportSession
 
 if TYPE_CHECKING:
+    from c64cast.scenes.modulation import MusicModulation
+
     from .config import SceneCfg
     from .ensemble import Ensemble
-    from .modulation import MusicModulation
 
 InterstitialFactory = Callable[[str], Scene]
 FollowerSceneFactory = Callable[["SceneCfg"], Scene]
@@ -403,7 +404,7 @@ class Playlist:
     def _default_interstitial_factory(self) -> InterstitialFactory:
         # Late import so tests that supply their own factory don't have
         # to pull in backgrounds + InterstitialCfg.
-        from .interstitial import InterstitialScene
+        from c64cast.scenes.interstitial import InterstitialScene
 
         api = self.api
         return lambda name: InterstitialScene(api, name)

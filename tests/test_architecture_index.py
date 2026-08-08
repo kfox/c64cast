@@ -37,7 +37,7 @@ _PACKAGE = _REPO_ROOT / "c64cast"
 # Registry subpackages the index lists whole, as directories: their files are
 # small members of one registry apiece, and a per-file row would say the same
 # thing forty times. Paths are relative to the package root.
-_REGISTRY_DIRS = ("generators/", "video/modes/", "orchestrators/", "overlays/")
+_REGISTRY_DIRS = ("scenes/generators/", "video/modes/", "orchestrators/", "scenes/overlays/")
 
 
 def _load_bookdoc():

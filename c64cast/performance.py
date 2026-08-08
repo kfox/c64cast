@@ -52,8 +52,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from c64cast.scenes.scenes import Scene
+
     from .playlist import Playlist
-    from .scenes import Scene
 
 log = logging.getLogger(__name__)
 

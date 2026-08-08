@@ -238,7 +238,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertIsNone(src.features())  # no feature stream until setup()
 
     def test_reactive_setup_exposes_features_then_teardown_clears(self):
-        from c64cast.modulation import MusicModulation
+        from c64cast.scenes.modulation import MusicModulation
 
         path = self._write(_make_sid())
         src = self._src(path, reactive=True)
@@ -263,7 +263,9 @@ class SidFileAudioSourceTest(unittest.TestCase):
         path = self._write(_make_sid())
         src = self._src(path, reactive=True)
         self.addCleanup(src.teardown)
-        with patch("c64cast.music_features.SidFeatureStream.start", side_effect=RuntimeError("x")):
+        with patch(
+            "c64cast.scenes.music_features.SidFeatureStream.start", side_effect=RuntimeError("x")
+        ):
             with self.assertLogs("c64cast.audio.audio_source", level="ERROR"):
                 src.setup()
         self.assertIsNone(src.features())
@@ -295,7 +297,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         return build_scene(s, cfg or self.cfg, cast(C64Backend, FakeAPI()), None, None)
 
     def test_sid_scene_is_host_dma_and_competes(self):
-        from c64cast.scenes import SourceScene
+        from c64cast.scenes.scenes import SourceScene
         from c64cast.video.modes import PETSCIIDisplayMode
 
         scene = self._build(display="petscii")
@@ -359,7 +361,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertTrue(scene.competes_for_audio_lock())
 
     def test_reactive_defaults_true_and_passes_through(self):
-        from c64cast.scenes import SourceScene
+        from c64cast.scenes.scenes import SourceScene
 
         scene = self._build(display="petscii")  # no reactive kw → default True
         assert isinstance(scene, SourceScene)
@@ -367,7 +369,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertTrue(scene.audio_source._reactive)
 
     def test_reactive_false_passes_through(self):
-        from c64cast.scenes import SourceScene
+        from c64cast.scenes.scenes import SourceScene
 
         scene = self._build(display="petscii", reactive=False)
         assert isinstance(scene, SourceScene)

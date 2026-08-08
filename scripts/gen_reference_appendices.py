@@ -48,8 +48,9 @@ from pathlib import Path
 from types import ModuleType
 
 from c64cast import cli as climod
-from c64cast import doctor, effects, generators, introspect
+from c64cast import doctor, introspect
 from c64cast import paths as pathsmod
+from c64cast.scenes import effects, generators
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE_DIR = REPO_ROOT / "docs" / "reference"

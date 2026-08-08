@@ -39,7 +39,7 @@ import time
 import numpy as np
 
 from c64cast._pollthread import PollThread
-from c64cast.modulation import MusicModulation, TempoEstimator
+from c64cast.scenes.modulation import MusicModulation, TempoEstimator
 
 log = logging.getLogger(__name__)
 

@@ -22,12 +22,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast import text_surface  # noqa: E402
-from c64cast.overlays.callsign import CallsignOverlay  # noqa: E402
-from c64cast.overlays.logo import LogoOverlay  # noqa: E402
-from c64cast.overlays.marquee import MarqueeOverlay  # noqa: E402
-from c64cast.overlays.scrolling_text import ScrollingTextOverlay  # noqa: E402
-from c64cast.text_surface import HiresTextSurface, MHiresTextSurface  # noqa: E402
+from c64cast.scenes import text_surface  # noqa: E402
+from c64cast.scenes.overlays.callsign import CallsignOverlay  # noqa: E402
+from c64cast.scenes.overlays.logo import LogoOverlay  # noqa: E402
+from c64cast.scenes.overlays.marquee import MarqueeOverlay  # noqa: E402
+from c64cast.scenes.overlays.scrolling_text import ScrollingTextOverlay  # noqa: E402
+from c64cast.scenes.text_surface import HiresTextSurface, MHiresTextSurface  # noqa: E402
 from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
 
 

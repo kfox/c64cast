@@ -34,7 +34,7 @@ lock, so a render/consumer thread always sees a consistent snapshot.
 effects/generators can be driven by MIDI tempo exactly as they are by SID audio
 today, with no new effect wiring (the Phase-2/3 ``mod_source = clock`` selector
 is what routes it). Deliberately stdlib-only (plus the leaf
-:mod:`c64cast.modulation`) so it imports nowhere near mido or the heavy
+:mod:`c64cast.scenes.modulation`) so it imports nowhere near mido or the heavy
 render deps.
 """
 
@@ -46,7 +46,7 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from .modulation import MusicModulation
+from c64cast.scenes.modulation import MusicModulation
 
 if TYPE_CHECKING:
     from .config import PerformanceCfg
@@ -220,7 +220,7 @@ class TempoClock:
         """Drive the grid from the live-input analyzer's tempo estimate
         (``tempo_source = "audio"``). The playlist calls this once per frame with
         the BPM the :mod:`audio_features` analyzer already derives (it runs a full
-        :class:`~c64cast.modulation.TempoEstimator` over spectral-flux onsets), so
+        :class:`~c64cast.scenes.modulation.TempoEstimator` over spectral-flux onsets), so
         the process-wide grid locks to the detected beat and every consumer —
         launch quantize, ``mod_source = "clock"`` effects, WLED tempo — follows.
 

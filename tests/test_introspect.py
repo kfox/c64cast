@@ -109,7 +109,7 @@ class CompatMatrixTest(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_matrix_mirrors_validate_for_scene(self):
-        from c64cast.overlays import build_overlay, validate_for_scene
+        from c64cast.scenes.overlays import build_overlay, validate_for_scene
 
         ov = build_overlay({"type": "clock"}, audio=None)
         od = self._doc("clock")
@@ -155,17 +155,17 @@ class ChoiceVocabSyncTest(unittest.TestCase):
         self.assertEqual(cfgmod._MIDI_VOICE_MODE_CHOICES, midi_scene.VOICE_MODES)
 
     def test_backgrounds(self):
-        from c64cast import backgrounds
+        from c64cast.scenes import backgrounds
 
         self.assertEqual(set(cfgmod._BACKGROUND_CHOICES) - {"random"}, set(backgrounds.REGISTRY))
 
     def test_generative_sources(self):
-        from c64cast import generators
+        from c64cast.scenes import generators
 
         self.assertEqual(cfgmod._GENERATIVE_SOURCE_CHOICES, generators.generator_names())
 
     def test_effects(self):
-        from c64cast import effects
+        from c64cast.scenes import effects
 
         self.assertEqual(cfgmod._EFFECT_CHOICES, effects.effect_names())
 

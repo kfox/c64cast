@@ -31,13 +31,13 @@ patterns that keep the suite hardware-free. For runtime behavior see
 ## Adding an Overlay
 
 Overlays are the most common extension point — drop a file into
-[c64cast/overlays/](../c64cast/overlays/), register it under a
+[c64cast/scenes/overlays/](../c64cast/scenes/overlays/), register it under a
 config name, implement three methods.
 
 ### Minimal example
 
 ```python
-# c64cast/overlays/blink.py
+# c64cast/scenes/overlays/blink.py
 """Blink the border color between two C64 colors at a configurable rate."""
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ Then register it in the loader's auto-import block (otherwise the
 `@register` decorator won't run and the loader can't find it):
 
 ```python
-# c64cast/overlays/__init__.py — inside _load_all()
+# c64cast/scenes/overlays/__init__.py — inside _load_all()
 from . import (
     ...,
     blink,        # <-- add this
@@ -177,12 +177,12 @@ appropriate), and one positive-path render.
 Scenes are bigger lifts than overlays — a Scene is responsible for
 producing one frame of *content* per `process_frame()` call (the
 overlays paint over it). Most users won't need to add scenes; if you do,
-subclass `Scene` from [scenes.py](../c64cast/scenes.py).
+subclass `Scene` from [scenes.py](../c64cast/scenes/scenes.py).
 
 ### Skeleton
 
 ```python
-# c64cast/scenes.py (or your own module)
+# c64cast/scenes/scenes.py (or your own module)
 class MyScene(Scene):
     def __init__(self, api, audio, display_mode, name="My scene"):
         super().__init__(api, audio, display_mode, name)
@@ -279,7 +279,7 @@ Performance tips (these are what makes the bundled modes hit 30+ fps):
 
 Backgrounds are the parallax decoration that plays between scenes
 (during the "UP NEXT: …" interstitial). Add one in
-[backgrounds.py](../c64cast/backgrounds.py):
+[backgrounds.py](../c64cast/scenes/backgrounds.py):
 
 ```python
 @register("mybg")                  # decorator sets cls.name + adds to REGISTRY
@@ -380,10 +380,10 @@ per surface, fakes at the top, three-to-six small `test_*` methods.
 
 | What you're adding         | Where it goes                                                | Wire-up                                                                 |
 |----------------------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
-| Overlay                    | [c64cast/overlays/yours.py](../c64cast/overlays/)        | `@register("yours")` + add to `_load_all()` in `overlays/__init__.py`   |
-| Scene                      | [c64cast/scenes.py](../c64cast/scenes.py) (or new file)  | branch in `config.scenes_from_config` + optional `SceneCfg` fields      |
+| Overlay                    | [c64cast/scenes/overlays/yours.py](../c64cast/scenes/overlays/)        | `@register("yours")` + add to `_load_all()` in `overlays/__init__.py`   |
+| Scene                      | [c64cast/scenes/scenes.py](../c64cast/scenes/scenes.py) (or new file)  | branch in `config.scenes_from_config` + optional `SceneCfg` fields      |
 | DisplayMode                | [c64cast/video/modes/](../c64cast/video/modes/)                      | branch in `config._build_display_mode`                                  |
-| Background                 | [c64cast/backgrounds.py](../c64cast/backgrounds.py)      | `@register("yours")` decorator                                          |
+| Background                 | [c64cast/scenes/backgrounds.py](../c64cast/scenes/backgrounds.py)      | `@register("yours")` decorator                                          |
 | CLI flag                   | [c64cast/cli.py](../c64cast/cli.py)                      | `default=None` + entry in `config.CLI_TO_CFG`                           |
 | Control-plane endpoint     | [c64cast/control_plane.py](../c64cast/control_plane.py)  | new event on `Playlist` + handler in the run loop                       |
 | Test                       | [tests/test_*.py](../tests/)                                 | `FakeAPI` (`tests/_fakes.py`) + `FakeAudio` (`tests/test_overlays.py`) reusable |

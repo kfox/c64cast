@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
 from c64cast.hw.c64 import VIC_BANK_0, VIC_BANK_2  # noqa: E402
-from c64cast.scenes import Scene, _render_with_overlays  # noqa: E402
+from c64cast.scenes.scenes import Scene, _render_with_overlays  # noqa: E402
 from c64cast.video.modes import HiresDisplayMode, MultiHiresDisplayMode  # noqa: E402
 from c64cast.video.modes_irq import (  # noqa: E402
     BANK_SWAP_IRQ_HANDLER_ADDR,

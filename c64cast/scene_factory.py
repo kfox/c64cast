@@ -40,6 +40,18 @@ from c64cast.audio.audio_source import (
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.hw.c64 import nmi_rate_safety
+from c64cast.scenes.effects import build_effect
+from c64cast.scenes.generators import GenerativeSource, build_generator
+from c64cast.scenes.overlays import build_overlay, paints_into_buffers, validate_for_scene
+from c64cast.scenes.scenes import (
+    BlankScene,
+    LauncherScene,
+    Scene,
+    SlideshowScene,
+    SourceScene,
+    VideoScene,
+    WebcamScene,
+)
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.modes import (
     BitmapDisplayMode,
@@ -75,20 +87,8 @@ from .config import (
     SceneCfg,
     _is_valid_param_holder,
 )
-from .effects import build_effect
-from .generators import GenerativeSource, build_generator
 from .midi_scene import MidiScene
 from .orchestrator import resolve_orchestrator
-from .overlays import build_overlay, paints_into_buffers, validate_for_scene
-from .scenes import (
-    BlankScene,
-    LauncherScene,
-    Scene,
-    SlideshowScene,
-    SourceScene,
-    VideoScene,
-    WebcamScene,
-)
 from .sid_autoconfig import SID_MODEL_CHOICES, resolve_sid_model_cfg
 from .sid_host_emu import parse_sid_header, payload_overlaps_bank0_display
 from .songlengths import LengthsDB

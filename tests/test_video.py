@@ -14,8 +14,9 @@ from unittest import mock
 import numpy as np
 from _fakes import FrozenClock
 
-from c64cast import scenes, video_transport
-from c64cast.scenes import VideoScene
+from c64cast.scenes import scenes, video_transport
+from c64cast.scenes.scenes import VideoScene
+from c64cast.scenes.video_transport import VideoTransportControls
 from c64cast.transport import LoopPresetStore, timecode
 from c64cast.video.video import (
     NORMALIZATION_MAX_GAIN,
@@ -28,7 +29,6 @@ from c64cast.video.video import (
     ensure_pyav,
     scan_video_samples,
 )
-from c64cast.video_transport import VideoTransportControls
 
 
 def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> AVFileSource:

@@ -93,7 +93,7 @@ class SceneGatingTest(unittest.TestCase):
         from types import SimpleNamespace
 
         from c64cast.config import ColorCfg
-        from c64cast.scenes import _maybe_start_rolling_palette
+        from c64cast.scenes.scenes import _maybe_start_rolling_palette
 
         scene = SimpleNamespace(name="live")
         applying_mode = SimpleNamespace(_force_palette=True, set_color_map=lambda c: None)
@@ -118,7 +118,7 @@ class SceneGatingTest(unittest.TestCase):
     def test_apply_installs_polled_map_and_is_none_safe(self):
         from types import SimpleNamespace
 
-        from c64cast.scenes import _apply_rolling_palette
+        from c64cast.scenes.scenes import _apply_rolling_palette
 
         installed: list[ColorMap] = []
         mode = SimpleNamespace(set_color_map=installed.append)

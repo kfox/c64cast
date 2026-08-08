@@ -9,7 +9,7 @@ import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, VIC_BANK_0, VIC_BANK_2, RegionID
-from c64cast.text_surface import HiresTextSurface
+from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER,

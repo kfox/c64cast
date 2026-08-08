@@ -34,8 +34,9 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from c64cast.scenes import overlays as ovmod
+
 from . import config as cfgmod
-from . import overlays as ovmod
 from . import paths as pathsmod
 
 # ---------------------------------------------------------------------------
@@ -330,9 +331,10 @@ def _iter_live_holders() -> list[tuple[str, str, type]]:
     ``LIVE_PARAMS``/``LIVE_CHOICES`` live-tune surface. Imported lazily (modes /
     effects / generators / voice_scope pull in numpy/cv2) so this module stays
     import-light for the schema / --describe path, which never calls it."""
+    from c64cast.scenes import effects, generators
     from c64cast.video import modes as modesmod
 
-    from . import effects, generators, voice_scope
+    from . import voice_scope
 
     out: list[tuple[str, str, type]] = []
 

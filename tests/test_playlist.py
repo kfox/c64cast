@@ -1259,7 +1259,7 @@ class PlaylistAudioTempoDriveTest(unittest.TestCase):
             self._bpm = bpm
 
         def features(self):
-            from c64cast.modulation import MusicModulation
+            from c64cast.scenes.modulation import MusicModulation
 
             if self._bpm is None:
                 return None

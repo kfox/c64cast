@@ -25,7 +25,7 @@ from c64cast import config as cfgmod
 from c64cast import scene_factory
 from c64cast.ensemble import Ensemble, SystemStack
 from c64cast.playlist import Playlist
-from c64cast.scenes import BlankScene, Scene, VideoScene, WebcamScene
+from c64cast.scenes.scenes import BlankScene, Scene, VideoScene, WebcamScene
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402

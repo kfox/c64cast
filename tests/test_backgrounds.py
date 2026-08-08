@@ -14,7 +14,7 @@ import unittest
 
 import numpy as np
 
-from c64cast.backgrounds import (
+from c64cast.scenes.backgrounds import (
     REGISTRY,
     SC_SPACE,
     Background,

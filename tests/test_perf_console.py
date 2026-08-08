@@ -12,8 +12,8 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from c64cast.effects import TrailsEffect
 from c64cast.perf_console import PerfBridge, _beats_remaining, _system_state
+from c64cast.scenes.effects import TrailsEffect
 
 try:
     import fastapi  # noqa: F401

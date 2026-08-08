@@ -11,7 +11,7 @@ import struct
 import unittest
 from typing import Any
 
-from c64cast.modulation import MusicModulation
+from c64cast.scenes.modulation import MusicModulation
 from c64cast.wled_sync import (
     WledAudioSyncBroadcaster,
     _freq_to_geq_bin,

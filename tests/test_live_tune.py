@@ -14,8 +14,9 @@ from dataclasses import fields, replace
 from typing import cast
 
 from c64cast import config as cfgmod
-from c64cast import scene_factory, scenes
+from c64cast import scene_factory
 from c64cast.config import _PALETTE_MODE_CHOICES, ColorCfg, Config, SceneCfg
+from c64cast.scenes import scenes
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402

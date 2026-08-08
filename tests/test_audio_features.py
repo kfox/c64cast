@@ -23,7 +23,7 @@ from c64cast.audio.audio_features import (
     AudioFeatureStream,
     band_edges,
 )
-from c64cast.modulation import MusicModulation, TempoEstimator
+from c64cast.scenes.modulation import MusicModulation, TempoEstimator
 
 SR = 44100.0
 POLL_HZ = 60.0
@@ -357,7 +357,7 @@ class ModulationCompatTest(unittest.TestCase):
     def test_generator_helpers_ignore_empty_bands(self):
         # The SID path's reactive look must be bit-for-bit what it was before
         # the spectral terms existed: both fold to exactly 0.0.
-        from c64cast.generators import GenerativeSource as G
+        from c64cast.scenes.generators import GenerativeSource as G
 
         m = self._sid_style()
         self.assertEqual(
@@ -370,7 +370,7 @@ class ModulationCompatTest(unittest.TestCase):
         )
 
     def test_generator_helpers_use_bands_when_present(self):
-        from c64cast.generators import GenerativeSource as G
+        from c64cast.scenes.generators import GenerativeSource as G
 
         base = self._sid_style()
         bassy = MusicModulation(**{**vars(base), "bands": (1.0, 1.0, 0.0, 0.0, 0.0, 0.0)})

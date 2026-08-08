@@ -20,10 +20,10 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from c64cast.scenes.scenes import Scene
     from c64cast.video.modes import DisplayMode
 
     from .playlist import Playlist
-    from .scenes import Scene
 
 
 class SceneFades:
@@ -155,7 +155,7 @@ class PlaylistMenu:
             return
         if pl.menu_cfg is None or not getattr(pl.menu_cfg, "enabled", False):
             return
-        from .overlays.menu import can_show_menu
+        from c64cast.scenes.overlays.menu import can_show_menu
 
         # Publish eligibility to the poller every frame: only an eligible scene
         # lets it drain/clear the keyboard buffer (so SPACE-to-open is inert,
@@ -196,7 +196,7 @@ class PlaylistMenu:
         return pl.config is not None and bool(pl.config_path)
 
     def open(self) -> None:
-        from .overlays.menu import MenuOverlay, can_show_menu
+        from c64cast.scenes.overlays.menu import MenuOverlay, can_show_menu
 
         pl = self._pl
         scene = pl.current

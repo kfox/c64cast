@@ -7,7 +7,7 @@ import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import RegionID
-from c64cast.text_surface import CharTextSurface
+from c64cast.scenes.text_surface import CharTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.palette import (
     C64_PALETTE_BGR,

@@ -284,9 +284,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["E402"]   # allow late imports inside test methods
-"c64cast/overlays/__init__.py" = ["E402"]   # late-block re-export of backgrounds
-"c64cast/generators/__init__.py" = ["E402"]   # ordered submodule imports after the base class
-"c64cast/scenes.py" = ["E741"]   # `l` for LAB-color split is canonical opencv idiom
+"c64cast/scenes/overlays/__init__.py" = ["E402"]   # late-block re-export of backgrounds
+"c64cast/scenes/generators/__init__.py" = ["E402"]   # ordered submodule imports after the base class
+"c64cast/scenes/scenes.py" = ["E741"]   # `l` for LAB-color split is canonical opencv idiom
 
 # --- uv --------------------------------------------------------------------
 [tool.uv]
@@ -312,7 +312,7 @@ files = [
     "c64cast/playlist.py",
     "c64cast/hw/socket_dma.py",
     "c64cast/hw/teensyrom_dma.py",
-    "c64cast/scenes.py",
+    "c64cast/scenes/scenes.py",
     "c64cast/video/modes_irq.py",
     "c64cast/config.py",
     "c64cast/scene_factory.py",

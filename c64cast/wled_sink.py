@@ -43,11 +43,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from c64cast.scenes.frame_source import BaseFrameSource
+
 from ._pollthread import PollThread
-from .frame_source import BaseFrameSource
 
 if TYPE_CHECKING:
-    from .modulation import MusicModulation
+    from c64cast.scenes.modulation import MusicModulation
 
 log = logging.getLogger(__name__)
 

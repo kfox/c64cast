@@ -11,8 +11,8 @@ from _fakes import FakeAPI
 from c64cast.config import SceneCfg
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import KEYBUF, SCREEN
-from c64cast.overlays.menu import MenuItem, MenuOverlay, build_menu_items, can_show_menu
-from c64cast.scenes import Scene
+from c64cast.scenes.overlays.menu import MenuItem, MenuOverlay, build_menu_items, can_show_menu
+from c64cast.scenes.scenes import Scene
 
 
 class BitmapMode:
