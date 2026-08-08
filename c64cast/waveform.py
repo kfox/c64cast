@@ -50,7 +50,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ._pollthread import PollThread
-from .audio import RING_BUFFER_ADDR, RING_BUFFER_END, AudioStreamer
+from .audio import AudioStreamer
+from .audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from .backend import C64Backend
 from .c64 import CIA2, CPU, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
 from .modulation import MusicModulation

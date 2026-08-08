@@ -60,7 +60,8 @@ import sounddevice as sd
 
 # c64cast imports work because _diaglib put the repo root on sys.path.
 from c64cast.api import Ultimate64API
-from c64cast.audio import RING_BUFFER_ADDR, RING_BUFFER_SIZE, AudioStreamer
+from c64cast.audio import AudioStreamer
+from c64cast.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_SIZE
 from c64cast.c64 import SID
 
 SR = 8000  # SID DAC sample rate (audio default)

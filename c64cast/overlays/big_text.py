@@ -92,7 +92,7 @@ SCREEN_PAGE_ADDRS = (0x0400, 0x0C00)
 D018_PAGE_VALUES = (0x14, 0x34)
 
 # Raster-IRQ commit handler. Lives at $C000 (the audio NMI lives at
-# $C020+ — see audio.py — so $C000-$C01F is free). On every raster IRQ
+# $C020+ — see audio_handlers.py — so $C000-$C01F is free). On every raster IRQ
 # at line 248 (top of VBLANK), this routine copies the shadow bytes at
 # $C100/$C101 into $D016/$D018, acks the VIC IRQ, and JMPs to the
 # kernal default IRQ handler at $EA31 so the keyboard scan + jiffy

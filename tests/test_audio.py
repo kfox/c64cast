@@ -12,15 +12,15 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.api import Ultimate64API
-from c64cast.audio import (
+from c64cast.audio import AudioStreamer
+from c64cast.audio_handlers import (
     NEUTRAL_SAMPLE,
     RING_BUFFER_ADDR,
     RING_BUFFER_END,
     RING_BUFFER_SIZE,
     SAMPLE_TAP_SIZE,
     STOMP_GUARD_BYTES,
-    AudioStreamer,
-    _stomp_spans,
+    stomp_spans,
 )
 from c64cast.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
 
@@ -431,12 +431,12 @@ class EffectiveRateTest(unittest.TestCase):
 
 
 class StompSpanTests(unittest.TestCase):
-    """Pure _stomp_spans() — the pause NEUTRAL-fill span math."""
+    """Pure stomp_spans() — the pause NEUTRAL-fill span math."""
 
     def test_no_wrap_span(self):
         r = RING_BUFFER_ADDR + 0x100
         w = RING_BUFFER_ADDR + 0x800
-        spans = _stomp_spans(r, w, guard=STOMP_GUARD_BYTES)
+        spans = stomp_spans(r, w, guard=STOMP_GUARD_BYTES)
         self.assertEqual(len(spans), 1)
         start, length = spans[0]
         self.assertEqual(start, r + STOMP_GUARD_BYTES)
@@ -449,7 +449,7 @@ class StompSpanTests(unittest.TestCase):
         # W has wrapped below R: the unplayed region straddles RING_BUFFER_END.
         r = RING_BUFFER_END - 0x100
         w = RING_BUFFER_ADDR + 0x200
-        spans = _stomp_spans(r, w, guard=STOMP_GUARD_BYTES)
+        spans = stomp_spans(r, w, guard=STOMP_GUARD_BYTES)
         self.assertEqual(len(spans), 2)
         (s0, l0), (s1, l1) = spans
         self.assertEqual(s0, r + STOMP_GUARD_BYTES)
@@ -463,9 +463,9 @@ class StompSpanTests(unittest.TestCase):
 
     def test_gap_at_or_below_guard_is_empty(self):
         r = RING_BUFFER_ADDR + 0x40
-        self.assertEqual(_stomp_spans(r, r + STOMP_GUARD_BYTES, guard=STOMP_GUARD_BYTES), [])
-        self.assertEqual(_stomp_spans(r, r + STOMP_GUARD_BYTES - 1, guard=STOMP_GUARD_BYTES), [])
-        self.assertEqual(_stomp_spans(r, r, guard=STOMP_GUARD_BYTES), [])
+        self.assertEqual(stomp_spans(r, r + STOMP_GUARD_BYTES, guard=STOMP_GUARD_BYTES), [])
+        self.assertEqual(stomp_spans(r, r + STOMP_GUARD_BYTES - 1, guard=STOMP_GUARD_BYTES), [])
+        self.assertEqual(stomp_spans(r, r, guard=STOMP_GUARD_BYTES), [])
 
 
 if __name__ == "__main__":

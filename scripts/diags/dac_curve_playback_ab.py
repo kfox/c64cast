@@ -34,14 +34,14 @@ import numpy as np
 import sounddevice as sd
 
 from c64cast import dac_calibration as dc
-from c64cast.audio import (
+from c64cast.audio import AudioStreamer
+from c64cast.audio_handlers import (
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
     CIA2_ICR_ENABLE_TIMER_A_NMI,
     CIA2_TIMER_A_CONTINUOUS,
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
-    AudioStreamer,
     encode_floats_to_dac,
 )
 from c64cast.backend import make_backend

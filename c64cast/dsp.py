@@ -6,7 +6,7 @@ of codes (audible as buzz/chop), and the dynamic range of normal program
 material dwarfs what 16 levels can hold. The same reasoning that makes AM radio
 and telephony lean on heavy compression applies here, only more so. This module
 is the pure-numpy DSP stage that runs on float samples in [-1, 1] *before*
-`audio.encode_floats_to_dac` quantizes them, so the signal that reaches the DAC
+`audio_handlers.encode_floats_to_dac` quantizes them, so the signal that reaches the DAC
 already lives in the loud, narrow band the 4 bits can represent.
 
 Five composable, stateful processors (config surface: `[dsp]` via

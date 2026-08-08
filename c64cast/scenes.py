@@ -35,12 +35,8 @@ import cv2
 import numpy as np
 
 from ._pollthread import PollThread
-from .audio import (
-    INT16_FULL_SCALE,
-    REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
-    AudioStreamer,
-    encode_floats_to_dac,
-)
+from .audio import AudioStreamer
+from .audio_handlers import INT16_FULL_SCALE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS, encode_floats_to_dac
 from .backend import C64Backend
 from .bitmap_text import glyphs_to_mask, load_glyphs
 from .c64 import CIA1, SCREEN

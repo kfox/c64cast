@@ -24,7 +24,7 @@ import numpy as np
 
 from ._native_io import silence_native_stderr
 from ._pollthread import PollThread
-from .audio import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
+from .audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator
 
 log = logging.getLogger(__name__)

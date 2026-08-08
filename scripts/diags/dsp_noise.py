@@ -34,7 +34,7 @@ import wave
 import _diaglib as d
 import numpy as np
 
-from c64cast.audio import encode_floats_to_dac
+from c64cast.audio_handlers import encode_floats_to_dac
 from c64cast.config import DSPCfg
 from c64cast.config import load as load_config
 from c64cast.dsp import Expander

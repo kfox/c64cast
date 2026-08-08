@@ -465,9 +465,9 @@ Three knobs, and understanding why two of them are off matters more than the kno
 
 **What they compensate for.** The host-DMA worker paces ring writes to wall-clock, so the write head W advances at `sample_rate`, while the NMI reader R advances only as fast as the 6510 actually services NMIs. Let video bus-halts steal ticks from R and W out-produces it, laps the ring after ≈26 s (an audible echo), and playback runs slow.
 
-**`host_dma_servo` — default on.** A pure host-side PI controller (`_servo_period`) reads R once per chunk and stretches or shrinks the worker's sleep so the ring gap parks near half a ring. This is orthogonal to pitch and stays on.
+**`host_dma_servo` — default on.** A pure host-side PI controller (`audio_handlers.servo_period`) reads R once per chunk and stretches or shrinks the worker's sleep so the ring gap parks near half a ring. This is orthogonal to pitch and stays on.
 
-**`nmi_rate_adaptive` and `pitch_mult_*` — default off / 1.0.** Playback pitch is `R / sample_rate`, and both of these force R back up toward `sample_rate`: the adaptive loop (`_nmi_rate_step`) shrinks the CIA #2 latch from a measured-R estimate, and the static per-mode `pitch_mult_*` multipliers do the same open-loop.
+**`nmi_rate_adaptive` and `pitch_mult_*` — default off / 1.0.** Playback pitch is `R / sample_rate`, and both of these force R back up toward `sample_rate`: the adaptive loop (`audio_handlers.nmi_rate_step`) shrinks the CIA #2 latch from a measured-R estimate, and the static per-mode `pitch_mult_*` multipliers do the same open-loop.
 
 They are off because the **net pitch error** they would correct is already ≈0. Hardware measurement (2026-07-02, `scripts/diags/nmi_pitch_ab.py` — full-pipeline capture, pitch via log-spectrum cross-correlation against the source, robust to avfoundation's chunk-drops) puts it at **≈0** with the bitmap+digi fps cap, `VideoScene` frame dedup, and the REU-staged double-buffer in play. DAC-path mhires video, with no compensation at all, plays at +0.07 % on a near-static clip and −0.01 % on a high-motion one.
 
@@ -506,9 +506,15 @@ The sequence: bump `_flush_epoch`; `get_nowait`-drain the queue via `_drain_queu
 
 **No DAC ring stomp at seeks or loop wraps.** The servo-held ≈4096-byte ring gap (≈0.5 s) is accepted constant output latency, so flush-only makes each splice a constant-latency crosscut: the not-yet-heard approach to the splice point finishes while fresh audio lands behind it. No silence hole, no mid-phrase chop.
 
-**`silence_output=True` (pause only)** sets `_stomp_requested`. The *worker thread* — which owns `write_addr`, so no ring DMA races the servo — then NEUTRAL-fills the unplayed region `_stomp_spans(R+STOMP_GUARD_BYTES, W)` on its next iteration. The guard deliberately leaves ≈16 ms of stale tail un-stomped so the fill can never race the read head.
+**`silence_output=True` (pause only)** sets `_stomp_requested`. The *worker thread* — which owns `write_addr`, so no ring DMA races the servo — then NEUTRAL-fills the unplayed region `audio_handlers.stomp_spans(R+STOMP_GUARD_BYTES, W)` on its next iteration. The guard deliberately leaves ≈16 ms of stale tail un-stomped so the fill can never race the read head.
 
 `flush()` is a no-op in REU-pump mode: that path owns its own C64-side timeline, and it is force-disabled under transport anyway.
+
+## `audio_handlers.py` — the 6502 machine-code layer
+
+Everything the DAC path uploads to C64 RAM, split out of `audio.py` (2026-08) so the byte arrays and their memory map live apart from the streamer that drives them: the `$C020` NMI DAC routine (`NMI_ROUTINE`), the `$C100` REU pump IRQ handlers (`REU_IRQ_HANDLER`, `REU_IRQ_HANDLER_GOVERNOR`, `REU_IRQ_HANDLER_TRACKED`, `REU_MIC_IRQ_HANDLER`), the `$C180` pump-body subroutine `modes.py`'s chunked bank-swap dispatcher JSRs into, the ring/pump memory-map constants (`RING_BUFFER_*`, the `$C200` tracker slots), the control-loop tuning constants, and the pure pacing helpers `stomp_spans` / `servo_period` / `nmi_rate_step`.
+
+Everything in the module is pure data or a pure function — no hardware access, no state — which is what keeps the handler byte layouts and the control math unit-testable without a C64 (`tests/test_audio.py`, `tests/test_reu_audio.py`, `tests/test_reu_mic.py`). Byte-level layout commentary lives with each array in the module itself, and the module docstring carries the ring-placement (`$4000`) and why-not-PWM rationale. The sections above describe how `AudioStreamer` *uses* these pieces; nothing above changed in the split. `modes.py` imports `REU_PUMP_BODY_SUBROUTINE_ADDR` from here rather than from `audio.py`, so the display-mode layer no longer has an import edge into the streamer.
 
 ## `sampler.py` — UltimateAudioSampler (U64 "Ultimate Audio" FPGA PCM)
 
@@ -627,7 +633,7 @@ Because the ring lives in REU SDRAM, `wants_sampler` also pulls the REU into `wa
 
 ## `dsp.py` — host-side audio DSP for the 4-bit DAC path
 
-Pure-numpy DSP that runs on float samples in `[-1, 1]` **before** `audio.encode_floats_to_dac` quantizes them. The premise: the SID volume DAC is 4 bits — 16 levels, ≈24 dB of usable range — so a raw line/mic signal wastes most of it (quiet passages collapse into a handful of codes, audible as buzz/chop). The same reasoning that makes AM radio and telephony lean on heavy compression applies here, only harder. The job of this module is to hand the encoder a signal that already lives in the loud, narrow band 4 bits can represent. Config surface is `[dsp]` (`config.DSPCfg`, which builds the pure `dsp.DSPParams` this module consumes); **scope is the `$D418` DAC path only** — the U64's default video audio goes through the off-bus Ultimate Audio sampler at 16 bits and never touches this.
+Pure-numpy DSP that runs on float samples in `[-1, 1]` **before** `audio_handlers.encode_floats_to_dac` quantizes them. The premise: the SID volume DAC is 4 bits — 16 levels, ≈24 dB of usable range — so a raw line/mic signal wastes most of it (quiet passages collapse into a handful of codes, audible as buzz/chop). The same reasoning that makes AM radio and telephony lean on heavy compression applies here, only harder. The job of this module is to hand the encoder a signal that already lives in the loud, narrow band 4 bits can represent. Config surface is `[dsp]` (`config.DSPCfg`, which builds the pure `dsp.DSPParams` this module consumes); **scope is the `$D418` DAC path only** — the U64's default video audio goes through the off-bus Ultimate Audio sampler at 16 bits and never touches this.
 
 Five stateful processors, wired by `AudioDSP` in a source-appropriate order: **pre-emphasis → (AGC, mic only) → expander → compressor → limiter**. The order is load-bearing — pre-emphasis shapes first; AGC normalizes gross mic level; the expander cleans the noise floor *before* the compressor's makeup gain would raise it; the compressor evens dynamics; the limiter is the final ceiling. A disabled chain (`enabled=False`) is an exact identity, and `AudioDSP.active` reports whether any processor will actually run.
 

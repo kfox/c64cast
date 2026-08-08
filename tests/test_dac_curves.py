@@ -11,12 +11,12 @@ import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.api import Ultimate64API
-from c64cast.audio import (
+from c64cast.audio import AudioStreamer
+from c64cast.audio_handlers import (
     NEUTRAL_SAMPLE,
     RING_BUFFER_ADDR,
     RING_BUFFER_SIZE,
     SID_GATE_OFF,
-    AudioStreamer,
     encode_floats_to_dac,
 )
 from c64cast.dac_curves import (

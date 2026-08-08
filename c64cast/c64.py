@@ -202,7 +202,7 @@ class VIC_BANK_2:
 # bus (main RAM or I/O space) at ~1 byte per cycle while halting the 6510.
 # c64cast uses this for:
 #   * audio: a kernal-IRQ-triggered pump streams pre-staged samples from
-#     REU into the audio ring (see [audio.py] REU_IRQ_HANDLER).
+#     REU into the audio ring (see [audio_handlers.py] REU_IRQ_HANDLER).
 #   * video (REU-staged display modes): the host pre-stages frame data
 #     into REU via socket DMA opcode 0xFF07 (REUWRITE, no bus halt), then
 #     triggers REU→main DMAs to drop the frame into screen RAM.
@@ -385,7 +385,7 @@ def cpu_clock(system: str) -> int:
 # ---------------------------------------------------------------------------
 # NMI audio sample-rate safety budget.
 # ---------------------------------------------------------------------------
-# The $D418 DAC NMI handler (audio.NMI_ROUTINE) pulls one sample per fire. If
+# The $D418 DAC NMI handler (audio_handlers.NMI_ROUTINE) pulls one sample per fire. If
 # the sample PERIOD (= cpu_clock / sample_rate) is shorter than the handler can
 # complete (fast path + a VIC-II badline steal + entry latency for the
 # in-progress instruction), NMIs queue and fire back-to-back — the effective
