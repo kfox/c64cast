@@ -168,7 +168,7 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
     return f"tr-serial-{_sanitize(tr.serial_port or 'auto')}"
 
 
-def _path_for_key(cfg: Config, key: str) -> Path:
+def path_for_key(cfg: Config, key: str) -> Path:
     """Where the calibration filed under ``key`` lives — the file
     ``[audio].dac_calibration_profile`` names, when it named a path, else
     ``<calibration dir>/<key>.json``."""
@@ -183,7 +183,7 @@ def calibration_path(cfg: Config, be: C64Backend | None = None) -> Path:
     override = profile_path_override(cfg)
     if override is not None:
         return override
-    return _path_for_key(cfg, resolve_calibration_key(cfg, be))
+    return path_for_key(cfg, resolve_calibration_key(cfg, be))
 
 
 def offline_key_is_authoritative(cfg: Config) -> bool:
@@ -302,12 +302,19 @@ def active_socket_at_d400(be: C64Backend) -> int | None:
     return None
 
 
-def load_calibrated_table(cfg: Config, *, be: C64Backend | None = None) -> bytes | None:
+def load_calibrated_table(
+    cfg: Config, *, be: C64Backend | None = None, path: Path | None = None
+) -> bytes | None:
     """Return the 256-byte calibrated sidtable applicable to this system right
     now, or None if no (valid/applicable) calibration exists. Malformed files
     and schema mismatches return None rather than raising, so a stale or
-    corrupt cache degrades to the baked/linear default."""
-    path = calibration_path(cfg, be)
+    corrupt cache degrades to the baked/linear default.
+
+    ``path`` lets a caller that has already resolved the file (resolving the
+    key can cost a live device round-trip on the Ultimate) skip the internal
+    resolution; see ``dac_curve_resolve``."""
+    if path is None:
+        path = calibration_path(cfg, be)
     try:
         raw = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -412,7 +419,7 @@ def save_calibration(
             out["raw_signed_levels"] = [[int(c), round(v, 8)] for c, v in r.raw]
         return out
 
-    path = _path_for_key(cfg, key)
+    path = path_for_key(cfg, key)
     doc = {
         "schema": _SCHEMA_VERSION,
         "key": key,
