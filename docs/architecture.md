@@ -15,7 +15,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
-* **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/playlist.py`, `app/recording_metadata.py`
+* **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/doctor.py`, `app/playlist.py`, `app/recording_metadata.py`
 
 ## Module index
 
@@ -45,6 +45,7 @@ the two lists account for every module in the tree.
 | Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
 | `app/config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
 | `app/config_serialize.py` | [Config, CLI & ensemble](architecture/config.md#config_serializepy--the-writing-surface) |
+| `app/connect.py` | [Config, CLI & ensemble](architecture/config.md#connectpy--scheme-aware-connection-targets) |
 | `control/control_plane.py` | [Control surfaces & live performance](architecture/control.md#control_planepy--http-control-plane-optional) |
 | `audio/dac_calibration.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
 | `audio/dac_calibration_store.py` | [Audio output](architecture/audio.md#the-calibration-file) |
@@ -52,6 +53,7 @@ the two lists account for every module in the tree.
 | `audio/dac_curve_resolve.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
 | `audio/dac_curves.py` | [Audio output](architecture/audio.md#audiodac_curve--mahoney-8-bit-d418-companding) |
 | `audio/dac_slot_ring.py` | [Audio output](architecture/audio.md#the-slot-ring-reading-signed-levels-directly) |
+| `app/doctor.py` | [Config, CLI & ensemble](architecture/config.md#doctorpy--config-and-environment-diagnostics) |
 | `video/dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |
 | `audio/dsp.py` | [Audio output](architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path) |
 | `scenes/effects.py` | [Scenes, sources & overlays](architecture/scenes.md#effectspy--the-frameeffect-registry) |
@@ -81,6 +83,8 @@ the two lists account for every module in the tree.
 | `video/petscii_styles.py` | [Video input & the color pipeline](architecture/video-color.md#petscii_stylespy) |
 | `app/playlist.py` | [Config, CLI & ensemble](architecture/config.md#playlistpy--the-run-loop-scene-walk-pacing-crash-tolerance) |
 | `app/playlist_support.py` | [Config, CLI & ensemble](architecture/config.md#playlist_supportpy--playlist-collaborators) |
+| `app/profiler.py` | [Config, CLI & ensemble](architecture/config.md#profilerpy--per-frame-timing) |
+| `app/quickcast.py` | [Config, CLI & ensemble](architecture/config.md#quickcastpy--quick-playback) |
 | `app/recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
 | `video/rolling_palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
@@ -122,11 +126,7 @@ rationale in the meantime — each of the ones below opens with one.
 | `_pollthread.py` | Background daemon thread with start/stop boilerplate |
 | `audio/audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
 | `scenes/bitmap_text.py` | Shared hires bitmap text rasterizer (char-ROM glyphs) |
-| `app/connect.py` | `-u/--url` connection-target URI parsing |
-| `app/doctor.py` | `--doctor` configuration + environment diagnostics |
 | `video/framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
 | `video/preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
-| `app/profiler.py` | `--profile` per-frame timing harness |
-| `app/quickcast.py` | Positional-`MEDIA` quick-playback config builder |
 | `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore + the `SidHwSession` restore tracker |
 | `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |
