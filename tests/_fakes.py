@@ -272,6 +272,38 @@ def new_streamer(**overrides):
     return AudioStreamer(cast(Ultimate64API, FakeAPI()), **kwargs)
 
 
+def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] | None = None):
+    """Execute hand-assembled IRQ-handler bytes on a bare py65 6502 until
+    they chain into the kernal (JMP $EA31 full tail / JMP $EA81 lean tail).
+
+    `seed` is an {address: byte} map applied before the run (trackers,
+    counters, fake REU registers). Returns an object with `memory` (the
+    sid_host_emu.TrappedRam, so `.ram` and the `.access` read/write bitmap
+    are inspectable), `exit_pc` (which kernal tail was taken) and `mpu`.
+    The step budget turns a mis-assembled branch displacement — which JAMs
+    a real C64 — into a loud failure instead of a hang, and a handler that
+    leaves its own PHA unbalanced shows up as `mpu.sp != 0xFF`."""
+    from types import SimpleNamespace
+
+    from py65.devices.mpu6502 import MPU
+
+    from c64cast.sid.sid_host_emu import TrappedRam
+
+    memory = TrappedRam(track_access=True)
+    memory.ram[addr : addr + len(handler)] = handler
+    for seed_addr, value in (seed or {}).items():
+        memory.ram[seed_addr] = value
+    mpu = MPU(memory=memory)
+    mpu.pc = addr
+    mpu.sp = 0xFF
+    kernal_tails = (0xEA31, 0xEA81)
+    for _ in range(5000):
+        mpu.step()
+        if mpu.pc in kernal_tails:
+            return SimpleNamespace(memory=memory, exit_pc=mpu.pc, mpu=mpu)
+    raise AssertionError(f"handler never chained to the kernal (PC=${mpu.pc:04X})")
+
+
 def bare_waveform_scene(**attrs):
     """A WaveformScene that skips the SID-loading __init__ (which needs a
     real PSID file + emulator bring-up); each caller sets exactly the

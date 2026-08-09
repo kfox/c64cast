@@ -1,8 +1,8 @@
 """Tests for the REU-staged live-mic path (start_mic with use_reu_pump).
 
 The host-side mechanism (REUWRITE wrap, callback encoding, host write
-position tracking) is exercised directly. The C64-side IRQ handler bytes
-get the same shape verification as the video REU pump handler so a
+position tracking) is exercised directly. The C64-side IRQ handler is
+EXECUTED on the repo's own 6502 (_fakes.run_irq_handler) so a
 hand-assembled regression can't pass tests."""
 
 from __future__ import annotations
@@ -11,16 +11,15 @@ import unittest
 from typing import cast
 
 import numpy as np
-from _fakes import FakeAPI, new_streamer
+from _fakes import FakeAPI, new_streamer, run_irq_handler
 
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     REU_AUDIO_SRC_TRACKER_ADDR,
+    REU_CMD_FETCH_EXEC,
     REU_MIC_BASE,
-    REU_MIC_BASE_HI,
     REU_MIC_BOOTSTRAP_BYTES,
-    REU_MIC_END_HI,
     REU_MIC_IRQ_HANDLER,
     REU_MIC_SIZE,
     REU_PUMP_CHUNK_SIZE,
@@ -40,78 +39,63 @@ def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
 
 
 class ReuMicIrqHandlerTest(unittest.TestCase):
-    """The mic IRQ handler is hand-assembled with two BCC displacements
-    that must land on instruction boundaries, and the src-side reload
-    uses a main-RAM tracker instead of $DF06 read-back (which the U64's
-    REU returns as garbage). Pin the byte shape so a regression on either
-    constraint trips a test."""
+    """The mic pump handler, EXECUTED on the repo's own 6502 (see
+    _fakes.run_irq_handler) instead of pinning instruction offsets: the
+    old tests hard-coded byte positions (BCC at 64, PLA at 98, ...), so
+    inserting one instruction broke them all and required renames — while
+    the constraints they guard (a wrong displacement JAMs the CPU; the
+    src side must come from the main-RAM tracker because $DF06 read-back
+    is garbage on the U64) are exactly what running the handler proves."""
 
-    def test_handler_length_is_known(self):
-        # The handler is bigger than the video pump because it
-        # reloads src from a 3-byte tracker each trigger and increments
-        # the tracker (instead of trusting $DF06 auto-increment + read-back).
-        self.assertEqual(len(REU_MIC_IRQ_HANDLER), 102)
+    def _run(self, *, src: int, df03: int = RING_BUFFER_HI):
+        seed = {
+            REU_AUDIO_SRC_TRACKER_ADDR + 0: src & 0xFF,
+            REU_AUDIO_SRC_TRACKER_ADDR + 1: (src >> 8) & 0xFF,
+            REU_AUDIO_SRC_TRACKER_ADDR + 2: (src >> 16) & 0xFF,
+            0xDF03: df03,  # REC dst HI as the (reliable) hardware would report it
+        }
+        return run_irq_handler(REU_MIC_IRQ_HANDLER, addr=REU_PUMP_HANDLER_ADDR, seed=seed)
 
-    def test_src_wrap_bcc_lands_on_dst_wrap_block(self):
-        # BCC +15 at offset 64 → offset 81 (start of dst wrap block,
-        # LDA $DF03 absolute = 0xAD opcode). Wrong offset here lands
-        # mid-instruction and stomps either REU regs or the tracker.
-        self.assertEqual(REU_MIC_IRQ_HANDLER[64], 0x90)  # BCC
-        self.assertEqual(REU_MIC_IRQ_HANDLER[65], 0x0F)  # +15
-        self.assertEqual(REU_MIC_IRQ_HANDLER[81], 0xAD)  # LDA absolute opcode
+    def _tracker(self, run) -> int:
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        ram = run.memory.ram
+        return ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
 
-    def test_dst_wrap_bcc_lands_on_trailing_pla(self):
-        # BCC +10 at offset 86 → PLA at offset 98 (opcode 0x68). Same
-        # constraint as the video pump's BCC; pinned to catch any
-        # future edit to the dst-wrap block that doesn't recompute the
-        # displacement.
-        self.assertEqual(REU_MIC_IRQ_HANDLER[86], 0x90)  # BCC
-        self.assertEqual(REU_MIC_IRQ_HANDLER[87], 0x0A)  # +10
-        self.assertEqual(REU_MIC_IRQ_HANDLER[98], 0x68)  # PLA
+    def test_pumps_one_chunk_from_the_main_ram_tracker(self):
+        src = REU_MIC_BASE + 0x1234
+        run = self._run(src=src)
+        ram = run.memory.ram
+        # REC programmed from the tracker (never $DF06 read-back) + triggered.
+        self.assertEqual(ram[0xDF07], REU_PUMP_CHUNK_SIZE & 0xFF)
+        self.assertEqual(ram[0xDF08], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
+        self.assertEqual(
+            [ram[0xDF04], ram[0xDF05], ram[0xDF06]],
+            [src & 0xFF, (src >> 8) & 0xFF, (src >> 16) & 0xFF],
+        )
+        self.assertEqual(ram[0xDF01], REU_CMD_FETCH_EXEC)
+        # Tracker advanced one chunk; handler chained the kernal IRQ tail
+        # (keyboard scan + jiffy clock keep working) with a balanced stack.
+        self.assertEqual(self._tracker(run), src + REU_PUMP_CHUNK_SIZE)
+        self.assertEqual(run.exit_pc, 0xEA31)
+        self.assertEqual(run.mpu.sp, 0xFF, "handler must balance its own PHA/PLA")
 
-    def test_handler_ends_in_jmp_kernal_irq(self):
-        # JMP $EA31 — chains keyboard scan + jiffy clock so the C= /
-        # SHIFT / CTRL poller keeps working.
-        self.assertEqual(REU_MIC_IRQ_HANDLER[-3:], bytes([0x4C, 0x31, 0xEA]))
+    def test_src_wraps_to_mic_ring_base_at_ring_end(self):
+        # The last chunk of the mic ring must reset the tracker to the ring
+        # base — the host's _push_mic_to_reu wraps its write position by the
+        # same modulus, so the two stay aligned.
+        run = self._run(src=REU_MIC_BASE + REU_MIC_SIZE - REU_PUMP_CHUNK_SIZE)
+        self.assertEqual(self._tracker(run), REU_MIC_BASE)
 
-    def test_src_reload_reads_main_ram_tracker_not_DF06(self):
-        # The src reload sequence (offsets 11-28) loads from the main-RAM
-        # tracker into $DF04/$DF05/$DF06. Verify the LDA absolute reads
-        # are aimed at the tracker, NOT at $DF06 (which would re-introduce
-        # the read-back garbage bug). All three LDA opcodes = 0xAD;
-        # operand low byte = tracker offset; operand high byte = tracker page.
-        # LDA tracker_lo at offset 11:
-        self.assertEqual(REU_MIC_IRQ_HANDLER[11], 0xAD)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[12], REU_AUDIO_SRC_TRACKER_ADDR & 0xFF)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[13], REU_AUDIO_SRC_TRACKER_ADDR >> 8)
-        # LDA tracker_hi at offset 23:
-        self.assertEqual(REU_MIC_IRQ_HANDLER[23], 0xAD)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[24], (REU_AUDIO_SRC_TRACKER_ADDR + 2) & 0xFF)
+    def test_dst_wraps_rec_registers_to_the_audio_ring(self):
+        # The dst side reads $DF03 directly (that register IS reliable) and
+        # resets the REC dst to RING_BUFFER_ADDR at the ring end.
+        run = self._run(src=REU_MIC_BASE, df03=RING_BUFFER_END_HI)
+        self.assertEqual(run.memory.ram[0xDF03], RING_BUFFER_HI)
+        self.assertEqual(run.memory.ram[0xDF02], RING_BUFFER_ADDR & 0xFF)
 
-    def test_src_wrap_check_uses_mic_ring_end(self):
-        # The wrap check at offset 59-63 reads tracker_hi and compares
-        # against REU_MIC_END_HI. Wrong value either never wraps (silent
-        # runaway past the ring) or wraps too early (truncates the ring).
-        self.assertEqual(REU_MIC_IRQ_HANDLER[62], 0xC9, "CMP immediate opcode")
-        self.assertEqual(REU_MIC_IRQ_HANDLER[63], REU_MIC_END_HI)
-
-    def test_src_wrap_resets_tracker_to_mic_ring_base(self):
-        # On wrap, the handler writes REU_MIC_BASE_HI to tracker_hi (not
-        # to $DF06 directly). The host's _push_mic_to_reu wraps its own
-        # write-position by the same modulus, so the two stay aligned.
-        self.assertEqual(REU_MIC_IRQ_HANDLER[66], 0xA9, "LDA immediate opcode")
-        self.assertEqual(REU_MIC_IRQ_HANDLER[67], REU_MIC_BASE_HI)
-        # STA tracker_hi at offset 68:
-        self.assertEqual(REU_MIC_IRQ_HANDLER[68], 0x8D)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[69], (REU_AUDIO_SRC_TRACKER_ADDR + 2) & 0xFF)
-
-    def test_dst_wrap_uses_audio_ring(self):
-        # The dst wrap reads $DF03 (this side IS reliable on the U64's REU)
-        # and compares against RING_BUFFER_END_HI. On wrap, resets dst to
-        # RING_BUFFER_ADDR. Catches a future audio-ring relocation that
-        # doesn't propagate into this handler.
-        self.assertEqual(REU_MIC_IRQ_HANDLER[85], RING_BUFFER_END_HI)
-        self.assertEqual(REU_MIC_IRQ_HANDLER[89], RING_BUFFER_HI)
+    def test_dst_below_ring_end_is_left_to_auto_increment(self):
+        run = self._run(src=REU_MIC_BASE, df03=RING_BUFFER_END_HI - 1)
+        self.assertEqual(run.memory.ram[0xDF03], RING_BUFFER_END_HI - 1)
 
     def test_handler_does_not_read_DF06(self):
         # Whole-handler invariant: $DF06 is WRITTEN (during src reload)
