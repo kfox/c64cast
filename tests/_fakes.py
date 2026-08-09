@@ -236,6 +236,12 @@ class FrozenClock:
         self._now = float(now)
         self._attr = attr
 
+    def advance(self, dt: float) -> None:
+        """Move the pinned clock forward — lets a test drive a poller's tick
+        state machine on virtual time (each tick exactly poll_interval_s
+        apart) instead of racing a real thread against wall time."""
+        self._now += dt
+
     def __getattr__(self, name: str):
         # Only reached for names not on the instance, so `_now`/`_attr` never
         # route back through here.
