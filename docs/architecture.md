@@ -15,7 +15,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
-* **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/scene_factory.py`, `app/cli.py`, `app/recording_metadata.py`
+* **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/scene_factory.py`, `app/cli.py`, `app/playlist.py`, `app/recording_metadata.py`
 
 ## Module index
 
@@ -77,6 +77,8 @@ the two lists account for every module in the tree.
 | `video/palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | `app/paths.py` | [Config, CLI & ensemble](architecture/config.md#pathspy) |
 | `video/petscii_styles.py` | [Video input & the color pipeline](architecture/video-color.md#petscii_stylespy) |
+| `app/playlist.py` | [Config, CLI & ensemble](architecture/config.md#playlistpy--the-run-loop-scene-walk-pacing-crash-tolerance) |
+| `app/playlist_support.py` | [Config, CLI & ensemble](architecture/config.md#playlist_supportpy--playlist-collaborators) |
 | `app/recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
 | `video/rolling_palette.py` | [Video input & the color pipeline](architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap) |
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
@@ -121,8 +123,6 @@ rationale in the meantime — each of the ones below opens with one.
 | `app/doctor.py` | `--doctor` configuration + environment diagnostics |
 | `video/framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
 | `app/introspect.py` | The single rendering surface over config metadata |
-| `app/playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
-| `app/playlist_support.py` | Playlist collaborators — scene fades, on-C64 menu driver, ensemble coordination |
 | `video/preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
 | `app/profiler.py` | `--profile` per-frame timing harness |
 | `app/quickcast.py` | Positional-`MEDIA` quick-playback config builder |
