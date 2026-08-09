@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "c64cast"
-version = "0.2.1"
+version = "0.3.0"
 # `description` and `keywords` mirror the GitHub repo's About blurb and topics.
 # The About field is the source of truth — it is what people see first — so if
 # either is reworded, change it there and here in the same commit. The blurb is
