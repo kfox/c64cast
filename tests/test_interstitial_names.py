@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
+from _fakes import bare_waveform_scene
 
 from c64cast.scenes.scenes import SlideshowScene, VideoScene, _display_name
 
@@ -129,17 +130,17 @@ class WaveformPrepareNextTest(unittest.TestCase):
     a bare instance with the SID-loading internals stubbed."""
 
     def _bare_scene(self):
-        from c64cast.sid.waveform import WaveformScene
-
-        scene = WaveformScene.__new__(WaveformScene)
-        scene._candidates = ["a.sid", "b.sid"]
-        scene._prepared = False
-        scene.song = 0
-        scene.name = "SID: old #0"
-        scene.header = MagicMock(name="hdr")
-        scene.header.name = "Picked Tune"
-        scene._sid_file = "b.sid"
-        scene.load_calls = 0
+        header = MagicMock(name="hdr")
+        header.name = "Picked Tune"
+        scene = bare_waveform_scene(
+            _candidates=["a.sid", "b.sid"],
+            _prepared=False,
+            song=0,
+            name="SID: old #0",
+            header=header,
+            _sid_file="b.sid",
+            load_calls=0,
+        )
 
         def fake_load():
             scene.load_calls += 1

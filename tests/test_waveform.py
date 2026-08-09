@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+from _fakes import FakeAPI, bare_waveform_scene
 
 from c64cast.sid.sidemu import (
     WAVE_NOISE,
@@ -267,13 +268,7 @@ class EndOfTuneDetectionTest(unittest.TestCase):
     SID-loading __init__ via __new__ so it needs no hardware or SID file."""
 
     def _scene(self):
-        from c64cast.sid.waveform import WaveformScene
-
-        s = WaveformScene.__new__(WaveformScene)
-        s._ever_sounded = False
-        s._silence_since = None
-        s.name = "test"
-        return s
+        return bare_waveform_scene(_ever_sounded=False, _silence_since=None, name="test")
 
     EPS = 1e-3
 
@@ -550,8 +545,6 @@ class LayoutHelpersTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # WaveformScene
 # ---------------------------------------------------------------------------
-
-from _fakes import FakeAPI
 
 
 def _write_sid_to_tempfile() -> str:
@@ -2072,11 +2065,7 @@ class WaveformPlayPreflightTest(unittest.TestCase):
     host emulator's cycle cap on every pass (the Hollywood Poker Pro hang)."""
 
     def _scene(self):
-        from c64cast.sid.waveform import WaveformScene
-
-        s = WaveformScene.__new__(WaveformScene)
-        s._song_arg = 0
-        return s
+        return bare_waveform_scene(_song_arg=0)
 
     def _write(self, sid_bytes):
         fd, path = tempfile.mkstemp(suffix=".sid")
@@ -2173,12 +2162,7 @@ class WledLabelTest(unittest.TestCase):
     self.name is a moving target)."""
 
     def _scene(self, candidates, name):
-        from c64cast.sid.waveform import WaveformScene
-
-        s = WaveformScene.__new__(WaveformScene)
-        s._candidates = candidates
-        s.name = name
-        return s
+        return bare_waveform_scene(_candidates=candidates, name=name)
 
     def test_random_pool_uses_stable_pool_label(self):
         s = self._scene(["a.sid", "b.sid"], "SID: Commando #1")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import tempfile
 import threading
@@ -17,7 +16,6 @@ from _fakes import FrozenClock
 from c64cast.control.transport import LoopPresetStore, timecode
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
-from c64cast.scenes.video_transport import VideoTransportControls
 from c64cast.video.video import (
     NORMALIZATION_MAX_GAIN,
     NORMALIZATION_TARGET_PEAK,
@@ -214,31 +212,69 @@ class _FakeContainer:
         pass
 
 
+def _make_demux_source_stub(
+    packets: list[_FakePacket],
+    *,
+    pending_seek: float | None = None,
+    anchor: float = 0.0,
+    decode_target: tuple[int, int] | None = None,
+) -> AVFileSource:
+    """The demux-loop stub shared by DemuxRebaseTest / TransportSeekTest /
+    DemuxDecodeDownscaleTest: every attribute `_demux_loop` touches, set in
+    ONE place so a new demux field can't silently miss a subset of the
+    stubs. Stays on __new__ because the real __init__ opens a PyAV
+    container — the one AVFileSource path a fake can't ride through."""
+    src = AVFileSource.__new__(AVFileSource)
+    src._closed = False
+    src._pts_offset = None
+    src._pts_anchor_target = anchor
+    src._pending_seek = pending_seek
+    src._muted = False
+    src.video_time_base = 1.0  # 1 PTS tick == 1 second
+    src._video_buf = []
+    src._lock = threading.Lock()
+    src.max_video_buffer = 240
+    src._resampler = None
+    src._audio_push = None
+    src._decode_target = decode_target
+    src._decode_size = None
+    src._decode_planned = False
+    src._tempo_scale = 1.0
+    src._atempo_graph = None
+    src.last_frame_pts = 0.0
+    src.path = "fake"
+    src.target_sr = 8000
+    src.a_stream = None
+    src.container = _FakeContainer(packets)
+    return src
+
+
+def _make_emit_audio_stub(sink: list[np.ndarray], *, tempo_scale: float = 1.0) -> AVFileSource:
+    """The `_emit_audio` stub shared by MuteLatchTest / EmitAudioSeekGuardTest /
+    SeekPendingPropertyTest / AtempoTempoCompensationTest — every attribute
+    the emit path reads, in one place (same rationale as
+    `_make_demux_source_stub`)."""
+    src = AVFileSource.__new__(AVFileSource)
+    src.path = "test.mp4"
+    src._closed = False
+    src._muted = False
+    src._pending_seek = None
+    src._lock = threading.Lock()
+    src._audio_push = sink.append
+    src.audio_noise_gate = 0
+    src.audio_gain = 1.0
+    src._tempo_scale = tempo_scale
+    src._atempo_graph = None
+    return src
+
+
 class DemuxRebaseTest(unittest.TestCase):
     """`_demux_loop` rebases video PTS by the first decoded frame so a seeked
     source (frame PTS ~start_s) still starts at the from-0 playback clock.
     Driven with a fake container — no PyAV, no real file."""
 
     def _run_demux(self, frame_ptss: list[int]) -> list[float]:
-        src = AVFileSource.__new__(AVFileSource)
-        src._closed = False
-        src._pts_offset = None
-        src._pts_anchor_target = 0.0
-        src._pending_seek = None
-        src.video_time_base = 1.0  # 1 PTS tick == 1 second
-        src._video_buf = []
-        src._lock = threading.Lock()
-        src.max_video_buffer = 240
-        src._resampler = None
-        src._audio_push = None
-        src._decode_target = None
-        src._decode_size = None
-        src._decode_planned = False
-        src._tempo_scale = 1.0
-        src._atempo_graph = None
-        src.last_frame_pts = 0.0
-        src.path = "fake"
-        src.container = _FakeContainer([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
+        src = _make_demux_source_stub([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
         src._demux_loop()
         return [pts for pts, _ in src._video_buf]
 
@@ -256,13 +292,7 @@ class MuteLatchTest(unittest.TestCase):
     every packet `_emit_audio` would otherwise pass to the consumer."""
 
     def _stub(self, sink) -> AVFileSource:
-        src = AVFileSource.__new__(AVFileSource)
-        src._muted = False
-        src._pending_seek = None
-        src._audio_push = sink.append
-        src.audio_noise_gate = 0
-        src.audio_gain = 1.0
-        return src
+        return _make_emit_audio_stub(sink)
 
     def test_muted_drops_packets(self):
         sink: list[np.ndarray] = []
@@ -295,29 +325,11 @@ class TransportSeekTest(unittest.TestCase):
     PyAV, no real file."""
 
     def _make_src(self, frame_ptss, *, pending_seek=None, anchor=0.0) -> AVFileSource:
-        src = AVFileSource.__new__(AVFileSource)
-        src._closed = False
-        src._pts_offset = None
-        src._pts_anchor_target = anchor
-        src._pending_seek = pending_seek
-        src._muted = False
-        src.video_time_base = 1.0  # 1 PTS tick == 1 second
-        src._video_buf = []
-        src._lock = threading.Lock()
-        src.max_video_buffer = 240
-        src._resampler = None
-        src._audio_push = None
-        src._decode_target = None
-        src._decode_size = None
-        src._decode_planned = False
-        src._tempo_scale = 1.0
-        src._atempo_graph = None
-        src.last_frame_pts = 0.0
-        src.path = "fake"
-        src.target_sr = 8000
-        src.a_stream = None
-        src.container = _FakeContainer([_FakePacket([_FakeFrame(p)]) for p in frame_ptss])
-        return src
+        return _make_demux_source_stub(
+            [_FakePacket([_FakeFrame(p)]) for p in frame_ptss],
+            pending_seek=pending_seek,
+            anchor=anchor,
+        )
 
     def test_request_seek_clears_buffer_and_queues_target(self):
         src = self._make_src([0, 1, 2])
@@ -368,8 +380,7 @@ class TransportSeekTest(unittest.TestCase):
 class _StubSource:
     """Duck-types the bits of AVFileSource that VideoScene's transport
     surface and process_frame's loop-wrap logic touch, without any PyAV
-    dependency — mirrors this file's AVFileSource.__new__ stub pattern one
-    layer up."""
+    dependency — the source-side companion to `_make_video_scene_stub`."""
 
     def __init__(
         self,
@@ -429,39 +440,24 @@ def _freeze_time(t: float) -> ExitStack:
     return stack
 
 
+# resolve_file_spec passes URLs through with no existence check, which lets
+# the stub builder run the real, I/O-free __init__ without a file on disk.
+STUB_VIDEO_URL = "https://stub.invalid/clip.mp4"
+
+
 def _make_video_scene_stub(source: _StubSource, *, start_s: float = 0.0) -> VideoScene:
-    """Build a VideoScene without going through __init__/setup() (which need
-    PyAV + a real AudioStreamer) — mirrors test_ensemble_audio_lock.py's
-    `VideoScene.__new__(VideoScene)` pattern, filling in exactly the
-    attributes the transport surface + process_frame's loop-wrap/frame-number
-    paths touch."""
-    scene = VideoScene.__new__(VideoScene)
+    """Build a VideoScene through the REAL constructor (only setup() needs
+    PyAV + a real AudioStreamer), then swap in the duck-typed source. A field
+    added to __init__ can never silently miss this stub — the bug class
+    PR #227 fixed for AudioStreamer fixtures."""
+    scene = VideoScene(
+        api=mock.MagicMock(),
+        audio=None,
+        display_mode=mock.MagicMock(),
+        file=STUB_VIDEO_URL,
+        start_s=start_s,
+    )
     scene.source = source  # type: ignore[assignment]  # duck-typed stub, not a real AVFileSource
-    scene.audio = None
-    scene.wall_start_time = 0.0
-    scene.osd = scenes.OsdState()
-    scene.start_s = start_s
-    scene.show_frame_numbers = False
-    scene._last_rendered_img = None
-    scene._last_osd_shown = None
-    scene._online_fit = None
-    scene._online_fit_frames = 0
-    scene.display_mode = mock.MagicMock()
-    scene.overlays = []
-    scene.api = mock.MagicMock()
-    scene._av_lag_min = math.inf
-    scene._av_lag_max = -math.inf
-    scene._av_lag_sum = 0.0
-    scene._av_lag_count = 0
-    scene._av_buf_min = math.inf
-    scene._av_last_log_t = 0.0
-    scene.tempo_scale = 1.0
-    # A real collaborator, not hand-set fields: the transport state machine
-    # lives in video_transport.VideoTransportControls now, and building it for
-    # real means a field added there can never silently miss this stub.
-    # loop_audio="on" keeps the mute/wall path for audio=None stubs, so the
-    # Phase-2 clock tests are unchanged.
-    scene.transport = VideoTransportControls(scene, loop_audio="on")
     return scene
 
 
@@ -592,14 +588,7 @@ class EmitAudioSeekGuardTest(unittest.TestCase):
     pre-seek samples don't reach the consumer past the splice flush)."""
 
     def _stub(self, sink) -> AVFileSource:
-        src = AVFileSource.__new__(AVFileSource)
-        src._muted = False
-        src._pending_seek = None
-        src._lock = threading.Lock()
-        src._audio_push = sink.append
-        src.audio_noise_gate = 0
-        src.audio_gain = 1.0
-        return src
+        return _make_emit_audio_stub(sink)
 
     def test_drops_while_seek_pending(self):
         sink: list[np.ndarray] = []
@@ -626,10 +615,7 @@ class EmitAudioSeekGuardTest(unittest.TestCase):
 
 class SeekPendingPropertyTest(unittest.TestCase):
     def _src(self) -> AVFileSource:
-        src = AVFileSource.__new__(AVFileSource)
-        src._lock = threading.Lock()
-        src._pending_seek = None
-        return src
+        return _make_emit_audio_stub([])
 
     def test_false_when_none(self):
         self.assertFalse(self._src().seek_pending)
@@ -1118,26 +1104,8 @@ class DemuxDecodeDownscaleTest(unittest.TestCase):
     is set, and falls back to the full-res convert when it isn't."""
 
     def _run(self, decode_target, src_w=3840, src_h=2160):
-        src = AVFileSource.__new__(AVFileSource)
-        src._closed = False
-        src._pts_offset = None
-        src._pts_anchor_target = 0.0
-        src._pending_seek = None
-        src.video_time_base = 1.0
-        src._video_buf = []
-        src._lock = threading.Lock()
-        src.max_video_buffer = 240
-        src._resampler = None
-        src._audio_push = None
-        src._decode_target = decode_target
-        src._decode_size = None
-        src._decode_planned = False
-        src._tempo_scale = 1.0
-        src._atempo_graph = None
-        src.last_frame_pts = 0.0
-        src.path = "fake"
         frame = _FakeFrame(0, width=src_w, height=src_h)
-        src.container = _FakeContainer([_FakePacket([frame])])
+        src = _make_demux_source_stub([_FakePacket([frame])], decode_target=decode_target)
         src._demux_loop()
         return src, frame
 
@@ -1194,15 +1162,7 @@ class AtempoTempoCompensationTest(unittest.TestCase):
     SR = 8000
 
     def _stub(self, tempo_scale: float, sink) -> AVFileSource:
-        src = AVFileSource.__new__(AVFileSource)
-        src.path = "test.mp4"
-        src._closed = False
-        src._muted = False
-        src._pending_seek = None
-        src.audio_gain = 1.0
-        src.audio_noise_gate = 0
-        src._tempo_scale = tempo_scale
-        src._audio_push = sink.append
+        src = _make_emit_audio_stub(sink, tempo_scale=tempo_scale)
         src._atempo_graph = _build_atempo_graph(self.SR, tempo_scale)
         return src
 

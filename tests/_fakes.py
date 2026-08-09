@@ -196,6 +196,19 @@ class FakeAPI:
         pass
 
 
+def bare_waveform_scene(**attrs):
+    """A WaveformScene that skips the SID-loading __init__ (which needs a
+    real PSID file + emulator bring-up); each caller sets exactly the
+    attributes its method under test reads. One builder instead of a
+    re-implemented ``_scene()`` per TestCase."""
+    from c64cast.sid.waveform import WaveformScene
+
+    scene = WaveformScene.__new__(WaveformScene)
+    for name, value in attrs.items():
+        setattr(scene, name, value)
+    return scene
+
+
 class FrozenClock:
     """A stand-in for the stdlib ``time`` module with one function pinned.
 
