@@ -161,7 +161,7 @@ That WS sequencing is why the `/` page's live feed rides the `/ws` socket rather
 
 The reason: its `self.name` is the currently-loaded tune and rotates each `setup()`. Naming a preset — or the effect dropdown — after it would falsely promise one tune and churn `vid`. A single fixed tune keeps its real title. `self.name` itself, used for the interstitial "up next" and the on-screen title row, is untouched.
 
-> **Follow-ups:** the queued-jump latency (an `fx` change lands at the next scene boundary, not instantly — ≈16–40 ms to the next rendered frame, with residual felt lag being scene teardown plus `_safe_setup`), and ensemble-as-one-tiled-matrix (per-system segments already lay the groundwork).
+> **Follow-ups:** the queued-jump latency (an `fx` change lands at the next scene boundary, not instantly — ≈16–40 ms to the next rendered frame, with residual felt lag being scene teardown plus `safe_setup`), and ensemble-as-one-tiled-matrix (per-system segments already lay the groundwork).
 
 Effects, generators, and scope scenes all answer sx/ix — see the `LIVE_PARAMS` registry note.
 
