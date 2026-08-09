@@ -543,10 +543,12 @@ class SidFileAudioSource:
         # Host-side music-feature stream (built per setup() once the tune is
         # picked + playing); None when not reactive or before setup.
         self._features: SidFeatureStream | None = None
-        # SID hardware config (model autoconfig) snapshotted by setup() so
-        # teardown can restore it. None means "nothing applied, nothing to
-        # restore" — see sid_autoconfig.apply_sid_autoconfig.
-        self._saved_sid_config: dict[tuple[str, str], str] | None = None
+        # SID hardware config (model autoconfig + mixer originals) recorded by
+        # setup() so teardown can restore it — see
+        # sid_autoconfig.apply_sid_autoconfig.
+        from c64cast.sid.sid_hw_config import SidHwSession
+
+        self._sid_session = SidHwSession(api)
         # Validate the spec + first candidate now so a misconfigured single
         # scene raises at build time (parity with WaveformScene.__init__).
         self._pick_and_load()
@@ -679,7 +681,7 @@ class SidFileAudioSource:
         assert self.header is not None  # set by _pick_and_load, called above
         from c64cast.sid.sid_autoconfig import apply_sid_autoconfig
 
-        self._saved_sid_config = apply_sid_autoconfig(self._api, self.header, self._sid_model)
+        self._sid_session.fold(apply_sid_autoconfig(self._api, self.header, self._sid_model))
         self._apply_sid_mixer()
         # May raise (RSID / load<$0820 / under KERNAL) — propagate to
         # SourceScene.setup, which aborts the scene cleanly.
@@ -716,16 +718,8 @@ class SidFileAudioSource:
 
         sources = sources_for_addresses(self._api, self.header.sid_addresses)
         panning = apply_panning(self._api, sources, self._sid_panning)
-        self._fold_into_restore(panning.originals)
-        self._fold_into_restore(apply_volume(self._api, sources, self._sid_volume))
-
-    def _fold_into_restore(self, originals: dict[tuple[str, str], str]) -> None:
-        """Merge mixer originals into the snapshot teardown restores."""
-        if not originals:
-            return
-        if self._saved_sid_config is None:
-            self._saved_sid_config = {}
-        self._saved_sid_config.update(originals)
+        self._sid_session.fold(panning.originals)
+        self._sid_session.fold(apply_volume(self._api, sources, self._sid_volume))
 
     def teardown(self) -> None:
         """Stop the feature stream, then SID playback. SID order mirrors
@@ -746,11 +740,7 @@ class SidFileAudioSource:
             self._api.flush()
         except Exception:
             log.exception("sid audio: teardown silence/restore failed")
-        if self._saved_sid_config:
-            from c64cast.sid.sid_hw_config import restore_sid_config
-
-            restore_sid_config(self._api, self._saved_sid_config)
-            self._saved_sid_config = None
+        self._sid_session.restore()
 
     def position_seconds(self) -> float | None:
         return None

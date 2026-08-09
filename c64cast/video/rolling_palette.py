@@ -32,6 +32,8 @@ import threading
 import cv2
 import numpy as np
 
+from c64cast._pollthread import PollThread
+
 from .palette import ColorMap, RollingColorMapAccumulator
 
 log = logging.getLogger(__name__)
@@ -68,14 +70,10 @@ class RollingForcePalette:
         self._cut = False  # a shot cut was detected since the last worker cycle
         self._prev_hist: np.ndarray | None = None  # render-thread only (cut detection)
         self._frame_count = 0  # render-thread only (cut-check throttle)
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._poll = PollThread(self._run, name="rolling-fp", manual=True, join_timeout=2.0)
 
     def start(self) -> None:
-        if self._thread is not None:
-            return
-        self._thread = threading.Thread(target=self._run, name="rolling-fp", daemon=True)
-        self._thread.start()
+        self._poll.start()
 
     def submit_frame(self, img_bgr: np.ndarray) -> None:
         """Hand the newest rendered frame to the worker (cheap) + run the
@@ -94,10 +92,7 @@ class RollingForcePalette:
         return cmap
 
     def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        self._poll.stop()
 
     def _detect_cut(self, img_bgr: np.ndarray) -> bool:
         """Cheap shot-cut test: HSV hue/sat histogram correlation of a downscaled
@@ -119,12 +114,12 @@ class RollingForcePalette:
         corr = cv2.compareHist(prev, hist, cv2.HISTCMP_CORREL)
         return corr < _CUT_CORREL_THRESHOLD
 
-    def _run(self) -> None:
+    def _run(self, stop: threading.Event) -> None:
         # `published` (worker-local) is the last color set we installed; a new
         # bake is published only when its set differs (or a cut fired), so a
         # stable scene stops re-installing after it converges.
         published: tuple[int, ...] | None = None
-        while not self._stop.wait(self._interval):
+        while not stop.wait(self._interval):
             with self._lock:
                 frame = self._latest
                 cut, self._cut = self._cut, False

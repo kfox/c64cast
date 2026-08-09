@@ -76,12 +76,11 @@ from .sid_host_emu import (
     ram_write_footprint,
 )
 from .sid_hw_config import (
+    SidHwSession,
     apply_config,
     apply_sid_map,
     detect_socket_models,
     detect_sockets,
-    restore_sid_config,
-    snapshot_sid_config,
 )
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_volume import apply_volume
@@ -433,9 +432,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._rebuild_scope_for_sids()
         # U64 multi-SID hardware config (address map for the tune's extra SID
         # chips). Snapshotted before we change it, restored on teardown. Only
-        # touched for multi-SID tunes on a config-capable backend (U64); None
-        # means "nothing applied, nothing to restore".
-        self._saved_sid_config: dict[tuple[str, str], str] | None = None
+        # touched for multi-SID tunes on a config-capable backend (U64).
+        self._sid_session = SidHwSession(self.api)
         # Default the poll rate to the system video rate — that's the
         # SID's effective PLAY-per-frame cadence on a kernal IRQ, so
         # matching it keeps the host emulator's writes in step with
@@ -962,7 +960,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             model_plan = plan_model_config_for_header(self.api, self.header, self._sid_model)
 
         if sid_map is not None or model_plan:
-            self._saved_sid_config = snapshot_sid_config(self.api)
+            self._sid_session.snapshot()
 
         if sid_map is not None:
             apply_sid_map(self.api, sid_map)
@@ -1034,15 +1032,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             return sid_map.sources
         return sources_for_addresses(self.api, self._sid_addresses)
 
-    def _fold_into_restore(self, originals: dict[tuple[str, str], str]) -> None:
-        """Merge mixer originals into the snapshot teardown restores, so one
-        restore puts addressing, model and mixer state back together."""
-        if not originals:
-            return
-        if self._saved_sid_config is None:
-            self._saved_sid_config = {}
-        self._saved_sid_config.update(originals)
-
     def _apply_sid_panning(self, sid_map: SidMap | None) -> None:
         """Pan each of the tune's SID chips across the U64 mixer's stereo field
         ([ultimate64].sid_panning; auto-spread when unset). Runs after routing,
@@ -1051,7 +1040,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         stereo field."""
         panning = apply_panning(self.api, self._sid_sources(sid_map), self._sid_panning)
         self.set_window_chip_order(panning.window_order)
-        self._fold_into_restore(panning.originals)
+        self._sid_session.fold(panning.originals)
 
     def _apply_sid_volume(self, sid_map: SidMap | None) -> None:
         """Make every source the tune plays on audible and mute the rest
@@ -1059,15 +1048,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         core is silent whenever that core's mixer level is OFF — which is how
         many machines sit, and which produces no error anywhere: the chip is
         mapped, the player writes to it, and nothing comes out."""
-        self._fold_into_restore(
-            apply_volume(self.api, self._sid_sources(sid_map), self._sid_volume)
-        )
+        self._sid_session.fold(apply_volume(self.api, self._sid_sources(sid_map), self._sid_volume))
 
     def _restore_sid_hw_config(self) -> None:
         """Restore the SID address config snapshotted by _apply_sid_hw_config."""
-        if self._saved_sid_config:
-            restore_sid_config(self.api, self._saved_sid_config)
-            self._saved_sid_config = None
+        self._sid_session.restore()
 
     def teardown(self):
         super().teardown()

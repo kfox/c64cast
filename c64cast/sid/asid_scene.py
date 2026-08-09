@@ -50,48 +50,23 @@ import logging
 import threading
 import time
 from collections.abc import Sequence
-from typing import Any
 
+from c64cast._midi import MIDI_AVAILABLE, open_input_port
 from c64cast._pollthread import PollThread
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
+from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from . import asid
 from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
-from .sid_hw_config import (
-    apply_sid_map,
-    detect_sockets,
-    restore_sid_config,
-    snapshot_sid_config,
-)
+from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import (
-    D018_HIRES_BITMAP,
-    META_ROW,
-    METADATA_TEXT_COLOR,
-    TITLE_ROW,
-    TITLE_TEXT_COLOR,
-    VoiceScopeRenderer,
-    _layout_lr,
-)
+from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
 
 log = logging.getLogger(__name__)
-
-# Typed as Any so Pyright doesn't flag mido.* as attributes of None — the
-# MIDI_AVAILABLE flag is the runtime guard. Mirrors midi_scene.py.
-try:
-    import mido as _mido
-
-    mido: Any = _mido
-    MIDI_AVAILABLE = True
-except ImportError:
-    mido = None
-    MIDI_AVAILABLE = False
-
 
 # Max rate at which coalesced register frames are flushed to the SID. 60 Hz
 # covers PAL/NTSC single-speed frame rates and keeps bursts / high-multispeed
@@ -252,8 +227,8 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # thread (avoids mutating display state from the reader).
         self._max_chip_seen = 0
         # Snapshot of the SID-address config taken before the first remap, for
-        # restore on teardown. None until a remap happens.
-        self._saved_config: dict[tuple[str, str], str] | None = None
+        # restore on teardown. Empty until a remap happens.
+        self._sid_session = SidHwSession(api)
         self._socket_present = (False, False)
         # [ultimate64].sid_panning — empty means the auto spread. Applied at
         # setup for the initial single chip and re-applied on every remap.
@@ -265,8 +240,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._sid_volume = list(sid_volume or ())
 
         self._midi_port = None
-        self._reader_thread: threading.Thread | None = None
-        self._stop = threading.Event()
+        self._reader_poll = PollThread(
+            self._reader, name="asid-reader", manual=True, join_timeout=1.0
+        )
         self._dirty = True  # force first text-row paint
 
         # Construct the ring player up front (its queue accepts pushes before the
@@ -277,26 +253,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
 
     # ---- MIDI plumbing -------------------------------------------------------
     def _open_port(self):
-        assert mido is not None
-        if self.port_name in (None, "", "default"):
-            names = mido.get_input_names()
-            if not names:
-                raise RuntimeError("AsidScene: no MIDI input ports available")
-            self._midi_port = mido.open_input(names[0])
-            log.info("AsidScene: opened MIDI port %r", names[0])
-            return
-        # Partial (case-insensitive substring) matching so users don't need the
-        # exact rtmidi string.
-        names = mido.get_input_names()
-        match = next((n for n in names if self.port_name.lower() in n.lower()), None)
-        if match is None:
-            raise RuntimeError(
-                f"AsidScene: no MIDI input port matches {self.port_name!r}; available: {names}"
-            )
-        self._midi_port = mido.open_input(match)
-        log.info("AsidScene: opened MIDI port %r", match)
+        self._midi_port, _ = open_input_port(self.port_name, label="AsidScene")
 
-    def _reader(self):
+    def _reader(self, stop: threading.Event):
         port = self._midi_port
         if port is None:
             return
@@ -310,7 +269,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # v1 limitation).
         last_flush = 0.0
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 for msg in port.iter_pending():
                     if msg.type == "sysex":
                         self._handle_sysex(msg.data)
@@ -510,19 +469,12 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._pending_flush = bool(self._dirty_chips) or bool(self._pending_ctrl_first)
 
     # ---- multi-SID configuration ---------------------------------------------
-    def _snapshot_config(self) -> None:
-        """Snapshot the SID-address config we're about to change, once, so
-        teardown can restore it (best-effort)."""
-        if self._saved_config is not None:
-            return
-        self._saved_config = snapshot_sid_config(self.api)
-
     def _reconfigure_chips(self, n: int) -> None:
         """Grow the active SID map to `n` chips: configure the U64 address map
         live, update routing, and reflow the split scope. Runs on the main
         (render) thread from process_frame."""
         n = max(1, min(n, self._max_sids))
-        self._snapshot_config()
+        self._sid_session.snapshot()
         sid_map = plan_sid_map(
             n, socket1_present=self._socket_present[0], socket2_present=self._socket_present[1]
         )
@@ -562,14 +514,6 @@ class AsidScene(VoiceScopeRenderer, Scene):
         n = sid_map.n if sid_map is not None else self._active_chips
         return sources_for_addresses(self.api, self._chip_addresses[:n])
 
-    def _fold_into_restore(self, originals: dict[tuple[str, str], str]) -> None:
-        """Merge mixer originals into the snapshot teardown restores."""
-        if not originals:
-            return
-        if self._saved_config is None:
-            self._saved_config = {}
-        self._saved_config.update(originals)
-
     def _apply_sid_mixer(self, sid_map: SidMap | None = None) -> None:
         """Pan the active SID chips across the U64 mixer's stereo field and make
         every source they landed on audible ([ultimate64].sid_panning /
@@ -582,12 +526,11 @@ class AsidScene(VoiceScopeRenderer, Scene):
         sources = self._sid_sources(sid_map)
         panning = apply_panning(self.api, sources, self._sid_panning)
         self.set_window_chip_order(panning.window_order)
-        self._fold_into_restore(panning.originals)
-        self._fold_into_restore(apply_volume(self.api, sources, self._sid_volume))
+        self._sid_session.fold(panning.originals)
+        self._sid_session.fold(apply_volume(self.api, sources, self._sid_volume))
 
     def _restore_config(self) -> None:
-        if self._saved_config:
-            restore_sid_config(self.api, self._saved_config)
+        self._sid_session.restore()
 
     # ---- info text rows ------------------------------------------------------
     def _build_title_line(self) -> str:
@@ -611,24 +554,6 @@ class AsidScene(VoiceScopeRenderer, Scene):
         vol = self._sid_shadows[0][_MODE_VOL_OFFSET] & 0x0F
         return _layout_lr(tags, f"VOL {vol:2d}")
 
-    def _paint_info_rows(self) -> None:
-        title_fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
-        self._paint_text_row(
-            TITLE_ROW,
-            self._build_title_line(),
-            title_fg,
-            RegionID.WAVE_TITLE_BITMAP,
-            RegionID.WAVE_TITLE_SCREEN,
-        )
-        meta_fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
-        self._paint_text_row(
-            META_ROW,
-            self._build_meta_line(),
-            meta_fg,
-            RegionID.WAVE_META_BITMAP,
-            RegionID.WAVE_META_SCREEN,
-        )
-
     # ---- Scene lifecycle -----------------------------------------------------
     def setup(self) -> None:
         super().setup()
@@ -648,9 +573,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._paint_info_rows()
         self._alloc_scope_buffers()
         self._open_port()
-        self._stop.clear()
-        self._reader_thread = threading.Thread(target=self._reader, daemon=True, name="asid-reader")
-        self._reader_thread.start()
+        self._reader_poll.start()
         # Arm the buffered ring player after the reader (so its prebuffer can draw
         # from frames already streaming in) but before the scope needs it.
         if self._use_buffered_player and self._player is not None:
@@ -710,10 +633,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
 
     def teardown(self) -> None:
         super().teardown()
-        self._stop.set()
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=1.0)
-            self._reader_thread = None
+        self._reader_poll.stop()
         # Stop the ring player FIRST: it restores $0314 → the kernal IRQ tail and
         # the CIA #1 latch, so the C64 stops popping the ring before we silence
         # the SID(s) and restore the display below.

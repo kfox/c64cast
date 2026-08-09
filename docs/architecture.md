@@ -2,7 +2,7 @@
 
 This is the per-module reference for the `c64cast/` tree: the design rationale, hardware constraints, and edge-case history behind each module — the *why*, and the dead ends, that the code alone doesn't carry. Read the relevant section before modifying a module, and update it in the same change set when you change that module's behavior.
 
-The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules. Since 2026-08 the package tree mirrors these topic areas on disk — one subpackage per area (`hw/`, `audio/`, `video/`, `scenes/`, `sid/`, `control/`, `wled/`, `app/`), with only the entry point and two private cross-cutting utilities (`_pollthread.py`, `_native_io.py`) at the package root. Section headings keep the module's bare filename, so anchors predate — and survive — the move.
+The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules. Since 2026-08 the package tree mirrors these topic areas on disk — one subpackage per area (`hw/`, `audio/`, `video/`, `scenes/`, `sid/`, `control/`, `wled/`, `app/`), with only the entry point and three private cross-cutting utilities (`_pollthread.py`, `_native_io.py`, `_midi.py`) at the package root. Section headings keep the module's bare filename, so anchors predate — and survive — the move.
 
 For end-user configuration see [the Programmer’s Reference Guide](reference/README.md), for known limitations [caveats.md](caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](extending.md).
 
@@ -107,6 +107,7 @@ rationale in the meantime — each of the ones below opens with one.
 | Module | What it is |
 | --- | --- |
 | `__main__.py` | `python -m c64cast` entry point |
+| `_midi.py` | Shared guarded mido import + MIDI input-port resolution |
 | `_native_io.py` | Process-level stderr muting for native-library chatter |
 | `_pollthread.py` | Background daemon thread with start/stop boilerplate |
 | `audio/audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
@@ -125,7 +126,7 @@ rationale in the meantime — each of the ones below opens with one.
 | `app/profiler.py` | `--profile` per-frame timing harness |
 | `app/quickcast.py` | Positional-`MEDIA` quick-playback config builder |
 | `app/schema.py` | JSON Schema generator for the TOML config |
-| `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore |
+| `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore + the `SidHwSession` restore tracker |
 | `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |
 | `hw/teensyrom_api.py` | TeensyROM+ implementation of `C64Backend` |
 | `app/wizard.py` | `--init` interactive config builder |

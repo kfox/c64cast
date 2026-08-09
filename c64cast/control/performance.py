@@ -40,18 +40,16 @@ without a cycle — the same rule transport.py follows.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import re
 import threading
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+from .transport import JsonSlotStore
 
+if TYPE_CHECKING:
     from c64cast.app.playlist import Playlist
     from c64cast.scenes.scenes import Scene
 
@@ -154,66 +152,15 @@ def _slugify_name(name: str) -> str:
     return slug or "c64cast"
 
 
-class LookStore:
+class LookStore(JsonSlotStore):
     """Persist performance "looks" to a JSON file, one map per system.
 
-    A look is ``{"clip": <slot|null>, "effects": [<layer state>, ...]}`` keyed by
-    a 1-based pad slot. Mirrors :class:`~c64cast.wled.wled_device.PresetStore`'s
-    tolerant-load / atomic-write contract exactly: a missing or corrupt file
-    reads as an empty map, and writes go through ``transport.atomic_write_text``
-    (temp file + ``os.replace``) so a crash mid-write can't leave a half-written
-    map. The path is injectable so tests point it at a tempdir."""
-
-    #: Look slots are 1-based pad ids (slot 0 is never stored).
-    SLOT_MIN = 1
-    SLOT_MAX = 250
-
-    def __init__(self, path: Path) -> None:
-        self._path = Path(path)
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    def load(self) -> dict[str, dict[str, Any]]:
-        try:
-            raw = self._path.read_text(encoding="utf-8")
-        except OSError:
-            return {}
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        out: dict[str, dict[str, Any]] = {}
-        for k, v in data.items():
-            if isinstance(v, dict) and str(k).isdigit() and int(k) != 0:
-                out[str(int(k))] = v
-        return out
+    A look is ``{"clip": <slot|null>, "effects": [<layer state>, ...]}`` keyed
+    by a 1-based pad slot. The tolerant-load / atomic-write contract is the
+    shared :class:`~c64cast.control.transport.JsonSlotStore` one."""
 
     def get(self, slot: int) -> dict[str, Any] | None:
         return self.load().get(str(int(slot)))
-
-    def save(self, slot: int, look: Mapping[str, Any]) -> None:
-        if not self.SLOT_MIN <= slot <= self.SLOT_MAX:
-            return
-        data = self.load()
-        data[str(slot)] = dict(look)
-        self._write(data)
-
-    def delete(self, slot: int) -> None:
-        if slot == 0:
-            return
-        data = self.load()
-        if data.pop(str(slot), None) is not None:
-            self._write(data)
-
-    def _write(self, data: Mapping[str, Any]) -> None:
-        from .transport import atomic_write_text
-
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(self._path, json.dumps(data, indent=2, sort_keys=True))
 
 
 def default_look_store(name: str) -> LookStore:

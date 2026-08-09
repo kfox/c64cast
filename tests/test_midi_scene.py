@@ -652,7 +652,7 @@ class PaintTests(_MidiTestCase):
         self.assertIn("1:PUL", title)  # all three voices default to pulse
         self.assertIn("3:PUL", title)
         self.assertIn("VOL 15", title)
-        ctl = scene._build_controller_line()
+        ctl = scene._build_meta_line()
         self.assertIn("PW", ctl)
         self.assertIn("CUT", ctl)
 
@@ -683,7 +683,7 @@ class PaintTests(_MidiTestCase):
         scene, _ = _make_scene()
         scene._control_change(midi_scene._CC_CUTOFF, 64)
         scene._control_change(midi_scene._CC_RESONANCE, 127)
-        ctl = scene._build_controller_line()
+        ctl = scene._build_meta_line()
         self.assertIn(f"RES {scene.filter_resonance:2d}", ctl)
         self.assertEqual(len(ctl), 40)  # _paint_text_row needs exactly 40
 
@@ -774,7 +774,9 @@ class PortSelectionTests(_MidiTestCase):
         fake = mock.MagicMock()
         fake.get_input_names.return_value = names
         fake.open_input.side_effect = lambda n: opened.append(n) or _FakePort()
-        return mock.patch.object(midi_scene, "mido", fake)
+        # Port resolution lives in the shared c64cast._midi.open_input_port,
+        # so the fake goes there, not on the scene's module.
+        return mock.patch("c64cast._midi.mido", fake)
 
     def test_empty_port_picks_first(self):
         scene, _ = _make_scene(port="")
@@ -810,8 +812,8 @@ class ReaderCoalescingTests(_MidiTestCase):
 
     def _drain(self, scene, port) -> None:
         scene._midi_port = port
-        scene._stop.clear()
-        t = threading.Thread(target=scene._reader, daemon=True)
+        stop = threading.Event()
+        t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
         t.start()
         # Wait until the batch has been drained + flushed at least once.
         deadline = time.time() + 1.0
@@ -819,7 +821,7 @@ class ReaderCoalescingTests(_MidiTestCase):
             op[0] == "write_regs" and op[1] == "D402" for op in scene.api.ops
         ):
             time.sleep(0.005)
-        scene._stop.set()
+        stop.set()
         t.join(timeout=1.0)
 
     def test_modwheel_flood_coalesced_to_few_writes(self):
@@ -843,11 +845,11 @@ class ReaderCoalescingTests(_MidiTestCase):
             batch.append(mido.Message("note_on", note=60, velocity=100))
             batch.append(mido.Message("note_off", note=60))
         scene._midi_port = _ScriptedPort(batch)
-        scene._stop.clear()
-        t = threading.Thread(target=scene._reader, daemon=True)
+        stop = threading.Event()
+        t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
         t.start()
         time.sleep(0.1)
-        scene._stop.set()
+        stop.set()
         t.join(timeout=1.0)
         voice_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
         # Each on/off reprograms voice 0 → ~16 writes, not collapsed to one.
@@ -893,12 +895,10 @@ class LifecycleTests(_MidiTestCase):
             # Per-voice pre-program ran (pw + waveform, gate off) for all 3.
             for base in ("D402", "D409", "D410"):
                 self.assertIn(base, api.regs)
-            reader = scene._reader_thread
-            assert reader is not None
-            self.assertTrue(reader.is_alive())
+            self.assertTrue(scene._reader_poll.is_running())
         finally:
             scene.teardown()
-        self.assertFalse(scene._reader_thread is not None and scene._reader_thread.is_alive())
+        self.assertFalse(scene._reader_poll.is_running())
 
 
 if __name__ == "__main__":

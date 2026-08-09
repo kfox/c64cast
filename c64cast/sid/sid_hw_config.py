@@ -197,3 +197,54 @@ def apply_config(api: C64Backend, mapping: dict[tuple[str, str], str]) -> None:
 def restore_sid_config(api: C64Backend, saved: dict[tuple[str, str], str]) -> None:
     """Restore a snapshot from :func:`snapshot_sid_config` (best-effort)."""
     _put_all(api, saved, warn=False)
+
+
+class SidHwSession:
+    """Tracks every SID hardware-config change one scene/tool makes so a single
+    :meth:`restore` puts it all back: the :func:`snapshot_sid_config` baseline
+    plus any originals folded in along the way (``apply_panning`` /
+    ``apply_volume`` / ``sid_autoconfig`` return the values they overwrote).
+
+    :meth:`snapshot` is idempotent — the first call wins — which mechanically
+    enforces the single-snapshot rule (a re-snapshot mid-session would capture
+    our own edits as if they were the user's config; see the SID architecture
+    notes). :meth:`restore` resets the session so a re-setup of the same scene
+    starts from a fresh baseline. Also a context manager for function-scoped
+    sessions (dac_calibration's per-socket measurement loop), restoring on the
+    way out of the ``with`` even on error."""
+
+    def __init__(self, api: C64Backend) -> None:
+        self._api = api
+        self._saved: dict[tuple[str, str], str] | None = None
+
+    @property
+    def saved(self) -> dict[tuple[str, str], str] | None:
+        """The recorded restore set (None before anything was recorded).
+        Read-only view for tests and logging."""
+        return self._saved
+
+    def snapshot(self) -> None:
+        """Record the managed-config baseline (first call wins)."""
+        if self._saved is None:
+            self._saved = snapshot_sid_config(self._api)
+
+    def fold(self, originals: dict[tuple[str, str], str]) -> None:
+        """Merge mixer/model originals into the restore set, so one restore
+        puts addressing, model and mixer state back together."""
+        if not originals:
+            return
+        if self._saved is None:
+            self._saved = {}
+        self._saved.update(originals)
+
+    def restore(self) -> None:
+        """Restore everything recorded (best-effort), then reset for reuse."""
+        if self._saved:
+            restore_sid_config(self._api, self._saved)
+        self._saved = None
+
+    def __enter__(self) -> SidHwSession:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.restore()

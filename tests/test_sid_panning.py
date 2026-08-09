@@ -429,19 +429,23 @@ class ScenePanningFoldTest(unittest.TestCase):
     def _waveform_self(self, api, *, n_sids, addresses, panning=(), saved=None):
         from types import SimpleNamespace
 
+        from c64cast.sid.sid_hw_config import SidHwSession
         from c64cast.sid.waveform import WaveformScene
 
+        session = SidHwSession(api)
+        if saved:
+            session.fold(saved)
         scene = SimpleNamespace(
             api=api,
             _n_sids=n_sids,
             _sid_addresses=addresses,
             _sid_panning=list(panning),
             _sid_volume=[],
-            _saved_sid_config=saved,
+            _sid_session=session,
             window_order=None,
         )
         scene.set_window_chip_order = lambda order: setattr(scene, "window_order", tuple(order))
-        _bind(scene, WaveformScene, "_sid_sources", "_fold_into_restore")
+        _bind(scene, WaveformScene, "_sid_sources")
         return scene
 
     def _centered_socket_api(self):
@@ -476,7 +480,7 @@ class ScenePanningFoldTest(unittest.TestCase):
             dict(api.config_store[CAT]),
             {"Pan Socket 1": "Left 3", "Pan Socket 2": "Right 3", "Pan UltiSID 1": "Center"},
         )
-        self.assertEqual(scene._saved_sid_config, {PAN_S1: "Center", PAN_S2: "Center"})
+        self.assertEqual(scene._sid_session.saved, {PAN_S1: "Center", PAN_S2: "Center"})
 
     def test_waveform_sets_the_scope_column_order(self):
         from c64cast.sid.asid_sidmap import SidMap
@@ -505,7 +509,7 @@ class ScenePanningFoldTest(unittest.TestCase):
         WaveformScene._apply_sid_panning(scene, None)
 
         self.assertEqual(api.config_store[CAT]["Pan Socket 1"], "Center")
-        self.assertEqual(scene._saved_sid_config, {PAN_S1: "Right 4"})
+        self.assertEqual(scene._sid_session.saved, {PAN_S1: "Right 4"})
 
     def test_waveform_config_override_beats_the_auto_spread(self):
         from c64cast.sid.waveform import WaveformScene
@@ -531,7 +535,7 @@ class ScenePanningFoldTest(unittest.TestCase):
         WaveformScene._apply_sid_panning(scene, None)
 
         self.assertEqual(
-            scene._saved_sid_config,
+            scene._sid_session.saved,
             {**existing, PAN_S1: "Center"},
             "panning originals must not clobber the address/model snapshot",
         )
@@ -544,7 +548,7 @@ class ScenePanningFoldTest(unittest.TestCase):
 
         WaveformScene._apply_sid_panning(scene, None)
 
-        self.assertIsNone(scene._saved_sid_config)
+        self.assertIsNone(scene._sid_session.saved)
         self.assertEqual(api.config_puts, [])
 
     def test_asid_pans_from_the_map_on_remap(self):
@@ -552,6 +556,7 @@ class ScenePanningFoldTest(unittest.TestCase):
 
         from c64cast.sid.asid_scene import AsidScene
         from c64cast.sid.asid_sidmap import SidMap
+        from c64cast.sid.sid_hw_config import SidHwSession
 
         api = self._centered_socket_api()
         scene = SimpleNamespace(
@@ -560,18 +565,18 @@ class ScenePanningFoldTest(unittest.TestCase):
             _chip_addresses=[0xD400, 0xD420],
             _sid_panning=[],
             _sid_volume=[],
-            _saved_config=None,
+            _sid_session=SidHwSession(api),
             window_order=None,
         )
         scene.set_window_chip_order = lambda order: setattr(scene, "window_order", tuple(order))
-        _bind(scene, AsidScene, "_sid_sources", "_fold_into_restore")
+        _bind(scene, AsidScene, "_sid_sources")
         sid_map = SidMap(addresses=(0xD400, 0xD420), requested=2, sources=("socket1", "socket2"))
 
         AsidScene._apply_sid_mixer(scene, sid_map)
 
         self.assertEqual(api.config_store[CAT]["Pan Socket 1"], "Left 3")
         self.assertEqual(api.config_store[CAT]["Pan Socket 2"], "Right 3")
-        self.assertEqual(scene._saved_config, {PAN_S1: "Center", PAN_S2: "Center"})
+        self.assertEqual(scene._sid_session.saved, {PAN_S1: "Center", PAN_S2: "Center"})
 
 
 if __name__ == "__main__":

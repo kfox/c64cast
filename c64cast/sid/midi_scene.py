@@ -39,38 +39,17 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any
 
+from c64cast._midi import MIDI_AVAILABLE, open_input_port
 from c64cast._pollthread import PollThread
-from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, RegionID, cpu_clock
+from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import (
-    D018_HIRES_BITMAP,
-    META_ROW,
-    METADATA_TEXT_COLOR,
-    TITLE_ROW,
-    TITLE_TEXT_COLOR,
-    VoiceScopeRenderer,
-    _layout_lr,
-)
+from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
 
 log = logging.getLogger(__name__)
-
-# Typed as Any so Pyright doesn't flag every mido.XXX as accessing attributes
-# of None — the MIDI_AVAILABLE flag is the runtime guard. Also sidesteps
-# pyright not seeing mido.open_input / mido.get_input_names through stubs.
-try:
-    import mido as _mido
-
-    mido: Any = _mido
-    MIDI_AVAILABLE = True
-except ImportError:
-    mido = None
-    MIDI_AVAILABLE = False
-
 
 # SID waveform-select control bits (high nibble of voice control register).
 _WAVEFORM_BITS = {
@@ -392,32 +371,16 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # Monotonic assignment counter feeding `_VoiceState.seq`.
         self._assign_seq = 0
         self._midi_port = None
-        self._reader_thread: threading.Thread | None = None
-        self._stop = threading.Event()
+        self._reader_poll = PollThread(
+            self._reader, name="midi-reader", manual=True, join_timeout=1.0
+        )
         self._dirty = True  # force first text-row paint
 
     # ---- MIDI plumbing -------------------------------------------------------
     def _open_port(self):
-        assert mido is not None
-        if self.port_name in (None, "", "default"):
-            names = mido.get_input_names()
-            if not names:
-                raise RuntimeError("MidiScene: no MIDI input ports available")
-            self._midi_port = mido.open_input(names[0])
-            log.info("MidiScene: opened MIDI port %r", names[0])
-            return
-        # Allow partial-name matching so users don't need to paste the
-        # exact rtmidi string.
-        names = mido.get_input_names()
-        match = next((n for n in names if self.port_name.lower() in n.lower()), None)
-        if match is None:
-            raise RuntimeError(
-                f"MidiScene: no MIDI input port matches {self.port_name!r}; available: {names}"
-            )
-        self._midi_port = mido.open_input(match)
-        log.info("MidiScene: opened MIDI port %r", match)
+        self._midi_port, _ = open_input_port(self.port_name, label="MidiScene")
 
-    def _reader(self):
+    def _reader(self, stop: threading.Event):
         port = self._midi_port
         if port is None:
             return
@@ -435,7 +398,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 for msg in port.iter_pending():
                     if msg.type in ("note_on", "note_off"):
                         self._handle_msg(msg)
@@ -590,7 +553,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
     def _control_change(self, cc: int, value: int) -> None:
         """Map a MIDI continuous controller to a SID parameter. `value` is
         0..127. Unmapped CCs are ignored. The bottom controller row shows the
-        live state (see _build_controller_line)."""
+        live state (see _build_meta_line)."""
         if cc == _CC_VOLUME:  # master volume nibble
             self.master_volume = value >> 3
             self._write_mode_vol()
@@ -798,7 +761,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         )
         return _layout_lr(waves, f"VOL {self.master_volume:2d}")
 
-    def _build_controller_line(self) -> str:
+    def _build_meta_line(self) -> str:
         """Live controller state on the second row: pulse width %, filter
         cutoff (OPEN at max), resonance, and the A/D/R envelope nibbles. Per-
         voice note/velocity isn't shown — the colored-vs-gray voice strips
@@ -808,24 +771,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         a, d, _, r = self.adsr
         line = f"PW{pw_pct:3d}% CUT {cut} RES {self.filter_resonance:2d} A{a:X} D{d:X} R{r:X}"
         return line[:40].ljust(40)
-
-    def _paint_info_rows(self) -> None:
-        title_fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
-        self._paint_text_row(
-            TITLE_ROW,
-            self._build_title_line(),
-            title_fg,
-            RegionID.WAVE_TITLE_BITMAP,
-            RegionID.WAVE_TITLE_SCREEN,
-        )
-        meta_fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
-        self._paint_text_row(
-            META_ROW,
-            self._build_controller_line(),
-            meta_fg,
-            RegionID.WAVE_META_BITMAP,
-            RegionID.WAVE_META_SCREEN,
-        )
 
     # ---- per-voice waveform changes (SHIFT + Program Change) -----------------
     def _set_voice_waveform(self, idx: int, bits: int, name: str) -> None:
@@ -918,9 +863,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._paint_info_rows()
         self._alloc_scope_buffers()
         self._open_port()
-        self._stop.clear()
-        self._reader_thread = threading.Thread(target=self._reader, daemon=True, name="midi-reader")
-        self._reader_thread.start()
+        self._reader_poll.start()
         # Envelope ticker: advances each voice's ADSR at the video rate so
         # attack/decay/release tails evolve on screen between MIDI events.
         self._poll = PollThread(self._tick_envelopes, period=self._poll_dt, name="midi-env")
@@ -959,10 +902,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
 
     def teardown(self) -> None:
         super().teardown()
-        self._stop.set()
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=1.0)
-            self._reader_thread = None
+        self._reader_poll.stop()
         if self._midi_port is not None:
             try:
                 self._midi_port.close()

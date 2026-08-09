@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from c64cast._pollthread import PollThread
+
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
 
@@ -389,7 +391,7 @@ class UltimateAudioSampler:
         self._lead_panic = max(self.bps, self._lead_target // 4)
 
         self._q: queue.Queue[bytes] = queue.Queue(maxsize=queue_max_chunks)
-        self._writer: threading.Thread | None = None
+        self._writer: PollThread | None = None
         self._running = False
         self._stopped = False
         self._eof = False
@@ -475,7 +477,12 @@ class UltimateAudioSampler:
         )
         self._gate_time = time.monotonic()
         self._running = True
-        self._writer = threading.Thread(target=self._writer_loop, name="uaudio-writer", daemon=True)
+        # The loop's stop signal is self._running (read by the push/pump
+        # guards too), so the PollThread event goes unused — the poll supplies
+        # the daemon-thread start/join lifecycle.
+        self._writer = PollThread(
+            lambda stop: self._writer_loop(), name="uaudio-writer", manual=True, join_timeout=1.0
+        )
         self._writer.start()
         ref_note = "" if self._ref_clock == SAMPLER_REF_CLOCK else f", ref {self._ref_clock} Hz"
         log.info(
@@ -753,7 +760,7 @@ class UltimateAudioSampler:
         self._stopped = True
         self._running = False
         if self._writer is not None:
-            self._writer.join(timeout=1.0)
+            self._writer.stop()
             self._writer = None
         try:
             gate_off(self.api, self.channel)

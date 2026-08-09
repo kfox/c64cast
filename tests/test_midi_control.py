@@ -574,12 +574,12 @@ class CrashGuardTests(_MidiControlTestCase):
             self.assertLogs("c64cast.control.midi_control", level="ERROR"),
         ):
             listener._midi_port = _ScriptedPort([mido.Message("note_on", note=36, velocity=100)])
-            listener._stop.clear()
-            t = threading.Thread(target=listener._reader, daemon=True)
+            stop = threading.Event()
+            t = threading.Thread(target=listener._reader, args=(stop,), daemon=True)
             t.start()
             time.sleep(0.05)
             self.assertTrue(t.is_alive())
-            listener._stop.set()
+            stop.set()
             t.join(timeout=1.0)
             self.assertFalse(t.is_alive())
 
@@ -593,7 +593,9 @@ class PortSelectionTests(_MidiControlTestCase):
         fake = mock.MagicMock()
         fake.get_input_names.return_value = names
         fake.open_input.side_effect = lambda n: opened.append(n) or _FakePort()
-        return mock.patch.object(midi_control, "mido", fake)
+        # Port resolution lives in the shared c64cast._midi.open_input_port,
+        # so the fake goes there, not on midi_control itself.
+        return mock.patch("c64cast._midi.mido", fake)
 
     def _listener(self, port=None):
         pl = _fake_playlist("system")
@@ -639,14 +641,12 @@ class LifecycleTests(_MidiControlTestCase):
         ):
             listener.start()
         try:
-            reader = listener._reader_thread
-            assert reader is not None
-            self.assertTrue(reader.is_alive())
+            self.assertTrue(listener._reader_poll.is_running())
         finally:
             port = listener._midi_port
             listener.stop()
             self.assertTrue(port.closed)
-            self.assertIsNone(listener._reader_thread)
+            self.assertFalse(listener._reader_poll.is_running())
 
     def test_empty_playlists_rejected(self):
         with self.assertRaises(ValueError):
@@ -840,9 +840,7 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
             lis.start()
         try:
             self.assertIs(lis._out_port, out)
-            fb = lis._feedback_thread
-            assert fb is not None
-            self.assertTrue(fb.is_alive())
+            self.assertTrue(lis._feedback_poll.is_running())
             # The clip pad gets painted (loaded) within a couple of poll cycles.
             deadline = time.monotonic() + 1.0
             while not out.sent and time.monotonic() < deadline:
@@ -850,7 +848,7 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
             self.assertTrue(any(m.note == 60 for m in out.sent))
         finally:
             lis.stop()
-        self.assertIsNone(lis._feedback_thread)
+        self.assertFalse(lis._feedback_poll.is_running())
         self.assertTrue(out.closed)
         # stop() extinguished pad 60 last (off velocity).
         offs = [m for m in out.sent if m.note == 60 and m.velocity == lis._fmap.off]
@@ -870,7 +868,7 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
             lis.start()
         try:
             self.assertIsNone(lis._out_port)
-            self.assertIsNone(lis._feedback_thread)
+            self.assertFalse(lis._feedback_poll.is_running())
         finally:
             lis.stop()
 

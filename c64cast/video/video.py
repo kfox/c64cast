@@ -651,7 +651,7 @@ class AVFileSource:
         self._lock = threading.Lock()
         self._eof = False
         self._closed = False
-        self._demux_thread: threading.Thread | None = None
+        self._demux_poll: PollThread | None = None
         self._audio_push: Callable[[np.ndarray], None] | None = None
 
         # Audio peak-normalization. Pre-scan the audio so each clip plays at
@@ -731,8 +731,13 @@ class AVFileSource:
         has already been pre-decoded into REU and the demuxer shouldn't
         waste CPU decoding + resampling audio just to discard it."""
         self._audio_push = audio_push
-        self._demux_thread = threading.Thread(target=self._demux_loop, daemon=True, name="av-demux")
-        self._demux_thread.start()
+        # The loop's stop signal is self._closed (read by the seek/emit paths
+        # too), so the PollThread event goes unused — the poll supplies the
+        # daemon-thread start/join lifecycle.
+        self._demux_poll = PollThread(
+            lambda stop: self._demux_loop(), name="av-demux", manual=True, join_timeout=1.0
+        )
+        self._demux_poll.start()
 
     def request_seek(self, target_s: float) -> None:
         """Ask the demux thread to seek to `target_s` (absolute seconds from
@@ -1016,9 +1021,9 @@ class AVFileSource:
 
     def close(self) -> None:
         self._closed = True
-        if self._demux_thread:
-            self._demux_thread.join(timeout=1.0)
-            self._demux_thread = None
+        if self._demux_poll is not None:
+            self._demux_poll.stop()
+            self._demux_poll = None
         try:
             self.container.close()
         except Exception as e:

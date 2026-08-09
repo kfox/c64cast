@@ -58,6 +58,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
+from c64cast._pollthread import PollThread
+
 from .transport import TransportEvent
 
 if TYPE_CHECKING:
@@ -66,17 +69,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Typed as Any so Pyright doesn't flag every mido.XXX as accessing attributes
-# of None — the MIDI_AVAILABLE flag is the runtime guard. Mirrors
-# midi_scene.py's import-guard pattern exactly.
-try:
-    import mido as _mido
-
-    mido: Any = _mido
-    MIDI_AVAILABLE = True
-except ImportError:
-    mido = None
-    MIDI_AVAILABLE = False
+# mido + the availability flag come from the shared guarded import
+# (c64cast._midi); the clock/output port openers below still use the module
+# handle directly.
 
 _CC_TYPES = ("cc", "note", "pc", "mmc")
 _ACTIONS = (
@@ -551,9 +546,17 @@ class MidiControlListener:
         # the tempo grid. None (the usual case) = clock rides the control port.
         self.clock_port_name = clock_port
         self._clock_port: Any = None
-        self._clock_reader_thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self._reader_thread: threading.Thread | None = None
+        # One PollThread per reader; the clock/feedback ones only start when
+        # their port opens. Each loop watches its own stop event (manual mode).
+        self._reader_poll = PollThread(
+            self._reader, name="midi-control-reader", manual=True, join_timeout=1.0
+        )
+        self._clock_poll = PollThread(
+            self._clock_reader, name="midi-clock-reader", manual=True, join_timeout=1.0
+        )
+        self._feedback_poll = PollThread(
+            self._feedback_reader, name="midi-led-feedback", manual=True, join_timeout=1.0
+        )
         self._warned_channels: set[int] = set()
         # Per-playlist last-tap time for the osd.position double-tap detection.
         self._osd_last_tap: dict[str, float] = {}
@@ -567,7 +570,6 @@ class MidiControlListener:
         self._feedback_port = feedback_port
         self._feedback_profile_port: str | None = None
         self._out_port: Any = None
-        self._feedback_thread: threading.Thread | None = None
         self._fmap = FeedbackMap()
         # note -> last velocity sent (feedback thread only; the diff cache).
         self._led_state: dict[int, int] = {}
@@ -576,24 +578,9 @@ class MidiControlListener:
 
     # ---- MIDI plumbing --------------------------------------------------
     def _open_port(self) -> None:
-        assert mido is not None
-        if self.port_name in (None, "", "default"):
-            names = mido.get_input_names()
-            if not names:
-                raise RuntimeError("midi_control: no MIDI input ports available")
-            self._midi_port = mido.open_input(names[0])
-            self._opened_port_name = names[0]
-            log.info("midi_control: opened MIDI port %r", names[0])
-            return
-        names = mido.get_input_names()
-        match = next((n for n in names if self.port_name.lower() in n.lower()), None)
-        if match is None:
-            raise RuntimeError(
-                f"midi_control: no MIDI input port matches {self.port_name!r}; available: {names}"
-            )
-        self._midi_port = mido.open_input(match)
-        self._opened_port_name = match
-        log.info("midi_control: opened MIDI port %r", match)
+        self._midi_port, self._opened_port_name = open_input_port(
+            self.port_name, label="midi_control"
+        )
 
     def start(self) -> None:
         if mido is None:
@@ -628,26 +615,16 @@ class MidiControlListener:
                 self._controller_profile,
                 exc_info=True,
             )
-        self._stop.clear()
         self._open_clock_port()
         # LED feedback needs the final effective mapping (for fx pads) and the
         # clip pad folds already done above, so set it up here.
         if self._feedback_enabled:
             self._setup_feedback()
-        self._reader_thread = threading.Thread(
-            target=self._reader, daemon=True, name="midi-control-reader"
-        )
-        self._reader_thread.start()
+        self._reader_poll.start()
         if self._clock_port is not None:
-            self._clock_reader_thread = threading.Thread(
-                target=self._clock_reader, daemon=True, name="midi-clock-reader"
-            )
-            self._clock_reader_thread.start()
+            self._clock_poll.start()
         if self._out_port is not None:
-            self._feedback_thread = threading.Thread(
-                target=self._feedback_reader, daemon=True, name="midi-led-feedback"
-            )
-            self._feedback_thread.start()
+            self._feedback_poll.start()
         log.info(
             "midi_control: listening (%d mapping(s), %d target(s)%s)",
             len(self._mapping),
@@ -770,7 +747,7 @@ class MidiControlListener:
             return
         log.info("midi_control: LED feedback on MIDI output %r", match)
 
-    def _feedback_reader(self) -> None:
+    def _feedback_reader(self, stop: threading.Event) -> None:
         """Poll performance/effect state and push LED diffs to the grid. Emits
         only on change (a static state is silent after the first paint); the armed
         blink flips on `_LED_BLINK_HALF_PERIOD_S`. Extinguishes every managed pad
@@ -778,7 +755,7 @@ class MidiControlListener:
         if self._out_port is None:
             return
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 blink_on = int(time.monotonic() / _LED_BLINK_HALF_PERIOD_S) % 2 == 0
                 self._emit_led_diff(self._compute_led_map(blink_on))
                 time.sleep(_LED_POLL_INTERVAL_S)
@@ -852,13 +829,13 @@ class MidiControlListener:
         self._led_state.clear()
 
     def stop(self) -> None:
-        self._stop.set()
-        for thread in (self._reader_thread, self._clock_reader_thread, self._feedback_thread):
-            if thread is not None:
-                thread.join(timeout=1.0)
-        self._reader_thread = None
-        self._clock_reader_thread = None
-        self._feedback_thread = None
+        # Signal all three loops before joining any, so they wind down in
+        # parallel (matching the old shared stop event) rather than serially.
+        polls = (self._reader_poll, self._clock_poll, self._feedback_poll)
+        for poll in polls:
+            poll.stop_event.set()
+        for poll in polls:
+            poll.stop()
         for attr in ("_midi_port", "_clock_port", "_out_port"):
             port = getattr(self, attr)
             if port is not None:
@@ -868,12 +845,12 @@ class MidiControlListener:
                     log.debug("midi_control: port close failed", exc_info=True)
                 setattr(self, attr, None)
 
-    def _reader(self) -> None:
+    def _reader(self, stop: threading.Event) -> None:
         port = self._midi_port
         if port is None:
             return
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 for msg in port.iter_pending():
                     try:
                         self._dispatch(msg)
@@ -883,7 +860,7 @@ class MidiControlListener:
         except Exception:
             log.exception("midi_control reader crashed")
 
-    def _clock_reader(self) -> None:
+    def _clock_reader(self, stop: threading.Event) -> None:
         """Reader for the dedicated clock port (opened only when clock_port names
         a distinct device). Feeds the tempo grid and nothing else — clock
         messages carry no channel and map to no action."""
@@ -891,7 +868,7 @@ class MidiControlListener:
         if port is None:
             return
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 for msg in port.iter_pending():
                     try:
                         self._feed_tempo(msg)

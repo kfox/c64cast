@@ -27,9 +27,10 @@ import time
 from collections import Counter
 from typing import Any
 
+from c64cast._midi import MIDI_AVAILABLE, mido
 from c64cast.app import introspect
 
-from .midi_control import MIDI_AVAILABLE, FeedbackMap, classify_message, mido
+from .midi_control import FeedbackMap, classify_message
 from .transport import make_controller_profile_store
 
 # The transport / OSD buttons the wizard offers to learn, in prompt order.

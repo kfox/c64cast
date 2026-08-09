@@ -63,7 +63,6 @@ piece, mirroring the control-plane pattern.
 
 import asyncio
 import hashlib
-import json
 import logging
 import re
 import socket
@@ -71,12 +70,11 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from c64cast.app import paths
 from c64cast.app.playlist import Playlist
-from c64cast.control.transport import atomic_write_text
+from c64cast.control.transport import JsonSlotStore
 from c64cast.video.modes import PALETTE_MODES
 
 # NOTE: this module deliberately does NOT use `from __future__ import
@@ -645,40 +643,17 @@ def _sanitize_name(name: str) -> str:
     return slug or "c64cast"
 
 
-class PresetStore:
+class PresetStore(JsonSlotStore):
     """Persist WLED presets to a JSON file (one map per device).
 
     The file holds the WLED presets map ``{"1": {...}, ...}`` (ids 1..250; id 0
-    is WLED's reserved empty slot, never stored). Loads are tolerant — a missing
-    or corrupt file reads as an empty map; writes are atomic (a temp file in the
-    same directory + ``os.replace``) so a crash mid-write can't leave a
-    half-written map. The path is injectable so tests point it at a tempdir.
+    is WLED's reserved empty slot, never stored). The tolerant-load /
+    atomic-write contract is the shared
+    :class:`~c64cast.control.transport.JsonSlotStore` one.
     """
 
-    def __init__(self, path: Path) -> None:
-        self._path = Path(path)
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    def load(self) -> dict[str, dict[str, Any]]:
-        try:
-            raw = self._path.read_text(encoding="utf-8")
-        except OSError:
-            return {}
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        out: dict[str, dict[str, Any]] = {}
-        for k, v in data.items():
-            # Keep only well-formed numeric-id → dict entries (skip id 0 / junk).
-            if isinstance(v, dict) and str(k).isdigit() and int(k) != 0:
-                out[str(int(k))] = v
-        return out
+    SLOT_MIN = _PRESET_ID_MIN
+    SLOT_MAX = _PRESET_ID_MAX
 
     def all(self) -> dict[str, dict[str, Any]]:
         return self.load()
@@ -690,30 +665,11 @@ class PresetStore:
                 return pid
         return _PRESET_ID_MAX
 
-    def save(self, pid: int, preset: Mapping[str, Any]) -> None:
-        if not _PRESET_ID_MIN <= pid <= _PRESET_ID_MAX:
-            return
-        data = self.load()
-        data[str(pid)] = dict(preset)
-        self._write(data)
-
-    def delete(self, pid: int) -> None:
-        if pid == 0:
-            return
-        data = self.load()
-        if data.pop(str(pid), None) is not None:
-            self._write(data)
-
     def mtime_ns(self) -> int:
         try:
             return self._path.stat().st_mtime_ns
         except OSError:
             return 0
-
-    def _write(self, data: Mapping[str, Any]) -> None:
-        # Atomic replace (temp file in the same dir + os.replace), shared with
-        # the live-tune save-back via transport.atomic_write_text.
-        atomic_write_text(self._path, json.dumps(data, indent=2, sort_keys=True))
 
 
 class WledBridge:

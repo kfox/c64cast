@@ -57,6 +57,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA1, KERNAL, REU, VECTORS, cpu_clock
 
 from .asid import _ASID_REG_TO_OFFSET
@@ -459,7 +460,7 @@ class AsidRingPlayer:
         self.slot_size = slot_size_for_chips(self.n_chips)
 
         self._q: queue.Queue[bytes] = queue.Queue(maxsize=_QUEUE_MAX_SLOTS)
-        self._writer: threading.Thread | None = None
+        self._writer: PollThread | None = None
         self._running = False
         self._armed = False
         self._lock = threading.Lock()  # guards rate/anchor accounting
@@ -540,7 +541,12 @@ class AsidRingPlayer:
         self.api.flush()
 
         self._running = True
-        self._writer = threading.Thread(target=self._writer_loop, name="asid-ring", daemon=True)
+        # The loop's stop signal is self._running (reinit/teardown flip it),
+        # so the PollThread event goes unused — the poll supplies the
+        # daemon-thread start/join lifecycle.
+        self._writer = PollThread(
+            lambda stop: self._writer_loop(), name="asid-ring", manual=True, join_timeout=1.0
+        )
         self._writer.start()
         log.info(
             "asid_player: installed — %d chip(s), slot %d B, %.1f Hz (latch %d, N=%d), "
@@ -752,7 +758,7 @@ class AsidRingPlayer:
         Idempotent; leaves the SID untouched (the scene silences it)."""
         self._running = False
         if self._writer is not None:
-            self._writer.join(timeout=1.0)
+            self._writer.stop()
             self._writer = None
         if not self._armed:
             return

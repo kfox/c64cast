@@ -622,6 +622,36 @@ class VoiceScopeRenderer:
             screen_addr, bytes([fg_byte] * SCREEN_W_CHARS), region_id=screen_region_id
         )
 
+    def _build_title_line(self) -> str:
+        """Subclass hook: the 40-char top info row (see _paint_info_rows)."""
+        raise NotImplementedError
+
+    def _build_meta_line(self) -> str:
+        """Subclass hook: the 40-char second info row (see _paint_info_rows)."""
+        raise NotImplementedError
+
+    def _paint_info_rows(self) -> None:
+        """Paint the two 40-char info rows (title + meta) in the shared scope
+        colors and delta-cache regions. AsidScene and MidiScene supply the two
+        line builders above; WaveformScene keeps its own two-step painters
+        because its metadata row needs a synthesized-glyph override."""
+        title_fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
+        self._paint_text_row(
+            TITLE_ROW,
+            self._build_title_line(),
+            title_fg,
+            RegionID.WAVE_TITLE_BITMAP,
+            RegionID.WAVE_TITLE_SCREEN,
+        )
+        meta_fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
+        self._paint_text_row(
+            META_ROW,
+            self._build_meta_line(),
+            meta_fg,
+            RegionID.WAVE_META_BITMAP,
+            RegionID.WAVE_META_SCREEN,
+        )
+
     # ---- hires rendering ---------------------------------------------------
 
     def _voice_time_window_s(
