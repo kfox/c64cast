@@ -10,6 +10,7 @@ tests/test_control_plane.py."""
 from __future__ import annotations
 
 import unittest
+import warnings
 from typing import Any
 
 from c64cast.control.perf_console import PerfBridge, _beats_remaining, _system_state
@@ -17,7 +18,12 @@ from c64cast.scenes.effects import TrailsEffect
 
 try:
     import fastapi  # noqa: F401
-    from fastapi.testclient import TestClient
+
+    # Silenced like test_control_plane's copy — the httpx2 deprecation is a
+    # dependency decision, not per-worker test output.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient
 
     HAVE_TESTCLIENT = True
 except (ImportError, RuntimeError):

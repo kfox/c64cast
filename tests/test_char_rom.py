@@ -19,6 +19,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from _fakes import quiet_logging
 from py65.devices.mpu6502 import MPU
 
 from c64cast.hw import char_rom
@@ -503,7 +504,7 @@ class InstallCharRomCliTest(_CharRomTestCase):
         from c64cast.app.cli import main
 
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with quiet_logging(), redirect_stdout(buf):
             rc = main(argv)
         return rc, buf.getvalue()
 
@@ -545,7 +546,7 @@ class DumpCharRomCliTest(_CharRomTestCase):
 
         buf = io.StringIO()
         with mock.patch("c64cast.app.cli_commands.make_backend", return_value=be):
-            with redirect_stdout(buf):
+            with quiet_logging(), redirect_stdout(buf):
                 rc = main(["--dump-char-rom", "-u", "u64://198.51.100.1"])
         return rc, buf.getvalue()
 

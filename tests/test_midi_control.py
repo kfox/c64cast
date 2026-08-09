@@ -867,6 +867,7 @@ class FeedbackLifecycleTests(_FeedbackListenerTestCase):
                 side_effect=lambda: setattr(lis, "_midi_port", _FakePort()),
             ),
             mock.patch.object(midi_control.mido, "get_output_names", return_value=[]),
+            self.assertLogs("c64cast.control.midi_control", level="WARNING"),
         ):
             lis.start()
         try:

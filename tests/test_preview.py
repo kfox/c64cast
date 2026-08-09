@@ -86,7 +86,8 @@ class PreviewWindowOpenTest(unittest.TestCase):
         cv2.namedWindow.side_effect = RuntimeError("no GUI support")
         with patch.object(preview_mod, "cv2", cv2):
             win = PreviewWindow(_fake_fb(), title="t")
-            win.open()  # must not raise
+            with self.assertLogs("c64cast.video.preview", level="ERROR"):
+                win.open()  # must not raise
         self.assertFalse(win.is_open)
 
     def test_is_open_false_before_open(self):

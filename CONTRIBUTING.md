@@ -106,6 +106,13 @@ writes to stdout in a `redirect_stdout`. Expected output left to print buries
 real failures. When a call both logs and raises, nest `assertLogs` *outside*
 `assertRaises` so the records are actually verified.
 
+Where the message is incidental — a warning from a subsystem the test only had
+to set up — `quiet_logging()` from [`tests/_fakes.py`](tests/_fakes.py) swallows
+it instead of asserting it. It also restores the root logger, which anything
+driving `cli.main()` needs: `configure_logging` replaces the root handlers
+process-wide, so without it that handler outlives the test and every later INFO
+record in the same worker prints, from modules with no connection to the CLI.
+
 Several tests exist purely to stop documentation from drifting — the JSON schema
 against the config metadata, the annotated example TOML against the dataclass
 fields, the `all` extra against the union of the other extras. If one of those

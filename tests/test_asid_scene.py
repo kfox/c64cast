@@ -29,7 +29,7 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI  # noqa: E402
+from _fakes import FakeAPI, quiet_logging  # noqa: E402
 
 from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.sid import asid  # noqa: E402
@@ -228,7 +228,10 @@ class AsidSceneTest(unittest.TestCase):
         # Seed a prior addressing value so restore has something to write back.
         api.config_store[CAT_ADDRESSING] = {"UltiSID Range Split": "Off"}
         self._bring_up(scene)
-        scene._reconfigure_chips(3)
+        # 3 chips outrun the 2 pannable UltiSID cores, which warns; the pan
+        # fallback has its own test, this one is about the teardown restore.
+        with quiet_logging():
+            scene._reconfigure_chips(3)
         api.config_puts.clear()
         scene.teardown()
         # The snapshotted split value is restored.

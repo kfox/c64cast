@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+import warnings
 from unittest.mock import MagicMock
 
 try:
@@ -24,7 +25,13 @@ try:
     # TestClient also needs httpx — fastapi declares it as an optional
     # extra, so installing a bare `fastapi` can still leave the import
     # failing at runtime. Catch any ImportError, not just fastapi's.
-    from fastapi.testclient import TestClient
+    # The import itself warns (starlette wants httpx2); that is a dependency
+    # decision, not something a test run should reprint on every worker. The
+    # filter is category-blind because starlette raises it as a UserWarning
+    # subclass that only it can name — and the block covers one import.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient
 
     HAVE_TESTCLIENT = True
 except (ImportError, RuntimeError):

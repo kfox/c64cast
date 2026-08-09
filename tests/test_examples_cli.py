@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
-from _fakes import MachineSettingsIsolation
+from _fakes import MachineSettingsIsolation, quiet_logging
 
 from c64cast.app import config as cfgmod
 from c64cast.app import introspect, paths
@@ -38,7 +38,7 @@ def tearDownModule():
 
 def _run(argv: list[str]) -> tuple[int, str]:
     buf = io.StringIO()
-    with redirect_stdout(buf):
+    with quiet_logging(), redirect_stdout(buf):
         rc = main(argv)
     return rc, buf.getvalue()
 
@@ -94,7 +94,8 @@ class PrintExampleTest(unittest.TestCase):
         self.assertEqual(len(cfg.scenes), 1)
 
     def test_unknown_name_is_a_usage_error(self):
-        self.assertEqual(main(["--print-example", "nope"]), 2)
+        with quiet_logging():
+            self.assertEqual(main(["--print-example", "nope"]), 2)
 
 
 class ConfigExamplePrefixTest(unittest.TestCase):

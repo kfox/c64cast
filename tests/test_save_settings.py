@@ -17,6 +17,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+from _fakes import quiet_logging
+
 from c64cast.app import config as cfgmod
 from c64cast.app.cli import main
 
@@ -30,7 +32,7 @@ class SaveSettingsTest(unittest.TestCase):
     def _main(self, argv: list[str]) -> tuple[int, str]:
         buf = io.StringIO()
         with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": self._settings}):
-            with redirect_stdout(buf):
+            with quiet_logging(), redirect_stdout(buf):
                 rc = main(argv)
         return rc, buf.getvalue()
 
@@ -92,7 +94,7 @@ class SaveSettingsTest(unittest.TestCase):
             os.environ,
             {"C64CAST_SETTINGS": self._settings, "C64CAST_DMA_PASSWORD": "topsecret"},
         ):
-            with redirect_stdout(buf):
+            with quiet_logging(), redirect_stdout(buf):
                 rc = main(["-u", "u64://box.lan", "--save-settings"])
         self.assertEqual(rc, 0)
         with open(self._settings) as f:

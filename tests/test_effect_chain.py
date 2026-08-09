@@ -227,7 +227,9 @@ class ChainRenderTest(unittest.TestCase):
         boom = _Boom()
         good = _Tagger(7)
         scene = _fake_scene([boom, good])
-        out = _apply_effect_chain(scene, _img(0), 0.0, None)
+        with self.assertLogs("c64cast.scenes.scenes", level="ERROR") as cm:
+            out = _apply_effect_chain(scene, _img(0), 0.0, None)
+        self.assertIn("disabling", "\n".join(cm.output))
         self.assertEqual(int(out[0, 0, 0]), 7)
         # The failing layer is removed from the chain, not retried next frame.
         self.assertNotIn(boom, scene.effects)
