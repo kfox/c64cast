@@ -17,6 +17,8 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 
 The Playlist calls `setup()` → `process_frame()` (repeatedly) → `teardown()` for each scene, with an interstitial scene — built by an injected `interstitial_factory` — between them.
 
+**`MediaFileMixin` — shared `file =` spec plumbing.** VideoScene, SlideshowScene, and LauncherScene each resolve a comma-separated file/dir/glob spec (`scene_factory.resolve_file_spec`), pick a random candidate at every `setup()` (directories rescan between iterations), and keep `self.name` showing the picked file; the three copies of that plumbing were identical modulo extensions and log label, so it lives once in the mixin. A concrete scene sets `MEDIA_EXTS`/`MEDIA_LABEL` class attrs and inherits `_resolve_candidates` / `_pick_filepath` / `prepare_next` / the build-time `_initial_scene_name`; SlideshowScene overrides `prepare_next` (it pre-loads the opening slide, not just a path pick) and ignores `_pick_filepath` in favor of its shuffle bag. The extension tuples themselves (`VIDEO_EXTS` & co., including `SID_EXTS`/`AUDIO_EXTS` for the non-mixin SID/audio sources) are defined at the top of `scenes.py` — not in `scene_factory`, which imports this module — and `scene_factory` re-exports them for the app layer (quickcast, wizard, CLI).
+
 ### `WebcamScene` — tuned for latency
 
 Each camera frame is pushed straight through, with no delay buffer.

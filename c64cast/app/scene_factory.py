@@ -40,6 +40,7 @@ from c64cast.audio.audio_source import (
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.hw.c64 import nmi_rate_safety
+from c64cast.scenes import scenes as _scenes
 from c64cast.scenes.effects import build_effect
 from c64cast.scenes.generators import GenerativeSource, build_generator
 from c64cast.scenes.overlays import build_overlay, paints_into_buffers, validate_for_scene
@@ -2252,13 +2253,15 @@ def scenes_from_config(
     return interleaved
 
 
-VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov", ".webm", ".m4v")
-SID_EXTS = (".sid",)
-PICTURE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
-PROGRAM_EXTS = (".prg", ".crt")
-# Audio-only formats — a generative scene with `audio_source = "file"` decodes
-# one (PyAV) to the DAC and reacts to it. Shared with quickcast.py.
-AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus")
+# The media-extension tuples live with the scene classes (scenes.scenes,
+# whose MediaFileMixin subclasses carry them as MEDIA_EXTS) and are
+# re-exported here — quickcast, wizard, and the CLI import them from this
+# module, the app layer's scene surface.
+VIDEO_EXTS = _scenes.VIDEO_EXTS
+SID_EXTS = _scenes.SID_EXTS
+PICTURE_EXTS = _scenes.PICTURE_EXTS
+PROGRAM_EXTS = _scenes.PROGRAM_EXTS
+AUDIO_EXTS = _scenes.AUDIO_EXTS
 
 # Default `file =` value for scenes that don't set one. The scene picks a
 # random file from the directory at each setup() (same as an explicit

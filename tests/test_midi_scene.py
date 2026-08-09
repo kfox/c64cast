@@ -652,7 +652,7 @@ class PaintTests(_MidiTestCase):
         self.assertIn("1:PUL", title)  # all three voices default to pulse
         self.assertIn("3:PUL", title)
         self.assertIn("VOL 15", title)
-        ctl = scene._build_controller_line()
+        ctl = scene._build_meta_line()
         self.assertIn("PW", ctl)
         self.assertIn("CUT", ctl)
 
@@ -683,7 +683,7 @@ class PaintTests(_MidiTestCase):
         scene, _ = _make_scene()
         scene._control_change(midi_scene._CC_CUTOFF, 64)
         scene._control_change(midi_scene._CC_RESONANCE, 127)
-        ctl = scene._build_controller_line()
+        ctl = scene._build_meta_line()
         self.assertIn(f"RES {scene.filter_resonance:2d}", ctl)
         self.assertEqual(len(ctl), 40)  # _paint_text_row needs exactly 40
 

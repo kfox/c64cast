@@ -42,20 +42,12 @@ import time
 
 from c64cast._midi import MIDI_AVAILABLE, open_input_port
 from c64cast._pollthread import PollThread
-from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, RegionID, cpu_clock
+from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import (
-    D018_HIRES_BITMAP,
-    META_ROW,
-    METADATA_TEXT_COLOR,
-    TITLE_ROW,
-    TITLE_TEXT_COLOR,
-    VoiceScopeRenderer,
-    _layout_lr,
-)
+from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
 
 log = logging.getLogger(__name__)
 
@@ -560,7 +552,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
     def _control_change(self, cc: int, value: int) -> None:
         """Map a MIDI continuous controller to a SID parameter. `value` is
         0..127. Unmapped CCs are ignored. The bottom controller row shows the
-        live state (see _build_controller_line)."""
+        live state (see _build_meta_line)."""
         if cc == _CC_VOLUME:  # master volume nibble
             self.master_volume = value >> 3
             self._write_mode_vol()
@@ -768,7 +760,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         )
         return _layout_lr(waves, f"VOL {self.master_volume:2d}")
 
-    def _build_controller_line(self) -> str:
+    def _build_meta_line(self) -> str:
         """Live controller state on the second row: pulse width %, filter
         cutoff (OPEN at max), resonance, and the A/D/R envelope nibbles. Per-
         voice note/velocity isn't shown — the colored-vs-gray voice strips
@@ -778,24 +770,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         a, d, _, r = self.adsr
         line = f"PW{pw_pct:3d}% CUT {cut} RES {self.filter_resonance:2d} A{a:X} D{d:X} R{r:X}"
         return line[:40].ljust(40)
-
-    def _paint_info_rows(self) -> None:
-        title_fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
-        self._paint_text_row(
-            TITLE_ROW,
-            self._build_title_line(),
-            title_fg,
-            RegionID.WAVE_TITLE_BITMAP,
-            RegionID.WAVE_TITLE_SCREEN,
-        )
-        meta_fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
-        self._paint_text_row(
-            META_ROW,
-            self._build_controller_line(),
-            meta_fg,
-            RegionID.WAVE_META_BITMAP,
-            RegionID.WAVE_META_SCREEN,
-        )
 
     # ---- per-voice waveform changes (SHIFT + Program Change) -----------------
     def _set_voice_waveform(self, idx: int, bits: int, name: str) -> None:

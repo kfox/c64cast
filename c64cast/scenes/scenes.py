@@ -29,7 +29,7 @@ import os
 import random
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import cv2
 import numpy as np
@@ -92,6 +92,18 @@ ONLINE_FIT_WARMUP_FRAMES = 48
 # video plays under -vv. The per-scene summary is logged once at teardown
 # (info, visible at -v). See VideoScene._log_av_lag.
 AV_LAG_LOG_INTERVAL_S = 2.0
+
+# Media extensions each file-driven scene accepts (`file =` spec resolution).
+# Defined here — not in scene_factory, which imports this module — so the
+# concrete scenes below can carry them as MEDIA_EXTS class attrs;
+# scene_factory re-exports them to the app layer (quickcast, wizard, CLI).
+VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov", ".webm", ".m4v")
+SID_EXTS = (".sid",)
+PICTURE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+PROGRAM_EXTS = (".prg", ".crt")
+# Audio-only formats — a generative scene with `audio_source = "file"` decodes
+# one (PyAV) to the DAC and reacts to it. Shared with quickcast.py.
+AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus")
 
 # Border color while a MIDI live-tune loop is armed (Record pressed / first
 # loop_toggle press, awaiting Stop/second press to close it) — C64 palette
@@ -908,7 +920,70 @@ class BlankScene(Scene):
             self.audio.stop()
 
 
-class SlideshowScene(Scene):
+class MediaFileMixin:
+    """Shared `file =` spec plumbing for the media-file scenes (slideshow /
+    video / launcher), which were three identical copies modulo extensions and
+    label. Owns candidate resolution, the random per-setup pick, and the
+    interstitial pre-pick; a concrete scene sets ``MEDIA_EXTS``/``MEDIA_LABEL``
+    and provides the annotated instance attrs."""
+
+    MEDIA_EXTS: ClassVar[tuple[str, ...]] = ()
+    MEDIA_LABEL: ClassVar[str] = ""
+
+    file_spec: str
+    filepath: str
+    name: str
+    _prepared: bool
+
+    def _resolve_candidates(self) -> list[str]:
+        from c64cast.app.scene_factory import resolve_file_spec
+
+        return resolve_file_spec(self.file_spec, self.MEDIA_EXTS, label=self.MEDIA_LABEL)
+
+    def _initial_scene_name(self, candidates: list[str]) -> str:
+        """The build-time scene name: the file's basename for a single-entry
+        pool, the raw spec for a multi-entry one (the picked file's basename
+        gets prefixed at each setup)."""
+        if len(candidates) == 1:
+            return f"{self.MEDIA_LABEL.title()}: {_display_name(candidates[0])}"
+        return f"{self.MEDIA_LABEL.title()}: {self.file_spec}"
+
+    def _pick_filepath(self) -> bool:
+        """Re-resolve the spec (directories rescan between iterations so
+        newly dropped files become eligible), pick a random candidate, and
+        refresh self.name to the picked file (extension stripped) so the
+        interstitial card + heartbeat log show it. Returns False if the spec
+        no longer resolves to anything."""
+        try:
+            candidates = self._resolve_candidates()
+        except ValueError as e:
+            log.error(
+                "%s: file spec %r failed to resolve at setup: %s",
+                self.MEDIA_LABEL,
+                self.file_spec,
+                e,
+            )
+            return False
+        self.filepath = random.choice(candidates)
+        self.name = f"{self.MEDIA_LABEL.title()}: {_display_name(self.filepath)}"
+        if len(candidates) > 1:
+            log.info(
+                "%s: picked %s from %d candidates",
+                self.MEDIA_LABEL,
+                os.path.basename(self.filepath),
+                len(candidates),
+            )
+        return True
+
+    def prepare_next(self) -> None:
+        """Pick the upcoming file now so the preceding interstitial shows
+        the real filename instead of the directory spec / a stale prior
+        pick. setup() consumes this pick (skips re-rolling)."""
+        if self._pick_filepath():
+            self._prepared = True
+
+
+class SlideshowScene(MediaFileMixin, Scene):
     """Cycle through still images for the scene's duration.
 
     File spec mirrors VideoScene's grammar (comma-separated paths,
@@ -928,6 +1003,9 @@ class SlideshowScene(Scene):
     webcam smoothing pipeline blends consecutive frames, which would
     produce ugly cross-fades between unrelated stills.
     """
+
+    MEDIA_EXTS = PICTURE_EXTS
+    MEDIA_LABEL = "slideshow"
 
     def __init__(
         self,
@@ -951,7 +1029,6 @@ class SlideshowScene(Scene):
         aspect_mode: str = "crop",
     ):
         from c64cast.app.config import ColorCfg
-        from c64cast.app.scene_factory import PICTURE_EXTS, resolve_file_spec
 
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
@@ -992,12 +1069,8 @@ class SlideshowScene(Scene):
         self._double_buffer_setting = double_buffer
         self._backend_supports_reu = backend_supports_reu
         self._audio_reu_pump_active = audio_reu_pump_active
-        candidates = resolve_file_spec(file, PICTURE_EXTS, label="slideshow")
-        if len(candidates) == 1:
-            scene_name = f"Slideshow: {_display_name(candidates[0])}"
-        else:
-            scene_name = f"Slideshow: {file}"
-        super().__init__(api, None, display_mode, scene_name)
+        candidates = self._resolve_candidates()
+        super().__init__(api, None, display_mode, self._initial_scene_name(candidates))
         self._shuffle_bag: list[str] = []
         self._current_path: str | None = None
         self._current_img: np.ndarray | None = None
@@ -1007,11 +1080,6 @@ class SlideshowScene(Scene):
         # updated self.name); setup() then skips the re-pick. See
         # VideoScene._prepared for the full rationale.
         self._prepared = False
-
-    def _resolve_candidates(self) -> list[str]:
-        from c64cast.app.scene_factory import PICTURE_EXTS, resolve_file_spec
-
-        return resolve_file_spec(self.file_spec, PICTURE_EXTS, label="slideshow")
 
     def _maybe_rebuild_display_mode(self) -> None:
         """When display_spec is "random", pick a fresh concrete mode and
@@ -1188,7 +1256,7 @@ class SlideshowScene(Scene):
         return True
 
 
-class VideoScene(Scene):
+class VideoScene(MediaFileMixin, Scene):
     """PyAV-driven A/V playback with audio-master sync.
 
     The demuxer runs on its own thread, pushing resampled audio straight into
@@ -1199,6 +1267,8 @@ class VideoScene(Scene):
     """
 
     WANTS_AUDIO_LOCK = True
+    MEDIA_EXTS = VIDEO_EXTS
+    MEDIA_LABEL = "video"
 
     def competes_for_audio_lock(self) -> bool:
         # A muted video (audio = false, or global [audio].enabled
@@ -1224,20 +1294,12 @@ class VideoScene(Scene):
         pool). The candidate pool is resolved here once; each `setup()`
         re-resolves so a directory's contents can change between scene
         repeats. Single-entry pools stay deterministic."""
-        from c64cast.app.scene_factory import VIDEO_EXTS, resolve_file_spec
-
         self.file_spec = file
         # Initial resolution so __init__ raises on bad specs (mirrors the
         # validate_scene_cfg check; also covers auto-interleaved scenes
         # built without going through validate). Picked again at setup.
-        candidates = resolve_file_spec(file, VIDEO_EXTS, label="video")
-        # Display the spec in the scene name when the pool has multiple
-        # entries — the picked file's basename gets prefixed at setup.
-        if len(candidates) == 1:
-            scene_name = f"Video: {_display_name(candidates[0])}"
-        else:
-            scene_name = f"Video: {file}"
-        super().__init__(api, audio, display_mode, scene_name)
+        candidates = self._resolve_candidates()
+        super().__init__(api, audio, display_mode, self._initial_scene_name(candidates))
         # True when prepare_next() has already chosen this iteration's file
         # (and updated self.name) so setup() consumes that pick instead of
         # re-rolling. Reset to False each setup so single-scene loops /
@@ -1301,39 +1363,6 @@ class VideoScene(Scene):
         # the record border, and the per-video loop preset store; reset in
         # setup() so a repeated/looped scene starts fresh.
         self.transport = VideoTransportControls(self, loop_audio=loop_audio)
-
-    def _resolve_candidates(self) -> list[str]:
-        from c64cast.app.scene_factory import VIDEO_EXTS, resolve_file_spec
-
-        return resolve_file_spec(self.file_spec, VIDEO_EXTS, label="video")
-
-    def _pick_filepath(self) -> bool:
-        """Re-resolve the spec (directories rescan between iterations so
-        newly dropped files become eligible), pick a random candidate, and
-        refresh self.name to the picked file (extension stripped) so the
-        interstitial card + heartbeat log show it. Returns False if the spec
-        no longer resolves to anything."""
-        try:
-            candidates = self._resolve_candidates()
-        except ValueError as e:
-            log.error("video: file spec %r failed to resolve at setup: %s", self.file_spec, e)
-            return False
-        self.filepath = random.choice(candidates)
-        self.name = f"Video: {_display_name(self.filepath)}"
-        if len(candidates) > 1:
-            log.info(
-                "video: picked %s from %d candidates",
-                os.path.basename(self.filepath),
-                len(candidates),
-            )
-        return True
-
-    def prepare_next(self) -> None:
-        """Pick the upcoming file now so the preceding interstitial shows
-        the real filename instead of the directory spec / a stale prior
-        pick. setup() consumes this pick (skips re-rolling)."""
-        if self._pick_filepath():
-            self._prepared = True
 
     def setup(self) -> None:
         # Consume a prepare_next() pick if there is one; otherwise pick now
@@ -1783,7 +1812,7 @@ class VideoScene(Scene):
         self._last_osd_shown = None
 
 
-class LauncherScene(Scene):
+class LauncherScene(MediaFileMixin, Scene):
     """Launch a native C64 program and hand the machine over to it.
 
     Resets the U64, then uploads + runs a `.prg` (firmware run_prg) or `.crt`
@@ -1819,6 +1848,8 @@ class LauncherScene(Scene):
     """
 
     WANTS_AUDIO_LOCK = True
+    MEDIA_EXTS = PROGRAM_EXTS
+    MEDIA_LABEL = "launcher"
 
     def competes_for_audio_lock(self) -> bool:
         # The launched program outputs through the real SID regardless of
@@ -1847,20 +1878,12 @@ class LauncherScene(Scene):
         launch_grace_s: float = 1.5,
         name: str | None = None,
     ):
-        from c64cast.app.scene_factory import PROGRAM_EXTS, resolve_file_spec
-
         self.file_spec = file
         # Resolve once so __init__ raises on a bad spec (mirrors
         # validate_scene_cfg; also covers any scene built without validation).
         # Re-resolved at each setup() so a dropped file becomes eligible.
-        candidates = resolve_file_spec(file, PROGRAM_EXTS, label="launcher")
-        if name:
-            scene_name = name
-        elif len(candidates) == 1:
-            scene_name = f"Launcher: {_display_name(candidates[0])}"
-        else:
-            scene_name = f"Launcher: {file}"
-        super().__init__(api, None, None, scene_name)
+        candidates = self._resolve_candidates()
+        super().__init__(api, None, None, name or self._initial_scene_name(candidates))
         self.input_source = input_source
         self.reset_before_launch = reset_before_launch
         self.bypass_audio_lock = bool(bypass_audio_lock)
@@ -1881,35 +1904,6 @@ class LauncherScene(Scene):
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
         # True when prepare_next() already picked this iteration's file.
         self._prepared = False
-
-    def _resolve_candidates(self) -> list[str]:
-        from c64cast.app.scene_factory import PROGRAM_EXTS, resolve_file_spec
-
-        return resolve_file_spec(self.file_spec, PROGRAM_EXTS, label="launcher")
-
-    def _pick_filepath(self) -> bool:
-        """Re-resolve the spec (dirs rescan between iterations), pick a random
-        candidate, refresh self.name. Returns False if nothing resolves."""
-        try:
-            candidates = self._resolve_candidates()
-        except ValueError as e:
-            log.error("launcher: file spec %r failed to resolve at setup: %s", self.file_spec, e)
-            return False
-        self.filepath = random.choice(candidates)
-        self.name = f"Launcher: {_display_name(self.filepath)}"
-        if len(candidates) > 1:
-            log.info(
-                "launcher: picked %s from %d candidates",
-                os.path.basename(self.filepath),
-                len(candidates),
-            )
-        return True
-
-    def prepare_next(self) -> None:
-        """Pick the upcoming program now so the preceding interstitial shows
-        the real filename. setup() consumes this pick."""
-        if self._pick_filepath():
-            self._prepared = True
 
     def setup(self) -> None:
         if self._prepared:

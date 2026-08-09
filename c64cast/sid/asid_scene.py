@@ -53,7 +53,7 @@ from collections.abc import Sequence
 
 from c64cast._midi import MIDI_AVAILABLE, open_input_port
 from c64cast._pollthread import PollThread
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0, RegionID
+from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
@@ -64,15 +64,7 @@ from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import (
-    D018_HIRES_BITMAP,
-    META_ROW,
-    METADATA_TEXT_COLOR,
-    TITLE_ROW,
-    TITLE_TEXT_COLOR,
-    VoiceScopeRenderer,
-    _layout_lr,
-)
+from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
 
 log = logging.getLogger(__name__)
 
@@ -560,24 +552,6 @@ class AsidScene(VoiceScopeRenderer, Scene):
         tags = " ".join(f"{i + 1}:{_WAVE_ABBREV.get(w, '---')}" for i, w in enumerate(waves))
         vol = self._sid_shadows[0][_MODE_VOL_OFFSET] & 0x0F
         return _layout_lr(tags, f"VOL {vol:2d}")
-
-    def _paint_info_rows(self) -> None:
-        title_fg = C64_COLORS.get(TITLE_TEXT_COLOR, C64_COLORS["white"])
-        self._paint_text_row(
-            TITLE_ROW,
-            self._build_title_line(),
-            title_fg,
-            RegionID.WAVE_TITLE_BITMAP,
-            RegionID.WAVE_TITLE_SCREEN,
-        )
-        meta_fg = C64_COLORS.get(METADATA_TEXT_COLOR, C64_COLORS["light gray"])
-        self._paint_text_row(
-            META_ROW,
-            self._build_meta_line(),
-            meta_fg,
-            RegionID.WAVE_META_BITMAP,
-            RegionID.WAVE_META_SCREEN,
-        )
 
     # ---- Scene lifecycle -----------------------------------------------------
     def setup(self) -> None:
