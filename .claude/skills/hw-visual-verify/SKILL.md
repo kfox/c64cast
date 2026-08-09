@@ -13,8 +13,19 @@ a USB video capture device is wired to the U64's HDMI output (e.g. Elgato Cam
 Link, AverMedia, any UVC capture stick), `cv2.VideoCapture(index)` will return
 a 1080p BGR frame you can `imwrite()` and Read.
 
-Don't write a capture script from scratch unless you need to. Use an existing
-script in scripts/diags if one is available.
+Don't write a capture script from scratch — the committed tooling covers both
+shapes of the job:
+
+- [scripts/diags/hdmi_capture.py](../../../scripts/diags/hdmi_capture.py) grabs
+  still frame(s) from the capture device (`-n`/`--delay` for a sequence,
+  `--full` for native 1080p pixel-peeking; it discards warm-up frames and
+  prints the written paths).
+- [scripts/diags/run_and_capture.py](../../../scripts/diags/run_and_capture.py)
+  is the full launch–capture–reset harness: it starts audio capture *before*
+  c64cast (so the boot window isn't missed), grabs frames across the run, and
+  resets the machine on exit.
+
+Improve these rather than writing throwaway variants.
 
 **Ask the user before assuming a capture is available** — they vary by machine. If
 one is present, use it for verification of any visual change (overlays, display
@@ -27,8 +38,8 @@ when the `camera` extra (cv2-enumerate-cameras) is installed — so the Cam Link
 identifiable by its Elgato VID rather than by trial-and-error index probing.
 
 `[video].device` also accepts a name substring or `VID:PID` string (resolved via
-[camera.py](../../../c64cast/camera.py) `resolve_camera_index`), so a webcam scene
-can target the capture stick stably.
+[camera.py](../../../c64cast/control/camera.py) `resolve_camera_index`), so a
+webcam scene can target the capture stick stably.
 
 ## Scope
 

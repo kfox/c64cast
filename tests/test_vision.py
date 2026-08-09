@@ -250,13 +250,17 @@ class VisionControllerTest(unittest.TestCase):
     def test_fast_swipe_skips(self):
         # Sustained horizontal wrist motion (x flips across the frame) past the
         # settle window → skip. Needs >SWIPE_SETTLE_FRAMES frames of motion.
+        # Driven on the virtual clock, not a thread: the swipe verdict divides
+        # wrist travel by inter-tick time, so on a loaded runner real ticks
+        # stretch, the computed speed drops below swipe_velocity, and the
+        # gesture legitimately never fires (the windows-latest flake the
+        # perf-mode tests already fixed this way).
         ctl = _controller([fist(0.1), fist(0.9), fist(0.1), fist(0.9)], swipe_velocity=1.0)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
-        ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
-        self.assertTrue(skip.wait(0.5), "fast wrist motion should set skip_event")
+        _drive_ticks(ctl, 5, pause, resume, skip=skip, cycle=cycle)
+        self.assertTrue(skip.is_set(), "fast wrist motion should set skip_event")
         self.assertFalse(pause.is_set())
-        ctl.stop()
 
     def test_vertical_raise_is_not_a_swipe(self):
         # Raising the hand = fast VERTICAL motion (x constant, y changes). Must
