@@ -1,7 +1,7 @@
 # assets/models/
 
 ML model files for the **vision controller** (webcam hand-gesture control —
-see [c64cast/vision.py](../../c64cast/vision.py)). Like the rest of
+see [c64cast/control/vision.py](../../c64cast/control/vision.py)). Like the rest of
 `assets/`, the model files themselves are `.gitignore`d; only this README is
 tracked.
 

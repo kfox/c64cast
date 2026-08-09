@@ -555,10 +555,11 @@ class AudioCfg:
         },
     )
     # Mahoney 8-bit $D418 companding. "auto" (default) picks the best curve for
-    # the connected system: a per-unit calibrated table if one exists (see
-    # --calibrate-dac), else "mahoney_ultisid" on the Ultimate (its emulated SID
-    # is deterministic), else "linear" (a physical/unknown SID with no
-    # calibration — the baked emulated table would not match it). "linear" = the
+    # the SID that actually answers $D400: a per-unit calibrated table if one
+    # applies (see --calibrate-dac), else "mahoney_ultisid" when an UltiSID core
+    # owns that address (the emulated SID is deterministic), else "linear" (a
+    # physical/unknown SID with no calibration — the baked emulated table would
+    # not match it, see dac_curve_resolve.py). "linear" = the
     # classic 4-bit volume-nibble DAC. "mahoney_ultisid" parks the SID voices as
     # DC sources and writes the full $D418 byte per sample (volume + filter-mode
     # + 3-off bits) for ~6-7 effective bits, using a baked table measured on the
@@ -568,9 +569,11 @@ class AudioCfg:
     dac_curve: str = field(
         default="auto",
         metadata={
-            "help": "SID $D418 DAC companding curve. 'auto' (default) = per-system "
-            "calibrated table if present, else 'mahoney_ultisid' on the Ultimate, "
-            "else 'linear'. 'linear' = classic 4-bit volume nibble. 'mahoney_ultisid' "
+            "help": "SID $D418 DAC companding curve. 'auto' (default) = calibrated "
+            "table for the SID answering $D400 if present, else 'mahoney_ultisid' "
+            "when an UltiSID core owns $D400, else 'linear' (an uncalibrated "
+            "physical chip — run --calibrate-dac to measure it). "
+            "'linear' = classic 4-bit volume nibble. 'mahoney_ultisid' "
             "= Mahoney 8-bit technique (full $D418 byte, ~6-7 effective bits) with the "
             "baked emulated-UltiSID table. 'calibrated' = this system's per-unit table "
             "from --calibrate-dac (errors if none). Non-linear curves require the "
@@ -589,7 +592,9 @@ class AudioCfg:
         default=None,
         metadata={
             "help": "Override the auto-derived calibration file key (device unique_id / "
-            "TR USB serial) with a name — calibration/dac/profile-<name>.json — or with "
+            "TR USB serial) with a name — calibration/dac/profile-<name>.json, or an "
+            "existing file's own name (e.g. the device-keyed 'ultimate-<id>' that "
+            "--calibrate-dac writes), used as-is — or with "
             "a path to a calibration file, used as given. Use when a TeensyROM+ moves "
             "between physical C64s (name each host's calibration once at --calibrate-dac "
             "time, then pass the same name on every playback run against that host), or "

@@ -109,7 +109,7 @@ Every name c64cast answers to — 410 of them — and the pages that discuss eac
 | `--dac-calibration-profile` | [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `dac_bitmap_tempo_hires` | [The Bitmap-and-DAC Time Stretch (4)](05-sound-and-music.md#the-bitmap-and-dac-time-stretch), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `dac_bitmap_tempo_mhires` | [The Bitmap-and-DAC Time Stretch (4)](05-sound-and-music.md#the-bitmap-and-dac-time-stretch), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `dac_calibration_profile` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
+| `dac_calibration_profile` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `dac_curve` | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `date_format` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `[debug]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`debug` (A)](20-appendix-a-configuration.md#debug) |
