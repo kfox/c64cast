@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import importlib.util
 import io
 import os
@@ -219,6 +220,40 @@ class TestReleaseWorkflow(unittest.TestCase):
             with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
                 bv.main([flag, "--definitely-not-a-flag", "1.2.3"])
             self.assertNotIn(f"unrecognized arguments: {flag}", err.getvalue())
+
+    def _smoke_test_imports(self) -> list[tuple[str, str, object]]:
+        """Every `from c64cast... import X` in the workflow, resolved."""
+        pairs = re.findall(r"(?m)^\s*from (c64cast[\w.]*) import (\w+)$", self.code)
+        self.assertTrue(pairs, "the wheel smoke test no longer imports c64cast")
+        resolved: list[tuple[str, str, object]] = []
+        for package, name in pairs:
+            try:
+                # A submodule is not an attribute of its package until imported,
+                # so the plain attribute lookup has to come second.
+                member: object = importlib.import_module(f"{package}.{name}")
+            except ImportError:
+                member = getattr(importlib.import_module(package), name, None)
+            self.assertIsNotNone(
+                member,
+                f"release.yml imports {name} from {package}, which has no such member",
+            )
+            resolved.append((package, name, member))
+        return resolved
+
+    def test_the_smoke_test_imports_modules_that_exist(self) -> None:
+        # The smoke test runs against an installed wheel from outside the
+        # checkout, so nothing but a release exercises these imports -- a module
+        # that moves in a refactor fails at the tag, after the merge.
+        self._smoke_test_imports()
+
+    def test_the_smoke_test_calls_functions_that_exist(self) -> None:
+        for _, name, member in self._smoke_test_imports():
+            for call in re.findall(rf"(?m)^\s*\w+ = {name}\.(\w+)\(", self.code):
+                with self.subTest(f"{name}.{call}()"):
+                    self.assertTrue(
+                        callable(getattr(member, call, None)),
+                        f"release.yml calls {name}.{call}(), which is gone",
+                    )
 
     def test_it_renders_the_books_through_the_make_target(self) -> None:
         self.assertIn("make books", self.code)

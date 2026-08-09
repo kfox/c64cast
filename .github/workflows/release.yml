@@ -85,7 +85,7 @@ jobs:
           uv run --no-project --with "$wheel" c64cast --list-examples > /dev/null
           uv run --no-project --with "$wheel" c64cast --print-example hello > /dev/null
           uv run --no-project --with "$wheel" python -c "
-          from c64cast import paths
+          from c64cast.app import paths
           schema = paths.packaged_schema_path()
           assert schema.is_file(), f'schema missing from the wheel: {schema}'
           names = paths.example_config_paths()
