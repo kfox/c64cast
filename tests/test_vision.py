@@ -331,17 +331,20 @@ class VisionPerformanceModeTest(unittest.TestCase):
     """Live DJ/VJ Phase 6: a bound playlist remaps RUNNING gestures to the
     clip-launch grid (swipe = next clip, pinch = fx0 bypass, open = fx1 bypass)."""
 
+    # Driven through _drive_ticks like the transport tests above: the swipe
+    # decision divides wrist movement by real inter-tick dt, so the threaded
+    # version's positives depended on the poll thread keeping ~5 ms pacing —
+    # a loaded CI box stretched dt, the computed speed fell under the
+    # threshold, and the swipe legitimately never fired (went red on
+    # windows-latest py3.11). Virtual ticks make the gesture math exact.
+
     def test_swipe_launches_next_clip_not_skip(self):
         ctl = _controller([fist(0.1), fist(0.9), fist(0.1), fist(0.9)], swipe_velocity=1.0)
         perf = _FakePerfPlaylist()
         ctl.bind_performance(perf)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
-        ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
-        deadline = time.time() + 0.5
-        while perf.performance.advanced == 0 and time.time() < deadline:
-            time.sleep(0.01)
-        ctl.stop()
+        _drive_ticks(ctl, 5, pause, resume, skip=skip, cycle=cycle)
         self.assertGreaterEqual(perf.performance.advanced, 1, "swipe should advance the clip grid")
         self.assertFalse(skip.is_set(), "in performance mode a swipe must not skip")
 
@@ -351,11 +354,7 @@ class VisionPerformanceModeTest(unittest.TestCase):
         ctl.bind_performance(perf)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
-        ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
-        deadline = time.time() + 0.5
-        while not perf.toggled and time.time() < deadline:
-            time.sleep(0.01)
-        ctl.stop()
+        _drive_ticks(ctl, 4, pause, resume, skip=skip, cycle=cycle)
         self.assertIn(0, perf.toggled, "pinch-hold should bypass fx layer 0")
         self.assertFalse(pause.is_set(), "in performance mode a pinch must not pause")
 
@@ -365,24 +364,21 @@ class VisionPerformanceModeTest(unittest.TestCase):
         ctl.bind_performance(perf)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
-        ctl.start(pause, resume, skip_event=skip, cycle_event=cycle)
-        deadline = time.time() + 0.5
-        while not perf.toggled and time.time() < deadline:
-            time.sleep(0.01)
-        ctl.stop()
+        _drive_ticks(ctl, 4, pause, resume, skip=skip, cycle=cycle)
         self.assertIn(1, perf.toggled, "open-hand-hold should bypass fx layer 1")
         self.assertFalse(cycle.is_set(), "in performance mode open-hand must not cycle style")
 
     def test_paused_pinch_still_resumes_in_performance_mode(self):
-        # The paused-state resume gesture is unchanged whether or not perf is bound.
+        # The paused-state resume gesture is unchanged whether or not perf is
+        # bound. hold_threshold 0.05 s at 0.005 s virtual ticks = held after
+        # 10 ticks; drive 15 so the accrual provably crosses it.
         ctl = _controller([pinch()], hold_threshold_s=0.05)
         perf = _FakePerfPlaylist()
         ctl.bind_performance(perf)
         pause, resume = threading.Event(), threading.Event()
         pause.set()
-        ctl.start(pause, resume)
-        self.assertTrue(resume.wait(0.5), "pinch-hold while paused should still resume")
-        ctl.stop()
+        _drive_ticks(ctl, 15, pause, resume)
+        self.assertTrue(resume.is_set(), "pinch-hold while paused should still resume")
 
     def test_stop_closes_recognizer(self):
         rec = FakeRecognizer([None])
