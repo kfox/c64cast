@@ -242,9 +242,14 @@ class StreamerTest(unittest.TestCase):
         self.assertTrue(np.all(recent > 0.4))
 
     def test_set_pre_emphasis_is_noop(self):
-        # Scene.setup calls this on the audio object regardless of backend.
-        smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
-        smp.set_pre_emphasis(0.9)  # must not raise
+        # Scene.setup calls this on the audio object regardless of backend;
+        # on the sampler it must neither raise nor touch the hardware.
+        api = _FakeBackend()
+        smp = _make(api, sample_rate=44100, bits=16)
+        smp.set_pre_emphasis(0.9)
+        self.assertEqual(
+            (api.reu_writes, api.reg_writes, api.mem_writes, api.flushes), ([], [], [], 0)
+        )
 
 
 # ---------------------------------------------------------------------------

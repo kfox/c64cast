@@ -9,24 +9,11 @@ from __future__ import annotations
 import time
 import unittest
 
+from _fakes import make_psid
+
 from c64cast.hw.c64 import SID
 from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.music_features import SidFeatureStream
-
-
-def _make_sid(*, init=0x1000, play=0x1001, payload=(0x60, 0x60), load=0x1000) -> bytes:
-    """Minimal runnable PSID v2 (RTS init/play) — INIT/PLAY no-op, so the
-    feature math is driven entirely by the snapshots we feed _process_tick."""
-    h = bytearray(124)
-    h[0:4] = b"PSID"
-    h[4:6] = (2).to_bytes(2, "big")
-    h[6:8] = (0x7C).to_bytes(2, "big")
-    h[8:10] = load.to_bytes(2, "big")
-    h[10:12] = init.to_bytes(2, "big")
-    h[12:14] = play.to_bytes(2, "big")
-    h[14:16] = (1).to_bytes(2, "big")  # num_songs
-    h[16:18] = (1).to_bytes(2, "big")  # start_song
-    return bytes(h) + bytes(payload)
 
 
 def _regs(*, gate: bool, freq: int = 0x2000, voice: int = 0, sustain: int = 0xF) -> bytes:
@@ -53,7 +40,7 @@ class _PrimedStream(SidFeatureStream):
 
 class FeatureMathTest(unittest.TestCase):
     def setUp(self):
-        self.sid = _make_sid()
+        self.sid = make_psid()
 
     def test_features_none_before_prepare(self):
         s = SidFeatureStream(self.sid, song=0, system="NTSC")
@@ -157,7 +144,7 @@ class FeatureMathTest(unittest.TestCase):
 
 class StreamLifecycleTest(unittest.TestCase):
     def test_start_stop_smoke_produces_features(self):
-        s = SidFeatureStream(_make_sid(), song=0, system="NTSC")
+        s = SidFeatureStream(make_psid(), song=0, system="NTSC")
         s.start()
         try:
             # Give the poll thread a moment to run a few PLAY ticks.

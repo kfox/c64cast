@@ -21,6 +21,7 @@ from c64cast.hw.socket_dma import (
     CMD_IDENTIFY,
     CMD_KEYB,
     CMD_RESET,
+    CMD_REUWRITE,
     SocketDMAClient,
     SocketDMAError,
 )
@@ -174,6 +175,31 @@ class WireEncodingTest(unittest.TestCase):
     def test_keyb_encoding(self):
         self.client.keyb(b"RUN\r")
         expected = struct.pack("<HH", CMD_KEYB, 4) + b"RUN\r"
+        self.assertEqual(self._new(), expected)
+
+    def test_reuwrite_encoding(self):
+        # REUWRITE carries a 24-bit little-endian REU offset (3 bytes, not
+        # the 16-bit C64 address DMAWRITE uses) before the data. Every REU
+        # audio/video/mic preload rides on this command; elsewhere it's
+        # only exercised through FakeSocketDMA, so the call is verified
+        # but the bytes never were.
+        self.client.reuwrite(0x012345, b"\xaa\xbb")
+        expected = (
+            struct.pack("<HH", CMD_REUWRITE, 5)  # 3 offset + 2 data
+            + b"\x45\x23\x01"  # 0x012345 little-endian, 24-bit
+            + b"\xaa\xbb"
+        )
+        self.assertEqual(
+            self._new(),
+            expected,
+            "REUWRITE bytes don't match — wire format regression!",
+        )
+
+    def test_reuwrite_offset_uses_all_24_bits(self):
+        # The top byte must survive: a 16-bit truncation would alias every
+        # REU bank onto the first 64 KiB and silently corrupt the preload.
+        self.client.reuwrite(0xFEDCBA, b"\x01")
+        expected = struct.pack("<HH", CMD_REUWRITE, 4) + b"\xba\xdc\xfe" + b"\x01"
         self.assertEqual(self._new(), expected)
 
 

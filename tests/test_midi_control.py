@@ -483,8 +483,10 @@ class ParamActionTests(_MidiControlTestCase):
             {"system": pl},
             [{"type": "cc", "number": 13, "action": "param", "target": "effect.decay"}],
         )
-        # Should not raise.
+        # Must not raise — and must not post the "param applied" OSD
+        # feedback for a change that never landed.
         listener._dispatch(mido.Message("control_change", control=13, value=64))
+        pl.post_osd.assert_not_called()
 
     def test_no_current_scene_is_noop(self):
         pl = _fake_playlist("system")
@@ -494,6 +496,7 @@ class ParamActionTests(_MidiControlTestCase):
             [{"type": "cc", "number": 13, "action": "param", "target": "effect.decay"}],
         )
         listener._dispatch(mido.Message("control_change", control=13, value=64))
+        pl.post_osd.assert_not_called()
 
     def test_scene_prefix_targets_the_scene_itself(self):
         # `scene.<name>` resolves the holder to the scene, not a source/effect

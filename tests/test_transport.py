@@ -164,6 +164,9 @@ class DispatchTests(unittest.TestCase):
         session = TransportSession()
         session.enqueue(TransportEvent(action="play_pause"))
         _tick(session, pl, 0.0)  # must not raise
+        # The event must be CONSUMED, not left queued — a survivor would
+        # fire against whatever scene becomes current next frame.
+        self.assertTrue(session._queue.empty())
 
     def test_transitioning_is_noop(self):
         scene = _StubScene()
@@ -178,6 +181,7 @@ class DispatchTests(unittest.TestCase):
         session = TransportSession()
         session.enqueue(TransportEvent(action="play_pause"))
         _tick(session, pl, 0.0)  # must not raise
+        self.assertTrue(session._queue.empty(), "event must be consumed, not left queued")
 
 
 class JogTests(unittest.TestCase):
@@ -401,8 +405,11 @@ class LoopPresetStoreTests(unittest.TestCase):
         self.assertEqual(self.store.load(), {})
 
     def test_delete_missing_slot_is_noop(self):
+        # A miss must leave existing slots untouched (not rewrite the file
+        # to empty) — "no-op" means state-unchanged, not just "no crash".
+        self.store.save(2, 5.0, None)
         self.store.delete(9)  # must not raise
-        self.assertEqual(self.store.load(), {})
+        self.assertEqual(self.store.load(), {"2": {"a": 5.0, "b": None}})
 
     def test_corrupt_file_reads_empty(self):
         self.store.path.parent.mkdir(parents=True, exist_ok=True)

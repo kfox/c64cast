@@ -31,12 +31,6 @@ from c64cast.sid.asid_sidmap import (
 from c64cast.sid.sid_host_emu import SidHeader
 
 
-def _ultimate_fake(*, supports_config: bool = True) -> FakeAPI:
-    api = FakeAPI()
-    api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=supports_config)
-    return api
-
-
 def _header(
     *, sid_addresses: tuple[int, ...] = (0xD400,), sid_models: tuple[str | None, ...] = (None,)
 ) -> SidHeader:
@@ -185,7 +179,7 @@ class ResolveSidModelCfgTest(unittest.TestCase):
 
 class CurrentAddrMapTest(unittest.TestCase):
     def test_reads_live_addressing_and_sockets(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_SOCKETS] = {ITEM_SOCKET1_EN: "Enabled", ITEM_SOCKET2_EN: "Disabled"}
         api.config_store[CAT_ADDRESSING] = {
             ITEM_SOCKET1_ADDR: "$D400",
@@ -211,7 +205,7 @@ class CurrentAddrMapTest(unittest.TestCase):
         # HW-observed: with Auto Address Mirroring enabled (the factory
         # default resting state), an UltiSID core and an enabled socket can
         # both report the same base — only the socket is actually audible.
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_SOCKETS] = {ITEM_SOCKET1_EN: "Enabled"}
         api.config_store[CAT_ADDRESSING] = {
             ITEM_SOCKET1_ADDR: "$D400",
@@ -222,20 +216,20 @@ class CurrentAddrMapTest(unittest.TestCase):
 
 class PlanModelConfigForHeaderTest(unittest.TestCase):
     def test_off_short_circuits(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         plan = sa.plan_model_config_for_header(api, _header(), "off")
         self.assertIsNone(plan)
         self.assertEqual(api.config_puts, [])
 
     def test_no_config_api_short_circuits(self):
-        api = _ultimate_fake(supports_config=False)
+        api = FakeAPI.ultimate(supports_config=False)
         header = _header(sid_addresses=(0xD400,), sid_models=("8580",))
         plan = sa.plan_model_config_for_header(api, header, "auto")
         self.assertIsNone(plan)
         self.assertEqual(api.config_puts, [])
 
     def test_auto_uses_header_models(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_SOCKETS] = {
             ITEM_SOCKET1_EN: "Enabled",
             ITEM_SOCKET1_TYPE: "6581",
@@ -257,7 +251,7 @@ class PlanModelConfigForHeaderTest(unittest.TestCase):
         )
 
     def test_explicit_override_forces_every_chip_ignoring_header(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_SOCKETS] = {
             ITEM_SOCKET1_EN: "Enabled",
             ITEM_SOCKET1_TYPE: "6581",
@@ -285,18 +279,18 @@ class PlanModelConfigForHeaderTest(unittest.TestCase):
 
 class ApplySidAutoconfigTest(unittest.TestCase):
     def test_off_makes_no_rest_calls_and_returns_empty(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         saved = sa.apply_sid_autoconfig(api, _header(), "off")
         self.assertEqual(saved, {})
         self.assertEqual(api.config_puts, [])
 
     def test_no_config_api_returns_empty(self):
-        api = _ultimate_fake(supports_config=False)
+        api = FakeAPI.ultimate(supports_config=False)
         saved = sa.apply_sid_autoconfig(api, _header(sid_models=("8580",)), "auto")
         self.assertEqual(saved, {})
 
     def test_already_matching_applies_nothing(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_SOCKETS] = {ITEM_SOCKET1_EN: "Enabled", ITEM_SOCKET1_TYPE: "6581"}
         api.config_store[CAT_ADDRESSING] = {ITEM_SOCKET1_ADDR: "$D400"}
         header = _header(sid_addresses=(0xD400,), sid_models=("6581",))
@@ -305,7 +299,7 @@ class ApplySidAutoconfigTest(unittest.TestCase):
         self.assertEqual(api.config_puts, [])
 
     def test_swap_applies_and_returns_restorable_snapshot(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_SOCKETS] = {
             ITEM_SOCKET1_EN: "Enabled",
             ITEM_SOCKET1_TYPE: "6581",

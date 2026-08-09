@@ -9,6 +9,8 @@ from collections import deque
 from typing import cast
 from unittest import mock
 
+from _fakes import FrozenClock
+
 from c64cast.control import keyboard as keyboard_mod
 from c64cast.control.keyboard import (
     ADDR_KB_BUFFER,
@@ -18,20 +20,6 @@ from c64cast.control.keyboard import (
 )
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import KEYBUF
-
-
-class _TickClock:
-    """A `time` stand-in for driving CommodoreKeyPoller._tick synchronously:
-    monotonic() returns a hand-advanced value, so a scripted press/release
-    schedule means exactly what it says regardless of host load. Bound over
-    the keyboard module's own `time` name (see _fakes.FrozenClock's warning
-    about never patching the stdlib module itself)."""
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def monotonic(self) -> float:
-        return self.now
 
 
 class FakeApi:
@@ -61,6 +49,42 @@ class FakeApi:
     @property
     def stats(self):
         return {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
+
+
+def _drive_ticks(
+    poller,
+    ticks,
+    pause,
+    resume,
+    *,
+    skip=None,
+    cycle=None,
+    menu_event=None,
+    menu_active=None,
+    menu_eligible=None,
+    nav_queue=None,
+):
+    """Drive the poller's state machine synchronously: one scripted read per
+    tick on a virtual clock, no poll thread. The threaded version of the
+    negative tests slept and then asserted an event was still clear — which
+    stays green even with the feature deleted whenever a loaded box keeps
+    the poll thread from running inside the sleep window. After N
+    synchronous ticks, "nothing fired" means the state machine said no."""
+    poller._pause_event = pause
+    poller._resume_event = resume
+    poller._skip_event = skip
+    poller._cycle_event = cycle
+    poller._menu_event = menu_event
+    poller._menu_active = menu_active
+    poller._menu_eligible = menu_eligible
+    poller._nav_queue = nav_queue
+    state = keyboard_mod._KeyPollState()
+    clock = FrozenClock(0.0, "monotonic")
+    with mock.patch.object(keyboard_mod, "time", clock):
+        for _ in range(ticks):
+            poller._tick(state)
+            clock.advance(poller.poll_interval_s)
+    return state
 
 
 class CommodoreKeyPollerTest(unittest.TestCase):
@@ -127,14 +151,7 @@ class CommodoreKeyPollerTest(unittest.TestCase):
         # legitimately before the release sample was ever read. Virtual
         # ticks advance exactly poll_interval_s apiece, so the schedule the
         # script encodes is the schedule the state machine sees.
-        poller._pause_event = pause
-        poller._resume_event = resume
-        state = keyboard_mod._KeyPollState()
-        clock = _TickClock()
-        with mock.patch.object(keyboard_mod, "time", clock):
-            for _ in seq:
-                poller._tick(state)
-                clock.now += 0.02
+        _drive_ticks(poller, len(seq), pause, resume)
         self.assertFalse(resume.is_set(), "release in the middle should reset the hold timer")
 
     def test_read_failure_does_not_trigger_pause(self):
@@ -146,10 +163,8 @@ class CommodoreKeyPollerTest(unittest.TestCase):
         pause = threading.Event()
         resume = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
-        poller.start(pause, resume)
-        time.sleep(0.15)
+        _drive_ticks(poller, 5, pause, resume)
         self.assertFalse(pause.is_set(), "read failures must not phantom-press")
-        poller.stop()
 
 
 class CtrlSkipTest(unittest.TestCase):
@@ -175,11 +190,9 @@ class CtrlSkipTest(unittest.TestCase):
         resume = threading.Event()
         skip = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
-        poller.start(pause, resume, skip_event=skip)
-        time.sleep(0.15)
+        _drive_ticks(poller, 5, pause, resume, skip=skip)
         self.assertFalse(skip.is_set(), "CTRL while paused must be ignored")
         self.assertFalse(resume.is_set(), "CTRL while paused must not trigger resume either")
-        poller.stop()
 
     def test_ctrl_dropped_when_no_skip_event_provided(self):
         # Backwards compat: existing callers that don't pass skip_event
@@ -189,10 +202,8 @@ class CtrlSkipTest(unittest.TestCase):
         pause = threading.Event()
         resume = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
-        poller.start(pause, resume)  # no skip_event
-        time.sleep(0.1)
+        _drive_ticks(poller, 4, pause, resume)  # no skip event wired
         self.assertFalse(pause.is_set())
-        poller.stop()
 
     def test_simultaneous_cbm_and_ctrl_prefers_pause(self):
         # Frame-perfect chord: $02 | $04 = $06. Pause wins; skip dropped.
@@ -267,11 +278,9 @@ class ShiftCycleTest(unittest.TestCase):
         resume = threading.Event()
         cycle = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
-        poller.start(pause, resume, cycle_event=cycle)
-        time.sleep(0.15)
+        _drive_ticks(poller, 5, pause, resume, cycle=cycle)
         self.assertFalse(cycle.is_set(), "SHIFT while paused must be ignored")
         self.assertFalse(resume.is_set(), "SHIFT while paused must not trigger resume either")
-        poller.stop()
 
     def test_shift_dropped_when_no_cycle_event_provided(self):
         # Backwards compat: callers that don't pass cycle_event still work.
@@ -280,10 +289,8 @@ class ShiftCycleTest(unittest.TestCase):
         pause = threading.Event()
         resume = threading.Event()
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
-        poller.start(pause, resume)
-        time.sleep(0.1)
+        _drive_ticks(poller, 4, pause, resume)  # no cycle event wired
         self.assertFalse(pause.is_set())
-        poller.stop()
 
     def test_shift_chord_with_cbm_drops_cycle(self):
         # SHIFT + C= → pause wins, cycle suppressed.
@@ -371,7 +378,9 @@ class MenuInputTest(unittest.TestCase):
 
     def test_no_buffer_read_when_menu_not_wired(self):
         # menu_event None → the poller must never touch the keyboard buffer
-        # (read load stays $028D-only). A buffer read here would raise.
+        # (read load stays $028D-only). Driven synchronously so a buffer
+        # read raises HERE — on the old poll thread the AssertionError died
+        # with the thread and unittest never saw it.
         class ModOnlyApi(MenuKeyApi):
             def read_memory(self, address, length, timeout=1.0):
                 assert address == ADDR_MODIFIERS, "must not read the buffer when menu unwired"
@@ -380,14 +389,13 @@ class MenuInputTest(unittest.TestCase):
         api = ModOnlyApi()
         poller = _menu_poller(api)
         pause, resume = threading.Event(), threading.Event()
-        poller.start(pause, resume)  # no menu params
-        time.sleep(0.08)
-        poller.stop()  # no assertion error ⇒ pass
+        _drive_ticks(poller, 5, pause, resume)  # no menu params
 
     def test_no_buffer_read_when_not_eligible(self):
         # menu wired but neither open nor eligible (e.g. a kernal-input
         # launcher scene): the poller must NOT read/clear the buffer — $00C6
-        # is the launcher's own to watch. A buffer read here would raise.
+        # is the launcher's own to watch. A buffer read raises in-thread
+        # (same rationale as test_no_buffer_read_when_menu_not_wired).
         class ModOnlyApi(MenuKeyApi):
             def read_memory(self, address, length, timeout=1.0):
                 assert address == ADDR_MODIFIERS, "must not touch the buffer when not eligible"
@@ -398,15 +406,15 @@ class MenuInputTest(unittest.TestCase):
         pause, resume = threading.Event(), threading.Event()
         menu_event, menu_active, menu_eligible = (threading.Event() for _ in range(3))
         # eligible NOT set, active NOT set
-        poller.start(
+        _drive_ticks(
+            poller,
+            5,
             pause,
             resume,
             menu_event=menu_event,
             menu_active=menu_active,
             menu_eligible=menu_eligible,
         )
-        time.sleep(0.08)
-        poller.stop()
 
     def test_menu_active_suspends_pause_skip_cycle(self):
         # With menu_active set, C=/CTRL/SHIFT must NOT fire pause/skip/cycle.
@@ -415,19 +423,19 @@ class MenuInputTest(unittest.TestCase):
         pause, resume, skip, cycle = (threading.Event() for _ in range(4))
         menu_event, menu_active = threading.Event(), threading.Event()
         menu_active.set()
-        poller.start(
+        _drive_ticks(
+            poller,
+            5,
             pause,
             resume,
-            skip_event=skip,
-            cycle_event=cycle,
+            skip=skip,
+            cycle=cycle,
             menu_event=menu_event,
             menu_active=menu_active,
         )
-        time.sleep(0.1)
         self.assertFalse(pause.is_set(), "menu open: C= must not pause")
         self.assertFalse(skip.is_set(), "menu open: CTRL must not skip")
         self.assertFalse(cycle.is_set(), "menu open: SHIFT must not cycle")
-        poller.stop()
 
     def test_space_while_active_toggles_menu_closed(self):
         api = MenuKeyApi()
@@ -466,9 +474,9 @@ class MenuInputTest(unittest.TestCase):
         pause, resume = threading.Event(), threading.Event()
         menu_event, menu_active = threading.Event(), threading.Event()
         menu_active.set()
-        poller.start(pause, resume, menu_event=menu_event, menu_active=menu_active, nav_queue=nav)
-        time.sleep(0.1)
-        poller.stop()
+        _drive_ticks(
+            poller, 3, pause, resume, menu_event=menu_event, menu_active=menu_active, nav_queue=nav
+        )
         self.assertEqual(len(nav), 0, "SPACE drives menu_event, never the nav queue")
 
     def test_buffer_consumed_after_drain(self):

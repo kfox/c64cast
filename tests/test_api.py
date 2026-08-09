@@ -10,6 +10,8 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+from _fakes import make_psid
+
 from c64cast.hw.api import (
     _REINIT_PATCH_BANK,
     _REINIT_PATCH_INIT_HI,
@@ -220,7 +222,8 @@ class RunSidPlayerTest(unittest.TestCase):
         with patch.object(self.api.socket_dma, "close"):
             self.api.close()
 
-    # ---- header construction helper ----------------------------------
+    # ---- header construction helper (this file's defaults over the
+    # shared PSID builder) ----------------------------------------------
     @staticmethod
     def _make_sid(
         *,
@@ -232,17 +235,15 @@ class RunSidPlayerTest(unittest.TestCase):
         start_song=1,
         payload_len=64,
     ):
-        h = bytearray(124)
-        h[0:4] = magic
-        h[4:6] = (2).to_bytes(2, "big")
-        # data_offset = 124 (v2 header)
-        h[6:8] = (124).to_bytes(2, "big")
-        h[8:10] = load.to_bytes(2, "big")
-        h[10:12] = init.to_bytes(2, "big")
-        h[12:14] = play.to_bytes(2, "big")
-        h[14:16] = num_songs.to_bytes(2, "big")
-        h[16:18] = start_song.to_bytes(2, "big")
-        return bytes(h) + bytes(payload_len)
+        return make_psid(
+            magic=magic,
+            load=load,
+            init=init,
+            play=play,
+            num_songs=num_songs,
+            start_song=start_song,
+            payload=bytes(payload_len),
+        )
 
     # ---- validation --------------------------------------------------
     def test_rejects_rsid(self):
@@ -952,6 +953,116 @@ class PutConfigItemTest(unittest.TestCase):
         self.put.return_value.raise_for_status.side_effect = requests.HTTPError("400")
         with self.assertRaises(requests.HTTPError):
             self.api.put_config_item("C64 and Cartridge Settings", "REU Size", "16 MB")
+
+
+class ReadSideTest(unittest.TestCase):
+    """The REST read surface (read_memory / probe / get_config_category /
+    get_device_info / run_basic_clear_loop / reset): URL + params shape,
+    the str-coercion contract on config/info maps, and which failures are
+    swallowed (best-effort polling paths return None / log) versus
+    propagated (config reads the caller must know about)."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.get = patch.object(self.api.session, "get").start()
+        self.get.return_value.raise_for_status.return_value = None
+        self.addCleanup(patch.stopall)
+
+    def test_read_memory_requests_hex_address_and_length(self):
+        self.get.return_value.content = b"\x02"
+        data = self.api.read_memory(0x028D, 1)
+        self.assertEqual(data, b"\x02")
+        _, kwargs = self.get.call_args
+        self.assertEqual(kwargs["params"], {"address": "028D", "length": "1"})
+
+    def test_read_memory_returns_none_on_transport_failure(self):
+        # The pollers (keyboard, launcher) call this at 10 Hz; a dropped
+        # read must come back as "couldn't tell", never an exception.
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(self.api.read_memory(0x028D, 1))
+
+    def test_read_memory_returns_none_on_http_error(self):
+        import requests
+
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("500")
+        self.assertIsNone(self.api.read_memory(0x0400, 8))
+
+    def test_probe_reports_status_and_swallows_failure(self):
+        self.get.return_value.status_code = 200
+        self.assertEqual(self.api.probe(), "HTTP 200")
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(self.api.probe())
+
+    def test_get_config_category_unwraps_and_coerces_to_str(self):
+        # The firmware's emit_store wraps the items under the category name
+        # and mixes ints (value items) with strings (enum labels).
+        self.get.return_value.json.return_value = {
+            "Audio Mixer": {"Volume SID Left": 0, "Pan SID Left": "Left 3"},
+        }
+        got = self.api.get_config_category("Audio Mixer")
+        self.assertEqual(got, {"Volume SID Left": "0", "Pan SID Left": "Left 3"})
+
+    def test_get_config_category_unexpected_shape_returns_empty(self):
+        self.get.return_value.json.return_value = ["not", "a", "dict"]
+        self.assertEqual(self.api.get_config_category("Audio Mixer"), {})
+
+    def test_get_config_category_propagates_http_error(self):
+        # Config reads aren't fire-and-forget: AsidScene decides its socket
+        # policy on the answer, so it must SEE the failure.
+        import requests
+
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("500")
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
+    def test_get_device_info_coerces_to_str(self):
+        self.get.return_value.json.return_value = {"unique_id": "5D327C", "core": 137}
+        self.assertEqual(self.api.get_device_info(), {"unique_id": "5D327C", "core": "137"})
+        args, _ = self.get.call_args
+        self.assertEqual(args[0], "http://example.invalid/v1/info")
+
+    def test_run_basic_clear_loop_posts_prg_and_swallows_failure(self):
+        import requests
+
+        from c64cast.hw.c64 import U64_API
+
+        patch.object(self.api, "flush").start()
+        patch.object(self.api, "invalidate_cache").start()
+        post = patch.object(self.api.session, "post").start()
+        post.return_value.raise_for_status.return_value = None
+        self.api.run_basic_clear_loop()
+        self.assertTrue(post.call_args.args[0].endswith(U64_API.RUN_PRG))
+        self.assertIn("file", post.call_args.kwargs["files"])
+
+        post.side_effect = requests.ConnectionError("down")
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.run_basic_clear_loop()  # best-effort — must not raise
+
+    def test_reset_puts_even_when_pre_blank_fails(self):
+        # The pre-reset display blank is best-effort; a dead DMA socket on
+        # shutdown must not stop the REST reset from firing.
+        patch.object(self.api, "blank_display", side_effect=OSError("dead socket")).start()
+        put = patch.object(self.api.session, "put").start()
+        self.api.reset()
+        put.assert_called_once()
+        self.assertEqual(put.call_args.args[0], self.api.reset_url)
+
+    def test_reset_swallows_rest_failure(self):
+        import requests
+
+        patch.object(self.api, "blank_display").start()
+        patch.object(self.api, "flush").start()
+        put = patch.object(self.api.session, "put").start()
+        put.side_effect = requests.ConnectionError("down")
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.reset()  # shutdown path — must not raise
 
 
 class DumpCharRomTest(unittest.TestCase):

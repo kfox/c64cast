@@ -105,6 +105,17 @@ class FakeAPI:
         # supports_reu=False)` or override the field.
         self.profile = HardwareProfile(name="Fake", family="fake")
 
+    @classmethod
+    def ultimate(cls, *, supports_config: bool = True) -> FakeAPI:
+        """A FakeAPI presenting as a config-capable Ultimate — the profile
+        the SID volume / panning / autoconfig and DAC-calibration paths gate
+        on. Seed `config_store` afterward to model mixer items / sockets."""
+        api = cls()
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=supports_config
+        )
+        return api
+
     def write_memory(self, addr, data_hex):
         self.memories[str(addr).upper()] = data_hex
         self.ops.append(("write_memory", str(addr).upper(), data_hex))
@@ -196,6 +207,116 @@ class FakeAPI:
         pass
 
 
+def make_psid(
+    *,
+    magic: bytes = b"PSID",
+    load: int = 0x1000,
+    init: int = 0x1000,
+    play: int = 0x1001,
+    num_songs: int = 1,
+    start_song: int = 1,
+    payload: bytes | tuple[int, ...] | list[int] = (0x60, 0x60),
+) -> bytes:
+    """Minimal runnable PSID v2: real header fields + payload, enough for
+    parse_psid_for_player + SidHostEmu to run INIT/PLAY (the defaults are an
+    RTS init and play). PSID is a real external format — its byte offsets
+    live here once, so a typo'd field fails every consumer instead of just
+    the one file that happened to re-type it."""
+    header = bytearray(124)
+    header[0:4] = magic
+    header[4:6] = (2).to_bytes(2, "big")  # version
+    header[6:8] = (124).to_bytes(2, "big")  # data offset (v2 header size)
+    header[8:10] = load.to_bytes(2, "big")
+    header[10:12] = init.to_bytes(2, "big")
+    header[12:14] = play.to_bytes(2, "big")
+    header[14:16] = num_songs.to_bytes(2, "big")
+    header[16:18] = start_song.to_bytes(2, "big")
+    return bytes(header) + bytes(payload)
+
+
+def fake_system_stack(name: str, scenes: list | None = None):
+    """A SystemStack with every non-trivial field mocked — the ensemble and
+    orchestrator tests only exercise `name` (and `cfg.scenes` when given)."""
+    from c64cast.app.ensemble import SystemStack
+
+    cfg = mock.MagicMock(name=f"cfg-{name}")
+    cfg.scenes = scenes or []
+    return SystemStack(
+        name=name,
+        cfg=cfg,
+        api=mock.MagicMock(name=f"api-{name}"),
+        audio=None,
+        source=None,
+        playlist=mock.MagicMock(name=f"playlist-{name}"),
+        key_poller=mock.MagicMock(name=f"keyboard-{name}"),
+        framebuffer=None,
+        preview_window=None,
+        recorder=None,
+    )
+
+
+def new_streamer(**overrides):
+    """A bare-bones AudioStreamer over a FakeAPI (no thread started), built
+    through the real __init__ — the PR #227 post-mortem: a __new__ plus
+    hand-copied-state fixture went stale every time a field was added, and
+    the missing field surfaced as an AttributeError deep inside a worker
+    thread rather than as a fixture error. host_dma_servo defaults off so
+    worker-path tests stay open-loop (no R reads); override per test."""
+    from typing import cast
+
+    from c64cast.audio.audio import AudioStreamer
+    from c64cast.hw.api import Ultimate64API
+
+    kwargs: dict = {"sample_rate": 8000, "system": "NTSC", "host_dma_servo": False}
+    kwargs.update(overrides)
+    return AudioStreamer(cast(Ultimate64API, FakeAPI()), **kwargs)
+
+
+def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] | None = None):
+    """Execute hand-assembled IRQ-handler bytes on a bare py65 6502 until
+    they chain into the kernal (JMP $EA31 full tail / JMP $EA81 lean tail).
+
+    `seed` is an {address: byte} map applied before the run (trackers,
+    counters, fake REU registers). Returns an object with `memory` (the
+    sid_host_emu.TrappedRam, so `.ram` and the `.access` read/write bitmap
+    are inspectable), `exit_pc` (which kernal tail was taken) and `mpu`.
+    The step budget turns a mis-assembled branch displacement — which JAMs
+    a real C64 — into a loud failure instead of a hang, and a handler that
+    leaves its own PHA unbalanced shows up as `mpu.sp != 0xFF`."""
+    from types import SimpleNamespace
+
+    from py65.devices.mpu6502 import MPU
+
+    from c64cast.sid.sid_host_emu import TrappedRam
+
+    memory = TrappedRam(track_access=True)
+    memory.ram[addr : addr + len(handler)] = handler
+    for seed_addr, value in (seed or {}).items():
+        memory.ram[seed_addr] = value
+    mpu = MPU(memory=memory)
+    mpu.pc = addr
+    mpu.sp = 0xFF
+    kernal_tails = (0xEA31, 0xEA81)
+    for _ in range(5000):
+        mpu.step()
+        if mpu.pc in kernal_tails:
+            return SimpleNamespace(memory=memory, exit_pc=mpu.pc, mpu=mpu)
+    raise AssertionError(f"handler never chained to the kernal (PC=${mpu.pc:04X})")
+
+
+def bare_waveform_scene(**attrs):
+    """A WaveformScene that skips the SID-loading __init__ (which needs a
+    real PSID file + emulator bring-up); each caller sets exactly the
+    attributes its method under test reads. One builder instead of a
+    re-implemented ``_scene()`` per TestCase."""
+    from c64cast.sid.waveform import WaveformScene
+
+    scene = WaveformScene.__new__(WaveformScene)
+    for name, value in attrs.items():
+        setattr(scene, name, value)
+    return scene
+
+
 class FrozenClock:
     """A stand-in for the stdlib ``time`` module with one function pinned.
 
@@ -222,6 +343,12 @@ class FrozenClock:
     def __init__(self, now: float, attr: str = "time") -> None:
         self._now = float(now)
         self._attr = attr
+
+    def advance(self, dt: float) -> None:
+        """Move the pinned clock forward — lets a test drive a poller's tick
+        state machine on virtual time (each tick exactly poll_interval_s
+        apart) instead of racing a real thread against wall time."""
+        self._now += dt
 
     def __getattr__(self, name: str):
         # Only reached for names not on the instance, so `_now`/`_attr` never

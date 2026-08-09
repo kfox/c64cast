@@ -122,9 +122,12 @@ class InterstitialSceneTest(unittest.TestCase):
         self.assertEqual(len(scene.lines[1]), 40)
 
     def test_teardown_is_inert(self):
-        scene, _ = self._scene(background="none")
+        scene, api = self._scene(background="none")
+        fake = cast(FakeAPI, api)
         scene.setup()
+        ops_before = len(fake.ops)
         scene.teardown()  # no audio/source — must not raise
+        self.assertEqual(len(fake.ops), ops_before, "an inert teardown issues no C64 writes")
 
 
 class DefaultFactoryTest(unittest.TestCase):

@@ -106,29 +106,72 @@ def _transition_factory():
     return factory, counter
 
 
+def _await(condition, timeout=5.0):
+    """Poll `condition()` until it's true or the deadline passes; return the
+    final answer."""
+    deadline = time.time() + timeout
+    while not condition() and time.time() < deadline:
+        time.sleep(0.002)
+    return bool(condition())
+
+
+def _drive(stop, *steps, timeout=5.0):
+    """Script the playlist from a watcher thread while pl.run() occupies the
+    test thread, then set `stop`. A step returning a bool is a condition to
+    await; a step returning None is an action performed once (e.g.
+    pl.skip_event.set). Waiting on observables — frame counts, the run loop
+    clearing an event — instead of wall-clock windows means a slow box
+    changes a test's duration, not its verdict; this generalizes the fix the
+    request_jump tests got when a coverage-instrumented CI runner outran
+    their 0.2 s guesses. Returns {"ok", "thread"}: join the thread after
+    run() and assert "ok" so a timed-out condition fails the test loudly
+    instead of silently weakening the assertions that follow."""
+    result = {"ok": True}
+
+    def watch():
+        try:
+            for step in steps:
+                first = step()
+                if first is None:
+                    continue
+                if first is not True and not _await(step, timeout=timeout):
+                    result["ok"] = False
+                    return
+        finally:
+            stop.set()
+
+    thread = threading.Thread(target=watch, daemon=True)
+    result["thread"] = thread
+    thread.start()
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 class PlaylistTest(unittest.TestCase):
-    def _run_briefly(
-        self, scenes, stop_after=0.2, target_fps=10000.0, heartbeat_interval=0.0, loop=True
-    ):
+    def _run_until(self, scenes, *conditions, loop=True):
+        """Build a playlist over `scenes`, run it on this thread, and stop
+        it once every condition has been observed. Returns the interstitial
+        counter."""
         api = FakeApi()
         stop_event = threading.Event()
         factory, counter = _transition_factory()
         pl = Playlist(
             scenes,
             api,
-            target_fps=target_fps,
-            heartbeat_interval=heartbeat_interval,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
             stop_event=stop_event,
             interstitial_factory=factory,
             loop=loop,
         )
-        threading.Timer(stop_after, stop_event.set).start()
+        driven = _drive(stop_event, *conditions)
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "watcher timed out awaiting the run conditions")
         return counter
 
     # --- core state machine -----------------------------------------------
@@ -139,7 +182,13 @@ class PlaylistTest(unittest.TestCase):
         # this test keeps the multi-scene transition path covered.
         a = FakeScene("A", frames_until_done=2)
         b = FakeScene("B", frames_until_done=2)
-        counter = self._run_briefly([a, b], stop_after=0.3)
+        # Both scenes re-setting-up implies ≥3 interstitials in between, so
+        # the counter assertion below is guaranteed once these are observed.
+        counter = self._run_until(
+            [a, b],
+            lambda: a.setup_count > 1,
+            lambda: b.setup_count > 1,
+        )
         self.assertGreater(a.setup_count, 1, "scene A should re-setup on each playlist cycle")
         self.assertGreater(b.setup_count, 1, "scene B should re-setup on each playlist cycle")
         self.assertGreater(counter["n"], 2, "transitions should fire between cycles")
@@ -171,8 +220,10 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
             loop=True,
         )
-        threading.Timer(0.3, stop_event.set).start()
+        driven = _drive(stop_event, lambda: "B-picked" in captured)
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "prepared name never reached the interstitial factory")
         self.assertGreater(
             b.prepare_next_count, 0, "prepare_next must be called on the upcoming scene"
         )
@@ -187,9 +238,11 @@ class PlaylistTest(unittest.TestCase):
 
     def test_single_scene_skips_interstitial(self):
         # 1 scene → Playlist.single_scene = True → interstitial_factory
-        # must never be called.
+        # must never be called. Running until the scene has looped once
+        # makes this a strong negative: the loop provably cycled, and the
+        # factory count is still zero.
         s = FakeScene("A", frames_until_done=2)
-        counter = self._run_briefly([s], stop_after=0.3)
+        counter = self._run_until([s], lambda: s.setup_count >= 2)
         self.assertEqual(counter["n"], 0, "interstitial factory must not run in single-scene mode")
         self.assertGreater(s.setup_count, 0, "the single scene must still run")
 
@@ -197,14 +250,17 @@ class PlaylistTest(unittest.TestCase):
         # The scene flips is_done after 2 frames; single-scene mode must
         # re-setup it via teardown+setup so it runs again, not just stop.
         s = FakeScene("A", frames_until_done=2)
-        self._run_briefly([s], stop_after=0.3)
+        self._run_until([s], lambda: s.teardown_count >= 2)
         self.assertGreater(s.setup_count, 1, "scene should re-setup on each loop iteration")
         # Teardown happens on each loop boundary (and once more in finally).
         self.assertGreater(s.teardown_count, 1, "scene should tear down on each loop iteration")
 
     def test_single_scene_ignores_skip_event(self):
         # Firing skip_event in single-scene mode must NOT cause rapid-fire
-        # teardown churn and must NOT invoke the interstitial factory.
+        # teardown churn and must NOT invoke the interstitial factory. Each
+        # skip is fired only after the previous one was consumed (the run
+        # loop clears the event), so all five provably went through the
+        # skip branch — which lets the teardown assertion be exact.
         s = FakeScene("A", frames_until_done=10_000_000)
         api = FakeApi()
         stop = threading.Event()
@@ -212,34 +268,33 @@ class PlaylistTest(unittest.TestCase):
         pl = Playlist(
             [s],
             api,
-            target_fps=200.0,
+            target_fps=10000.0,
             heartbeat_interval=0.0,
             stop_event=stop,
             interstitial_factory=factory,
         )
 
-        def fire_skips():
-            for _ in range(5):
-                time.sleep(0.02)
-                pl.skip_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire_skips, daemon=True).start()
+        steps = [lambda: s.frame_count >= 1]
+        for _ in range(5):
+            steps += [pl.skip_event.set, lambda: not pl.skip_event.is_set()]
+        driven = _drive(stop, *steps)
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "watcher timed out — a skip was never consumed")
         self.assertEqual(
             counter["n"], 0, "interstitial factory must not run on skip in single-scene mode"
         )
-        # The scene was never marked done by skip → only the finally
-        # teardown fires (count == 1). Tolerate >=1 in case of cleanup races.
-        self.assertLessEqual(s.teardown_count, 1, "single-scene skip should not churn teardowns")
+        # The scene is never marked done by an ignored skip → it sets up
+        # exactly once, and the only teardown is run()'s finally block.
+        self.assertEqual(s.setup_count, 1, "single-scene skip must not re-setup the scene")
+        self.assertEqual(s.teardown_count, 1, "single-scene skip should not churn teardowns")
         self.assertFalse(
             pl.skip_event.is_set(), "skip event still gets cleared so it doesn't accumulate"
         )
 
     def test_multi_scene_rotation_starts_each(self):
         scenes = [FakeScene(c, frames_until_done=2) for c in "ABCD"]
-        self._run_briefly(scenes, stop_after=0.5)
+        self._run_until(scenes, lambda: all(s.setup_count > 0 for s in scenes))
         for s in scenes:
             self.assertGreater(s.setup_count, 0, f"{s.name} never ran in rotation")
 
@@ -329,7 +384,7 @@ class PlaylistTest(unittest.TestCase):
         # The scene crash is logged via log.exception — wrap in assertLogs
         # to both capture (silence) the traceback and verify the recovery path.
         with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
-            self._run_briefly([bad, good])
+            self._run_until([bad, good], lambda: good.setup_count >= 1)
         self.assertTrue(
             any("scene 'BAD' raised; advancing" in line for line in cap.output),
             f"expected scene-crash log, got: {cap.output!r}",
@@ -341,7 +396,7 @@ class PlaylistTest(unittest.TestCase):
         bad_td = FakeScene("A", frames_until_done=1, raise_on_teardown=True)
         ok = FakeScene("B", frames_until_done=1)
         with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
-            self._run_briefly([bad_td, ok], stop_after=0.3)
+            self._run_until([bad_td, ok], lambda: ok.setup_count >= 1)
         self.assertTrue(
             any("teardown of 'A' failed" in line for line in cap.output),
             f"expected teardown-failure log, got: {cap.output!r}",
@@ -430,9 +485,16 @@ class PlaylistTest(unittest.TestCase):
             stop_event=stop,
             interstitial_factory=factory,
         )
-        threading.Timer(0.25, stop.set).start()
+        # assertLogs' handler appends to cap.records live, so the watcher can
+        # stop the run the moment the first heartbeat actually lands rather
+        # than gambling on a wall-clock window.
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
+            driven = _drive(
+                stop, lambda: any("writes=" in r.getMessage() for r in list(cap.records))
+            )
             pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "no heartbeat line arrived within the deadline")
         self.assertTrue(
             any("writes=" in line for line in cap.output),
             f"no heartbeat lines in captured logs: {cap.output!r}",
@@ -453,14 +515,17 @@ class PlaylistTest(unittest.TestCase):
             stop_event=stop,
             interstitial_factory=factory,
         )
-        threading.Timer(0.2, stop.set).start()
-        # No INFO logs should arrive from the playlist module.
+        # Strong negative: run until the loop has provably rendered several
+        # frames, then check no heartbeat line appeared.
+        driven = _drive(stop, lambda: s.frame_count >= 5)
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             # Inject one log so assertLogs doesn't error on "no logs captured".
             import logging
 
             logging.getLogger("c64cast.app.playlist").info("sentinel")
             pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "playlist never rendered the probe frames")
         heartbeat_lines = [line for line in cap.output if "writes=" in line]
         self.assertEqual(heartbeat_lines, [], "no heartbeat lines expected when interval=0")
 
@@ -477,20 +542,21 @@ class PlaylistTest(unittest.TestCase):
         pl = Playlist(
             [s, FakeScene("B", frames_until_done=1)],
             api,
-            target_fps=200.0,
+            target_fps=10000.0,
             heartbeat_interval=0.0,
             stop_event=stop,
             interstitial_factory=factory,
         )
 
-        def fire_skip():
-            time.sleep(0.05)
-            pl.skip_event.set()
-            time.sleep(0.2)
-            stop.set()
-
-        threading.Thread(target=fire_skip, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: s.frame_count >= 1,
+            pl.skip_event.set,
+            lambda: counter["n"] > 1,
+        )
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "skip never advanced to a new interstitial")
         self.assertGreaterEqual(s.teardown_count, 1, "skip should tear down the current scene")
         self.assertGreater(counter["n"], 1, "skip should land on a new interstitial")
 
@@ -555,25 +621,20 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire_jump():
-            # Wait past the playlist's own startup interstitial before firing
-            # (same rationale as the bypass test below): a jump that lands
-            # while the first "UP NEXT" card is still transitioning is
-            # consumed as a plain skip into scene A and the target is never
-            # taken — the race a coverage-instrumented CI runner actually
-            # hit. Then wait on the observable landing rather than a
-            # wall-clock guess, so a slow box changes this test's duration,
-            # not its verdict; the deadline still bounds a real regression.
-            deadline = time.time() + 5.0
-            while scenes[0].setup_count < 1 and time.time() < deadline:
-                time.sleep(0.005)
-            pl.request_jump(2)
-            while scenes[2].setup_count < 1 and time.time() < deadline:
-                time.sleep(0.005)
-            stop.set()
-
-        threading.Thread(target=fire_jump, daemon=True).start()
+        # Wait past the playlist's own startup interstitial before firing
+        # (same rationale as the bypass test below): a jump that lands
+        # while the first "UP NEXT" card is still transitioning is
+        # consumed as a plain skip into scene A and the target is never
+        # taken — the race a coverage-instrumented CI runner actually hit.
+        driven = _drive(
+            stop,
+            lambda: scenes[0].setup_count >= 1,
+            lambda: pl.request_jump(2),
+            lambda: scenes[2].setup_count >= 1,
+        )
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "jump never landed on the target scene")
         self.assertGreaterEqual(scenes[2].setup_count, 1, "jump should land on scene C")
         self.assertEqual(scenes[1].setup_count, 0, "jump must skip scene B entirely")
 
@@ -600,27 +661,21 @@ class PlaylistTest(unittest.TestCase):
 
         result: dict[str, int | None] = {"baseline": None}
 
-        def fire_jump():
-            # Wait past the playlist's own startup interstitial (every
-            # playlist enters scene 0 via one "UP NEXT" card) so the
-            # baseline below reflects a settled, running scene A —
-            # otherwise a race against that first card would make the
-            # baseline nondeterministic. Assertions run in the main thread
-            # after pl.run() returns (an AssertionError raised here, in a
-            # background thread, wouldn't fail the test).
-            deadline = time.time() + 5.0
-            while scenes[0].setup_count < 1 and time.time() < deadline:
-                time.sleep(0.005)
-            result["baseline"] = counter["n"]
-            pl.request_jump(1, skip_interstitial=True)
-            # Wait on the landing itself (bounded), not a wall-clock guess —
-            # under coverage instrumentation 0.2 s was not enough loop time.
-            while scenes[1].setup_count < 1 and time.time() < deadline:
-                time.sleep(0.005)
-            stop.set()
-
-        threading.Thread(target=fire_jump, daemon=True).start()
+        # Wait past the playlist's own startup interstitial (every playlist
+        # enters scene 0 via one "UP NEXT" card) so the baseline reflects a
+        # settled, running scene A — otherwise a race against that first
+        # card would make the baseline nondeterministic. Assertions run in
+        # the main thread after pl.run() returns.
+        driven = _drive(
+            stop,
+            lambda: scenes[0].setup_count >= 1,
+            lambda: result.__setitem__("baseline", counter["n"]),
+            lambda: pl.request_jump(1, skip_interstitial=True),
+            lambda: scenes[1].setup_count >= 1,
+        )
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cut jump never landed on the target scene")
         baseline = result["baseline"]
         assert baseline is not None, "startup interstitial never completed"
         self.assertEqual(counter["n"], baseline, "a cut jump must never build an interstitial")
@@ -645,17 +700,16 @@ class PlaylistTest(unittest.TestCase):
 
         result: dict[str, int | None] = {"baseline": None}
 
-        def fire_jump():
-            deadline = time.time() + 1.0
-            while scenes[0].setup_count < 1 and time.time() < deadline:
-                time.sleep(0.005)
-            result["baseline"] = counter["n"]
-            pl.request_jump(1, skip_interstitial=False)
-            time.sleep(0.2)
-            stop.set()
-
-        threading.Thread(target=fire_jump, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: scenes[0].setup_count >= 1,
+            lambda: result.__setitem__("baseline", counter["n"]),
+            lambda: pl.request_jump(1, skip_interstitial=False),
+            lambda: scenes[1].setup_count >= 1,
+        )
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "routed jump never landed on the target scene")
         baseline = result["baseline"]
         assert baseline is not None, "startup interstitial never completed"
         self.assertGreater(
@@ -670,23 +724,9 @@ class PlaylistTest(unittest.TestCase):
         # _resolve_next_index's skip-past-gated-scenes behavior. Proven
         # here by pre-setting stop_event so the wait exits immediately
         # with current=None, instead of landing on the gated scene.
-        from unittest.mock import MagicMock
+        from _fakes import fake_system_stack as _stack
 
-        from c64cast.app.ensemble import Ensemble, SystemStack
-
-        def _stack(name):
-            return SystemStack(
-                name=name,
-                cfg=MagicMock(),
-                api=MagicMock(),
-                audio=None,
-                source=None,
-                playlist=MagicMock(),
-                key_poller=MagicMock(),
-                framebuffer=None,
-                preview_window=None,
-                recorder=None,
-            )
+        from c64cast.app.ensemble import Ensemble
 
         class AudioGatedScene(FakeScene):
             def competes_for_audio_lock(self):
@@ -758,8 +798,10 @@ class PlaylistTest(unittest.TestCase):
             stop_event=stop,
             interstitial_factory=factory,
         )
-        threading.Timer(0.3, stop.set).start()
+        driven = _drive(stop, lambda: overlay.teardown_count >= 1)
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "busy overlay never unblocked into a teardown")
         # The overlay's process_frame should have been called more than
         # the scene's frames_until_done (1) — busy deferral let it keep
         # running for at least a few extra frames before teardown.
@@ -803,14 +845,15 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire_skip():
-            time.sleep(0.05)
-            pl.skip_event.set()
-            time.sleep(0.2)
-            stop.set()
-
-        threading.Thread(target=fire_skip, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: scene.frame_count >= 1,
+            pl.skip_event.set,
+            lambda: counter["n"] > 1,
+        )
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "CTRL skip never cut through the busy overlay")
         # CTRL should cut through the busy guard — scene torn down and
         # we landed on a new interstitial.
         self.assertGreaterEqual(scene.teardown_count, 1, "CTRL skip should override busy overlay")
@@ -844,15 +887,16 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire_cycle():
-            time.sleep(0.05)
-            pl.cycle_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire_cycle, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: s.frame_count >= 1,
+            pl.cycle_event.set,
+            lambda: not pl.cycle_event.is_set(),
+        )
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cycle event was never consumed")
         self.assertEqual(
             fake_mode.calls, 1, "cycle_event should invoke display_mode.cycle_style once"
         )
@@ -880,30 +924,37 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
 
-        # Custom factory: returns a long-lived interstitial so the cycle
-        # firing during the transition has a chance to be dropped.
+        # Custom factory: returns a long-lived interstitial (and records it,
+        # so the watcher can wait until the card is provably on screen
+        # before firing the cycle it expects to be dropped).
+        built: list[FakeScene] = []
+
         def factory(name):
-            return FakeScene(f"trans:{name}", frames_until_done=10_000_000)
+            scene = FakeScene(f"trans:{name}", frames_until_done=10_000_000)
+            built.append(scene)
+            return scene
 
         pl = Playlist(
             [a, b],
             api,
-            target_fps=200.0,
+            target_fps=10000.0,
             heartbeat_interval=0.0,
             stop_event=stop,
             interstitial_factory=factory,
         )
 
-        def fire_cycle():
-            # Let the first interstitial start, then fire cycle while it's
-            # still active, then stop.
-            time.sleep(0.05)
-            pl.cycle_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire_cycle, daemon=True).start()
+        # Fire cycle only while the interstitial is rendering; the run loop
+        # clears the event even when it drops it, so "consumed" is the
+        # observable that makes this negative sound.
+        driven = _drive(
+            stop,
+            lambda: bool(built) and built[0].frame_count >= 1,
+            pl.cycle_event.set,
+            lambda: not pl.cycle_event.is_set(),
+        )
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cycle event was never consumed during the interstitial")
         self.assertEqual(counter.calls, 0, "cycle must not dispatch on an interstitial scene")
 
     def test_cycle_event_also_broadcasts_to_overlays(self):
@@ -950,15 +1001,16 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire():
-            time.sleep(0.05)
-            pl.cycle_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: s.frame_count >= 1,
+            pl.cycle_event.set,
+            lambda: not pl.cycle_event.is_set(),
+        )
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cycle event was never consumed")
         self.assertEqual(overlay.cycle_calls, 1, "cycle_event must dispatch to opt-in overlays")
         # Log should mention both the display and overlay labels.
         self.assertTrue(
@@ -987,14 +1039,15 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire():
-            time.sleep(0.05)
-            pl.cycle_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: s.frame_count >= 1,
+            pl.cycle_event.set,
+            lambda: not pl.cycle_event.is_set(),
+        )
         pl.run()  # must not raise
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cycle event was never consumed")
         self.assertFalse(pl.cycle_event.is_set())
 
     def test_cycle_event_catches_exception(self):
@@ -1017,15 +1070,16 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire():
-            time.sleep(0.05)
-            pl.cycle_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: s.frame_count >= 1,
+            pl.cycle_event.set,
+            lambda: not pl.cycle_event.is_set(),
+        )
         with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cycle event was never consumed")
         self.assertTrue(
             any("cycle_style failed" in line for line in cap.output),
             f"expected cycle_style failure log, got {cap.output!r}",
@@ -1058,15 +1112,16 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire():
-            time.sleep(0.05)
-            pl.cycle_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: s.frame_count >= 1,
+            pl.cycle_event.set,
+            lambda: not pl.cycle_event.is_set(),
+        )
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cycle event was never consumed")
         self.assertEqual(s.cycle_calls, 1, "cycle_event must invoke scene.cycle_style once")
         self.assertTrue(
             any("scene=song 2/5" in line for line in cap.output),
@@ -1097,15 +1152,16 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        def fire():
-            time.sleep(0.05)
-            pl.cycle_event.set()
-            time.sleep(0.1)
-            stop.set()
-
-        threading.Thread(target=fire, daemon=True).start()
+        driven = _drive(
+            stop,
+            lambda: s.frame_count >= 1,
+            pl.cycle_event.set,
+            lambda: not pl.cycle_event.is_set(),
+        )
         with self.assertLogs("c64cast.app.playlist", level="ERROR") as cap:
             pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "cycle event was never consumed")
         self.assertTrue(
             any("cycle_style failed on scene" in line for line in cap.output),
             f"expected scene cycle failure log, got {cap.output!r}",
@@ -1120,14 +1176,16 @@ class PlaylistTest(unittest.TestCase):
         pl = Playlist(
             [s],
             api,
-            target_fps=200.0,
+            target_fps=10000.0,
             heartbeat_interval=0.0,
             stop_event=stop,
             interstitial_factory=factory,
         )
         pl.skip_event.set()
-        threading.Timer(0.1, stop.set).start()
+        driven = _drive(stop, lambda: not pl.skip_event.is_set())
         pl.run()
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "skip event was never consumed")
         # Event should have been auto-cleared by the run loop.
         self.assertFalse(pl.skip_event.is_set())
 

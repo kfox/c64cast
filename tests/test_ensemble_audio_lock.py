@@ -23,36 +23,21 @@ from unittest.mock import MagicMock
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
-from c64cast.app.ensemble import Ensemble, SystemStack
+from c64cast.app.ensemble import Ensemble
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import BlankScene, Scene, VideoScene, WebcamScene
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _fakes import FakeAPI  # noqa: E402
+from _fakes import FakeAPI, fake_system_stack  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Layer 1: Ensemble.try_claim_audio / release_audio
 # ---------------------------------------------------------------------------
 
 
-def _fake_stack(name: str) -> SystemStack:
-    return SystemStack(
-        name=name,
-        cfg=MagicMock(name=f"cfg-{name}"),
-        api=MagicMock(name=f"api-{name}"),
-        audio=None,
-        source=None,
-        playlist=MagicMock(name=f"playlist-{name}"),
-        key_poller=MagicMock(name=f"keyboard-{name}"),
-        framebuffer=None,
-        preview_window=None,
-        recorder=None,
-    )
-
-
 class EnsembleAudioLockTest(unittest.TestCase):
     def _ensemble(self, names):
-        return Ensemble(stacks=[_fake_stack(n) for n in names], stop_event=threading.Event())
+        return Ensemble(stacks=[fake_system_stack(n) for n in names], stop_event=threading.Event())
 
     def test_first_claim_wins(self):
         ens = self._ensemble(["a", "b"])
@@ -309,13 +294,13 @@ class ResolveNextIndexTest(unittest.TestCase):
         pl = _build_playlist(
             [FakePlaylistScene("a", wants_audio=False), FakePlaylistScene("b", wants_audio=True)]
         )
-        pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
+        pl.ensemble = Ensemble(stacks=[fake_system_stack("sys")], stop_event=pl.stop_event)
         self.assertEqual(pl.ensemble_coord.resolve_next_index(), 0)
 
     def test_audio_scene_claims_lock_when_free(self):
         scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
-        pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
+        pl.ensemble = Ensemble(stacks=[fake_system_stack("sys")], stop_event=pl.stop_event)
         self.assertEqual(pl.ensemble_coord.resolve_next_index(), 0)
         self.assertEqual(pl.ensemble.audio_holder, "sys")
         self.assertTrue(scene.__dict__["_audio_lock_held"])
@@ -327,7 +312,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         live = FakePlaylistScene("live", wants_audio=False)
         pl = _build_playlist([comm, live])
         pl.ensemble = Ensemble(
-            stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
@@ -342,7 +327,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         muted = FakePlaylistScene("muted-video", wants_audio=True, audio=None)
         pl = _build_playlist([muted])
         pl.ensemble = Ensemble(
-            stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
         self.assertEqual(pl.ensemble_coord.resolve_next_index(), 0)
@@ -355,7 +340,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(
-            stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
 
@@ -377,7 +362,7 @@ class ResolveNextIndexTest(unittest.TestCase):
         scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(
-            stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
         # Fire stop_event almost immediately.
@@ -391,7 +376,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
     def test_teardown_releases_audio_slot_when_flag_set(self):
         scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
-        pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
+        pl.ensemble = Ensemble(stacks=[fake_system_stack("sys")], stop_event=pl.stop_event)
         pl.ensemble.try_claim_audio("sys")
         scene.__dict__["_audio_lock_held"] = True
 
@@ -403,7 +388,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(
-            stacks=[_fake_stack("sys"), _fake_stack("other")], stop_event=pl.stop_event
+            stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
         # scene didn't claim — _audio_lock_held is not set on it.
@@ -418,7 +403,7 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
 
         scene = Boom("video", wants_audio=True)
         pl = _build_playlist([scene])
-        pl.ensemble = Ensemble(stacks=[_fake_stack("sys")], stop_event=pl.stop_event)
+        pl.ensemble = Ensemble(stacks=[fake_system_stack("sys")], stop_event=pl.stop_event)
         pl.ensemble.try_claim_audio("sys")
         scene.__dict__["_audio_lock_held"] = True
 

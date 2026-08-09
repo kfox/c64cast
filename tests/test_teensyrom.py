@@ -14,6 +14,8 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
+from _fakes import make_psid
+
 from c64cast.app import config as cfgmod
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
@@ -84,6 +86,28 @@ class LoopbackTransport(TRTransport):
     @property
     def description(self) -> str:
         return "loopback"
+
+
+# The clear-loop bring-up's launch choreography: DeleteFile + PostFile ack
+# 5 times, LaunchFile 2. One place for the protocol's internal ack count so
+# a wire change moves one number instead of breaking every bring-up test.
+_BRINGUP_LAUNCH_ACKS = 7
+
+
+def _queue_bringup_acks(t: LoopbackTransport) -> None:
+    """Ack the DeleteFile → PostFile → LaunchFile choreography that starts
+    every clear-loop bring-up on read-capable firmware."""
+    for _ in range(_BRINGUP_LAUNCH_ACKS):
+        t.queue_token(TOK_ACK)
+
+
+def _assert_token_order(test: unittest.TestCase, sent: bytes, *tokens: bytes) -> None:
+    """Assert each wire token appears in `sent`, in the given order."""
+    pos = -1
+    for tok in tokens:
+        idx = sent.find(tok, pos + 1)
+        test.assertNotEqual(idx, -1, f"token {tok!r} missing (or out of order) after {pos}")
+        pos = idx
 
 
 class FramingTest(unittest.TestCase):
@@ -292,17 +316,10 @@ class BackendTest(unittest.TestCase):
     # ---- SID player -------------------------------------------------------
     @staticmethod
     def _make_sid(*, load=0x1000, init=0x1003, play=0x1006, num_songs=1, payload_len=64):
-        """Minimal valid PSID v2 header + payload (mirrors tests/test_api.py)."""
-        h = bytearray(124)
-        h[0:4] = b"PSID"
-        h[4:6] = (2).to_bytes(2, "big")  # version
-        h[6:8] = (124).to_bytes(2, "big")  # data offset
-        h[8:10] = load.to_bytes(2, "big")
-        h[10:12] = init.to_bytes(2, "big")
-        h[12:14] = play.to_bytes(2, "big")
-        h[14:16] = num_songs.to_bytes(2, "big")
-        h[16:18] = (1).to_bytes(2, "big")  # start song
-        return bytes(h) + bytes(payload_len)
+        """This file's defaults over the shared PSID builder."""
+        return make_psid(
+            load=load, init=init, play=play, num_songs=num_songs, payload=bytes(payload_len)
+        )
 
     def test_run_sid_player_loads_then_vector_swaps(self):
         # Default (defer_audio False): DMA payload + player MC + re-INIT stub,
@@ -408,8 +425,7 @@ class BackendTest(unittest.TestCase):
         # the clear-loop. Acks: 5 (delete+post clear-loop) + 2 (launch) +
         # 1 (CURLIN probe read) + 1 (screen clear).
         b, t = self._backend(read=True)
-        for _ in range(7):
-            t.queue_token(TOK_ACK)
+        _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20 -> already in the GOTO loop
         t.queue_token(TOK_ACK)
@@ -420,12 +436,7 @@ class BackendTest(unittest.TestCase):
         self.assertIn(b"\x64\xfb\x04\x00", sent)  # screen-clear to $0400
         self.assertNotIn(b"\x64\xfb\x00\xcc", sent)  # BLNSW ($00CC) never written
         # The clear-loop PRG was deleted-then-posted-then-launched.
-        i_del = sent.find(b"\x64\xcf")
-        i_post = sent.find(b"\x64\xbb")
-        i_launch = sent.find(b"\x64\x44")
-        self.assertNotEqual(i_del, -1)
-        self.assertLess(i_del, i_post)
-        self.assertLess(i_post, i_launch)
+        _assert_token_order(self, sent, b"\x64\xcf", b"\x64\xbb", b"\x64\x44")
 
     def test_bring_up_repairs_a_clear_loop_that_did_not_run(self):
         # The usual TR outcome (HW-measured): LaunchFile leaves the program body
@@ -436,8 +447,7 @@ class BackendTest(unittest.TestCase):
         # reads as direct mode) and repair it: re-DMA the program, fix VARTAB,
         # and type RUN into the keyboard buffer.
         b, t = self._backend(read=True)
-        for _ in range(7):
-            t.queue_token(TOK_ACK)  # delete+post (5) + launch (2)
+        _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
         t.queue_raw(b"\x00\x00")  # ...CURLIN $0000 -> BASIC is at READY
         for _ in range(4):
@@ -459,8 +469,7 @@ class BackendTest(unittest.TestCase):
         # in KEYD, where the keyboard poller reads them as menu input (RETURN is
         # a nav code). So the repair only fires when BASIC is really at READY.
         b, t = self._backend(read=True)
-        for _ in range(7):
-            t.queue_token(TOK_ACK)
+        _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20 -> already looping
         t.queue_token(TOK_ACK)
@@ -507,8 +516,7 @@ class BackendTest(unittest.TestCase):
         # to silence first.
         b, t = self._backend(read=True)
         t.queue_stale(b"Remote Launch:\rF: clearloop.prg\rResetting C64\r")
-        for _ in range(7):
-            t.queue_token(TOK_ACK)
+        _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
         t.queue_raw(b"\x00\x00")  # ...CURLIN $0000 -> BASIC is at READY, repair fires
         for _ in range(4):
@@ -527,20 +535,15 @@ class BackendTest(unittest.TestCase):
         # SYS stub, then DMA-clear the screen. Acks: 1 (spin) +
         # 5 (delete+post spin stub) + 2 (launch) + 1 (screen clear) = 9.
         b, t = self._backend(read=False)
-        for _ in range(9):
-            t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)  # spin MC write
+        _queue_bringup_acks(t)
+        t.queue_token(TOK_ACK)  # screen clear
         b.run_basic_clear_loop()
         sent = bytes(t.sent)
         # Tokens in order: 0x64FB (spin write), 0x64CF, 0x64BB, 0x6444.
-        i_write = sent.find(b"\x64\xfb")
-        i_del = sent.find(b"\x64\xcf")
-        i_post = sent.find(b"\x64\xbb")
-        i_launch = sent.find(b"\x64\x44")
-        self.assertNotEqual(i_write, -1)
-        self.assertLess(i_write, i_del)
-        self.assertLess(i_del, i_post)
-        self.assertLess(i_post, i_launch)
+        _assert_token_order(self, sent, b"\x64\xfb", b"\x64\xcf", b"\x64\xbb", b"\x64\x44")
         # The spin MC is written to $C000 (BE address bytes C0 00).
+        i_write = sent.find(b"\x64\xfb")
         self.assertEqual(sent[i_write : i_write + 4], b"\x64\xfb\xc0\x00")
 
     def test_pause_idle_clears_screen_keeping_display_on(self):

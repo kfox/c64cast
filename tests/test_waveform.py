@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+from _fakes import FakeAPI, bare_waveform_scene, make_psid
 
 from c64cast.sid.sidemu import (
     WAVE_NOISE,
@@ -267,13 +268,7 @@ class EndOfTuneDetectionTest(unittest.TestCase):
     SID-loading __init__ via __new__ so it needs no hardware or SID file."""
 
     def _scene(self):
-        from c64cast.sid.waveform import WaveformScene
-
-        s = WaveformScene.__new__(WaveformScene)
-        s._ever_sounded = False
-        s._silence_since = None
-        s.name = "test"
-        return s
+        return bare_waveform_scene(_ever_sounded=False, _silence_since=None, name="test")
 
     EPS = 1e-3
 
@@ -550,8 +545,6 @@ class LayoutHelpersTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # WaveformScene
 # ---------------------------------------------------------------------------
-
-from _fakes import FakeAPI
 
 
 def _write_sid_to_tempfile() -> str:
@@ -2052,31 +2045,12 @@ class WaveformConfigValidationTest(unittest.TestCase):
             self._validate(scroll_columns=-1)
 
 
-def _make_playable_sid(init_addr, play_addr, payload, load_addr=0x1000, num_songs=1):
-    """Minimal PSID v2 with real init/play addresses + a payload — enough
-    for parse_psid_for_player + SidHostEmu to run INIT/PLAY."""
-    h = bytearray(124)
-    h[0:4] = b"PSID"
-    h[4:6] = (2).to_bytes(2, "big")  # version
-    h[6:8] = (0x7C).to_bytes(2, "big")  # data offset
-    h[8:10] = load_addr.to_bytes(2, "big")
-    h[10:12] = init_addr.to_bytes(2, "big")
-    h[12:14] = play_addr.to_bytes(2, "big")
-    h[14:16] = num_songs.to_bytes(2, "big")
-    h[16:18] = (1).to_bytes(2, "big")  # start_song
-    return bytes(h) + bytes(payload)
-
-
 class WaveformPlayPreflightTest(unittest.TestCase):
     """WaveformScene._load_sid_file rejects tunes whose PLAY spins past the
     host emulator's cycle cap on every pass (the Hollywood Poker Pro hang)."""
 
     def _scene(self):
-        from c64cast.sid.waveform import WaveformScene
-
-        s = WaveformScene.__new__(WaveformScene)
-        s._song_arg = 0
-        return s
+        return bare_waveform_scene(_song_arg=0)
 
     def _write(self, sid_bytes):
         fd, path = tempfile.mkstemp(suffix=".sid")
@@ -2088,16 +2062,14 @@ class WaveformPlayPreflightTest(unittest.TestCase):
 
     def test_rejects_spinning_play(self):
         # init=$1000 RTS; play=$1001 JMP $1001 (infinite) → caps every tick.
-        sid = _make_playable_sid(
-            init_addr=0x1000, play_addr=0x1001, payload=[0x60, 0x4C, 0x01, 0x10]
-        )
+        sid = make_psid(init=0x1000, play=0x1001, payload=[0x60, 0x4C, 0x01, 0x10])
         path = self._write(sid)
         with self.assertRaisesRegex(ValueError, "PLAY never completes"):
             self._scene()._load_sid_file(path)
 
     def test_accepts_returning_play(self):
         # init=$1000 RTS; play=$1001 RTS → returns immediately, never caps.
-        sid = _make_playable_sid(init_addr=0x1000, play_addr=0x1001, payload=[0x60, 0x60])
+        sid = make_psid(init=0x1000, play=0x1001, payload=[0x60, 0x60])
         path = self._write(sid)
         s = self._scene()
         s._load_sid_file(path)  # must not raise
@@ -2173,12 +2145,7 @@ class WledLabelTest(unittest.TestCase):
     self.name is a moving target)."""
 
     def _scene(self, candidates, name):
-        from c64cast.sid.waveform import WaveformScene
-
-        s = WaveformScene.__new__(WaveformScene)
-        s._candidates = candidates
-        s.name = name
-        return s
+        return bare_waveform_scene(_candidates=candidates, name=name)
 
     def test_random_pool_uses_stable_pool_label(self):
         s = self._scene(["a.sid", "b.sid"], "SID: Commando #1")

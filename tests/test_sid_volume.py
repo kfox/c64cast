@@ -11,7 +11,6 @@ import unittest
 
 from _fakes import FakeAPI
 
-from c64cast.hw.backend import HardwareProfile
 from c64cast.sid import sid_volume as sv
 
 CAT = sv.CAT_MIXER
@@ -31,8 +30,7 @@ CORES_OFF = {
 
 
 def _ultimate_fake(*, supports_config: bool = True, mixer: dict[str, str] | None = None) -> FakeAPI:
-    api = FakeAPI()
-    api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=supports_config)
+    api = FakeAPI.ultimate(supports_config=supports_config)
     api.config_store[sv.CAT_MIXER] = dict(mixer if mixer is not None else CORES_OFF)
     return api
 

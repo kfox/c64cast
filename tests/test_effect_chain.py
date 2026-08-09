@@ -407,8 +407,10 @@ class FxToggleTest(unittest.TestCase):
         self.assertTrue(eff.enabled)  # unchanged
 
     def test_toggle_no_current_scene_is_noop(self):
-        pl = cast("object", SimpleNamespace(current=None, post_osd=lambda *_: None))
+        posts: list = []
+        pl = cast("object", SimpleNamespace(current=None, post_osd=posts.append))
         mc.MidiControlListener._toggle_effect_layer(pl, 0)  # type: ignore[arg-type]
+        self.assertEqual(posts, [], "no OSD feedback for a toggle that didn't happen")
 
 
 class MidiActionParityTest(unittest.TestCase):

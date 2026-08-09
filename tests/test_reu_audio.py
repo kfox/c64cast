@@ -9,7 +9,7 @@ from __future__ import annotations
 import unittest
 from typing import cast
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, new_streamer, run_irq_handler
 
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
@@ -39,32 +39,14 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_SIZE,
     servo_period,
 )
-from c64cast.hw.api import Ultimate64API
 
 
 def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
-    """Bare-bones AudioStreamer (no thread, real API replaced by FakeAPI).
-
-    Built through the real __init__ rather than __new__ plus a hand-written copy
-    of the constructor's state: that copy went stale every time a field was
-    added, and an absent field surfaces as an AttributeError thrown deep inside
-    a worker thread rather than as a fixture error.
-
-    reu_pump_governor OFF so the bring-up tests below assert the plain open-loop
-    handler bytes (GovernorSelectionTest flips it on explicitly; the production
-    default is True — see config.AudioCfg.reu_pump_governor), and host_dma_servo
-    OFF so worker-path tests stay open-loop — HostDmaServoTest exercises the pure
-    controller directly.
-    """
-    return AudioStreamer(
-        cast(Ultimate64API, FakeAPI()),
-        sample_rate=8000,
-        system="NTSC",
-        dither=False,
-        use_reu_pump=use_reu_pump,
-        reu_pump_governor=False,
-        host_dma_servo=False,
-    )
+    """This file's defaults over the shared builder: dither OFF, and
+    reu_pump_governor OFF so the bring-up tests below assert the plain
+    open-loop handler bytes (GovernorSelectionTest flips it on explicitly;
+    the production default is True — see config.AudioCfg.reu_pump_governor)."""
+    return new_streamer(dither=False, use_reu_pump=use_reu_pump, reu_pump_governor=False)
 
 
 class RingBufferRelocationTest(unittest.TestCase):
@@ -493,63 +475,95 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         self.assertLess(body_idx, entry_idx)
 
 
-class ReuTrackedHandlerLeanExitTest(unittest.TestCase):
-    """Verify the tick-divider / lean-exit pattern in
-    REU_IRQ_HANDLER_TRACKED. Pattern borrowed from SID player
-    (api.py:SID_PLAYER_MC_TEMPLATE): instead of chaining to $EA31 on
-    every CIA #1 tick, DEC a counter and chain only every Nth tick;
-    the other N-1 ticks ack CIA #1 and JMP $EA81 for a lean RTI."""
+class ReuTrackedHandlerTest(unittest.TestCase):
+    """REU_IRQ_HANDLER_TRACKED, EXECUTED on the repo's own 6502 (see
+    _fakes.run_irq_handler) instead of pinning instruction offsets: the
+    old tests carried the offset in the test NAME (test_pla_at_offset_105),
+    so inserting one instruction broke all six and required renames —
+    while the constraint they guard (a wrong branch displacement JAMs the
+    CPU) is exactly what actually running the handler proves.
 
-    def test_handler_length_is_125(self):
-        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
+    Covers the tick-divider / lean-exit pattern (borrowed from the SID
+    player: chain to $EA31 every Nth CIA #1 tick, ack + JMP $EA81 for a
+    lean RTI the other N-1), the tracker-driven REC pump, and the dst
+    ring wrap."""
 
-        # 109 (pre-lean-exit) + 16 bytes for the divider/lean-exit tail = 125.
-        self.assertEqual(len(REU_IRQ_HANDLER_TRACKED), 125)
+    def _run(self, *, counter: int, dst: int | None = None):
+        from c64cast.audio.audio_handlers import (
+            REU_IRQ_HANDLER_TRACKED,
+            REU_PUMP_TICK_COUNTER_ADDR,
+        )
 
-    def test_pla_at_offset_105(self):
-        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
+        src = 0x032211  # arbitrary 24-bit REU offset, mid-ring
+        dst = RING_BUFFER_ADDR if dst is None else dst
+        seed = {
+            REU_AUDIO_SRC_TRACKER_ADDR + 0: src & 0xFF,
+            REU_AUDIO_SRC_TRACKER_ADDR + 1: (src >> 8) & 0xFF,
+            REU_AUDIO_SRC_TRACKER_ADDR + 2: (src >> 16) & 0xFF,
+            REU_AUDIO_SRC_TRACKER_ADDR + 3: dst & 0xFF,
+            REU_AUDIO_SRC_TRACKER_ADDR + 4: (dst >> 8) & 0xFF,
+            REU_PUMP_TICK_COUNTER_ADDR: counter,
+        }
+        run = run_irq_handler(REU_IRQ_HANDLER_TRACKED, addr=REU_PUMP_HANDLER_ADDR, seed=seed)
+        run.src, run.dst = src, dst
+        return run
 
-        # PLA (0x68) at offset 105 — same as pre-lean-exit. BCC +10 at
-        # offset 93 still lands here.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[105], 0x68)
+    def test_on_cycle_tick_chains_and_reloads_the_divider(self):
+        from c64cast.audio.audio_handlers import (
+            REU_PUMP_TICK_COUNTER_ADDR,
+            REU_PUMP_TICK_DIVIDER,
+        )
 
-    def test_dec_counter_at_offset_106(self):
-        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED, REU_PUMP_TICK_COUNTER_ADDR
+        run = self._run(counter=1)
+        self.assertEqual(run.exit_pc, 0xEA31, "Nth tick must chain the full kernal tail")
+        self.assertEqual(run.memory.ram[REU_PUMP_TICK_COUNTER_ADDR], REU_PUMP_TICK_DIVIDER)
+        self.assertEqual(run.mpu.sp, 0xFF, "handler must balance its own PHA/PLA")
 
-        # DEC $C205 (CE 05 C2)
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[106], 0xCE)
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[107], REU_PUMP_TICK_COUNTER_ADDR & 0xFF)
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[108], (REU_PUMP_TICK_COUNTER_ADDR >> 8) & 0xFF)
+    def test_off_cycle_tick_takes_the_lean_exit_and_acks_cia(self):
+        from c64cast.audio.audio_handlers import (
+            REU_PUMP_TICK_COUNTER_ADDR,
+            REU_PUMP_TICK_DIVIDER,
+        )
+        from c64cast.hw.c64 import CIA1
 
-    def test_bne_to_lean_exit_at_offset_109(self):
-        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
+        run = self._run(counter=REU_PUMP_TICK_DIVIDER)
+        self.assertEqual(run.exit_pc, 0xEA81, "off-cycle ticks must take the lean exit")
+        self.assertEqual(run.memory.ram[REU_PUMP_TICK_COUNTER_ADDR], REU_PUMP_TICK_DIVIDER - 1)
+        assert run.memory.access is not None
+        self.assertTrue(run.memory.access[CIA1.ICR], "lean exit must still ack CIA #1")
+        self.assertEqual(run.mpu.sp, 0xFF)
 
-        # BNE +8 (D0 08) — branches past the reload + chain block to the
-        # lean exit at offset 119.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[109], 0xD0)
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[110], 0x08)
+    def test_every_tick_pumps_one_chunk_from_the_trackers(self):
+        from c64cast.audio.audio_handlers import REU_CMD_FETCH_EXEC
 
-    def test_divider_immediate_at_offset_112(self):
-        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED, REU_PUMP_TICK_DIVIDER
+        run = self._run(counter=2)  # off-cycle — the pump body runs on EVERY tick
+        ram = run.memory.ram
+        # REC programmed from the main-RAM trackers (never from register
+        # read-back) and triggered:
+        self.assertEqual(ram[0xDF07], REU_PUMP_CHUNK_SIZE & 0xFF)
+        self.assertEqual(ram[0xDF08], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
+        self.assertEqual(
+            [ram[0xDF04], ram[0xDF05], ram[0xDF06]],
+            [run.src & 0xFF, (run.src >> 8) & 0xFF, (run.src >> 16) & 0xFF],
+        )
+        self.assertEqual([ram[0xDF02], ram[0xDF03]], [run.dst & 0xFF, run.dst >> 8])
+        self.assertEqual(ram[0xDF01], REU_CMD_FETCH_EXEC)
+        # Both trackers advanced one chunk for the next tick.
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        src_after = ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
+        self.assertEqual(src_after, run.src + REU_PUMP_CHUNK_SIZE)
+        dst_after = ram[t + 3] | (ram[t + 4] << 8)
+        self.assertEqual(dst_after, run.dst + REU_PUMP_CHUNK_SIZE)
 
-        # LDA #N (A9 N) — the divider value reloaded into the counter on
-        # each chain tick.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[111], 0xA9)
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[112], REU_PUMP_TICK_DIVIDER)
-
-    def test_chain_jmp_at_offset_116(self):
-        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
-
-        # JMP $EA31 (4C 31 EA) — full kernal IRQ tail.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[116:119], bytes([0x4C, 0x31, 0xEA]))
-
-    def test_lean_exit_at_offset_119(self):
-        from c64cast.audio.audio_handlers import REU_IRQ_HANDLER_TRACKED
-
-        # LDA $DC0D (AD 0D DC) — ack CIA #1 ICR.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[119:122], bytes([0xAD, 0x0D, 0xDC]))
-        # JMP $EA81 (4C 81 EA) — kernal register-restore + RTI.
-        self.assertEqual(REU_IRQ_HANDLER_TRACKED[122:125], bytes([0x4C, 0x81, 0xEA]))
+    def test_dst_tracker_wraps_at_ring_end(self):
+        # The last chunk before the ring end must wrap the dst tracker back
+        # to the ring start (not $DF03 — that register goes stale whenever
+        # the bank-swap pipeline ran between IRQs).
+        last_chunk_dst = (RING_BUFFER_END_HI << 8) - REU_PUMP_CHUNK_SIZE
+        run = self._run(counter=2, dst=last_chunk_dst)
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        self.assertEqual(run.memory.ram[t + 3], 0x00)
+        self.assertEqual(run.memory.ram[t + 4], RING_BUFFER_HI)
 
     def test_skip_hook_seeds_tick_counter_to_one(self):
         # First IRQ must DEC the counter to 0, trigger reload+chain, then
