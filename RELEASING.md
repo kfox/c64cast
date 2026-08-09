@@ -99,9 +99,20 @@ yanked, never replaced, while a GitHub release can be recreated.
 **5. Check the result.**
 
 ```bash
-uv tool install 'c64cast[all]'==0.2.0
-c64cast --version
+uvx --refresh-package c64cast --from 'c64cast[all]==0.2.0' c64cast --doctor --skip-probe
 ```
+
+`uvx` over `uv tool install` so the check leaves nothing behind — no shim in
+`~/.local/bin`, nothing in `uv tool list`, and no chance of shadowing a working
+install on the release machine. The version has to sit *inside* the `--from`
+spec: it is one argument, so `--from 'c64cast[all]' ==0.2.0` would be read as
+the command name. `--refresh-package` is worth the extra seconds right after a
+publish, when uv may still hold an index response that predates the upload.
+
+`--doctor --skip-probe` is offline and prints the EXTRAS section, so it proves
+the extras resolved rather than only that the entry point runs. `--version` is
+the faster smoke test if that is all you want — pair it with a bare
+`'c64cast==0.2.0'` and skip the mediapipe and yt-dlp download.
 
 PyPI renders `README.md`, which cannot be changed without a new release — worth
 a look the first time.
