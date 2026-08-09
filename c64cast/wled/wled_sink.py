@@ -214,6 +214,8 @@ class WledPixelReceiver:
             # Loopback-only was rejected: the senders (LedFx, xLights, a WLED
             # controller) stream from elsewhere on the LAN, and a loopback bind
             # succeeds, so the scene would show nothing and never report why.
+            # Accepting LAN traffic is the feature, hence the CodeQL waiver.
+            # codeql[py/bind-socket-all-network-interfaces]
             s.bind((self._host, port))
         except OSError as e:
             s.close()
