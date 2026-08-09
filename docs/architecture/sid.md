@@ -11,6 +11,8 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`waveform.py` + `sidemu.py` + `sid_host_emu.py` — SID oscilloscope scene](#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene)
 * [`midi_scene.py` — MidiScene (live MIDI → SID + oscilloscope)](#midi_scenepy--midiscene-live-midi--sid--oscilloscope)
 * [`asid.py` + `asid_scene.py` — AsidScene (ASID client → real SID + oscilloscope)](#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope)
+* [`sid_hw_config.py` — shared SID hardware-config plumbing](#sid_hw_configpy--shared-sid-hardware-config-plumbing)
+* [`songlengths.py` — HVSC SongLengths lookup](#songlengthspy--hvsc-songlengths-lookup)
 
 ---
 
@@ -325,3 +327,21 @@ Both share the rest of the policy:
 The oracle in `tests/test_asid_sidmap.py` asserts each routed chip is realized *by the source the map says plays it*, and that the only address answered by two sources is a deliberate LED mirror.
 
 **Follow-ups (see auto-memory):** the reverse direction — c64cast as an ASID *host* emitting `0x4E` from the `sid_host_emu` register capture to drive external ASID synths; and per-chip color tint / labels on the split scope (v1 distinguishes chips by position + gutter only).
+
+## `sid_hw_config.py` — shared SID hardware-config plumbing
+
+The REST half of every U64 SID story above: snapshot the `SID Addressing` / `SID Sockets Configuration` / `UltiSID Configuration` categories, apply a plan, put the user's config back on teardown. It was extracted from `AsidScene` so `WaveformScene`'s multi-SID support could reuse it verbatim; today it also serves [autoconfig](#sid-player-autoconfig), [panning](#sid-panning), [volume](#sid-volume), `SidFileAudioSource`, `dac_calibration`'s per-socket isolation ([audio.md](audio.md#table-selection-auto-and-per-system-calibration)) and `--doctor`'s SID probes. Two contracts govern everything in it: every function is **best-effort** — a failed config read returns a benign empty default and a failed write logs, because a REST hiccup must never crash a scene — and every caller gates on `api.profile.supports_config` (TeensyROM has no config API; the scope still draws every chip, chip 0 stays audible).
+
+The `MANAGED_*` item tuples are the module's real contract: the exact `(category, item)` set a snapshot/restore round-trips, which must match both the firmware's names (`u64_config.cc`) and the items the planners emit — a plan that PUTs an item the snapshot didn't record is a change the teardown can't undo. `MANAGED_MODEL_ITEMS` (the UltiSID filter curves) is deliberately a third sibling rather than folded into the addressing or socket tuples: distinct REST category, distinct concern — chip model, not address routing. `_put_all` splits its log level by direction: a *forward* apply that fails deserves a WARNING (the caller wanted that change to take), while a *teardown restore* that fails only leaves the U64 as the user last configured it — DEBUG.
+
+`current_source_map` — which source answers each `$Dxxx` address right now — carries the module's two subtlest decisions. Physical sockets are folded into the map **last**, so they win an `Auto Address Mirroring` collision: when a populated socket and an UltiSID core both report the same address, the socket's real chip is what a listener hears and the core is merely mirroring. That exact collision masked which source was actually audible during the autoconfig hardware verification — one of the two bugs only real hardware surfaced. The v1 simplification: a split UltiSID core is tracked only at its configured base address, not the secondary instance a `1/2`/`1/4` split expands it across, so a chip at that secondary address gets a harmless re-route instead of recognition. `detect_socket_models` exists un-collapsed beside `detect_sockets` because its consumers treat the socket strings ("6581"/"8580") as chip *identity*, not mere presence — the calibration store keys on them.
+
+`SidHwSession` — the one-snapshot restore tracker every consumer holds — is covered with the rule it enforces under [SID Player Autoconfig](#sid-player-autoconfig): `snapshot()` is first-call-wins, mechanically enforcing the single-snapshot rule the per-scene dicts used to uphold by call-site discipline alone.
+
+## `songlengths.py` — HVSC SongLengths lookup
+
+The High Voltage SID Collection ships `Songlengths.md5`, mapping each SID file's MD5 to per-subtune durations; a hit is what lets a waveform scene run exactly as long as the tune instead of a guessed `duration_s` (the precedence — explicit duration > DB > fallback — is [`WaveformScene`'s](#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene)). Loading is `scene_factory._load_songlengths`' job ([config.md](config.md#scene_factorypy)): memoized per path, and when `[playlist].songlengths_file` is unset it auto-detects an unpacked HVSC under `assets/sids` — memoized including the not-found result, since an HVSC tree is tens of thousands of files; an explicit empty string opts out.
+
+The one hard-won fact in the module is the key. The shipped database is keyed by a **plain MD5 of the entire raw file, header included** — not the field-selective fingerprint libsidplayfp's `SidTune::createMD5()` computes (which deliberately excludes the free-text name/author/released fields so re-tagged rips still match). The data-only digest looked right and failed silently: tunes present in the database reported "not found". `md5_of_sid`'s docstring carries the verification against shipped entries.
+
+Parsing is tolerant by line — comments, malformed lines, and non-MD5 keys are skipped, never fatal — but *positional* within an entry: an unparseable duration is kept as a `None` slot so the 1-based subtune indexing (PSID convention) stays aligned for the durations that did parse. `LengthsDB` is the hold-it-open form; the `song_length` convenience re-reads the file on every call and says so — `scene_factory`'s memoized loader is the long-lived holder in practice.
