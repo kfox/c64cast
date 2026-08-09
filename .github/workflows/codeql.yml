@@ -34,10 +34,30 @@ jobs:
         with:
           languages: python
           queries: security-extended
+          # Emits SARIF `suppressions` for in-code `# codeql[query-id]` waivers
+          # (e.g. the WLED sink binding 0.0.0.0 by design). Not in any default
+          # suite, so it must be added explicitly.
+          packs: codeql/python-queries:AlertSuppression.ql
 
       # Python is interpretation-only (no build step needed for CodeQL);
       # the autobuild action is for compiled languages and would no-op here.
       - name: Perform CodeQL analysis
+        id: analyze
         uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           category: "/language:python"
+          output: sarif-results
+
+      # Code scanning uploads SARIF suppressions but never acts on them, and a
+      # manual dismissal dies whenever a refactor moves the flagged line (each
+      # move mints a new alert — see alerts #1-#3, all the same wled_sink bind).
+      # This step closes suppressed alerts via the alerts API instead. Main
+      # only: dismissal is a repo-global alert property, not per-branch.
+      - name: Dismiss suppressed alerts
+        if: github.ref == 'refs/heads/main'
+        uses: advanced-security/dismiss-alerts@a18f986bdb40edba0dd7a74382c15d4a3d50a1c8 # v2.0.3
+        with:
+          sarif-id: ${{ steps.analyze.outputs.sarif-id }}
+          sarif-file: sarif-results/python.sarif
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
