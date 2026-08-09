@@ -94,7 +94,7 @@ jobs:
           "
 
       - name: Set up Typst
-        uses: typst-community/setup-typst@63ac138db421d586de61f7f5ac3bcef6a2e6c78c # v5.1.0
+        uses: typst-community/setup-typst@40d32bb6ccb235bd7f5164cb47cfd40a5ea3a314 # v5.2.0
 
       - name: Render the books
         # build_book.py is stdlib-only, so PY skips the project sync. The
