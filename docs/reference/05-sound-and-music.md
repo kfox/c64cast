@@ -145,7 +145,7 @@ the ring differ.
 
 | `dac_curve` | Meaning |
 |---|---|
-| `"auto"` | The default. A calibration measured from your own chip if one exists, else the built-in table on the Ultimate, else `"linear"` |
+| `"auto"` | The default. A calibration measured from the SID answering `$D400` if one exists, else the built-in table when an UltiSID core owns that address, else `"linear"` — so an uncalibrated socketed chip gets the plain 4-bit path, not a table measured on different silicon |
 | `"linear"` | The plain 4-bit path |
 | `"mahoney_ultisid"` | The built-in table, measured from the Ultimate's own emulated SID |
 | `"calibrated"` | Force the measured table; an error if there is none |
@@ -164,6 +164,10 @@ capture device, and writes a table. It takes about fifty seconds per SID
 socket, and a machine with two socketed chips measures each one separately.
 The file is keyed to the machine's own identity — the Ultimate's serial
 number, a TeensyROM's USB serial — so a changed address does not orphan it.
+`[audio].dac_calibration_profile` overrides that key with a name of your own,
+or — given a path — points a run at another machine's calibration file
+outright, which is how a table measured over the Ultimate replays the same
+chip over a TeensyROM+ in that machine's cartridge port.
 
 > [!WARNING]
 > A run replaces this machine's existing table outright. There is no prompt
@@ -174,9 +178,14 @@ number, a TeensyROM's USB serial — so a changed address does not orphan it.
 
 The measurement is checked before it is kept. Sixteen of the 256 values set
 the master volume to zero and *must* therefore be silent whatever else they
-say; a table that fails that test is rejected rather than used, because a bad
-calibration is worse than none. On the one chip where both were compared, the
-measured table beat the plain 4-bit path by 2 dB while running 5.6 dB louder.
+say, each level is the median of several passes so a single glitched reading
+is discarded outright, and a capture whose passes disagree broadly is refused
+— the message says whether the level was still settling or the laps genuinely
+played different levels, which have opposite fixes — because a bad calibration
+is worse than none. A refused capture is kept under `calibration/unusable/`
+in the data directory, with its diagnostics, so the evidence survives the
+refusal. On the one chip where both were compared, the measured table beat
+the plain 4-bit path by 1.7 dB while running 5.9 dB louder.
 
 Two more knobs sit here. `[audio].dither` adds a little triangular noise
 during encoding; it is off by default because at four bits the hiss it adds

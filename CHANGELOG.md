@@ -246,7 +246,19 @@ the version and stamps it with the date.
 
 - `scripts/diags/audio_fm_probe.py` — measures how much a host DMA write
   perturbs DAC playback, as a function of payload size, against a tone that
-  cannot underrun.
+  cannot underrun. Its siblings from the same investigations ship alongside
+  it: `halt_shape_probe.py` (what a DMA write costs the 6510, in NMI ticks),
+  `ring_race_probe.py` (the write head against the NMI consumer's read
+  pointer), `write_delivery_lag.py` (how much of what the host believes it
+  wrote is actually in C64 RAM), and `tr_clearloop_state_probe.py` (what the
+  C64 is doing at each step of TeensyROM+ bring-up).
+
+### Changed
+
+- The `vision` extra's mediapipe pin is now `>=0.10.35,<1.1` (previously
+  `<0.11`), so a fresh `c64cast[vision]` or `c64cast[all]` install resolves
+  mediapipe 1.x. Existing 0.10.x installs remain within the pin; the
+  hand-gesture controller works with either series.
 
 ## [0.2.1] - 2026-08-05
 

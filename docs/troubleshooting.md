@@ -57,8 +57,25 @@ picture and the knobs that actually help:
   rather than the chip: check that the capture device is actually fed by the SID
   output, that nothing else is mixed into it, and that the level isn't clipping.
   The raw levels are saved in the calibration file for diagnosis; `metrics`
-  there also carries `pass_spread_frac` per ring, which is large when the
-  capture couldn't be read reliably at all.
+  there also carries per-ring pass spreads (`pass_spread_p95_frac`, which the
+  trust gate reads, and `pass_spread_frac`, the worst single slot), which are
+  large when the capture couldn't be read reliably at all.
+- **`--calibrate-dac` says "the calibration ring is playing and is being
+  recorded, but the passes disagree…"**. Each capture plays the same ladder
+  several times over and compares the passes; one whose passes disagree
+  broadly is refused, because a table fitted to levels that move is worse
+  than none. The input is right — the message says so up front — and it also
+  says which *kind* of unsteady it saw, because the two have opposite fixes.
+  A **level drift** means the ring replayed faithfully while the level it was
+  measured through moved: let the machine play a few seconds before
+  calibrating, and check nothing in the capture path applies AGC or its own
+  level control. Passes that **differ in shape** mean something besides the
+  ring is reaching the output: another SID, a sampler channel or a drive
+  still up in the machine's mixer, or a tune still playing — over a link
+  with no config API nothing is muted for you. Nothing is written and
+  playback keeps the previous curve; the refused capture is saved under
+  `calibration/unusable/` in the data directory with its diagnostics, and
+  the failure names the exact path.
 - **On the U64, video audio isn't on the `$D418` DAC at all by default.**
   `[audio] backend = "auto"` uses the off-bus Ultimate Audio PCM sampler,
   far higher fidelity than any `$D418` path. Persistent robotic *video*
@@ -85,7 +102,11 @@ The audio worker can't get fresh samples onto the U64's ring buffer fast
 enough, so it pads with neutral samples — audible as dropouts. (There is
 no client-side write queue to watch under Socket DMA; the TCP send buffer
 is the only buffer, and `--profile` reports `u64 dma latency` rather than
-a queue percentage.) Possible causes:
+a queue percentage.) Run with `-v` first: on the `$D418` DAC path the worker
+logs a short health line every few seconds — underruns, late ring sub-writes,
+write and consumer rates — which tells a fault that is present throughout
+from one that appears part-way in, and the stop summary reports the run's
+late-write share. Possible causes:
 
 - LAN saturated by something else (other streaming, large transfers).
   Move the U64 onto wired Ethernet.

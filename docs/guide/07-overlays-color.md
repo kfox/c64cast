@@ -186,12 +186,22 @@ quality.
 The **`$D418` DAC** works on every machine. It abuses the SID's volume
 register as a crude digital-to-analog converter, which is how digitized
 sound was done on the C64 in period. Written the obvious way that gives four
-bits, and c64cast can still do exactly that. By default it does something
-better: it parks all three voices as steady sources and writes the whole
-register each sample — volume, filter mode, and the voice-three switch —
-which lands on roughly 256 distinct output levels. They are unevenly spaced,
-so the useful resolution is nearer six or seven bits than eight, but it is a
-long way past four.
+bits, and c64cast can still do exactly that. Where it knows the chip, it does
+something better by default: it parks all three voices as steady sources and
+writes the whole register each sample — volume, filter mode, and the
+voice-three switch — which lands on roughly 256 distinct output levels. They
+are unevenly spaced, so the useful resolution is nearer six or seven bits
+than eight, but it is a long way past four.
+
+"Where it knows the chip" matters: those 256 levels are only as good as a
+table that matches the silicon they come out of. The Ultimate's emulated SID
+ships with one built in, so it gets the better path out of the box. A
+physical SID — a chip in a socket, or any machine behind a TeensyROM —
+plays through the plain 4-bit path until you run `--calibrate-dac` once to
+measure your own chip; [the Programmer's Reference
+Guide](https://github.com/kfox/c64cast/blob/main/docs/reference/05-sound-and-music.md#companding--dac_curve)
+covers the measurement and what it needs (an audio capture of the C64's
+output).
 
 It still sounds rough, because it is still a volume register being wobbled
 twelve thousand times a second, and that roughness is most of the charm. It

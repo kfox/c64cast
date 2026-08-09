@@ -990,7 +990,9 @@ not None` guard — it's a Pylance limitation, not a real issue.
 ## BASIC clear-and-loop is how the cursor stays hidden
 
 `api.run_basic_clear_loop()` POSTs `10 PRINT CHR$(147) : 20 GOTO 20`
-to the `/v1/runners:run_prg` endpoint at startup and on resume. The
+to the `/v1/runners:run_prg` endpoint at startup and on resume; a
+TeensyROM+ link launches the same program its own way and repairs it
+over DMA when the launcher leaves it unlinked at `$0801`. The
 `PRINT CHR$(147)` clears the screen + homes the cursor; the infinite
 `GOTO 20` keeps BASIC out of the editor's direct-input mode, which is
 what keeps the kernal cursor-blink IRQ suppressed (the editor is what

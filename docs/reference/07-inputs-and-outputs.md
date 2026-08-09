@@ -346,7 +346,12 @@ kill -HUP $(pgrep -f c64cast)
 Windows has no `SIGHUP`, which is why `POST /reload` is the portable spelling of
 it. `SIGTERM` stops the run the way a normal exit does, tearing the scene down
 and putting the machine back; <kbd>CTRL</kbd> <kbd>C</kbd> still interrupts at
-the terminal.
+the terminal. A second <kbd>CTRL</kbd> <kbd>C</kbd> while teardown runs does
+not kill the process — it restores the default handler, so it is the *third*
+press that kills outright. The ladder is deliberate: a kill can cut a DMA
+transfer mid-flight, which wedges the hardware and skips the machine's final
+reset, so the escalation is there for a teardown that is genuinely stuck, not
+an impatient one.
 
 In an ensemble each system re-reads its own file independently, from the path it
 was originally loaded from. The master is not re-read, so adding or removing a

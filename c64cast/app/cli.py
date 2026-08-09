@@ -218,7 +218,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME|PATH",
         help="Override the auto-derived DAC calibration file key, for both "
         "--calibrate-dac and playback. A name keys a file under "
-        "calibration/dac/profile-<name>.json (use when a TeensyROM+ moves between "
+        "calibration/dac/profile-<name>.json, or names an existing file there "
+        "as-is, e.g. the device-keyed 'ultimate-<id>' files --calibrate-dac "
+        "writes (use when a TeensyROM+ moves between "
         "physical C64s: name each host's calibration once, reuse the name on every "
         "run there); a path (ending .json, or containing a separator) names a "
         "calibration file directly, which is how one machine's calibration is "
