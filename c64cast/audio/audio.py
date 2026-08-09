@@ -612,6 +612,26 @@ class AudioStreamer:
                 addr = RING_BUFFER_ADDR
         return n, taken_total, leftover
 
+    def stats(self) -> dict[str, int | float]:
+        """Snapshot of the pacing/underrun telemetry counters — the public
+        seam for tests and reporting. The push/consume pair is read under
+        _count_lock so position bookkeeping stays coherent; the worker-owned
+        counters are plain reads (single-writer, torn reads impossible on
+        ints). The counters themselves stay private so their single-owner
+        write discipline is visible at the attribute level."""
+        with self._count_lock:
+            pushed = self._pushed_count
+            queued = self._queued_samples
+        return {
+            "pushed_samples": pushed,
+            "queued_samples": queued,
+            "full_underruns": self._full_underruns,
+            "partial_underruns": self._partial_underruns,
+            "late_slots": self._late_slots,
+            "total_slots": self._total_slots,
+            "late_worst_s": self._late_worst_s,
+        }
+
     def _maybe_log_health(self, now: float) -> None:
         """Emit one worker-health line per window, as deltas over that window.
 

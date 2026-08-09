@@ -449,5 +449,31 @@ class StompSpanTests(unittest.TestCase):
         self.assertEqual(stomp_spans(r, r, guard=STOMP_GUARD_BYTES), [])
 
 
+class StatsSeamTest(unittest.TestCase):
+    """AudioStreamer.stats() — the public snapshot of the pacing/underrun
+    telemetry, so tests and reporting needn't reach for private counters."""
+
+    def test_fresh_streamer_reports_zeroed_counters(self):
+        self.assertEqual(
+            new_streamer().stats(),
+            {
+                "pushed_samples": 0,
+                "queued_samples": 0,
+                "full_underruns": 0,
+                "partial_underruns": 0,
+                "late_slots": 0,
+                "total_slots": 0,
+                "late_worst_s": 0.0,
+            },
+        )
+
+    def test_stats_track_the_push_side(self):
+        s = new_streamer()
+        s._encode_and_enqueue(np.zeros(64, dtype=np.float32))
+        stats = s.stats()
+        self.assertEqual(stats["pushed_samples"], 64)
+        self.assertEqual(stats["queued_samples"], 64)
+
+
 if __name__ == "__main__":
     unittest.main()

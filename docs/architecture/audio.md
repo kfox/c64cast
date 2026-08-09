@@ -155,6 +155,8 @@ This went unmeasured for years because every metric on this path was a *frequenc
 
 That health line is per-**window**, not cumulative, because the artifacts left on this path are the time-varying ones — a fault that appears part-way in, deepens, clears and returns is indistinguishable from a steady one in a session total. It carries the servo gap's excursion, late slots over total, underruns, write rate, the live quantum, the measured consumer rate R and the latch, which is enough to tell a collection stall from a link stall from a servo excursion without a capture rig.
 
+`AudioStreamer.stats()` is the public snapshot of these counters (pushed/queued samples under `_count_lock`, plus the underrun/late-slot telemetry) — the seam tests and reporting read instead of the private attributes, whose single-owner write discipline stays visible at the attribute level.
+
 #### Verifying the arm took
 
 Three writes bring the consumer up, and all three are load-bearing: the `$0318` NMI vector, the Timer A latch, and the `$DD0D`/`$DD0E` enable+start. They ride the same transport as everything else, whose `_emit` contract is to **absorb** a failed write rather than raise — right for a lost border poke, wrong here. Any one of them going missing produces the identical symptom: the NMI never fires, the read pointer R (the self-modifying operand at `$C025`) sits at `RING_BUFFER_ADDR` forever, and the session is silent from the first frame to the last. It also runs *fast* — the host-DMA servo is correctly reacting to a reader that never consumes. A dropped vector write is not a milder case: the KERNAL NMI handler stays installed and writes `#$7F` to `$DD0D`, killing CIA #2 interrupts itself.
