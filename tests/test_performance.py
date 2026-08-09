@@ -507,8 +507,16 @@ class LookSessionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             session = self._session(d)
             pl: Any = _FakePlaylist()
+            eff = _FakeEffect(decay=0.8)
+            pl.current = _FakeScene("live", effects=[eff])
             session.enqueue_look(7, save=False)
             session.service(pl)  # must not raise
+            # A missing look must leave the live chain and the deck alone —
+            # a recall that wiped every effect would sail past a bare
+            # "does not raise".
+            self.assertAlmostEqual(eff.decay, 0.8)
+            self.assertTrue(eff.enabled)
+            self.assertEqual(pl.swaps, [])
 
     def test_recall_relaunches_captured_clip_and_applies_effects(self):
         with tempfile.TemporaryDirectory() as d:
