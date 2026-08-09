@@ -13,12 +13,43 @@ write_memory_file call as (addr_upper, bytes). Read injection: set
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import tempfile
 import time
+from collections.abc import Iterator
 from unittest import mock
 
 from c64cast.hw.backend import HardwareProfile
+
+
+@contextlib.contextmanager
+def quiet_logging() -> Iterator[None]:
+    """Swallow log records for the duration of the block, and undo any
+    root-logger reconfiguration the code under test performs.
+
+    Use this only where the log line is incidental to what the test asserts.
+    Where the message *is* the documented behavior, `assertLogs` says so and
+    silences it at the same time — prefer that. (`logging.disable` outranks
+    `assertLogs`, so the two must not nest.)
+
+    Restoring the root logger is the half that matters beyond the test's own
+    output: `cli.main()` calls `configure_logging`, which clears the root
+    handlers and installs its own. That handler outlives the test, so every
+    later INFO record in the same worker process — from modules with no
+    connection to the CLI — prints to the console mid-run.
+    """
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    previous = root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(previous)
+        root.handlers[:] = handlers
+        root.setLevel(level)
 
 
 class MachineSettingsIsolation:

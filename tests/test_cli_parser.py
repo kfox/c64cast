@@ -7,6 +7,8 @@ pin the parser-level invariants that everything downstream assumes.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 
 from c64cast.app.cli import build_parser
@@ -79,8 +81,11 @@ class ParserContractTest(unittest.TestCase):
 
     def test_system_choices_are_the_two_video_standards(self):
         self.assertEqual(build_parser().parse_args(["-s", "PAL"]).system, "PAL")
-        with self.assertRaises(SystemExit):
+        # argparse prints usage + the rejection to stderr before it exits.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
             build_parser().parse_args(["-s", "SECAM"])
+        self.assertIn("invalid choice: 'SECAM'", err.getvalue())
 
 
 if __name__ == "__main__":

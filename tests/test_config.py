@@ -791,9 +791,10 @@ class MachineSettingsTest(unittest.TestCase):
 
     def test_scenes_section_rejected(self):
         self._write_settings('[ultimate64]\nurl = "http://m.lan"\n[[scenes]]\ntype = "blank"\n')
-        with self._env():
+        with self._env(), self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             data = cfgmod.load_machine_settings()
             cfg = cfgmod.load(None)
+        self.assertIn("[scenes] ignored", "\n".join(cm.output))
         self.assertNotIn("scenes", data)
         self.assertEqual(cfg.scenes, [])
         self.assertEqual(cfg.ultimate64.url, "http://m.lan")  # other sections still applied
@@ -802,9 +803,10 @@ class MachineSettingsTest(unittest.TestCase):
         self._write_settings(
             "[ensemble]\nsystems = [{name='a', config='a.toml'}]\n[audio]\nsample_rate = 8000\n"
         )
-        with self._env():
+        with self._env(), self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             data = cfgmod.load_machine_settings()
             cfg = cfgmod.load(None)
+        self.assertIn("[ensemble] ignored", "\n".join(cm.output))
         self.assertNotIn("ensemble", data)
         self.assertEqual(cfg.audio.sample_rate, 8000)
 

@@ -16,7 +16,9 @@ scripts/ is not a package, so the modules are loaded by path.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import os
 import posixpath
 import re
@@ -96,7 +98,10 @@ class _BuiltSite:
         if cls._dir is None:
             cls._dir = tempfile.TemporaryDirectory()
             cls.root = Path(cls._dir.name) / "site"
-            bs.build(cls.root)
+            # build() reports what it wrote on stdout — that is for the human
+            # running `make site`, not for the middle of a test run.
+            with contextlib.redirect_stdout(io.StringIO()):
+                bs.build(cls.root)
         return cls.root
 
 
@@ -436,7 +441,8 @@ class CheckModeTest(unittest.TestCase):
     def test_check_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "site"
-            self.assertEqual(0, bs.build(out, write=False))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, bs.build(out, write=False))
             self.assertFalse(out.exists())
 
 

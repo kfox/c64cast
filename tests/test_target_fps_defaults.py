@@ -30,7 +30,7 @@ from c64cast.app.scene_factory import _frame_push_default_fps
 from c64cast.video.modes import DisplayMode
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _fakes import FakeAPI  # noqa: E402
+from _fakes import FakeAPI, quiet_logging  # noqa: E402
 
 
 def _mode(is_bitmapped: bool) -> DisplayMode:
@@ -283,7 +283,10 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="mic", display="mcm", audio=False
         )
-        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
+        # mic + audio = false also warns that the visuals stay time-driven —
+        # covered where that warning belongs; here only target_fps matters.
+        with quiet_logging():
+            scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)
 
 

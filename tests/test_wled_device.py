@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 from pathlib import Path
 from typing import cast
 
@@ -24,8 +25,11 @@ try:
     # The WLED JSON API tests drive the real FastAPI app via TestClient, which
     # also needs httpx (fastapi declares it optional). CI runs without the
     # `wled`/`control` extra, so guard the API class like test_control_plane
-    # does; the bridge + parser tests below need none of this.
-    from fastapi.testclient import TestClient  # noqa: F401
+    # does; the bridge + parser tests below need none of this. The import's
+    # httpx2 deprecation warning is silenced for the same reason it is there.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from fastapi.testclient import TestClient  # noqa: F401
 
     HAVE_TESTCLIENT = True
 except (ImportError, RuntimeError):
