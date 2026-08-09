@@ -8,7 +8,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 ## Topic areas
 
-* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/api.py`, `hw/teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
+* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
@@ -35,7 +35,9 @@ the two lists account for every module in the tree.
 | `audio/audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |
 | `audio/audio_features.py` | [Audio output](architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
 | `audio/audio_source.py` | [Audio output](architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source) |
+| `hw/backend.py` | [Hardware I/O & transports](architecture/hardware-io.md#backendpy--the-c64backend-duck-type-hardware-profiles-and-the-shared-write-path) |
 | `scenes/backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
+| `hw/c64.py` | [Hardware I/O & transports](architecture/hardware-io.md#c64py--the-hardware-constant-register) |
 | `control/camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
 | `hw/char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
 | `app/cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
@@ -56,6 +58,7 @@ the two lists account for every module in the tree.
 | `scenes/frame_source.py` | [Scenes, sources & overlays](architecture/scenes.md#frame_sourcepy) |
 | Framerate pacing & frame-dropping | [Video input & the color pipeline](architecture/video-color.md#framerate-pacing--frame-dropping) |
 | `scenes/generators/` | [Scenes, sources & overlays](architecture/scenes.md#generators--the-generativesource-registry) |
+| `hw/hw_provision.py` | [Hardware I/O & transports](architecture/hardware-io.md#hw_provisionpy--live-reu--sampler-auto-provisioning) |
 | `scenes/interstitial.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `control/keyboard.py` | [Control surfaces & live performance](architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle) |
 | `control/midi_control.py` | [Control surfaces & live performance](architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
@@ -87,6 +90,7 @@ the two lists account for every module in the tree.
 | `sid/sidemu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | `hw/socket_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
+| `hw/teensyrom_api.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_apipy--the-teensyrom-backend) |
 | `hw/teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
 | `scenes/text_surface.py` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
 | `control/transport.py` | [Control surfaces & live performance](architecture/control.md#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5) |
@@ -111,14 +115,11 @@ rationale in the meantime — each of the ones below opens with one.
 | `_native_io.py` | Process-level stderr muting for native-library chatter |
 | `_pollthread.py` | Background daemon thread with start/stop boilerplate |
 | `audio/audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
-| `hw/backend.py` | The `C64Backend` hardware abstraction the whole app is duck-typed on |
 | `scenes/bitmap_text.py` | Shared hires bitmap text rasterizer (char-ROM glyphs) |
-| `hw/c64.py` | Centralized C64 hardware constants — addresses, registers, magic numbers |
 | `app/config_serialize.py` | `Config` → annotated TOML, the inverse of `config.load` |
 | `app/connect.py` | `-u/--url` connection-target URI parsing |
 | `app/doctor.py` | `--doctor` configuration + environment diagnostics |
 | `video/framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
-| `hw/hw_provision.py` | Live U64 REU + Ultimate Audio sampler auto-provisioning (volatile, restored at teardown) |
 | `app/introspect.py` | The single rendering surface over config metadata |
 | `app/playlist.py` | Playlist state machine — scene walk, pacing, crash tolerance |
 | `app/playlist_support.py` | Playlist collaborators — scene fades, on-C64 menu driver, ensemble coordination |
@@ -128,5 +129,4 @@ rationale in the meantime — each of the ones below opens with one.
 | `app/schema.py` | JSON Schema generator for the TOML config |
 | `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore + the `SidHwSession` restore tracker |
 | `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |
-| `hw/teensyrom_api.py` | TeensyROM+ implementation of `C64Backend` |
 | `app/wizard.py` | `--init` interactive config builder |
