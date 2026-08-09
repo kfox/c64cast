@@ -10,7 +10,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 * **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
-* **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping
+* **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
@@ -25,6 +25,9 @@ the two lists account for every module in the tree.
 
 | Module | Notes |
 | --- | --- |
+| `_midi.py` | [Config, CLI & ensemble](architecture/config.md#_midipy--the-guarded-mido-import) |
+| `_native_io.py` | [Config, CLI & ensemble](architecture/config.md#_native_iopy--fd-level-stderr-muting) |
+| `_pollthread.py` | [Config, CLI & ensemble](architecture/config.md#_pollthreadpy--the-background-loop-idiom) |
 | `hw/api.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
 | `sid/asid.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `sid/asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
@@ -34,9 +37,11 @@ the two lists account for every module in the tree.
 | `audio/audio_rate.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio/audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |
 | `audio/audio_features.py` | [Audio output](architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input) |
+| `audio/audio_marker.py` | [Audio output](architecture/audio.md#audio_markerpy--the-capture-alignment-marker) |
 | `audio/audio_source.py` | [Audio output](architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source) |
 | `hw/backend.py` | [Hardware I/O & transports](architecture/hardware-io.md#backendpy--the-c64backend-duck-type-hardware-profiles-and-the-shared-write-path) |
 | `scenes/backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
+| `scenes/bitmap_text.py` | [Scenes, sources & overlays](architecture/scenes.md#bitmap_textpy--the-shared-glyph-rasterizer) |
 | `hw/c64.py` | [Hardware I/O & transports](architecture/hardware-io.md#c64py--the-hardware-constant-register) |
 | `control/camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
 | `hw/char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
@@ -59,6 +64,7 @@ the two lists account for every module in the tree.
 | `scenes/effects.py` | [Scenes, sources & overlays](architecture/scenes.md#effectspy--the-frameeffect-registry) |
 | `app/ensemble.py` | [Config, CLI & ensemble](architecture/config.md#ensemblepy--audio-slot-coordination) |
 | `scenes/frame_source.py` | [Scenes, sources & overlays](architecture/scenes.md#frame_sourcepy) |
+| `video/framebuffer.py` | [Video input & the color pipeline](architecture/video-color.md#framebufferpy--previewpy--the-software-mirror-behind-preview-and-recording) |
 | Framerate pacing & frame-dropping | [Video input & the color pipeline](architecture/video-color.md#framerate-pacing--frame-dropping) |
 | `scenes/generators/` | [Scenes, sources & overlays](architecture/scenes.md#generators--the-generativesource-registry) |
 | `hw/hw_provision.py` | [Hardware I/O & transports](architecture/hardware-io.md#hw_provisionpy--live-reu--sampler-auto-provisioning) |
@@ -83,6 +89,7 @@ the two lists account for every module in the tree.
 | `video/petscii_styles.py` | [Video input & the color pipeline](architecture/video-color.md#petscii_stylespy) |
 | `app/playlist.py` | [Config, CLI & ensemble](architecture/config.md#playlistpy--the-run-loop-scene-walk-pacing-crash-tolerance) |
 | `app/playlist_support.py` | [Config, CLI & ensemble](architecture/config.md#playlist_supportpy--playlist-collaborators) |
+| `video/preview.py` | [Video input & the color pipeline](architecture/video-color.md#framebufferpy--previewpy--the-software-mirror-behind-preview-and-recording) |
 | `app/profiler.py` | [Config, CLI & ensemble](architecture/config.md#profilerpy--per-frame-timing) |
 | `app/quickcast.py` | [Config, CLI & ensemble](architecture/config.md#quickcastpy--quick-playback) |
 | `app/recording_metadata.py` | [Config, CLI & ensemble](architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging) |
@@ -94,10 +101,12 @@ the two lists account for every module in the tree.
 | `sid/sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
 | SID player PRG | [SID playback & the oscilloscope](architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
 | `sid/sid_host_emu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
+| `sid/sid_hw_config.py` | [SID playback & the oscilloscope](architecture/sid.md#sid_hw_configpy--shared-sid-hardware-config-plumbing) |
 | `sid/sid_panning.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-panning) |
 | `sid/sid_volume.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-volume) |
 | `sid/sidemu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | `hw/socket_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
+| `sid/songlengths.py` | [SID playback & the oscilloscope](architecture/sid.md#songlengthspy--hvsc-songlengths-lookup) |
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
 | `hw/teensyrom_api.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_apipy--the-teensyrom-backend) |
 | `hw/teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
@@ -115,18 +124,10 @@ the two lists account for every module in the tree.
 
 ## Not covered here
 
-These modules have no section yet. Their module docstring is the design
-rationale in the meantime — each of the ones below opens with one.
+These modules have no section. A module listed here must open with a docstring
+carrying its design rationale instead — except the entry point, which is three
+lines with nothing to say.
 
 | Module | What it is |
 | --- | --- |
 | `__main__.py` | `python -m c64cast` entry point |
-| `_midi.py` | Shared guarded mido import + MIDI input-port resolution |
-| `_native_io.py` | Process-level stderr muting for native-library chatter |
-| `_pollthread.py` | Background daemon thread with start/stop boilerplate |
-| `audio/audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
-| `scenes/bitmap_text.py` | Shared hires bitmap text rasterizer (char-ROM glyphs) |
-| `video/framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
-| `video/preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
-| `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore + the `SidHwSession` restore tracker |
-| `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |

@@ -25,6 +25,10 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`playlist_support.py` — playlist collaborators](#playlist_supportpy--playlist-collaborators)
 * [`profiler.py` — per-frame timing](#profilerpy--per-frame-timing)
 * [`recording_metadata.py` — per-scene SCENE_CONFIG_JSON logging](#recording_metadatapy--per-scene-scene_config_json-logging)
+* [The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`](#the-package-root-utilities--_pollthreadpy-_midipy-_native_iopy)
+  * [`_pollthread.py` — the background-loop idiom](#_pollthreadpy--the-background-loop-idiom)
+  * [`_midi.py` — the guarded mido import](#_midipy--the-guarded-mido-import)
+  * [`_native_io.py` — fd-level stderr muting](#_native_iopy--fd-level-stderr-muting)
 
 ---
 
@@ -233,3 +237,19 @@ Two things are deliberately left out, because the payload is meant to be pasted 
 The `source` block is scene-type-specific. For `video`, `config.build_scene` (see the note above) resolves a URL's `file` into a local `file_spec` var for the `VideoScene` constructor but never mutates `s.file` itself — so `scene._cfg.file` still holds the **original URL exactly as given** with no extra plumbing, while the actual (often ugly, CDN-signed) resolved stream URL never appears in the log. `copyright` is a fixed placeholder string today; c64cast doesn't collect yt-dlp uploader/license metadata anywhere (adding it would mean changing `quickcast.resolve_media_url`/`resolve_video_url`'s tuple-return shape and its exact-equality tests — deferred). `waveform` and `generative` (with `audio_source = "sid"`) scenes are different: the PSID header (`WaveformScene.header` / `SidFileAudioSource.header`, a `sid_host_emu.SidHeader`) routinely carries a real `name`/`author`/`released` (copyright year + composer), so those are used verbatim — no placeholder.
 
 `extract_scene_configs(log_text)` pulls every `SCENE_CONFIG_JSON` payload back out of a `--log-file` run (formatter-agnostic — it searches for the marker substring, not a fixed line format), and `render_description(payload)` renders one entry as a human, paste-ready text block; both are pure functions so [scripts/scene_config_to_description.py](../../scripts/scene_config_to_description.py) is a thin argparse+file-I/O shell around them (default: render the last entry; `--all`/`--index N` for the rest).
+
+## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`
+
+The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these three: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
+
+### `_pollthread.py` — the background-loop idiom
+
+Every background loop in the tree is a `PollThread` — 21 consumer modules, from the overlay pollers, the WLED bridge and the feature streams to the keyboard/vision/MIDI surfaces and the stream recorder — in place of per-site copies of the thread + stop-`Event` + `join` boilerplate. Periodic mode calls the target every `period` (with `run_first` picking whether the first call precedes the first wait); `manual=True` hands the worker the stop event and lets it own its pacing (backoff loops, `select` loops) — the constructor rejects a `period` in manual mode and demands one otherwise, so a call site can't half-configure it. The load-bearing details are in the teardown: the periodic wait is `Event.wait`, so `stop()` interrupts a sleeping loop immediately rather than at the next tick, and threads are daemons joined with a bounded `join_timeout` (0.5 s default) — teardown is never hostage to a hung worker, and an abandoned one can't block process exit. `tests/test_pollthread.py` pins the whole contract.
+
+### `_midi.py` — the guarded mido import
+
+mido (+ python-rtmidi) is the optional `midi` extra, so every MIDI consumer needs the same import guard — it had been copied into three modules (one copy's comment promised it mirrored another "exactly"), each with its own 19-line port resolver, until #249 folded them here. Beyond what the docstring says (`mido` typed `Any` to keep pyright off the `None` fallback, `MIDI_AVAILABLE` as the runtime guard), the part that bites is the patch point: consumers re-import `mido` under their own module name, so patching `<consumer>.mido` still works for code *in that module* — but port resolution reads this module's copy, so tests that fake ports patch `c64cast._midi.mido`. `open_input_port` matches a case-insensitive substring of the available names, so nobody has to paste an exact rtmidi port string.
+
+### `_native_io.py` — fd-level stderr muting
+
+Some native dependencies write diagnostics straight to file descriptor 2 — below Python's `logging`, `sys.stderr`, and any library verbosity flag — so an fd-level `dup2` redirect is the only thing that catches them. Three sites use it, each scoped to the one call that emits: MediaPipe's C++/absl chatter (`vision.py`), OpenCV's AVFoundation probe of camera indices past the last valid one (`--list-devices`), and the Obj-C runtime's one-time "class implemented in both" warning when PyAV's bundled libavdevice loads on top of cv2's (`video._ensure_pyav`) — harmless, since the duplicated classes are the AVFoundation capture device neither file-decode path uses, but printed on every video run. The first two silences existed inline; the third made it a shared context manager. The scoping rule is the point: wrap only the emitting import/probe, on the main thread before worker threads start, so real stderr from elsewhere is never swallowed.

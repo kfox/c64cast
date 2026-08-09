@@ -9,6 +9,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`scenes.py` — Scene state machine](#scenespy--scene-state-machine)
 * [Composable scenes — `scenes.SourceScene` + `frame_source.py` + `generators/` + `effects.py` + `audio_source.py` + `modulation.py` + `music_features.py`](#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy)
 * [`overlays/`](#overlays)
+* [`bitmap_text.py` — the shared glyph rasterizer](#bitmap_textpy--the-shared-glyph-rasterizer)
 * [`interstitial.py` + `backgrounds.py`](#interstitialpy--backgroundspy)
 
 ---
@@ -349,6 +350,14 @@ Other audio overlays read recent float samples from `AudioStreamer.get_recent_sa
 **Single-scene mode**: when `len(scenes) == 1` at `Playlist.__init__` (or after a reload), `Playlist.single_scene` is True. `_advance` skips the interstitial path entirely — the one scene is set up directly on first call, and on `is_done` it's torn down and re-set-up back-to-back so it loops forever. CTRL skip events are dropped (with `log.debug`) and the event is cleared so it doesn't accumulate; C= pause/resume still work. `scenes_from_config` also short-circuits `interleave_videos` when the user-defined playlist is a single scene (an inserted video would promote the playlist to 2 scenes and silently defeat the mode). This is the mode every file in [c64cast/examples/](../../c64cast/examples/) runs in.
 
 **Playlist loop control**: `[playlist] loop` (also `--loop` / `--no-loop`) controls what happens at the end of the playlist. Default `true` preserves the looping behavior above. `false` makes `_advance` set `stop_event` instead of looping — single-scene mode tears down after one play; multi-scene tears down after one full pass through the scene list. Used for "play one video and exit" and "play these N videos then quit" workflows. Live-streaming scenes (webcam, blank) typically leave it at the default and run until the user kills the streamer.
+
+## `bitmap_text.py` — the shared glyph rasterizer
+
+One rasterizer, three consumer shapes. Text destined for the C64's own bitmap goes through `paint_text_row` (the on-C64 menu panel) or folds into the in-memory frame buffers via [`text_surface`'s `HiresTextSurface`](#overlays) before `push()`; text composited host-side *before* quantization — the `--frame-numbers` label and the MIDI OSD — goes through `glyphs_to_mask`, which unpacks the 8-byte glyphs into an `(8, 8·len)` pixel mask for `scenes._blit_c64_text` to scale and halo ([the OSD's story](control.md#the-osd)). All three draw the identical uppercase charset the C64 itself displays, because `load_glyphs()` forwards to [`char_rom.py`](hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) — the forwarder is kept, rather than re-pointing consumers at `char_rom`, because every glyph consumer historically reaches for it here. The module was extracted from `voice_scope` when the on-C64 menu needed the same painting; the oscilloscope kept its own row painter but sources `load_glyphs`/`ascii_to_screen_code` from here, with byte-identical scope output.
+
+The layout fact `paint_text_row` is built on: a hires cell is 8 consecutive bitmap bytes, consecutive cells in a row are consecutive 8-byte chunks, and a row's screen-RAM color bytes are consecutive too — so a text run at any column offset is exactly **two contiguous `write_region` calls** (glyph bytes + FG/BG nibbles), and the delta cache absorbs the unchanged cells when a panel repaints. That is what lets the menu repaint its rows on every navigation event for the cost of only the cells that changed.
+
+`ascii_to_screen_code` maps into the uppercase set: `A-Z` fold to `$01-$1A`, `@` to `$00`, and `$20-$3F` passes through (space, digits, and most punctuation are identical between ASCII and screen codes). Anything the charset can't represent becomes a blank `$20` rather than passing through as a graphics glyph that would read as noise; `_` is special-cased to `$6F` — [the underscore story](control.md#the-osd), which benefits every consumer, not just the overlays that motivated it.
 
 ## `interstitial.py` + `backgrounds.py`
 
