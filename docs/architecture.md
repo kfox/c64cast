@@ -15,7 +15,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
 * **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
-* **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/scene_factory.py`, `app/cli.py`, `app/playlist.py`, `app/recording_metadata.py`
+* **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/playlist.py`, `app/recording_metadata.py`
 
 ## Module index
 
@@ -44,6 +44,7 @@ the two lists account for every module in the tree.
 | `app/cli_commands.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |
 | Composable scenes | [Scenes, sources & overlays](architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy) |
 | `app/config.py` | [Config, CLI & ensemble](architecture/config.md#configpy) |
+| `app/config_serialize.py` | [Config, CLI & ensemble](architecture/config.md#config_serializepy--the-writing-surface) |
 | `control/control_plane.py` | [Control surfaces & live performance](architecture/control.md#control_planepy--http-control-plane-optional) |
 | `audio/dac_calibration.py` | [Audio output](architecture/audio.md#table-selection-auto-and-per-system-calibration) |
 | `audio/dac_calibration_store.py` | [Audio output](architecture/audio.md#the-calibration-file) |
@@ -60,6 +61,7 @@ the two lists account for every module in the tree.
 | `scenes/generators/` | [Scenes, sources & overlays](architecture/scenes.md#generators--the-generativesource-registry) |
 | `hw/hw_provision.py` | [Hardware I/O & transports](architecture/hardware-io.md#hw_provisionpy--live-reu--sampler-auto-provisioning) |
 | `scenes/interstitial.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
+| `app/introspect.py` | [Config, CLI & ensemble](architecture/config.md#introspectpy--the-model-and-the-terminal-renderers) |
 | `control/keyboard.py` | [Control surfaces & live performance](architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle) |
 | `control/midi_control.py` | [Control surfaces & live performance](architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
 | `sid/midi_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope) |
@@ -84,6 +86,7 @@ the two lists account for every module in the tree.
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
 | `app/scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes/scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
+| `app/schema.py` | [Config, CLI & ensemble](architecture/config.md#schemapy--the-editor-surface) |
 | `sid/sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
 | SID player PRG | [SID playback & the oscilloscope](architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
 | `sid/sid_host_emu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
@@ -101,6 +104,7 @@ the two lists account for every module in the tree.
 | `control/vision.py` | [Control surfaces & live performance](architecture/control.md#visionpy--webcam-gesture-control-optional-camera-as-input) |
 | `sid/voice_scope.py` | [SID playback & the oscilloscope](architecture/sid.md#voice_scopepy--shared-3-voice-oscilloscope-renderer) |
 | `sid/waveform.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
+| `app/wizard.py` | [Config, CLI & ensemble](architecture/config.md#wizardpy--the-prompting-surface) |
 | `wled/wled_device.py` | [WLED bridge](architecture/wled.md#wled_devicepy--virtual-wled-device--control-surface-wled-bridge-mode-1) |
 | `wled/wled_sink.py` | [WLED bridge](architecture/wled.md#wled_sinkpy--virtual-led-matrix--realtime-pixel-sink-wled-bridge-mode-2) |
 | `wled/wled_sync.py` | [WLED bridge](architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3) |
@@ -118,15 +122,11 @@ rationale in the meantime — each of the ones below opens with one.
 | `_pollthread.py` | Background daemon thread with start/stop boilerplate |
 | `audio/audio_marker.py` | Source-timeline alignment marker for capture-card recordings |
 | `scenes/bitmap_text.py` | Shared hires bitmap text rasterizer (char-ROM glyphs) |
-| `app/config_serialize.py` | `Config` → annotated TOML, the inverse of `config.load` |
 | `app/connect.py` | `-u/--url` connection-target URI parsing |
 | `app/doctor.py` | `--doctor` configuration + environment diagnostics |
 | `video/framebuffer.py` | Software VIC-II framebuffer behind preview + recording |
-| `app/introspect.py` | The single rendering surface over config metadata |
 | `video/preview.py` | `PreviewWindow` + `StreamRecorder` over the framebuffer |
 | `app/profiler.py` | `--profile` per-frame timing harness |
 | `app/quickcast.py` | Positional-`MEDIA` quick-playback config builder |
-| `app/schema.py` | JSON Schema generator for the TOML config |
 | `sid/sid_hw_config.py` | Shared U64 multi-SID hardware-config snapshot/restore + the `SidHwSession` restore tracker |
 | `sid/songlengths.py` | HVSC `Songlengths.md5` lookup |
-| `app/wizard.py` | `--init` interactive config builder |
