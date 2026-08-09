@@ -22,6 +22,19 @@ Argument → scene type mapping:
   at setup — "a directory of SIDs plays a random SID")
 * URL                     → ``video`` (direct media URLs play as-is;
   YouTube and other sites are resolved via the optional ``yt-dlp`` extra)
+
+Two integration rules keep this front door equivalent to a config-driven run.
+:func:`build_config` applies the machine-settings overlay
+(``config.apply_machine_settings``) right after building the base Config and
+before its own field sets, so quick playback inherits the saved connection
+target / capture device / SID model without a per-run ``-u`` (an explicit
+``-u`` / ``C64CAST_URL`` still wins, applied afterward). And CLI flags reach
+the config through the shared ``config.merge_cli`` — quick playback sets only
+its own *policy* first (no loop, no interleaved videos) so ``--loop`` still
+overrides it. It must not hand-pick a subset of flags: it used to, and twelve
+mapped flags plus ``C64CAST_DMA_PASSWORD`` were accepted and silently
+dropped. ``tests/test_quickcast.py`` asserts against ``CLI_TO_CFG`` itself,
+so a newly mapped flag is covered on the day it's added.
 """
 
 from __future__ import annotations
