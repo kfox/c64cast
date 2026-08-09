@@ -14,6 +14,8 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
+from _fakes import make_psid
+
 from c64cast.app import config as cfgmod
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
@@ -292,17 +294,10 @@ class BackendTest(unittest.TestCase):
     # ---- SID player -------------------------------------------------------
     @staticmethod
     def _make_sid(*, load=0x1000, init=0x1003, play=0x1006, num_songs=1, payload_len=64):
-        """Minimal valid PSID v2 header + payload (mirrors tests/test_api.py)."""
-        h = bytearray(124)
-        h[0:4] = b"PSID"
-        h[4:6] = (2).to_bytes(2, "big")  # version
-        h[6:8] = (124).to_bytes(2, "big")  # data offset
-        h[8:10] = load.to_bytes(2, "big")
-        h[10:12] = init.to_bytes(2, "big")
-        h[12:14] = play.to_bytes(2, "big")
-        h[14:16] = num_songs.to_bytes(2, "big")
-        h[16:18] = (1).to_bytes(2, "big")  # start song
-        return bytes(h) + bytes(payload_len)
+        """This file's defaults over the shared PSID builder."""
+        return make_psid(
+            load=load, init=init, play=play, num_songs=num_songs, payload=bytes(payload_len)
+        )
 
     def test_run_sid_player_loads_then_vector_swaps(self):
         # Default (defer_audio False): DMA payload + player MC + re-INIT stub,

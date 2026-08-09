@@ -105,6 +105,17 @@ class FakeAPI:
         # supports_reu=False)` or override the field.
         self.profile = HardwareProfile(name="Fake", family="fake")
 
+    @classmethod
+    def ultimate(cls, *, supports_config: bool = True) -> FakeAPI:
+        """A FakeAPI presenting as a config-capable Ultimate — the profile
+        the SID volume / panning / autoconfig and DAC-calibration paths gate
+        on. Seed `config_store` afterward to model mixer items / sockets."""
+        api = cls()
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=supports_config
+        )
+        return api
+
     def write_memory(self, addr, data_hex):
         self.memories[str(addr).upper()] = data_hex
         self.ops.append(("write_memory", str(addr).upper(), data_hex))
@@ -194,6 +205,71 @@ class FakeAPI:
 
     def flush(self, timeout=5.0):
         pass
+
+
+def make_psid(
+    *,
+    magic: bytes = b"PSID",
+    load: int = 0x1000,
+    init: int = 0x1000,
+    play: int = 0x1001,
+    num_songs: int = 1,
+    start_song: int = 1,
+    payload: bytes | tuple[int, ...] | list[int] = (0x60, 0x60),
+) -> bytes:
+    """Minimal runnable PSID v2: real header fields + payload, enough for
+    parse_psid_for_player + SidHostEmu to run INIT/PLAY (the defaults are an
+    RTS init and play). PSID is a real external format — its byte offsets
+    live here once, so a typo'd field fails every consumer instead of just
+    the one file that happened to re-type it."""
+    header = bytearray(124)
+    header[0:4] = magic
+    header[4:6] = (2).to_bytes(2, "big")  # version
+    header[6:8] = (124).to_bytes(2, "big")  # data offset (v2 header size)
+    header[8:10] = load.to_bytes(2, "big")
+    header[10:12] = init.to_bytes(2, "big")
+    header[12:14] = play.to_bytes(2, "big")
+    header[14:16] = num_songs.to_bytes(2, "big")
+    header[16:18] = start_song.to_bytes(2, "big")
+    return bytes(header) + bytes(payload)
+
+
+def fake_system_stack(name: str, scenes: list | None = None):
+    """A SystemStack with every non-trivial field mocked — the ensemble and
+    orchestrator tests only exercise `name` (and `cfg.scenes` when given)."""
+    from c64cast.app.ensemble import SystemStack
+
+    cfg = mock.MagicMock(name=f"cfg-{name}")
+    cfg.scenes = scenes or []
+    return SystemStack(
+        name=name,
+        cfg=cfg,
+        api=mock.MagicMock(name=f"api-{name}"),
+        audio=None,
+        source=None,
+        playlist=mock.MagicMock(name=f"playlist-{name}"),
+        key_poller=mock.MagicMock(name=f"keyboard-{name}"),
+        framebuffer=None,
+        preview_window=None,
+        recorder=None,
+    )
+
+
+def new_streamer(**overrides):
+    """A bare-bones AudioStreamer over a FakeAPI (no thread started), built
+    through the real __init__ — the PR #227 post-mortem: a __new__ plus
+    hand-copied-state fixture went stale every time a field was added, and
+    the missing field surfaced as an AttributeError deep inside a worker
+    thread rather than as a fixture error. host_dma_servo defaults off so
+    worker-path tests stay open-loop (no R reads); override per test."""
+    from typing import cast
+
+    from c64cast.audio.audio import AudioStreamer
+    from c64cast.hw.api import Ultimate64API
+
+    kwargs: dict = {"sample_rate": 8000, "system": "NTSC", "host_dma_servo": False}
+    kwargs.update(overrides)
+    return AudioStreamer(cast(Ultimate64API, FakeAPI()), **kwargs)
 
 
 def bare_waveform_scene(**attrs):

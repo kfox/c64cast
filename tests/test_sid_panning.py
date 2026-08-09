@@ -22,8 +22,7 @@ PAN_U2 = (CAT, "Pan UltiSID 2")
 
 
 def _ultimate_fake(*, supports_config: bool = True, mixer: dict[str, str] | None = None) -> FakeAPI:
-    api = FakeAPI()
-    api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=supports_config)
+    api = FakeAPI.ultimate(supports_config=supports_config)
     api.config_store[sp.CAT_MIXER] = dict(mixer or {})
     return api
 

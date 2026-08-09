@@ -17,29 +17,16 @@ import unittest
 import unittest.mock
 from unittest.mock import MagicMock
 
+from _fakes import fake_system_stack
+
 from c64cast.app.cli import _run_playlists, teardown_stack
 from c64cast.app.ensemble import SystemStack
-
-
-def _fake_stack(name: str) -> SystemStack:
-    return SystemStack(
-        name=name,
-        cfg=MagicMock(name=f"cfg-{name}"),
-        api=MagicMock(name=f"api-{name}"),
-        audio=None,
-        source=None,
-        playlist=MagicMock(name=f"playlist-{name}"),
-        key_poller=MagicMock(name=f"key_poller-{name}"),
-        framebuffer=None,
-        preview_window=None,
-        recorder=None,
-    )
 
 
 class RunPlaylistsTest(unittest.TestCase):
     def test_starts_one_thread_per_stack_and_joins(self):
         stop_event = threading.Event()
-        stacks = [_fake_stack("a"), _fake_stack("b")]
+        stacks = [fake_system_stack("a"), fake_system_stack("b")]
         # playlist.run() returns immediately (no infinite loop here);
         # each thread exits and join() completes.
         for st in stacks:
@@ -55,7 +42,7 @@ class RunPlaylistsTest(unittest.TestCase):
         # Playlists that block until stop_event is set should also join
         # cleanly when the event fires from outside.
         stop_event = threading.Event()
-        stacks = [_fake_stack("a"), _fake_stack("b")]
+        stacks = [fake_system_stack("a"), fake_system_stack("b")]
         for st in stacks:
             st.playlist.run.side_effect = lambda: stop_event.wait()
         # Kick stop_event after a short delay so the main "join" loop
@@ -79,7 +66,7 @@ class RunPlaylistsTest(unittest.TestCase):
         # pumping a window polls is_alive() anyway, which is exactly why Ctrl+C
         # looked intermittent. So the headless path must join with a timeout.
         stop_event = threading.Event()
-        stacks = [_fake_stack("a")]
+        stacks = [fake_system_stack("a")]
         stacks[0].playlist.run.side_effect = lambda: stop_event.wait()
         timeouts: list[float | None] = []
         real_join = threading.Thread.join
@@ -102,7 +89,7 @@ class RunPlaylistsTest(unittest.TestCase):
 class TeardownStackOrderTest(unittest.TestCase):
     def _record_order(self) -> tuple[SystemStack, list[str]]:
         order: list[str] = []
-        st = _fake_stack("only")
+        st = fake_system_stack("only")
         st.preview_window = MagicMock()
         st.preview_window.close.side_effect = lambda: order.append("preview")
         st.recorder = MagicMock()
@@ -133,7 +120,7 @@ class TeardownStackOrderTest(unittest.TestCase):
 
     def test_missing_optional_resources_skipped(self):
         # framebuffer / preview_window / recorder are all None by default.
-        st = _fake_stack("only")
+        st = fake_system_stack("only")
         teardown_stack(st)
         st.api.reset.assert_called_once()
         st.api.close.assert_called_once()

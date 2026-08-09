@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import threading
 import unittest
-from unittest.mock import MagicMock
 
 import numpy as np
+from _fakes import fake_system_stack
 
 from c64cast.app.config import SceneCfg
-from c64cast.app.ensemble import Ensemble, SystemStack
+from c64cast.app.ensemble import Ensemble
 from c64cast.app.orchestrator import OrchestratorError
 from c64cast.app.orchestrators.big_text_span import (
     SCREEN_W_PX,
@@ -20,25 +20,8 @@ from c64cast.app.orchestrators.big_text_span import (
 )
 
 
-def _fake_stack(name: str, scenes: list[SceneCfg] | None = None) -> SystemStack:
-    cfg = MagicMock(name=f"cfg-{name}")
-    cfg.scenes = scenes or []
-    return SystemStack(
-        name=name,
-        cfg=cfg,
-        api=MagicMock(name=f"api-{name}"),
-        audio=None,
-        source=None,
-        playlist=MagicMock(name=f"playlist-{name}"),
-        key_poller=MagicMock(name=f"keyboard-{name}"),
-        framebuffer=None,
-        preview_window=None,
-        recorder=None,
-    )
-
-
 def _ensemble(*names: str) -> Ensemble:
-    return Ensemble(stacks=[_fake_stack(n) for n in names], stop_event=threading.Event())
+    return Ensemble(stacks=[fake_system_stack(n) for n in names], stop_event=threading.Event())
 
 
 class ClaimsTest(unittest.TestCase):

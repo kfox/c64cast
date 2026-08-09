@@ -9,7 +9,7 @@ from __future__ import annotations
 import unittest
 from typing import cast
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, new_streamer
 
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
@@ -39,32 +39,14 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_SIZE,
     servo_period,
 )
-from c64cast.hw.api import Ultimate64API
 
 
 def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
-    """Bare-bones AudioStreamer (no thread, real API replaced by FakeAPI).
-
-    Built through the real __init__ rather than __new__ plus a hand-written copy
-    of the constructor's state: that copy went stale every time a field was
-    added, and an absent field surfaces as an AttributeError thrown deep inside
-    a worker thread rather than as a fixture error.
-
-    reu_pump_governor OFF so the bring-up tests below assert the plain open-loop
-    handler bytes (GovernorSelectionTest flips it on explicitly; the production
-    default is True — see config.AudioCfg.reu_pump_governor), and host_dma_servo
-    OFF so worker-path tests stay open-loop — HostDmaServoTest exercises the pure
-    controller directly.
-    """
-    return AudioStreamer(
-        cast(Ultimate64API, FakeAPI()),
-        sample_rate=8000,
-        system="NTSC",
-        dither=False,
-        use_reu_pump=use_reu_pump,
-        reu_pump_governor=False,
-        host_dma_servo=False,
-    )
+    """This file's defaults over the shared builder: dither OFF, and
+    reu_pump_governor OFF so the bring-up tests below assert the plain
+    open-loop handler bytes (GovernorSelectionTest flips it on explicitly;
+    the production default is True — see config.AudioCfg.reu_pump_governor)."""
+    return new_streamer(dither=False, use_reu_pump=use_reu_pump, reu_pump_governor=False)
 
 
 class RingBufferRelocationTest(unittest.TestCase):

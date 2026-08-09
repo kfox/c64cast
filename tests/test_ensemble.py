@@ -7,26 +7,10 @@ from __future__ import annotations
 
 import threading
 import unittest
-from unittest.mock import MagicMock
 
-from c64cast.app.ensemble import Ensemble, SystemStack
+from _fakes import fake_system_stack
 
-
-def _fake_stack(name: str) -> SystemStack:
-    """A SystemStack with every non-trivial field mocked — Ensemble only
-    needs the `name` field; other fields aren't exercised here."""
-    return SystemStack(
-        name=name,
-        cfg=MagicMock(name="cfg"),
-        api=MagicMock(name="api"),
-        audio=None,
-        source=None,
-        playlist=MagicMock(name="playlist"),
-        key_poller=MagicMock(name="key_poller"),
-        framebuffer=None,
-        preview_window=None,
-        recorder=None,
-    )
+from c64cast.app.ensemble import Ensemble
 
 
 class EnsembleRegistryTest(unittest.TestCase):
@@ -34,9 +18,9 @@ class EnsembleRegistryTest(unittest.TestCase):
         stop = threading.Event()
         ens = Ensemble(
             stacks=[
-                _fake_stack("left"),
-                _fake_stack("middle"),
-                _fake_stack("right"),
+                fake_system_stack("left"),
+                fake_system_stack("middle"),
+                fake_system_stack("right"),
             ],
             stop_event=stop,
         )
@@ -44,14 +28,14 @@ class EnsembleRegistryTest(unittest.TestCase):
 
     def test_stack_lookup_returns_named_stack(self):
         stop = threading.Event()
-        left = _fake_stack("left")
-        right = _fake_stack("right")
+        left = fake_system_stack("left")
+        right = fake_system_stack("right")
         ens = Ensemble(stacks=[left, right], stop_event=stop)
         self.assertIs(ens.stack("left"), left)
         self.assertIs(ens.stack("right"), right)
 
     def test_stack_lookup_raises_key_error_on_unknown(self):
-        ens = Ensemble(stacks=[_fake_stack("left")], stop_event=threading.Event())
+        ens = Ensemble(stacks=[fake_system_stack("left")], stop_event=threading.Event())
         with self.assertRaises(KeyError) as cm:
             ens.stack("nope")
         self.assertIn("nope", str(cm.exception))
@@ -63,7 +47,7 @@ class EnsembleRegistryTest(unittest.TestCase):
         stop = threading.Event()
         ens = Ensemble(stacks=[], stop_event=stop)
         self.assertEqual(ens.system_names(), [])
-        ens.stacks = [_fake_stack("solo")]
+        ens.stacks = [fake_system_stack("solo")]
         self.assertEqual(ens.system_names(), ["solo"])
         self.assertIs(ens.stop_event, stop)
 

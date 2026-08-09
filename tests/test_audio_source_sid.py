@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from typing import cast
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, make_psid
 
 from c64cast.audio.audio_source import SidFileAudioSource
 from c64cast.hw.backend import C64Backend
@@ -21,23 +21,6 @@ from c64cast.sid.sid_host_emu import (
 )
 
 
-def _make_sid(
-    *, init=0x1000, play=0x1001, payload=(0x60, 0x60), load=0x1000, num_songs=1, start_song=1
-) -> bytes:
-    """Minimal PSID v2 with real init/play addresses + a payload — runnable by
-    SidHostEmu (parse_psid_for_player + INIT/PLAY)."""
-    h = bytearray(124)
-    h[0:4] = b"PSID"
-    h[4:6] = (2).to_bytes(2, "big")  # version
-    h[6:8] = (0x7C).to_bytes(2, "big")  # data offset
-    h[8:10] = load.to_bytes(2, "big")
-    h[10:12] = init.to_bytes(2, "big")
-    h[12:14] = play.to_bytes(2, "big")
-    h[14:16] = num_songs.to_bytes(2, "big")
-    h[16:18] = start_song.to_bytes(2, "big")
-    return bytes(h) + bytes(payload)
-
-
 class _FakeMode:
     """Stand-in display mode — only `is_bitmapped` matters to the SID source."""
 
@@ -47,7 +30,7 @@ class _FakeMode:
 
 class SidHostEmuHelpersTest(unittest.TestCase):
     def test_payload_extent_basic(self):
-        sid = _make_sid(load=0x1000, payload=(0x60,) * 0x100)
+        sid = make_psid(load=0x1000, payload=(0x60,) * 0x100)
         lo, hi = _sid_payload_extent(sid)
         self.assertEqual(lo, 0x1000)
         self.assertEqual(hi, 0x1000 + 0x100)
@@ -55,7 +38,7 @@ class SidHostEmuHelpersTest(unittest.TestCase):
     def test_overlap_char_only_screen(self):
         # A $1000-load tune of 0x1500 bytes reaches $2500 — clears $0400 (char)
         # but overlaps the $2000 bitmap.
-        sid = _make_sid(load=0x1000, payload=(0x60,) * 0x1500)
+        sid = make_psid(load=0x1000, payload=(0x60,) * 0x1500)
         self.assertIsNone(payload_overlaps_bank0_display(sid, is_bitmapped=False))
         conflict = payload_overlaps_bank0_display(sid, is_bitmapped=True)
         assert conflict is not None
@@ -63,13 +46,13 @@ class SidHostEmuHelpersTest(unittest.TestCase):
 
     def test_overlap_screen_region(self):
         # Load right at screen RAM ($0400) → conflicts on a char display too.
-        sid = _make_sid(load=0x0400, init=0x0400, play=0x0401, payload=(0x60, 0x60))
+        sid = make_psid(load=0x0400, init=0x0400, play=0x0401, payload=(0x60, 0x60))
         conflict = payload_overlaps_bank0_display(sid, is_bitmapped=False)
         assert conflict is not None
         self.assertEqual(conflict[0], 0x0400)
 
     def test_high_load_clears_both(self):
-        sid = _make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60))
+        sid = make_psid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60))
         self.assertIsNone(payload_overlaps_bank0_display(sid, is_bitmapped=True))
 
     def test_play_bank_intersection(self):
@@ -88,12 +71,12 @@ class SidHostEmuHelpersTest(unittest.TestCase):
         self.assertIsNone(_play_bank_for_footprints(w2, a2))
 
     def test_preflight_accepts_returning_play(self):
-        sid = _make_sid(init=0x1000, play=0x1001, payload=(0x60, 0x60))
+        sid = make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x60))
         self.assertTrue(sid_play_preflight(sid))
 
     def test_preflight_rejects_spinning_play(self):
         # play=$1001 JMP $1001 → caps every pass.
-        sid = _make_sid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10))
+        sid = make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10))
         self.assertFalse(sid_play_preflight(sid))
 
 
@@ -116,28 +99,28 @@ class SidFileAudioSourceTest(unittest.TestCase):
         )
 
     def test_wants_audio_lock_and_no_clock(self):
-        path = self._write(_make_sid())
+        path = self._write(make_psid())
         src = self._src(path)
         self.assertTrue(src.wants_audio_lock)
         self.assertIsNone(src.position_seconds())
 
     def test_char_display_accepts_low_load(self):
         # Typical $1000-load tune; char display reserves only $0400 → OK.
-        path = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x1500))
+        path = self._write(make_psid(load=0x1000, payload=(0x60,) * 0x1500))
         src = self._src(path, is_bitmapped=False)  # must not raise
         self.assertEqual(src.song, 1)
 
     def test_song_out_of_range_rejected(self):
         import logging
 
-        path = self._write(_make_sid(num_songs=2))
+        path = self._write(make_psid(num_songs=2))
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, logging.NOTSET)
         with self.assertRaisesRegex(ValueError, "out of range"):
             self._src(path, song=5)
 
     def test_bitmap_display_rejects_overlapping_payload(self):
-        path = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x1500))
+        path = self._write(make_psid(load=0x1000, payload=(0x60,) * 0x1500))
         # The single-candidate skip logs a WARNING before the hard raise;
         # assertLogs captures it so the console stays clean.
         with self.assertLogs("c64cast.audio.audio_source", level="WARNING"):
@@ -145,7 +128,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
                 self._src(path, is_bitmapped=True)
 
     def test_setup_runs_player_with_avoid_and_play_bank(self):
-        path = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x40))
+        path = self._write(make_psid(load=0x1000, payload=(0x60,) * 0x40))
         api = FakeAPI()
         src = SidFileAudioSource(
             cast(C64Backend, api),
@@ -167,7 +150,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
     def test_setup_bitmap_reserves_bitmap_region(self):
         # High-load SID so the bitmap display accepts it; then avoid must
         # reserve both $0400 and $2000.
-        path = self._write(_make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
+        path = self._write(make_psid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
         api = FakeAPI()
         src = SidFileAudioSource(
             cast(C64Backend, api),
@@ -180,7 +163,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertTrue(all(avoid[0x2000 : 0x2000 + 8000]))
 
     def test_teardown_silences_in_order(self):
-        path = self._write(_make_sid())
+        path = self._write(make_psid())
         api = FakeAPI()
         # Record call order: vector restore MUST precede silence (so a PLAY
         # tick can't rewrite the SID between the volume-clear and gate-clears).
@@ -213,9 +196,9 @@ class SidFileAudioSourceTest(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(__import__("shutil").rmtree, d)
         with open(os.path.join(d, "bad.sid"), "wb") as f:
-            f.write(_make_sid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10)))
+            f.write(make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10)))
         with open(os.path.join(d, "good.sid"), "wb") as f:
-            f.write(_make_sid(init=0x1000, play=0x1001, payload=(0x60, 0x60)))
+            f.write(make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x60)))
         # The skip logs a warning — assertLogs both verifies the skip AND keeps
         # the console clean.
         with patch("c64cast.audio.audio_source.random.shuffle", lambda x: x.sort()):
@@ -226,21 +209,21 @@ class SidFileAudioSourceTest(unittest.TestCase):
     def test_all_candidates_bad_raises(self):
         import logging
 
-        path = self._write(_make_sid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10)))
+        path = self._write(make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10)))
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, logging.NOTSET)
         with self.assertRaisesRegex(ValueError, "none could be loaded"):
             self._src(path, is_bitmapped=False)
 
     def test_features_none_before_setup(self):
-        path = self._write(_make_sid())
+        path = self._write(make_psid())
         src = self._src(path)
         self.assertIsNone(src.features())  # no feature stream until setup()
 
     def test_reactive_setup_exposes_features_then_teardown_clears(self):
         from c64cast.scenes.modulation import MusicModulation
 
-        path = self._write(_make_sid())
+        path = self._write(make_psid())
         src = self._src(path, reactive=True)
         src.setup()
         self.addCleanup(src.teardown)
@@ -249,7 +232,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertIsNone(src.features())  # stream stopped + cleared
 
     def test_reactive_false_skips_feature_stream(self):
-        path = self._write(_make_sid())
+        path = self._write(make_psid())
         src = self._src(path, reactive=False)
         src.setup()
         self.addCleanup(src.teardown)
@@ -260,7 +243,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         # continues, features() just returns None.
         from unittest.mock import patch
 
-        path = self._write(_make_sid())
+        path = self._write(make_psid())
         src = self._src(path, reactive=True)
         self.addCleanup(src.teardown)
         with patch(
@@ -287,7 +270,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
 
         self.cfg = Config()
         # A small $1000-load tune clears $0400; works on a char display.
-        self.sid = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x40))
+        self.sid = self._write(make_psid(load=0x1000, payload=(0x60,) * 0x40))
 
     def _build(self, cfg=None, **kw):
         from c64cast.app.config import SceneCfg
@@ -330,7 +313,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
 
     def test_bitmap_sid_defaults_to_half_rate(self):
         # A high-load tune so the bitmap display accepts it; target_fps halves.
-        hi = self._write(_make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
+        hi = self._write(make_psid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import build_scene
 
@@ -339,7 +322,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertEqual(scene.target_fps, 30.0)  # NTSC half-rate
 
     def test_explicit_target_fps_wins_over_half_rate(self):
-        hi = self._write(_make_sid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
+        hi = self._write(make_psid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import build_scene
 
@@ -382,7 +365,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
-        big = self._write(_make_sid(load=0x1000, payload=(0x60,) * 0x1500))
+        big = self._write(make_psid(load=0x1000, payload=(0x60,) * 0x1500))
         s = SceneCfg(type="generative", audio_source="sid", file=big, display="mhires")
         with self.assertRaisesRegex(ValueError, "hires bitmap"):
             validate_scene_cfg(s, self.cfg, audio_enabled=False)

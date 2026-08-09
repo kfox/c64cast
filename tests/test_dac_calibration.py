@@ -54,12 +54,6 @@ def _tr_serial_cfg(dev: str | None = "/dev/cu.usbmodem1234") -> Config:
     return cfg
 
 
-def _ultimate_fake() -> FakeAPI:
-    api = FakeAPI()
-    api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=True)
-    return api
-
-
 def _result(fill: int) -> dcs.CalibrationResult:
     return dcs.CalibrationResult(sidtable=[fill & 0xFF] * 256, metrics={"ladder_bits": 6.5})
 
@@ -126,13 +120,13 @@ class ResolveKeyTest(unittest.TestCase):
 
     def test_ultimate_live_key_uses_unique_id(self):
         cfg = _u64_cfg()
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.device_info = {"product": "C64 Ultimate", "unique_id": "5D327C"}
         self.assertEqual(dcs.resolve_calibration_key(cfg, api), "ultimate-5D327C")
 
     def test_ultimate_live_lookup_failure_falls_back_to_host(self):
         cfg = _u64_cfg("192.168.2.64")
-        api = _ultimate_fake()  # device_info left None -> get_device_info() raises
+        api = FakeAPI.ultimate()  # device_info left None -> get_device_info() raises
         self.assertEqual(dcs.resolve_calibration_key(cfg, api), "ultimate-192.168.2.64")
 
     def test_tr_serial_key_offline_sanitizes_device(self):
@@ -170,7 +164,7 @@ class ResolveKeyTest(unittest.TestCase):
     def test_profile_override_wins_over_everything(self):
         cfg = _u64_cfg("192.168.2.64")
         cfg.audio.dac_calibration_profile = "My Breadbin!"
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.device_info = {"unique_id": "5D327C"}
         self.assertEqual(dcs.resolve_calibration_key(cfg, api), "profile-My_Breadbin_")
 
@@ -388,7 +382,7 @@ class PersistenceTest(DataDirIsolated):
                 key, {"1": _result(1), "2": _result(2)}, {"unique_id": "5D327C"}
             ),
         )
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
             "SID Socket 2 Address": "$D400",
@@ -408,7 +402,7 @@ class PersistenceTest(DataDirIsolated):
         dcs.save_calibration(
             cfg, dcs.CalibrationDocument(key, {"1": _result(1), "2": _result(2)}, {})
         )
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
             "SID Socket 2 Address": "$D440",
@@ -425,14 +419,14 @@ class PersistenceTest(DataDirIsolated):
         cfg = _u64_cfg()
         key = dcs.resolve_calibration_key(cfg)
         dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(7)}, {}))
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         got = dcs.load_calibrated_table(cfg, be=api)
         self.assertEqual(got, bytes([7] * 256))
 
 
 class IsolateSocketTest(unittest.TestCase):
     def test_isolate_socket_1(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         dc._isolate_socket(api, 1)
         self.assertEqual(
             api.config_puts,
@@ -447,7 +441,7 @@ class IsolateSocketTest(unittest.TestCase):
         )
 
     def test_isolate_socket_2(self):
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         dc._isolate_socket(api, 2)
         self.assertEqual(
             api.config_puts,
@@ -522,7 +516,7 @@ class MissingCalibrationLogTest(DataDirIsolated):
     def test_ultimate_live_no_cal_logs_info(self):
         cfg = _u64_cfg()
         with self.assertLogs("c64cast.audio.dac_curve_resolve", level="INFO") as cm:
-            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+            label, table = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.ultimate())
         self.assertEqual(label, "mahoney_ultisid")
         self.assertEqual(table, MAHONEY_ULTISID)
         joined = "\n".join(cm.output)
@@ -553,7 +547,7 @@ class MissingCalibrationLogTest(DataDirIsolated):
         key = dcs.resolve_calibration_key(cfg)
         dcs.save_calibration(cfg, dcs.CalibrationDocument(key, {"default": _result(0)}, {}))
         with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
-            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=_ultimate_fake())
+            label, _ = dcr.resolve_dac_curve_for_backend(cfg, be=FakeAPI.ultimate())
         self.assertTrue(label.startswith("calibrated:"))
 
 
@@ -563,7 +557,7 @@ def _socket_at_d400(socket: int) -> FakeAPI:
     bug: both sockets populated, auto-mirroring on, an UltiSID core nominally
     at the same address (the socket wins, so the real chip is audible)."""
     other = 2 if socket == 1 else 1
-    api = _ultimate_fake()
+    api = FakeAPI.ultimate()
     api.config_store[CAT_ADDRESSING] = {
         f"SID Socket {socket} Address": "$D400",
         f"SID Socket {other} Address": "$D420",
@@ -605,7 +599,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         # Nothing physical answers $D400, so the baked table is the *matched*
         # one and stays the right default.
         cfg = _u64_cfg()
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
             "UltiSID 1 Address": "$D400",
@@ -621,7 +615,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
     def test_empty_socket_mapped_at_d400_still_gets_the_baked_table(self):
         # Mapped but no chip detected — nothing physical is there to mismatch.
         cfg = _u64_cfg()
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_ADDRESSING] = {"SID Socket 1 Address": "$D400"}
         api.config_store[CAT_SOCKETS] = {
             "SID Socket 1": "Enabled",
@@ -719,7 +713,7 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         # because the "unknown" path added beside it must not become a way for a
         # physical-chip table to reach an emulated core.
         cfg = _u64_cfg()
-        api = _ultimate_fake()
+        api = FakeAPI.ultimate()
         api.config_store[CAT_ADDRESSING] = {
             "SID Socket 1 Address": "$D420",
             "UltiSID 1 Address": "$D400",

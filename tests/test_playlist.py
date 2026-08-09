@@ -724,23 +724,9 @@ class PlaylistTest(unittest.TestCase):
         # _resolve_next_index's skip-past-gated-scenes behavior. Proven
         # here by pre-setting stop_event so the wait exits immediately
         # with current=None, instead of landing on the gated scene.
-        from unittest.mock import MagicMock
+        from _fakes import fake_system_stack as _stack
 
-        from c64cast.app.ensemble import Ensemble, SystemStack
-
-        def _stack(name):
-            return SystemStack(
-                name=name,
-                cfg=MagicMock(),
-                api=MagicMock(),
-                audio=None,
-                source=None,
-                playlist=MagicMock(),
-                key_poller=MagicMock(),
-                framebuffer=None,
-                preview_window=None,
-                recorder=None,
-            )
+        from c64cast.app.ensemble import Ensemble
 
         class AudioGatedScene(FakeScene):
             def competes_for_audio_lock(self):

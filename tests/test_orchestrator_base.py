@@ -11,11 +11,12 @@ from __future__ import annotations
 import threading
 import unittest
 from typing import Any
-from unittest.mock import MagicMock
+
+from _fakes import fake_system_stack
 
 from c64cast.app import orchestrator as orch_mod
 from c64cast.app.config import SceneCfg
-from c64cast.app.ensemble import Ensemble, SystemStack
+from c64cast.app.ensemble import Ensemble
 from c64cast.app.orchestrator import (
     Orchestrator,
     OrchestratorError,
@@ -24,26 +25,9 @@ from c64cast.app.orchestrator import (
 )
 
 
-def _fake_stack(name: str, scenes: list[SceneCfg] | None = None) -> SystemStack:
-    cfg = MagicMock(name=f"cfg-{name}")
-    cfg.scenes = scenes or []
-    return SystemStack(
-        name=name,
-        cfg=cfg,
-        api=MagicMock(name=f"api-{name}"),
-        audio=None,
-        source=None,
-        playlist=MagicMock(name=f"playlist-{name}"),
-        key_poller=MagicMock(name=f"keyboard-{name}"),
-        framebuffer=None,
-        preview_window=None,
-        recorder=None,
-    )
-
-
 def _ensemble(*names: str, stacks_overrides: dict[str, list[SceneCfg]] | None = None) -> Ensemble:
     overrides = stacks_overrides or {}
-    stacks = [_fake_stack(n, overrides.get(n, [])) for n in names]
+    stacks = [fake_system_stack(n, overrides.get(n, [])) for n in names]
     return Ensemble(stacks=stacks, stop_event=threading.Event())
 
 

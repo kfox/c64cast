@@ -9,7 +9,7 @@ import unittest
 from typing import Any, cast
 
 import numpy as np
-from _fakes import FakeAPI
+from _fakes import new_streamer
 
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
@@ -22,25 +22,6 @@ from c64cast.audio.audio_handlers import (
     stomp_spans,
 )
 from c64cast.audio.dac_curves import MAHONEY_ULTISID, NEUTRAL_INDEX
-from c64cast.hw.api import Ultimate64API
-
-
-def _new_streamer() -> AudioStreamer:
-    # Built through the real __init__, not __new__ + hand-set attributes: this
-    # fixture used to be a copy of the constructor's state, and it silently fell
-    # behind it. Every field added to AudioStreamer since was simply absent
-    # here, so the worker's post-prebuffer path (which reads _nmi_latch) died of
-    # AttributeError inside the thread — where _worker logs and exits, leaving
-    # the pacing regression test to pass on prebuffer writes alone.
-    #
-    # host_dma_servo off keeps the worker open-loop (no R reads) for the
-    # deterministic worker-path tests below.
-    return AudioStreamer(
-        cast(Ultimate64API, FakeAPI()),
-        sample_rate=8000,
-        system="NTSC",
-        host_dma_servo=False,
-    )
 
 
 def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
@@ -58,13 +39,13 @@ def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
 
 class SampleTapTest(unittest.TestCase):
     def test_push_then_get(self):
-        s = _new_streamer()
+        s = new_streamer()
         s._push_to_tap(np.array([0.5, -0.5, 0.25], dtype=np.float32))
         out = s.get_recent_samples(5)
         self.assertEqual(list(out), [0.0, 0.0, 0.5, -0.5, 0.25])
 
     def test_wrap_around(self):
-        s = _new_streamer()
+        s = new_streamer()
         # Push more than tap size to force a wrap.
         big = np.linspace(-1, 1, SAMPLE_TAP_SIZE + 100, dtype=np.float32)
         s._push_to_tap(big)
@@ -75,7 +56,7 @@ class SampleTapTest(unittest.TestCase):
         np.testing.assert_allclose(out, big[-SAMPLE_TAP_SIZE:], rtol=1e-5)
 
     def test_empty_push_noop(self):
-        s = _new_streamer()
+        s = new_streamer()
         s._push_to_tap(np.array([], dtype=np.float32))
         self.assertEqual(s._tap_write, 0)
 
@@ -83,7 +64,7 @@ class SampleTapTest(unittest.TestCase):
 class EncodeAndEnqueueTest(unittest.TestCase):
     def test_mid_scale_maps_to_7(self):
         # 0.0 input → (0 + 1) * 7.5 = 7.5 → uint8 truncates to 7 = NEUTRAL_SAMPLE.
-        s = _new_streamer()
+        s = new_streamer()
         n = s._encode_and_enqueue(np.array([0.0] * 4, dtype=np.float32))
         self.assertEqual(n, 4)
         values = _drain_queue_to_samples(s.q)
@@ -92,7 +73,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
 
     def test_full_scale_maps_to_15_and_0(self):
         # +1.0 → 15; -1.0 → 0.
-        s = _new_streamer()
+        s = new_streamer()
         s._encode_and_enqueue(np.array([1.0, -1.0], dtype=np.float32))
         blob = s.q.get()
         # TPDF dither can shift full-scale by ±1 LSB pre-clip.
@@ -103,7 +84,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         # Suppression of dither at floats == 0 is a load-bearing property
         # of _encode_and_enqueue — mic / AVFileSource noise gates zero the
         # noise floor; dither must not re-introduce noise there.
-        s = _new_streamer()
+        s = new_streamer()
         s._encode_and_enqueue(np.zeros(1024, dtype=np.float32))
         blob = s.q.get()
         self.assertTrue(
@@ -115,7 +96,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
     def test_dither_disabled_gives_deterministic_quantize(self):
         # With dither off, a constant non-zero input must map to a single
         # bit-exact value — no random offset.
-        s = _new_streamer()
+        s = new_streamer()
         s.dither_enabled = False
         # 0.5 input → (0.5 + 1) * 7.5 = 11.25 → uint8 truncates to 11.
         s._encode_and_enqueue(np.full(64, 0.5, dtype=np.float32))
@@ -126,7 +107,7 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         )
 
     def test_drops_when_queue_full_without_block(self):
-        s = _new_streamer()
+        s = new_streamer()
         # Saturate the sample-count cap directly (backpressure is by
         # sample count now, not q.full()).
         s._queued_samples = s._max_queued_samples
@@ -139,7 +120,7 @@ class DacCurveEncodeTest(unittest.TestCase):
     ring bytes must be the curve's $D418 codes, not the 4-bit nibble."""
 
     def _curved_streamer(self) -> AudioStreamer:
-        s = _new_streamer()
+        s = new_streamer()
         s.dac_curve_name = "mahoney_ultisid"
         s._dac_curve = np.frombuffer(MAHONEY_ULTISID, dtype=np.uint8)
         s._neutral_byte = int(s._dac_curve[NEUTRAL_INDEX])
@@ -176,7 +157,7 @@ class DacCurveEncodeTest(unittest.TestCase):
 
 class WorkerBatchingTest(unittest.TestCase):
     def test_worker_drains_chunk_in_one_post(self):
-        s = _new_streamer()
+        s = new_streamer()
         s.running = True
         s.chunk_size = 64
         # Pre-load the queue with one full chunk's worth as a single blob.
@@ -205,7 +186,7 @@ class WorkerBatchingTest(unittest.TestCase):
     def test_worker_splits_oversized_blob_across_chunks(self):
         """A single blob larger than chunk_size should be split across
         multiple uploads via the `leftover` carry."""
-        s = _new_streamer()
+        s = new_streamer()
         s.running = True
         s.chunk_size = 16
         # 50 samples = 3 full chunks + 2 leftover.
@@ -241,7 +222,7 @@ class WorkerBatchingTest(unittest.TestCase):
         overwriting real audio with neutral pads."""
         import time
 
-        s = _new_streamer()
+        s = new_streamer()
         s.running = True
         s.chunk_size = 64
         s.sample_rate = 8000  # → chunk_period = 8 ms
@@ -294,7 +275,7 @@ class EffectiveRateTest(unittest.TestCase):
     achievable rates form the grid PHI2/(latch+1)."""
 
     def _at(self, rate: int, system: str) -> AudioStreamer:
-        s = _new_streamer()
+        s = new_streamer()
         s.sample_rate = rate
         s.system = system
         return s
@@ -342,7 +323,7 @@ class EffectiveRateTest(unittest.TestCase):
     """AudioStreamer.flush() (transport resync, Phase 4)."""
 
     def _seed(self, pushed: int, queued: int, blobs: list[int]) -> AudioStreamer:
-        s = _new_streamer()
+        s = new_streamer()
         s._pushed_count = pushed
         s._queued_samples = queued
         for n in blobs:
@@ -392,7 +373,7 @@ class EffectiveRateTest(unittest.TestCase):
     def test_blocked_push_dropped_by_flush_epoch(self):
         import time
 
-        s = _new_streamer()
+        s = new_streamer()
         s.running = True
         s._max_queued_samples = 16384
         s._queued_samples = 16384  # at cap → _encode_and_enqueue spins
@@ -415,7 +396,7 @@ class EffectiveRateTest(unittest.TestCase):
     def test_stop_still_drains_and_zeroes(self):
         # stop() now routes its drain through _drain_queue_samples; the queue
         # must still empty and the counters reset (refactor regression guard).
-        s = _new_streamer()
+        s = new_streamer()
         s.running = False
         s._reu_pump_armed = False
         s._pushed_count = 4242

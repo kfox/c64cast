@@ -10,6 +10,8 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+from _fakes import make_psid
+
 from c64cast.hw.api import (
     _REINIT_PATCH_BANK,
     _REINIT_PATCH_INIT_HI,
@@ -220,7 +222,8 @@ class RunSidPlayerTest(unittest.TestCase):
         with patch.object(self.api.socket_dma, "close"):
             self.api.close()
 
-    # ---- header construction helper ----------------------------------
+    # ---- header construction helper (this file's defaults over the
+    # shared PSID builder) ----------------------------------------------
     @staticmethod
     def _make_sid(
         *,
@@ -232,17 +235,15 @@ class RunSidPlayerTest(unittest.TestCase):
         start_song=1,
         payload_len=64,
     ):
-        h = bytearray(124)
-        h[0:4] = magic
-        h[4:6] = (2).to_bytes(2, "big")
-        # data_offset = 124 (v2 header)
-        h[6:8] = (124).to_bytes(2, "big")
-        h[8:10] = load.to_bytes(2, "big")
-        h[10:12] = init.to_bytes(2, "big")
-        h[12:14] = play.to_bytes(2, "big")
-        h[14:16] = num_songs.to_bytes(2, "big")
-        h[16:18] = start_song.to_bytes(2, "big")
-        return bytes(h) + bytes(payload_len)
+        return make_psid(
+            magic=magic,
+            load=load,
+            init=init,
+            play=play,
+            num_songs=num_songs,
+            start_song=start_song,
+            payload=bytes(payload_len),
+        )
 
     # ---- validation --------------------------------------------------
     def test_rejects_rsid(self):
