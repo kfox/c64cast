@@ -12,6 +12,10 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-08-09
+
 ### Added
 
 - **A TeensyROM+ inside an Ultimate needs `Bus Operation Mode = Writes`, and the
@@ -23,6 +27,7 @@ the version and stamps it with the date.
   connection is `tr://` to the TeensyROM+ and there is no link to the Ultimate
   whose setting it is. Documented in the User's Guide setup chapter, the
   reference guide's DAC section, `caveats.md` and `troubleshooting.md`.
+
 - **`--calibrate-dac` now says which *kind* of unsteady a refused ring was.** A
   spread number alone cannot distinguish a capture whose level was still settling
   — where the ring replayed faithfully and only the level moved — from laps that
@@ -31,12 +36,67 @@ the version and stamps it with the date.
   that instead of listing everything: a drifting level is no longer blamed on a
   second SID that cannot have caused it. Marginal rings say which kind they are
   as they are measured.
+
 - **A run whose rings are individually fine but collectively marginal now says
   so.** Rings sitting under the trust gate still add up: measured on one chip an
   hour apart, a run with a single marginal ring reproduced at corr 0.9994 / 0.78%
   RMS where a run with none managed corr 1.0000 / 0.00%. The table is still
   written; the run now reports how many rings cleared the healthy band and the
   worst of them, and the count is persisted with the metrics.
+
+- **Audio worker health lines.** Under `-v`, the DAC path now logs a short line
+  every few seconds — ring gap excursion, late ring sub-writes, underruns, write
+  rate, consumer rate, NMI latch — and reports the session's late-write share on
+  stop. The counts that already existed were session totals, which cannot tell a
+  fault that is present throughout from one that appears part-way in, deepens,
+  clears and returns; the artifacts worth chasing on this path are exactly the
+  latter. "Late" means a ring sub-write reached its slot after that slot's
+  deadline had passed, which bunches the rest of the chunk and undoes the spread
+  described below, without registering as an underrun.
+
+- `scripts/diags/audio_fm_probe.py` — measures how much a host DMA write
+  perturbs DAC playback, as a function of payload size, against a tone that
+  cannot underrun. Its siblings from the same investigations ship alongside
+  it: `halt_shape_probe.py` (what a DMA write costs the 6510, in NMI ticks),
+  `ring_race_probe.py` (the write head against the NMI consumer's read
+  pointer), `write_delivery_lag.py` (how much of what the host believes it
+  wrote is actually in C64 RAM), and `tr_clearloop_state_probe.py` (what the
+  C64 is doing at each step of TeensyROM+ bring-up).
+
+### Changed
+
+- **The baked `mahoney_ultisid` table has been re-measured** against the
+  emulated core in isolation. It reproduces the original curve almost exactly,
+  but the code-selection step has been rewritten since that table was generated,
+  and the shipped bytes had gone stale against it — non-monotonic through the
+  very curve they came from. No action needed; the improvement is automatic for
+  anyone whose `$D400` is an UltiSID core.
+
+- **The 4-bit `$D418` DAC wobbles far less.** Each host write to the audio ring
+  halts the C64's CPU for about one cycle per byte, and CIA #2 latches NMIs on an
+  edge — so a write long enough to span two timer underflows makes the second
+  sample vanish rather than merely arrive late. The ring write was one 1024-byte
+  push, which at the 12 kHz default froze the CPU for roughly 12 NMI periods
+  about 12 times a second, right in the 4-20 Hz band the ear is most sensitive to.
+  It is now split into pieces that each fit inside one NMI period and spread
+  across the chunk period. Measured on hardware against a 376 Hz carrier,
+  frequency deviation drops from 27.3 Hz to about 6 Hz on both the Ultimate 64
+  and TeensyROM+. There is no knob: the piece size is derived from the live NMI
+  period and floored by what the link can carry, so a backend that cannot afford
+  to split degrades to a single write on its own.
+
+- `[audio].dac_calibration_profile` now also takes a **path** to a calibration
+  file, used as given. A name is folded into one filesystem-safe token, so a path
+  handed to it silently became a key matching no file — and a name can only ever
+  address the current backend's own key space, which made it impossible to point
+  a TeensyROM+ run at the calibration of the C64 it is plugged into (filed under
+  the Ultimate's device id). Missing calibrations now name the file that was
+  looked for instead of a mangled key.
+
+- The `vision` extra's mediapipe pin is now `>=0.10.35,<1.1` (previously
+  `<0.11`), so a fresh `c64cast[vision]` or `c64cast[all]` install resolves
+  mediapipe 1.x. Existing 0.10.x installs remain within the pin; the
+  hand-gesture controller works with either series.
 
 ### Fixed
 
@@ -54,6 +114,7 @@ the version and stamps it with the date.
   inside teardown and abandon the run's final reset. A second Ctrl+C restores
   the default handler rather than exiting on the spot, so the third is what
   kills — cutting an in-flight DMA is what wedges the hardware.
+
 - **Nothing writes to BLNSW (`$00CC`) any more.** Poking `$80` there to stop the
   kernal cursor blink never worked — the editor's input-wait loop overwrites that
   byte on every pass, so it is gone microseconds after the DMA lands. The BASIC
@@ -62,6 +123,7 @@ the version and stamps it with the date.
   `suppress_cursor_blink()` helper is gone, and the TeensyROM+'s "is BASIC at the
   READY prompt?" check — which had been reading that state as a side effect of
   the same write — is now a plain read of CURLIN.
+
 - **TeensyROM+ bring-up now actually detects the READY prompt.** The check for
   "is BASIC at the READY prompt, so the clear-loop repair needs to run?" tested
   CURLIN's high byte for `$FF`, the usual shorthand for direct mode. Measured on
@@ -69,6 +131,7 @@ the version and stamps it with the date.
   clear loop, so the test matched neither state, every probe answered "running",
   and the repair never fired — leaving BASIC in the editor with a blinking
   cursor. Both spellings of "not executing a line" are now accepted.
+
 - **TeensyROM+ bring-up no longer skips the clear-loop repair after a slow
   launch.** LaunchFile acks and then streams its own console text back over the
   same link, a C64 reset included. Bring-up waited a fixed 0.6 s for that and
@@ -77,6 +140,7 @@ the version and stamps it with the date.
   the repair took its can't-read-the-state early return, and BASIC was left in
   the editor — with exactly the blinking cursor the repair exists to prevent. The
   wait now drains the link until it goes quiet instead of guessing a duration.
+
 - **A calibration measured on the Ultimate could not be replayed over a
   TeensyROM+.** A multi-socket file holds one table per socket, and choosing
   between them means knowing which socket answers `$D400`. A link with no SID
@@ -90,6 +154,7 @@ the version and stamps it with the date.
   began, and that record is believed on any link; a file predating it falls
   back to socket 1 — the default mapping — with a warning naming the assumption
   and how to retire it.
+
 - **`--calibrate-dac` averaged glitched readings into the table, and later
   refused good runs because of them.** Individual capture slots occasionally read
   far off on one pass: across every refused capture kept for diagnosis, 1-6 codes
@@ -103,6 +168,7 @@ the version and stamps it with the date.
   Ultimate, of the same 6581, went from agreeing at corr 0.844 / 18% RMS to
   **corr 1.0000 / 0.12%** — the figure two clean runs of one chip reproduce at.
   The link was never the variable.
+
 - **A calibration profile named by a bare name could not refer to an existing
   file.** `--calibrate-dac` writes device-keyed names (`ultimate-<unique-id>`), but
   naming one of those in `[audio].dac_calibration_profile` resolved to
@@ -110,11 +176,13 @@ the version and stamps it with the date.
   since it is what is on disk. A name matching an existing file now wins; a name
   with no such file still gets the `profile-` prefix so new profiles file
   themselves as before.
+
 - **A refused calibration capture is no longer discarded.** It is the only
   evidence for its own refusal, and repeating it costs a ~50 s hardware run that
   may not fault the same way. Refused captures are now written to
   `<data root>/calibration/unusable/`, with the codes, sample rate and
   diagnostics in the same file, and the failure names the path.
+
 - **The test suite wrote a real calibration file into the developer's own data
   directory** on every run — `~/.local/share/c64cast/calibration/dac/` — because
   one test class persisted a calibration without redirecting `$C64CAST_DATA_DIR`.
@@ -139,12 +207,14 @@ the version and stamps it with the date.
   spreads near or above 1%, re-measure it** — or delete it and let `"auto"` fall
   back. (The gate this shipped with read the worst single slot, which refused
   good runs; see the slot-glitch entry under Fixed for what it reads now.)
+
 - **A calibration measured over a link with no SID config API no longer applies
   itself silently.** Only the Ultimate can report which SID answers `$D400`, so
   every other link measures whatever is there and files it under one key. That is
   correct on a single-SID machine and a blend of two ladders on a machine with a
   second chip or with address mirroring on, and nothing on the host side can tell
   those apart — so the assumption is now logged where the table is chosen.
+
 - **The static on the `$D418` DAC: a calibration table was being applied to the
   wrong SID.** `[audio].dac_curve = "auto"` chose the baked *emulated-UltiSID*
   table whenever the backend was an Ultimate, without checking which SID source
@@ -157,63 +227,19 @@ the version and stamps it with the date.
   populated socket with no calibration of its own falls back to the 4-bit path
   instead. **If you have a physical SID, run `--calibrate-dac` once** — a
   matched table beats the 4-bit path by 1.7 dB and runs 5.9 dB louder.
+
 - **`--calibrate-dac` measured every socket after the first with unparked SID
   voices.** The 8-bit mode needs the three voices parked as DC sources, and that
   setup was written once at start-up, so it landed on whichever chip was mapped
   to `$D400` at the time. On a two-socket board the second socket's table was
   measured with no DC to scale. It is now re-installed after each routing change.
+
 - **`--calibrate-dac` could measure a muted SID.** Routing a source to `$D400`
   does not make it audible — the Audio Mixer carries a separate per-source
   level. Calibration now routes the mixer to the source it is measuring and
   restores the previous levels afterwards. Previously this produced a capture at
   the noise floor, which looks like a broken capture device rather than a muted
   chip.
-
-### Changed
-
-- **The baked `mahoney_ultisid` table has been re-measured** against the
-  emulated core in isolation. It reproduces the original curve almost exactly,
-  but the code-selection step has been rewritten since that table was generated,
-  and the shipped bytes had gone stale against it — non-monotonic through the
-  very curve they came from. No action needed; the improvement is automatic for
-  anyone whose `$D400` is an UltiSID core.
-
-### Added
-
-- **Audio worker health lines.** Under `-v`, the DAC path now logs a short line
-  every few seconds — ring gap excursion, late ring sub-writes, underruns, write
-  rate, consumer rate, NMI latch — and reports the session's late-write share on
-  stop. The counts that already existed were session totals, which cannot tell a
-  fault that is present throughout from one that appears part-way in, deepens,
-  clears and returns; the artifacts worth chasing on this path are exactly the
-  latter. "Late" means a ring sub-write reached its slot after that slot's
-  deadline had passed, which bunches the rest of the chunk and undoes the spread
-  described below, without registering as an underrun.
-
-### Changed
-
-- **The 4-bit `$D418` DAC wobbles far less.** Each host write to the audio ring
-  halts the C64's CPU for about one cycle per byte, and CIA #2 latches NMIs on an
-  edge — so a write long enough to span two timer underflows makes the second
-  sample vanish rather than merely arrive late. The ring write was one 1024-byte
-  push, which at the 12 kHz default froze the CPU for roughly 12 NMI periods
-  about 12 times a second, right in the 4-20 Hz band the ear is most sensitive to.
-  It is now split into pieces that each fit inside one NMI period and spread
-  across the chunk period. Measured on hardware against a 376 Hz carrier,
-  frequency deviation drops from 27.3 Hz to about 6 Hz on both the Ultimate 64
-  and TeensyROM+. There is no knob: the piece size is derived from the live NMI
-  period and floored by what the link can carry, so a backend that cannot afford
-  to split degrades to a single write on its own.
-
-- `[audio].dac_calibration_profile` now also takes a **path** to a calibration
-  file, used as given. A name is folded into one filesystem-safe token, so a path
-  handed to it silently became a key matching no file — and a name can only ever
-  address the current backend's own key space, which made it impossible to point
-  a TeensyROM+ run at the calibration of the C64 it is plugged into (filed under
-  the Ultimate's device id). Missing calibrations now name the file that was
-  looked for instead of a mangled key.
-
-### Fixed
 
 - **The audio underrun summary no longer contradicts itself.** It is emitted
   when the streamer stops, which happens once as a scene tears down and again at
@@ -241,24 +267,6 @@ the version and stamps it with the date.
   rewrites `$00CC` on every pass, no write could switch the blink off. Bring-up
   now detects it and repairs it over DMA. The editor also stops eating the
   keystrokes the on-C64 keyboard control reads.
-
-### Added
-
-- `scripts/diags/audio_fm_probe.py` — measures how much a host DMA write
-  perturbs DAC playback, as a function of payload size, against a tone that
-  cannot underrun. Its siblings from the same investigations ship alongside
-  it: `halt_shape_probe.py` (what a DMA write costs the 6510, in NMI ticks),
-  `ring_race_probe.py` (the write head against the NMI consumer's read
-  pointer), `write_delivery_lag.py` (how much of what the host believes it
-  wrote is actually in C64 RAM), and `tr_clearloop_state_probe.py` (what the
-  C64 is doing at each step of TeensyROM+ bring-up).
-
-### Changed
-
-- The `vision` extra's mediapipe pin is now `>=0.10.35,<1.1` (previously
-  `<0.11`), so a fresh `c64cast[vision]` or `c64cast[all]` install resolves
-  mediapipe 1.x. Existing 0.10.x installs remain within the pin; the
-  hand-gesture controller works with either series.
 
 ## [0.2.1] - 2026-08-05
 
@@ -785,7 +793,8 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kfox/c64cast/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kfox/c64cast/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kfox/c64cast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kfox/c64cast/releases/tag/v0.1.0

@@ -64,9 +64,8 @@ fresh `## [Unreleased]`, fixes the link references, and re-runs `uv lock`.
 
 Nothing else needs editing — `__version__`, the `#:schema` URL and every book's
 cover or footer version all derive from that number. The exception is the
-**edition** line in each bound book's `colophon.md`, which is an editorial call: a
-release with substantially rewritten chapters is a new edition, a patch release
-is not.
+**edition** line in each bound book's `colophon.md`, which is an editorial call:
+see [Editions](#editions).
 
 **3. Open a PR and verify.**
 
@@ -132,3 +131,32 @@ a patch. Do not delete it — deleting frees the version number for reuse.
 Semantic versioning over the user surface: CLI flags, config schema, `example:`
 names, data-directory layout. See
 [What counts as a breaking change](CONTRIBUTING.md#what-counts-as-a-breaking-change).
+
+## Editions
+
+The version and the edition answer different questions. `VERSION X.Y.Z` on a
+book's cover, in its PDF metadata and in the card's header says *which build of
+the software this text describes*; it derives from the bump and is never a
+judgement call. The **edition** in `colophon.md` says *which book this is*, so
+that someone holding a detached PDF can tell whether their copy is the one you
+are citing.
+
+Because the cover already carries the release, the edition is free to mean what
+it means in print: a new edition is a book you would have to re-read, not a book
+with corrections in it. Bump it when the shape or the teaching changes —
+
+- a chapter is added, removed, renumbered or reordered, so the old copy's
+  contents no longer line up;
+- a chapter is rewritten rather than amended, changing the recommended path
+  through the material;
+- advice the previous edition gave is now *wrong*, such that following the old
+  book gets a bad result rather than an incomplete one.
+
+Flags and config fields documented in place, corrections, new sections within a
+chapter and typography work are all the same edition, as are the reference
+guide's appendices and index — those regenerate on every build by construction.
+
+The month is the date the edition was established, not the date the PDF was
+rendered, so it moves only when the ordinal does: a colophon reading `1st
+Edition, July 2026` under a cover reading `VERSION 0.4.0` is correct, not stale.
+Both bound books advance together when either earns it.
