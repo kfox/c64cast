@@ -21,10 +21,10 @@ each system's Playlist + per-system reload closures are the shared state.
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from c64cast._pollthread import PollThread
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import Scene
 
@@ -56,18 +56,20 @@ class ControlServer:
             access_log=False,
         )
         self._server = uvicorn.Server(self._cfg)
-        self._thread: threading.Thread | None = None
+        # uvicorn has its own stop signal (should_exit, set in stop()), so the
+        # target ignores the PollThread event — the poll supplies only the
+        # daemon-thread start/join lifecycle.
+        self._poll = PollThread(
+            lambda stop: self._server.run(), name="control-plane", manual=True, join_timeout=2.0
+        )
 
     def start(self):
-        self._thread = threading.Thread(target=self._server.run, daemon=True, name="control-plane")
-        self._thread.start()
+        self._poll.start()
         log.info("%s: listening on http://%s:%d", self.label, self.host, self.port)
 
     def stop(self):
         self._server.should_exit = True
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        self._poll.stop()
 
 
 def _status_for(pl: Playlist) -> dict[str, Any]:

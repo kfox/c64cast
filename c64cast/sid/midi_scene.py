@@ -371,15 +371,16 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # Monotonic assignment counter feeding `_VoiceState.seq`.
         self._assign_seq = 0
         self._midi_port = None
-        self._reader_thread: threading.Thread | None = None
-        self._stop = threading.Event()
+        self._reader_poll = PollThread(
+            self._reader, name="midi-reader", manual=True, join_timeout=1.0
+        )
         self._dirty = True  # force first text-row paint
 
     # ---- MIDI plumbing -------------------------------------------------------
     def _open_port(self):
         self._midi_port, _ = open_input_port(self.port_name, label="MidiScene")
 
-    def _reader(self):
+    def _reader(self, stop: threading.Event):
         port = self._midi_port
         if port is None:
             return
@@ -397,7 +398,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 for msg in port.iter_pending():
                     if msg.type in ("note_on", "note_off"):
                         self._handle_msg(msg)
@@ -862,9 +863,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._paint_info_rows()
         self._alloc_scope_buffers()
         self._open_port()
-        self._stop.clear()
-        self._reader_thread = threading.Thread(target=self._reader, daemon=True, name="midi-reader")
-        self._reader_thread.start()
+        self._reader_poll.start()
         # Envelope ticker: advances each voice's ADSR at the video rate so
         # attack/decay/release tails evolve on screen between MIDI events.
         self._poll = PollThread(self._tick_envelopes, period=self._poll_dt, name="midi-env")
@@ -903,10 +902,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
 
     def teardown(self) -> None:
         super().teardown()
-        self._stop.set()
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=1.0)
-            self._reader_thread = None
+        self._reader_poll.stop()
         if self._midi_port is not None:
             try:
                 self._midi_port.close()

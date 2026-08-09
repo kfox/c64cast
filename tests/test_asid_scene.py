@@ -236,12 +236,17 @@ class AsidSceneTest(unittest.TestCase):
 
     def test_setup_opens_port_and_starts_threads(self):
         scene, api = self._make()
-        with mock.patch.object(scene, "_open_port"):
-            scene._midi_port = None  # _open_port patched; reader exits immediately
+        # Avoid touching real MIDI hardware: a stub port that never yields a
+        # message keeps the reader loop alive so is_running() is observable.
+        port = mock.MagicMock()
+        port.iter_pending.return_value = iter(())
+        with mock.patch.object(
+            scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", port)
+        ):
             scene.setup()
         try:
             self.assertGreaterEqual(api.cache_invalidations, 1)
-            self.assertIsNotNone(scene._reader_thread)
+            self.assertTrue(scene._reader_poll.is_running())
         finally:
             scene.teardown()
 

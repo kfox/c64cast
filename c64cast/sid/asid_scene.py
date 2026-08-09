@@ -240,8 +240,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._sid_volume = list(sid_volume or ())
 
         self._midi_port = None
-        self._reader_thread: threading.Thread | None = None
-        self._stop = threading.Event()
+        self._reader_poll = PollThread(
+            self._reader, name="asid-reader", manual=True, join_timeout=1.0
+        )
         self._dirty = True  # force first text-row paint
 
         # Construct the ring player up front (its queue accepts pushes before the
@@ -254,7 +255,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
     def _open_port(self):
         self._midi_port, _ = open_input_port(self.port_name, label="AsidScene")
 
-    def _reader(self):
+    def _reader(self, stop: threading.Event):
         port = self._midi_port
         if port is None:
             return
@@ -268,7 +269,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # v1 limitation).
         last_flush = 0.0
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 for msg in port.iter_pending():
                     if msg.type == "sysex":
                         self._handle_sysex(msg.data)
@@ -572,9 +573,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._paint_info_rows()
         self._alloc_scope_buffers()
         self._open_port()
-        self._stop.clear()
-        self._reader_thread = threading.Thread(target=self._reader, daemon=True, name="asid-reader")
-        self._reader_thread.start()
+        self._reader_poll.start()
         # Arm the buffered ring player after the reader (so its prebuffer can draw
         # from frames already streaming in) but before the scope needs it.
         if self._use_buffered_player and self._player is not None:
@@ -634,10 +633,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
 
     def teardown(self) -> None:
         super().teardown()
-        self._stop.set()
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=1.0)
-            self._reader_thread = None
+        self._reader_poll.stop()
         # Stop the ring player FIRST: it restores $0314 → the kernal IRQ tail and
         # the CIA #1 latch, so the C64 stops popping the ring before we silence
         # the SID(s) and restore the display below.

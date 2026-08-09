@@ -83,7 +83,7 @@ class DriverPublishTest(unittest.TestCase):
         fp.start()
         fp.stop()
         fp.stop()  # second stop is a no-op
-        self.assertIsNone(fp._thread)
+        self.assertFalse(fp._poll.is_running())
 
 
 class SceneGatingTest(unittest.TestCase):

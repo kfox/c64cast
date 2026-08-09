@@ -29,6 +29,8 @@ import time
 
 import cv2
 
+from c64cast._pollthread import PollThread
+
 from .framebuffer import Framebuffer
 
 log = logging.getLogger(__name__)
@@ -148,8 +150,7 @@ class StreamRecorder:
         self.fps = max(1, int(fps))
         self.scale = max(1, int(scale))
         self.fourcc = fourcc
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._poll = PollThread(self._loop, name="stream-recorder", manual=True, join_timeout=2.0)
         self._writer: cv2.VideoWriter | None = None
         self._frame_count = 0
 
@@ -169,29 +170,24 @@ class StreamRecorder:
                 f"check the fourcc ({self.fourcc!r}) and codecs in your opencv "
                 "build"
             )
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="stream-recorder")
-        self._thread.start()
+        self._poll.start()
         log.info("recording: %s @ %dx%d %dfps (%s)", self.output_path, w, h, self.fps, self.fourcc)
 
     def stop(self):
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        self._poll.stop()
         if self._writer is not None:
             self._writer.release()
             self._writer = None
         log.info("recording: stopped after %d frames", self._frame_count)
 
-    def _loop(self):
+    def _loop(self, stop: threading.Event):
         period = 1.0 / self.fps
         next_t = time.monotonic()
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 now = time.monotonic()
                 if now < next_t:
-                    self._stop.wait(timeout=next_t - now)
+                    stop.wait(timeout=next_t - now)
                     continue
                 bgr = self.fb.render()
                 if self.scale != 1:
