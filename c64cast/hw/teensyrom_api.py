@@ -256,6 +256,24 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             log.debug("TR ping failed: %s", e)
             return None
 
+    def describe_device(self) -> str:
+        """This board's identity for the connect-time log: ``"TeensyROM+
+        12345678 (full firmware, serial /dev/cu.usbmodem12345678@2000000)"``.
+        The USB serial number is the only per-unit identifier the TR exposes and
+        a TCP-attached board offers none, so the link description carries the
+        rest."""
+        from .teensyrom_dma import SerialTransport, usb_serial_number
+
+        transport = self.tr.transport
+        serial_number = (
+            usb_serial_number(transport.port) if isinstance(transport, SerialTransport) else None
+        )
+        parts = ["TeensyROM+"]
+        if serial_number:
+            parts.append(serial_number)
+        parts.append(f"({self.tr.firmware} firmware, {transport.description})")
+        return " ".join(parts)
+
     def reset(self) -> None:
         """Reset the C64 (boots to the TR menu). Best-effort: a failure logs
         but doesn't raise (mirrors the Ultimate's reset)."""

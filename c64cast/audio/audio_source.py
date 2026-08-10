@@ -711,15 +711,21 @@ class SidFileAudioSource:
         make every source they play on audible ([ultimate64].sid_panning /
         sid_volume). This path does no address routing, so the source playing
         each chip is whatever currently answers its address. Originals fold into
-        the same snapshot teardown restores."""
+        the same snapshot teardown restores, and the settled state is logged so
+        a chip that ends up muted or on the wrong model says so."""
         assert self.header is not None  # set by _pick_and_load, called by setup
+        from c64cast.sid.sid_autoconfig import required_models_for
         from c64cast.sid.sid_panning import apply_panning, sources_for_addresses
+        from c64cast.sid.sid_resolved import log_resolved_audio
         from c64cast.sid.sid_volume import apply_volume
 
-        sources = sources_for_addresses(self._api, self.header.sid_addresses)
+        addresses = self.header.sid_addresses
+        sources = sources_for_addresses(self._api, addresses)
         panning = apply_panning(self._api, sources, self._sid_panning)
         self._sid_session.fold(panning.originals)
         self._sid_session.fold(apply_volume(self._api, sources, self._sid_volume))
+        required = required_models_for(self._sid_model, self.header.sid_models, len(addresses))
+        log_resolved_audio(self._api, addresses, required)
 
     def teardown(self) -> None:
         """Stop the feature stream, then SID playback. SID order mirrors

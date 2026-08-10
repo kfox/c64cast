@@ -1028,6 +1028,31 @@ class ReadSideTest(unittest.TestCase):
         args, _ = self.get.call_args
         self.assertEqual(args[0], "http://example.invalid/v1/info")
 
+    def test_describe_device_names_the_unit_and_its_firmware(self):
+        # `product` is the only thing over this API that tells a U64 from a
+        # U2+, and the two expose different config categories — so the
+        # connect-time line has to carry it.
+        self.get.return_value.json.return_value = {
+            "product": "Ultimate II+",
+            "unique_id": "5D327C",
+            "firmware_version": "3.14d",
+            "fpga_version": "122",
+        }
+        self.assertEqual(
+            self.api.describe_device(), "Ultimate II+ 5D327C (firmware 3.14d, FPGA 122)"
+        )
+
+    def test_describe_device_omits_fields_the_device_did_not_report(self):
+        self.get.return_value.json.return_value = {"product": "C64 Ultimate"}
+        self.assertEqual(self.api.describe_device(), "C64 Ultimate")
+
+    def test_describe_device_is_empty_when_the_device_wont_answer(self):
+        # Firmware without /v1/info must cost a log line, not a crashed run.
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        self.assertEqual(self.api.describe_device(), "")
+
     def test_run_basic_clear_loop_posts_prg_and_swallows_failure(self):
         import requests
 

@@ -16,8 +16,8 @@ actually socketed (via :mod:`c64cast.sid.sid_hw_config`), and — best-effort, l
 every other REST config helper in this codebase — reconfigures the U64 so the
 tune lands on a matching chip: swap to a physical socket with a matching chip
 if one exists, else fall back to an UltiSID FPGA core set to a representative
-filter curve for that model, else warn and leave the chip on whatever answers
-its address already.
+filter curve for that model *and* take the address away from whatever answered
+it before, else warn and leave the chip on whatever answers its address already.
 
 Mirrors :mod:`c64cast.audio.dac_calibration`'s auto/explicit-override +
 snapshot/apply/restore shape, reusing :mod:`c64cast.sid.sid_hw_config` (REST
@@ -33,6 +33,7 @@ it — see docs/caveats.md.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
 from .asid_sidmap import (
@@ -41,6 +42,7 @@ from .asid_sidmap import (
     CAT_ULTISID,
     FILTER_CURVE_6581,
     FILTER_CURVE_8580,
+    ITEM_AUTO_MIRROR,
     ITEM_SOCKET1_ADDR,
     ITEM_SOCKET1_EN,
     ITEM_SOCKET2_ADDR,
@@ -79,6 +81,13 @@ SID_MODEL_CHOICES: Final[tuple[str, ...]] = ("auto", "6581", "8580", "off")
 # module agree on what "no requirement" means.
 _NO_REQUIREMENT = NO_MODEL_REQUIREMENT
 
+# Which config item enables each physical socket, keyed as current_source_map
+# names its sources — so an UltiSID route can silence the socket it displaces.
+_SOCKET_ENABLE_ITEM: Final[dict[str, str]] = {
+    "socket1": ITEM_SOCKET1_EN,
+    "socket2": ITEM_SOCKET2_EN,
+}
+
 
 def _current_addr_map(api: C64Backend) -> dict[int, str]:
     """Which source answers each ``$Dxxx`` address, per the live SID config.
@@ -114,10 +123,13 @@ def plan_sid_model_config(
          mechanism :func:`c64cast.sid.asid_sidmap.plan_sid_map_for_addresses`
          uses for multi-SID routing).
       3. `ultisid_allowed` and a free UltiSID core remains → route this
-         chip's address to that core and set its filter-curve item to the
-         fixed representative curve for the required model (`"6581"` /
-         `"8580 Lo"` — the exact curve variant, e.g. `"8580 Hi"`, isn't
-         exposed as a config knob in this pass).
+         chip's address to that core, set its filter-curve item to the fixed
+         representative curve for the required model (`"6581"` / `"8580 Lo"`
+         — the exact curve variant, e.g. `"8580 Hi"`, isn't exposed as a
+         config knob in this pass), and clear whatever else answers that
+         address: `Auto Address Mirroring` off, plus the socket sitting there
+         disabled. Without that last part the route is silent-by-design — the
+         real chip keeps answering and the core never reaches the mixer.
       4. Otherwise: log a warning (best-effort — never raises) and leave the
          chip unchanged.
 
@@ -174,14 +186,25 @@ def plan_sid_model_config(
                 curve = FILTER_CURVE_6581 if required == "6581" else FILTER_CURVE_8580
                 plan[(CAT_ADDRESSING, addr_item)] = f"${address:04X}"
                 plan[(CAT_ULTISID, filter_item)] = curve
+                # Pointing a core at the address is not enough to make it the
+                # chip a listener hears. `Auto Address Mirroring` lets a socket
+                # mirror the core's base, and a socket still enabled there
+                # answers alongside it — so the real (wrong-model) chip keeps
+                # sounding and the whole route is inaudible. Same reason
+                # plan_sid_map disables both; both items are in the
+                # snapshot/restore set, so the user's config comes back.
+                plan[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
+                if displaced := _SOCKET_ENABLE_ITEM.get(current_source or ""):
+                    plan[(CAT_SOCKETS, displaced)] = "Disabled"
                 reserved.add(core)
                 log.info(
                     "sid autoconfig: chip at $%04X (%s) → %s (filter curve %r, "
-                    "no matching physical socket)",
+                    "no matching physical socket)%s",
                     address,
                     required,
                     core,
                     curve,
+                    f" — displacing {current_source}" if displaced else "",
                 )
                 continue
 
@@ -195,6 +218,25 @@ def plan_sid_model_config(
         )
 
     return plan or None
+
+
+def required_models_for(
+    sid_model: str, header_models: Sequence[str | None], n_chips: int
+) -> tuple[str | None, ...]:
+    """The chip model each of `n_chips` chips requires under `sid_model`: the
+    tune's own per-chip PSID header models under ``"auto"``, the forced model
+    under an explicit ``"6581"``/``"8580"``, and nothing at all under ``"off"``
+    (which disables model matching entirely).
+
+    Padded and truncated to `n_chips` rather than trusting the header's own
+    length, because :func:`~c64cast.sid.sid_host_emu.detect_sid_addresses` can
+    resolve a different chip count than the header declares."""
+    if sid_model == "off":
+        return ()
+    if sid_model != "auto":
+        return tuple(sid_model for _ in range(n_chips))
+    models = tuple(header_models)[:n_chips]
+    return models + (None,) * (n_chips - len(models))
 
 
 def resolve_sid_model_cfg(cfg: Config) -> str:

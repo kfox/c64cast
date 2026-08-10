@@ -62,6 +62,7 @@ from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
 from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
 from .sid_panning import apply_panning, sources_for_addresses
+from .sid_resolved import log_resolved_audio
 from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
@@ -528,6 +529,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self.set_window_chip_order(panning.window_order)
         self._sid_session.fold(panning.originals)
         self._sid_session.fold(apply_volume(self.api, sources, self._sid_volume))
+        # No model requirement to check — an ASID stream carries no PSID header,
+        # so the line reports routing and audibility only.
+        log_resolved_audio(self.api, self._chip_addresses[: len(sources)])
 
     def _restore_config(self) -> None:
         self._sid_session.restore()

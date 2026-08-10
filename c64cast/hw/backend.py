@@ -370,6 +370,18 @@ class C64Backend(ABC):
         address."""
         raise BackendCapabilityError("get_device_info")
 
+    def describe_device(self) -> str:
+        """A human-readable identity for the connected unit — model, per-unit
+        serial, firmware — for the connect-time log, or ``""`` when the backend
+        can't tell. Best-effort: never raises.
+
+        Logged instead of relying on the connection target alone, because an IP
+        or serial-port path names an *endpoint*, not a unit: two devices can
+        trade addresses between runs, and a bug report carrying only the address
+        can't say which machine produced it (nor even, for the Ultimate family,
+        whether it was a U64 or a U2+)."""
+        return ""
+
     # ---- semantic write helpers ---------------------------------------
     # Pure writes presuming the standard C64 memory map + kernal IRQ chain.
     # Default impls raise here on the ABC; BufferedWriteBackend (which every
