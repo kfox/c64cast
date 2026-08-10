@@ -29,6 +29,7 @@ from typing import IO, Any, Literal
 
 from c64cast.hw import hw_provision
 from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
+from c64cast.sid import emusid_mixer
 
 from .config import ColorCfg, Config, ConfigError, LoadResult, resolve_recording_path
 from .orchestrator import OrchestratorError
@@ -1264,10 +1265,14 @@ def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnost
     ]
 
 
-# The Ultimate's emulated-SID enable lives here. Both U64 and U2+ expose it.
-_AUDIO_CONFIG_CATEGORY = "Audio Output Settings"
-_SID_LEFT_FIELD = "SID Left"
-_SID_RIGHT_FIELD = "SID Right"
+# The emulated-SID enable state. The category is registered by U2/U2+/U2+L
+# firmware only (the U64's internal SID lives elsewhere and is normally on) —
+# the probe below already stays quiet when the fields are absent, which is
+# exactly what a U64 answers. Canonical names live in
+# c64cast/sid/emusid_mixer.py, the module that drives this surface.
+_AUDIO_CONFIG_CATEGORY = emusid_mixer.CAT_EMUSID
+_SID_LEFT_FIELD = emusid_mixer.ITEM_ENABLE["emusid1"]
+_SID_RIGHT_FIELD = emusid_mixer.ITEM_ENABLE["emusid2"]
 
 
 def _wants_sid_audio(cfg: Config) -> tuple[bool, list[str]]:

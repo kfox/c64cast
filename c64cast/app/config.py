@@ -349,33 +349,34 @@ class Ultimate64Cfg:
             "choices": SID_MODEL_CHOICES,
         },
     )
-    # Applied live to the U64's Audio Mixer before playback and restored at
+    # Applied live to the device's SID mixer before playback and restored at
     # teardown, like sid_model. Panning is per audio SOURCE (socket / UltiSID
-    # core), so each tune chip is panned wherever it was routed — see
-    # c64cast/sid/sid_panning.py.
+    # core / U2+ emulated stereo SID), so each tune chip is panned wherever it
+    # was routed — see c64cast/sid/sid_panning.py.
     sid_panning: list[int | str] = field(
         default_factory=list,
         metadata={
-            "help": "Stereo pan per SID audio source, U64 only. Max 4 entries — "
-            "the U64 has one pan control per source (2 SID sockets + 2 UltiSID "
-            "cores), and entry N pans the Nth source the tune uses. Each entry "
-            "is an int -5..5 (negative = left, 0 = center) or a label ('Left 3', "
-            "'Center', 'Right 2'). Empty = auto spread: 1 source centered, "
-            "2 [-3, 3], 3 [0, -3, 3], 4 [-2, 2, -5, 5] — ordered so the primary "
-            "chip stays nearest center. Fewer positions exist without socketed "
-            "SIDs: with none, only the 2 UltiSID cores are pannable, so chips "
-            "beyond the 2nd share a pan.",
+            "help": "Stereo pan per SID audio source (U64, or the Ultimate II+'s "
+            "2 emulated stereo SIDs). Max 4 entries — one pan control per source "
+            "(the U64 has 2 SID sockets + 2 UltiSID cores), and entry N pans the "
+            "Nth source the tune uses. Each entry is an int -5..5 (negative = "
+            "left, 0 = center) or a label ('Left 3', 'Center', 'Right 2'). "
+            "Empty = auto spread: 1 source centered, 2 [-3, 3], 3 [0, -3, 3], "
+            "4 [-2, 2, -5, 5] — ordered so the primary chip stays nearest "
+            "center. Fewer positions exist without socketed SIDs: with none, "
+            "only the 2 FPGA sources are pannable, so chips beyond the 2nd "
+            "share a pan.",
         },
     )
-    # Applied live to the U64's Audio Mixer alongside sid_panning and restored
+    # Applied live to the device's SID mixer alongside sid_panning and restored
     # at teardown. Indexed by SOURCE exactly like sid_panning — see
     # c64cast/sid/sid_volume.py.
     sid_volume: list[int | str] = field(
         default_factory=list,
         metadata={
-            "help": "Mixer level per SID audio source, U64 only. Max 4 entries — "
-            "the U64 has one volume control per source (2 SID sockets + 2 UltiSID "
-            "cores), and entry N sets the Nth source the tune uses, same indexing "
+            "help": "Mixer level per SID audio source (U64, or the Ultimate II+'s "
+            "2 emulated stereo SIDs). Max 4 entries — one volume control per "
+            "source, and entry N sets the Nth source the tune uses, same indexing "
             "as sid_panning. Each entry is a dB int (0, -6, 3) or a label "
             "('0 dB', '-6 dB', 'off'). Empty = auto: a source the tune plays on is "
             "raised to 0 dB when it would otherwise be OFF (silent), a source "

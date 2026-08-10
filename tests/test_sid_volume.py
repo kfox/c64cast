@@ -216,5 +216,59 @@ class ApplyVolumeTest(unittest.TestCase):
         self.assertEqual(api.config_puts, [])
 
 
+EMU_CAT = "Audio Output Settings"
+
+
+def _u2plus_fake(mixer: dict[str, str] | None = None) -> FakeAPI:
+    api = FakeAPI.u2plus()
+    api.config_store[EMU_CAT] = dict(
+        mixer if mixer is not None else {"Vol EmuSid1": "OFF", "Vol EmuSid2": " 0 dB"}
+    )
+    return api
+
+
+class ApplyVolumeEmuSurfaceTest(unittest.TestCase):
+    """The same policy on the U2+ emulated-stereo-SID surface: the claimed
+    side becomes audible, the other side is muted, all under the emu category
+    — and the U64 items, absent from that category, are left alone."""
+
+    def test_claimed_side_up_spare_side_muted(self):
+        api = _u2plus_fake()
+
+        originals = sv.apply_volume(api, ("emusid1",), None)
+
+        self.assertEqual(api.config_store[EMU_CAT]["Vol EmuSid1"], " 0 dB")
+        self.assertEqual(api.config_store[EMU_CAT]["Vol EmuSid2"], "OFF")
+        self.assertEqual(
+            originals,
+            {(EMU_CAT, "Vol EmuSid1"): "OFF", (EMU_CAT, "Vol EmuSid2"): " 0 dB"},
+        )
+
+    def test_u64_items_are_never_planned_on_the_emu_surface(self):
+        api = _u2plus_fake()
+
+        sv.apply_volume(api, ("emusid1", "emusid2"), None)
+
+        self.assertFalse(any("Socket" in item for _cat, item, _v in api.config_puts))
+        self.assertFalse(any("UltiSid" in item for _cat, item, _v in api.config_puts))
+
+    def test_already_correct_emu_mixer_writes_nothing(self):
+        api = _u2plus_fake({"Vol EmuSid1": " 0 dB", "Vol EmuSid2": "OFF"})
+
+        self.assertEqual(sv.apply_volume(api, ("emusid1",), None), {})
+        self.assertEqual(api.config_puts, [])
+
+    def test_deliberate_trim_on_a_claimed_side_is_kept(self):
+        api = _u2plus_fake({"Vol EmuSid1": "-6 dB", "Vol EmuSid2": "OFF"})
+
+        self.assertEqual(sv.apply_volume(api, ("emusid1",), None), {})
+
+    def test_backend_with_neither_surface_is_a_no_op(self):
+        api = FakeAPI()  # default profile: no config surfaces at all
+
+        self.assertEqual(sv.apply_volume(api, ("emusid1",), None), {})
+        self.assertEqual(api.config_puts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

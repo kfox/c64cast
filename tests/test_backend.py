@@ -398,6 +398,20 @@ class SidConfigCapabilityTest(unittest.TestCase):
 
         self.assertFalse(TEENSYROM_PROFILE.supports_sid_config)
 
+    def test_emusid_category_matches_the_canonical_constant(self):
+        from c64cast.hw.backend import EMUSID_MIXER_CATEGORY
+        from c64cast.sid.emusid_mixer import CAT_EMUSID
+
+        self.assertEqual(EMUSID_MIXER_CATEGORY, CAT_EMUSID)
+
+    def test_no_profile_claims_the_emusid_surface_statically(self):
+        # Evidence-based, not optimistic: only refine_capabilities grants it,
+        # so an unprobed run keeps the pre-flag behavior on every backend.
+        from c64cast.hw.backend import TEENSYROM_PROFILE
+
+        self.assertFalse(ULTIMATE_PROFILE.supports_emusid_mixer)
+        self.assertFalse(TEENSYROM_PROFILE.supports_emusid_mixer)
+
     def test_default_no_op_refine_exists_on_the_abc(self):
         # cli/doctor call it on every backend after a successful probe; a
         # backend with nothing to refine must accept the call.

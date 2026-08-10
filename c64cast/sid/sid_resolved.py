@@ -22,6 +22,12 @@ one best-effort reader (:func:`log_resolved_audio`), like the rest of the SID
 hardware-config modules — and a REST failure logs nothing rather than crashing
 a scene.
 
+A backend without the multi-SID surface but with the U2+ emulated-stereo-SID
+surface renders from that instead (:func:`read_emusid_hardware_state`): the
+side snooping each chip, its filter curve as the model, and its mixer level
+and pan — with the declared host-SID verdict appended, because on such a
+device the host machine's own SID plays the tune too, on its own output.
+
 A backend that can't read the SID hardware state at all (TeensyROM has no
 config API) still gets a model-match verdict when the machine's chip is
 declared: ``[hardware].host_sid_model`` rides in on the backend profile, and
@@ -44,6 +50,7 @@ from .asid_sidmap import (
     ITEM_ULTISID2_FILTER,
     NO_MODEL_REQUIREMENT,
 )
+from .emusid_mixer import ITEM_FILTER, emusid_topology, read_emusid_category
 from .sid_hw_config import current_source_map, detect_socket_models
 from .sid_panning import CAT_MIXER, PAN_ITEM
 from .sid_volume import VOL_ITEM, VOL_OFF
@@ -76,7 +83,13 @@ class SidHardwareState:
     `addr_map` is ``{$Dxxx: source}`` per
     :func:`~c64cast.sid.sid_hw_config.current_source_map`, `socket_models` the
     detected chip per physical socket, `ultisid_curves` each FPGA core's filter
-    curve, and `mixer` the raw ``Audio Mixer`` category."""
+    curve, and `mixer` the raw ``Audio Mixer`` category.
+
+    The emulated-stereo-SID surface renders through the same shape
+    (:func:`read_emusid_hardware_state`): `addr_map` maps snooped addresses to
+    ``emusid1``/``emusid2``, `ultisid_curves` carries those sides' filter
+    curves, `socket_models` is empty, and `mixer` is the raw ``Audio Output
+    Settings`` category."""
 
     addr_map: dict[int, str]
     socket_models: tuple[str | None, str | None]
@@ -188,14 +201,17 @@ def describe_declared_audio(
     return ResolvedAudio(fragment, clean=True)
 
 
-def _log_declared_audio(api: C64Backend, address: int, required: str | None) -> None:
-    """Render the primary chip's verdict from ``[hardware].host_sid_model``
-    when the live state can't be read. Silent when no model is declared
-    (`host_sid_model = "unknown"`, or a profile predating the field)."""
+def _declared_host_verdict(
+    api: C64Backend, address: int, required: str | None
+) -> ResolvedAudio | None:
+    """The primary chip's verdict from ``[hardware].host_sid_model``, or None
+    when no model is declared (`host_sid_model = "unknown"`, or a profile
+    predating the field). Also logs the once-per-run note that the NTSC/PAL
+    convention is an assumption, the first time a verdict rides on it."""
     global _assumed_model_logged
     host_model = getattr(api.profile, "host_sid_model", None)
     if host_model is None:
-        return
+        return None
     assumed = bool(getattr(api.profile, "host_sid_model_assumed", False))
     if assumed and not _assumed_model_logged:
         _assumed_model_logged = True
@@ -205,7 +221,15 @@ def _log_declared_audio(api: C64Backend, address: int, required: str | None) -> 
             "[hardware].host_sid_model if it's wrong)",
             host_model,
         )
-    resolved = describe_declared_audio(host_model, assumed, address, required)
+    return describe_declared_audio(host_model, assumed, address, required)
+
+
+def _log_declared_audio(api: C64Backend, address: int, required: str | None) -> None:
+    """Render the primary chip's verdict from ``[hardware].host_sid_model``
+    when the live state can't be read. Silent when no model is declared."""
+    resolved = _declared_host_verdict(api, address, required)
+    if resolved is None:
+        return
     log_fn = log.info if resolved.clean else log.warning
     log_fn("sid hardware: %s", resolved.summary)
 
@@ -231,6 +255,25 @@ def read_sid_hardware_state(api: C64Backend) -> SidHardwareState | None:
     )
 
 
+def read_emusid_hardware_state(api: C64Backend) -> SidHardwareState | None:
+    """Read the emulated-stereo-SID surface into the same renderable shape
+    (best-effort; None on a backend without that surface or any read
+    failure). One category carries everything — topology, curves, and the
+    mixer items — so this is a single REST read."""
+    category = read_emusid_category(api)
+    if category is None:
+        return None
+    addr_map: dict[int, str] = {}
+    for source, address in emusid_topology(category).items():
+        addr_map.setdefault(address, source)  # emusid1 first, wins a shared address
+    return SidHardwareState(
+        addr_map=addr_map,
+        socket_models=(None, None),
+        ultisid_curves={source: category.get(item, "") for source, item in ITEM_FILTER.items()},
+        mixer=category,
+    )
+
+
 def log_resolved_audio(
     api: C64Backend,
     addresses: Sequence[int],
@@ -238,14 +281,31 @@ def log_resolved_audio(
 ) -> None:
     """Read the settled SID hardware state back and log what will be heard.
     Call once per scene setup, after routing/model/panning/volume have all been
-    applied. Best-effort and silent on any failure. A backend that *can't* read
-    SID state (no config API — as opposed to a capable one whose read failed
-    transiently) still renders the primary chip against the declared host
-    model (see :func:`describe_declared_audio`)."""
+    applied. Best-effort and silent on any failure.
+
+    A backend without the multi-SID surface renders from the emulated-stereo-
+    SID surface instead when it has one, with the declared host-SID verdict
+    appended — on such a device the host machine's own SID plays the tune too,
+    just on a different output than the snooped emulations. A backend that
+    can't read any SID state (no config API — as opposed to a capable one
+    whose read failed transiently) still renders the primary chip against the
+    declared host model alone (see :func:`describe_declared_audio`)."""
     if not addresses:
         return
+    required0 = required_models[0] if required_models else None
     if not getattr(api.profile, "supports_sid_config", False):
-        _log_declared_audio(api, addresses[0], required_models[0] if required_models else None)
+        state = read_emusid_hardware_state(api)
+        if state is None:
+            _log_declared_audio(api, addresses[0], required0)
+            return
+        resolved = describe_resolved_audio(state, addresses, required_models)
+        if (host := _declared_host_verdict(api, addresses[0], required0)) is not None:
+            resolved = ResolvedAudio(
+                summary=f"{resolved.summary}; {host.summary} on the machine's own audio output",
+                clean=resolved.clean and host.clean,
+            )
+        log_fn = log.info if resolved.clean else log.warning
+        log_fn("sid hardware: %s", resolved.summary)
         return
     state = read_sid_hardware_state(api)
     if state is None:

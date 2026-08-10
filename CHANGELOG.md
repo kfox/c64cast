@@ -49,6 +49,20 @@ the version and stamps it with the date.
 
 ### Added
 
+- **The Ultimate II+'s emulated stereo SIDs are now routed, panned, and
+  leveled like the U64 mixer.** The U2+'s audio jack carries two FPGA SID
+  emulations, each snooping one configurable bus address — and the stock
+  right-side base is not `$D420`, so a 2SID tune played half-silent with no
+  error anywhere (the host C64's own output can't help: a real SID answers
+  the whole `$D4xx-$D7xx` range, so multi-SID tunes collapse onto one chip
+  there). SID-playing scenes now retarget a spare *enabled* side to any
+  uncovered chip address, apply `sid_panning` / `sid_volume` to
+  `Pan/Vol EmuSid1/2`, and restore the user's config at teardown — a side
+  that was disabled is never touched. The resolved-audio line reads the same
+  surface back (`$D400 → emusid1 (6581) @ 0 dB Left 3`), with the declared
+  host-SID verdict appended, since the machine's own SID still plays the tune
+  on its own output.
+
 - **`[hardware].host_sid_model`** — declare the SID chip model in the C64 being
   driven (`auto` | `6581` | `8580` | `unknown`). On links that can't read the
   SID hardware state (TeensyROM has no config API), the resolved-audio line can

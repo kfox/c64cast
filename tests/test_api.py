@@ -1092,6 +1092,7 @@ class RefineCapabilitiesTest(unittest.TestCase):
     def test_u64_category_list_keeps_the_sid_surface(self):
         self._refine_with(_U64_CATEGORIES)
         self.assertTrue(self.api.profile.supports_sid_config)
+        self.assertFalse(self.api.profile.supports_emusid_mixer)
 
     def test_u2plus_category_list_revokes_the_sid_surface_with_one_line(self):
         with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
@@ -1100,6 +1101,23 @@ class RefineCapabilitiesTest(unittest.TestCase):
         info_lines = [r for r in cm.records if r.levelname == "INFO"]
         self.assertEqual(len(info_lines), 1)
         self.assertIn("no multi-SID config surface", info_lines[0].getMessage())
+
+    def test_u2plus_category_list_grants_the_emusid_surface(self):
+        # The one line also points at the surface that IS available, so the
+        # downgrade doesn't read as "no mixer control at all".
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self._refine_with(_U2PLUS_CATEGORIES)
+        self.assertTrue(self.api.profile.supports_emusid_mixer)
+        self.assertIn("emulated stereo-SID", cm.records[0].getMessage())
+
+    def test_no_surface_at_all_keeps_the_old_message(self):
+        # A device with neither surface (no known hardware, but the probe
+        # must not imply a mixer that isn't there).
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self._refine_with(["C64 and Cartridge Settings"])
+        self.assertFalse(self.api.profile.supports_sid_config)
+        self.assertFalse(self.api.profile.supports_emusid_mixer)
+        self.assertIn("mixer control are unavailable", cm.records[0].getMessage())
 
     def test_partial_surface_is_revoked(self):
         # All three categories make the surface; asid_sidmap's planners
@@ -1118,10 +1136,21 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self._refine_with("not-a-list")
         self.assertTrue(self.api.profile.supports_sid_config)
 
-    def test_already_revoked_makes_no_rest_call(self):
+    def test_already_revoked_still_probes_for_the_emusid_surface(self):
+        # The old contract skipped the REST call on an already-revoked
+        # profile; the emusid grant is evidence-based, so the read always
+        # happens now — and a second refine is idempotent, no re-log.
         self.api.profile = replace(self.api.profile, supports_sid_config=False)
+        self._refine_with(_U2PLUS_CATEGORIES)
+        self.assertFalse(self.api.profile.supports_sid_config)
+        self.assertTrue(self.api.profile.supports_emusid_mixer)
+
+    def test_read_failure_keeps_emusid_conservative_false(self):
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
         self.api.refine_capabilities()
-        self.get.assert_not_called()
+        self.assertFalse(self.api.profile.supports_emusid_mixer)
 
     def test_run_basic_clear_loop_posts_prg_and_swallows_failure(self):
         import requests

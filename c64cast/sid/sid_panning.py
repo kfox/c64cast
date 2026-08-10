@@ -25,10 +25,14 @@ plumbing (`apply_config`, `current_source_map`) rather than duplicating it.
 side-by-side chip windows run left-to-right across the stereo field and the
 picture matches what you hear.
 
-U64 only, best-effort — every function no-ops on a backend without a SID config
-API (TeensyROM), and a REST failure never crashes a scene. The scene folds the
-returned originals into its existing SID-config restore snapshot so the user's
-mixer is put back on teardown.
+The same planners drive the Ultimate II+'s emulated stereo SIDs: its two
+sides are the ``emusid1``/``emusid2`` sources (`Pan EmuSid1/2` under `Audio
+Output Settings` — topology in :mod:`c64cast.sid.emusid_mixer`), resolved per
+backend by :func:`mixer_category_for`. Ultimate-family only, best-effort —
+every function no-ops on a backend with neither mixer surface (TeensyROM),
+and a REST failure never crashes a scene. The scene folds the returned
+originals into its existing SID-config restore snapshot so the user's mixer
+is put back on teardown.
 """
 
 from __future__ import annotations
@@ -38,6 +42,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from .emusid_mixer import (
+    CAT_EMUSID,
+    PAN_ITEM_EMU,
+    emusid_sources_for_addresses,
+    read_emusid_category,
+)
 from .sid_hw_config import apply_config, current_source_map
 
 if TYPE_CHECKING:
@@ -45,15 +55,34 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Config category + per-source pan item names — must match the firmware exactly
-# (u64_config.cc / live GET). One pan item per mixable SID source.
+# Config category + per-source pan item names — must match the firmware
+# exactly (u64_config.cc / audio_select.cc / live GET). One pan item per
+# mixable SID source, across both surfaces: the U64's socket/UltiSID sources
+# live in `Audio Mixer`, the U2+'s emulated stereo SIDs in `Audio Output
+# Settings`. One merged map is safe because a backend only ever *derives*
+# its own surface's sources, and a planner probing the other surface's item
+# finds no current value and leaves it alone.
 CAT_MIXER: Final = "Audio Mixer"
 PAN_ITEM: Final[dict[str, str]] = {
     "socket1": "Pan Socket 1",
     "socket2": "Pan Socket 2",
     "ultisid1": "Pan UltiSID 1",
     "ultisid2": "Pan UltiSID 2",
+    **PAN_ITEM_EMU,
 }
+
+
+def mixer_category_for(api: C64Backend) -> str | None:
+    """The config category carrying this backend's SID mixer items, or None
+    when it has neither surface (TeensyROM, or an unprobed/unrefined run).
+    The two surfaces are mutually exclusive per device; checking the U64's
+    first keeps an unprobed Ultimate run on its pre-flag behavior."""
+    if getattr(api.profile, "supports_sid_config", False):
+        return CAT_MIXER
+    if getattr(api.profile, "supports_emusid_mixer", False):
+        return CAT_EMUSID
+    return None
+
 
 # Pan value space: int -5..+5 (negative = left) ↔ enum label. Index 0..10 of
 # PAN_LABELS maps to value PAN_MIN..PAN_MAX.
@@ -76,11 +105,14 @@ _LABEL_TO_VALUE: Final[dict[str, int]] = {
     lbl.lower(): PAN_MIN + i for i, lbl in enumerate(PAN_LABELS)
 }
 
-# The U64 has exactly one pan control per source, so at most this many distinct
-# pan positions exist — and a sid_panning list longer than this can never take
-# effect. The *achievable* count is lower without socketed SIDs: 2 UltiSID cores
-# + one per populated socket (_warn_if_sources_limited surfaces the shortfall).
-MAX_PANNED_SOURCES: Final = len(PAN_ITEM)
+# One pan control per source, so at most this many distinct pan positions
+# exist on any one device — and a sid_panning list longer than this can never
+# take effect. Pinned to the U64's source count (2 sockets + 2 UltiSID cores),
+# NOT len(PAN_ITEM): the merged map spans both surfaces, but no device carries
+# more than 4. The *achievable* count is lower without socketed SIDs — 2
+# UltiSID cores, or the U2+'s 2 emulated stereo SIDs
+# (_warn_if_sources_limited surfaces the shortfall).
+MAX_PANNED_SOURCES: Final = 4
 
 # Default stereo spreads by pannable-source count, ordered by musical
 # importance rather than as a uniform fan: an odd count puts the primary chip
@@ -235,28 +267,37 @@ def window_order_for_pans(chip_pans: Sequence[int]) -> tuple[int, ...]:
 
 
 def plan_sid_panning(
-    sources: Sequence[str | None], pans: Sequence[int]
+    sources: Sequence[str | None], pans: Sequence[int], category: str = CAT_MIXER
 ) -> dict[tuple[str, str], str]:
     """Pure planner: the mixer PUT that pans each source the tune uses.
-    ``sources[i]`` is the audio source (``"socket1"``/``"socket2"``/
-    ``"ultisid1"``/``"ultisid2"``) playing tune chip *i*; ``pans[k]`` is the
-    position of the *k*-th distinct source claimed. Returns
-    ``{(CAT_MIXER, "Pan <Source>"): <label>}``.
+    ``sources[i]`` is the audio source (``"socket1"``/``"ultisid1"``/…/
+    ``"emusid1"``/``"emusid2"``) playing tune chip *i*; ``pans[k]`` is the
+    position of the *k*-th distinct source claimed; `category` is the config
+    category carrying this backend's pan items
+    (:func:`mixer_category_for`). Returns
+    ``{(category, "Pan <Source>"): <label>}``.
 
     A chip on no pannable source is skipped. Chips sharing one source (two split
     instances of a single UltiSID core) share its one pan control."""
     return {
-        (CAT_MIXER, PAN_ITEM[source]): pan_to_label(pan)
+        (category, PAN_ITEM[source]): pan_to_label(pan)
         for source, pan in source_pans(sources, pans).items()
     }
 
 
 def sources_for_addresses(api: C64Backend, addresses: Sequence[int]) -> tuple[str | None, ...]:
-    """Which mixer source currently answers each of `addresses` (tune-chip
-    order), via :func:`c64cast.sid.sid_hw_config.current_source_map`. Used for the
-    non-remapped single-SID case, where no :class:`~c64cast.sid.asid_sidmap.SidMap`
-    supplies the source ordering (best-effort; ``None`` per address on a read
-    failure or an address nothing answers)."""
+    """Which mixer source currently plays each of `addresses` (tune-chip
+    order) — the U64's live address map
+    (:func:`c64cast.sid.sid_hw_config.current_source_map`), or on the emulated-
+    stereo-SID surface whichever enabled side snoops each address. Used
+    wherever no :class:`~c64cast.sid.asid_sidmap.SidMap` supplies the source
+    ordering (best-effort; ``None`` per address on a read failure or an
+    address nothing answers)."""
+    if not getattr(api.profile, "supports_sid_config", False):
+        category = read_emusid_category(api)
+        if category is None:
+            return (None,) * len(addresses)
+        return emusid_sources_for_addresses(addresses, category)
     src_map = current_source_map(api)
     return tuple(src_map.get(a) for a in addresses)
 
@@ -277,11 +318,12 @@ def _warn_if_sources_limited(
         socketed = [s for s in claimed if s.startswith("socket")]
         # "not in use" rather than "not present": model-aware routing skips a
         # populated socket whose chip is the wrong model for the tune.
-        why = (
-            "no socketed SID in use, so only the 2 UltiSID cores are pannable"
-            if not socketed
-            else f"{len(claimed)} pannable source(s) in use"
-        )
+        if any(s.startswith("emusid") for s in claimed):
+            why = "only the 2 emulated stereo SIDs are pannable on this device"
+        elif not socketed:
+            why = "no socketed SID in use, so only the 2 UltiSID cores are pannable"
+        else:
+            why = f"{len(claimed)} pannable source(s) in use"
         log.warning(
             "sid panning: %d SID chips but only %d distinct pan position(s) "
             "available (%s) — chips sharing a source share its pan",
@@ -301,9 +343,10 @@ def _warn_if_sources_limited(
 def apply_panning(
     api: C64Backend, sources: Sequence[str | None], configured: Sequence[int | str] | None
 ) -> SidPanning:
-    """Resolve, apply, and report the panning for a tune (U64 only,
-    best-effort). `sources` is the audio source playing each chip, in chip
-    order; `configured` is ``[ultimate64].sid_panning``.
+    """Resolve, apply, and report the panning for a tune (best-effort; a
+    no-op on a backend with neither mixer surface). `sources` is the audio
+    source playing each chip, in chip order; `configured` is
+    ``[ultimate64].sid_panning``.
 
     Reads the current pan items once and writes only the sources whose pan
     actually differs, so an already-correct configuration (a centered single-SID
@@ -311,7 +354,8 @@ def apply_panning(
     restore set — nothing to put back on teardown. The returned
     :class:`SidPanning` carries the originals for the caller's restore snapshot
     plus the scope's left-to-right column order."""
-    if not getattr(api.profile, "supports_sid_config", False):
+    category = mixer_category_for(api)
+    if category is None:
         return SidPanning.identity(len(sources))
 
     pans = resolve_panning(configured, len(distinct_sources(sources)), len(sources))
@@ -324,11 +368,11 @@ def apply_panning(
             ", ".join(f"chip {chip} ({pan_to_label(chip_pans[chip])})" for chip in window_order),
         )
 
-    desired = plan_sid_panning(sources, pans)
+    desired = plan_sid_panning(sources, pans, category)
     if not desired:
         return SidPanning.identity(len(sources))
     try:
-        mixer = api.get_config_category(CAT_MIXER)
+        mixer = api.get_config_category(category)
     except Exception:
         log.debug("sid panning: mixer read failed — skipping", exc_info=True)
         return SidPanning.identity(len(sources))

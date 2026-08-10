@@ -60,6 +60,7 @@ from c64cast.video.palette import C64_COLORS
 from . import asid
 from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
+from .emusid_mixer import apply_emusid_routing
 from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import log_resolved_audio
@@ -516,14 +517,19 @@ class AsidScene(VoiceScopeRenderer, Scene):
         return sources_for_addresses(self.api, self._chip_addresses[:n])
 
     def _apply_sid_mixer(self, sid_map: SidMap | None = None) -> None:
-        """Pan the active SID chips across the U64 mixer's stereo field and make
+        """Pan the active SID chips across the mixer's stereo field and make
         every source they landed on audible ([ultimate64].sid_panning /
         sid_volume). Called at setup for the initial single chip and again after
         every remap, so both track the current chip count — a stream growing
         past 2 chips spills onto UltiSID cores, which are inaudible on a machine
-        whose mixer leaves them at OFF. Originals fold into the same snapshot
-        teardown restores, and the scope's columns are reordered to run
-        left-to-right across the stereo field."""
+        whose mixer leaves them at OFF. On the emulated-stereo-SID surface
+        (U2+) the routing step first points a spare enabled side at any
+        uncovered chip address. Originals fold into the same snapshot teardown
+        restores, and the scope's columns are reordered to run left-to-right
+        across the stereo field."""
+        n = sid_map.n if sid_map is not None else self._active_chips
+        addresses = self._chip_addresses[:n]
+        self._sid_session.fold(apply_emusid_routing(self.api, addresses))
         sources = self._sid_sources(sid_map)
         panning = apply_panning(self.api, sources, self._sid_panning)
         self.set_window_chip_order(panning.window_order)
@@ -531,7 +537,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._sid_session.fold(apply_volume(self.api, sources, self._sid_volume))
         # No model requirement to check — an ASID stream carries no PSID header,
         # so the line reports routing and audibility only.
-        log_resolved_audio(self.api, self._chip_addresses[: len(sources)])
+        log_resolved_audio(self.api, addresses)
 
     def _restore_config(self) -> None:
         self._sid_session.restore()

@@ -58,6 +58,7 @@ from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
+from .emusid_mixer import apply_emusid_routing
 from .sid_autoconfig import plan_model_config_for_header, required_models_for
 
 # SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
@@ -932,10 +933,26 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         NO REST traffic at all, not a snapshot-then-restore-to-the-same-values
         round trip.
 
-        All of it is a no-op on a backend without a SID config API (TeensyROM) —
-        the scope still shows every chip; only $D400 sounds there. Best-
-        effort throughout; a REST failure never aborts the scene."""
+        On a backend with the emulated-stereo-SID surface instead (U2+), the
+        routing step is :func:`~c64cast.sid.emusid_mixer.apply_emusid_routing` —
+        retarget a spare enabled side to any uncovered chip address — and
+        panning/volume ride the same calls as the U64 path. On a backend with
+        neither surface (TeensyROM) all of it is a no-op — the scope still
+        shows every chip; only $D400 sounds there. Best-effort throughout; a
+        REST failure never aborts the scene."""
         if not getattr(self.api.profile, "supports_sid_config", False):
+            if getattr(self.api.profile, "supports_emusid_mixer", False):
+                self._sid_session.fold(apply_emusid_routing(self.api, self._sid_addresses))
+                if self._sid_model != "off":
+                    log.info(
+                        "sid autoconfig: mode=%s but this backend has no "
+                        "chip-model surface — cannot verify or correct chip model",
+                        self._sid_model,
+                    )
+                self._apply_sid_panning(None)
+                self._apply_sid_volume(None)
+                log_resolved_audio(self.api, self._sid_addresses, self._required_sid_models())
+                return
             if self._n_sids >= 2:
                 log.info(
                     "waveform: %d-SID tune but backend has no SID config API — "

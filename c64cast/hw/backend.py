@@ -113,6 +113,13 @@ class HardwareProfile:
     #   socket detection, UltiSID model curves — see SID_CONFIG_CATEGORIES).
     #   Narrower than supports_config: the Ultimate II+ has the config API but
     #   none of these categories (emulated stereo SIDs, no sockets or cores).
+    supports_emusid_mixer: bool = False  # the U2+ emulated stereo SID surface
+    #   (snoop routing + Vol/Pan EmuSid mixer — see EMUSID_MIXER_CATEGORY).
+    #   Mutually exclusive with supports_sid_config in practice: the two
+    #   firmwares register different categories. Granted by
+    #   refine_capabilities from the device's category list, so it stays
+    #   False on an unprobed run (which then behaves exactly as before the
+    #   flag existed).
     supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
@@ -156,6 +163,14 @@ SID_CONFIG_CATEGORIES = (
     "SID Sockets Configuration",
     "UltiSID Configuration",
 )
+
+# The one category carrying the U2+ emulated-stereo-SID surface (snoop
+# topology + Vol/Pan EmuSid mixer). Registered only by the U2/U2+/U2+L
+# firmware (audio_select.cc) — the U64 registers "Audio Mixer" instead — so
+# presence in GET /v1/configs is a clean per-device test, same rationale as
+# SID_CONFIG_CATEGORIES above. tests/test_backend.py pins this to the
+# canonical constant in c64cast/sid/emusid_mixer.py (hw must not import sid).
+EMUSID_MIXER_CATEGORY = "Audio Output Settings"
 
 # The Ultimate family (Ultimate 64, Ultimate II+). The two are protocol-
 # equivalent for c64cast's purposes, so they share one profile for now;

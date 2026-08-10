@@ -27,8 +27,15 @@ derivation is shared, not duplicated: `sid_panning.distinct_sources` decides
 which sources a tune claims and in what order, so the ``sid_volume`` list is
 indexed exactly like ``sid_panning`` — entry *k* is the *k*-th source claimed.
 
-U64 only, best-effort — a no-op on a backend without a SID config API
-(TeensyROM), and a REST failure never crashes a scene.
+The same semantics drive the Ultimate II+'s emulated stereo SIDs (`Vol
+EmuSid1/2` under `Audio Output Settings` — topology in
+:mod:`c64cast.sid.emusid_mixer`): each tune chip's primary side is made
+audible and every other side is muted — including a redundant mirror side
+snooping an address the primary already covers, so a tune renders once,
+predictably, and the user's doubling comes back at teardown with the rest of
+the restore set. Ultimate-family only, best-effort — a no-op on a backend
+with neither mixer surface (TeensyROM), and a REST failure never crashes a
+scene.
 
 Two firmware naming traps, both confirmed live via
 ``GET /v1/configs/Audio%20Mixer``:
@@ -47,8 +54,9 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
+from .emusid_mixer import VOL_ITEM_EMU
 from .sid_hw_config import apply_config
-from .sid_panning import CAT_MIXER, distinct_sources
+from .sid_panning import CAT_MIXER, distinct_sources, mixer_category_for
 
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
@@ -58,12 +66,15 @@ log = logging.getLogger(__name__)
 # Per-source volume item names — must match the firmware exactly (see the
 # module docstring's note on `UltiSid` vs `UltiSID`). One per mixable SID
 # source, keyed identically to sid_panning.PAN_ITEM so the two share
-# `distinct_sources` for source derivation.
+# `distinct_sources` for source derivation. Spans both surfaces like
+# PAN_ITEM does; safe for the same reason (a planner probing the other
+# surface's item finds no current value and leaves it alone).
 VOL_ITEM: Final[dict[str, str]] = {
     "socket1": "Vol Socket 1",
     "socket2": "Vol Socket 2",
     "ultisid1": "Vol UltiSid 1",
     "ultisid2": "Vol UltiSid 2",
+    **VOL_ITEM_EMU,
 }
 
 # The mixer's level enum, in firmware order. NOT a uniform 1 dB ladder: it is
@@ -109,9 +120,11 @@ _VALID_DB: Final[tuple[int, ...]] = tuple(
     int(label.strip().removesuffix(" dB")) for label in VOL_LABELS if label != VOL_OFF
 )
 
-# One volume control per source, so a sid_volume list longer than this can never
-# take effect (config load rejects it) — same ceiling as sid_panning.
-MAX_VOLUME_SOURCES: Final = len(VOL_ITEM)
+# One volume control per source, so a sid_volume list longer than this can
+# never take effect (config load rejects it) — same ceiling as sid_panning,
+# and pinned to 4 for the same reason (the merged VOL_ITEM spans both
+# surfaces, but no device carries more than 4 sources).
+MAX_VOLUME_SOURCES: Final = 4
 
 
 def _db_to_label(db: int) -> str:
@@ -197,14 +210,19 @@ def target_level(*, in_use: bool, configured: str | None, current: str | None) -
 
 
 def plan_sid_volume(
-    sources: Sequence[str | None], levels: Sequence[str | None], current: dict[str, str]
+    sources: Sequence[str | None],
+    levels: Sequence[str | None],
+    current: dict[str, str],
+    category: str = CAT_MIXER,
 ) -> dict[tuple[str, str], str]:
     """Pure planner: the mixer PUT that makes the tune's sources audible and
     mutes the rest. ``sources[i]`` is the audio source playing tune chip *i*;
     ``levels[k]`` is the configured level of the *k*-th distinct source claimed
-    (``None`` = auto); `current` is the live ``Audio Mixer`` category. Returns
-    ``{(CAT_MIXER, "Vol <Source>"): <label>}`` covering every source whose level
-    should change from `current`."""
+    (``None`` = auto); `current` is the live mixer category and `category` its
+    name (:func:`~c64cast.sid.sid_panning.mixer_category_for`). Returns
+    ``{(category, "Vol <Source>"): <label>}`` covering every source whose level
+    should change from `current` — sources belonging to the other surface are
+    absent from `current`, so they are left alone."""
     claimed = distinct_sources(sources)
     configured_by_source = dict(zip(claimed, levels, strict=False))
     plan = {}
@@ -215,22 +233,24 @@ def plan_sid_volume(
             current=current.get(item),
         )
         if level is not None:
-            plan[(CAT_MIXER, item)] = level
+            plan[(category, item)] = level
     return plan
 
 
 def apply_volume(
     api: C64Backend, sources: Sequence[str | None], configured: Sequence[int | str] | None
 ) -> dict[tuple[str, str], str]:
-    """Resolve and apply the mixer levels for a tune (U64 only, best-effort).
-    `sources` is the audio source playing each chip, in chip order; `configured`
-    is ``[ultimate64].sid_volume``. Returns the ``{(category, item): value}``
+    """Resolve and apply the mixer levels for a tune (best-effort; a no-op on
+    a backend with neither mixer surface). `sources` is the audio source
+    playing each chip, in chip order; `configured` is
+    ``[ultimate64].sid_volume``. Returns the ``{(category, item): value}``
     originals for the caller's restore snapshot — empty when nothing changed.
 
     Reads the mixer once and writes only the sources whose level actually
     differs, so a rig already configured the way the tune wants does no writes
     and leaves nothing to put back at teardown."""
-    if not getattr(api.profile, "supports_sid_config", False):
+    category = mixer_category_for(api)
+    if category is None:
         return {}
     claimed = distinct_sources(sources)
     if not claimed:
@@ -240,12 +260,12 @@ def apply_volume(
         return {}
 
     try:
-        mixer = api.get_config_category(CAT_MIXER)
+        mixer = api.get_config_category(category)
     except Exception:
         log.debug("sid volume: mixer read failed — skipping", exc_info=True)
         return {}
 
-    desired = plan_sid_volume(sources, resolve_volumes(configured, len(claimed)), mixer)
+    desired = plan_sid_volume(sources, resolve_volumes(configured, len(claimed)), mixer, category)
     changes = {key: label for key, label in desired.items() if mixer.get(key[1]) != label}
     if not changes:
         log.info("sid volume: mixer already at the target — no change")

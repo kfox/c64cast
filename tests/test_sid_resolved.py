@@ -281,5 +281,82 @@ class LogDeclaredAudioTest(unittest.TestCase):
         self.assertIn("host SID (6581 declared)", cm.records[-1].getMessage())
 
 
+class EmuSurfaceResolvedTest(unittest.TestCase):
+    """log_resolved_audio on the emulated-stereo-SID surface: the verdict
+    names the snooping side, its filter curve as the model, and its mixer
+    level/pan — with the declared host-SID verdict appended, because the host
+    machine's own SID plays the tune too, on its own output."""
+
+    def setUp(self):
+        sr._assumed_model_logged = False
+
+    def _api(self, *, host_model: str | None = None, curve: str = "6581") -> FakeAPI:
+        from dataclasses import replace
+
+        api = FakeAPI.u2plus()
+        api.config_store["Audio Output Settings"] = {
+            "SID Left": "Enabled",
+            "SID Left Base": "Snoop $D400",
+            "SID Left Filter Curve": curve,
+            "SID Right": "Enabled",
+            "SID Right Base": "Snoop $D420",
+            "SID Right Filter Curve": curve,
+            "Vol EmuSid1": " 0 dB",
+            "Vol EmuSid2": " 0 dB",
+            "Pan EmuSid1": "Left 3",
+            "Pan EmuSid2": "Right 3",
+        }
+        if host_model is not None:
+            api.profile = replace(api.profile, host_sid_model=host_model)
+        return api
+
+    def test_state_reads_topology_curves_and_mixer(self):
+        state = sr.read_emusid_hardware_state(self._api())
+        assert state is not None
+        self.assertEqual(state.addr_map, {0xD400: "emusid1", 0xD420: "emusid2"})
+        self.assertEqual(state.model_of("emusid1"), "6581")
+        self.assertEqual(state.level_of("emusid2"), " 0 dB")
+        self.assertEqual(state.pan_of("emusid2"), "Right 3")
+
+    def test_clean_2sid_renders_both_sides_at_info(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(), (0xD400, 0xD420), ("6581", "6581"))
+        self.assertEqual(cm.records[-1].levelname, "INFO")
+        message = cm.records[-1].getMessage()
+        self.assertIn("$D400 → emusid1 (6581)", message)
+        self.assertIn("$D420 → emusid2 (6581)", message)
+
+    def test_declared_host_verdict_is_appended(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="6581"), (0xD400,), ("6581",))
+        message = cm.records[-1].getMessage()
+        self.assertIn("host SID (6581 declared)", message)
+        self.assertIn("machine's own audio output", message)
+
+    def test_wrong_curve_warns(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(curve="6581"), (0xD400,), ("8580",))
+        self.assertEqual(cm.records[-1].levelname, "WARNING")
+        self.assertIn("tune wants 8580", cm.records[-1].getMessage())
+
+    def test_host_mismatch_alone_still_warns(self):
+        # The jack sounds right (8580 curve) but the machine's own SID is a
+        # declared 6581 — someone listening to the C64's output hears the
+        # mismatch, so the combined verdict stays a WARNING.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="6581", curve="8580"), (0xD400,), ("8580",))
+        self.assertEqual(cm.records[-1].levelname, "WARNING")
+
+    def test_unreadable_surface_falls_back_to_declared(self):
+        from dataclasses import replace
+
+        api = FakeAPI.u2plus()  # empty category = firmware's missing-category answer
+        api.profile = replace(api.profile, host_sid_model="6581")
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400,), ("6581",))
+        self.assertIn("host SID (6581 declared)", cm.records[-1].getMessage())
+        self.assertNotIn("emusid", cm.records[-1].getMessage())
+
+
 if __name__ == "__main__":
     unittest.main()

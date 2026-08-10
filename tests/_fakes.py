@@ -153,6 +153,22 @@ class FakeAPI:
         )
         return api
 
+    @classmethod
+    def u2plus(cls) -> FakeAPI:
+        """A FakeAPI presenting as a refined Ultimate II+: config API present,
+        no multi-SID surface, emulated-stereo-SID surface granted (the state
+        refine_capabilities leaves a real U2+ in). Seed
+        `config_store["Audio Output Settings"]` to model the topology."""
+        api = cls()
+        api.profile = HardwareProfile(
+            name="Fake U2+",
+            family="fake",
+            supports_config=True,
+            supports_sid_config=False,
+            supports_emusid_mixer=True,
+        )
+        return api
+
     def write_memory(self, addr, data_hex):
         self.memories[str(addr).upper()] = data_hex
         self.ops.append(("write_memory", str(addr).upper(), data_hex))

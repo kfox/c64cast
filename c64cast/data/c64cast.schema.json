@@ -135,12 +135,12 @@
         },
         "sid_panning": {
           "type": "array",
-          "description": "Stereo pan per SID audio source, U64 only. Max 4 entries \u2014 the U64 has one pan control per source (2 SID sockets + 2 UltiSID cores), and entry N pans the Nth source the tune uses. Each entry is an int -5..5 (negative = left, 0 = center) or a label ('Left 3', 'Center', 'Right 2'). Empty = auto spread: 1 source centered, 2 [-3, 3], 3 [0, -3, 3], 4 [-2, 2, -5, 5] \u2014 ordered so the primary chip stays nearest center. Fewer positions exist without socketed SIDs: with none, only the 2 UltiSID cores are pannable, so chips beyond the 2nd share a pan.",
+          "description": "Stereo pan per SID audio source (U64, or the Ultimate II+'s 2 emulated stereo SIDs). Max 4 entries \u2014 one pan control per source (the U64 has 2 SID sockets + 2 UltiSID cores), and entry N pans the Nth source the tune uses. Each entry is an int -5..5 (negative = left, 0 = center) or a label ('Left 3', 'Center', 'Right 2'). Empty = auto spread: 1 source centered, 2 [-3, 3], 3 [0, -3, 3], 4 [-2, 2, -5, 5] \u2014 ordered so the primary chip stays nearest center. Fewer positions exist without socketed SIDs: with none, only the 2 FPGA sources are pannable, so chips beyond the 2nd share a pan.",
           "default": []
         },
         "sid_volume": {
           "type": "array",
-          "description": "Mixer level per SID audio source, U64 only. Max 4 entries \u2014 the U64 has one volume control per source (2 SID sockets + 2 UltiSID cores), and entry N sets the Nth source the tune uses, same indexing as sid_panning. Each entry is a dB int (0, -6, 3) or a label ('0 dB', '-6 dB', 'off'). Empty = auto: a source the tune plays on is raised to 0 dB when it would otherwise be OFF (silent), a source already at a deliberate level is left alone, and every source the tune does not use is muted. The ladder is sparse below -18 dB: -42, -36, -30, -27, -24, then every dB from -18 to +6.",
+          "description": "Mixer level per SID audio source (U64, or the Ultimate II+'s 2 emulated stereo SIDs). Max 4 entries \u2014 one volume control per source, and entry N sets the Nth source the tune uses, same indexing as sid_panning. Each entry is a dB int (0, -6, 3) or a label ('0 dB', '-6 dB', 'off'). Empty = auto: a source the tune plays on is raised to 0 dB when it would otherwise be OFF (silent), a source already at a deliberate level is left alone, and every source the tune does not use is muted. The ladder is sparse below -18 dB: -42, -36, -30, -27, -24, then every dB from -18 to +6.",
           "default": []
         }
       }
