@@ -14,6 +14,16 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **The Ultimate II+'s Ultimate Audio sampler is detected again.** The sampler
+  probe read the mixer volumes from the U64's `Audio Mixer` config category; the
+  U2+ carries the same `Vol Sampler L/R` fields in `Audio Output Settings`, and
+  its firmware answers a query for a category it doesn't have with an empty
+  success rather than an error — so the probe concluded the sampler was absent
+  and silently downgraded video audio to the 4-bit `$D418` DAC even with the
+  sampler mapped and audible. The probe now searches both categories and every
+  mixer write (including the teardown restore) follows the one the device
+  actually carries.
+
 - **A tune routed onto an UltiSID core to match its chip model is now actually
   audible.** SID Player Autoconfig pointed a core at the chip's address and set
   its filter curve, but left `Auto Address Mirroring` on and left the physical
