@@ -9,8 +9,9 @@ chip addresses, and both must put the user's config back afterward.
 
 Every function is best-effort and swallows REST errors (logging at debug/warn):
 a config read/write failure must never crash a scene. All are gated by the
-caller on ``api.profile.supports_config`` (U64 only; TeensyROM has no config
-API — the display still works, chip 0 stays audible).
+caller on ``api.profile.supports_sid_config`` (U64 only: TeensyROM has no
+config API, and the Ultimate II+ has a config API without any of these
+categories — the display still works, chip 0 stays audible).
 """
 
 from __future__ import annotations

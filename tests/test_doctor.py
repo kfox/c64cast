@@ -36,6 +36,7 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
     before driving the probe — one builder instead of the same seven-line
     block in every connectivity test."""
     from c64cast.hw.api import Ultimate64API
+    from c64cast.hw.backend import ULTIMATE_PROFILE
 
     with mock.patch.object(Ultimate64API, "__init__", return_value=None):
         api_instance = Ultimate64API.__new__(Ultimate64API)
@@ -43,6 +44,9 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
         api_instance.session = mock.MagicMock()
         api_instance.probe = mock.MagicMock(return_value="HTTP 200")
         api_instance.close = mock.MagicMock()
+        # The real __init__ always sets a profile; refine_capabilities (run
+        # by _probe_one_system after a successful probe) reads it.
+        api_instance.profile = ULTIMATE_PROFILE
         with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
             yield api_instance
 
@@ -954,7 +958,9 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
     def test_auto_with_no_calibration_is_ok(self):
         cfg = self._cfg("auto")
         api = FakeAPI()
-        api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=True)
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
         diags = doctor._probe_dac_calibration_status("sys", cfg, api)
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "ok")
@@ -963,7 +969,9 @@ class DacCalibrationStatusProbeTest(unittest.TestCase):
     def test_calibrated_missing_is_error_with_hint(self):
         cfg = self._cfg("calibrated")
         api = FakeAPI()
-        api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=True)
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
         diags = doctor._probe_dac_calibration_status("sys", cfg, api)
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].level, "error")

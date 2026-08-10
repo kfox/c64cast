@@ -109,6 +109,10 @@ class HardwareProfile:
     supports_run_crt: bool = True  # launch a CRT (cartridge)
     supports_reu: bool = True  # REU writes (use_reu_pump / use_reu_staged)
     supports_config: bool = False  # writable/readable device config API (Ultimate REST)
+    supports_sid_config: bool = False  # the U64 multi-SID config surface (SID routing,
+    #   socket detection, UltiSID model curves — see SID_CONFIG_CATEGORIES).
+    #   Narrower than supports_config: the Ultimate II+ has the config API but
+    #   none of these categories (emulated stereo SIDs, no sockets or cores).
     supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
@@ -125,6 +129,33 @@ class HardwareProfile:
     # ---- C64 memory map assumptions ------------------------------------
     audio_ring_addr: int = 0x4000  # base of the audio DAC ring buffer
 
+    # ---- host machine declarations --------------------------------------
+    # The SID model in the C64 being driven — a property of the machine, not
+    # the link, but carried here (resolved by make_backend from
+    # [hardware].host_sid_model) because its consumer, the resolved-audio
+    # verdict, already holds a backend and nothing else machine-scoped.
+    # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
+    # convention rather than a user declaration, so the verdict can say so.
+    host_sid_model: str | None = None
+    host_sid_model_assumed: bool = False
+
+
+# The three REST config categories that make up the U64 multi-SID surface —
+# address routing, socket enables/detection, UltiSID model curves. A device
+# qualifies for `supports_sid_config` only when it exposes ALL of them; the
+# Ultimate II+ exposes none (its emulated stereo SIDs live under "Audio
+# Output Settings" with a different topology). refine_capabilities checks
+# these against GET /v1/configs — deliberately NOT against the product
+# string from /v1/info: the category list is the actual contract and tracks
+# firmware differences within one product, the product string is
+# presentation. tests/test_backend.py pins these to the canonical constants
+# in c64cast/sid/asid_sidmap.py, which can't be imported from here (hw must
+# not depend on sid).
+SID_CONFIG_CATEGORIES = (
+    "SID Addressing",
+    "SID Sockets Configuration",
+    "UltiSID Configuration",
+)
 
 # The Ultimate family (Ultimate 64, Ultimate II+). The two are protocol-
 # equivalent for c64cast's purposes, so they share one profile for now;
@@ -143,6 +174,10 @@ ULTIMATE_PROFILE = HardwareProfile(
     supports_run_crt=True,
     supports_reu=True,
     supports_config=True,  # REST config API (/v1/configs) — live SID address map, REU, sampler
+    supports_sid_config=True,  # optimistic: the whole family claims the U64 multi-SID
+    #   surface here, and refine_capabilities revokes it at connect on a device
+    #   without the categories (U2+). Optimistic so an unprobed run (--skip-probe,
+    #   probe failure) behaves exactly as before this flag existed.
     supports_sampler=True,  # "Ultimate Audio" FPGA PCM sampler (gated by probe)
     reu_bus_clean=True,  # U64 REUWRITE is an ARM-side memcpy; no bus halt
     writes_are_acked=False,  # socket DMAWRITE is fire-and-forget
@@ -174,6 +209,7 @@ TEENSYROM_PROFILE = HardwareProfile(
     supports_run_crt=True,  # RemoteLaunch handles CRT launch
     supports_reu=False,  # no REUWRITE opcode
     supports_config=False,  # no device config API (Ultimate-only REST surface)
+    supports_sid_config=False,  # no config API at all, so no SID config surface
     supports_sampler=False,  # no FPGA PCM sampler (Ultimate-only feature)
     reu_bus_clean=False,
     writes_are_acked=True,  # every write returns Ack/Fail -> flush ~free
@@ -357,8 +393,10 @@ class C64Backend(ABC):
         """Read one device config category as ``{item_name: current_value}``
         (Ultimate REST: ``GET /v1/configs/<category>``). Default raises — only
         the Ultimate exposes a readable config surface. Callers gate on
-        ``profile.supports_config`` first (AsidScene reads the SID socket
-        detection + snapshots the SID address map to restore on teardown)."""
+        ``profile.supports_config`` first — or on ``profile.supports_sid_config``
+        when the category is part of the U64 multi-SID surface (AsidScene reads
+        the SID socket detection + snapshots the SID address map to restore on
+        teardown)."""
         raise BackendCapabilityError("get_config_category")
 
     def get_device_info(self, *, timeout: float = 3.0) -> dict[str, str]:
@@ -369,6 +407,29 @@ class C64Backend(ABC):
         the device's stable ``unique_id`` instead of its (DHCP-mutable) host
         address."""
         raise BackendCapabilityError("get_device_info")
+
+    def describe_device(self) -> str:
+        """A human-readable identity for the connected unit — model, per-unit
+        serial, firmware — for the connect-time log, or ``""`` when the backend
+        can't tell. Best-effort: never raises.
+
+        Logged instead of relying on the connection target alone, because an IP
+        or serial-port path names an *endpoint*, not a unit: two devices can
+        trade addresses between runs, and a bug report carrying only the address
+        can't say which machine produced it (nor even, for the Ultimate family,
+        whether it was a U64 or a U2+)."""
+        return ""
+
+    def refine_capabilities(self) -> None:
+        """Downgrade optimistic profile capability flags against the connected
+        device — the same probe-and-downgrade `TeensyROMBackend` applies to
+        `supports_read` at connect, hooked here for backends whose probe can't
+        run in ``__init__`` (the Ultimate's REST side isn't proven reachable
+        until the CLI's startup probe succeeds). Callers invoke it only on
+        that already-proven path, never under ``--skip-probe``. Best-effort:
+        an override that can't read the device keeps the optimistic flags and
+        never raises. Default no-op."""
+        return
 
     # ---- semantic write helpers ---------------------------------------
     # Pure writes presuming the standard C64 memory map + kernal IRQ chain.
@@ -651,6 +712,19 @@ class BufferedWriteBackend(C64Backend):
         )
 
 
+def resolve_host_sid_model(configured: str, system: str) -> tuple[str | None, bool]:
+    """The SID model to assume in the host C64: ``[hardware].host_sid_model``,
+    or the NTSC→6581 / PAL→8580 convention under ``"auto"``. Returns
+    ``(model, assumed)`` — model None when opted out (``"unknown"``); assumed
+    True when the convention picked it (a weak heuristic, so consumers must
+    report it as an assumption, not a fact)."""
+    if configured == "unknown":
+        return None, False
+    if configured != "auto":
+        return configured, False
+    return ("6581" if system.upper() == "NTSC" else "8580"), True
+
+
 def make_backend(cfg: Config) -> C64Backend:
     """Construct the hardware backend selected by ``[hardware].backend``.
 
@@ -665,11 +739,19 @@ def make_backend(cfg: Config) -> C64Backend:
     # NTSC/PAL is orthogonal to the hardware variant; fold the resolved
     # system rate into the profile here so the playlist reads one number.
     fps = 60.0 if cfg.ultimate64.system == "NTSC" else 50.0
+    host_model, host_model_assumed = resolve_host_sid_model(
+        cfg.hardware.host_sid_model, cfg.ultimate64.system
+    )
 
     if backend == "ultimate":
         from .api import Ultimate64API
 
-        profile = replace(ULTIMATE_PROFILE, default_fps=fps)
+        profile = replace(
+            ULTIMATE_PROFILE,
+            default_fps=fps,
+            host_sid_model=host_model,
+            host_sid_model_assumed=host_model_assumed,
+        )
         return Ultimate64API(
             cfg.ultimate64.url,
             dma_port=cfg.ultimate64.dma_port,
@@ -727,7 +809,13 @@ def make_backend(cfg: Config) -> C64Backend:
             transport_kind = "tr_tcp"
         else:
             raise ValueError(f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)")
-        profile = replace(TEENSYROM_PROFILE, default_fps=fps, write_transport=transport_kind)
+        profile = replace(
+            TEENSYROM_PROFILE,
+            default_fps=fps,
+            write_transport=transport_kind,
+            host_sid_model=host_model,
+            host_sid_model_assumed=host_model_assumed,
+        )
         return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
 
     raise ValueError(

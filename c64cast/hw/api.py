@@ -38,13 +38,14 @@ import logging
 import os
 import time
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 from urllib.parse import urlparse
 
 import requests
 
 from .backend import (
+    SID_CONFIG_CATEGORIES,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
     BufferedWriteBackend,
@@ -1493,6 +1494,77 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         r.raise_for_status()
         body = r.json()
         return {k: str(v) for k, v in body.items()} if isinstance(body, dict) else {}
+
+    def describe_device(self) -> str:
+        """This unit's identity for the connect-time log, from ``GET /v1/info``:
+        ``"Ultimate II+ 5D327C (firmware 3.14d, FPGA 122)"``. Empty when the
+        device won't answer (older firmware without ``/v1/info``).
+
+        ``product`` is the only thing that distinguishes a U64 from a U2+ over
+        this API, and the two differ in which config categories they expose — so
+        without this line a config-surface failure reads as a bare 404."""
+        try:
+            info = self.get_device_info()
+        except requests.RequestException:
+            log.debug("device identity read failed", exc_info=True)
+            return ""
+        parts = [info.get("product") or "Ultimate"]
+        if unique_id := info.get("unique_id"):
+            parts.append(unique_id)
+        versions = [
+            f"{label} {info[key]}"
+            for label, key in (("firmware", "firmware_version"), ("FPGA", "fpga_version"))
+            if info.get(key)
+        ]
+        if versions:
+            parts.append(f"({', '.join(versions)})")
+        return " ".join(parts)
+
+    def get_config_categories(self, *, timeout: float = 3.0) -> list[str]:
+        """The config categories this device's firmware exposes
+        (``GET /v1/configs`` → ``{"categories": [...]}``) — the capability
+        contract `refine_capabilities` checks the multi-SID surface against.
+        Raises ``requests.RequestException`` on transport/HTTP failure; an
+        unrecognized response shape returns ``[]``."""
+        r = self.session.get(f"{self.base_url}/v1/configs", timeout=timeout)
+        r.raise_for_status()
+        body = r.json()
+        categories = body.get("categories") if isinstance(body, dict) else None
+        if not isinstance(categories, list):
+            return []
+        return [category for category in categories if isinstance(category, str)]
+
+    def refine_capabilities(self) -> None:
+        """One cheap REST call revoking the multi-SID surface the family
+        profile claims optimistically, on a device that doesn't expose it
+        (Ultimate II+). Category presence, not the ``product`` string, is the
+        test: the category list is the actual contract and tracks firmware
+        differences within one product, the product string is presentation.
+
+        A failed or unrecognizable read keeps the optimistic flags: every SID
+        config call site already absorbs a missing surface per-call, but
+        nothing could absorb SID config wrongly *disabled* on a healthy U64
+        over a transient read error."""
+        if not self.profile.supports_sid_config:
+            return
+        try:
+            categories = set(self.get_config_categories())
+        except (requests.RequestException, ValueError) as e:
+            log.debug("capability probe: /v1/configs unreadable (%s) — keeping optimism", e)
+            return
+        if not categories:
+            log.debug("capability probe: unrecognized /v1/configs shape — keeping optimism")
+            return
+        missing = [c for c in SID_CONFIG_CATEGORIES if c not in categories]
+        if not missing:
+            return
+        self.profile = replace(self.profile, supports_sid_config=False)
+        log.info(
+            "this device has no multi-SID config surface (no %s) — SID routing, "
+            "chip-model matching and mixer control are unavailable; tunes play "
+            "on whatever answers their addresses",
+            ", ".join(missing),
+        )
 
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Upload and run a tiny BASIC program: `10 PRINT CHR$(147) : 20 GOTO 20`.

@@ -317,7 +317,9 @@ class PersistenceTest(DataDirIsolated):
         # would fire on every Ultimate run whose file predates per-socket entries.
         cfg = _u64_cfg()
         be = FakeAPI()
-        be.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
+        be.profile = HardwareProfile(
+            name="Fake", family="fake", supports_config=True, supports_sid_config=True
+        )
         dcs.save_calibration(
             cfg,
             dcs.CalibrationDocument(
