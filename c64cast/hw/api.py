@@ -1494,6 +1494,31 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         body = r.json()
         return {k: str(v) for k, v in body.items()} if isinstance(body, dict) else {}
 
+    def describe_device(self) -> str:
+        """This unit's identity for the connect-time log, from ``GET /v1/info``:
+        ``"Ultimate II+ 6AF00F (firmware 3.14d, FPGA 122)"``. Empty when the
+        device won't answer (older firmware without ``/v1/info``).
+
+        ``product`` is the only thing that distinguishes a U64 from a U2+ over
+        this API, and the two differ in which config categories they expose — so
+        without this line a config-surface failure reads as a bare 404."""
+        try:
+            info = self.get_device_info()
+        except requests.RequestException:
+            log.debug("device identity read failed", exc_info=True)
+            return ""
+        parts = [info.get("product") or "Ultimate"]
+        if unique_id := info.get("unique_id"):
+            parts.append(unique_id)
+        versions = [
+            f"{label} {info[key]}"
+            for label, key in (("firmware", "firmware_version"), ("FPGA", "fpga_version"))
+            if info.get(key)
+        ]
+        if versions:
+            parts.append(f"({', '.join(versions)})")
+        return " ".join(parts)
+
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Upload and run a tiny BASIC program: `10 PRINT CHR$(147) : 20 GOTO 20`.
 

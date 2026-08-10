@@ -120,8 +120,12 @@ Each entry is gated on the same version and address-byte conditions that make it
 
 1. Already matches → no-op.
 2. The *other* physical socket reports the required model → remap that socket's address, using the same `SID Addressing` / `SID Sockets Configuration` PUTs that `asid_sidmap.plan_sid_map_for_addresses` uses.
-3. Otherwise → fall back to a free UltiSID core, setting its `"UltiSID N Filter Curve"` item (category `"UltiSID Configuration"`, confirmed live via `GET /v1/configs`) to a fixed representative curve, `"6581"` or `"8580 Lo"`. The full enum also offers `"8580 Hi"`, `"6581 Alt"`, `"U2 Low"`, `"U2 Mid"`, and `"U2 High"`, none exposed as a config knob in this pass.
+3. Otherwise → fall back to a free UltiSID core, setting its `"UltiSID N Filter Curve"` item (category `"UltiSID Configuration"`, confirmed live via `GET /v1/configs`) to a fixed representative curve, `"6581"` or `"8580 Lo"`. The full enum also offers `"8580 Hi"`, `"6581 Alt"`, `"U2 Low"`, `"U2 Mid"`, and `"U2 High"`, none exposed as a config knob in this pass. The same step also sets `"Auto Address Mirroring"` to `Disabled` and disables whichever socket currently answers that address — see below.
 4. Otherwise → warn and leave the chip unchanged.
+
+**An UltiSID route that doesn't take the address away is inaudible by design.** Pointing a core at `$D400` does not make the core what a listener hears. `Auto Address Mirroring` lets a socket mirror the core's base, and a socket left `Enabled` there answers alongside it — and by the policy in `sid_hw_config.current_source_map` (a socket's real chip is what sounds; a core "at" the same address is just mirroring) the socket is what every downstream consumer then reports. So the mixer pass reads the *socket* as the source the tune plays on, unmutes it, and mutes the core that autoconfig just configured. The result is a log that says `chip at $D400 (8580) → ultisid1 (filter curve '8580 Lo')` while the 6581 in socket 1 is what actually plays — reproduced on hardware as thin, screeching 8580-tune-on-a-6581 playback with no error anywhere. Step 3 therefore disables both mirroring and the displaced socket, exactly as `asid_sidmap.plan_sid_map` already does for multi-SID routing. Both items are in `MANAGED_ADDRESSING_ITEMS` / `MANAGED_SOCKET_ITEMS`, so the snapshot puts the user's config back at teardown.
+
+The socket-swap branch (step 2) deliberately leaves both knobs alone: a real chip answering its own address needs no help from either, and writing them would churn config the restore then has to undo.
 
 **The setting.** `"auto"` (default) reads the header per chip. An explicit `"6581"`/`"8580"` forces that model for every chip, ignoring the header. `"off"` disables header inspection entirely.
 
@@ -337,6 +341,26 @@ The `MANAGED_*` item tuples are the module's real contract: the exact `(category
 `current_source_map` — which source answers each `$Dxxx` address right now — carries the module's two subtlest decisions. Physical sockets are folded into the map **last**, so they win an `Auto Address Mirroring` collision: when a populated socket and an UltiSID core both report the same address, the socket's real chip is what a listener hears and the core is merely mirroring. That exact collision masked which source was actually audible during the autoconfig hardware verification — one of the two bugs only real hardware surfaced. The v1 simplification: a split UltiSID core is tracked only at its configured base address, not the secondary instance a `1/2`/`1/4` split expands it across, so a chip at that secondary address gets a harmless re-route instead of recognition. `detect_socket_models` exists un-collapsed beside `detect_sockets` because its consumers treat the socket strings ("6581"/"8580") as chip *identity*, not mere presence — the calibration store keys on them.
 
 `SidHwSession` — the one-snapshot restore tracker every consumer holds — is covered with the rule it enforces under [SID Player Autoconfig](#sid-player-autoconfig): `snapshot()` is first-call-wins, mechanically enforcing the single-snapshot rule the per-scene dicts used to uphold by call-site discipline alone.
+
+## `sid_resolved.py` — the resolved-audio line
+
+One log line, emitted once per scene setup after routing, model matching, panning and volume have all settled, naming the chip a listener will actually hear:
+
+```
+sid hardware: $D400 → ultisid1 (8580 Lo) @ 0 dB Center
+sid hardware: $D400 → socket1 (6581) @ 0 dB Center — tune wants 8580
+sid hardware: $D400 → ultisid1 (8580 Lo) @ 0 dB Center; also audible: socket2 (6581) at $D420 @ -6 dB
+```
+
+**Why it exists.** Every planner above logs its *intent* and none logs the outcome, and they can disagree without producing an error anywhere — the config PUTs all succeed. A core can be configured and never reach the mixer; a socket can keep answering an address a core was just handed; a level the user trimmed to `OFF` can silence a perfectly routed chip. The only symptom is wrong-sounding or silent playback, and diagnosing it means reading four REST categories by hand — which is exactly how the mirroring bug under [SID Player Autoconfig](#sid-player-autoconfig) was found, after a hardware session spent proving that a log saying `→ ultisid1 (8580 Lo)` described a chip nobody could hear.
+
+**It is a read-back, not a summary of the plans.** The planners are the thing it exists to catch, so it re-reads `SID Addressing`, `SID Sockets Configuration`, `UltiSID Configuration` and `Audio Mixer` and reports what they say. `SidHardwareState` holds that snapshot; `describe_resolved_audio` is a pure renderer over it, so the whole verdict matrix is unit-testable without hardware.
+
+**The verdict drives the log level.** A chip that is unmapped, muted, or on a model the tune didn't ask for makes the line a WARNING; otherwise INFO. Model matching compares by prefix, so a core's `"8580 Lo"` satisfies a header asking for `"8580"`. Two deliberate non-verdicts: a level the mixer didn't report counts as *audible* (claiming silence we never measured sends someone hunting a mixer problem that isn't there), and an empty `required_models` — an ASID stream, which carries no PSID header — reports routing and audibility only.
+
+**Bystanders** — sources the tune doesn't play on that are still audible — are drawn from the address map rather than the mixer, so a source that is merely unmuted but answers no address (a disabled socket the user never turned down) isn't reported as something they can hear.
+
+Called from all three SID hardware paths: `WaveformScene._apply_sid_hw_config`, `SidFileAudioSource._apply_sid_mixer`, and `AsidScene._apply_sid_mixer` (which re-emits after every remap, since a stream growing past 2 chips spills onto cores). U64 only, best-effort, and silent on any read failure. `tests/test_sid_resolved.py` covers the renderer and the read-back.
 
 ## `songlengths.py` — HVSC SongLengths lookup
 

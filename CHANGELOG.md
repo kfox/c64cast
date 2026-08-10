@@ -12,7 +12,36 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A tune routed onto an UltiSID core to match its chip model is now actually
+  audible.** SID Player Autoconfig pointed a core at the chip's address and set
+  its filter curve, but left `Auto Address Mirroring` on and left the physical
+  socket enabled at that same address — so the socket's real chip kept answering,
+  the mixer pass unmuted *it* and muted the core, and an 8580-tagged tune played
+  on a 6581 while the log said it had been routed to an FPGA core. Nothing
+  errored: every config write succeeded. The UltiSID fallback now disables
+  mirroring and the socket it displaces (both already covered by the
+  snapshot/restore, so your config comes back at teardown). Verified on hardware.
+
+### Added
+
+- **One log line saying what you will actually hear.** After SID routing, model
+  matching, panning and volume have settled, c64cast reads the hardware back and
+  reports the source answering each of the tune's chip addresses, the chip model
+  that source presents, and its mixer level and pan — plus anything else still
+  audible that the tune isn't using. A chip that ends up unmapped, muted, or on a
+  model the tune didn't ask for makes the line a warning. Until now every step
+  logged its *intent* and none logged the outcome, so a chip that was configured
+  but inaudible looked identical in the log to one that was playing.
+
+- **The connect-time log now identifies the device, not just its address.** Runs
+  report the unit's model, serial and firmware — `Ultimate II+ 5D327C (firmware
+  3.14d, FPGA 122)`, or a TeensyROM+'s USB serial number — because an IP or
+  serial path names an endpoint, not a machine: two devices can trade addresses
+  between runs, and `192.168.2.64` is the Ultimate's factory default that any
+  number of units answer to. It also makes a U64-versus-U2+ mismatch legible from
+  a log alone, which a bare HTTP 404 against a config URL is not.
 
 ## [0.3.0] - 2026-08-09
 

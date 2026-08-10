@@ -661,6 +661,8 @@ def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) ->
                 source.release()
             raise StackBuildError(2)
         log.info("%s reachable: %s", cfg.hardware.backend, status)
+        if identity := api.describe_device():
+            log.info("connected device: %s", identity)
     return api
 
 

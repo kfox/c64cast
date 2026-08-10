@@ -18,6 +18,7 @@ from c64cast.sid.asid_sidmap import (
     CAT_ADDRESSING,
     CAT_SOCKETS,
     CAT_ULTISID,
+    ITEM_AUTO_MIRROR,
     ITEM_SOCKET1_ADDR,
     ITEM_SOCKET1_EN,
     ITEM_SOCKET1_TYPE,
@@ -104,8 +105,48 @@ class PlanSidModelConfigTest(unittest.TestCase):
             {
                 (CAT_ADDRESSING, ITEM_ULTISID1_ADDR): "$D400",
                 (CAT_ULTISID, ITEM_ULTISID1_FILTER): "8580 Lo",
+                # Without these the core is configured but never heard: the
+                # 6581 in socket 1 keeps answering $D400.
+                (CAT_ADDRESSING, ITEM_AUTO_MIRROR): "Disabled",
+                (CAT_SOCKETS, ITEM_SOCKET1_EN): "Disabled",
             },
         )
+
+    def test_ultisid_fallback_displaces_socket2_when_that_is_what_answers(self):
+        plan = sa.plan_sid_model_config(
+            chips=((0xD420, "8580"),),
+            current_addr_map={0xD420: "socket2"},
+            socket_models=("6581", "6581"),
+            ultisid_allowed=True,
+        )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_SOCKETS, ITEM_SOCKET2_EN)], "Disabled")
+        self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET1_EN), plan)
+
+    def test_ultisid_fallback_disables_no_socket_when_none_answers(self):
+        plan = sa.plan_sid_model_config(
+            chips=((0xD400, "8580"),),
+            current_addr_map={},  # nothing mapped there yet
+            socket_models=("6581", "6581"),
+            ultisid_allowed=True,
+        )
+        assert plan is not None
+        self.assertEqual(plan[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)], "Disabled")
+        self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET1_EN), plan)
+        self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET2_EN), plan)
+
+    def test_socket_swap_leaves_mirroring_and_sockets_alone(self):
+        # A real chip at its own address needs no help from either knob, so a
+        # swap must not churn config the restore then has to put back.
+        plan = sa.plan_sid_model_config(
+            chips=((0xD400, "8580"),),
+            current_addr_map={0xD400: "socket1"},
+            socket_models=("6581", "8580"),
+            ultisid_allowed=True,
+        )
+        assert plan is not None
+        self.assertNotIn((CAT_ADDRESSING, ITEM_AUTO_MIRROR), plan)
+        self.assertNotIn((CAT_SOCKETS, ITEM_SOCKET1_EN), plan)
 
     def test_ultisid_fallback_uses_6581_curve_for_6581_request(self):
         plan = sa.plan_sid_model_config(
@@ -138,7 +179,7 @@ class PlanSidModelConfigTest(unittest.TestCase):
                 ultisid_allowed=True,
             )
         # First two chips consume both UltiSID cores; the third has nowhere to go.
-        self.assertEqual(len(plan), 4)  # 2 addr + 2 filter-curve entries
+        self.assertEqual(len(plan), 5)  # 2 addr + 2 filter-curve + mirroring off
         self.assertTrue(any("no matching physical" in msg for msg in cm.output))
 
     def test_unspecified_or_either_model_is_always_a_noop(self):
@@ -165,6 +206,25 @@ class PlanSidModelConfigTest(unittest.TestCase):
         self.assertEqual(plan[(CAT_ADDRESSING, ITEM_SOCKET2_ADDR)], "$D400")
         self.assertEqual(plan[(CAT_ADDRESSING, ITEM_ULTISID1_ADDR)], "$D420")
         self.assertEqual(plan[(CAT_ULTISID, ITEM_ULTISID1_FILTER)], "8580 Lo")
+
+
+class RequiredModelsForTest(unittest.TestCase):
+    """The shared sid_model -> per-chip requirement mapping."""
+
+    def test_auto_takes_the_headers_own_models(self):
+        self.assertEqual(sa.required_models_for("auto", ("8580", "6581"), 2), ("8580", "6581"))
+
+    def test_explicit_model_overrides_every_chip(self):
+        self.assertEqual(sa.required_models_for("6581", ("8580", "8580"), 2), ("6581", "6581"))
+
+    def test_off_requires_nothing(self):
+        self.assertEqual(sa.required_models_for("off", ("8580",), 1), ())
+
+    def test_padded_and_truncated_to_the_detected_chip_count(self):
+        # detect_sid_addresses can resolve a different count than the header
+        # declares; the result must stay parallel to the addresses.
+        self.assertEqual(sa.required_models_for("auto", ("8580",), 3), ("8580", None, None))
+        self.assertEqual(sa.required_models_for("auto", ("8580", "6581"), 1), ("8580",))
 
 
 class ResolveSidModelCfgTest(unittest.TestCase):
