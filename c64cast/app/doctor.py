@@ -1521,8 +1521,8 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
             ]
         return []
 
-    present, map_enabled, volumes = hw_provision.read_sampler_config(api)
-    if present is None:
+    state = hw_provision.read_sampler_config(api)
+    if state.present is None:
         return [
             Diagnostic(
                 level="warn",
@@ -1531,10 +1531,11 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
                 message="REST query for the Ultimate Audio sampler state failed.",
                 hint=f"Config will use the sampler ({reason_str}). If video audio is "
                 "silent, check F2 -> C64 and Cartridge Settings -> Map Ultimate "
-                "Audio $DF20-DFFF, and F2 -> Audio Mixer -> Vol Sampler L/R.",
+                "Audio $DF20-DFFF, and Vol Sampler L/R under F2 -> Audio Mixer "
+                "(U64) / Audio Output Settings (U2+).",
             )
         ]
-    if not present:
+    if not state.present:
         if backend == "sampler":
             return [
                 Diagnostic(
@@ -1557,8 +1558,8 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
             )
         ]
 
-    audible = any(v != hw_provision.SAMPLER_VOL_OFF for v in volumes.values())
-    if map_enabled and audible:
+    audible = any(v != hw_provision.SAMPLER_VOL_OFF for v in state.volumes.values())
+    if state.map_enabled and audible:
         return [
             Diagnostic(
                 level="ok",
@@ -1569,7 +1570,7 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
             )
         ]
     off_bits = []
-    if not map_enabled:
+    if not state.map_enabled:
         off_bits.append("$DF20 I/O map disabled")
     if not audible:
         off_bits.append("Sampler mixer channels OFF")

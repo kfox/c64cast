@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 19 sections and 149 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 19 sections and 150 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -186,7 +186,8 @@ Hardware backend selection.
 
 ```toml
 [hardware]
-backend = "ultimate"  # ultimate | teensyrom
+backend = "ultimate"     # ultimate | teensyrom
+host_sid_model = "auto"  # auto | 6581 | 8580 | unknown
 dump_char_rom = true
 ```
 
@@ -194,6 +195,7 @@ dump_char_rom = true
 | Field | Description |
 |---|---|
 | **`backend`**<br>*Type:* `str`<br>*Default:* `'ultimate'` | Hardware backend family driving the C64. Choices: `ultimate`, `teensyrom`. |
+| **`host_sid_model`**<br>*Type:* `str`<br>*Default:* `'auto'` | SID chip model in the C64 being driven, so a tune asking for the other model still gets a warning on links that can't read the SID hardware state (e.g. TeensyROM). 'auto' assumes 6581 on NTSC / 8580 on PAL and logs that assumption; 'unknown' opts out of model-match verdicts. Ignored where the live SID state is readable (U64). Choices: `auto`, `6581`, `8580`, `unknown`. |
 | **`dump_char_rom`**<br>*Type:* `bool`<br>*Default:* `True` | On the first run against a machine, read its character ROM and cache it, so C64 text renders in the real C64 font instead of a built-in ASCII substitute. One ~1s step, never repeated; set false to skip it entirely. |
 
 ## `[interstitial]`

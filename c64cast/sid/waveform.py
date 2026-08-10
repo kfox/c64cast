@@ -948,6 +948,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     "— cannot verify or correct chip model",
                     self._sid_model,
                 )
+            log_resolved_audio(self.api, self._sid_addresses, self._required_sid_models())
             return
 
         sid_map, model_blind = self._plan_multi_sid_map() if self._n_sids >= 2 else (None, False)

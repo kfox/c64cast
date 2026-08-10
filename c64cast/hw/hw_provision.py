@@ -21,6 +21,7 @@ failed REST call logs + degrades instead of failing the run.
 from __future__ import annotations
 
 import logging
+from typing import NamedTuple
 
 from c64cast.app.config import Config
 
@@ -265,11 +266,18 @@ def reu_is_enabled(api: object) -> bool | None:
 
 # ---- Ultimate Audio FPGA PCM sampler ($DF20-$DFFF) ----------------------
 # The $DF20 I/O map lives in "C64 and Cartridge Settings"; the stereo mixer
-# routing/level in "Audio Mixer". The presence of these config keys is how we
-# detect that the firmware exposes the sampler at all (sampler.py).
+# routing/level in a mixer category. The presence of these config keys is how
+# we detect that the firmware exposes the sampler at all (sampler.py).
 _SAMPLER_MAP_CATEGORY = REU_CONFIG_CATEGORY  # "C64 and Cartridge Settings"
 _SAMPLER_MAP_FIELD = "Map Ultimate Audio $DF20-DFFF"
-_SAMPLER_MIXER_CATEGORY = "Audio Mixer"
+# The category carrying the "Vol Sampler L/R" channels differs across the
+# Ultimate family: the U64 has a dedicated "Audio Mixer"; the Ultimate II+
+# (firmware 3.x) folds the same fields into "Audio Output Settings". Probed in
+# order — first category actually carrying the fields wins — because the
+# firmware answers a GET for a category it doesn't have with HTTP 200 and an
+# empty body rather than an error, so a single fixed name would silently read
+# "sampler absent" on the other device.
+_SAMPLER_MIXER_CATEGORIES = ("Audio Mixer", "Audio Output Settings")
 _SAMPLER_VOL_FIELDS = ("Vol Sampler L", "Vol Sampler R")
 # The mixer volume enum's audible "0 dB" label. The firmware's volumes[] table
 # (u64_config.cc) stores it with a LEADING SPACE (" 0 dB", index 24); the REST
@@ -281,36 +289,52 @@ SAMPLER_VOL_OFF = "OFF"
 _RESTORE_SEP = "\x1f"
 
 
-def read_sampler_config(
-    api: object,
-) -> tuple[bool | None, bool | None, dict[str, str]]:
-    """Read the U64's Ultimate Audio sampler state over REST.
+class SamplerConfig(NamedTuple):
+    """Live Ultimate Audio sampler state (see :func:`read_sampler_config`)."""
 
-    Returns ``(present, map_enabled, volumes)``:
-      * ``present`` — True if the firmware exposes the sampler config keys (it
-        has the feature), False if absent, None if the REST query failed.
-      * ``map_enabled`` — the $DF20 I/O-map enable (None when not present).
-      * ``volumes`` — current ``{field: value}`` for the Sampler mixer channels
-        (for restore). Reuses `fetch_config_section` so it tracks firmware
-        response-shape variants identically to the REU/SID probes."""
+    present: bool | None
+    map_enabled: bool | None
+    volumes: dict[str, str]
+    mixer_category: str | None
+
+
+def _read_sampler_mixer(api: object) -> tuple[str | None, dict[str, str], bool]:
+    """The (category, volumes) of the first candidate mixer category carrying
+    the Sampler channels, or ``(None, {}, any_read_failed)`` when none does."""
+    any_read_failed = False
+    for category in _SAMPLER_MIXER_CATEGORIES:
+        mixer, _data, err = fetch_config_section(api, category, field_hint=_SAMPLER_VOL_FIELDS[0])
+        if err is not None:
+            any_read_failed = True
+            continue
+        if all(f in mixer for f in _SAMPLER_VOL_FIELDS):
+            volumes = {f: v for f in _SAMPLER_VOL_FIELDS if isinstance(v := mixer.get(f), str)}
+            return category, volumes, False
+    return None, {}, any_read_failed
+
+
+def read_sampler_config(api: object) -> SamplerConfig:
+    """Read the Ultimate Audio sampler state over REST.
+
+    * ``present`` — True if the firmware exposes the sampler config keys (it
+      has the feature), False if absent, None if a REST query failed.
+    * ``map_enabled`` — the $DF20 I/O-map enable (None when not present).
+    * ``volumes`` — current ``{field: value}`` for the Sampler mixer channels
+      (for restore). Reuses `fetch_config_section` so it tracks firmware
+      response-shape variants identically to the REU/SID probes.
+    * ``mixer_category`` — the category carrying those channels on this
+      device (see ``_SAMPLER_MIXER_CATEGORIES``); the target every mixer PUT
+      and composite restore key must use."""
     cart, _d1, err1 = fetch_config_section(
         api, _SAMPLER_MAP_CATEGORY, field_hint=_SAMPLER_MAP_FIELD
     )
-    mixer, _d2, err2 = fetch_config_section(
-        api, _SAMPLER_MIXER_CATEGORY, field_hint=_SAMPLER_VOL_FIELDS[0]
-    )
-    if err1 is not None or err2 is not None:
-        return None, None, {}
+    mixer_category, volumes, mixer_read_failed = _read_sampler_mixer(api)
+    if err1 is not None or (mixer_category is None and mixer_read_failed):
+        return SamplerConfig(None, None, {}, None)
     map_raw = cart.get(_SAMPLER_MAP_FIELD)
-    present = (map_raw is not None) and all(f in mixer for f in _SAMPLER_VOL_FIELDS)
-    if not present:
-        return False, None, {}
-    volumes: dict[str, str] = {}
-    for field in _SAMPLER_VOL_FIELDS:
-        v = mixer.get(field)
-        if isinstance(v, str):
-            volumes[field] = v
-    return True, (map_raw == "Enabled"), volumes
+    if map_raw is None or mixer_category is None:
+        return SamplerConfig(False, None, {}, None)
+    return SamplerConfig(True, map_raw == "Enabled", volumes, mixer_category)
 
 
 def sampler_is_available(api: object) -> bool | None:
@@ -322,13 +346,13 @@ def sampler_is_available(api: object) -> bool | None:
     Used by `cli._resolve_sampler_available` to resolve [audio].backend — None
     or False degrades to the 4-bit DAC. Run AFTER `provision_sampler` so a box
     this run just enabled reads as available."""
-    present, map_enabled, volumes = read_sampler_config(api)
-    if present is None:
+    state = read_sampler_config(api)
+    if state.present is None:
         return None
-    if not present:
+    if not state.present:
         return False
-    audible = any(v != SAMPLER_VOL_OFF for v in volumes.values())
-    return bool(map_enabled) and audible
+    audible = any(v != SAMPLER_VOL_OFF for v in state.volumes.values())
+    return bool(state.map_enabled) and audible
 
 
 def wants_sampler(cfg: Config) -> tuple[bool, list[str]]:
@@ -373,20 +397,20 @@ def provision_sampler(api: object, cfg: Config) -> dict[str, str] | None:
 
     import requests
 
-    present, map_enabled, volumes = read_sampler_config(api)
-    if present is None:
+    state = read_sampler_config(api)
+    if state.present is None:
         log.warning(
             "sampler: config wants the Ultimate Audio sampler (%s) but its state "
             "could not be read — leaving it unchanged.",
             ", ".join(reasons),
         )
         return None
-    if not present:
+    if not state.present or state.mixer_category is None:
         # Firmware doesn't expose the sampler; resolve falls back to the DAC.
         return None
 
     restore: dict[str, str] = {}
-    if not map_enabled:
+    if not state.map_enabled:
         try:
             api.put_config_item(_SAMPLER_MAP_CATEGORY, _SAMPLER_MAP_FIELD, "Enabled")  # type: ignore[attr-defined]
         except requests.RequestException as e:
@@ -394,15 +418,15 @@ def provision_sampler(api: object, cfg: Config) -> dict[str, str] | None:
             return restore or None
         restore[f"{_SAMPLER_MAP_CATEGORY}{_RESTORE_SEP}{_SAMPLER_MAP_FIELD}"] = "Disabled"
 
-    for fieldname, cur in volumes.items():
+    for fieldname, cur in state.volumes.items():
         if cur != SAMPLER_VOL_OFF:
             continue
         try:
-            api.put_config_item(_SAMPLER_MIXER_CATEGORY, fieldname, _SAMPLER_VOL_AUDIBLE)  # type: ignore[attr-defined]
+            api.put_config_item(state.mixer_category, fieldname, _SAMPLER_VOL_AUDIBLE)  # type: ignore[attr-defined]
         except requests.RequestException as e:
             log.warning("sampler: could not unmute %s: %s", fieldname, e)
         else:
-            restore[f"{_SAMPLER_MIXER_CATEGORY}{_RESTORE_SEP}{fieldname}"] = cur
+            restore[f"{state.mixer_category}{_RESTORE_SEP}{fieldname}"] = cur
 
     if restore:
         log.info(

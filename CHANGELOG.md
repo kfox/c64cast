@@ -14,6 +14,16 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **The Ultimate II+'s Ultimate Audio sampler is detected again.** The sampler
+  probe read the mixer volumes from the U64's `Audio Mixer` config category; the
+  U2+ carries the same `Vol Sampler L/R` fields in `Audio Output Settings`, and
+  its firmware answers a query for a category it doesn't have with an empty
+  success rather than an error — so the probe concluded the sampler was absent
+  and silently downgraded video audio to the 4-bit `$D418` DAC even with the
+  sampler mapped and audible. The probe now searches both categories and every
+  mixer write (including the teardown restore) follows the one the device
+  actually carries.
+
 - **A tune routed onto an UltiSID core to match its chip model is now actually
   audible.** SID Player Autoconfig pointed a core at the chip's address and set
   its filter curve, but left `Auto Address Mirroring` on and left the physical
@@ -25,6 +35,14 @@ the version and stamps it with the date.
   snapshot/restore, so your config comes back at teardown). Verified on hardware.
 
 ### Added
+
+- **`[hardware].host_sid_model`** — declare the SID chip model in the C64 being
+  driven (`auto` | `6581` | `8580` | `unknown`). On links that can't read the
+  SID hardware state (TeensyROM has no config API), the resolved-audio line can
+  now still warn when a tune asks for the other model — previously it was
+  skipped entirely there. `auto` (the default) assumes 6581 on NTSC / 8580 on
+  PAL and logs that assumption once per run; `unknown` opts out. Ignored where
+  the live SID state is readable (Ultimate 64).
 
 - **One log line saying what you will actually hear.** After SID routing, model
   matching, panning and volume have settled, c64cast reads the hardware back and

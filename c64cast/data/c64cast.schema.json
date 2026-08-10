@@ -19,6 +19,17 @@
           ],
           "default": "ultimate"
         },
+        "host_sid_model": {
+          "type": "string",
+          "description": "SID chip model in the C64 being driven, so a tune asking for the other model still gets a warning on links that can't read the SID hardware state (e.g. TeensyROM). 'auto' assumes 6581 on NTSC / 8580 on PAL and logs that assumption; 'unknown' opts out of model-match verdicts. Ignored where the live SID state is readable (U64).",
+          "enum": [
+            "auto",
+            "6581",
+            "8580",
+            "unknown"
+          ],
+          "default": "auto"
+        },
         "dump_char_rom": {
           "type": "boolean",
           "description": "On the first run against a machine, read its character ROM and cache it, so C64 text renders in the real C64 font instead of a built-in ASCII substitute. One ~1s step, never repeated; set false to skip it entirely.",
