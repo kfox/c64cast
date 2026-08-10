@@ -663,6 +663,11 @@ def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) ->
         log.info("%s reachable: %s", cfg.hardware.backend, status)
         if identity := api.describe_device():
             log.info("connected device: %s", identity)
+        # Reachability just proved; one cheap REST call downgrades capability
+        # flags the family profile claims optimistically (U2+: no multi-SID
+        # config surface). Under --skip-probe the flags stay optimistic and
+        # the per-call error handling absorbs any missing surface, as before.
+        api.refine_capabilities()
     return api
 
 

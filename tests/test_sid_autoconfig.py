@@ -254,7 +254,9 @@ class CurrentAddrMapTest(unittest.TestCase):
 
     def test_read_failure_returns_empty(self):
         class BrokenAPI:
-            profile = HardwareProfile(name="Broken", family="fake", supports_config=True)
+            profile = HardwareProfile(
+                name="Broken", family="fake", supports_config=True, supports_sid_config=True
+            )
 
             def get_config_category(self, category, *, timeout=3.0):
                 raise RuntimeError("boom")

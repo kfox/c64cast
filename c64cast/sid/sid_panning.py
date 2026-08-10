@@ -311,7 +311,7 @@ def apply_panning(
     restore set — nothing to put back on teardown. The returned
     :class:`SidPanning` carries the originals for the caller's restore snapshot
     plus the scope's left-to-right column order."""
-    if not getattr(api.profile, "supports_config", False):
+    if not getattr(api.profile, "supports_sid_config", False):
         return SidPanning.identity(len(sources))
 
     pans = resolve_panning(configured, len(distinct_sources(sources)), len(sources))

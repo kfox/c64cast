@@ -259,6 +259,27 @@ class LogDeclaredAudioTest(unittest.TestCase):
             sr.log_resolved_audio(_no_config_api("6581"), (0xD400,), ("6581",))
         self.assertNotIn("assumption", "".join(r.getMessage() for r in cm.records))
 
+    def test_u2plus_shape_uses_the_declared_fallback(self):
+        # A U2+ after the connect-time capability probe: it HAS a config API
+        # (supports_config) but not the multi-SID surface — the read-back must
+        # not be attempted (its categories aren't there) and the declared
+        # verdict must fire instead.
+        from c64cast.hw.backend import HardwareProfile
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake U2+",
+            family="fake",
+            supports_config=True,
+            supports_sid_config=False,
+            host_sid_model="6581",
+        )
+        self.assertIsNone(sr.read_sid_hardware_state(api))
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400,), ("8580",))
+        self.assertEqual(cm.records[-1].levelname, "WARNING")
+        self.assertIn("host SID (6581 declared)", cm.records[-1].getMessage())
+
 
 if __name__ == "__main__":
     unittest.main()

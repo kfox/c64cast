@@ -362,7 +362,9 @@ class ApplyPanningTest(unittest.TestCase):
                 raise RuntimeError("boom")
 
         api = BrokenAPI()
-        api.profile = HardwareProfile(name="Fake U64", family="fake", supports_config=True)
+        api.profile = HardwareProfile(
+            name="Fake U64", family="fake", supports_config=True, supports_sid_config=True
+        )
         result = sp.apply_panning(api, ("socket1",), [3])
         self.assertEqual(result.originals, {})
         self.assertEqual(api.config_puts, [])

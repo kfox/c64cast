@@ -1153,6 +1153,10 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
             return _probe_tr_reachability(name, cfg, api, status)
         if status is None:
             return [_rest_down_diagnostic(name, cfg, url)]
+        # REST just answered the probe; refine the optimistic capability
+        # flags so the per-service probes below judge the device's actual
+        # config surface (U2+: no multi-SID categories), like a real run.
+        api.refine_capabilities()
         return _probe_u64_services(name, cfg, api, url, status)
     finally:
         api.close()

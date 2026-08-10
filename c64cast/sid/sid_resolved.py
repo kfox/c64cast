@@ -212,8 +212,8 @@ def _log_declared_audio(api: C64Backend, address: int, required: str | None) -> 
 
 def read_sid_hardware_state(api: C64Backend) -> SidHardwareState | None:
     """Read the live SID routing + mixer state (best-effort; None on a backend
-    without a config API or any read failure)."""
-    if not getattr(api.profile, "supports_config", False):
+    without the multi-SID config surface or any read failure)."""
+    if not getattr(api.profile, "supports_sid_config", False):
         return None
     try:
         ultisid = api.get_config_category(CAT_ULTISID)
@@ -244,7 +244,7 @@ def log_resolved_audio(
     model (see :func:`describe_declared_audio`)."""
     if not addresses:
         return
-    if not getattr(api.profile, "supports_config", False):
+    if not getattr(api.profile, "supports_sid_config", False):
         _log_declared_audio(api, addresses[0], required_models[0] if required_models else None)
         return
     state = read_sid_hardware_state(api)
