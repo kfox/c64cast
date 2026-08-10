@@ -61,6 +61,15 @@ backend = "ultimate"                # which hardware abstraction layer drives
                                     # string (u64://HOST, tr://, tr://HOST,
                                     # tr:///dev/cu.usbmodem*), overriding these
                                     # sections; $C64CAST_URL is the env fallback.
+host_sid_model = "auto"             # SID chip model in the C64 being driven
+                                    # (auto | 6581 | 8580 | unknown), so a tune
+                                    # asking for the other model still gets a
+                                    # warning on links that can't read the SID
+                                    # hardware state (e.g. TeensyROM). "auto"
+                                    # assumes 6581 on NTSC / 8580 on PAL and
+                                    # logs that assumption; "unknown" opts out.
+                                    # Ignored where the live SID state is
+                                    # readable (U64).
 dump_char_rom = true                # on the first run against a machine, read
                                     # its character ROM and cache it under the
                                     # data dir, so C64 text renders in the real

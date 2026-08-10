@@ -19,8 +19,16 @@ the line a WARNING instead of INFO.
 Read-back, not a summary of what the planners decided: the planners are exactly
 what this is here to catch. Pure renderer (:func:`describe_resolved_audio`) plus
 one best-effort reader (:func:`log_resolved_audio`), like the rest of the SID
-hardware-config modules — U64 only, and a REST failure logs nothing rather than
-crashing a scene.
+hardware-config modules — and a REST failure logs nothing rather than crashing
+a scene.
+
+A backend that can't read the SID hardware state at all (TeensyROM has no
+config API) still gets a model-match verdict when the machine's chip is
+declared: ``[hardware].host_sid_model`` rides in on the backend profile, and
+:func:`describe_declared_audio` renders the primary chip against it — the tune
+wants an 8580, this machine is declared (or NTSC/PAL-assumed) to carry a 6581.
+That mismatch is the single most audible mis-set on such a link, and without
+the declaration nothing anywhere could say so.
 """
 
 from __future__ import annotations
@@ -54,6 +62,11 @@ _SOCKET_INDEX: Final[dict[str, int]] = {"socket1": 0, "socket2": 1}
 _UNMAPPED = "nothing mapped"
 _NO_CHIP = "empty socket"
 _UNKNOWN_LEVEL = "level unknown"
+
+# Set once the NTSC/PAL host-model assumption has been logged, so a playlist
+# of SID scenes states it on the first verdict that rides on it rather than
+# at every scene activation.
+_assumed_model_logged = False
 
 
 @dataclass(frozen=True)
@@ -161,6 +174,42 @@ def describe_resolved_audio(
     )
 
 
+def describe_declared_audio(
+    host_model: str, assumed: bool, address: int, required: str | None
+) -> ResolvedAudio:
+    """Pure renderer for the no-hardware-state fallback: what a listener hears
+    at `address` given only the declared (or NTSC/PAL-assumed) host SID
+    model. One chip only — a link that can't read the SID state also can't
+    route extra chips, so the host machine's own SID is all that plays."""
+    origin = "assumed" if assumed else "declared"
+    fragment = f"${address:04X} → host SID ({host_model} {origin})"
+    if required not in NO_MODEL_REQUIREMENT and not host_model.startswith(required or ""):
+        return ResolvedAudio(f"{fragment} — tune wants {required}", clean=False)
+    return ResolvedAudio(fragment, clean=True)
+
+
+def _log_declared_audio(api: C64Backend, address: int, required: str | None) -> None:
+    """Render the primary chip's verdict from ``[hardware].host_sid_model``
+    when the live state can't be read. Silent when no model is declared
+    (`host_sid_model = "unknown"`, or a profile predating the field)."""
+    global _assumed_model_logged
+    host_model = getattr(api.profile, "host_sid_model", None)
+    if host_model is None:
+        return
+    assumed = bool(getattr(api.profile, "host_sid_model_assumed", False))
+    if assumed and not _assumed_model_logged:
+        _assumed_model_logged = True
+        log.info(
+            "sid hardware: assuming this machine's SID is a %s (the NTSC=6581 / "
+            "PAL=8580 convention — an assumption, not a measurement; set "
+            "[hardware].host_sid_model if it's wrong)",
+            host_model,
+        )
+    resolved = describe_declared_audio(host_model, assumed, address, required)
+    log_fn = log.info if resolved.clean else log.warning
+    log_fn("sid hardware: %s", resolved.summary)
+
+
 def read_sid_hardware_state(api: C64Backend) -> SidHardwareState | None:
     """Read the live SID routing + mixer state (best-effort; None on a backend
     without a config API or any read failure)."""
@@ -189,8 +238,14 @@ def log_resolved_audio(
 ) -> None:
     """Read the settled SID hardware state back and log what will be heard.
     Call once per scene setup, after routing/model/panning/volume have all been
-    applied. Best-effort and silent on any failure."""
+    applied. Best-effort and silent on any failure. A backend that *can't* read
+    SID state (no config API — as opposed to a capable one whose read failed
+    transiently) still renders the primary chip against the declared host
+    model (see :func:`describe_declared_audio`)."""
     if not addresses:
+        return
+    if not getattr(api.profile, "supports_config", False):
+        _log_declared_audio(api, addresses[0], required_models[0] if required_models else None)
         return
     state = read_sid_hardware_state(api)
     if state is None:

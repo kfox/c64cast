@@ -189,5 +189,76 @@ class LogResolvedAudioTest(unittest.TestCase):
             sr.log_resolved_audio(api, (0xD400,), ("6581",))
 
 
+class DescribeDeclaredAudioTest(unittest.TestCase):
+    """The no-hardware-state fallback verdict, rendered from the declared (or
+    NTSC/PAL-assumed) host SID model alone."""
+
+    def test_matching_model_is_clean(self):
+        resolved = sr.describe_declared_audio("6581", False, 0xD400, "6581")
+        self.assertTrue(resolved.clean)
+        self.assertEqual(resolved.summary, "$D400 → host SID (6581 declared)")
+
+    def test_mismatch_is_not_clean_and_names_the_want(self):
+        resolved = sr.describe_declared_audio("6581", True, 0xD400, "8580")
+        self.assertFalse(resolved.clean)
+        self.assertEqual(resolved.summary, "$D400 → host SID (6581 assumed) — tune wants 8580")
+
+    def test_no_model_requirement_is_clean(self):
+        for required in (None, "?", "6581+8580"):
+            self.assertTrue(sr.describe_declared_audio("8580", False, 0xD400, required).clean)
+
+
+def _no_config_api(host_model: str | None, *, assumed: bool = False) -> FakeAPI:
+    """A TeensyROM-like link: no SID config API, host model on the profile."""
+    from c64cast.hw.backend import HardwareProfile
+
+    api = FakeAPI()
+    api.profile = HardwareProfile(
+        name="Fake TR",
+        family="fake",
+        supports_config=False,
+        host_sid_model=host_model,
+        host_sid_model_assumed=assumed,
+    )
+    return api
+
+
+class LogDeclaredAudioTest(unittest.TestCase):
+    """log_resolved_audio on a backend that can't read SID state: verdicts come
+    from [hardware].host_sid_model, and the NTSC/PAL assumption is stated once
+    per run."""
+
+    def setUp(self):
+        sr._assumed_model_logged = False
+
+    def test_mismatch_warns_without_a_config_api(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(_no_config_api("6581"), (0xD400,), ("8580",))
+        self.assertEqual(cm.records[-1].levelname, "WARNING")
+        self.assertIn("tune wants 8580", cm.records[-1].getMessage())
+
+    def test_match_logs_info(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(_no_config_api("8580"), (0xD400,), ("8580",))
+        self.assertEqual(cm.records[-1].levelname, "INFO")
+
+    def test_unknown_host_model_logs_nothing(self):
+        with self.assertNoLogs("c64cast.sid.sid_resolved", level="INFO"):
+            sr.log_resolved_audio(_no_config_api(None), (0xD400,), ("8580",))
+
+    def test_assumption_is_stated_once_per_run(self):
+        api = _no_config_api("6581", assumed=True)
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400,), ("6581",))
+            sr.log_resolved_audio(api, (0xD400,), ("6581",))
+        assumptions = [r for r in cm.records if "assumption, not a measurement" in r.getMessage()]
+        self.assertEqual(len(assumptions), 1)
+
+    def test_declared_model_states_no_assumption(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(_no_config_api("6581"), (0xD400,), ("6581",))
+        self.assertNotIn("assumption", "".join(r.getMessage() for r in cm.records))
+
+
 if __name__ == "__main__":
     unittest.main()

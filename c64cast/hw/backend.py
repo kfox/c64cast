@@ -125,6 +125,16 @@ class HardwareProfile:
     # ---- C64 memory map assumptions ------------------------------------
     audio_ring_addr: int = 0x4000  # base of the audio DAC ring buffer
 
+    # ---- host machine declarations --------------------------------------
+    # The SID model in the C64 being driven — a property of the machine, not
+    # the link, but carried here (resolved by make_backend from
+    # [hardware].host_sid_model) because its consumer, the resolved-audio
+    # verdict, already holds a backend and nothing else machine-scoped.
+    # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
+    # convention rather than a user declaration, so the verdict can say so.
+    host_sid_model: str | None = None
+    host_sid_model_assumed: bool = False
+
 
 # The Ultimate family (Ultimate 64, Ultimate II+). The two are protocol-
 # equivalent for c64cast's purposes, so they share one profile for now;
@@ -663,6 +673,19 @@ class BufferedWriteBackend(C64Backend):
         )
 
 
+def resolve_host_sid_model(configured: str, system: str) -> tuple[str | None, bool]:
+    """The SID model to assume in the host C64: ``[hardware].host_sid_model``,
+    or the NTSC→6581 / PAL→8580 convention under ``"auto"``. Returns
+    ``(model, assumed)`` — model None when opted out (``"unknown"``); assumed
+    True when the convention picked it (a weak heuristic, so consumers must
+    report it as an assumption, not a fact)."""
+    if configured == "unknown":
+        return None, False
+    if configured != "auto":
+        return configured, False
+    return ("6581" if system.upper() == "NTSC" else "8580"), True
+
+
 def make_backend(cfg: Config) -> C64Backend:
     """Construct the hardware backend selected by ``[hardware].backend``.
 
@@ -677,11 +700,19 @@ def make_backend(cfg: Config) -> C64Backend:
     # NTSC/PAL is orthogonal to the hardware variant; fold the resolved
     # system rate into the profile here so the playlist reads one number.
     fps = 60.0 if cfg.ultimate64.system == "NTSC" else 50.0
+    host_model, host_model_assumed = resolve_host_sid_model(
+        cfg.hardware.host_sid_model, cfg.ultimate64.system
+    )
 
     if backend == "ultimate":
         from .api import Ultimate64API
 
-        profile = replace(ULTIMATE_PROFILE, default_fps=fps)
+        profile = replace(
+            ULTIMATE_PROFILE,
+            default_fps=fps,
+            host_sid_model=host_model,
+            host_sid_model_assumed=host_model_assumed,
+        )
         return Ultimate64API(
             cfg.ultimate64.url,
             dma_port=cfg.ultimate64.dma_port,
@@ -739,7 +770,13 @@ def make_backend(cfg: Config) -> C64Backend:
             transport_kind = "tr_tcp"
         else:
             raise ValueError(f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)")
-        profile = replace(TEENSYROM_PROFILE, default_fps=fps, write_transport=transport_kind)
+        profile = replace(
+            TEENSYROM_PROFILE,
+            default_fps=fps,
+            write_transport=transport_kind,
+            host_sid_model=host_model,
+            host_sid_model_assumed=host_model_assumed,
+        )
         return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
 
     raise ValueError(

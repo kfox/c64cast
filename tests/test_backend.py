@@ -26,6 +26,7 @@ from c64cast.hw.backend import (
     BufferedWriteBackend,
     C64Backend,
     make_backend,
+    resolve_host_sid_model,
 )
 
 
@@ -178,6 +179,14 @@ class MakeBackendTest(unittest.TestCase):
 
             api_pal = make_backend(self._cfg(system="PAL"))
             self.assertEqual(api_pal.profile.default_fps, 50.0)
+
+    def test_host_sid_model_resolved_onto_the_profile(self):
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            cfg = self._cfg(system="PAL")
+            cfg.hardware.host_sid_model = "6581"
+            api = make_backend(cfg)
+            self.assertEqual(api.profile.host_sid_model, "6581")
+            self.assertFalse(api.profile.host_sid_model_assumed)
 
     def test_direct_construction_defaults_to_ultimate_profile(self):
         with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
@@ -365,6 +374,22 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.restore_kernal_irq_vector()
         # $0314/$0315 ← $EA31 (kernal default), coalesced into one write.
         self.assertEqual(b.emits, [(0x0314, b"\x31\xea")])
+
+
+class ResolveHostSidModelTest(unittest.TestCase):
+    """[hardware].host_sid_model resolution: explicit wins, "auto" applies the
+    NTSC=6581 / PAL=8580 convention and is flagged as assumed, "unknown" opts
+    out entirely."""
+
+    def test_explicit_model_is_not_assumed(self):
+        self.assertEqual(resolve_host_sid_model("8580", "NTSC"), ("8580", False))
+
+    def test_unknown_opts_out(self):
+        self.assertEqual(resolve_host_sid_model("unknown", "PAL"), (None, False))
+
+    def test_auto_follows_the_system_convention_and_is_assumed(self):
+        self.assertEqual(resolve_host_sid_model("auto", "NTSC"), ("6581", True))
+        self.assertEqual(resolve_host_sid_model("auto", "PAL"), ("8580", True))
 
 
 class MakeBackendTeensyromValidationTest(unittest.TestCase):

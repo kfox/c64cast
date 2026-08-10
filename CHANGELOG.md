@@ -36,6 +36,14 @@ the version and stamps it with the date.
 
 ### Added
 
+- **`[hardware].host_sid_model`** — declare the SID chip model in the C64 being
+  driven (`auto` | `6581` | `8580` | `unknown`). On links that can't read the
+  SID hardware state (TeensyROM has no config API), the resolved-audio line can
+  now still warn when a tune asks for the other model — previously it was
+  skipped entirely there. `auto` (the default) assumes 6581 on NTSC / 8580 on
+  PAL and logs that assumption once per run; `unknown` opts out. Ignored where
+  the live SID state is readable (Ultimate 64).
+
 - **One log line saying what you will actually hear.** After SID routing, model
   matching, panning and volume have settled, c64cast reads the hardware back and
   reports the source answering each of the tune's chip addresses, the chip model
