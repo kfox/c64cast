@@ -935,7 +935,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         All of it is a no-op on a backend without a SID config API (TeensyROM) —
         the scope still shows every chip; only $D400 sounds there. Best-
         effort throughout; a REST failure never aborts the scene."""
-        if not getattr(self.api.profile, "supports_config", False):
+        if not getattr(self.api.profile, "supports_sid_config", False):
             if self._n_sids >= 2:
                 log.info(
                     "waveform: %d-SID tune but backend has no SID config API — "

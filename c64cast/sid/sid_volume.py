@@ -230,7 +230,7 @@ def apply_volume(
     Reads the mixer once and writes only the sources whose level actually
     differs, so a rig already configured the way the tune wants does no writes
     and leaves nothing to put back at teardown."""
-    if not getattr(api.profile, "supports_config", False):
+    if not getattr(api.profile, "supports_sid_config", False):
         return {}
     claimed = distinct_sources(sources)
     if not claimed:

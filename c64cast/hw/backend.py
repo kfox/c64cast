@@ -109,6 +109,10 @@ class HardwareProfile:
     supports_run_crt: bool = True  # launch a CRT (cartridge)
     supports_reu: bool = True  # REU writes (use_reu_pump / use_reu_staged)
     supports_config: bool = False  # writable/readable device config API (Ultimate REST)
+    supports_sid_config: bool = False  # the U64 multi-SID config surface (SID routing,
+    #   socket detection, UltiSID model curves — see SID_CONFIG_CATEGORIES).
+    #   Narrower than supports_config: the Ultimate II+ has the config API but
+    #   none of these categories (emulated stereo SIDs, no sockets or cores).
     supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
@@ -136,6 +140,23 @@ class HardwareProfile:
     host_sid_model_assumed: bool = False
 
 
+# The three REST config categories that make up the U64 multi-SID surface —
+# address routing, socket enables/detection, UltiSID model curves. A device
+# qualifies for `supports_sid_config` only when it exposes ALL of them; the
+# Ultimate II+ exposes none (its emulated stereo SIDs live under "Audio
+# Output Settings" with a different topology). refine_capabilities checks
+# these against GET /v1/configs — deliberately NOT against the product
+# string from /v1/info: the category list is the actual contract and tracks
+# firmware differences within one product, the product string is
+# presentation. tests/test_backend.py pins these to the canonical constants
+# in c64cast/sid/asid_sidmap.py, which can't be imported from here (hw must
+# not depend on sid).
+SID_CONFIG_CATEGORIES = (
+    "SID Addressing",
+    "SID Sockets Configuration",
+    "UltiSID Configuration",
+)
+
 # The Ultimate family (Ultimate 64, Ultimate II+). The two are protocol-
 # equivalent for c64cast's purposes, so they share one profile for now;
 # a per-variant `[hardware].variant` selector + distinct profiles (e.g.
@@ -153,6 +174,10 @@ ULTIMATE_PROFILE = HardwareProfile(
     supports_run_crt=True,
     supports_reu=True,
     supports_config=True,  # REST config API (/v1/configs) — live SID address map, REU, sampler
+    supports_sid_config=True,  # optimistic: the whole family claims the U64 multi-SID
+    #   surface here, and refine_capabilities revokes it at connect on a device
+    #   without the categories (U2+). Optimistic so an unprobed run (--skip-probe,
+    #   probe failure) behaves exactly as before this flag existed.
     supports_sampler=True,  # "Ultimate Audio" FPGA PCM sampler (gated by probe)
     reu_bus_clean=True,  # U64 REUWRITE is an ARM-side memcpy; no bus halt
     writes_are_acked=False,  # socket DMAWRITE is fire-and-forget
@@ -184,6 +209,7 @@ TEENSYROM_PROFILE = HardwareProfile(
     supports_run_crt=True,  # RemoteLaunch handles CRT launch
     supports_reu=False,  # no REUWRITE opcode
     supports_config=False,  # no device config API (Ultimate-only REST surface)
+    supports_sid_config=False,  # no config API at all, so no SID config surface
     supports_sampler=False,  # no FPGA PCM sampler (Ultimate-only feature)
     reu_bus_clean=False,
     writes_are_acked=True,  # every write returns Ack/Fail -> flush ~free
@@ -367,8 +393,10 @@ class C64Backend(ABC):
         """Read one device config category as ``{item_name: current_value}``
         (Ultimate REST: ``GET /v1/configs/<category>``). Default raises — only
         the Ultimate exposes a readable config surface. Callers gate on
-        ``profile.supports_config`` first (AsidScene reads the SID socket
-        detection + snapshots the SID address map to restore on teardown)."""
+        ``profile.supports_config`` first — or on ``profile.supports_sid_config``
+        when the category is part of the U64 multi-SID surface (AsidScene reads
+        the SID socket detection + snapshots the SID address map to restore on
+        teardown)."""
         raise BackendCapabilityError("get_config_category")
 
     def get_device_info(self, *, timeout: float = 3.0) -> dict[str, str]:
@@ -391,6 +419,17 @@ class C64Backend(ABC):
         can't say which machine produced it (nor even, for the Ultimate family,
         whether it was a U64 or a U2+)."""
         return ""
+
+    def refine_capabilities(self) -> None:
+        """Downgrade optimistic profile capability flags against the connected
+        device — the same probe-and-downgrade `TeensyROMBackend` applies to
+        `supports_read` at connect, hooked here for backends whose probe can't
+        run in ``__init__`` (the Ultimate's REST side isn't proven reachable
+        until the CLI's startup probe succeeds). Callers invoke it only on
+        that already-proven path, never under ``--skip-probe``. Best-effort:
+        an override that can't read the device keeps the optimistic flags and
+        never raises. Default no-op."""
+        return
 
     # ---- semantic write helpers ---------------------------------------
     # Pure writes presuming the standard C64 memory map + kernal IRQ chain.

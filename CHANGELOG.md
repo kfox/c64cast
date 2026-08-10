@@ -14,6 +14,19 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **An Ultimate II+ now says up front that it has no SID config surface,
+  instead of planning against config that isn't there.** The U64's SID
+  routing / chip-model / mixer configuration lives in three REST categories
+  the U2+ doesn't have — and the firmware answers queries for missing
+  categories with an empty success, so every SID-playing scene silently read
+  empty state and planned against it. Connecting now probes the device's
+  actual category list once (after reachability is already proven; `--skip-probe`
+  costs nothing new) and logs a single line when the surface is absent; SID
+  tunes then play on whatever answers their addresses, with the model verdict
+  coming from `[hardware].host_sid_model`. Capability detection is by config
+  category presence, not the product name, so it tracks firmware differences
+  within one product too.
+
 - **The Ultimate II+'s Ultimate Audio sampler is detected again.** The sampler
   probe read the mixer volumes from the U64's `Audio Mixer` config category; the
   U2+ carries the same `Vol Sampler L/R` fields in `Audio Output Settings`, and

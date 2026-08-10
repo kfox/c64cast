@@ -168,7 +168,9 @@ class AsidSceneTest(unittest.TestCase):
         from c64cast.sid.asid_scene import AsidScene
 
         api = FakeAPI()
-        api.profile = HardwareProfile(name="Fake", family="fake", supports_config=True)
+        api.profile = HardwareProfile(
+            name="Fake", family="fake", supports_config=True, supports_sid_config=True
+        )
         if sockets:
             from c64cast.sid.asid_sidmap import CAT_SOCKETS
 

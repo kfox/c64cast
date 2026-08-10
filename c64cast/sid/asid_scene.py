@@ -144,8 +144,8 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._d018 = D018_HIRES_BITMAP
 
         # Multi-SID: honored only when enabled AND the backend exposes the
-        # config API (Ultimate REST). Off ⇒ extra chips downmix to the primary.
-        self._multi_sid = multi_sid and bool(getattr(api.profile, "supports_config", False))
+        # U64 multi-SID config surface. Off ⇒ extra chips downmix to the primary.
+        self._multi_sid = multi_sid and bool(getattr(api.profile, "supports_sid_config", False))
         self._max_sids = MAX_SIDS if max_sids is None else max(1, min(max_sids, MAX_SIDS))
 
         # Buffered C64-side ring player (cycle-accurate multispeed) — U64 only

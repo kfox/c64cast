@@ -140,10 +140,16 @@ class FakeAPI:
     def ultimate(cls, *, supports_config: bool = True) -> FakeAPI:
         """A FakeAPI presenting as a config-capable Ultimate — the profile
         the SID volume / panning / autoconfig and DAC-calibration paths gate
-        on. Seed `config_store` afterward to model mixer items / sockets."""
+        on. The multi-SID surface flag tracks `supports_config` because this
+        factory models a U64, where the two arrive together (a U2+-shaped
+        fake sets `supports_sid_config=False` explicitly). Seed `config_store`
+        afterward to model mixer items / sockets."""
         api = cls()
         api.profile = HardwareProfile(
-            name="Fake U64", family="fake", supports_config=supports_config
+            name="Fake U64",
+            family="fake",
+            supports_config=supports_config,
+            supports_sid_config=supports_config,
         )
         return api
 

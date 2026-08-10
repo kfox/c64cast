@@ -263,7 +263,7 @@ def plan_model_config_for_header(
     if sid_model == "off":
         log.info("sid autoconfig: off — leaving SID hardware config untouched")
         return None
-    if not getattr(api.profile, "supports_config", False):
+    if not getattr(api.profile, "supports_sid_config", False):
         log.info(
             "sid autoconfig: mode=%s but backend has no SID config API — cannot "
             "verify or correct chip model; playing on whatever answers each "

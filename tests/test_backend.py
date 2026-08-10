@@ -21,6 +21,7 @@ from c64cast.app import config as cfgmod
 from c64cast.hw.backend import (
     BACKENDS,
     DELTA_CHUNK_BYTES,
+    SID_CONFIG_CATEGORIES,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
     BufferedWriteBackend,
@@ -374,6 +375,33 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.restore_kernal_irq_vector()
         # $0314/$0315 ← $EA31 (kernal default), coalesced into one write.
         self.assertEqual(b.emits, [(0x0314, b"\x31\xea")])
+
+
+class SidConfigCapabilityTest(unittest.TestCase):
+    """The supports_sid_config contract: what each family profile claims, and
+    that the hw-layer category list can't drift from the canonical constants
+    in asid_sidmap (which backend.py can't import — hw must not depend on
+    sid)."""
+
+    def test_probe_categories_match_the_canonical_constants(self):
+        from c64cast.sid.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS, CAT_ULTISID
+
+        self.assertEqual(set(SID_CONFIG_CATEGORIES), {CAT_ADDRESSING, CAT_SOCKETS, CAT_ULTISID})
+
+    def test_ultimate_claims_the_surface_optimistically(self):
+        # Optimistic so an unprobed run (--skip-probe, probe failure) behaves
+        # exactly as before the flag existed; refine_capabilities revokes it.
+        self.assertTrue(ULTIMATE_PROFILE.supports_sid_config)
+
+    def test_teensyrom_never_claims_the_surface(self):
+        from c64cast.hw.backend import TEENSYROM_PROFILE
+
+        self.assertFalse(TEENSYROM_PROFILE.supports_sid_config)
+
+    def test_default_no_op_refine_exists_on_the_abc(self):
+        # cli/doctor call it on every backend after a successful probe; a
+        # backend with nothing to refine must accept the call.
+        _RecordingBackend().refine_capabilities()
 
 
 class ResolveHostSidModelTest(unittest.TestCase):
