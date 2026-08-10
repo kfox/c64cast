@@ -139,6 +139,21 @@ when audio is enabled — the always-DAC `$D418` stream (see the tempo section
 above) is where the difference is loudest, not the only thing crossing that port.
 Verified on C64 Ultimate firmware 1.1.0.
 
+## Bus Operation Mode = `Writes` also blocks cartridge-port launches
+
+The same setting cuts the other way for a device that *launches* programs from
+the cartridge port. An Ultimate II+ sitting in an Ultimate 64's (or C64
+Ultimate's) cartridge port cannot start a PRG via its `run_prg` REST runner:
+that launch path asserts RESET over the cartridge port, and under
+`Bus Operation Mode = Writes` the host machine does not honor it. The request
+succeeds, nothing errors, and the machine never restarts into the program.
+
+So a cartridge-port U2+ is a *config-read-only* target for c64cast: the REST
+config surface and probes all answer, but SID/PRG playback never starts.
+Useful for checking configuration and connectivity; any playback behavior has
+to be verified with the U2+ in an ordinary C64, where its cartridge-port RESET
+works.
+
 ## SID playback uses a C64-side player PRG, not `runners:sidplay`
 
 `WaveformScene` deliberately avoids the U64 firmware's

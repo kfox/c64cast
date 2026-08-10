@@ -48,6 +48,10 @@ SYSTEM_CHOICES = ("NTSC", "PAL")
 # Mirrors backend.BACKENDS; duplicated here so config.py stays import-light
 # (it doesn't pull in api.py). tests/test_introspect.py asserts they match.
 _BACKEND_CHOICES = ("ultimate", "teensyrom")
+# Unlike [ultimate64].sid_model ("off" = don't touch the hardware config),
+# the opt-out here is "unknown": there is no hardware config to touch, only
+# a claim about the machine that a verdict can be rendered from.
+HOST_SID_MODEL_CHOICES = ("auto", "6581", "8580", "unknown")
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
 _TR_STORAGE_CHOICES = ("sd", "usb")
 _DISPLAY_CHOICES = ("hires_edges", "hires", "petscii", "mcm", "mhires", "blank", "random")
@@ -213,6 +217,21 @@ class HardwareCfg:
     backend: str = field(
         default="ultimate",
         metadata={"help": "Hardware backend family driving the C64.", "choices": _BACKEND_CHOICES},
+    )
+    # Consulted only by the resolved-audio verdict, and only when the link
+    # can't read the SID hardware state itself (c64cast/sid/sid_resolved.py);
+    # a backend with the U64 SID config API reads the real chips instead.
+    host_sid_model: str = field(
+        default="auto",
+        metadata={
+            "help": "SID chip model in the C64 being driven, so a tune asking "
+            "for the other model still gets a warning on links that can't read "
+            "the SID hardware state (e.g. TeensyROM). 'auto' assumes 6581 on "
+            "NTSC / 8580 on PAL and logs that assumption; 'unknown' opts out "
+            "of model-match verdicts. Ignored where the live SID state is "
+            "readable (U64).",
+            "choices": HOST_SID_MODEL_CHOICES,
+        },
     )
     dump_char_rom: bool = field(
         default=True,

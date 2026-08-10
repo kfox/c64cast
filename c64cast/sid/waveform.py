@@ -58,7 +58,7 @@ from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
-from .sid_autoconfig import plan_model_config_for_header
+from .sid_autoconfig import plan_model_config_for_header, required_models_for
 
 # SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
 # _play_bank_for_footprints moved to sid_host_emu.py (so SidFileAudioSource can
@@ -83,6 +83,7 @@ from .sid_hw_config import (
     detect_sockets,
 )
 from .sid_panning import apply_panning, sources_for_addresses
+from .sid_resolved import log_resolved_audio
 from .sid_volume import apply_volume
 from .sidemu import ACCUMULATOR_RANGE, SIDEmulator, primary_waveform
 
@@ -934,7 +935,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         All of it is a no-op on a backend without a SID config API (TeensyROM) —
         the scope still shows every chip; only $D400 sounds there. Best-
         effort throughout; a REST failure never aborts the scene."""
-        if not getattr(self.api.profile, "supports_config", False):
+        if not getattr(self.api.profile, "supports_sid_config", False):
             if self._n_sids >= 2:
                 log.info(
                     "waveform: %d-SID tune but backend has no SID config API — "
@@ -947,6 +948,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     "— cannot verify or correct chip model",
                     self._sid_model,
                 )
+            log_resolved_audio(self.api, self._sid_addresses, self._required_sid_models())
             return
 
         sid_map, model_blind = self._plan_multi_sid_map() if self._n_sids >= 2 else (None, False)
@@ -983,17 +985,15 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         self._apply_sid_panning(sid_map)
         self._apply_sid_volume(sid_map)
+        log_resolved_audio(self.api, self._sid_addresses, self._required_sid_models())
 
     def _required_sid_models(self) -> tuple[str | None, ...]:
         """The chip model each of the tune's chips requires, parallel to
-        `_sid_addresses`: the PSID header's own per-chip models under "auto", the
-        forced model under an explicit "6581"/"8580", and nothing at all under
-        "off" (which disables model matching entirely)."""
-        if self._sid_model == "off":
-            return ()
-        if self._sid_model == "auto":
-            return self.header.sid_models
-        return tuple(self._sid_model for _ in self._sid_addresses)
+        `_sid_addresses` (which detect_sid_addresses may resolve to a different
+        count than the raw header declares)."""
+        return required_models_for(
+            self._sid_model, self.header.sid_models, len(self._sid_addresses)
+        )
 
     def _plan_multi_sid_map(self) -> tuple[SidMap | None, bool]:
         """Plan the hardware map for a multi-SID tune. Returns the map and

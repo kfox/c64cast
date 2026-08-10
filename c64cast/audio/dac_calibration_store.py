@@ -237,7 +237,7 @@ def _select_sid_entry(
     evidence available on a link that can't ask the machine itself."""
     has_socket_entries = "1" in sids or "2" in sids
     if has_socket_entries and be is not None:
-        if cfg.hardware.backend == "ultimate" and getattr(be.profile, "supports_config", False):
+        if cfg.hardware.backend == "ultimate" and getattr(be.profile, "supports_sid_config", False):
             socket = active_socket_at_d400(be)
             if socket is None:
                 # The file has physical-chip table(s), but $D400 is currently
@@ -341,7 +341,7 @@ def load_calibrated_table(
         # write per-socket entries, either way knowingly; saying this there would
         # fire on every Ultimate run that predates per-socket files.
         and be is not None
-        and not getattr(be.profile, "supports_config", False)
+        and not getattr(be.profile, "supports_sid_config", False)
     ):
         # A "default" entry means the measurement never established *which* SID
         # it was driving: it measured whatever answers $D400 and filed it under

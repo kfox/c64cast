@@ -1028,6 +1028,101 @@ class ReadSideTest(unittest.TestCase):
         args, _ = self.get.call_args
         self.assertEqual(args[0], "http://example.invalid/v1/info")
 
+    def test_describe_device_names_the_unit_and_its_firmware(self):
+        # `product` is the only thing over this API that tells a U64 from a
+        # U2+, and the two expose different config categories — so the
+        # connect-time line has to carry it.
+        self.get.return_value.json.return_value = {
+            "product": "Ultimate II+",
+            "unique_id": "5D327C",
+            "firmware_version": "3.14d",
+            "fpga_version": "122",
+        }
+        self.assertEqual(
+            self.api.describe_device(), "Ultimate II+ 5D327C (firmware 3.14d, FPGA 122)"
+        )
+
+    def test_describe_device_omits_fields_the_device_did_not_report(self):
+        self.get.return_value.json.return_value = {"product": "C64 Ultimate"}
+        self.assertEqual(self.api.describe_device(), "C64 Ultimate")
+
+    def test_describe_device_is_empty_when_the_device_wont_answer(self):
+        # Firmware without /v1/info must cost a log line, not a crashed run.
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        self.assertEqual(self.api.describe_device(), "")
+
+
+# What GET /v1/configs lists on each device (live dumps, abridged to what the
+# capability probe reads). The U2+ has a config API but none of the three
+# multi-SID categories.
+_U64_CATEGORIES = [
+    "Audio Mixer",
+    "SID Sockets Configuration",
+    "UltiSID Configuration",
+    "SID Addressing",
+    "C64 and Cartridge Settings",
+]
+_U2PLUS_CATEGORIES = [
+    "Audio Output Settings",
+    "C64 and Cartridge Settings",
+    "Network Settings",
+]
+
+
+class RefineCapabilitiesTest(unittest.TestCase):
+    """The connect-time capability probe: category presence decides
+    `supports_sid_config`, and every failure keeps the optimistic flags —
+    a transient read error must never disable SID config on a healthy U64."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.get = patch.object(self.api.session, "get").start()
+        self.get.return_value.raise_for_status.return_value = None
+        self.addCleanup(patch.stopall)
+
+    def _refine_with(self, categories: object) -> None:
+        self.get.return_value.json.return_value = {"categories": categories, "errors": []}
+        self.api.refine_capabilities()
+
+    def test_u64_category_list_keeps_the_sid_surface(self):
+        self._refine_with(_U64_CATEGORIES)
+        self.assertTrue(self.api.profile.supports_sid_config)
+
+    def test_u2plus_category_list_revokes_the_sid_surface_with_one_line(self):
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self._refine_with(_U2PLUS_CATEGORIES)
+        self.assertFalse(self.api.profile.supports_sid_config)
+        info_lines = [r for r in cm.records if r.levelname == "INFO"]
+        self.assertEqual(len(info_lines), 1)
+        self.assertIn("no multi-SID config surface", info_lines[0].getMessage())
+
+    def test_partial_surface_is_revoked(self):
+        # All three categories make the surface; asid_sidmap's planners
+        # write to each of them, so two out of three is still unusable.
+        self._refine_with(["SID Addressing", "C64 and Cartridge Settings"])
+        self.assertFalse(self.api.profile.supports_sid_config)
+
+    def test_read_failure_keeps_optimism(self):
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        self.api.refine_capabilities()
+        self.assertTrue(self.api.profile.supports_sid_config)
+
+    def test_unrecognized_shape_keeps_optimism(self):
+        self._refine_with("not-a-list")
+        self.assertTrue(self.api.profile.supports_sid_config)
+
+    def test_already_revoked_makes_no_rest_call(self):
+        self.api.profile = replace(self.api.profile, supports_sid_config=False)
+        self.api.refine_capabilities()
+        self.get.assert_not_called()
+
     def test_run_basic_clear_loop_posts_prg_and_swallows_failure(self):
         import requests
 

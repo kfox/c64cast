@@ -622,20 +622,22 @@ def run_calibration(
     calibration file. Leaves the machine silenced + reset. Requires a capture
     device on the SID output (the ``mic`` extra / sounddevice).
 
-    On a backend with a config API (``profile.supports_config`` — Ultimate
-    only), every physical SID socket reporting a detected chip
-    (``sid_hw_config.detect_sockets``) is measured independently — isolated to
-    ``$D400`` via :func:`_isolate_socket`, measured, then every socket's
-    original SID address/socket config is restored. A board with no populated
-    sockets, or a backend with no config API at all, falls back to a single
-    unlabeled measurement of whatever SID currently answers ``$D400``.
+    On a backend with the multi-SID config surface
+    (``profile.supports_sid_config`` — U64 only), every physical SID socket
+    reporting a detected chip (``sid_hw_config.detect_sockets``) is measured
+    independently — isolated to ``$D400`` via :func:`_isolate_socket`,
+    measured, then every socket's original SID address/socket config is
+    restored. A board with no populated sockets, or a backend without that
+    surface (TeensyROM has no config API; the Ultimate II+ has no sockets to
+    isolate), falls back to a single unlabeled measurement of whatever SID
+    currently answers ``$D400``.
 
     Raises :class:`CaptureUnavailableError` if capture can't be set up.
     """
     _require_sounddevice()
 
     key = resolve_calibration_key(cfg, be)
-    supports_config = bool(getattr(be.profile, "supports_config", False))
+    supports_sid_config = bool(getattr(be.profile, "supports_sid_config", False))
     device_info = _device_provenance(cfg, be, log_fn)
     normal_d400: int | None = None
     try:
@@ -645,11 +647,11 @@ def run_calibration(
             be=be, key=key, device=dev, fmt=fmt, secs=secs, settle=settle, log_fn=log_fn
         )
 
-        sockets = _populated_sockets(be, log_fn) if supports_config else []
+        sockets = _populated_sockets(be, log_fn) if supports_sid_config else []
         # Read before the measurement loop: _isolate_socket remaps every socket
         # to $D400 in turn, so asking afterwards answers with c64cast's own
         # edit rather than the mapping this machine actually runs under.
-        normal_d400 = active_socket_at_d400(be) if supports_config else None
+        normal_d400 = active_socket_at_d400(be) if supports_sid_config else None
 
         if sockets:
             entries = _measure_each_socket(ctx, st, sockets)
