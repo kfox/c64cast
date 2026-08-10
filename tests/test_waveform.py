@@ -1012,6 +1012,53 @@ class WaveformSceneTest(unittest.TestCase):
         scene.teardown()
         self.assertIn("SILENCE", api.regs)
         self.assertIn("RESTORE_IRQ", api.regs)
+
+    def test_teardown_silences_extra_chips_before_config_restore(self):
+        # A 2SID tune on the U2+ emulated-stereo-SID surface: teardown must
+        # zero the chip at $D420 BEFORE the config restore re-points that
+        # side at its home base — a side moved home mid-note keeps ringing
+        # where no write can ever reach it, and a machine reset does not
+        # clear the emulation's voice state (HW-verified).
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI.u2plus()
+        api.config_store["Audio Output Settings"] = {
+            "SID Left": "Enabled",
+            "SID Left Base": "Snoop $D400",
+            "SID Right": "Enabled",
+            "SID Right Base": "Snoop $D680",
+            "Vol EmuSid1": " 0 dB",
+            "Vol EmuSid2": " 0 dB",
+            "Pan EmuSid1": "Center",
+            "Pan EmuSid2": "Center",
+        }
+        orig_put = api.put_config_item
+
+        def put_and_log(category, item, value, **kw):
+            api.ops.append(("put_config_item", category, item, value))
+            return orig_put(category, item, value, **kw)
+
+        api.put_config_item = put_and_log
+        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
+            f.write(make_psid(second_sid_addr=0xD420, payload=bytes(2048)))
+            path = f.name
+        self.addCleanup(os.unlink, path)
+
+        scene = WaveformScene(api, audio=None, file=path)
+        scene.setup()
+        api.ops.clear()  # only the teardown ordering is under test
+        scene.teardown()
+
+        self.assertEqual(api.regs["D420"], tuple(bytes(25)))
+        zero_fill = next(
+            i for i, op in enumerate(api.ops) if op[0] == "write_regs" and op[1] == "D420"
+        )
+        restore = next(
+            i
+            for i, op in enumerate(api.ops)
+            if op[0] == "put_config_item" and op[2] == "SID Right Base"
+        )
+        self.assertLess(zero_fill, restore)
         # Teardown must NOT poke BLNSW ($00CC) to stop the cursor blink: the
         # editor's input-wait loop overwrites that address on every pass, so it
         # never holds. The BASIC clear loop is the only thing that stops it.

@@ -61,7 +61,17 @@ the version and stamps it with the date.
   that was disabled is never touched. The resolved-audio line reads the same
   surface back (`$D400 → emusid1 (6581) @ 0 dB Left 3`), with the declared
   host-SID verdict appended, since the machine's own SID still plays the tune
-  on its own output.
+  on its own output. Teardown silences every routed chip *before* putting the
+  snoop bases back: the emulation's voice state survives a machine reset
+  (hardware-verified), so a side moved home mid-note would otherwise keep
+  droning where no write could ever reach it.
+
+- **Extra SID chips are now silenced at scene teardown.** Waveform and
+  SID-audio scenes only silenced `$D400`; a multi-SID tune's other chips kept
+  whatever note was sounding when the scene ended — inaudible in practice on
+  a U64 only because the mixer restore usually muted them or the app's exit
+  reset cleared the real chips. Every tune chip is now zeroed at the address
+  it played, in the same teardown step ASID scenes already had.
 
 - **`[hardware].host_sid_model`** — declare the SID chip model in the C64 being
   driven (`auto` | `6581` | `8580` | `unknown`). On links that can't read the

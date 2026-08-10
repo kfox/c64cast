@@ -53,7 +53,7 @@ from c64cast._pollthread import PollThread
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, CPU, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import CIA2, CPU, SCREEN, SID, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
@@ -86,7 +86,7 @@ from .sid_hw_config import (
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import log_resolved_audio
 from .sid_volume import apply_volume
-from .sidemu import ACCUMULATOR_RANGE, SIDEmulator, primary_waveform
+from .sidemu import ACCUMULATOR_RANGE, SID_REG_COUNT, SIDEmulator, primary_waveform
 
 # The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
 # helpers, VIC hires bring-up, and the per-voice render paths) lives in
@@ -1074,15 +1074,23 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def teardown(self):
         super().teardown()
         self._poll.stop()
-        self._restore_sid_hw_config()
-        # Order: vector first, then silence. If silence happened first,
-        # the IRQ could fire between the volume-clear and gate-clears,
-        # rewriting both. Flush after the vector write so it has actually
-        # landed before silence_sid issues its writes; flush after silence
-        # so the SID is genuinely quiet before the next scene begins.
+        # Order: vector first, then silence, then the SID-config restore. If
+        # silence happened before the vector restore, the IRQ could fire
+        # between the volume-clear and gate-clears, rewriting both. Every
+        # tune chip is silenced at the address it played (mirroring
+        # AsidScene.teardown), and only THEN is the config restored: the
+        # restore may re-point a U2+ emulated SID at its home base, and a
+        # side moved home mid-note keeps ringing where no write can ever
+        # reach it — a machine reset does not clear the emulation's voice
+        # state (HW-verified). Flush after the vector write so it has
+        # actually landed before the silence writes; flush after silence so
+        # the SID is genuinely quiet before the next scene begins.
         try:
             self.api.restore_kernal_irq_vector()
             self.api.flush()
+            for base in self._sid_addresses:
+                if base != SID.BASE:
+                    self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
             self.api.silence_sid()
             # Restore VIC bank 0 + the default $D018 so the next scene's
             # bank-0 display renders (a no-op when we never relocated; the
@@ -1093,6 +1101,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.api.flush()
         except Exception:
             log.exception("waveform: teardown silence/restore failed")
+        finally:
+            self._restore_sid_hw_config()
 
     def cycle_style(self, api: C64Backend) -> str | None:
         """SHIFT handler: advance to the next subtune in the SID.

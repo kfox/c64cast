@@ -268,11 +268,13 @@ def make_psid(
     play: int = 0x1001,
     num_songs: int = 1,
     start_song: int = 1,
+    second_sid_addr: int = 0,
     payload: bytes | tuple[int, ...] | list[int] = (0x60, 0x60),
 ) -> bytes:
     """Minimal runnable PSID v2: real header fields + payload, enough for
     parse_psid_for_player + SidHostEmu to run INIT/PLAY (the defaults are an
-    RTS init and play). PSID is a real external format — its byte offsets
+    RTS init and play). A nonzero `second_sid_addr` ($D420-style base) makes
+    it a v3 2SID header. PSID is a real external format — its byte offsets
     live here once, so a typo'd field fails every consumer instead of just
     the one file that happened to re-type it."""
     header = bytearray(124)
@@ -284,6 +286,9 @@ def make_psid(
     header[12:14] = play.to_bytes(2, "big")
     header[14:16] = num_songs.to_bytes(2, "big")
     header[16:18] = start_song.to_bytes(2, "big")
+    if second_sid_addr:
+        header[4:6] = (3).to_bytes(2, "big")  # secondSIDAddress is v3+
+        header[0x7A] = (second_sid_addr >> 4) & 0xFF
     return bytes(header) + bytes(payload)
 
 

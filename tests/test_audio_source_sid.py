@@ -187,6 +187,51 @@ class SidFileAudioSourceTest(unittest.TestCase):
         src.teardown()
         self.assertEqual(order, ["restore_kernal_irq_vector", "silence_sid"])
 
+    def test_teardown_zero_fills_extra_chips_before_config_restore(self):
+        # A 2SID tune on the U2+ emulated-stereo-SID surface: the chip at
+        # $D420 must be zeroed BEFORE the config restore re-points that side
+        # at its home base — a side moved home mid-note keeps ringing where
+        # no write can ever reach it, and a machine reset does not clear the
+        # emulation's voice state (HW-verified).
+        path = self._write(make_psid(second_sid_addr=0xD420))
+        api = FakeAPI.u2plus()
+        api.config_store["Audio Output Settings"] = {
+            "SID Left": "Enabled",
+            "SID Left Base": "Snoop $D400",
+            "SID Right": "Enabled",
+            "SID Right Base": "Snoop $D680",
+            "Vol EmuSid1": " 0 dB",
+            "Vol EmuSid2": " 0 dB",
+            "Pan EmuSid1": "Center",
+            "Pan EmuSid2": "Center",
+        }
+        orig_put = api.put_config_item
+
+        def put_and_log(category, item, value, **kw):
+            api.ops.append(("put_config_item", category, item, value))
+            return orig_put(category, item, value, **kw)
+
+        api.put_config_item = put_and_log
+        src = SidFileAudioSource(
+            cast(C64Backend, api),
+            path,
+            display_mode=cast("object", _FakeMode(False)),  # type: ignore[arg-type]
+        )
+        src.setup()
+        api.ops.clear()  # only the teardown ordering is under test
+        src.teardown()
+
+        self.assertEqual(api.regs["D420"], tuple(bytes(25)))
+        zero_fill = next(
+            i for i, op in enumerate(api.ops) if op[0] == "write_regs" and op[1] == "D420"
+        )
+        restore = next(
+            i
+            for i, op in enumerate(api.ops)
+            if op[0] == "put_config_item" and op[2] == "SID Right Base"
+        )
+        self.assertLess(zero_fill, restore)
+
     def test_pool_retry_skips_bad_candidate(self):
         # A directory with one spinning SID + one healthy SID: the source must
         # skip the bad one and pick the good one. Stub the shuffle to an
