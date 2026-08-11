@@ -25,8 +25,18 @@ retargeting what they left on. Panning and volume for the routed sides ride on
 :mod:`c64cast.sid.sid_panning` / :mod:`c64cast.sid.sid_volume`, whose item maps
 include the ``emusid1``/``emusid2`` sources defined here.
 
-Same shape as the siblings: pure planners plus one best-effort impure entry
-point (:func:`apply_emusid_routing`), gated on
+It also *matches the model*: each side snooping a tune chip is set to the
+6581 or 8580 the tune's PSID header asked for (:func:`apply_emusid_model`,
+under the same ``[ultimate64].sid_model`` knob as the U64's SID Player
+Autoconfig). That pass is trivial next to the U64's, where matching means
+finding a different chip — swapping sockets or falling back to an FPGA core.
+Here the side *is* an emulation, so it is simply told which chip to be, and a
+mismatch is always fixable in place. The host C64's own SID still plays the
+tune unmatched on the machine's own output; nothing on this surface can change
+that, which is why the resolved-audio line reports both routes separately.
+
+Same shape as the siblings: pure planners plus best-effort impure entry
+points (:func:`apply_emusid_routing`, :func:`apply_emusid_model`), gated on
 ``profile.supports_emusid_mixer`` — granted by ``refine_capabilities`` from
 the device's category list, so it is never true alongside the U64's
 ``supports_sid_config`` surface (the two firmwares register different
@@ -69,10 +79,26 @@ ITEM_FILTER: Final[dict[str, str]] = {
     "emusid1": "SID Left Filter Curve",
     "emusid2": "SID Right Filter Curve",
 }
+ITEM_WAVEFORMS: Final[dict[str, str]] = {
+    "emusid1": "SID Left Combined Waveforms",
+    "emusid2": "SID Right Combined Waveforms",
+}
 VOL_ITEM_EMU: Final[dict[str, str]] = {"emusid1": "Vol EmuSid1", "emusid2": "Vol EmuSid2"}
 PAN_ITEM_EMU: Final[dict[str, str]] = {"emusid1": "Pan EmuSid1", "emusid2": "Pan EmuSid2"}
 
 ENABLED: Final = "Enabled"
+
+# Both model items take the firmware's two-entry `sidchip_sel` ladder, so the
+# emulation is told which chip to *be* rather than which curve to approximate —
+# none of the U64 UltiSID's "8580 Lo"/"8580 Hi"/"6581 Alt" variants to choose
+# between, and the labels are already the model names the PSID header uses.
+EMU_MODELS: Final[tuple[str, ...]] = ("6581", "8580")
+
+# Filter curve and combined waveforms are separate config items, but they are
+# two halves of one question — a side set to an 8580 curve with 6581 waveform
+# combining emulates neither chip. A tune asks for a chip, so they move
+# together.
+_MODEL_ITEMS: Final[tuple[dict[str, str], ...]] = (ITEM_FILTER, ITEM_WAVEFORMS)
 
 # The bus addresses the snoop-base enum can express (audio_select.cc
 # sid_base[]) — the twelve standard multi-SID bases. The enum's remaining
@@ -182,6 +208,40 @@ def emusid_sources_for_addresses(
     return tuple(by_address.get(a) for a in addresses)
 
 
+def plan_emusid_model(
+    addresses: Sequence[int],
+    required_models: Sequence[str | None],
+    category: Mapping[str, str],
+) -> dict[tuple[str, str], str]:
+    """Pure planner: set each snooping side to the chip model its tune chip
+    asked for — the emulated-SID analog of
+    :func:`c64cast.sid.sid_autoconfig.plan_sid_model_config`, and far shorter,
+    because here there is nothing to route around. A U64 chip *is* a 6581 or an
+    8580 and autoconfig can only find a different one; an emulation is told
+    which to be, so a mismatch is always fixable in place and never displaces
+    anything.
+
+    `required_models` is the model each chip asked for, parallel to `addresses`
+    (a short or empty sequence — what ``sid_model = "off"`` produces — just
+    leaves those chips alone). Only sides snooping a tune address are touched,
+    and only when they don't already present the wanted model, so an
+    already-matching tune plans nothing and produces no REST traffic at all.
+
+    A requirement the ladder can't express is skipped rather than approximated:
+    that covers the PSID header's "unknown" and "6581+8580" (which any chip
+    satisfies) without a separate no-requirement check."""
+    sources = emusid_sources_for_addresses(addresses, category)
+    plan: dict[tuple[str, str], str] = {}
+    for source, required in zip(sources, required_models, strict=False):
+        if source is None or required is None or required not in EMU_MODELS:
+            continue
+        for items in _MODEL_ITEMS:
+            item = items[source]
+            if category.get(item) != required:
+                plan[(CAT_EMUSID, item)] = required
+    return plan
+
+
 def read_emusid_category(api: C64Backend) -> dict[str, str] | None:
     """The live ``Audio Output Settings`` category, or None when the backend
     doesn't carry the surface or the read failed — callers treat None as
@@ -241,5 +301,38 @@ def apply_emusid_routing(api: C64Backend, addresses: Sequence[int]) -> dict[tupl
     log.info(
         "emusid routing: %s",
         ", ".join(f"{item}={label}" for (_category, item), label in sorted(plan.items())),
+    )
+    return originals
+
+
+def apply_emusid_model(
+    api: C64Backend, addresses: Sequence[int], required_models: Sequence[str | None]
+) -> dict[tuple[str, str], str]:
+    """Set each snooping emulated SID to the chip model its tune chip asked
+    for (best-effort; a no-op on any backend without the surface). Returns the
+    ``{(category, item): value}`` originals for the caller's restore snapshot —
+    empty when every side already presents the wanted model.
+
+    Call this *after* :func:`apply_emusid_routing`: routing decides which side
+    snoops which address, and the category is re-read here so the models land on
+    where each chip actually ended up. Same discipline as the U64 path, where
+    :func:`c64cast.sid.sid_autoconfig.plan_model_config_for_header` re-derives
+    against the now-current addressing after a map is applied."""
+    if not addresses:
+        return {}
+    category = read_emusid_category(api)
+    if category is None:
+        return {}
+
+    plan = plan_emusid_model(addresses, required_models, category)
+    if not plan:
+        log.debug("emusid model: every snooping side already matches — no change")
+        return {}
+    originals = {key: category[key[1]] for key in plan if key[1] in category}
+
+    apply_config(api, plan)
+    log.info(
+        "emusid model: %s",
+        ", ".join(f"{item}={value}" for (_category, item), value in sorted(plan.items())),
     )
     return originals

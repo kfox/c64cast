@@ -113,10 +113,12 @@ auto_reu = true                     # auto-enable + size (16 MB) the U64 REU,
                                     # an REU (TeensyROM) or under --skip-probe.
 sid_model = "auto"                  # auto | 6581 | 8580 | off — match a .sid
                                     # file's PSID-requested chip model to the
-                                    # U64's actual SID hardware (swap sockets,
-                                    # or fall back to an UltiSID core). "auto"
-                                    # reads the header per chip; an explicit
-                                    # 6581/8580 forces every chip; off disables.
+                                    # actual SID hardware: on the U64 by swapping
+                                    # sockets or falling back to an UltiSID core,
+                                    # on the U2+ by setting each emulated SID that
+                                    # snoops a tune chip. "auto" reads the header
+                                    # per chip; an explicit 6581/8580 forces every
+                                    # chip; off disables.
 sid_panning = []                    # stereo pan per SID audio SOURCE (U64 only),
                                     # applied live before playback and restored
                                     # at teardown. MAX 4 ENTRIES: the U64 has one

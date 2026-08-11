@@ -320,6 +320,14 @@ other physical socket if it has the right chip, else falls back to an
 UltiSID FPGA core set to a fixed representative filter curve (`"6581"` /
 `"8580 Lo"`).
 
+On an **Ultimate II+** the same setting drives a much shorter path
+(`emusid_mixer.apply_emusid_model`): that machine has no sockets and no cores
+to fall back to, so each emulated SID snooping a tune chip is simply set to
+the requested model — `Filter Curve` and `Combined Waveforms` together, since
+a side split between the two emulates neither chip. Nothing is displaced and
+nothing can fail for want of matching hardware. The host C64's own SID is the
+exception, below.
+
 **Real-hardware limitation inherited from firmware: a genuinely fixed
 physical 6581 or 8580 chip cannot be reconfigured to the other model.**
 Autoconfig can only *route around* a mismatched chip — swap which socket
@@ -332,6 +340,33 @@ single-socket or bare-UltiSID board would. `--sid-model off` disables header
 inspection entirely (matches firmware's `CFG_PLAYER_AUTOCONFIG` disabled
 state); an explicit `--sid-model 6581`/`8580` forces that model for every
 chip in the tune, ignoring what the header says.
+
+The same limitation bounds the U2+ path from the other side. Model matching
+there is total *on the emulations* and impossible on the **host C64's own
+SID**, which plays the tune in parallel on the machine's own audio output. So
+a mismatched tune on a U2+ resolves to matched emulations plus one unmatched
+physical chip, and the resolved-audio line reports both routes rather than
+declaring the tune matched.
+
+**Verifying U2+ emu-SID audio by ear requires the cartridge's own output.**
+The two routes leave the setup on different cables: the emulated SIDs are
+audible only on the **Ultimate II+'s green audio jack**, while the C64's AV
+output (a 1702, or RF to a television) carries the machine's **real, internal**
+SID. A model change that is confirmed at the config level therefore sounds like
+*nothing happened* through the monitor — you are listening to the one chip no
+setting can touch. Observed during this feature's hardware verification: an
+8580-tagged tune still sounded thin and scratchy on the 1702 after the
+emulation had been correctly set to 8580, and sounded as authored on headphones
+into the green jack. The U64 has no such split — it is the Commodore, and its
+own output carries the chips it configures.
+
+**The host chip's model can only ever be declared, never read.** Nothing in
+the machine reports it, so `[hardware].host_sid_model` defaults to the
+NTSC=6581 / PAL=8580 convention and **warns once per run** that it is guessing,
+because every model verdict on that route rests on the guess. The convention is
+frequently wrong (NTSC machines carrying an 8580 are common). Setting the field
+to `"6581"`/`"8580"` states it as fact and silences the warning; `"unknown"`
+opts out of host-chip verdicts entirely.
 
 ### ASID buffered ring player (cycle-accurate multispeed)
 

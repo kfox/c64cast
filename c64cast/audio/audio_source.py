@@ -713,23 +713,25 @@ class SidFileAudioSource:
         playing each chip is whatever currently answers its address — but on
         the emulated-stereo-SID surface (U2+) a spare enabled side is still
         pointed at any uncovered chip address, or the chip has no route to
-        that output at all. Originals fold into the same snapshot teardown
-        restores, and the settled state is logged so a chip that ends up
-        muted or on the wrong model says so."""
+        that output at all, and each side that ends up snooping a tune chip is
+        set to the model that chip asked for. Originals fold into the same
+        snapshot teardown restores, and the settled state is logged so a chip
+        that ends up muted or on the wrong model says so."""
         assert self.header is not None  # set by _pick_and_load, called by setup
-        from c64cast.sid.emusid_mixer import apply_emusid_routing
+        from c64cast.sid.emusid_mixer import apply_emusid_model, apply_emusid_routing
         from c64cast.sid.sid_autoconfig import required_models_for
         from c64cast.sid.sid_panning import apply_panning, sources_for_addresses
         from c64cast.sid.sid_resolved import log_resolved_audio
         from c64cast.sid.sid_volume import apply_volume
 
         addresses = self.header.sid_addresses
+        required = required_models_for(self._sid_model, self.header.sid_models, len(addresses))
         self._sid_session.fold(apply_emusid_routing(self._api, addresses))
+        self._sid_session.fold(apply_emusid_model(self._api, addresses, required))
         sources = sources_for_addresses(self._api, addresses)
         panning = apply_panning(self._api, sources, self._sid_panning)
         self._sid_session.fold(panning.originals)
         self._sid_session.fold(apply_volume(self._api, sources, self._sid_volume))
-        required = required_models_for(self._sid_model, self.header.sid_models, len(addresses))
         log_resolved_audio(self._api, addresses, required)
 
     def teardown(self) -> None:

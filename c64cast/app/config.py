@@ -343,9 +343,11 @@ class Ultimate64Cfg:
         default="auto",
         metadata={
             "help": "Auto-configure the SID chip model (6581/8580) to match what "
-            "a .sid file's PSID header requests, remapping to a matching physical "
-            "socket or an UltiSID core if needed. 'off' disables. An explicit "
-            "'6581'/'8580' forces that model for every chip, ignoring the header.",
+            "a .sid file's PSID header requests: on the U64 by remapping to a "
+            "matching physical socket or an UltiSID core, on the Ultimate II+ by "
+            "setting each emulated SID that snoops a tune chip to that model. "
+            "'off' disables. An explicit '6581'/'8580' forces that model for "
+            "every chip, ignoring the header.",
             "choices": SID_MODEL_CHOICES,
         },
     )

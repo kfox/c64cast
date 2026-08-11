@@ -251,13 +251,20 @@ class LogDeclaredAudioTest(unittest.TestCase):
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
             sr.log_resolved_audio(api, (0xD400,), ("6581",))
             sr.log_resolved_audio(api, (0xD400,), ("6581",))
-        assumptions = [r for r in cm.records if "assumption, not a measurement" in r.getMessage()]
+        assumptions = [r for r in cm.records if "convention" in r.getMessage()]
         self.assertEqual(len(assumptions), 1)
+
+    def test_undeclared_model_warns_rather_than_informs(self):
+        # Every model verdict on such a link rests on the NTSC/PAL guess, so the
+        # guess itself is worth interrupting for — an INFO line scrolls past.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="WARNING") as cm:
+            sr.log_resolved_audio(_no_config_api("6581", assumed=True), (0xD400,), ("6581",))
+        self.assertTrue(any("convention" in r.getMessage() for r in cm.records))
 
     def test_declared_model_states_no_assumption(self):
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
             sr.log_resolved_audio(_no_config_api("6581"), (0xD400,), ("6581",))
-        self.assertNotIn("assumption", "".join(r.getMessage() for r in cm.records))
+        self.assertNotIn("convention", "".join(r.getMessage() for r in cm.records))
 
     def test_u2plus_shape_uses_the_declared_fallback(self):
         # A U2+ after the connect-time capability probe: it HAS a config API
