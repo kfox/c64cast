@@ -263,6 +263,10 @@ Physical chips do not generalize. 6581/8580 variation is enormous chip-to-chip, 
 
 `c64cast -u <target> --calibrate-dac` (`cli` → `dac_calibration.run_calibration`) measures the connected SID's signed transfer curve, ≈50 s per socket.
 
+#### The on-screen wait message
+
+The machine spends the whole run parked in the BASIC clear loop with a dead screen, so `run_calibration` paints two centered white lines onto it: a title right after bring-up, and a duration line once the SID count is known — `MEASURING 2 SIDS - ABOUT 90 SECONDS`, computed from the same `_plan_rounds()` capture plan the measurement loop runs so the message can't drift from the real ring count. Both paints land **strictly before the first capture, and the screen is never written again**: a host DMA halt spanning two CIA #2 Timer A underflows during a capture silently drops NMI samples (see "The ring write is split and spread" above), which would corrupt the very levels being measured. The BASIC loop is safe to paint over because `10 PRINT CHR$(147) : 20 GOTO 20` loops on line 20, not the PRINT — the screen clears exactly once at launch. There is deliberately no completion repaint: `_silence_and_reset` ends the run at the normal reset screen, which is itself the "machine released" signal, and the console carries the actual result.
+
 #### Picking the capture device
 
 `find_capture_device` resolves it: `--audio-device` if given, else the first input-capable device whose name matches `CAPTURE_NAME_HINTS` (`"cam link"`, `"elgato"`, `"hdmi"`, `"capture"`, `"macrosilicon"`, `"usb video"`, `"av to usb"` — tried in that order, so a rig with both a Cam Link and another HDMI input still picks the Cam Link), else the system default input.

@@ -1318,5 +1318,69 @@ class FindCaptureDeviceTest(unittest.TestCase):
         self.assertTrue(dcap.looks_like_capture_input("Cam Link 4K"))
 
 
+class StatusScreenTest(unittest.TestCase):
+    """The on-C64-screen wait message: centered white text as screen codes
+    (not ASCII/PETSCII), lines that fit the 40-column screen, a duration
+    estimate derived from the real ring plan, and — the safety property —
+    every screen write lands before the first measurement."""
+
+    def test_paint_centers_the_text_and_colors_it_white(self):
+        api = FakeAPI()
+        dc._paint_status_line(api, 10, "ABC")
+        base = 10 * 40 + (40 - 3) // 2
+        self.assertEqual(api.mem_files[f"{0x0400 + base:04X}"], bytes([0x01, 0x02, 0x03]))
+        self.assertEqual(api.mem_files[f"{0xD800 + base:04X}"], bytes([1, 1, 1]))
+
+    def test_screen_codes_use_the_uppercase_screen_set(self):
+        self.assertEqual(dc._screen_codes("@AZ"), bytes([0x00, 0x01, 0x1A]))
+        self.assertEqual(dc._screen_codes("a"), dc._screen_codes("A"))
+        self.assertEqual(dc._screen_codes(" -09"), bytes([0x20, 0x2D, 0x30, 0x39]))
+
+    def test_message_lines_fit_the_screen_as_screen_codes(self):
+        lines = (
+            dc._TITLE_TEXT,
+            dc._estimate_text(1, 4.5, 0.4),
+            dc._estimate_text(2, 4.5, 0.4),
+        )
+        for text in lines:
+            self.assertLessEqual(len(text), 40, text)
+            self.assertTrue(all(c < 0x40 for c in dc._screen_codes(text)), text)
+
+    def test_estimate_derives_from_the_ring_plan(self):
+        rings = sum(len(batches) for batches in dc._plan_rounds())
+        for n_sids in (1, 2):
+            text = dc._estimate_text(n_sids, 4.5, 0.4)
+            claimed = int(text.split("ABOUT ")[1].split(" ")[0])
+            actual = n_sids * (rings * 4.9 + dc._PER_SID_OVERHEAD_S)
+            self.assertLessEqual(abs(claimed - actual), dc._ESTIMATE_GRANULARITY_S / 2, text)
+
+    def test_run_paints_both_lines_before_any_measurement(self):
+        api = FakeAPI()  # default profile: no multi-SID surface → 1 SID
+        fmt = dcap.CaptureFormat(channels=2, samplerate=48000)
+
+        def fake_measure(ctx, label):
+            ctx.be.ops.append(("measure",))
+            return [0] * 256, {"ladder_bits": 6.5}, []
+
+        with (
+            patch.object(dc, "_require_sounddevice"),
+            patch.object(dc, "_bring_up_dac_env"),
+            patch.object(dc, "_open_capture", return_value=(0, fmt)),
+            patch.object(dc, "_measure_one", side_effect=fake_measure),
+            patch.object(dc, "_silence_and_reset"),
+            patch.object(dc, "save_calibration", return_value=Path("cal.json")),
+            patch.object(dc, "_report_run"),
+            patch.object(dc, "resolve_calibration_key", return_value="test-key"),
+            patch.object(dc, "_device_provenance", return_value={}),
+        ):
+            dc.run_calibration(api, _u64_cfg())
+
+        paints = [i for i, op in enumerate(api.ops) if op[0] == "write_memory_file"]
+        measures = [i for i, op in enumerate(api.ops) if op[0] == "measure"]
+        self.assertEqual(len(paints), 4)  # 2 lines × (screen + color RAM)
+        self.assertEqual(len(measures), 1)
+        self.assertTrue(max(paints) < min(measures), api.ops)
+
+
 if __name__ == "__main__":
     unittest.main()

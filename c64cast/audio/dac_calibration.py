@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from c64cast.app import paths
-from c64cast.hw.c64 import CIA2
+from c64cast.hw.c64 import CIA2, SCREEN
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -140,6 +141,62 @@ class CalibrationRun:
     key: str
     path: Path
     entries: dict[str, CalibrationResult]  # "1" / "2" / "default" -> result
+
+
+def _plan_rounds() -> list[list[list[int]]]:
+    """The capture plan every measurement runs: ring code-batches per rotation
+    round. Shared by :func:`_measure_one` and the on-screen duration estimate
+    so the two can't disagree about how many rings a run takes."""
+    return plan_capture_rounds(codes_per_ring(RING_BUFFER_SIZE) - 1)
+
+
+# --- on-screen status --------------------------------------------------------
+# The machine spends the whole run parked in the BASIC clear loop with a dead
+# screen; these two lines tell whoever is looking at it what is happening and
+# for roughly how long. Both are painted BEFORE the first capture and never
+# repainted: a host DMA halt spanning two CIA #2 Timer A underflows during a
+# capture silently drops NMI samples (docs/architecture/audio.md), so the
+# screen must not be written while a ring is being measured.
+
+_TITLE_ROW = 10
+_TITLE_TEXT = "SID DAC CALIBRATION IN PROGRESS"
+_ESTIMATE_ROW = 12
+_STATUS_COLOR = 1  # white
+# Per-SID cost beyond the rings themselves: socket isolation config writes,
+# the Mahoney-env settle, and the numpy fold.
+_PER_SID_OVERHEAD_S = 2.0
+_ESTIMATE_GRANULARITY_S = 15
+
+
+def _screen_codes(text: str) -> bytes:
+    """ASCII → C64 screen codes, uppercase set ('@A-Z' → $00-$1A; space,
+    digits and punctuation $20-$3F pass through). Mirrors
+    scenes/bitmap_text.ascii_to_screen_code rather than importing it —
+    audio/ stays independent of scenes/."""
+    return bytes(c - 0x40 if 0x40 <= c <= 0x5A else c for c in text.upper().encode("ascii"))
+
+
+def _paint_status_line(be: C64Backend, row: int, text: str) -> None:
+    """Center ``text`` on screen row ``row``, white on the cleared screen.
+
+    Plain uncached writes: each line is painted exactly once, pre-measurement
+    (see the section comment above for why never during one)."""
+    codes = _screen_codes(text)
+    base = row * SCREEN.W_CHARS + (SCREEN.W_CHARS - len(codes)) // 2
+    be.write_memory_file(f"{SCREEN.RAM + base:04X}", codes)
+    be.write_memory_file(f"{SCREEN.COLOR_RAM + base:04X}", bytes([_STATUS_COLOR]) * len(codes))
+
+
+def _estimate_text(n_sids: int, secs: float, settle: float) -> str:
+    """The duration line, computed from the same capture plan the measurement
+    loop runs (so the message can't drift from the real ring count). "ABOUT"
+    absorbs what it can't know: retried rings and capture bring-up."""
+    rings = sum(len(batches) for batches in _plan_rounds())
+    per_sid = rings * (secs + settle) + _PER_SID_OVERHEAD_S
+    granules = n_sids * per_sid / _ESTIMATE_GRANULARITY_S
+    total = max(1, math.floor(granules + 0.5)) * _ESTIMATE_GRANULARITY_S
+    noun = "SID" if n_sids == 1 else "SIDS"
+    return f"MEASURING {n_sids} {noun} - ABOUT {total} SECONDS"
 
 
 def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None) -> str:
@@ -468,7 +525,7 @@ def _measure_one(
     """Measure all 256 codes through whatever SID answers $D400 right now:
     every ring of every rotation round, then the fold into a sidtable (or the
     self-test rejection) plus the run's metrics."""
-    rounds = plan_capture_rounds(codes_per_ring(RING_BUFFER_SIZE) - 1)
+    rounds = _plan_rounds()
     total = sum(len(r) for r in rounds)
     ctx.log_fn(
         f"[calib] measuring {label}: 256 codes × {len(rounds)} rotations = "
@@ -642,6 +699,7 @@ def run_calibration(
     normal_d400: int | None = None
     try:
         st = _bring_up_dac_env(be, cfg, log_fn)
+        _paint_status_line(be, _TITLE_ROW, _TITLE_TEXT)
         dev, fmt = _open_capture(device, log_fn)
         ctx = _RunContext(
             be=be, key=key, device=dev, fmt=fmt, secs=secs, settle=settle, log_fn=log_fn
@@ -652,6 +710,9 @@ def run_calibration(
         # to $D400 in turn, so asking afterwards answers with c64cast's own
         # edit rather than the mapping this machine actually runs under.
         normal_d400 = active_socket_at_d400(be) if supports_sid_config else None
+        # Last screen write of the run: the duration line, painted once the
+        # SID count is known and strictly before the first capture.
+        _paint_status_line(be, _ESTIMATE_ROW, _estimate_text(max(1, len(sockets)), secs, settle))
 
         if sockets:
             entries = _measure_each_socket(ctx, st, sockets)

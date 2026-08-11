@@ -12,6 +12,15 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Added
+
+- **`--calibrate-dac` now says so on the C64 itself.** The machine used to sit
+  on a blank screen for the whole ~50 s-per-socket run; it now shows a
+  centered title plus a computed duration line (e.g. `MEASURING 2 SIDS -
+  ABOUT 90 SECONDS`). Both lines are painted before the first capture and the
+  screen is never touched again — mid-run screen DMA could drop NMI samples
+  and skew the measurement.
+
 ### Fixed
 
 - **Video scenes on the Ultimate Audio sampler path no longer stall ~2 seconds
