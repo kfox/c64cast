@@ -207,12 +207,68 @@ back when the scene ends. If you would rather choose yourself, `--sid-model
 6581` or `--sid-model 8580` forces every tune to one chip and `--sid-model off`
 leaves the tag unread.
 
-> [!NOTE]
-> On an Ultimate II+, the tune is *also* playing on whatever chip your
-> Commodore itself has, out that machine's own audio jack. That one is soldered
-> in, so nothing can change it. When a tune wants the model your Commodore does
-> not have, c64cast says so in the log rather than pretending the match was
-> complete.
+### Which Cable You Listen To
+
+On an Ultimate II+ this matters more than it sounds like it should, because the
+two chips come out of two different sockets on two different pieces of
+equipment.
+
+The emulated SIDs — the ones c64cast configures — are heard on the **Ultimate's
+own green audio output jack**, on the cartridge itself. Your Commodore's own
+audio, the one carried by the AV cable to a 1702 or through an RF modulator to
+a television, comes from the machine's own **internal SID**. Both are playing
+the same tune at the same time, and they can be different chips.
+
+So if you set out to hear the difference a model makes and listen through the
+monitor, you will hear no difference at all — you are listening to the one chip
+nothing can change. Plug headphones or a line-in into the Ultimate's green jack
+and the same tune sounds as it was written to.
+
+An Ultimate 64 does not have this split: it *is* the Commodore, and its own
+audio output carries the chips it configures.
+
+### Telling c64cast Which Chip You Have
+
+That internal chip is the one thing c64cast cannot look up. Over a network
+connection to an Ultimate it can read the configured SIDs directly, but the
+physical chip in the machine has no such register to ask.
+
+So it guesses, from the oldest rule of thumb there is: NTSC machines usually
+have the 6581, PAL machines usually the 8580. That rule is often right and
+easily wrong — plenty of NTSC machines carry an 8580 — so c64cast prints a
+warning saying it is guessing, and every judgement it makes about that chip
+rests on the guess.
+
+Tell it once and the warning goes away:
+
+```toml
+[hardware]
+host_sid_model = "6581"
+```
+
+| Value | Meaning |
+|---|---|
+| `"auto"` | The default. Guess from NTSC/PAL and warn that it is a guess |
+| `"6581"` / `"8580"` | This machine carries that chip. Stated as fact, no warning |
+| `"unknown"` | Do not guess and do not judge. c64cast says nothing about that chip |
+
+If you do not know which one you have, the label on the chip is the answer:
+`6581` or `8580`, sometimes with a suffix like `8580R5`. Opening the machine to
+look is not required — `"unknown"` is an honest setting, and everything else
+still works.
+
+> [!TIP]
+> This is a property of your machine, not of any one show, so it belongs in
+> your machine settings file rather than in a playlist. There is no flag for
+> it — add the two lines above to `~/.config/c64cast/settings.toml` by hand
+> (`--save-settings` writes that file but only covers the connection, the
+> devices and `--sid-model`), and every future run on this computer picks it
+> up.
+
+Two settings, easily confused, and it is worth being clear about which is
+which. `[ultimate64].sid_model` is about the **tune** — which chip it should be
+matched to. `[hardware].host_sid_model` is about the **machine** — which chip
+it actually contains.
 
 > [!NOTE]
 > The waveform scene needs a bitmap display mode, and it needs the Web

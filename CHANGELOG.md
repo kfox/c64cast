@@ -23,8 +23,17 @@ the version and stamps it with the date.
   which model to be. `Filter Curve` and `Combined Waveforms` move together,
   since a side split between the two emulates neither chip, and your settings
   come back at teardown. The host C64's own SID still plays the tune unmatched
-  on the machine's own output — no setting moves a soldered chip between models
-  — so a mismatch there is still reported rather than papered over.
+  on the machine's own output — nothing can change which model that internal
+  chip is — so a mismatch there is still reported rather than papered over.
+
+- **An undeclared host SID model now warns instead of mentioning it.** On a
+  link where the machine's own chip can't be read, every model verdict rests on
+  the NTSC=6581 / PAL=8580 convention — a rule that is frequently wrong, since
+  NTSC machines carrying an 8580 are common. That guess used to be stated at
+  INFO, where it scrolled past between the lines that depended on it; it is now
+  a once-per-run warning naming the field that settles it. Declaring
+  `[hardware].host_sid_model` silences it for good, and `"unknown"` opts out of
+  host-chip verdicts entirely.
 
 - **Video scenes now draw a buffering bar on the C64 while they load.** A
   diagonal-striped bar grows along screen row 22 through the blocking setup

@@ -232,7 +232,7 @@ Every name c64cast answers to — 412 of them — and the pages that discuss eac
 | `host` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host_dma_servo` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `host_sid_model` | [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `hue_corrections` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hue_corrections_replace_defaults` | [`color` (A)](20-appendix-a-configuration.md#color) |
 

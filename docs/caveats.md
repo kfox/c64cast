@@ -348,6 +348,26 @@ a mismatched tune on a U2+ resolves to matched emulations plus one unmatched
 physical chip, and the resolved-audio line reports both routes rather than
 declaring the tune matched.
 
+**Verifying U2+ emu-SID audio by ear requires the cartridge's own output.**
+The two routes leave the setup on different cables: the emulated SIDs are
+audible only on the **Ultimate II+'s green audio jack**, while the C64's AV
+output (a 1702, or RF to a television) carries the machine's **real, internal**
+SID. A model change that is confirmed at the config level therefore sounds like
+*nothing happened* through the monitor — you are listening to the one chip no
+setting can touch. Observed during this feature's hardware verification: an
+8580-tagged tune still sounded thin and scratchy on the 1702 after the
+emulation had been correctly set to 8580, and sounded as authored on headphones
+into the green jack. The U64 has no such split — it is the Commodore, and its
+own output carries the chips it configures.
+
+**The host chip's model can only ever be declared, never read.** Nothing in
+the machine reports it, so `[hardware].host_sid_model` defaults to the
+NTSC=6581 / PAL=8580 convention and **warns once per run** that it is guessing,
+because every model verdict on that route rests on the guess. The convention is
+frequently wrong (NTSC machines carrying an 8580 are common). Setting the field
+to `"6581"`/`"8580"` states it as fact and silences the warning; `"unknown"`
+opts out of host-chip verdicts entirely.
+
 ### ASID buffered ring player (cycle-accurate multispeed)
 
 `AsidScene`'s default *coalesced* path folds incoming ASID register frames into

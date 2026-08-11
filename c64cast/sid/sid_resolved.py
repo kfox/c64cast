@@ -206,8 +206,8 @@ def _declared_host_verdict(
 ) -> ResolvedAudio | None:
     """The primary chip's verdict from ``[hardware].host_sid_model``, or None
     when no model is declared (`host_sid_model = "unknown"`, or a profile
-    predating the field). Also logs the once-per-run note that the NTSC/PAL
-    convention is an assumption, the first time a verdict rides on it."""
+    predating the field). Also warns, once per run, that the NTSC/PAL
+    convention is a guess — the first time a verdict rests on it."""
     global _assumed_model_logged
     host_model = getattr(api.profile, "host_sid_model", None)
     if host_model is None:
@@ -215,10 +215,16 @@ def _declared_host_verdict(
     assumed = bool(getattr(api.profile, "host_sid_model_assumed", False))
     if assumed and not _assumed_model_logged:
         _assumed_model_logged = True
-        log.info(
-            "sid hardware: assuming this machine's SID is a %s (the NTSC=6581 / "
-            "PAL=8580 convention — an assumption, not a measurement; set "
-            "[hardware].host_sid_model if it's wrong)",
+        # WARNING, not INFO: every model verdict on this link is only as good as
+        # this guess, and the NTSC/PAL convention is a weak one — plenty of NTSC
+        # machines carry an 8580. A guess that silently underwrites a verdict is
+        # worth interrupting for once; declaring the model silences it for good.
+        log.warning(
+            "sid hardware: this machine's SID model is undeclared and cannot be "
+            "read over this link — assuming %s from the NTSC=6581 / PAL=8580 "
+            "convention. That is a guess, and every model verdict below rests on "
+            "it: set [hardware].host_sid_model to the chip this machine actually "
+            "carries (or 'unknown' to stop guessing).",
             host_model,
         )
     return describe_declared_audio(host_model, assumed, address, required)

@@ -359,9 +359,31 @@ for want of matching hardware.
 
 One chip is beyond reach there. The tune is also playing on whatever SID the
 host C64 itself carries, out that machine's own audio jack, and no setting
-moves a soldered chip from one model to the other. If the tune asked for the
+changes the model of the chip in the machine. If the tune asked for the
 model your machine doesn't have, the log says so on both routes at once — the
 emulations matched, the host chip not.
+
+The two routes are also two cables. The emulated SIDs are heard on the
+Ultimate II+'s own green audio jack; the C64's AV output carries the real chip.
+Judging a model change by ear through a monitor therefore proves nothing — that
+is the route the change cannot reach. An Ultimate 64 has no such split.
+
+### Declaring the Host Chip
+
+The internal SID is the one thing c64cast cannot read. `[hardware].host_sid_model`
+supplies it:
+
+| Value | Behavior |
+|---|---|
+| `"auto"` | The default. Assume NTSC → 6581, PAL → 8580, and warn once per run that this is a guess |
+| `"6581"` / `"8580"` | Declare the chip as fact; no warning |
+| `"unknown"` | Make no assumption and pass no verdict on that chip |
+
+The warning is deliberate rather than incidental. The NTSC/PAL convention is a
+weak rule — NTSC machines carrying an 8580 are common — and every model verdict
+on a route whose chip cannot be read is only as sound as that guess, so the
+guess announces itself once and then stops. Declaring the field silences it
+permanently. There is no CLI flag; it belongs in the machine settings file.
 
 All of this is Ultimate-only, best-effort, and restored at teardown. On a
 backend with no configuration interface the tune still plays; every chip past
