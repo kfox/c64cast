@@ -45,6 +45,7 @@ from urllib.parse import urlparse
 import requests
 
 from .backend import (
+    EMUSID_MIXER_CATEGORY,
     SID_CONFIG_CATEGORIES,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
@@ -1535,18 +1536,20 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         return [category for category in categories if isinstance(category, str)]
 
     def refine_capabilities(self) -> None:
-        """One cheap REST call revoking the multi-SID surface the family
-        profile claims optimistically, on a device that doesn't expose it
-        (Ultimate II+). Category presence, not the ``product`` string, is the
-        test: the category list is the actual contract and tracks firmware
+        """One cheap REST call resolving which SID config surface this device
+        actually carries: revoke the U64 multi-SID surface the family profile
+        claims optimistically when its categories are absent (Ultimate II+),
+        and grant the U2+ emulated-stereo-SID surface when its category is
+        present. Category presence, not the ``product`` string, is the test:
+        the category list is the actual contract and tracks firmware
         differences within one product, the product string is presentation.
 
-        A failed or unrecognizable read keeps the optimistic flags: every SID
-        config call site already absorbs a missing surface per-call, but
+        A failed or unrecognizable read keeps the profile untouched: every
+        SID config call site already absorbs a missing surface per-call, but
         nothing could absorb SID config wrongly *disabled* on a healthy U64
-        over a transient read error."""
-        if not self.profile.supports_sid_config:
-            return
+        over a transient read error. The emusid flag stays conservative-False
+        on such a run — an unprobed run behaves exactly as before the flag
+        existed."""
         try:
             categories = set(self.get_config_categories())
         except (requests.RequestException, ValueError) as e:
@@ -1555,16 +1558,31 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         if not categories:
             log.debug("capability probe: unrecognized /v1/configs shape — keeping optimism")
             return
+
+        has_emusid = EMUSID_MIXER_CATEGORY in categories
+        if has_emusid != self.profile.supports_emusid_mixer:
+            self.profile = replace(self.profile, supports_emusid_mixer=has_emusid)
+
         missing = [c for c in SID_CONFIG_CATEGORIES if c not in categories]
-        if not missing:
+        if not missing or not self.profile.supports_sid_config:
             return
         self.profile = replace(self.profile, supports_sid_config=False)
-        log.info(
-            "this device has no multi-SID config surface (no %s) — SID routing, "
-            "chip-model matching and mixer control are unavailable; tunes play "
-            "on whatever answers their addresses",
-            ", ".join(missing),
-        )
+        if has_emusid:
+            log.info(
+                "this device has no multi-SID config surface (no %s) — SID "
+                "socket/UltiSID routing and chip-model matching are "
+                "unavailable; using the emulated stereo-SID surface (%s) for "
+                "snoop routing, panning and volume instead",
+                ", ".join(missing),
+                EMUSID_MIXER_CATEGORY,
+            )
+        else:
+            log.info(
+                "this device has no multi-SID config surface (no %s) — SID "
+                "routing, chip-model matching and mixer control are "
+                "unavailable; tunes play on whatever answers their addresses",
+                ", ".join(missing),
+            )
 
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
         """Upload and run a tiny BASIC program: `10 PRINT CHR$(147) : 20 GOTO 20`.

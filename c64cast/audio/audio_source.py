@@ -707,19 +707,24 @@ class SidFileAudioSource:
                 self._features = None
 
     def _apply_sid_mixer(self) -> None:
-        """Pan the tune's SID chip(s) across the U64 mixer's stereo field and
+        """Pan the tune's SID chip(s) across the mixer's stereo field and
         make every source they play on audible ([ultimate64].sid_panning /
-        sid_volume). This path does no address routing, so the source playing
-        each chip is whatever currently answers its address. Originals fold into
-        the same snapshot teardown restores, and the settled state is logged so
-        a chip that ends up muted or on the wrong model says so."""
+        sid_volume). This path does no U64 address routing, so the source
+        playing each chip is whatever currently answers its address — but on
+        the emulated-stereo-SID surface (U2+) a spare enabled side is still
+        pointed at any uncovered chip address, or the chip has no route to
+        that output at all. Originals fold into the same snapshot teardown
+        restores, and the settled state is logged so a chip that ends up
+        muted or on the wrong model says so."""
         assert self.header is not None  # set by _pick_and_load, called by setup
+        from c64cast.sid.emusid_mixer import apply_emusid_routing
         from c64cast.sid.sid_autoconfig import required_models_for
         from c64cast.sid.sid_panning import apply_panning, sources_for_addresses
         from c64cast.sid.sid_resolved import log_resolved_audio
         from c64cast.sid.sid_volume import apply_volume
 
         addresses = self.header.sid_addresses
+        self._sid_session.fold(apply_emusid_routing(self._api, addresses))
         sources = sources_for_addresses(self._api, addresses)
         panning = apply_panning(self._api, sources, self._sid_panning)
         self._sid_session.fold(panning.originals)
@@ -731,17 +736,27 @@ class SidFileAudioSource:
         """Stop the feature stream, then SID playback. SID order mirrors
         WaveformScene.teardown: unhook our $0314 IRQ first (so the next PLAY tick
         can't rewrite the SID between the volume-clear and the gate-clears),
-        flush, then silence. Finally suppress the cursor blink — the player MC's
-        `JMP *` spin survives teardown, so a following char scene would otherwise
-        blink the cursor cell (HW-verified in WaveformScene.teardown). No
-        VIC-bank restore: a SID source never moved the bank (the display owns
-        bank 0 throughout)."""
+        flush, silence every tune chip at the address it played, and only then
+        restore the SID config — the restore may re-point a U2+ emulated SID at
+        its home base, and a side moved home mid-note keeps ringing where no
+        write can ever reach it (a machine reset does not clear the emulation's
+        voice state — HW-verified). Finally suppress the cursor blink — the
+        player MC's `JMP *` spin survives teardown, so a following char scene
+        would otherwise blink the cursor cell (HW-verified in
+        WaveformScene.teardown). No VIC-bank restore: a SID source never moved
+        the bank (the display owns bank 0 throughout)."""
+        from c64cast.hw.c64 import SID
+        from c64cast.sid.sidemu import SID_REG_COUNT
+
         if self._features is not None:
             self._features.stop()  # pure host-side; no U64 I/O
             self._features = None
         try:
             self._api.restore_kernal_irq_vector()
             self._api.flush()
+            for base in self.header.sid_addresses if self.header is not None else ():
+                if base != SID.BASE:
+                    self._api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
             self._api.silence_sid()
             self._api.flush()
         except Exception:

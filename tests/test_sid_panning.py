@@ -580,5 +580,66 @@ class ScenePanningFoldTest(unittest.TestCase):
         self.assertEqual(scene._sid_session.saved, {PAN_S1: "Center", PAN_S2: "Center"})
 
 
+EMU_CAT = "Audio Output Settings"
+
+
+def _u2plus_fake(category: dict[str, str] | None = None) -> FakeAPI:
+    api = FakeAPI.u2plus()
+    api.config_store[EMU_CAT] = dict(
+        category
+        if category is not None
+        else {
+            "SID Left": "Enabled",
+            "SID Left Base": "Snoop $D400",
+            "SID Right": "Enabled",
+            "SID Right Base": "Snoop $D420",
+            "Pan EmuSid1": "Center",
+            "Pan EmuSid2": "Center",
+        }
+    )
+    return api
+
+
+class EmuSurfacePanningTest(unittest.TestCase):
+    """The U2+ emulated-stereo-SID surface: source derivation from the snoop
+    topology, and panning through the same planners under the emu category."""
+
+    def test_sources_come_from_the_snoop_topology(self):
+        api = _u2plus_fake()
+        self.assertEqual(
+            sp.sources_for_addresses(api, (0xD400, 0xD420)),
+            ("emusid1", "emusid2"),
+        )
+
+    def test_unreadable_surface_yields_no_sources(self):
+        api = FakeAPI.u2plus()  # empty category = firmware's missing-category answer
+        self.assertEqual(sp.sources_for_addresses(api, (0xD400,)), (None,))
+
+    def test_auto_spread_pans_both_sides(self):
+        api = _u2plus_fake()
+        result = sp.apply_panning(api, ("emusid1", "emusid2"), None)
+
+        self.assertEqual(api.config_store[EMU_CAT]["Pan EmuSid1"], "Left 3")
+        self.assertEqual(api.config_store[EMU_CAT]["Pan EmuSid2"], "Right 3")
+        self.assertEqual(
+            result.originals,
+            {(EMU_CAT, "Pan EmuSid1"): "Center", (EMU_CAT, "Pan EmuSid2"): "Center"},
+        )
+
+    def test_single_side_stays_centered(self):
+        api = _u2plus_fake()
+        result = sp.apply_panning(api, ("emusid1",), None)
+
+        self.assertEqual(api.config_puts, [])
+        self.assertEqual(result.originals, {})
+
+    def test_neither_surface_is_identity(self):
+        api = FakeAPI()  # default profile: no config surfaces at all
+        result = sp.apply_panning(api, ("emusid1", "emusid2"), [(-3), 3])
+
+        self.assertEqual(api.config_puts, [])
+        self.assertEqual(result.window_order, (0, 1))
+
+
 if __name__ == "__main__":
     unittest.main()
