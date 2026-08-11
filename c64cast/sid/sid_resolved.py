@@ -29,12 +29,21 @@ and pan — with the declared host-SID verdict appended, because on such a
 device the host machine's own SID plays the tune too, on its own output.
 
 A backend that can't read the SID hardware state at all (TeensyROM has no
-config API) still gets a model-match verdict when the machine's chip is
-declared: ``[hardware].host_sid_model`` rides in on the backend profile, and
+config API) still gets a model-match verdict when the machine's chips are
+declared, since nothing on such a link can *ask* what the host C64 carries.
+``[hardware].host_sid_model`` rides in on the backend profile and
 :func:`describe_declared_audio` renders the primary chip against it — the tune
 wants an 8580, this machine is declared (or NTSC/PAL-assumed) to carry a 6581.
 That mismatch is the single most audible mis-set on such a link, and without
 the declaration nothing anywhere could say so.
+
+One chip is not always the whole machine, though. A C64 with an internal
+dual-SID mod (ARM2SID, SIDFX, DualSID) answers at a second address in its own
+hardware, and a multi-SID tune plays on both chips with no routing required —
+the mod has already done in silicon what the U64 does in config. Such a
+machine is declared per chip with ``[hardware].host_sid_chips``, and
+:func:`describe_declared_chips` gives every tune chip its own verdict, which
+matters most where these mods usually land: one 6581 and one 8580 at once.
 """
 
 from __future__ import annotations
@@ -69,6 +78,9 @@ _SOCKET_INDEX: Final[dict[str, int]] = {"socket1": 0, "socket2": 1}
 _UNMAPPED = "nothing mapped"
 _NO_CHIP = "empty socket"
 _UNKNOWN_LEVEL = "level unknown"
+# A host_sid_chips entry whose model the user doesn't know — the chip exists,
+# so the address is covered, but no model verdict can be passed on it.
+_MODEL_UNDECLARED = "unknown"
 
 # Set once the NTSC/PAL host-model assumption has been logged, so a playlist
 # of SID scenes states it on the first verdict that rides on it rather than
@@ -192,8 +204,9 @@ def describe_declared_audio(
 ) -> ResolvedAudio:
     """Pure renderer for the no-hardware-state fallback: what a listener hears
     at `address` given only the declared (or NTSC/PAL-assumed) host SID
-    model. One chip only — a link that can't read the SID state also can't
-    route extra chips, so the host machine's own SID is all that plays."""
+    model. The primary chip only — ``[hardware].host_sid_model`` describes one
+    chip, so a machine with more than one goes through
+    :func:`describe_declared_chips` instead."""
     origin = "assumed" if assumed else "declared"
     fragment = f"${address:04X} → host SID ({host_model} {origin})"
     if required not in NO_MODEL_REQUIREMENT and not host_model.startswith(required or ""):
@@ -201,14 +214,60 @@ def describe_declared_audio(
     return ResolvedAudio(fragment, clean=True)
 
 
+def describe_declared_chips(
+    chips: Sequence[tuple[int, str]],
+    addresses: Sequence[int],
+    required_models: Sequence[str | None] = (),
+) -> ResolvedAudio:
+    """Pure renderer for a machine whose internal SIDs are declared per chip
+    (``[hardware].host_sid_chips`` — a dual-SID mod). Every tune chip gets its
+    own verdict against the chip declared at that address.
+
+    A tune address with no declared chip is reported as such rather than
+    dropped: on a partly-declared machine that is the honest statement, and
+    silently omitting it would hide the one chip most likely to be misplaced.
+    A chip declared ``"unknown"`` is reported without a model verdict — the
+    user has said a chip is there and that they don't know which."""
+    declared = dict(chips)
+    required = tuple(required_models) + (None,) * (len(addresses) - len(required_models))
+    fragments: list[str] = []
+    ok = True
+    for address, want in zip(addresses, required, strict=False):
+        model = declared.get(address)
+        if model is None:
+            fragments.append(f"${address:04X} → no chip declared")
+            ok = False
+        elif model == _MODEL_UNDECLARED:
+            fragments.append(f"${address:04X} → host SID (model unknown)")
+        elif want not in NO_MODEL_REQUIREMENT and not model.startswith(want or ""):
+            fragments.append(f"${address:04X} → host SID ({model} declared) — tune wants {want}")
+            ok = False
+        else:
+            fragments.append(f"${address:04X} → host SID ({model} declared)")
+    # No bystander clause, unlike describe_resolved_audio's: a declared chip the
+    # tune doesn't drive is receiving no writes, so it makes no sound. The U64's
+    # bystanders are audible (mapped and unmuted); a silent chip has no place in
+    # a line about what a listener hears.
+    return ResolvedAudio("; ".join(fragments), clean=ok)
+
+
 def _declared_host_verdict(
-    api: C64Backend, address: int, required: str | None
+    api: C64Backend, addresses: Sequence[int], required_models: Sequence[str | None]
 ) -> ResolvedAudio | None:
-    """The primary chip's verdict from ``[hardware].host_sid_model``, or None
-    when no model is declared (`host_sid_model = "unknown"`, or a profile
-    predating the field). Also warns, once per run, that the NTSC/PAL
-    convention is a guess — the first time a verdict rests on it."""
+    """The host machine's verdict from what the config declares about it, or
+    None when it declares nothing (`host_sid_model = "unknown"` with no
+    `host_sid_chips`, or a profile predating the fields).
+
+    ``host_sid_chips`` wins when present: it describes every chip, including
+    the second one a dual-SID mod adds, which the single-valued
+    ``host_sid_model`` can't reach. Falling back to that model covers the
+    ordinary one-SID machine, and warns once per run when the NTSC/PAL
+    convention is what a verdict rests on."""
     global _assumed_model_logged
+    if chips := tuple(getattr(api.profile, "host_sid_chips", ())):
+        return describe_declared_chips(chips, addresses, required_models)
+    address = addresses[0]
+    required = required_models[0] if required_models else None
     host_model = getattr(api.profile, "host_sid_model", None)
     if host_model is None:
         return None
@@ -230,10 +289,12 @@ def _declared_host_verdict(
     return describe_declared_audio(host_model, assumed, address, required)
 
 
-def _log_declared_audio(api: C64Backend, address: int, required: str | None) -> None:
-    """Render the primary chip's verdict from ``[hardware].host_sid_model``
-    when the live state can't be read. Silent when no model is declared."""
-    resolved = _declared_host_verdict(api, address, required)
+def _log_declared_audio(
+    api: C64Backend, addresses: Sequence[int], required_models: Sequence[str | None]
+) -> None:
+    """Render the host machine's verdict from what the config declares about
+    it, when the live state can't be read. Silent when it declares nothing."""
+    resolved = _declared_host_verdict(api, addresses, required_models)
     if resolved is None:
         return
     log_fn = log.info if resolved.clean else log.warning
@@ -294,18 +355,19 @@ def log_resolved_audio(
     appended — on such a device the host machine's own SID plays the tune too,
     just on a different output than the snooped emulations. A backend that
     can't read any SID state (no config API — as opposed to a capable one
-    whose read failed transiently) still renders the primary chip against the
-    declared host model alone (see :func:`describe_declared_audio`)."""
+    whose read failed transiently) renders against what the config declares
+    about the machine instead — per chip when ``[hardware].host_sid_chips``
+    describes a dual-SID mod, otherwise the primary chip alone (see
+    :func:`describe_declared_chips` / :func:`describe_declared_audio`)."""
     if not addresses:
         return
-    required0 = required_models[0] if required_models else None
     if not getattr(api.profile, "supports_sid_config", False):
         state = read_emusid_hardware_state(api)
         if state is None:
-            _log_declared_audio(api, addresses[0], required0)
+            _log_declared_audio(api, addresses, required_models)
             return
         resolved = describe_resolved_audio(state, addresses, required_models)
-        if (host := _declared_host_verdict(api, addresses[0], required0)) is not None:
+        if (host := _declared_host_verdict(api, addresses, required_models)) is not None:
             resolved = ResolvedAudio(
                 summary=f"{resolved.summary}; {host.summary} on the machine's own audio output",
                 clean=resolved.clean and host.clean,

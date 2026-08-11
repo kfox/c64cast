@@ -270,6 +270,46 @@ which. `[ultimate64].sid_model` is about the **tune** — which chip it should b
 matched to. `[hardware].host_sid_model` is about the **machine** — which chip
 it actually contains.
 
+### If Your Machine Has Two Chips Inside
+
+Some Commodores have been modified to carry two SIDs internally — an ARM2SID,
+a SIDFX, a DualSID board — with the second chip answering at another address,
+commonly `$D420` or `$D500`. Often the two are set to different models, which
+is much of the reason for fitting one: a 6581 and an 8580 in the same machine,
+each tune played on whichever it was written for.
+
+Tunes written for two chips play correctly on such a machine with nothing asked
+of you. c64cast hands the tune to the machine and the tune writes to both
+addresses itself; the chips are already where the tune expects them, so there
+is nothing to route. This is true through a TeensyROM+ and through an Ultimate
+II+ alike.
+
+What c64cast cannot do is *guess* that your machine is one of these. Left
+undeclared it assumes the ordinary single chip, and will tell you a second
+chip is inaudible while you are listening to it. Declare the chips and it
+stops guessing:
+
+```toml
+[hardware]
+host_sid_chips = { d400 = "6581", d420 = "8580" }
+```
+
+Addresses are hexadecimal, with or without a leading `$`. Every chip gets its
+own verdict against the tune, so a tune wanting an 8580 on its second chip is
+judged against the chip that actually answers there. A chip whose model you do
+not know can be written `"unknown"` — c64cast will note it is there and pass no
+judgement on it.
+
+This setting replaces `host_sid_model` rather than adding to it: once you have
+listed the chips, the machine is described and the NTSC/PAL guess has nothing
+left to guess at. List all of them, including the one at `$D400`.
+
+> [!NOTE]
+> A second SID mapped into `$DE00` or `$DF00` — an option on some of these
+> boards — collides with a TeensyROM+ or Ultimate II+ in the cartridge port,
+> which uses that same address range for its own registers. If your machine is
+> configured that way, move the SID to `$D420` or `$D500`.
+
 > [!NOTE]
 > The waveform scene needs a bitmap display mode, and it needs the Web
 > Remote Control Service from Chapter 1, because starting the player is a

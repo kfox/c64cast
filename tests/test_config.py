@@ -329,6 +329,57 @@ class SidVolumeConfigTest(unittest.TestCase):
         self.assertIn("sid_volume", str(ctx.exception))
 
 
+class HostSidChipsConfigTest(unittest.TestCase):
+    """[hardware].host_sid_chips — a machine with an internal dual-SID mod. A
+    typo'd address here would otherwise surface as a chip silently missing from
+    the resolved-audio verdict, so it must fail at load."""
+
+    def _load(self, toml):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(toml)
+            path = f.name
+        try:
+            return cfgmod.load(path)
+        finally:
+            os.unlink(path)
+
+    def test_defaults_to_empty(self):
+        self.assertEqual(cfgmod.Config().hardware.host_sid_chips, {})
+
+    def test_dual_sid_table_loads(self):
+        cfg = self._load('[hardware]\nhost_sid_chips = { d400 = "6581", d420 = "8580" }\n')
+        self.assertEqual(cfg.hardware.host_sid_chips, {"d400": "6581", "d420": "8580"})
+
+    def test_dollar_prefixed_address_loads(self):
+        cfg = self._load('[hardware]\nhost_sid_chips = { "$D420" = "8580" }\n')
+        self.assertEqual(cfg.hardware.host_sid_chips, {"$D420": "8580"})
+
+    def test_unknown_model_loads(self):
+        cfg = self._load('[hardware]\nhost_sid_chips = { d420 = "unknown" }\n')
+        self.assertEqual(cfg.hardware.host_sid_chips, {"d420": "unknown"})
+
+    def test_non_hex_address_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[hardware]\nhost_sid_chips = { sid2 = "8580" }\n')
+        self.assertIn("hex address", str(ctx.exception))
+
+    def test_address_outside_the_sid_window_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[hardware]\nhost_sid_chips = { c000 = "8580" }\n')
+        self.assertIn("out of range", str(ctx.exception))
+
+    def test_address_off_a_chip_boundary_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[hardware]\nhost_sid_chips = { d425 = "8580" }\n')
+        self.assertIn("out of range", str(ctx.exception))
+
+    def test_auto_is_not_a_per_chip_model(self):
+        # There is nothing to infer for a chip the user is asserting exists.
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[hardware]\nhost_sid_chips = { d400 = "auto" }\n')
+        self.assertIn("host_sid_chips", str(ctx.exception))
+
+
 class DoubleBufferTest(unittest.TestCase):
     """[video].double_buffer — the host-DMA page-flip path for no-REU backends."""
 

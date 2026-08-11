@@ -30,6 +30,11 @@
           ],
           "default": "auto"
         },
+        "host_sid_chips": {
+          "type": "object",
+          "description": "Internal SID chips in the C64 being driven, as address=model (e.g. d400='6581', d420='8580') \u2014 for machines with a dual-SID mod, whose second chip host_sid_model can't describe. When set it supersedes host_sid_model, so no NTSC/PAL assumption is made. Ignored where the live SID state is readable (U64).",
+          "default": {}
+        },
         "dump_char_rom": {
           "type": "boolean",
           "description": "On the first run against a machine, read its character ROM and cache it, so C64 text renders in the real C64 font instead of a built-in ASCII substitute. One ~1s step, never repeated; set false to skip it entirely.",

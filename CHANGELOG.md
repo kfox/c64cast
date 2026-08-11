@@ -14,6 +14,26 @@ the version and stamps it with the date.
 
 ### Added
 
+- **`[hardware].host_sid_chips` describes a machine with an internal dual-SID
+  mod.** A C64 fitted with an ARM2SID, SIDFX or DualSID answers at a second
+  address in its own hardware, often at the other chip model — much of the
+  reason for fitting one. Such tunes already played correctly on those machines
+  and still do, with nothing routed: the tune writes to both addresses and the
+  chips are already there. What was wrong was what c64cast *said* about it, on
+  links that can't read the SID hardware state — it assumed one chip and
+  reported the second as inaudible while you were listening to it. Declare the
+  chips (`host_sid_chips = { d400 = "6581", d420 = "8580" }`) and each one gets
+  its own verdict against the tune. The declaration supersedes
+  `host_sid_model`, so the NTSC/PAL guess and its warning drop away with it.
+
+- **A tune loading into the RAM under `$D400-$D7FF` now warns on an Ultimate
+  II+.** Its emulated SIDs take writes off the cartridge port, which carries no
+  signal separating an I/O access from one to the RAM below — so a tune living
+  there is heard as register writes, and arrives as clicks and stray notes on
+  the Ultimate's audio output. A warning, never a refusal: the tune plays
+  correctly, and the C64's own output is fed by real chips that decode
+  properly.
+
 - **`sid_model` now matches chip models on the Ultimate II+ too, instead of
   only reporting them.** The resolved-audio line could already tell you a tune
   had asked for an 8580 and was playing on a 6581 emulation — and nothing could

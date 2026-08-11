@@ -298,6 +298,37 @@ class RunSidPlayerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "KERNAL ROM"):
             self.api.run_sid_player(self._make_sid(load=0xE000, init=0xE000, play=0xE003))
 
+    # ---- U2+ emulated-SID snoop window -------------------------------
+    def _u2plus(self):
+        """Re-profile the API as a U2+ (emulated stereo SIDs, no U64 multi-SID
+        surface) without rebuilding the whole fixture."""
+        from dataclasses import replace
+
+        self.api.profile = replace(self.api.profile, supports_emusid_mixer=True)
+
+    def test_payload_in_the_snoop_window_warns_but_still_plays(self):
+        # The U2+ takes SID writes off the cartridge port, which can't
+        # distinguish them from writes to the RAM underneath — so a tune living
+        # there is heard as register writes on the Ultimate's audio output.
+        # A warning, never a refusal: the tune plays correctly, and the C64's
+        # own output is unaffected.
+        self._u2plus()
+        with self.assertLogs("c64cast.hw.api", level="WARNING") as cm:
+            self.api.run_sid_player(self._make_sid(load=0xD400, init=0xD400, play=0xD403))
+        self.assertIn("emulated SIDs snoop", cm.records[0].getMessage())
+        self.assertTrue(self.dma_writes)  # played, not refused
+
+    def test_payload_clear_of_the_window_is_silent(self):
+        self._u2plus()
+        with self.assertNoLogs("c64cast.hw.api", level="WARNING"):
+            self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
+
+    def test_no_warning_on_a_backend_without_emulated_sids(self):
+        # A U64 (or TeensyROM) has no snooping emulation, so the same tune is
+        # unremarkable there.
+        with self.assertNoLogs("c64cast.hw.api", level="WARNING"):
+            self.api.run_sid_player(self._make_sid(load=0xD400, init=0xD400, play=0xD403))
+
     # ---- CPU-port (memory bank) selection ----------------------------
     def test_bank_for_addr_hi_rule(self):
         # getBank rule mirrored from the U64 firmware (sidcommon.asm).

@@ -297,7 +297,14 @@ consecutive layouts (`$D400/$D420/$D440`) and two-page layouts
 `plan_sid_map` layout (some chips silent — the scope stays correct). The prior
 config is snapshotted and restored on teardown ([sid_hw_config.py](../c64cast/sid/sid_hw_config.py)).
 Backends without a SID config API (TeensyROM) skip this: every chip's scope
-still renders; only `$D400` is audible. Single-SID tunes never touch the
+still renders, and on a stock machine only `$D400` is audible. **A C64 with an
+internal dual-SID mod is the exception** — an ARM2SID, SIDFX or DualSID answers
+at a second address (commonly `$D420`/`$D500`) in the machine's own hardware, so
+a multi-SID tune plays on both chips with no routing at all: the tune writes to
+both addresses and the chips are already there. Nothing on such a link can
+detect that, so `[hardware].host_sid_chips` declares it and the resolved-audio
+line reports per chip; undeclared, c64cast assumes the single-chip case.
+Single-SID tunes never touch the
 config (one window, byte-identical to before). Verified on U64-II hardware:
 `Enchanted_Forest_3SID.sid` → 3 windows, all 9 voices audible as each chip
 enters.
@@ -366,7 +373,30 @@ NTSC=6581 / PAL=8580 convention and **warns once per run** that it is guessing,
 because every model verdict on that route rests on the guess. The convention is
 frequently wrong (NTSC machines carrying an 8580 are common). Setting the field
 to `"6581"`/`"8580"` states it as fact and silences the warning; `"unknown"`
-opts out of host-chip verdicts entirely.
+opts out of host-chip verdicts entirely. A machine with an internal dual-SID
+mod is declared per chip with `[hardware].host_sid_chips` instead, which
+supersedes the single-valued field and its guess.
+
+**The two outputs never mix inside the device, and each is complete.** Internal
+SID audio is not routed through the expansion port, so the green jack carries
+only what the Ultimate itself generates (emulated stereo SID, Ultimate Audio
+sampler, tape, drive sounds — selectable in its config menu) and the AV output
+carries only the machine's own chips. They are two independent renderings of
+the same tune, not one signal reaching you twice. Pick the one you mean to
+listen to; there is nothing to balance between them.
+
+**The U2+'s snoop cannot tell an I/O write from a write to the RAM below it.**
+The emulated SIDs take CPU writes off the cartridge port, which carries no
+signal distinguishing an access to `$D400-$D7FF` from one to the RAM
+underneath. A tune whose payload or working buffers live in that RAM therefore
+sprays clicks, pops and stray notes into the emulated SIDs — on the Ultimate's
+audio output only; the C64's own output is fed by real chips that decode
+properly. `run_sid_player` warns when a tune's *payload* lands there (a
+warning, never a refusal: the tune plays correctly and only one listening path
+is affected), but a tune that merely uses that RAM at run time cannot be
+detected from the header. This also inverts the usual fidelity argument on a
+dual-SID machine: for the second chip, the machine's own output is the more
+faithful path, not the emulated one.
 
 ### ASID buffered ring player (cycle-accurate multispeed)
 
