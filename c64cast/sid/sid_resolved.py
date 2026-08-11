@@ -28,6 +28,14 @@ side snooping each chip, its filter curve as the model, and its mixer level
 and pan — with the declared host-SID verdict appended, because on such a
 device the host machine's own SID plays the tune too, on its own output.
 
+Those two outputs can disagree, and when they do the verdict alone is not
+enough. A tune matched to an 8580 emulation still plays on the machine's own
+6581 through the AV cable, so it sounds thin and scratchy there while the log
+says everything matched — which reads exactly like a failing SID.
+:func:`_warn_output_split` therefore names the consequence and the remedy once
+per run, rather than leaving a listener to infer either from a line about
+configuration.
+
 A backend that can't read the SID hardware state at all (TeensyROM has no
 config API) still gets a model-match verdict when the machine's chips are
 declared, since nothing on such a link can *ask* what the host C64 carries.
@@ -86,6 +94,11 @@ _MODEL_UNDECLARED = "unknown"
 # of SID scenes states it on the first verdict that rides on it rather than
 # at every scene activation.
 _assumed_model_logged = False
+
+# Set once the two-outputs guidance has been given. The per-scene verdict keeps
+# reporting the mismatch; the advice about which cable to listen to is the same
+# every time, so it is said once rather than at every scene activation.
+_output_split_logged = False
 
 
 @dataclass(frozen=True)
@@ -289,6 +302,34 @@ def _declared_host_verdict(
     return describe_declared_audio(host_model, assumed, address, required)
 
 
+def _warn_output_split(*, emu_clean: bool, host: ResolvedAudio) -> None:
+    """Say, once per run, what a *listener* should do when the two outputs
+    disagree — the emulations play the tune as authored, the machine's own
+    chip cannot.
+
+    The per-chip verdict above already states the mismatch, but it states it as
+    a fact about configuration, and the symptom reaches the user as sound: a
+    tune going thin and scratchy through the monitor while the config log says
+    everything matched. The obvious reading of that is a failing SID, and
+    someone can lose an evening to it before suspecting the cable. So when the
+    Ultimate's own output is correct and the machine's is not, name the
+    consequence and the remedy instead of leaving both to be inferred.
+
+    Not gated on a mismatch alone: if the emulations are *also* wrong, the
+    problem is configuration and pointing at a cable would misdirect."""
+    global _output_split_logged
+    if _output_split_logged or host.clean or not emu_clean:
+        return
+    _output_split_logged = True
+    log.warning(
+        "sid hardware: this tune plays as authored on the Ultimate's own audio "
+        "output, and on the wrong chip model through the C64's AV output — the "
+        "machine's internal SID is what it is and no setting can change it. "
+        "That is expected here, not a failing SID: listen on the Ultimate's "
+        "audio jack to hear the tune as written."
+    )
+
+
 def _log_declared_audio(
     api: C64Backend, addresses: Sequence[int], required_models: Sequence[str | None]
 ) -> None:
@@ -368,8 +409,12 @@ def log_resolved_audio(
             return
         resolved = describe_resolved_audio(state, addresses, required_models)
         if (host := _declared_host_verdict(api, addresses, required_models)) is not None:
+            # Label the host route as a *group* rather than trailing the phrase
+            # after it: with two declared chips a suffix reads as if only the
+            # last fragment were on the machine's own output.
+            _warn_output_split(emu_clean=resolved.clean, host=host)
             resolved = ResolvedAudio(
-                summary=f"{resolved.summary}; {host.summary} on the machine's own audio output",
+                summary=f"{resolved.summary}; on the machine's own audio output: {host.summary}",
                 clean=resolved.clean and host.clean,
             )
         log_fn = log.info if resolved.clean else log.warning

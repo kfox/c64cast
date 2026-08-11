@@ -347,6 +347,7 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
 
     def setUp(self):
         sr._assumed_model_logged = False
+        sr._output_split_logged = False
 
     def _api(self, *, host_model: str | None = None, curve: str = "6581") -> FakeAPI:
         from dataclasses import replace
@@ -404,6 +405,44 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
             sr.log_resolved_audio(self._api(host_model="6581", curve="8580"), (0xD400,), ("8580",))
         self.assertEqual(cm.records[-1].levelname, "WARNING")
+
+    def test_output_split_names_the_consequence_and_the_remedy(self):
+        # The symptom reaches the user as sound — a tune going thin through the
+        # monitor while the config log says everything matched — and the
+        # obvious reading of that is a failing SID. Say otherwise explicitly.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="6581", curve="8580"), (0xD400,), ("8580",))
+        guidance = " ".join(r.getMessage() for r in cm.records)
+        self.assertIn("not a failing SID", guidance)
+        self.assertIn("Ultimate's audio jack", guidance)
+
+    def test_output_split_guidance_is_once_per_run(self):
+        api = self._api(host_model="6581", curve="8580")
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400,), ("8580",))
+            sr.log_resolved_audio(api, (0xD400,), ("8580",))
+        said = sum("not a failing SID" in r.getMessage() for r in cm.records)
+        self.assertEqual(said, 1)
+
+    def test_no_split_guidance_when_the_emulations_are_wrong_too(self):
+        # Both routes wrong means the problem is configuration; pointing at a
+        # cable would misdirect.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="6581", curve="6581"), (0xD400,), ("8580",))
+        self.assertNotIn("not a failing SID", " ".join(r.getMessage() for r in cm.records))
+
+    def test_no_split_guidance_when_both_routes_match(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="8580", curve="8580"), (0xD400,), ("8580",))
+        self.assertNotIn("not a failing SID", " ".join(r.getMessage() for r in cm.records))
+
+    def test_host_route_is_labelled_as_a_group(self):
+        # The phrase must introduce the host fragments, not trail them: as a
+        # suffix it reads as if only the last chip were on that output.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="8580", curve="8580"), (0xD400,), ("8580",))
+        message = cm.records[-1].getMessage()
+        self.assertIn("on the machine's own audio output: $D400 → host SID", message)
 
     def test_unreadable_surface_falls_back_to_declared(self):
         from dataclasses import replace

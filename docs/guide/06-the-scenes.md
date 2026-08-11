@@ -224,6 +224,22 @@ monitor, you will hear no difference at all — you are listening to the one chi
 nothing can change. Plug headphones or a line-in into the Ultimate's green jack
 and the same tune sounds as it was written to.
 
+It is worse than merely hearing nothing change. If your machine has a 6581 and
+the tune wants an 8580, c64cast will set the emulation to 8580 and that is the
+right thing to do — but through the monitor the tune now plays on the unchanged
+6581 and sounds thin and scratchy, while everything in the log says it matched.
+The natural conclusion is that the SID is dying. It is not. c64cast says so
+when it happens:
+
+```
+sid hardware: this tune plays as authored on the
+Ultimate's own audio output, and on the wrong chip model
+through the C64's AV output — the machine's internal SID
+is what it is and no setting can change it. That is
+expected here, not a failing SID: listen on the
+Ultimate's audio jack to hear the tune as written.
+```
+
 An Ultimate 64 does not have this split: it *is* the Commodore, and its own
 audio output carries the chips it configures.
 

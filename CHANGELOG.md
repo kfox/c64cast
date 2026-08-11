@@ -26,6 +26,16 @@ the version and stamps it with the date.
   its own verdict against the tune. The declaration supersedes
   `host_sid_model`, so the NTSC/PAL guess and its warning drop away with it.
 
+- **When the two audio outputs disagree, c64cast now says which one to listen
+  to.** Matching a tune to an 8580 emulation is the right move on a machine
+  whose internal chip is a 6581 — but the tune then plays on that unchanged
+  6581 through the AV cable, sounding thin and scratchy while every line in the
+  log reports a match. That reads like a dying SID, and someone can lose an
+  evening to it before suspecting the cable. The mismatch was already reported;
+  it is now accompanied, once per run, by what it means and what to do about
+  it. Not emitted when the emulations are wrong too — then the problem really
+  is configuration, and pointing at a cable would misdirect.
+
 - **A tune loading into the RAM under `$D400-$D7FF` now warns on an Ultimate
   II+.** Its emulated SIDs take writes off the cartridge port, which carries no
   signal separating an I/O access from one to the RAM below — so a tune living
