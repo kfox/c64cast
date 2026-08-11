@@ -97,6 +97,7 @@ the two lists account for every module in the tree.
 | `audio/sampler.py` | [Audio output](architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm) |
 | `app/scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes/scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
+| `scenes/setup_progress.py` | [Scenes, sources & overlays](architecture/scenes.md#setup_progresspy--the-video-setup-progress-bar) |
 | `app/schema.py` | [Config, CLI & ensemble](architecture/config.md#schemapy--the-editor-surface) |
 | `sid/emusid_mixer.py` | [SID playback & the oscilloscope](architecture/sid.md#emusid_mixerpy--u2-emulated-stereo-sid-snoop-routing) |
 | `sid/sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
