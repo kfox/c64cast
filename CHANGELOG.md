@@ -14,6 +14,12 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **Video scenes on the Ultimate Audio sampler path no longer stall ~2 seconds
+  at startup.** `VideoScene` started the sampler's blocking prebuffer collection
+  before starting the demuxer that feeds it, so every video began by waiting
+  out the full prebuffer timeout on silence. The demuxer now starts first —
+  the same ordering the audio-file path has always documented and used.
+
 - **An Ultimate II+ now says up front that it has no SID config surface,
   instead of planning against config that isn't there.** The U64's SID
   routing / chip-model / mixer configuration lives in three REST categories

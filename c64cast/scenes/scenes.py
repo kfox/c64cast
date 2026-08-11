@@ -1496,8 +1496,13 @@ class VideoScene(MediaFileMixin, Scene):
             # int16 straight to its push_samples. No SID/$D418/NMI bring-up —
             # the FPGA plays from REU off the C64 bus. position_seconds()/stop()
             # are polymorphic, so _clock_s() + teardown() are unchanged.
-            self.audio.start()
+            # The demuxer must start FIRST: start() blocks on collecting a
+            # prebuffer, and push_samples accepts data before the ring is
+            # gated — starting the sampler first just waits out the full
+            # prebuffer timeout on silence (see AudioFileSource.setup for
+            # the same ordering on the audio-file path).
             self.source.start(audio_push=self.audio.push_samples)
+            self.audio.start()
         elif has_audio and getattr(self.audio, "use_reu_pump", False):
             # REU-staged path: pre-decode entire audio track, 4-bit encode
             # with the same gain/dither pipeline as the host-DMA path uses
