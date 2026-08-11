@@ -68,6 +68,16 @@ def main() -> int:
     ap.add_argument(
         "--frames", type=int, default=3, help="HDMI frames to grab across the run (0 = none)"
     )
+    ap.add_argument(
+        "--burst",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="ALSO grab frames continuously (single device open, --burst-fps/sec) "
+        "from app launch until SECONDS after it — catches short windows like "
+        "scene-setup progress bars that the spread --frames miss (0 = off)",
+    )
+    ap.add_argument("--burst-fps", type=float, default=6.0, help="burst grab rate (frames/sec)")
     ap.add_argument("--no-audio", action="store_true", help="skip audio capture")
     ap.add_argument(
         "--no-reset",
@@ -164,6 +174,30 @@ def main() -> int:
         flash_thread.start()
         print(f"[flash] border marker at {args.border_flash:g} Hz")
     try:
+        if args.burst > 0:
+            # Single device open for the whole window: per-frame re-opens cost
+            # ~1 s each, far too coarse for a scene-setup window of a few
+            # seconds. cap.read() blocks at the device rate; the deadline loop
+            # down-samples that to --burst-fps.
+            cap = cv2.VideoCapture(args.cv2_index)
+            for _ in range(4):
+                cap.read()  # discard warm-up frames
+            n_burst = 0
+            period = 1.0 / max(0.5, args.burst_fps)
+            nxt = time.time()
+            while time.time() - t0 < args.burst:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                if time.time() < nxt:
+                    continue  # keep draining the device between deadlines
+                nxt += period
+                stamp = time.time() - t0
+                p = out / f"{args.label}_burst{n_burst:03d}_t{stamp:05.1f}s.png"
+                d.save_image(frame, p)
+                n_burst += 1
+            cap.release()
+            print(f"[burst] {n_burst} frames over {args.burst:g}s -> {out}/{args.label}_burst*.png")
         for ft in frame_times:
             wait = ft - (time.time() - t0)
             if wait > 0:
