@@ -59,6 +59,7 @@ from c64cast.video.video import (
 )
 
 from .bitmap_text import glyphs_to_mask, load_glyphs
+from .setup_progress import SegmentedProgress, make_setup_bar
 from .video_transport import VideoTransportControls
 
 if TYPE_CHECKING:
@@ -1288,6 +1289,7 @@ class VideoScene(MediaFileMixin, Scene):
         start_s: float = 0.0,
         tempo_scale: float = 1.0,
         loop_audio: str = "on",
+        setup_progress: bool = True,
     ):
         """`file` is a comma-separated `resolve_file_spec` spec (or a single
         literal path — the spec grammar treats one path as a one-entry
@@ -1344,6 +1346,9 @@ class VideoScene(MediaFileMixin, Scene):
         # Capture-anchor marker (see audio_marker.py + AudioCfg.source_
         # alignment_marker). Only honored on the REU pre-encode path.
         self.prepend_alignment_marker = prepend_alignment_marker
+        # [video].setup_progress_bar: draw the striped buffering bar while
+        # setup() blocks (see setup_progress.py).
+        self._setup_progress = setup_progress
         # The whole [color] section travels as one object. It drives both the
         # display-mode shaping (channel_boost / hue_corrections) AND the
         # per-video stages installed at setup() from a one-shot pre-scan of the
@@ -1398,6 +1403,15 @@ class VideoScene(MediaFileMixin, Scene):
             )
             self.is_done = True
             return
+        # The buffering bar (see setup_progress.py). Created after the mode's
+        # setup() cleared the screen; the mode's first frame push wipes it.
+        bar = make_setup_bar(self.api, self.display_mode) if self._setup_progress else None
+        progress = (
+            SegmentedProgress(self._setup_segments(), bar.show)
+            if bar is not None
+            else SegmentedProgress.off()
+        )
+
         sr = int(round(self.audio.effective_rate)) if self.audio else 8000
         # The peak scan only matters when AVFileSource will push audio with
         # per-frame gain — i.e. the non-REU audible path. A muted scene
@@ -1431,6 +1445,7 @@ class VideoScene(MediaFileMixin, Scene):
             )
             self.is_done = True
             return
+        progress.complete("open")
 
         c = self._color
         # Per-video color stages. force_palette needs a blocking pre-scan (its
@@ -1462,7 +1477,9 @@ class VideoScene(MediaFileMixin, Scene):
                     map_colors=map_colors,
                     map_indices=map_indices,
                     decode_target_size=decode_target,
+                    on_progress=progress.reporter("prescan"),
                 )
+                progress.complete("prescan")
                 self.display_mode.set_color_fit(fit)
                 self.display_mode.set_color_map(cmap)
                 if fit is not None:
@@ -1503,6 +1520,7 @@ class VideoScene(MediaFileMixin, Scene):
             # the same ordering on the audio-file path).
             self.source.start(audio_push=self.audio.push_samples)
             self.audio.start()
+            progress.complete("audio-start")
         elif has_audio and getattr(self.audio, "use_reu_pump", False):
             # REU-staged path: pre-decode entire audio track, 4-bit encode
             # with the same gain/dither pipeline as the host-DMA path uses
@@ -1513,6 +1531,7 @@ class VideoScene(MediaFileMixin, Scene):
             # noticeable video lag at scene start until the demuxer catches up).
             assert isinstance(self.audio, AudioStreamer)  # DAC streamer (not sampler)
             audio_4bit = self._preencode_audio_for_reu()
+            progress.complete("encode")
             # Bitmap display modes (hires/mhires) push ~300 KB/sec via host
             # DMAWRITE which halts the C64 bus ~30 % of the time. NMI service
             # drops from 8 kHz to ~5 kHz under that load — the default REU
@@ -1548,7 +1567,10 @@ class VideoScene(MediaFileMixin, Scene):
             # gap until this method writes real audio bytes there.
             skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active", False))
             self.audio.start_for_reu_staged(
-                audio_4bit, chunk_size=chunk, skip_irq_vector_hook=skip_hook
+                audio_4bit,
+                chunk_size=chunk,
+                skip_irq_vector_hook=skip_hook,
+                on_progress=progress.reporter("upload"),
             )
             self.source.start(audio_push=None)
         elif has_audio:
@@ -1557,7 +1579,24 @@ class VideoScene(MediaFileMixin, Scene):
             self.source.start(audio_push=self.audio.push_samples)
         else:
             self.source.start(audio_push=None)
+        progress.finish()
         self.wall_start_time = time.time()
+
+    def _setup_segments(self) -> list[tuple[str, float]]:
+        """The SegmentedProgress weights for this scene's blocking setup
+        steps: coarse relative costs, decided from config before the
+        container opens. Only prescan and upload report real denominators;
+        the rest jump to done via complete(), and a segment that never runs
+        (e.g. the file turns out to have no audio stream) is absorbed by
+        finish()."""
+        segments = [("open", 1.0)]
+        if self.display_mode is not None and self._color.force_palette:
+            segments.append(("prescan", 3.0))
+        if isinstance(self.audio, UltimateAudioSampler):
+            segments.append(("audio-start", 1.0))
+        elif self.audio is not None and getattr(self.audio, "use_reu_pump", False):
+            segments.extend((("encode", 1.0), ("upload", 4.0)))
+        return segments
 
     def _preencode_audio_for_reu(self) -> bytes:
         """Decode the entire audio track to mono int16, apply the same

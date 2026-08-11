@@ -78,6 +78,8 @@ Short clips pay a small per-seek overhead — an accepted trade for bounding the
 
 Both paths share `_frame_to_scan_bgr`, the decode-time downscale above, and one decode pass serves force_palette and auto_fit alike.
 
+**Progress reporting.** `scan_video_samples(..., on_progress=)` feeds the setup progress bar ([scenes/setup_progress.py](scenes.md#setup_progresspy--the-video-setup-progress-bar)) without touching either sampling function: the hook is implemented as `_SampleProgressTap`, just another accumulator appended to the list, counting `add()` calls against `max_samples`. The sequential fallback can sample fewer frames than planned, so the reported fraction may end short of 1.0 — the caller marks its own completion (`SegmentedProgress.complete`).
+
 ### A/V-lag telemetry
 
 `current_frame` records the chosen frame's rebased PTS (`last_frame_pts`) and exposes `video_buffer_depth`; `VideoScene._record_av_lag` logs `audio_clock − displayed_frame_pts` per displayed frame. Small + lag (≤ one source-frame interval) is healthy frame selection; a lag that climbs while the buffer sits near 0 is the decoder failing real time. This is **software-side and artifact-free** — the right way to measure A/V drift on this project (Cam Link audio capture uniformly time-compresses the recording under host DMA load — a load-dependent factor, not the sampler — so it can't measure absolute drift). Live line at `-vv` (every `AV_LAG_LOG_INTERVAL_S`); per-scene min/avg/max summary at teardown (`-v`, mirrors the sampler's write-ahead-lead line).

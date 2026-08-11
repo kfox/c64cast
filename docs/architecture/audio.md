@@ -186,6 +186,8 @@ Two pinned BCC displacements (+15 src wrap, +10 dst wrap) must land on instructi
 
 Bootstrap latency is `REU_MIC_BOOTSTRAP_BYTES / sample_rate`, ≈133 ms at the 12 kHz default. The one `use_reu_pump` flag covers both the video (`start_for_reu_staged`) and mic (`start_mic`) paths — `AudioStreamer` picks the matching bring-up from whichever start method was called.
 
+On the video path, `start_for_reu_staged(..., on_progress=)` reports the whole-track upload (payload + EOF-pad bytes, one call per `REU_UPLOAD_SLICE`) — the seconds-long upload is the bulk of a REU video scene's setup time, and this hook is what the setup progress bar ([scenes/setup_progress.py](scenes.md#setup_progresspy--the-video-setup-progress-bar)) tracks through it.
+
 ### `[ultimate64].auto_reu` — automatic REU provisioning
 
 Default `true`, so the REU paths that hard-require it work without the manual F2 enable step.

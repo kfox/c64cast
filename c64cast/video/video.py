@@ -349,11 +349,27 @@ def _decode_sample_frames(
             break
 
 
+class _SampleProgressTap:
+    """An accumulator that only counts: reports ``n / total`` to ``notify``
+    per sampled frame, so a caller can show scan progress without the
+    sampling functions knowing anything beyond their accumulator list."""
+
+    def __init__(self, total: int, notify: Callable[[float], None]):
+        self._total = max(1, total)
+        self._notify = notify
+        self._n = 0
+
+    def add(self, img: Any) -> None:
+        self._n += 1
+        self._notify(self._n / self._total)
+
+
 def scan_video_samples(
     path: str,
     accumulators: list[Any],
     max_samples: int = 120,
     decode_target_size: tuple[int, int] | None = None,
+    on_progress: Callable[[float], None] | None = None,
 ) -> bool:
     """Sample up to ``max_samples`` frames spread across ``path`` and feed each
     into every accumulator's ``.add(img_bgr)``.
@@ -373,9 +389,15 @@ def scan_video_samples(
     see _plan_decode_size). Color statistics are distribution-based, so the
     downscaled frame yields the same fit/palette as the full-res one at a
     fraction of the cost.
+
+    ``on_progress`` (fraction 0..1) is called per sampled frame. The sequential
+    fallback may sample fewer than ``max_samples`` frames, so the fraction can
+    end short of 1.0 — callers mark their own completion.
     """
     if not accumulators or not ensure_pyav():
         return False
+    if on_progress is not None:
+        accumulators = [*accumulators, _SampleProgressTap(max_samples, on_progress)]
     try:
         container = av_open(path)
         try:
@@ -428,6 +450,7 @@ def prescan_source_color(
     map_colors: int | None = None,
     map_indices: list[int] | None = None,
     decode_target_size: tuple[int, int] | None = None,
+    on_progress: Callable[[float], None] | None = None,
 ) -> tuple[ColorFit | None, ColorMap | None]:
     """Pre-scan a video once and derive the enabled per-source color stages.
 
@@ -447,7 +470,9 @@ def prescan_source_color(
         else None
     )
     accs = [a for a in (fit_acc, map_acc) if a is not None]
-    if not scan_video_samples(path, accs, decode_target_size=decode_target_size):
+    if not scan_video_samples(
+        path, accs, decode_target_size=decode_target_size, on_progress=on_progress
+    ):
         return None, None
     return (fit_acc.result() if fit_acc else None, map_acc.result() if map_acc else None)
 

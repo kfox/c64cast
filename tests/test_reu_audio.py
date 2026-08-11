@@ -182,6 +182,19 @@ class StartForReuStagedTest(unittest.TestCase):
                 all(b == NEUTRAL_SAMPLE for b in data), "EOF pad must be all NEUTRAL_SAMPLE"
             )
 
+    def test_upload_progress_is_monotonic_and_ends_at_one(self):
+        """on_progress tracks payload + EOF-pad bytes: called at least once
+        per payload slice, never regresses, and the final call is exactly
+        1.0 (the setup bar relies on the endpoint)."""
+        s = _new_streamer()
+        audio = b"\x07" * (100 * 1024)
+        fractions: list[float] = []
+        s.start_for_reu_staged(audio, on_progress=fractions.append)
+        self.assertGreaterEqual(len(fractions), -(-len(audio) // REU_UPLOAD_SLICE))
+        self.assertEqual(fractions, sorted(fractions))
+        self.assertEqual(fractions[-1], 1.0)
+        self.assertTrue(all(0.0 < f <= 1.0 for f in fractions))
+
     def test_handler_lands_at_c100(self):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)

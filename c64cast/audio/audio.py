@@ -1617,6 +1617,7 @@ class AudioStreamer:
         chunk_size: int | None = None,
         *,
         skip_irq_vector_hook: bool = False,
+        on_progress: Callable[[float], None] | None = None,
     ) -> None:
         """Bring up audio with the entire track preloaded into REU.
 
@@ -1631,6 +1632,11 @@ class AudioStreamer:
         below the configured sample_rate due to bus halts, a smaller chunk keeps
         the ring from overflowing. See REU_PUMP_CHUNK_SIZE_HEAVY_BUS for the measured
         value (4020 Hz NMI under mhires-like halts → ~65 bytes/IRQ).
+
+        ``on_progress`` (fraction 0..1 of payload + EOF-pad bytes uploaded) is
+        called once per upload slice — the seconds-long upload is the bulk of
+        a REU video scene's setup time, and this is what the setup progress
+        bar tracks.
 
         ``skip_irq_vector_hook``: when True, skip step 6 (patching
         $0314 → $C100). Used when the display mode owns $0314 — its
@@ -1694,9 +1700,12 @@ class AudioStreamer:
             len(audio_4bit) / self.effective_rate,
             eof_pad_bytes,
         )
+        upload_total = len(audio_4bit) + eof_pad_bytes
         t0 = time.perf_counter()
         for off in range(0, len(audio_4bit), REU_UPLOAD_SLICE):
             self.api.reu_write(REU_AUDIO_BASE + off, audio_4bit[off : off + REU_UPLOAD_SLICE])
+            if on_progress is not None:
+                on_progress(min(off + REU_UPLOAD_SLICE, len(audio_4bit)) / upload_total)
         # EOF pad: write NEUTRAL_SAMPLE for the tail so the pump's read-past-
         # end-of-source plays silence instead of garbage.
         pad_payload = bytes([self._neutral_byte] * REU_UPLOAD_SLICE)
@@ -1706,6 +1715,8 @@ class AudioStreamer:
             chunk_len = min(REU_UPLOAD_SLICE, pad_end - pad_off)
             self.api.reu_write(REU_AUDIO_BASE + pad_off, pad_payload[:chunk_len])
             pad_off += chunk_len
+            if on_progress is not None:
+                on_progress(pad_off / upload_total)
         log.info("audio: REU upload took %.2fs", time.perf_counter() - t0)
 
         # 2. Standard NMI bring-up (NMI routine + neutral ring + digi-boost).

@@ -275,6 +275,12 @@ double_buffer = "auto"              # Host-DMA double-buffer (page flip) for
                                     # tear-free. Hires (no color RAM) and static-
                                     # palette mhires (cheap/grayscale) are fully
                                     # tear-free. Independent of use_reu_staged.
+setup_progress_bar = true           # Diagonal-striped bar along screen row 22
+                                    # while a video scene buffers (container
+                                    # open, color pre-scan, audio encode, REU
+                                    # upload). No text or numbers — the right
+                                    # edge is 100%. The first video frame wipes
+                                    # it. false = untouched screen during setup.
 
 [audio]
 enabled = true                      # on by default; --no-audio mutes

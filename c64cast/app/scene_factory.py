@@ -1666,6 +1666,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         start_s=start_s or 0.0,
         tempo_scale=_video_tempo_scale(cfg, mode, dac_audio=has_dac_audio),
         loop_audio=cfg.midi_control.loop_audio,
+        setup_progress=cfg.video.setup_progress_bar,
     )
     if video_name:
         scene.name = video_name
@@ -2241,6 +2242,7 @@ def scenes_from_config(
                 prepend_alignment_marker=(
                     cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump
                 ),
+                setup_progress=cfg.video.setup_progress_bar,
             )
             # These are built directly (not via build_scene), so apply the
             # same bitmap frame-push cap: 20 fps with audio (this hires_edges

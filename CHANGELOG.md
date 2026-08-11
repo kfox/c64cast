@@ -14,6 +14,12 @@ the version and stamps it with the date.
 
 ### Added
 
+- **Video scenes now draw a buffering bar on the C64 while they load.** A
+  diagonal-striped bar grows along screen row 22 through the blocking setup
+  work (container open, color pre-scan, audio encode, REU upload) in every
+  display mode — no text or numbers, the right edge is 100%, and the first
+  video frame wipes it. `[video].setup_progress_bar = false` turns it off.
+
 - **`--calibrate-dac` now says so on the C64 itself.** The machine used to sit
   on a blank screen for the whole ~50 s-per-socket run; it now shows a
   centered title plus a computed duration line (e.g. `MEASURING 2 SIDS -
