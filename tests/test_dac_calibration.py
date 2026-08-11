@@ -32,6 +32,8 @@ from c64cast.audio import dac_slot_ring as dsr
 from c64cast.audio.dac_curves import MAHONEY_ULTISID
 from c64cast.hw.backend import HardwareProfile
 from c64cast.sid.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
+from c64cast.sid.sid_panning import CAT_MIXER
+from c64cast.sid.sid_volume import VOL_OFF, VOL_UNITY
 
 
 def _u64_cfg(host: str = "192.168.2.64") -> Config:
@@ -445,6 +447,47 @@ class IsolateSocketTest(unittest.TestCase):
                 (CAT_ADDRESSING, "Auto Address Mirroring", "Disabled"),
             ],
         )
+
+
+class IsolateMixerTest(unittest.TestCase):
+    """_isolate_mixer only touches items the firmware's mixer reports —
+    VOL_ITEM spans both config surfaces (U2+ EmuSid vs U64 UltiSid), and the
+    other family's items must be skipped, not discovered via a 404'd PUT."""
+
+    U64_MIXER = {
+        "Vol Socket 1": " 0 dB",
+        "Vol Socket 2": " 0 dB",
+        "Vol UltiSid 1": "OFF",
+        "Vol UltiSid 2": "OFF",
+        "Pan Socket 1": "Center",
+    }
+
+    def _present(self, api: FakeAPI) -> set[str]:
+        return {item for _, item in dc._snapshot_mixer(api)}
+
+    def test_puts_only_the_items_this_firmware_carries(self):
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_MIXER] = dict(self.U64_MIXER)
+        dc._isolate_mixer(api, "socket1", self._present(api))
+        put_items = {item for _, item, _ in api.config_puts}
+        self.assertEqual(
+            put_items, {"Vol Socket 1", "Vol Socket 2", "Vol UltiSid 1", "Vol UltiSid 2"}
+        )
+
+    def test_target_source_at_unity_everything_else_off(self):
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_MIXER] = dict(self.U64_MIXER)
+        dc._isolate_mixer(api, "socket2", self._present(api))
+        values = {item: value for _, item, value in api.config_puts}
+        self.assertEqual(values["Vol Socket 2"], VOL_UNITY)
+        self.assertEqual(values["Vol Socket 1"], VOL_OFF)
+        self.assertEqual(values["Vol UltiSid 1"], VOL_OFF)
+        self.assertEqual(values["Vol UltiSid 2"], VOL_OFF)
+
+    def test_unreadable_mixer_surface_means_no_puts(self):
+        api = FakeAPI.ultimate()
+        dc._isolate_mixer(api, "socket1", self._present(api))
+        self.assertEqual(api.config_puts, [])
 
 
 class ResolveCurveTest(DataDirIsolated):

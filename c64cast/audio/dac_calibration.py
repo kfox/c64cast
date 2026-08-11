@@ -58,7 +58,7 @@ import json
 import logging
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -330,7 +330,7 @@ def _snapshot_mixer(be: C64Backend) -> dict[tuple[str, str], str]:
     return {(CAT_MIXER, item): mixer[item] for item in VOL_ITEM.values() if item in mixer}
 
 
-def _isolate_mixer(be: C64Backend, source: str) -> None:
+def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> None:
     """Route only `source` (``"socket1"``/``"ultisid2"``/…) into the mixer, at
     unity.
 
@@ -339,12 +339,19 @@ def _isolate_mixer(be: C64Backend, source: str) -> None:
     chips ships its UltiSID cores at ``OFF``. Measuring through a muted source
     captures the noise floor, which reads as a bring-up or wiring failure rather
     than the routing one it is. Forcing unity rather than preserving a
-    deliberate trim is what keeps two sources' ladders comparable."""
+    deliberate trim is what keeps two sources' ladders comparable.
+
+    `present` is the set of level items this firmware's mixer actually carries
+    (from the pre-loop :func:`_snapshot_mixer` read): ``VOL_ITEM`` spans both
+    config surfaces (U2+ ``EmuSid`` vs U64 ``UltiSid``), so the other family's
+    items are always absent here — skipped by the filter, not discovered by
+    PUTting them into a 404. A put that still fails raises, like
+    :func:`_isolate_socket`'s: measuring through a half-isolated mixer would
+    bake the other sources into the table."""
     for name, item in VOL_ITEM.items():
-        try:
-            be.put_config_item(CAT_MIXER, item, VOL_UNITY if name == source else VOL_OFF)
-        except Exception:  # noqa: BLE001 — best-effort; a board may lack the item
-            log.debug("calib: mixer put %s failed", item, exc_info=True)
+        if item not in present:
+            continue
+        be.put_config_item(CAT_MIXER, item, VOL_UNITY if name == source else VOL_OFF)
 
 
 def _isolate_socket(be: C64Backend, socket: int) -> None:
@@ -612,13 +619,17 @@ def _measure_each_socket(
     # capture its own previous edit rather than the user's setting.
     with SidHwSession(ctx.be) as session:
         session.snapshot()
-        session.fold(_snapshot_mixer(ctx.be))
+        mixer_levels = _snapshot_mixer(ctx.be)
+        session.fold(mixer_levels)
+        mixer_items = {item for _, item in mixer_levels}
+        if not mixer_items:
+            ctx.log_fn("[calib] mixer levels unreadable — measuring without per-source isolation")
         for socket, detected in sockets:
             ctx.log_fn(
                 f"[calib] isolating SID socket {socket} ({detected or 'detected'}) at $D400…"
             )
             _isolate_socket(ctx.be, socket)
-            _isolate_mixer(ctx.be, f"socket{socket}")
+            _isolate_mixer(ctx.be, f"socket{socket}", mixer_items)
             # Re-park AFTER the routing change, not once at bring-up.
             # The env is a series of writes to $D400-$D418, so it lands
             # on whichever chip owned that window at the time — the

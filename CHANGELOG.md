@@ -35,6 +35,14 @@ the version and stamps it with the date.
   out the full prebuffer timeout on silence. The demuxer now starts first —
   the same ordering the audio-file path has always documented and used.
 
+- **`--calibrate-dac` no longer logs 404 tracebacks while isolating the
+  mixer.** The per-source volume list spans both config surfaces (U2+
+  `EmuSid` vs U64 `UltiSid`), and the isolation step blind-PUT all of them —
+  so every U64 run dumped two "Not Found" tracebacks per socket into the
+  `-vv` log. Isolation now only touches the items the machine's own mixer
+  snapshot reported; a write that still fails aborts the run instead of
+  silently measuring a half-isolated mixer.
+
 - **An Ultimate II+ now says up front that it has no SID config surface,
   instead of planning against config that isn't there.** The U64's SID
   routing / chip-model / mixer configuration lives in three REST categories
