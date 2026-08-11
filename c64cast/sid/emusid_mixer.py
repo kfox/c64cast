@@ -11,10 +11,22 @@ the U64 ones :mod:`c64cast.sid.sid_volume` exists for:
   * a multi-SID tune's second chip is inaudible unless some emulated SID
     snoops its address — the stock right-side base is not ``$D420``, so 2SID
     tunes ship half-silent with no error anywhere;
-  * the host C64's own SID can't help: a real SID's partial address decode
-    answers the entire ``$D4xx-$D7xx`` region, so on the machine's own audio
-    out a multi-SID tune collapses onto one chip as mush. The snooped
-    emulations are the only output where such a tune can sound as authored.
+  * on a *stock* machine the host C64's own SID can't help: a lone real SID's
+    partial address decode answers the entire ``$D4xx-$D7xx`` region, so on
+    the machine's own audio out a multi-SID tune collapses onto one chip as
+    mush, and the snooped emulations are the only output where it can sound
+    as authored.
+
+That last point inverts on a machine with an internal dual-SID mod (ARM2SID,
+SIDFX, DualSID). There the second chip is properly decoded at its own address,
+so the machine's own output carries the tune as authored with no help from
+this module — and carries it *more* faithfully than the emulations do, because
+the snoop cannot tell a write to ``$D4xx-$D7xx`` from a write to the RAM
+underneath (the cartridge port carries no signal distinguishing the two), so a
+tune using that RAM sprays clicks and stray notes into the emulated SIDs.
+Which output a listener should trust is therefore a property of the machine,
+not of this surface; ``[hardware].host_sid_chips`` is how that gets declared,
+and c64cast/sid/sid_resolved.py renders the two routes separately.
 
 So this module *routes*: a spare enabled emulated SID (one snooping an address
 the tune doesn't play) is retargeted to an uncovered tune chip, and the

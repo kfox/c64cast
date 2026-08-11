@@ -70,6 +70,19 @@ host_sid_model = "auto"             # SID chip model in the C64 being driven
                                     # logs that assumption; "unknown" opts out.
                                     # Ignored where the live SID state is
                                     # readable (U64).
+host_sid_chips = {}                 # internal SID chips as address = model, for
+                                    # a machine with a dual-SID mod (ARM2SID,
+                                    # SIDFX, DualSID) whose second chip
+                                    # host_sid_model can't describe, e.g.
+                                    #   { d400 = "6581", d420 = "8580" }
+                                    # Hex keys on a $10 boundary in $D000-$DFF0
+                                    # (leading $ optional); models are
+                                    # 6581 | 8580 | unknown. Supersedes
+                                    # host_sid_model when set, so no NTSC/PAL
+                                    # assumption is made — list every chip,
+                                    # $D400 included. Such tunes already play on
+                                    # both chips with nothing routed; this only
+                                    # affects what c64cast reports.
 dump_char_rom = true                # on the first run against a machine, read
                                     # its character ROM and cache it under the
                                     # data dir, so C64 text renders in the real

@@ -41,7 +41,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -145,6 +145,12 @@ class HardwareProfile:
     # convention rather than a user declaration, so the verdict can say so.
     host_sid_model: str | None = None
     host_sid_model_assumed: bool = False
+    # The machine's internal SID chips as ((address, model), ...), from
+    # [hardware].host_sid_chips — a dual-SID mod (ARM2SID, SIDFX, DualSID)
+    # carries a second chip that host_sid_model alone can't describe. Pairs
+    # rather than a dict so the profile stays hashable. Empty = undeclared,
+    # which leaves host_sid_model in charge.
+    host_sid_chips: tuple[tuple[int, str], ...] = ()
 
 
 # The three REST config categories that make up the U64 multi-SID surface —
@@ -740,6 +746,18 @@ def resolve_host_sid_model(configured: str, system: str) -> tuple[str | None, bo
     return ("6581" if system.upper() == "NTSC" else "8580"), True
 
 
+def resolve_host_sid_chips(configured: Mapping[str, str]) -> tuple[tuple[int, str], ...]:
+    """``[hardware].host_sid_chips`` as ``((address, model), ...)``, sorted by
+    address. Keys are hex (``"d420"``, ``"$D420"``); a chip declared
+    ``"unknown"`` keeps its address — the machine has a chip there, we just
+    can't judge its model — so the verdict reports it rather than calling the
+    address unmapped. Config validation has already range-checked these
+    (:func:`c64cast.app.config._validate_host_sid_chips`)."""
+    return tuple(
+        sorted((int(str(address).lstrip("$"), 16), model) for address, model in configured.items())
+    )
+
+
 def make_backend(cfg: Config) -> C64Backend:
     """Construct the hardware backend selected by ``[hardware].backend``.
 
@@ -757,6 +775,12 @@ def make_backend(cfg: Config) -> C64Backend:
     host_model, host_model_assumed = resolve_host_sid_model(
         cfg.hardware.host_sid_model, cfg.ultimate64.system
     )
+    host_chips = resolve_host_sid_chips(cfg.hardware.host_sid_chips)
+    if host_chips:
+        # An explicit chip list describes the machine outright, so the NTSC/PAL
+        # convention has nothing left to guess at — clear the assumed flag so
+        # the once-per-run "this is a guess" warning stays quiet.
+        host_model_assumed = False
 
     if backend == "ultimate":
         from .api import Ultimate64API
@@ -766,6 +790,7 @@ def make_backend(cfg: Config) -> C64Backend:
             default_fps=fps,
             host_sid_model=host_model,
             host_sid_model_assumed=host_model_assumed,
+            host_sid_chips=host_chips,
         )
         return Ultimate64API(
             cfg.ultimate64.url,
@@ -830,6 +855,7 @@ def make_backend(cfg: Config) -> C64Backend:
             write_transport=transport_kind,
             host_sid_model=host_model,
             host_sid_model_assumed=host_model_assumed,
+            host_sid_chips=host_chips,
         )
         return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
 

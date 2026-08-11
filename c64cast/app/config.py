@@ -52,6 +52,15 @@ _BACKEND_CHOICES = ("ultimate", "teensyrom")
 # the opt-out here is "unknown": there is no hardware config to touch, only
 # a claim about the machine that a verdict can be rendered from.
 HOST_SID_MODEL_CHOICES = ("auto", "6581", "8580", "unknown")
+# Per-chip models for host_sid_chips. No "auto": an entry names a chip the user
+# is asserting exists, so there is nothing to infer — "unknown" covers a chip
+# whose model they don't know.
+HOST_SID_CHIP_MODEL_CHOICES = ("6581", "8580", "unknown")
+# The window a PSID second/third-SID address byte can land in ($D000 | byte<<4,
+# see sid_host_emu._decode_extra_sid_addr), so a declared chip address and a
+# tune's declared chip address are range-checked against the same bounds.
+_HOST_SID_ADDR_LO = 0xD000
+_HOST_SID_ADDR_HI = 0xDFF0
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
 _TR_STORAGE_CHOICES = ("sd", "usb")
 _DISPLAY_CHOICES = ("hires_edges", "hires", "petscii", "mcm", "mhires", "blank", "random")
@@ -231,6 +240,21 @@ class HardwareCfg:
             "of model-match verdicts. Ignored where the live SID state is "
             "readable (U64).",
             "choices": HOST_SID_MODEL_CHOICES,
+        },
+    )
+    # Machines with an internal dual-SID mod (ARM2SID, SIDFX, DualSID) carry a
+    # second chip the single-valued host_sid_model can't describe — often set to
+    # the *other* model, which is the whole point of running one. Keyed by
+    # address rather than a parallel list of models so the two can't desync;
+    # matching against a tune's chips is by address anyway.
+    host_sid_chips: dict[str, str] = field(
+        default_factory=dict,
+        metadata={
+            "help": "Internal SID chips in the C64 being driven, as "
+            "address=model (e.g. d400='6581', d420='8580') — for machines with "
+            "a dual-SID mod, whose second chip host_sid_model can't describe. "
+            "When set it supersedes host_sid_model, so no NTSC/PAL assumption "
+            "is made. Ignored where the live SID state is readable (U64).",
         },
     )
     dump_char_rom: bool = field(
@@ -2786,6 +2810,37 @@ def _validate_sid_volume(u64: Ultimate64Cfg) -> None:
         raise ValueError(f"ultimate64.sid_volume: {e}") from e
 
 
+def _validate_host_sid_chips(hw: HardwareCfg) -> None:
+    """Range-check [hardware].host_sid_chips at load/doctor time. A typo'd
+    address here would otherwise surface as a chip silently missing from the
+    resolved-audio verdict — the one line whose job is to be trusted."""
+    if not hw.host_sid_chips:
+        return
+    if not isinstance(hw.host_sid_chips, dict):
+        raise ValueError(
+            f"hardware.host_sid_chips must be a table of address = model, got {hw.host_sid_chips!r}"
+        )
+    for address, model in hw.host_sid_chips.items():
+        try:
+            value = int(str(address).lstrip("$"), 16)
+        except ValueError:
+            raise ValueError(
+                f"hardware.host_sid_chips key {address!r} is not a hex address "
+                f"(want e.g. d400, d420)"
+            ) from None
+        if not (_HOST_SID_ADDR_LO <= value <= _HOST_SID_ADDR_HI) or value % 0x10:
+            raise ValueError(
+                f"hardware.host_sid_chips address ${value:04X} is out of range — "
+                f"a SID base sits on a $10 boundary in "
+                f"${_HOST_SID_ADDR_LO:04X}-${_HOST_SID_ADDR_HI:04X}"
+            )
+        if model not in HOST_SID_CHIP_MODEL_CHOICES:
+            raise ValueError(
+                f"hardware.host_sid_chips[{address}] = {model!r} — want one of "
+                f"{', '.join(HOST_SID_CHIP_MODEL_CHOICES)}"
+            )
+
+
 def _validate_force_palette(color: ColorCfg) -> None:
     """Range-check + normalize the [color].force_palette_colors knob at
     load/doctor time so a bad value surfaces before the playlist runs, not
@@ -2878,6 +2933,7 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     _validate_performance(cfg.performance)
     _validate_sid_panning(cfg.ultimate64)
     _validate_sid_volume(cfg.ultimate64)
+    _validate_host_sid_chips(cfg.hardware)
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out

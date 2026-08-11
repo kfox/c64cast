@@ -385,9 +385,46 @@ on a route whose chip cannot be read is only as sound as that guess, so the
 guess announces itself once and then stops. Declaring the field silences it
 permanently. There is no CLI flag; it belongs in the machine settings file.
 
-All of this is Ultimate-only, best-effort, and restored at teardown. On a
-backend with no configuration interface the tune still plays; every chip past
-the first is simply inaudible.
+### Machines With More Than One Internal SID
+
+`host_sid_model` names one chip, which is one too few for a C64 carrying an
+internal dual-SID mod (ARM2SID, SIDFX, DualSID). Those answer at a second
+address in the machine's own hardware — commonly `$D420` or `$D500` — and
+frequently at a different model from the first, which is much of the point of
+fitting one. `[hardware].host_sid_chips` declares them per chip:
+
+```toml
+[hardware]
+host_sid_chips = { d400 = "6581", d420 = "8580" }
+```
+
+Keys are hex addresses on a `$10` boundary in `$D000-$DFF0`, with or without a
+leading `$`; values are `6581`, `8580`, or `unknown` (the chip exists, its model
+is not known — reported, but no verdict passed on it). Bad keys and values are
+rejected at load, because a typo would otherwise surface as a chip quietly
+missing from the resolved-audio line.
+
+When set, this supersedes `host_sid_model` entirely: the machine is described,
+so the NTSC/PAL convention has nothing to infer and its once-per-run warning
+does not fire. Declare every chip, `$D400` included. Each of the tune's chips is
+then rendered against whatever is declared at its address, and a tune address
+with no declared chip is reported as such rather than omitted.
+
+No routing is involved anywhere in this. A multi-SID tune on such a machine
+plays on both chips because the tune writes to both addresses and the chips are
+already there — the mod has done in silicon what a U64 does in configuration.
+The declaration only affects what c64cast *says*.
+
+> [!NOTE]
+> A second SID mapped into cartridge I/O (`$DE00`/`$DF00`, an option on several
+> of these boards) collides with a TeensyROM+ or Ultimate II+ occupying the
+> cartridge port. The U2+'s snoop-base enum cannot express those addresses
+> either. Relocate the chip to `$D420` or `$D500`.
+
+All of this is best-effort and restored at teardown. Model *matching* is
+Ultimate-only — on a backend with no configuration interface there is no
+hardware to reconfigure, so the declarations feed the verdict alone and the
+tune plays on whatever the machine actually carries.
 
 ## Placing and Balancing Voices
 

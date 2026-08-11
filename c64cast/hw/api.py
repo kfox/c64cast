@@ -399,6 +399,16 @@ _AUDIO_REGION_HI = 0xC300  # exclusive
 # Highest legal end address for the player bundle. $D000+ is I/O space.
 _PLAYER_BUNDLE_HI_MAX = 0xD000
 
+# The bus window the U2+'s emulated stereo SIDs snoop. Its firmware takes SID
+# writes off the cartridge port, which carries no signal distinguishing an I/O
+# access from one to the RAM underneath — so a tune whose payload or buffers
+# live in RAM here is heard as register writes by the emulations. Harmless on
+# the C64's own audio output (where the real chips decode properly), audible
+# garbage on the Ultimate's. Warned about, never refused: the tune plays
+# correctly and only one of the two outputs is affected.
+_EMUSID_SNOOP_LO = 0xD400
+_EMUSID_SNOOP_HI = 0xD800  # exclusive
+
 # Lowest legal player base. The BASIC SYS stub lives at $0801-$0811, with
 # the same $0820 margin parse_psid_for_player applies to load_addr.
 _PLAYER_BASE_MIN = 0x0820
@@ -893,6 +903,34 @@ class _SidPlayerMixin(BufferedWriteBackend):
         self.write_memory_file(f"{launch.layout.player_base:04X}", launch.mc)
         self.write_memory_file(f"{launch.layout.stub_base:04X}", launch.reinit)
 
+    def _warn_if_payload_snooped(self, parsed: ParsedPsid) -> None:
+        """Warn when a tune's payload lands in the RAM under ``$D400-$D7FF`` on
+        a backend whose emulated SIDs snoop that window (the U2+). Only the
+        Ultimate's own audio output is affected — the C64's is fed by real
+        chips, which decode I/O properly — so this is a warning about one
+        listening path, not a reason to refuse a tune that plays fine.
+
+        Catches the load-time case only. A tune that merely *uses* that RAM at
+        run time hits the same problem and can't be detected from the header;
+        the message says so rather than implying the check is exhaustive."""
+        if not self.profile.supports_emusid_mixer:
+            return
+        payload_hi = parsed.load_addr + len(parsed.payload)
+        if parsed.load_addr >= _EMUSID_SNOOP_HI or payload_hi <= _EMUSID_SNOOP_LO:
+            return
+        log.warning(
+            "SID payload $%04X-$%04X overlaps $%04X-$%04X, the window this "
+            "device's emulated SIDs snoop off the cartridge port — which can't "
+            "tell those writes from real SID writes. Expect clicks or stray "
+            "notes on the Ultimate's audio output (the C64's own output is "
+            "unaffected). Tunes that use this RAM only at run time have the "
+            "same effect and can't be detected here.",
+            parsed.load_addr,
+            payload_hi,
+            _EMUSID_SNOOP_LO,
+            _EMUSID_SNOOP_HI - 1,
+        )
+
     def run_sid_player(
         self,
         sid_bytes: bytes,
@@ -941,6 +979,7 @@ class _SidPlayerMixin(BufferedWriteBackend):
         CIA #1 rate). See [docs/caveats.md] for the full rationale.
         """
         parsed = parse_psid_for_player(sid_bytes, song=song)
+        self._warn_if_payload_snooped(parsed)
         layout = _choose_player_layout(parsed, avoid)
         self._sid_player_layout = layout
         self._sid_player_default_play_bank = _play_bank_for(parsed)

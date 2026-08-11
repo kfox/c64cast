@@ -208,6 +208,57 @@ class DescribeDeclaredAudioTest(unittest.TestCase):
             self.assertTrue(sr.describe_declared_audio("8580", False, 0xD400, required).clean)
 
 
+class DescribeDeclaredChipsTest(unittest.TestCase):
+    """The per-chip fallback verdict for a machine with an internal dual-SID
+    mod, where each chip is declared separately ([hardware].host_sid_chips)."""
+
+    _DUAL = ((0xD400, "6581"), (0xD420, "8580"))
+
+    def test_each_chip_gets_its_own_model_verdict(self):
+        # The case these mods exist for: 6581 and 8580 at once, and a tune
+        # asking for exactly that pairing.
+        resolved = sr.describe_declared_chips(self._DUAL, (0xD400, 0xD420), ("6581", "8580"))
+        self.assertTrue(resolved.clean)
+        self.assertEqual(
+            resolved.summary,
+            "$D400 → host SID (6581 declared); $D420 → host SID (8580 declared)",
+        )
+
+    def test_one_chip_mismatched_warns_and_names_only_that_chip(self):
+        resolved = sr.describe_declared_chips(self._DUAL, (0xD400, 0xD420), ("6581", "6581"))
+        self.assertFalse(resolved.clean)
+        self.assertEqual(
+            resolved.summary,
+            "$D400 → host SID (6581 declared); $D420 → host SID (8580 declared) — tune wants 6581",
+        )
+
+    def test_undeclared_address_is_reported_not_dropped(self):
+        # A partly-declared machine: silently omitting $D500 would hide the
+        # chip most likely to be misplaced.
+        resolved = sr.describe_declared_chips(
+            ((0xD400, "6581"),), (0xD400, 0xD500), ("6581", "8580")
+        )
+        self.assertFalse(resolved.clean)
+        self.assertIn("$D500 → no chip declared", resolved.summary)
+
+    def test_unknown_model_reports_the_chip_without_a_verdict(self):
+        resolved = sr.describe_declared_chips(((0xD400, "unknown"),), (0xD400,), ("8580",))
+        self.assertTrue(resolved.clean)
+        self.assertEqual(resolved.summary, "$D400 → host SID (model unknown)")
+
+    def test_a_declared_chip_the_tune_does_not_drive_is_not_mentioned(self):
+        # It receives no writes, so it makes no sound — and this line is about
+        # what a listener hears.
+        resolved = sr.describe_declared_chips(self._DUAL, (0xD400,), ("6581",))
+        self.assertTrue(resolved.clean)
+        self.assertEqual(resolved.summary, "$D400 → host SID (6581 declared)")
+
+    def test_no_model_requirement_is_clean(self):
+        for required in (None, "?", "6581+8580"):
+            resolved = sr.describe_declared_chips(self._DUAL, (0xD420,), (required,))
+            self.assertTrue(resolved.clean)
+
+
 def _no_config_api(host_model: str | None, *, assumed: bool = False) -> FakeAPI:
     """A TeensyROM-like link: no SID config API, host model on the profile."""
     from c64cast.hw.backend import HardwareProfile
@@ -296,6 +347,7 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
 
     def setUp(self):
         sr._assumed_model_logged = False
+        sr._output_split_logged = False
 
     def _api(self, *, host_model: str | None = None, curve: str = "6581") -> FakeAPI:
         from dataclasses import replace
@@ -354,6 +406,44 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
             sr.log_resolved_audio(self._api(host_model="6581", curve="8580"), (0xD400,), ("8580",))
         self.assertEqual(cm.records[-1].levelname, "WARNING")
 
+    def test_output_split_names_the_consequence_and_the_remedy(self):
+        # The symptom reaches the user as sound — a tune going thin through the
+        # monitor while the config log says everything matched — and the
+        # obvious reading of that is a failing SID. Say otherwise explicitly.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="6581", curve="8580"), (0xD400,), ("8580",))
+        guidance = " ".join(r.getMessage() for r in cm.records)
+        self.assertIn("not a failing SID", guidance)
+        self.assertIn("Ultimate's audio jack", guidance)
+
+    def test_output_split_guidance_is_once_per_run(self):
+        api = self._api(host_model="6581", curve="8580")
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400,), ("8580",))
+            sr.log_resolved_audio(api, (0xD400,), ("8580",))
+        said = sum("not a failing SID" in r.getMessage() for r in cm.records)
+        self.assertEqual(said, 1)
+
+    def test_no_split_guidance_when_the_emulations_are_wrong_too(self):
+        # Both routes wrong means the problem is configuration; pointing at a
+        # cable would misdirect.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="6581", curve="6581"), (0xD400,), ("8580",))
+        self.assertNotIn("not a failing SID", " ".join(r.getMessage() for r in cm.records))
+
+    def test_no_split_guidance_when_both_routes_match(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="8580", curve="8580"), (0xD400,), ("8580",))
+        self.assertNotIn("not a failing SID", " ".join(r.getMessage() for r in cm.records))
+
+    def test_host_route_is_labelled_as_a_group(self):
+        # The phrase must introduce the host fragments, not trail them: as a
+        # suffix it reads as if only the last chip were on that output.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(host_model="8580", curve="8580"), (0xD400,), ("8580",))
+        message = cm.records[-1].getMessage()
+        self.assertIn("on the machine's own audio output: $D400 → host SID", message)
+
     def test_unreadable_surface_falls_back_to_declared(self):
         from dataclasses import replace
 
@@ -363,6 +453,52 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
             sr.log_resolved_audio(api, (0xD400,), ("6581",))
         self.assertIn("host SID (6581 declared)", cm.records[-1].getMessage())
         self.assertNotIn("emusid", cm.records[-1].getMessage())
+
+
+class DeclaredChipsThroughLogTest(unittest.TestCase):
+    """log_resolved_audio on a link that can't read SID state, for a machine
+    whose chips are declared per chip rather than by a single model."""
+
+    def setUp(self):
+        sr._assumed_model_logged = False
+
+    @staticmethod
+    def _api(chips, host_model="auto-ish", assumed=False):
+        from c64cast.hw.backend import HardwareProfile
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake TR",
+            family="fake",
+            supports_config=False,
+            host_sid_model=host_model,
+            host_sid_model_assumed=assumed,
+            host_sid_chips=chips,
+        )
+        return api
+
+    def test_second_chip_is_reported_on_a_dual_sid_machine(self):
+        api = self._api(((0xD400, "6581"), (0xD420, "8580")))
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400, 0xD420), ("6581", "8580"))
+        message = cm.records[-1].getMessage()
+        self.assertEqual(cm.records[-1].levelname, "INFO")
+        self.assertIn("$D420 → host SID (8580 declared)", message)
+
+    def test_declared_chips_win_over_host_sid_model(self):
+        # host_sid_model says 6581; the chip table says the $D400 chip is an
+        # 8580. The table describes the machine, so it decides the verdict.
+        api = self._api(((0xD400, "8580"),), host_model="6581")
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400,), ("8580",))
+        self.assertEqual(cm.records[-1].levelname, "INFO")
+        self.assertIn("host SID (8580 declared)", cm.records[-1].getMessage())
+
+    def test_declared_chips_silence_the_ntsc_pal_guess_warning(self):
+        api = self._api(((0xD400, "6581"),), host_model="6581", assumed=True)
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400,), ("6581",))
+        self.assertNotIn("convention", " ".join(r.getMessage() for r in cm.records))
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from c64cast.hw.backend import (
     BufferedWriteBackend,
     C64Backend,
     make_backend,
+    resolve_host_sid_chips,
     resolve_host_sid_model,
 )
 
@@ -187,6 +188,22 @@ class MakeBackendTest(unittest.TestCase):
             cfg.hardware.host_sid_model = "6581"
             api = make_backend(cfg)
             self.assertEqual(api.profile.host_sid_model, "6581")
+            self.assertFalse(api.profile.host_sid_model_assumed)
+
+    def test_host_sid_chips_resolved_onto_the_profile(self):
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            cfg = self._cfg(system="NTSC")
+            cfg.hardware.host_sid_chips = {"d400": "6581", "d420": "8580"}
+            api = make_backend(cfg)
+            self.assertEqual(api.profile.host_sid_chips, ((0xD400, "6581"), (0xD420, "8580")))
+
+    def test_declared_chips_clear_the_ntsc_pal_assumption(self):
+        # The machine is described outright, so there is nothing left to guess
+        # at — and the once-per-run "this is a guess" warning must stay quiet.
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            cfg = self._cfg(system="NTSC")  # host_sid_model defaults to "auto"
+            cfg.hardware.host_sid_chips = {"d400": "6581"}
+            api = make_backend(cfg)
             self.assertFalse(api.profile.host_sid_model_assumed)
 
     def test_direct_construction_defaults_to_ultimate_profile(self):
@@ -432,6 +449,28 @@ class ResolveHostSidModelTest(unittest.TestCase):
     def test_auto_follows_the_system_convention_and_is_assumed(self):
         self.assertEqual(resolve_host_sid_model("auto", "NTSC"), ("6581", True))
         self.assertEqual(resolve_host_sid_model("auto", "PAL"), ("8580", True))
+
+
+class ResolveHostSidChipsTest(unittest.TestCase):
+    """[hardware].host_sid_chips resolution: hex keys in either spelling,
+    sorted by address, "unknown" kept as a chip that exists."""
+
+    def test_parses_hex_keys_with_or_without_a_dollar_sign(self):
+        self.assertEqual(
+            resolve_host_sid_chips({"$D400": "6581", "d420": "8580"}),
+            ((0xD400, "6581"), (0xD420, "8580")),
+        )
+
+    def test_sorted_by_address_regardless_of_authoring_order(self):
+        chips = resolve_host_sid_chips({"d500": "8580", "d400": "6581"})
+        self.assertEqual([address for address, _model in chips], [0xD400, 0xD500])
+
+    def test_unknown_model_keeps_the_chip(self):
+        # The user is asserting a chip is there; only its model is in doubt.
+        self.assertEqual(resolve_host_sid_chips({"d420": "unknown"}), ((0xD420, "unknown"),))
+
+    def test_empty_stays_empty(self):
+        self.assertEqual(resolve_host_sid_chips({}), ())
 
 
 class MakeBackendTeensyromValidationTest(unittest.TestCase):
