@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 19 sections and 150 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 19 sections and 151 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -395,6 +395,7 @@ Webcam input + experimental video paths.
 device = -1
 use_reu_staged = "auto"
 double_buffer = "auto"
+setup_progress_bar = true
 ```
 
 <!-- table: fields -->
@@ -403,6 +404,7 @@ double_buffer = "auto"
 | **`device`**<br>*Type:* `int \| str`<br>*Default:* `-1` | Webcam device: an integer cv2 index (-1 = system default camera, cv2 index 0), or a string matched to a camera by name substring (e.g. "Cam Link") or USB VID:PID (e.g. "0fd9:0066"). String selection needs the 'camera' extra; run `--list-devices` to see names + VID:PID. |
 | **`use_reu_staged`**<br>*Type:* `bool \| str`<br>*Default:* `'auto'` | REU bank-swap double-buffer for video push. "auto" (default) stages bitmap modes (hires/mhires) when the startup probe finds the U64's REU enabled, leaving char modes on the cheaper host-DMA path; true forces it on for every mode, false off. auto silently falls back to host-DMA when REU isn't confirmed. |
 | **`double_buffer`**<br>*Type:* `bool \| str`<br>*Default:* `'auto'` | Host-DMA double-buffer (page flip) for tear-free bitmap video where REU staging can't help. "auto" (default) enables it for bitmap modes (hires/mhires) when REU staging is off and either the backend has no REU (e.g. TeensyROM) or the scene has a text overlay (whose presence turns the REU path off to dodge bank-swap shimmer, otherwise leaving single-buffer host-DMA that tears on cuts). true forces it on for bitmap modes, false off; gated off when the REU mic pump is active (shared $0314). Independent of [video].use_reu_staged (the REU path). |
+| **`setup_progress_bar`**<br>*Type:* `bool`<br>*Default:* `True` | Diagonal-striped bar along screen row 22 while a video scene buffers (container open, color pre-scan, audio encode, REU upload). No text or numbers — the right edge is 100%. The first video frame wipes it. Set false for an untouched screen during setup. |
 
 ## `[vision]`
 

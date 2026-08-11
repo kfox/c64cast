@@ -252,8 +252,8 @@ class MyDisplayMode(DisplayMode):
     def render(self, api, frame_bgr):
         # frame_bgr is a (H, W, 3) uint8 in OpenCV BGR order.
         # Quantize to whatever your mode needs, then push:
-        api.write_region(0x0400, screen_bytes, region_id=REG_SCREEN)
-        api.write_region(0xD800, color_bytes,  region_id=REG_COLOR)
+        api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
+        api.write_region(0xD800, color_bytes,  region_id=RegionID.COLOR)
 ```
 
 Wire it into the loader's mode factory:

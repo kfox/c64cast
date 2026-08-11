@@ -12,7 +12,36 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Added
+
+- **Video scenes now draw a buffering bar on the C64 while they load.** A
+  diagonal-striped bar grows along screen row 22 through the blocking setup
+  work (container open, color pre-scan, audio encode, REU upload) in every
+  display mode — no text or numbers, the right edge is 100%, and the first
+  video frame wipes it. `[video].setup_progress_bar = false` turns it off.
+
+- **`--calibrate-dac` now says so on the C64 itself.** The machine used to sit
+  on a blank screen for the whole ~50 s-per-socket run; it now shows a
+  centered title plus a computed duration line (e.g. `MEASURING 2 SIDS -
+  ABOUT 90 SECONDS`). Both lines are painted before the first capture and the
+  screen is never touched again — mid-run screen DMA could drop NMI samples
+  and skew the measurement.
+
 ### Fixed
+
+- **Video scenes on the Ultimate Audio sampler path no longer stall ~2 seconds
+  at startup.** `VideoScene` started the sampler's blocking prebuffer collection
+  before starting the demuxer that feeds it, so every video began by waiting
+  out the full prebuffer timeout on silence. The demuxer now starts first —
+  the same ordering the audio-file path has always documented and used.
+
+- **`--calibrate-dac` no longer logs 404 tracebacks while isolating the
+  mixer.** The per-source volume list spans both config surfaces (U2+
+  `EmuSid` vs U64 `UltiSid`), and the isolation step blind-PUT all of them —
+  so every U64 run dumped two "Not Found" tracebacks per socket into the
+  `-vv` log. Isolation now only touches the items the machine's own mixer
+  snapshot reported; a write that still fails aborts the run instead of
+  silently measuring a half-isolated mixer.
 
 - **An Ultimate II+ now says up front that it has no SID config surface,
   instead of planning against config that isn't there.** The U64's SID

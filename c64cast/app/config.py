@@ -463,6 +463,15 @@ class VideoCfg:
             "(shared $0314). Independent of [video].use_reu_staged (the REU path)."
         },
     )
+    setup_progress_bar: bool = field(
+        default=True,
+        metadata={
+            "help": "Diagonal-striped bar along screen row 22 while a video scene "
+            "buffers (container open, color pre-scan, audio encode, REU upload). "
+            "No text or numbers — the right edge is 100%. The first video frame "
+            "wipes it. Set false for an untouched screen during setup."
+        },
+    )
 
 
 @dataclass

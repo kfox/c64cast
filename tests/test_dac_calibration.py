@@ -32,6 +32,8 @@ from c64cast.audio import dac_slot_ring as dsr
 from c64cast.audio.dac_curves import MAHONEY_ULTISID
 from c64cast.hw.backend import HardwareProfile
 from c64cast.sid.asid_sidmap import CAT_ADDRESSING, CAT_SOCKETS
+from c64cast.sid.sid_panning import CAT_MIXER
+from c64cast.sid.sid_volume import VOL_OFF, VOL_UNITY
 
 
 def _u64_cfg(host: str = "192.168.2.64") -> Config:
@@ -445,6 +447,47 @@ class IsolateSocketTest(unittest.TestCase):
                 (CAT_ADDRESSING, "Auto Address Mirroring", "Disabled"),
             ],
         )
+
+
+class IsolateMixerTest(unittest.TestCase):
+    """_isolate_mixer only touches items the firmware's mixer reports —
+    VOL_ITEM spans both config surfaces (U2+ EmuSid vs U64 UltiSid), and the
+    other family's items must be skipped, not discovered via a 404'd PUT."""
+
+    U64_MIXER = {
+        "Vol Socket 1": " 0 dB",
+        "Vol Socket 2": " 0 dB",
+        "Vol UltiSid 1": "OFF",
+        "Vol UltiSid 2": "OFF",
+        "Pan Socket 1": "Center",
+    }
+
+    def _present(self, api: FakeAPI) -> set[str]:
+        return {item for _, item in dc._snapshot_mixer(api)}
+
+    def test_puts_only_the_items_this_firmware_carries(self):
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_MIXER] = dict(self.U64_MIXER)
+        dc._isolate_mixer(api, "socket1", self._present(api))
+        put_items = {item for _, item, _ in api.config_puts}
+        self.assertEqual(
+            put_items, {"Vol Socket 1", "Vol Socket 2", "Vol UltiSid 1", "Vol UltiSid 2"}
+        )
+
+    def test_target_source_at_unity_everything_else_off(self):
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_MIXER] = dict(self.U64_MIXER)
+        dc._isolate_mixer(api, "socket2", self._present(api))
+        values = {item: value for _, item, value in api.config_puts}
+        self.assertEqual(values["Vol Socket 2"], VOL_UNITY)
+        self.assertEqual(values["Vol Socket 1"], VOL_OFF)
+        self.assertEqual(values["Vol UltiSid 1"], VOL_OFF)
+        self.assertEqual(values["Vol UltiSid 2"], VOL_OFF)
+
+    def test_unreadable_mixer_surface_means_no_puts(self):
+        api = FakeAPI.ultimate()
+        dc._isolate_mixer(api, "socket1", self._present(api))
+        self.assertEqual(api.config_puts, [])
 
 
 class ResolveCurveTest(DataDirIsolated):
@@ -1316,6 +1359,70 @@ class FindCaptureDeviceTest(unittest.TestCase):
         # …and that fallback is exactly what run_calibration warns about.
         self.assertFalse(dcap.looks_like_capture_input("Line In"))
         self.assertTrue(dcap.looks_like_capture_input("Cam Link 4K"))
+
+
+class StatusScreenTest(unittest.TestCase):
+    """The on-C64-screen wait message: centered white text as screen codes
+    (not ASCII/PETSCII), lines that fit the 40-column screen, a duration
+    estimate derived from the real ring plan, and — the safety property —
+    every screen write lands before the first measurement."""
+
+    def test_paint_centers_the_text_and_colors_it_white(self):
+        api = FakeAPI()
+        dc._paint_status_line(api, 10, "ABC")
+        base = 10 * 40 + (40 - 3) // 2
+        self.assertEqual(api.mem_files[f"{0x0400 + base:04X}"], bytes([0x01, 0x02, 0x03]))
+        self.assertEqual(api.mem_files[f"{0xD800 + base:04X}"], bytes([1, 1, 1]))
+
+    def test_screen_codes_use_the_uppercase_screen_set(self):
+        self.assertEqual(dc._screen_codes("@AZ"), bytes([0x00, 0x01, 0x1A]))
+        self.assertEqual(dc._screen_codes("a"), dc._screen_codes("A"))
+        self.assertEqual(dc._screen_codes(" -09"), bytes([0x20, 0x2D, 0x30, 0x39]))
+
+    def test_message_lines_fit_the_screen_as_screen_codes(self):
+        lines = (
+            dc._TITLE_TEXT,
+            dc._estimate_text(1, 4.5, 0.4),
+            dc._estimate_text(2, 4.5, 0.4),
+        )
+        for text in lines:
+            self.assertLessEqual(len(text), 40, text)
+            self.assertTrue(all(c < 0x40 for c in dc._screen_codes(text)), text)
+
+    def test_estimate_derives_from_the_ring_plan(self):
+        rings = sum(len(batches) for batches in dc._plan_rounds())
+        for n_sids in (1, 2):
+            text = dc._estimate_text(n_sids, 4.5, 0.4)
+            claimed = int(text.split("ABOUT ")[1].split(" ")[0])
+            actual = n_sids * (rings * 4.9 + dc._PER_SID_OVERHEAD_S)
+            self.assertLessEqual(abs(claimed - actual), dc._ESTIMATE_GRANULARITY_S / 2, text)
+
+    def test_run_paints_both_lines_before_any_measurement(self):
+        api = FakeAPI()  # default profile: no multi-SID surface → 1 SID
+        fmt = dcap.CaptureFormat(channels=2, samplerate=48000)
+
+        def fake_measure(ctx, label):
+            ctx.be.ops.append(("measure",))
+            return [0] * 256, {"ladder_bits": 6.5}, []
+
+        with (
+            patch.object(dc, "_require_sounddevice"),
+            patch.object(dc, "_bring_up_dac_env"),
+            patch.object(dc, "_open_capture", return_value=(0, fmt)),
+            patch.object(dc, "_measure_one", side_effect=fake_measure),
+            patch.object(dc, "_silence_and_reset"),
+            patch.object(dc, "save_calibration", return_value=Path("cal.json")),
+            patch.object(dc, "_report_run"),
+            patch.object(dc, "resolve_calibration_key", return_value="test-key"),
+            patch.object(dc, "_device_provenance", return_value={}),
+        ):
+            dc.run_calibration(api, _u64_cfg())
+
+        paints = [i for i, op in enumerate(api.ops) if op[0] == "write_memory_file"]
+        measures = [i for i, op in enumerate(api.ops) if op[0] == "measure"]
+        self.assertEqual(len(paints), 4)  # 2 lines × (screen + color RAM)
+        self.assertEqual(len(measures), 1)
+        self.assertTrue(max(paints) < min(measures), api.ops)
 
 
 if __name__ == "__main__":

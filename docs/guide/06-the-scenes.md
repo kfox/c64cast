@@ -105,6 +105,13 @@ to the Commodore. The soundtrack is decoded in parallel and played through
 the sound chip, and the video is paced off the audio clock rather than a
 timer, so the two cannot drift apart over a long clip.
 
+All that preparation takes a few seconds before the first frame appears, and
+the Commodore doesn't keep it a secret: a striped loading bar grows across
+the lower part of the screen while the scene gets ready, and the first frame
+of video wipes it away. The right edge of the screen is 100% — no numbers
+needed. If you would rather the screen stay dark while a scene loads, set
+`setup_progress_bar = false` under `[video]`.
+
 Web links work as file paths. Direct links to media play immediately; links
 to video sites are resolved first, which needs the optional `yt` feature
 installed. If the link carries a timestamp, playback starts there.

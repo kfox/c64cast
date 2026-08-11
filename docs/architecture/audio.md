@@ -186,6 +186,8 @@ Two pinned BCC displacements (+15 src wrap, +10 dst wrap) must land on instructi
 
 Bootstrap latency is `REU_MIC_BOOTSTRAP_BYTES / sample_rate`, ≈133 ms at the 12 kHz default. The one `use_reu_pump` flag covers both the video (`start_for_reu_staged`) and mic (`start_mic`) paths — `AudioStreamer` picks the matching bring-up from whichever start method was called.
 
+On the video path, `start_for_reu_staged(..., on_progress=)` reports the whole-track upload (payload + EOF-pad bytes, one call per `REU_UPLOAD_SLICE`) — the seconds-long upload is the bulk of a REU video scene's setup time, and this hook is what the setup progress bar ([scenes/setup_progress.py](scenes.md#setup_progresspy--the-video-setup-progress-bar)) tracks through it.
+
 ### `[ultimate64].auto_reu` — automatic REU provisioning
 
 Default `true`, so the REU paths that hard-require it work without the manual F2 enable step.
@@ -262,6 +264,10 @@ Only the **emulated-UltiSID** table ships baked into [c64cast/audio/dac_curves.p
 Physical chips do not generalize. 6581/8580 variation is enormous chip-to-chip, dominated by the analog filter: two 6581s correlated only 0.74, and swapping their tables cost ≈29% RMS level error. SID replacements (ARM2SID, SwinSID, FPGASID) differ again. No baked table can serve them, hence calibration:
 
 `c64cast -u <target> --calibrate-dac` (`cli` → `dac_calibration.run_calibration`) measures the connected SID's signed transfer curve, ≈50 s per socket.
+
+#### The on-screen wait message
+
+The machine spends the whole run parked in the BASIC clear loop with a dead screen, so `run_calibration` paints two centered white lines onto it: a title right after bring-up, and a duration line once the SID count is known — `MEASURING 2 SIDS - ABOUT 90 SECONDS`, computed from the same `_plan_rounds()` capture plan the measurement loop runs so the message can't drift from the real ring count. Both paints land **strictly before the first capture, and the screen is never written again**: a host DMA halt spanning two CIA #2 Timer A underflows during a capture silently drops NMI samples (see "The ring write is split and spread" above), which would corrupt the very levels being measured. The BASIC loop is safe to paint over because `10 PRINT CHR$(147) : 20 GOTO 20` loops on line 20, not the PRINT — the screen clears exactly once at launch. There is deliberately no completion repaint: `_silence_and_reset` ends the run at the normal reset screen, which is itself the "machine released" signal, and the console carries the actual result.
 
 #### Picking the capture device
 
@@ -396,7 +402,7 @@ A real U64 can carry two physical SID sockets, each potentially a different chip
 Two things have to happen *after* each routing change, not once at bring-up, and both were found by a measurement that came back at the noise floor:
 
 * **Re-park the Mahoney env** (`st._enable_mahoney_env()`). The env is a series of writes to `$D400`–`$D418`, so it lands on whichever chip owned that window at the time — the first socket measured. Every socket after it was being measured with unparked voices, i.e. no DC for the volume nibble to scale.
-* **Route the mixer** (`_isolate_mixer`). Address routing alone does not make a source audible: the Audio Mixer carries an independent per-source level (`Vol Socket 1`, `Vol UltiSid 1`, …), and a board that has only ever used socketed chips ships its UltiSID cores at `OFF`. Levels are snapshotted once *before* the loop (`_snapshot_mixer`, a sibling of `snapshot_sid_config` rather than part of it — widening that snapshot would make every multi-SID planning caller restore mixer state it never touched), since `_isolate_mixer` rewrites them per socket and a per-iteration snapshot would capture its own previous edit.
+* **Route the mixer** (`_isolate_mixer`). Address routing alone does not make a source audible: the Audio Mixer carries an independent per-source level (`Vol Socket 1`, `Vol UltiSid 1`, …), and a board that has only ever used socketed chips ships its UltiSID cores at `OFF`. Levels are snapshotted once *before* the loop (`_snapshot_mixer`, a sibling of `snapshot_sid_config` rather than part of it — widening that snapshot would make every multi-SID planning caller restore mixer state it never touched), since `_isolate_mixer` rewrites them per socket and a per-iteration snapshot would capture its own previous edit. The snapshot doubles as the probe: `VOL_ITEM` spans both config surfaces (U2+ `EmuSid` vs U64 `UltiSid`), and `_isolate_mixer` only PUTs the items the snapshot actually saw — the other family's items are skipped up front, not discovered by PUTting them into a 404 (which used to land a traceback in every `-vv` calibration log). A PUT that still fails raises and aborts the run, same as `_isolate_socket`: measuring through a half-isolated mixer would bake the other sources into the table.
 
 Both failures present identically — a capture at the noise floor, which reads as a broken capture rig rather than as the routing problem it is. This is purely config-driven, no U64-vs-U2+ model check: a U2+ with one socket + one UltiSID core measures just that socket; a bare-UltiSID board or a backend with no config API (TeensyROM) falls back to one unlabeled measurement of whatever SID currently answers `$D400`.
 

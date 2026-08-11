@@ -24,6 +24,7 @@ from c64cast.video.video import (
     _compute_normalization_gain,
     _is_remote_url,
     _plan_decode_size,
+    _SampleProgressTap,
     ensure_pyav,
     scan_video_samples,
 )
@@ -38,6 +39,24 @@ def _make_av_source_stub(frames: list[tuple[float, np.ndarray]], eof: bool) -> A
     src._lock = threading.Lock()
     src._eof = eof
     return src
+
+
+class SampleProgressTapTest(unittest.TestCase):
+    """The pre-scan progress tap is just another accumulator: it counts
+    add() calls against the planned sample total."""
+
+    def test_reports_fraction_of_planned_samples(self):
+        fractions: list[float] = []
+        tap = _SampleProgressTap(4, fractions.append)
+        for _ in range(3):
+            tap.add(None)
+        self.assertEqual(fractions, [0.25, 0.5, 0.75])
+
+    def test_zero_total_cannot_divide_by_zero(self):
+        fractions: list[float] = []
+        tap = _SampleProgressTap(0, fractions.append)
+        tap.add(None)
+        self.assertEqual(fractions, [1.0])
 
 
 class RemoteUrlTest(unittest.TestCase):
