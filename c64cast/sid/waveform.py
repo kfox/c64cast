@@ -84,7 +84,7 @@ from .sid_hw_config import (
     detect_sockets,
 )
 from .sid_panning import apply_panning, sources_for_addresses
-from .sid_resolved import log_resolved_audio
+from .sid_resolved import host_chip_fit, log_resolved_audio
 from .sid_volume import apply_volume
 from .sidemu import ACCUMULATOR_RANGE, SID_REG_COUNT, SIDEmulator, primary_waveform
 
@@ -375,6 +375,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # [ultimate64].sid_volume — empty/None means "0 dB for a source that
         # would otherwise be inaudible, leave a deliberate level alone".
         self._sid_volume = list(sid_volume or ())
+        # The pool picker needs the backend profile ([hardware].host_sid_* and
+        # the capability flags) and runs below, before super().__init__ has set
+        # self.api.
+        self._pick_api = api
 
         # Initial resolution: __init__ raises on bad specs (mirrors
         # validate_scene_cfg). Also raises if every candidate fails the
@@ -503,6 +507,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     # eventually surfaces as a hard failure instead of silent retry.
     _MAX_PICK_ATTEMPTS = 8
 
+    # Enough of a candidate to answer "does this tune fit this machine's SID
+    # chips?": the PSID header ends at $7C, and the extra-SID address bytes
+    # this turns on ($7A/$7B) are the last fields that matter here.
+    _HOST_FIT_HEADER_BYTES = 0x80
+
     def _resolve_candidates(self) -> list[str]:
         """Re-resolve the spec at setup time so directory contents can
         change between iterations (newly dropped SIDs are picked up)."""
@@ -587,13 +596,81 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # so multi-pick scenes get the right padding per chosen SID.
         self._song_num_width = len(str(max(self.header.num_songs, 1)))
 
+    def _host_fit_of(self, path: str) -> bool | None:
+        """One candidate's host-chip verdict from its PSID header alone, or
+        None when the machine declares nothing to judge against.
+
+        Only the header is read (`_HOST_FIT_HEADER_BYTES`), so ordering a large
+        directory costs a few hundred short reads rather than loading every
+        tune. A file that can't be read or parsed counts as a miss: it is going
+        to fail `_load_sid_file` too, and sorting it to the back means the real
+        error is reported by the loader that can describe it properly."""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(self._HOST_FIT_HEADER_BYTES)
+            header = parse_sid_header(head)
+            addresses = detect_sid_addresses(path, head)
+        except (OSError, ValueError):
+            return False
+        required = required_models_for(self._sid_model, header.sid_models, len(addresses))
+        return host_chip_fit(self._pick_api, addresses, required)
+
+    def _order_by_host_fit(self, pool: list[str]) -> list[str]:
+        """Apply `[hardware].host_sid_tune_match` to an already-shuffled pool —
+        tunes the machine's own SID chips can play as authored first
+        ("prefer"), or those alone ("require").
+
+        "require" still falls back to the full pool when nothing fits, with a
+        warning. A mis-declared machine (or a directory of tunes for a chip
+        model the user doesn't have) is a configuration mistake, and degrading
+        to today's behavior surfaces it as a line in the log instead of a scene
+        that can never start."""
+        mode = getattr(self._pick_api.profile, "host_sid_tune_match", "off")
+        if mode == "off" or len(pool) < 2:
+            return pool
+        fits: list[str] = []
+        misses: list[str] = []
+        for path in pool:
+            fit = self._host_fit_of(path)
+            if fit is None:
+                # No-opinion is a property of the machine's declarations, not
+                # of this tune, so the first candidate settles it for all of
+                # them — no point reading the rest of the headers.
+                return pool
+            (fits if fit else misses).append(path)
+        if not misses:
+            return pool
+        if fits:
+            log.info(
+                "waveform: host_sid_tune_match=%s — %d of %d candidates play as "
+                "authored on this machine's own SID chips",
+                mode,
+                len(fits),
+                len(pool),
+            )
+            return fits if mode == "require" else fits + misses
+        log.warning(
+            "waveform: host_sid_tune_match=%s but none of the %d candidates match "
+            "this machine's declared SID chips — playing an unmatched tune rather "
+            "than nothing; check [hardware].host_sid_chips / host_sid_model against "
+            "the chips actually fitted",
+            mode,
+            len(pool),
+        )
+        return pool
+
     def _pick_and_load_sid(self) -> None:
         """Re-resolve the spec, pick a random candidate, load it. Retries
         on ValueError up to _MAX_PICK_ATTEMPTS with the offending file
-        removed from the shuffled pool. Raises if every attempt fails."""
+        removed from the shuffled pool. Raises if every attempt fails.
+
+        The shuffle happens before `_order_by_host_fit` so that mode's grouping
+        is a bias on top of a random order, not a reordering that would make one
+        tune the deterministic pick for a whole class of machines."""
         self._candidates = self._resolve_candidates()
         pool = list(self._candidates)
         random.shuffle(pool)
+        pool = self._order_by_host_fit(pool)
         last_error: Exception | None = None
         for path in pool[: self._MAX_PICK_ATTEMPTS]:
             try:

@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 413 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 414 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -232,8 +232,9 @@ Every name c64cast answers to — 413 of them — and the pages that discuss eac
 | `host` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host_dma_servo` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
-| `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
+| `host_sid_tune_match` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `hue_corrections` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hue_corrections_replace_defaults` | [`color` (A)](20-appendix-a-configuration.md#color) |
 
@@ -459,7 +460,7 @@ Every name c64cast answers to — 413 of them — and the pages that discuss eac
 | `show_dropped` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
 | `--sid-model` | [Machine Settings (1)](02-config-rules.md#machine-settings), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Connection (G)](26-appendix-g-cli-flags.md#connection) |
 | `sid_filter_cutoff` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `sid_model` | [Machine Settings (1)](02-config-rules.md#machine-settings), [Matching the Chip to the Tune (4)](05-sound-and-music.md#matching-the-chip-to-the-tune), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
+| `sid_model` | [Machine Settings (1)](02-config-rules.md#machine-settings), [Matching the Chip to the Tune (4)](05-sound-and-music.md#matching-the-chip-to-the-tune), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
 | `sid_panning` | [`sid_panning` (4)](05-sound-and-music.md#sid_panning), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `sid_volume` | [`sid_volume` (4)](05-sound-and-music.md#sid_volume), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | single-scene mode | [Single-Scene Mode (1)](02-config-rules.md#single-scene-mode), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |

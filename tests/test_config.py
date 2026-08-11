@@ -379,6 +379,21 @@ class HostSidChipsConfigTest(unittest.TestCase):
             self._load('[hardware]\nhost_sid_chips = { d400 = "auto" }\n')
         self.assertIn("host_sid_chips", str(ctx.exception))
 
+    def test_tune_match_defaults_to_off(self):
+        self.assertEqual(cfgmod.Config().hardware.host_sid_tune_match, "off")
+
+    def test_tune_match_accepts_every_choice(self):
+        for mode in cfgmod.HOST_SID_TUNE_MATCH_CHOICES:
+            cfg = self._load(f'[hardware]\nhost_sid_tune_match = "{mode}"\n')
+            self.assertEqual(cfg.hardware.host_sid_tune_match, mode)
+
+    def test_tune_match_typo_raises(self):
+        # A typo would otherwise read as "off" and do nothing, which is
+        # indistinguishable from the feature not working.
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[hardware]\nhost_sid_tune_match = "preferred"\n')
+        self.assertIn("host_sid_tune_match", str(ctx.exception))
+
 
 class DoubleBufferTest(unittest.TestCase):
     """[video].double_buffer — the host-DMA page-flip path for no-REU backends."""

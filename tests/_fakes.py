@@ -269,14 +269,17 @@ def make_psid(
     num_songs: int = 1,
     start_song: int = 1,
     second_sid_addr: int = 0,
+    model: str | None = None,
+    second_model: str | None = None,
     payload: bytes | tuple[int, ...] | list[int] = (0x60, 0x60),
 ) -> bytes:
     """Minimal runnable PSID v2: real header fields + payload, enough for
     parse_psid_for_player + SidHostEmu to run INIT/PLAY (the defaults are an
     RTS init and play). A nonzero `second_sid_addr` ($D420-style base) makes
-    it a v3 2SID header. PSID is a real external format — its byte offsets
-    live here once, so a typo'd field fails every consumer instead of just
-    the one file that happened to re-type it."""
+    it a v3 2SID header. `model` / `second_model` ("6581"/"8580") set the
+    per-chip model bits in the v2+ flags field. PSID is a real external format
+    — its byte offsets live here once, so a typo'd field fails every consumer
+    instead of just the one file that happened to re-type it."""
     header = bytearray(124)
     header[0:4] = magic
     header[4:6] = (2).to_bytes(2, "big")  # version
@@ -289,6 +292,11 @@ def make_psid(
     if second_sid_addr:
         header[4:6] = (3).to_bytes(2, "big")  # secondSIDAddress is v3+
         header[0x7A] = (second_sid_addr >> 4) & 0xFF
+    # v2+ flags at $76-$77 (big-endian): sidModel1 is bits 4-5 and sidModel2
+    # bits 6-7, both in the low byte $77. 1 = 6581, 2 = 8580.
+    bits = {"6581": 1, "8580": 2}
+    flags = bits.get(model or "", 0) << 4 | bits.get(second_model or "", 0) << 6
+    header[0x76:0x78] = flags.to_bytes(2, "big")
     return bytes(header) + bytes(payload)
 
 

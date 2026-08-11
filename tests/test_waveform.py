@@ -1660,6 +1660,126 @@ class WaveformPoolPickTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "none could be loaded"):
                 WaveformScene(api, audio=None, file=self.tmpdir, duration_s=10.0)
 
+    def _write_psid(self, filename: str, **psid_kwargs) -> str:
+        path = os.path.join(self.tmpdir, filename)
+        with open(path, "wb") as f:
+            f.write(make_psid(payload=bytes(2048), **psid_kwargs))
+        return path
+
+    def _scene_on(self, *, chips=(), mode="prefer", **profile_kwargs):
+        """A scene over the pool directory whose backend declares `chips` and
+        runs `[hardware].host_sid_tune_match` = `mode`."""
+        from c64cast.hw.backend import HardwareProfile
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake TR",
+            family="fake",
+            host_sid_chips=chips,
+            host_sid_tune_match=mode,
+            **profile_kwargs,
+        )
+        return WaveformScene(api, audio=None, file=self.tmpdir, duration_s=10.0)
+
+    def test_pool_prefers_a_tune_the_declared_chips_can_play(self):
+        # One 6581 tune, four 8580 tunes: without the bias the 6581 is picked
+        # one time in five, so landing on it under every seed is the bias.
+        self._write_psid("match.sid", model="6581")
+        for i in range(4):
+            self._write_psid(f"miss{i}.sid", model="8580")
+        for seed in range(6):
+            random.seed(seed)
+            scene = self._scene_on(chips=((0xD400, "6581"),))
+            self.assertEqual(os.path.basename(scene._sid_file), "match.sid")
+
+    def test_pool_skips_a_2sid_tune_on_a_single_sid_machine(self):
+        # The declared chip table describes the whole machine, so a tune
+        # driving $D420 has half its voices landing on nothing.
+        self._write_psid("mono.sid", model="6581")
+        for i in range(4):
+            self._write_psid(f"stereo{i}.sid", model="6581", second_sid_addr=0xD420)
+        for seed in range(6):
+            random.seed(seed)
+            scene = self._scene_on(chips=((0xD400, "6581"),))
+            self.assertEqual(os.path.basename(scene._sid_file), "mono.sid")
+
+    def test_off_leaves_the_pool_alone(self):
+        self._write_psid("match.sid", model="6581")
+        for i in range(4):
+            self._write_psid(f"miss{i}.sid", model="8580")
+        picked = set()
+        for seed in range(6):
+            random.seed(seed)
+            scene = self._scene_on(chips=((0xD400, "6581"),), mode="off")
+            picked.add(os.path.basename(scene._sid_file))
+        self.assertTrue(picked - {"match.sid"}, "off must not bias the pool")
+
+    def test_an_assumed_host_model_does_not_narrow_the_pool(self):
+        # Dropping tunes out of someone's directory on the strength of the
+        # NTSC/PAL guess is not a trade worth making.
+        self._write_psid("match.sid", model="6581")
+        for i in range(4):
+            self._write_psid(f"miss{i}.sid", model="8580")
+        picked = set()
+        for seed in range(6):
+            random.seed(seed)
+            scene = self._scene_on(host_sid_model="6581", host_sid_model_assumed=True)
+            picked.add(os.path.basename(scene._sid_file))
+        self.assertTrue(picked - {"match.sid"})
+
+    def test_require_falls_back_and_warns_when_nothing_fits(self):
+        # A mis-declared machine surfaces as a line in the log, not as a scene
+        # that can never start.
+        for i in range(3):
+            self._write_psid(f"miss{i}.sid", model="8580")
+        random.seed(0)
+        with self.assertLogs("c64cast.sid.waveform", level="WARNING") as cm:
+            scene = self._scene_on(chips=((0xD400, "6581"),), mode="require")
+        self.assertTrue(scene._sid_file.endswith(".sid"))
+        self.assertTrue(any("none of the 3 candidates" in r.getMessage() for r in cm.records))
+
+    def test_require_drops_misfits_from_the_pool(self):
+        self._write_psid("match.sid", model="6581")
+        self._write_psid("miss.sid", model="8580")
+        scene = self._scene_on(chips=((0xD400, "6581"),), mode="require")
+        self.assertEqual(
+            scene._order_by_host_fit(
+                [os.path.join(self.tmpdir, n) for n in ("miss.sid", "match.sid")]
+            ),
+            [os.path.join(self.tmpdir, "match.sid")],
+        )
+
+    def test_prefer_keeps_misfits_as_a_fallback_tail(self):
+        self._write_psid("match.sid", model="6581")
+        self._write_psid("miss.sid", model="8580")
+        scene = self._scene_on(chips=((0xD400, "6581"),), mode="prefer")
+        self.assertEqual(
+            [
+                os.path.basename(p)
+                for p in scene._order_by_host_fit(
+                    [os.path.join(self.tmpdir, n) for n in ("miss.sid", "match.sid")]
+                )
+            ],
+            ["match.sid", "miss.sid"],
+        )
+
+    def test_an_unreadable_candidate_sorts_to_the_back(self):
+        # It is going to fail _load_sid_file too; the loader is what can
+        # describe the failure properly.
+        self._write_psid("match.sid", model="6581")
+        junk = os.path.join(self.tmpdir, "junk.sid")
+        with open(junk, "wb") as f:
+            f.write(b"not a sid file at all")
+        scene = self._scene_on(chips=((0xD400, "6581"),), mode="prefer")
+        self.assertEqual(
+            [
+                os.path.basename(p)
+                for p in scene._order_by_host_fit([junk, os.path.join(self.tmpdir, "match.sid")])
+            ],
+            ["match.sid", "junk.sid"],
+        )
+
     def test_single_file_pool_skips_repick_at_setup(self):
         """Single-file specs stay deterministic AND keep cycle_style
         mutations (self.song advances) across setup/teardown cycles — the

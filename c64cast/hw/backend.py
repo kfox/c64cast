@@ -151,6 +151,11 @@ class HardwareProfile:
     # rather than a dict so the profile stays hashable. Empty = undeclared,
     # which leaves host_sid_model in charge.
     host_sid_chips: tuple[tuple[int, str], ...] = ()
+    # [hardware].host_sid_tune_match — "off"/"prefer"/"require". Carried
+    # alongside the declarations it is evaluated against, for the same reason
+    # they are here: its consumer (the waveform pool picker) already holds a
+    # backend and nothing else machine-scoped.
+    host_sid_tune_match: str = "off"
 
 
 # The three REST config categories that make up the U64 multi-SID surface —
@@ -791,6 +796,7 @@ def make_backend(cfg: Config) -> C64Backend:
             host_sid_model=host_model,
             host_sid_model_assumed=host_model_assumed,
             host_sid_chips=host_chips,
+            host_sid_tune_match=cfg.hardware.host_sid_tune_match,
         )
         return Ultimate64API(
             cfg.ultimate64.url,
@@ -856,6 +862,7 @@ def make_backend(cfg: Config) -> C64Backend:
             host_sid_model=host_model,
             host_sid_model_assumed=host_model_assumed,
             host_sid_chips=host_chips,
+            host_sid_tune_match=cfg.hardware.host_sid_tune_match,
         )
         return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
 
