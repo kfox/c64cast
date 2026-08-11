@@ -1064,6 +1064,31 @@ class WaveformSceneTest(unittest.TestCase):
         # never holds. The BASIC clear loop is the only thing that stops it.
         self.assertNotIn("SUPPRESS_BLINK", api.regs)
 
+    def test_emusid_sides_are_set_to_the_requested_model(self):
+        # The U2+ branch matches chip models rather than reporting that it
+        # cannot: the side snooping the tune's chip is told which chip to be,
+        # and teardown puts the user's model back.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI.u2plus()
+        api.config_store["Audio Output Settings"] = {
+            "SID Left": "Enabled",
+            "SID Left Base": "Snoop $D400",
+            "SID Left Filter Curve": "6581",
+            "SID Left Combined Waveforms": "6581",
+            "SID Right": "Disabled",
+            "Vol EmuSid1": " 0 dB",
+            "Pan EmuSid1": "Center",
+        }
+        scene = WaveformScene(api, audio=None, file=self.sid_path, sid_model="8580")
+        scene.setup()
+        category = api.config_store["Audio Output Settings"]
+        self.assertEqual(category["SID Left Filter Curve"], "8580")
+        self.assertEqual(category["SID Left Combined Waveforms"], "8580")
+        scene.teardown()
+        self.assertEqual(category["SID Left Filter Curve"], "6581")
+        self.assertEqual(category["SID Left Combined Waveforms"], "6581")
+
     def test_cycle_style_advances_song(self):
         # Header sets num_songs=4, start_song=1. Cycle should go 1→2.
         from c64cast.sid.waveform import WaveformScene

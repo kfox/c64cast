@@ -320,6 +320,14 @@ other physical socket if it has the right chip, else falls back to an
 UltiSID FPGA core set to a fixed representative filter curve (`"6581"` /
 `"8580 Lo"`).
 
+On an **Ultimate II+** the same setting drives a much shorter path
+(`emusid_mixer.apply_emusid_model`): that machine has no sockets and no cores
+to fall back to, so each emulated SID snooping a tune chip is simply set to
+the requested model — `Filter Curve` and `Combined Waveforms` together, since
+a side split between the two emulates neither chip. Nothing is displaced and
+nothing can fail for want of matching hardware. The host C64's own SID is the
+exception, below.
+
 **Real-hardware limitation inherited from firmware: a genuinely fixed
 physical 6581 or 8580 chip cannot be reconfigured to the other model.**
 Autoconfig can only *route around* a mismatched chip — swap which socket
@@ -332,6 +340,13 @@ single-socket or bare-UltiSID board would. `--sid-model off` disables header
 inspection entirely (matches firmware's `CFG_PLAYER_AUTOCONFIG` disabled
 state); an explicit `--sid-model 6581`/`8580` forces that model for every
 chip in the tune, ignoring what the header says.
+
+The same limitation bounds the U2+ path from the other side. Model matching
+there is total *on the emulations* and impossible on the **host C64's own
+SID**, which plays the tune in parallel on the machine's own audio output. So
+a mismatched tune on a U2+ resolves to matched emulations plus one unmatched
+physical chip, and the resolved-audio line reports both routes rather than
+declaring the tune matched.
 
 ### ASID buffered ring player (cycle-accurate multispeed)
 

@@ -186,6 +186,34 @@ so a single scene can draw on all of it.
 > from — which is the arrangement to prefer if you keep a configuration file
 > and its material together in one project folder.
 
+### The Two Sound Chips
+
+The Commodore 64 shipped with two different sound chips over its life, the
+6581 and the later 8580, and they do not sound the same. Tunes in the
+collection are usually tagged with the one they were written for, and a tune
+composed for one chip playing on the other can sound thin, harsh, or simply
+wrong.
+
+c64cast reads that tag and does what it can about it, with no configuration
+from you. What it can do depends on the machine. An Ultimate 64 has real chips
+in sockets and emulated ones in its FPGA, so it looks for a match: another
+socket holding the right chip, or one of its emulated cores set to behave like
+it. An Ultimate II+ has no sockets at all — the SIDs feeding its audio jack are
+emulations from the start, so there is nothing to search for and it simply
+tells them which chip to be.
+
+Either way it is best-effort and temporary: your machine's own settings come
+back when the scene ends. If you would rather choose yourself, `--sid-model
+6581` or `--sid-model 8580` forces every tune to one chip and `--sid-model off`
+leaves the tag unread.
+
+> [!NOTE]
+> On an Ultimate II+, the tune is *also* playing on whatever chip your
+> Commodore itself has, out that machine's own audio jack. That one is soldered
+> in, so nothing can change it. When a tune wants the model your Commodore does
+> not have, c64cast says so in the log rather than pretending the match was
+> complete.
+
 > [!NOTE]
 > The waveform scene needs a bitmap display mode, and it needs the Web
 > Remote Control Service from Chapter 1, because starting the player is a

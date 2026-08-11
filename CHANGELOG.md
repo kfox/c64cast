@@ -14,6 +14,18 @@ the version and stamps it with the date.
 
 ### Added
 
+- **`sid_model` now matches chip models on the Ultimate II+ too, instead of
+  only reporting them.** The resolved-audio line could already tell you a tune
+  had asked for an 8580 and was playing on a 6581 emulation — and nothing could
+  act on it, because model matching existed only for the U64's sockets and
+  UltiSID cores. The U2+ needs none of that machinery: its audio jack is fed by
+  two SID emulations, so the side already snooping a tune's chip is simply told
+  which model to be. `Filter Curve` and `Combined Waveforms` move together,
+  since a side split between the two emulates neither chip, and your settings
+  come back at teardown. The host C64's own SID still plays the tune unmatched
+  on the machine's own output — no setting moves a soldered chip between models
+  — so a mismatch there is still reported rather than papered over.
+
 - **Video scenes now draw a buffering bar on the C64 while they load.** A
   diagonal-striped bar grows along screen row 22 through the blocking setup
   work (container open, color pre-scan, audio encode, REU upload) in every

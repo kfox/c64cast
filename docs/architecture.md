@@ -99,7 +99,7 @@ the two lists account for every module in the tree.
 | `scenes/scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
 | `scenes/setup_progress.py` | [Scenes, sources & overlays](architecture/scenes.md#setup_progresspy--the-video-setup-progress-bar) |
 | `app/schema.py` | [Config, CLI & ensemble](architecture/config.md#schemapy--the-editor-surface) |
-| `sid/emusid_mixer.py` | [SID playback & the oscilloscope](architecture/sid.md#emusid_mixerpy--u2-emulated-stereo-sid-snoop-routing) |
+| `sid/emusid_mixer.py` | [SID playback & the oscilloscope](architecture/sid.md#emusid_mixerpy--u2-emulated-stereo-sid-snoop-routing--model-matching) |
 | `sid/sid_autoconfig.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-player-autoconfig) |
 | SID player PRG | [SID playback & the oscilloscope](architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking) |
 | `sid/sid_host_emu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |

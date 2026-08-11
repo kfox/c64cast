@@ -232,6 +232,38 @@ class SidFileAudioSourceTest(unittest.TestCase):
         )
         self.assertLess(zero_fill, restore)
 
+    def test_emusid_sides_are_set_to_the_requested_model(self):
+        # sid_model on the U2+ reaches the emulated SIDs: the side snooping the
+        # tune's chip is told which chip to be, and teardown puts the user's
+        # model back.
+        path = self._write(make_psid())
+        api = FakeAPI.u2plus()
+        api.config_store["Audio Output Settings"] = {
+            "SID Left": "Enabled",
+            "SID Left Base": "Snoop $D400",
+            "SID Left Filter Curve": "6581",
+            "SID Left Combined Waveforms": "6581",
+            "SID Right": "Disabled",
+            "Vol EmuSid1": " 0 dB",
+            "Pan EmuSid1": "Center",
+        }
+        src = SidFileAudioSource(
+            cast(C64Backend, api),
+            path,
+            display_mode=cast("object", _FakeMode(False)),  # type: ignore[arg-type]
+            sid_model="8580",
+        )
+        src.setup()
+        self.assertEqual(api.config_store["Audio Output Settings"]["SID Left Filter Curve"], "8580")
+        self.assertEqual(
+            api.config_store["Audio Output Settings"]["SID Left Combined Waveforms"], "8580"
+        )
+        src.teardown()
+        self.assertEqual(api.config_store["Audio Output Settings"]["SID Left Filter Curve"], "6581")
+        self.assertEqual(
+            api.config_store["Audio Output Settings"]["SID Left Combined Waveforms"], "6581"
+        )
+
     def test_pool_retry_skips_bad_candidate(self):
         # A directory with one spinning SID + one healthy SID: the source must
         # skip the bad one and pick the good one. Stub the shuffle to an

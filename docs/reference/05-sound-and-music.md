@@ -350,6 +350,19 @@ they cannot be separated: a router that places chips without regard to model,
 followed by a corrector that moves them, will take away a core the router had
 already given to another chip and leave it silent.
 
+On an Ultimate II+ the same setting means something simpler. That machine has
+no SID sockets and no cores to fall back to — its audio jack is fed by two SID
+*emulations*, each listening at an address you choose. There is no other chip
+to go looking for: the side already playing your tune's chip is just told which
+model to be, and it becomes one. Nothing gets displaced and nothing can fail
+for want of matching hardware.
+
+One chip is beyond reach there. The tune is also playing on whatever SID the
+host C64 itself carries, out that machine's own audio jack, and no setting
+moves a soldered chip from one model to the other. If the tune asked for the
+model your machine doesn't have, the log says so on both routes at once — the
+emulations matched, the host chip not.
+
 All of this is Ultimate-only, best-effort, and restored at teardown. On a
 backend with no configuration interface the tune still plays; every chip past
 the first is simply inaudible.
