@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import functools
 import logging
 import os
 import re
@@ -2608,15 +2609,114 @@ def _format_toml_error(path: str, err: tomllib.TOMLDecodeError) -> str:
     return "\n".join(out)
 
 
-def _apply_section(dc: Any, data: dict[str, Any], section_name: str) -> None:
-    """Overwrite dc fields with values from a TOML section dict, dropping
-    unknown keys with a warning so typos don't pass silently."""
+@dataclass(frozen=True)
+class UnknownKey:
+    """One key a TOML file declared that no dataclass field accepts.
+
+    Collected during load rather than logged on the spot so the caller
+    chooses the presentation: a normal run logs these as warnings, while
+    `--doctor` renders them as CONFIG diagnostics inside the report body
+    (a preamble log line above the report reads as noise next to the
+    formatted `[WARN]` rows, which is how a misplaced key stayed invisible
+    long enough to be mistaken for a working config)."""
+
+    section: str
+    key: str
+    source: str | None = None
+    hint: str | None = None
+
+    def describe(self) -> str:
+        """One-line rendering shared by the log path and the doctor row."""
+        where = f"{self.source}: " if self.source else ""
+        return f"{where}[{self.section}] unknown config key {self.key!r} — ignored"
+
+
+def _dedupe_unknown(records: list[UnknownKey]) -> list[UnknownKey]:
+    """Collapse identical (source, section, key) records, preserving order.
+
+    The machine-settings file is re-applied once per system in ensemble mode
+    (plus for the master defaults and the cascade baseline), so one stray key
+    there would otherwise be reported N+2 times — same file, same table, same
+    key, one problem to fix."""
+    seen: set[UnknownKey] = set()
+    out: list[UnknownKey] = []
+    for r in records:
+        if r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+# Sections whose keys live on a dataclass reachable from Config. Used only to
+# build the cross-section suggestion index; the apply path walks
+# _TOML_SCALAR_SECTIONS + the [color]/[[scenes]] special cases as before.
+@functools.lru_cache(maxsize=1)
+def _known_key_index() -> dict[str, tuple[str, ...]]:
+    """Map every valid config key to the section(s) that accept it.
+
+    Built from the same dataclass fields the apply path and the JSON schema
+    read, so it cannot drift from what a section actually takes. Used to turn
+    "unknown here" into "valid, but you put it in the wrong table" — the case
+    plain within-section difflib can never catch, because the key is spelled
+    perfectly and simply belongs elsewhere.
+    """
+    index: dict[str, list[str]] = {}
+    probe = Config()
+    for name in (*_TOML_SCALAR_SECTIONS, "color"):
+        for f in fields(getattr(probe, name)):
+            index.setdefault(f.name, []).append(name)
+    for f in fields(SceneCfg):
+        index.setdefault(f.name, []).append("[scenes]")
+    return {k: tuple(v) for k, v in index.items()}
+
+
+def _unknown_key_hint(section_name: str, key: str, valid: set[str]) -> str | None:
+    """Best available "did you mean" for an unknown key, most useful first:
+    an exact match in another section, then a near-miss within this section,
+    then a near-miss anywhere."""
+    elsewhere = tuple(s for s in _known_key_index().get(key, ()) if s != section_name)
+    if elsewhere:
+        where = " or ".join(f"[{s}]" for s in elsewhere)
+        return f"{key!r} is not a [{section_name}] key, but {where} accepts it — move it there."
+    close = difflib.get_close_matches(key, valid, n=1)
+    if close:
+        return f"did you mean {close[0]!r}?"
+    # The cross-section pool is ~20x the size of one section's, so difflib's
+    # default 0.6 cutoff starts volunteering junk ('strayA' -> 'storage', 0.62).
+    # Real typos score far higher ('dither_strenth' -> 'dither_strength', 0.97),
+    # so a stricter bar costs nothing and keeps a wrong guess from sending
+    # someone to edit the wrong table.
+    across = difflib.get_close_matches(key, set(_known_key_index()), n=1, cutoff=0.85)
+    if across:
+        other = _known_key_index()[across[0]]
+        where = " or ".join(f"[{s}]" for s in other)
+        return f"did you mean {across[0]!r} in {where}?"
+    return None
+
+
+def _apply_section(
+    dc: Any,
+    data: dict[str, Any],
+    section_name: str,
+    unknown: list[UnknownKey] | None = None,
+    *,
+    source: str | None = None,
+) -> None:
+    """Overwrite dc fields with values from a TOML section dict, collecting
+    unknown keys so typos don't pass silently.
+
+    When `unknown` is None the key is logged immediately (the standalone
+    `load()` callers — SIGHUP reload, the interstitial factory — have no
+    collector to drain). Otherwise it is appended for the caller to present.
+    """
     valid = {f.name for f in fields(dc)}
     for k, v in data.items():
         if k not in valid:
-            close = difflib.get_close_matches(k, valid, n=1)
-            suggestion = f" — did you mean {close[0]!r}?" if close else ""
-            log.warning("[%s] unknown config key %r%s — ignored", section_name, k, suggestion)
+            rec = UnknownKey(section_name, k, source, _unknown_key_hint(section_name, k, valid))
+            if unknown is None:
+                log.warning("%s%s", rec.describe(), f" ({rec.hint})" if rec.hint else "")
+            else:
+                unknown.append(rec)
             continue
         setattr(dc, k, v)
 
@@ -2939,7 +3039,13 @@ _TOML_SCALAR_SECTIONS: tuple[str, ...] = (
 )
 
 
-def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> None:
+def _apply_toml_sections(
+    cfg: Config,
+    data: dict[str, Any],
+    *,
+    source: str,
+    unknown: list[UnknownKey] | None = None,
+) -> None:
     """Apply the scalar + [color] sections of a parsed TOML dict onto `cfg`
     in place.
 
@@ -2948,12 +3054,12 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     through identical unknown-key difflib warnings, the tri-state / device
     validations, and the [color]/hue_corrections special case. Deliberately
     does NOT handle [[scenes]] or [ensemble] — those are load- / master-
-    specific. `source` names the origin for the debug log only (the unknown-key
-    warnings already carry the section name)."""
+    specific. `source` names the origin — it rides along on each collected
+    UnknownKey so an ensemble report can say which file the stray key is in."""
     log.debug("applying config sections from %s", source)
     for name in _TOML_SCALAR_SECTIONS:
         if name in data:
-            _apply_section(getattr(cfg, name), data[name], name)
+            _apply_section(getattr(cfg, name), data[name], name, unknown, source=source)
 
     # Record whether any layer explicitly authored a cc_map. Monotonic (only ever
     # set False, default True): once machine settings OR the project/per-system
@@ -2980,7 +3086,7 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     if "color" in data:
         raw_color = dict(data["color"])
         raw_hc = raw_color.pop("hue_corrections", [])
-        _apply_section(cfg.color, raw_color, "color")
+        _apply_section(cfg.color, raw_color, "color", unknown, source=source)
         for hc in raw_hc:
             if not isinstance(hc, dict):
                 raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
@@ -3021,7 +3127,7 @@ def load_machine_settings() -> dict[str, Any]:
     return data
 
 
-def apply_machine_settings(cfg: Config) -> Config:
+def apply_machine_settings(cfg: Config, unknown: list[UnknownKey] | None = None) -> Config:
     """Overlay the machine-settings file onto `cfg` in place (defaults →
     machine settings), returning it.
 
@@ -3033,13 +3139,13 @@ def apply_machine_settings(cfg: Config) -> Config:
     data = load_machine_settings()
     if not data:
         return cfg
-    _apply_toml_sections(cfg, data, source="machine settings")
+    _apply_toml_sections(cfg, data, source=str(paths.settings_path()), unknown=unknown)
     n_fields = sum(len(v) for v in data.values() if isinstance(v, dict))
     log.info("machine settings: %s (%d fields)", paths.settings_path(), n_fields)
     return cfg
 
 
-def load(path: str | None) -> Config:
+def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
     """Load a Config from a TOML file path, or from the default search path
     if `path` is None, or return defaults if neither exists.
 
@@ -3052,9 +3158,12 @@ def load(path: str | None) -> Config:
     override it.
 
     Parse failures (TOML syntax errors, missing file when path is given)
-    raise `ConfigError` with a message formatted for end-user display."""
+    raise `ConfigError` with a message formatted for end-user display.
+
+    `unknown` collects stray keys for the caller to present; when it is None
+    they are logged as they are found (see `_apply_section`)."""
     cfg = Config()
-    apply_machine_settings(cfg)
+    apply_machine_settings(cfg, unknown)
     if path is None:
         if not os.path.exists(DEFAULT_CONFIG_PATH):
             return cfg
@@ -3073,14 +3182,14 @@ def load(path: str | None) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(_format_toml_error(path, e)) from e
 
-    _apply_toml_sections(cfg, data, source=path)
+    _apply_toml_sections(cfg, data, source=path, unknown=unknown)
 
     for raw in data.get("scenes", []):
         sc = SceneCfg()
         # Pull overlays out before _apply_section so we keep the original
         # dicts intact (each overlay class validates its own kwargs).
         raw_overlays = raw.pop("overlays", [])
-        _apply_section(sc, raw, "scenes")
+        _apply_section(sc, raw, "scenes", unknown, source=path)
         for ov_raw in raw_overlays:
             if not isinstance(ov_raw, dict):
                 raise ValueError(f"scenes.overlays entry must be a table, got {ov_raw!r}")
@@ -3257,7 +3366,11 @@ class LoadResult:
     `master_control` holds the master TOML's [control] section (in
     single-system mode this is just the loaded config's [control]).
     `master_midi_control` is the [midi_control] analog — also process-wide,
-    not per-system-cascaded (see _CASCADE_SECTIONS)."""
+    not per-system-cascaded (see _CASCADE_SECTIONS).
+
+    `unknown_keys` carries every stray TOML key found across all layers
+    (machine settings, master, per-system) so `--doctor` can report them as
+    CONFIG rows; a normal run logs them instead (see cli._log_unknown_keys)."""
 
     cfgs: list[Config]
     names: list[str]
@@ -3265,6 +3378,7 @@ class LoadResult:
     is_ensemble: bool
     master_control: ControlPlaneCfg
     master_midi_control: MidiControlCfg
+    unknown_keys: list[UnknownKey] = field(default_factory=list)
 
 
 def load_master(path: str | None) -> LoadResult:
@@ -3304,8 +3418,10 @@ def load_master(path: str | None) -> LoadResult:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(_format_toml_error(path, e)) from e
 
+    unknown: list[UnknownKey] = []
+
     if "ensemble" not in raw:
-        cfg = load(path)
+        cfg = load(path, unknown)
         return LoadResult(
             cfgs=[cfg],
             names=["system"],
@@ -3313,6 +3429,7 @@ def load_master(path: str | None) -> LoadResult:
             is_ensemble=False,
             master_control=cfg.control,
             master_midi_control=cfg.midi_control,
+            unknown_keys=_dedupe_unknown(unknown),
         )
 
     log.info("loading ensemble master %s", path)
@@ -3328,7 +3445,7 @@ def load_master(path: str | None) -> LoadResult:
     # Master defaults start from the machine layer (defaults → machine →
     # master), so a machine setting is the baseline the master TOML overrides.
     defaults = Config()
-    apply_machine_settings(defaults)
+    apply_machine_settings(defaults, unknown)
     for section, dc in (
         ("ultimate64", defaults.ultimate64),
         ("video", defaults.video),
@@ -3344,7 +3461,7 @@ def load_master(path: str | None) -> LoadResult:
         ("menu", defaults.menu),
     ):
         if section in raw:
-            _apply_section(dc, raw[section], section)
+            _apply_section(dc, raw[section], section, unknown, source=path)
 
     # Same cc_map-authored tracking as _apply_toml_sections, for the master TOML
     # (which applies its sections through this separate path). [midi_control] is
@@ -3362,7 +3479,7 @@ def load_master(path: str | None) -> LoadResult:
     if "color" in raw:
         raw_color = dict(raw["color"])
         raw_hc = raw_color.pop("hue_corrections", [])
-        _apply_section(defaults.color, raw_color, "color")
+        _apply_section(defaults.color, raw_color, "color", unknown, source=path)
         for hc in raw_hc:
             if not isinstance(hc, dict):
                 raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
@@ -3383,7 +3500,7 @@ def load_master(path: str | None) -> LoadResult:
         sub_path = entry.config
         if not os.path.isabs(sub_path):
             sub_path = os.path.join(master_dir, sub_path)
-        sys_cfg = load(sub_path)
+        sys_cfg = load(sub_path, unknown)
         sys_cfg = apply_master_defaults(defaults, sys_cfg, baseline=machine_baseline)
         # Per-system Configs never carry ensemble metadata themselves —
         # only the master TOML does. (Belt and braces: load() never sets
@@ -3399,6 +3516,7 @@ def load_master(path: str | None) -> LoadResult:
         is_ensemble=True,
         master_control=defaults.control,
         master_midi_control=defaults.midi_control,
+        unknown_keys=_dedupe_unknown(unknown),
     )
 
 

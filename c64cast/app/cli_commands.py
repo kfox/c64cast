@@ -525,6 +525,7 @@ def run_doctor(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> int:
         is_ensemble=loaded.is_ensemble,
         master_control=loaded.master_control,
         master_midi_control=loaded.master_midi_control,
+        unknown_keys=loaded.unknown_keys,
     )
     diagnostics = validate_load_result(merged, probe_u64=not cfgs[0].debug.skip_probe)
     return print_report(diagnostics)

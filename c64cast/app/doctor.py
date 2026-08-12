@@ -135,6 +135,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_probe_machine_settings())
     out.extend(_probe_data_dirs())
     out.extend(_probe_char_rom())
+    out.extend(_validate_unknown_keys(loaded))
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve_cfg(loaded))
@@ -462,6 +463,30 @@ def _probe_char_rom() -> list[Diagnostic]:
             ),
         )
     ]
+
+
+def _validate_unknown_keys(loaded: LoadResult) -> list[Diagnostic]:
+    """Report every TOML key no dataclass field accepts as a warn-level row.
+
+    These are collected during load (`config.UnknownKey`) rather than logged
+    there, because a log line printed above the report is exactly where a
+    misplaced key hides: it reads as preamble next to the formatted rows, and
+    the run continues silently on defaults. Warn, not error — an ignored key
+    still leaves a runnable config, and failing the whole report would make a
+    stale key from an older schema unbootable."""
+    out: list[Diagnostic] = []
+    for rec in loaded.unknown_keys:
+        subject = f"{rec.source}: [{rec.section}]" if rec.source else f"[{rec.section}]"
+        out.append(
+            Diagnostic(
+                level="warn",
+                category="config",
+                subject=subject,
+                message=f"unknown key {rec.key!r} — ignored, this setting has no effect",
+                hint=rec.hint,
+            )
+        )
+    return out
 
 
 def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
@@ -1718,6 +1743,7 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
     # Stable ordering by category, then error > warn > ok within each.
     category_order = [
         "environment",
+        "config",
         "scene",
         "audio",
         "color",
