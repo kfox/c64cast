@@ -321,7 +321,7 @@ class RenderTest(unittest.TestCase):
                 self._region_cache: dict[int, bytes] = {}
                 self.region_pushes: dict[int, int] = {}
 
-            def write_region(self, addr, data, region_id=None, full_threshold=0.6):
+            def write_region(self, addr, data, region_id=None):
                 key = region_id if region_id is not None else addr
                 b = bytes(data)
                 if self._region_cache.get(key) == b:

@@ -184,7 +184,7 @@ class FakeAPI:
         self.regs[str(base).upper()] = tuple(vals)
         self.ops.append(("write_regs", str(base).upper(), tuple(vals)))
 
-    def write_region(self, addr, data, region_id=None, full_threshold=0.6):
+    def write_region(self, addr, data, region_id=None):
         b = bytes(data)
         self.regions[addr] = b
         self.ops.append(("write_region", addr, b, region_id))

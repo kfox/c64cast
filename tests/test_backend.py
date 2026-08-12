@@ -17,11 +17,14 @@ import unittest
 from dataclasses import FrozenInstanceError, replace
 from unittest import mock
 
+import numpy as np
+
 from c64cast.app import config as cfgmod
 from c64cast.hw.backend import (
     BACKENDS,
     DELTA_CHUNK_BYTES,
     SID_CONFIG_CATEGORIES,
+    TEENSYROM_PROFILE,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
     BufferedWriteBackend,
@@ -41,8 +44,9 @@ class _RecordingBackend(BufferedWriteBackend):
     Set `fail = True` to drive the failure ladder instead.
     """
 
-    def __init__(self):
+    def __init__(self, profile=ULTIMATE_PROFILE):
         super().__init__()
+        self.profile = profile
         self.emits: list[tuple[int, bytes]] = []
         self.fail = False
 
@@ -119,7 +123,7 @@ class AbstractContractTest(unittest.TestCase):
             def write_memory(self, address, data_hex): ...
             def write_memory_file(self, address, data_bytes): ...
             def write_regs(self, base_addr, *values): ...
-            def write_region(self, address, data, region_id=None, full_threshold=0.6):
+            def write_region(self, address, data, region_id=None):
                 return 0
 
             def flush(self): ...
@@ -235,8 +239,8 @@ class MakeBackendTest(unittest.TestCase):
 class BufferedWriteBackendTest(unittest.TestCase):
     """The host-side write path shared by every concrete backend."""
 
-    def _b(self):
-        return _RecordingBackend()
+    def _b(self, profile=ULTIMATE_PROFILE):
+        return _RecordingBackend(profile)
 
     # ---- basic writes + coalescing ---------------------------------------
     def test_write_memory_hex(self):
@@ -291,11 +295,11 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(n, 80)
         self.assertEqual(b.emits[0][0], 0x0400)
 
-    def test_region_chunked_diff_for_sparse_wide_range(self):
-        # A buffer with two distant single-byte changes spans nearly the whole
-        # region (wide dirty range) but only a couple of chunks differ → the
-        # chunked-diff path uploads just those chunks, not the whole buffer.
-        b = self._b()
+    def test_region_chunked_diff_for_sparse_wide_range_on_byte_bound_link(self):
+        # Two distant single-byte changes span nearly the whole region while
+        # only two chunks differ. On a byte-bound link (TeensyROM) the chunked
+        # path is genuinely cheaper, so it uploads just those chunks.
+        b = self._b(TEENSYROM_PROFILE)
         n = DELTA_CHUNK_BYTES * 8
         base = bytearray(n)
         b.write_region(0x4000, bytes(base), region_id=2)
@@ -308,8 +312,52 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(len(b.emits), 2)
         self.assertLess(uploaded, n)
 
-    def test_region_full_fallback_when_dirty_everywhere(self):
-        # Every chunk dirty → chunked diff saves nothing → one full push.
+    def test_region_same_sparse_range_stays_one_write_on_count_bound_link(self):
+        # The identical dirty pattern on the Ultimate, where a payload this
+        # size is free and a second write is not: chunking would move 512 bytes
+        # instead of 2038 and still cost twice as much, so it must not fire.
+        b = self._b(ULTIMATE_PROFILE)
+        n = DELTA_CHUNK_BYTES * 8
+        base = bytearray(n)
+        b.write_region(0x4000, bytes(base), region_id=2)
+        b.emits.clear()
+        base[5] = 1
+        base[n - 5] = 1
+        b.write_region(0x4000, bytes(base), region_id=2)
+        self.assertEqual(len(b.emits), 1)
+        self.assertEqual(b.emits[0][0], 0x4000 + 5)
+
+    def test_region_chunking_never_costs_more_than_one_span_write(self):
+        # The guarantee the cost model buys: whatever the dirty pattern and
+        # whichever profile, the strategy chosen is never more expensive than
+        # simply writing the whole dirty span.
+        rng = np.random.default_rng(20260812)
+        for profile in (ULTIMATE_PROFILE, TEENSYROM_PROFILE):
+            for density in (0.001, 0.01, 0.1, 0.5):
+                b = self._b(profile)
+                n = 8000
+                base = np.zeros(n, dtype=np.uint8)
+                b.write_region(0x2000, base.tobytes(), region_id=4)
+                b.emits.clear()
+                new = base.copy()
+                touched = rng.random(n) < density
+                new[touched] = 0xFF
+                if not touched.any():
+                    continue
+                b.write_region(0x2000, new.tobytes(), region_id=4)
+                first, last = int(np.argmax(touched)), n - int(np.argmax(touched[::-1]))
+                span_cost = profile.write_cost_s(last - first)
+                chosen = sum(profile.write_cost_s(len(p)) for _, p in b.emits)
+                self.assertLessEqual(
+                    chosen,
+                    span_cost + 1e-12,
+                    f"{profile.name} at density {density}: {len(b.emits)} writes "
+                    f"cost {chosen * 1000:.2f} ms vs {span_cost * 1000:.2f} ms for one span",
+                )
+
+    def test_region_all_dirty_is_a_single_full_push(self):
+        # Every byte dirty → the span is the whole region → one write, and it
+        # covers the region exactly.
         b = self._b()
         n = DELTA_CHUNK_BYTES * 4
         b.write_region(0x4000, bytes(n), region_id=3)
@@ -319,6 +367,23 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(uploaded, n)
         self.assertEqual(len(b.emits), 1)
         self.assertEqual(b.emits[0], (0x4000, changed))
+
+    def test_region_below_the_knee_is_never_split(self):
+        # A region smaller than the Ultimate's ~2.4 KB knee costs the same
+        # whole as it does in pieces, so no dirty pattern may split it.
+        b = self._b(ULTIMATE_PROFILE)
+        n = 1000  # screen / color RAM
+        base = bytearray(n)
+        b.write_region(0x0400, bytes(base), region_id=5)
+        for pattern in ([0, 999], [0, 500, 999], list(range(0, n, 97))):
+            b.emits.clear()
+            base = bytearray(n)
+            for i in pattern:
+                base[i] = 0xAA
+            b.write_region(0x0400, bytes(base), region_id=5)
+            self.assertEqual(len(b.emits), 1, f"pattern {pattern[:5]}… split into writes")
+            b.invalidate_region(5)
+            b.write_region(0x0400, bytes(n), region_id=5)
 
     def test_invalidate_cache_forces_next_full_upload(self):
         b = self._b()
