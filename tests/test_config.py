@@ -890,6 +890,87 @@ class MachineSettingsTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.url, "http://m.lan")
 
 
+class UnknownKeyCollectionTest(unittest.TestCase):
+    """`load_master` collects stray keys instead of logging them, so --doctor
+    can render them as report rows rather than a preamble line above it."""
+
+    def _master(self, toml: str) -> cfgmod.LoadResult:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.toml")
+            with open(path, "w") as f:
+                f.write(toml)
+            return cfgmod.load_master(path)
+
+    def test_load_master_collects_and_stays_silent(self):
+        with mock.patch.object(cfgmod.log, "warning") as warn:
+            loaded = self._master("[color]\nbogus_key = 7\n")
+        warn.assert_not_called()
+        self.assertEqual(len(loaded.unknown_keys), 1)
+        rec = loaded.unknown_keys[0]
+        self.assertEqual((rec.section, rec.key), ("color", "bogus_key"))
+        self.assertTrue(rec.source and rec.source.endswith("c.toml"))
+
+    def test_bare_load_still_logs_inline(self):
+        # SIGHUP reload and the interstitial factory call load() with no
+        # collector; those keys must still reach stderr.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.toml")
+            with open(path, "w") as f:
+                f.write("[color]\nbogus_key = 7\n")
+            with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
+                cfgmod.load(path)
+        self.assertTrue(any("bogus_key" in m for m in cm.output))
+
+    def test_valid_key_in_wrong_section_names_the_right_one(self):
+        # The case within-section difflib can never catch: spelled perfectly,
+        # just in the wrong table. This is the whole reason the index exists.
+        loaded = self._master('[color]\npalette_mode = "grayscale"\n')
+        hint = loaded.unknown_keys[0].hint or ""
+        self.assertIn("[[scenes]]", hint)
+        self.assertIn("move it there", hint)
+
+    def test_typo_in_right_section_suggests_the_near_miss(self):
+        loaded = self._master("[color]\ndither_strenth = 0.5\n")
+        self.assertIn("dither_strength", loaded.unknown_keys[0].hint or "")
+
+    def test_unrecognizable_key_has_no_hint(self):
+        loaded = self._master("[playlist]\nfrobnicate = true\n")
+        self.assertIsNone(loaded.unknown_keys[0].hint)
+
+    def test_weak_cross_section_match_is_not_volunteered(self):
+        # The cross-section pool is big enough that difflib's default cutoff
+        # offers junk; 'strayA' scores 0.62 against 'storage' in [teensyrom],
+        # which would send someone to edit an unrelated table.
+        loaded = self._master("[playlist]\nstrayA = 1\n")
+        self.assertIsNone(loaded.unknown_keys[0].hint)
+
+    def test_strong_cross_section_typo_is_still_offered(self):
+        loaded = self._master("[playlist]\ndither_strenth = 0.5\n")
+        hint = loaded.unknown_keys[0].hint or ""
+        self.assertIn("dither_strength", hint)
+        self.assertIn("[color]", hint)
+
+    def test_scene_keys_are_collected_with_their_section(self):
+        loaded = self._master('[[scenes]]\ntype = "blank"\nchannel_boost = [1, 2]\n')
+        rec = loaded.unknown_keys[0]
+        self.assertEqual((rec.section, rec.key), ("scenes", "channel_boost"))
+        self.assertIn("[color]", rec.hint or "")
+
+    def test_known_key_index_covers_every_applied_section(self):
+        # The index is what makes "wrong table" answerable; a section missing
+        # from it silently degrades those hints back to plain difflib.
+        index = cfgmod._known_key_index()
+        sections = {s for names in index.values() for s in names}
+        for name in (*cfgmod._TOML_SCALAR_SECTIONS, "color"):
+            self.assertIn(name, sections)
+        self.assertIn("[scenes]", sections)
+
+    def test_dedupe_collapses_repeats_of_one_key(self):
+        rec = cfgmod.UnknownKey("color", "bogus", "f.toml", None)
+        other = cfgmod.UnknownKey("color", "bogus", "g.toml", None)
+        self.assertEqual(cfgmod._dedupe_unknown([rec, rec, other]), [rec, other])
+
+
 class DmaPasswordEnvTest(unittest.TestCase):
     """C64CAST_DMA_PASSWORD env var is the final layer (env > config > default)
     — folded in by merge_cli. Previously untested (a gap this change closes)."""

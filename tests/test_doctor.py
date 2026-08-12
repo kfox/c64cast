@@ -1165,6 +1165,43 @@ class OpenCVProviderProbeTest(unittest.TestCase):
             self.assertEqual(doctor._probe_opencv_provider(), [])
 
 
+class UnknownKeyDiagnosticTest(unittest.TestCase):
+    """A stray TOML key has to land in the report body. It used to be a log
+    line printed above it, which reads as preamble next to the formatted rows
+    — the run then continues on defaults and the setting silently does
+    nothing."""
+
+    def test_unknown_key_becomes_a_config_diagnostic(self):
+        loaded = _load('[color]\npalette_mode = "grayscale"\n')
+        diags = doctor._validate_unknown_keys(loaded)
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "warn")
+        self.assertEqual(diags[0].category, "config")
+        self.assertIn("palette_mode", diags[0].message)
+        self.assertIn("[[scenes]]", diags[0].hint or "")
+
+    def test_clean_config_reports_nothing(self):
+        loaded = _load('[color]\ndither = "ordered"\n')
+        self.assertEqual(doctor._validate_unknown_keys(loaded), [])
+
+    def test_config_rows_render_and_count_as_warnings(self):
+        # The point of the change: it shows up under a CONFIG heading and in
+        # the summary tally, not as a line above the report.
+        buf = io.StringIO()
+        code = doctor.print_report(
+            doctor._validate_unknown_keys(_load('[color]\npalette_mode = "x"\n')), file=buf
+        )
+        out = buf.getvalue()
+        self.assertEqual(code, 0)  # warn-level: an ignored key still runs
+        self.assertIn("CONFIG", out)
+        self.assertIn("1 warn", out)
+
+    def test_validate_load_result_includes_config_rows(self):
+        loaded = _load('[color]\npalette_mode = "grayscale"\n')
+        diags = doctor.validate_load_result(loaded, probe_u64=False)
+        self.assertTrue(any(d.category == "config" for d in diags))
+
+
 class PrintReportCategoryTest(unittest.TestCase):
     def test_unlisted_category_still_prints(self):
         # The renderer used to iterate a fixed category list, so a probe

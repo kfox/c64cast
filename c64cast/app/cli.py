@@ -1103,6 +1103,15 @@ def _connection_is_builtin_default(cfg: cfgmod.Config) -> bool:
     )
 
 
+def _log_unknown_keys(records: list[cfgmod.UnknownKey]) -> None:
+    """Warn about stray TOML keys on the normal run path. `load_master` collects
+    instead of logging so `--doctor` can render them as report rows; every other
+    entry point still needs them on stderr, where an ignored key is the reason a
+    setting "did nothing"."""
+    for rec in records:
+        log.warning("%s%s", rec.describe(), f" ({rec.hint})" if rec.hint else "")
+
+
 def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[cfgmod.Config]]:
     """Produce the per-system configs to run, from one of two front doors:
 
@@ -1142,6 +1151,11 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
         return loaded, [cfg]
 
     loaded = cfgmod.load_master(args.config)
+    if not args.doctor:
+        # --doctor renders these as CONFIG rows in the report body instead;
+        # logging here too would print each one twice, once as the preamble
+        # noise this reporting exists to get away from.
+        _log_unknown_keys(loaded.unknown_keys)
 
     # CLI flags apply to every per-system config. In ensemble mode reject the
     # flags that pick one system's hardware — `[ultimate64].url` (the -u target)

@@ -14,6 +14,21 @@ the version and stamps it with the date.
 
 ### Added
 
+- **`--doctor` now reports unknown config keys as findings.** A key no section
+  accepts is dropped as before, but it is now a warn-level row under a new
+  `CONFIG` heading — named file, table, and key — and it counts in the summary
+  tally. Previously it was a single `log.warning` printed *above* the report,
+  where it reads as preamble next to the formatted rows: the run continued on
+  defaults and the misplaced setting silently did nothing, so a broken config
+  could look like a clean report. Normal (non-`--doctor`) runs still log the
+  same warnings to stderr.
+- **"Did you mean" now searches every config section.** When an unknown key is
+  a valid key of some *other* table, the hint says so and names it — e.g.
+  `palette_mode` under `[color]` reports that `[[scenes]]` accepts it and to
+  move it there. That case is invisible to a within-section near-miss search,
+  since the key is spelled correctly and simply lives elsewhere. Same-section
+  typos still get the near-miss suggestion.
+
 - **A multi-SID tune on a single-SID machine now says so.** On a link that
   can't route chips (TeensyROM+, Ultimate II+), a tune driving an address past
   `$D400` that no `[hardware].host_sid_chips` entry covers gets a warning once
