@@ -132,7 +132,7 @@ So the split is a net loss on this path, and `max_write_rate_hz` is deliberately
 
 #### A DAC table only applies to the chip it was measured on
 
-The audible static on the 4-bit DAC is not the halt, and it is not Mahoney. It is a **table/chip mismatch**: `dac_curve = "auto"` handed the baked *emulated-UltiSID* table to a *physical 6581*.
+The audible static on the 4-bit DAC is not the halt, and it is not Mahoney. Two separable faults produced it; the steady component is a **table/chip mismatch**, and the episodic component is a machine setting covered in the next section. The mismatch: `dac_curve = "auto"` handed the baked *emulated-UltiSID* table to a *physical 6581*.
 
 `resolve_dac_curve_for_backend`'s auto ladder tested `cfg.hardware.backend == "ultimate"` — the backend — rather than which SID source answers `$D400`, the fixed address the NMI handler's hand-assembled `STA $D418` reaches. On a board with a populated socket mapped there, the socket wins Auto Address Mirroring (the real chip is what a listener hears), so the emulated core's ladder was applied to silicon whose curve correlates with it at only ~0.74.
 
@@ -151,6 +151,14 @@ The fix is the mirror of a check `_select_sid_entry` already made in the other d
 > An earlier revision of this section concluded that Mahoney *itself* was the noise floor, reading ~15 dB worse than `linear`. Every measurement behind that claim was taken through the mismatch above, on a rig whose `$D400` was a physical 6581. The ordering it reported was real; the cause it assigned was not.
 
 This went unmeasured for years because every metric on this path was a *frequency* metric — carrier shift, FM deviation, modulation bands — and the fault is pure amplitude. `audio_fm_probe.py` now carries `noise_floor_db` for exactly this. Note that probe's own conditions use `digi_boost`, i.e. plain 4-bit: it has never exercised the Mahoney env, which is why its earlier results were all null.
+
+#### The episodic half is the cartridge port, not this code
+
+Correcting the table left a second artifact behind, and it is worth naming here because for a long stretch it was read as evidence about *this* code: bursts of 0.5-1.5 s lifting the noise floor 4-10 dB, arriving irregularly, with the floor creeping upward across a long capture. Neither the table, `[dsp]` shaping, nor anything in the write path moves it.
+
+It is the **Ultimate's Bus Operation Mode** sitting at its `Quiet` firmware default with a TeensyROM+ in the cartridge port; `Writes` (or `Dyn. & Writes`) clears it. That is a machine setting, not a c64cast knob, and c64cast cannot provision it live the way it does the REU and the sampler — on that rig the run's link is `tr://` to the TeensyROM+, and there is no connection to the Ultimate whose setting it is. The end-user framing lives in [caveats.md → "A TeensyROM+ in an Ultimate needs Bus Operation Mode set to Writes"](../caveats.md#a-teensyrom-in-an-ultimate-needs-bus-operation-mode-set-to-writes) and the [troubleshooting](../troubleshooting.md) entry beside it.
+
+The reason it belongs in this file: burst statistics gathered under that setting were what made a *traffic-coupled* mechanism look plausible on the host write path, and they are why the halt-splitting work above was pursued as an audio-quality fix at all. Both static components are now accounted for, and neither is bus-halt tick loss — so a future measurement that finds episodic noise on a TeensyROM+-in-an-Ultimate rig should check the bus mode before it treats the number as being about anything in `audio.py`.
 
 *Late slots are the metric that says the spread actually held.* Everything above is a design; whether a given run kept it is a separate question, and one nothing else answers. A sub-write reached after its slot deadline has passed goes out immediately, which leaves every later slot of that chunk expired too — so they fire back-to-back and the run degrades from the spread condition toward the burst condition, continuously and by degree. That is invisible to every other counter: the bytes still land, in order, and no underrun is recorded, because `_collect_until`'s non-blocking drain is doing its job. `_drip_chunk` therefore counts late slots and the worst lateness, `stop()` reports the session share (warning past 10 %), and `_maybe_log_health` emits a per-window line every `AUDIO_HEALTH_LOG_INTERVAL_S`.
 
