@@ -59,12 +59,11 @@ log = logging.getLogger(__name__)
 # api.py re-exports it for backwards compatibility.
 WriteListener = Callable[[int, bytes], None]
 
-# write_region delta strategy (shared by every backend):
-# - Small dirty range (< full_threshold of buffer): one write of that slice.
-# - Mid-size: chunk the dirty range into DELTA_CHUNK_BYTES slabs and diff
-#   each independently, so a sparse waveform/spectrum frame doesn't degrade
-#   to a full-buffer push.
-# - Whole-buffer write: one write.
+# Slab size for write_region's chunked branch (shared by every backend): the
+# dirty range is diffed in slabs this big and only the dirty ones are pushed,
+# so a sparse waveform/spectrum frame doesn't degrade to a full-buffer push.
+# Whether that is worth doing is a per-link cost question and NOT a property of
+# this constant — see HardwareProfile.write_cost_s and write_region.
 DELTA_CHUNK_BYTES = 256
 
 
@@ -132,6 +131,36 @@ class HardwareProfile:
     default_fps: float = 60.0  # resolved system rate (NTSC/PAL)
     max_fps: float | None = None  # per-variant cap on top of default_fps
     max_write_rate_hz: float | None = None  # sustained write ceiling (pacing)
+
+    # ---- link cost model -------------------------------------------------
+    # What one write costs the frame budget, in seconds, as a function of its
+    # payload — see `write_cost_s`. Measured per family with
+    # scripts/diags/link_cost_model.py; the defaults here are the Ultimate's,
+    # so an unmeasured backend inherits the conservative (count-bound) shape.
+    write_cost_floor_s: float = 5.2e-3  # per-write overhead payload can't touch
+    write_cost_intercept_s: float = 0.8e-3
+    write_cost_per_byte_s: float = 1.85e-6
+
+    def write_cost_s(self, nbytes: int) -> float:
+        """Wall-clock seconds one write of ``nbytes`` costs the frame budget.
+
+        Two regimes, because that is what the links measure as: a fixed
+        per-write overhead that the payload cannot touch, and above the knee
+        where that runs out, a marginal per-byte transfer cost.
+
+        The shape matters more than the constants. On the Ultimate the fixed
+        term is ~5.2 ms and payload is *free* up to ~2.4 KB, so what a frame
+        spends is writes; on the TeensyROM the fixed term is ~0.29 ms and cost
+        is essentially all payload, so what a frame spends is bytes. The
+        marginal slopes are within ~30% of each other (both are the C64 bus at
+        roughly a cycle a byte) — the 18x difference in the fixed term is the
+        link protocol, and it is what makes the same delta strategy right on
+        one backend and wrong on the other.
+        """
+        return max(
+            self.write_cost_floor_s,
+            self.write_cost_intercept_s + self.write_cost_per_byte_s * nbytes,
+        )
 
     # ---- C64 memory map assumptions ------------------------------------
     audio_ring_addr: int = 0x4000  # base of the audio DAC ring buffer
@@ -211,6 +240,14 @@ ULTIMATE_PROFILE = HardwareProfile(
     write_transport="socket_dma",
     max_fps=None,  # no extra cap beyond the system rate
     max_write_rate_hz=200.0,  # ~200 writes/sec DMA ceiling (see caveats)
+    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py, r2 = 1.0000 in
+    # every cell across two runs: cost is FLAT at 5.22 ms from 8 B to ~2.4 KB,
+    # then rises at 1.85 us/byte. So this link is write-count-bound over the
+    # whole range write_region chooses in — a 1 KB region costs exactly what an
+    # 8-byte one does, and splitting it in two doubles its price.
+    write_cost_floor_s=5.222e-3,
+    write_cost_intercept_s=0.784e-3,
+    write_cost_per_byte_s=1.8454e-6,
     audio_ring_addr=0x4000,
 )
 
@@ -252,6 +289,14 @@ TEENSYROM_PROFILE = HardwareProfile(
     # raise the DAC noise floor 2-3 dB while the NMI ticks they buy back are
     # inaudible. See the video-path note in docs/architecture/audio.md.
     max_write_rate_hz=200.0,
+    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py, r2 = 1.0000 in
+    # every cell: cost is linear in payload from 64 B up (0.29 / 0.57 / 1.70 /
+    # 3.18 / 6.11 ms at 64 / 256 / 1024 / 2048 / 4096 B), with the fixed term
+    # only ~0.29 ms. The opposite regime to the Ultimate: here bytes are what a
+    # frame spends, so splitting a sparse region into chunks genuinely pays.
+    write_cost_floor_s=0.287e-3,
+    write_cost_intercept_s=0.210e-3,
+    write_cost_per_byte_s=1.4429e-6,
     audio_ring_addr=0x4000,
 )
 
@@ -287,9 +332,7 @@ class C64Backend(ABC):
     def write_regs(self, base_addr: str, *values: int) -> None: ...
 
     @abstractmethod
-    def write_region(
-        self, address: int, data: bytes, region_id: int | None = None, full_threshold: float = 0.6
-    ) -> int: ...
+    def write_region(self, address: int, data: bytes, region_id: int | None = None) -> int: ...
 
     @abstractmethod
     def flush(self) -> None: ...
@@ -599,21 +642,33 @@ class BufferedWriteBackend(C64Backend):
         """
         self.write_memory(base_addr, "".join(f"{v & 0xFF:02X}" for v in values))
 
-    def write_region(
-        self, address: int, data: bytes, region_id: int | None = None, full_threshold: float = 0.6
-    ) -> int:
+    def write_region(self, address: int, data: bytes, region_id: int | None = None) -> int:
         """Push data, but only the changed sub-range if we have a cached copy.
 
         Returns bytes actually uploaded (0 = unchanged, skipped).
 
         Strategy:
           * No prior cache OR length mismatch → full upload.
-          * Contiguous dirty span < full_threshold of buffer → upload the span.
-          * Else → chunked diff: split the buffer into DELTA_CHUNK_BYTES
-            slabs, upload only the slabs that changed. This keeps sparse
-            updates (waveform traces, spectrum bars) from degrading to a
-            full push when the dirty range happens to span the whole region
-            but only a fraction of cells actually differ.
+          * Otherwise the choice is between one write covering the whole dirty
+            span and several writes covering only the dirty DELTA_CHUNK_BYTES
+            slabs within it, decided by `profile.write_cost_s` — whichever the
+            link actually charges less for.
+
+        The span write is never worse than a full push (it is a subset of the
+        same bytes and cost is monotonic in payload), so a full push is just
+        the case where everything is dirty and needs no branch of its own.
+
+        **Why this is a cost decision and not a byte-count one.** Chunking
+        trades one big write for k small ones, which is only a win where bytes
+        are what the link charges for. On the TeensyROM they are, and it wins.
+        On the Ultimate a payload under ~2.4 KB is *free* — an 8-byte write and
+        a 2 KB write both cost ~5.2 ms — so k chunks cost k times a single span
+        write, and the old fixed byte-ratio rule took that trade on every
+        firing it made: measured against real video, 19 of 19 firings across
+        three display modes were slower than not chunking, one mhires clip
+        losing 1083 ms over 400 frames, concentrated in 14 frames that each
+        stalled ~77 ms. A byte-ratio rule cannot see that, because the bytes
+        genuinely did go down.
         """
         key = region_id if region_id is not None else address
         # Skip the defensive bytes() copy when the caller already gave us
@@ -645,38 +700,35 @@ class BufferedWriteBackend(C64Backend):
         last = len(diff) - int(np.argmax(diff[::-1]))
         span = last - first
 
-        if span / len(new) < full_threshold:
-            self.write_memory_file(f"{address + first:04X}", new[first:last])
-            self._cache[key] = (new, arr_new)
-            return span
-
-        # Wide dirty range. Try chunked diff before giving up to a full push.
-        # The threshold here picks "did chunking save enough bytes to be
-        # worth the extra requests?" — if the chunked uploads would total
-        # more than `full_threshold` of the buffer, skip the overhead and
-        # do one big push.
         n = len(new)
-        if n >= DELTA_CHUNK_BYTES * 2:
+        cost = self.profile.write_cost_s
+        span_cost = cost(span)
+
+        # Chunking can only pay when there is more than one slab to skip
+        # between the dirty ends; below that the span write already is the
+        # chunked write.
+        if span > DELTA_CHUNK_BYTES * 2:
             # Mark each chunk as dirty if any byte within it differs.
             n_chunks = (n + DELTA_CHUNK_BYTES - 1) // DELTA_CHUNK_BYTES
             chunk_dirty = np.zeros(n_chunks, dtype=bool)
             idx = np.flatnonzero(diff)
             chunk_dirty[idx // DELTA_CHUNK_BYTES] = True
-            dirty_total = int(chunk_dirty.sum()) * DELTA_CHUNK_BYTES
-            if dirty_total < n * full_threshold:
+            dirty_ids = np.flatnonzero(chunk_dirty)
+            bounds = [
+                (int(ci) * DELTA_CHUNK_BYTES, min((int(ci) + 1) * DELTA_CHUNK_BYTES, n))
+                for ci in dirty_ids
+            ]
+            if sum(cost(end - start) for start, end in bounds) < span_cost:
                 uploaded = 0
-                for ci in np.flatnonzero(chunk_dirty):
-                    start = int(ci) * DELTA_CHUNK_BYTES
-                    end = min(start + DELTA_CHUNK_BYTES, n)
+                for start, end in bounds:
                     self.write_memory_file(f"{address + start:04X}", new[start:end])
                     uploaded += end - start
                 self._cache[key] = (new, arr_new)
                 return uploaded
 
-        # Everything else: just push the whole region in one write.
-        self.write_memory_file(f"{address:04X}", new)
+        self.write_memory_file(f"{address + first:04X}", new[first:last])
         self._cache[key] = (new, arr_new)
-        return n
+        return span
 
     # ---- host-side bookkeeping -------------------------------------------
     def invalidate_cache(self) -> None:
