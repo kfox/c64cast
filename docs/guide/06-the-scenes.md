@@ -301,9 +301,24 @@ is nothing to route. This is true through a TeensyROM+ and through an Ultimate
 II+ alike.
 
 What c64cast cannot do is *guess* that your machine is one of these. Left
-undeclared it assumes the ordinary single chip, and will tell you a second
-chip is inaudible while you are listening to it. Declare the chips and it
-stops guessing:
+undeclared it assumes the ordinary single chip — which is the right assumption
+for almost every Commodore, and the reason a two-chip tune gets a warning:
+
+```
+sid hardware: this tune drives 2 SID chips ($D400, $D420)
+and this machine is not declared to have one at $D420. On
+a stock C64 a single SID answers all of $D400-$D7FF, so
+both chips' writes land on that one chip and the tune
+will not sound as written — you may have picked a
+multi-SID tune by mistake. Play a single-SID tune, or
+declare an internal dual-SID mod with
+[hardware].host_sid_chips.
+```
+
+Most of the time that warning is right and you have picked up a two-chip tune
+without noticing — they are common in the collections and their filenames say
+so, usually `_2SID`. If your machine really does have the mod, declare the
+chips and the warning stops for good:
 
 ```toml
 [hardware]
@@ -325,6 +340,41 @@ left to guess at. List all of them, including the one at `$D400`.
 > boards — collides with a TeensyROM+ or Ultimate II+ in the cartridge port,
 > which uses that same address range for its own registers. If your machine is
 > configured that way, move the SID to `$D420` or `$D500`.
+
+### What You Actually Hear
+
+Three things decide it: what you are connected through, what is inside the
+Commodore, and how many chips the tune asks for. All the combinations, and what
+comes out of each socket:
+
+| Connected through | Inside the C64 | Tune | Ultimate's green jack | C64's AV output |
+|---|---|---|---|---|
+| Ultimate 64 | — | anything | as written | the same signal |
+| Ultimate II+ | one SID | one chip, models agree | as written | as written |
+| Ultimate II+ | one SID | one chip, wrong model | as written | thin and scratchy |
+| Ultimate II+ | one SID | two chips | as written | collapsed |
+| Ultimate II+ | dual-SID mod | two chips | as written | as written |
+| TeensyROM+ | one SID | one chip, wrong model | *(no jack)* | thin and scratchy |
+| TeensyROM+ | one SID | two chips | *(no jack)* | collapsed |
+| TeensyROM+ | dual-SID mod | two chips | *(no jack)* | as written |
+
+An Ultimate 64 has one row because it *is* the Commodore — the chips it
+configures are the chips you hear, whichever cable you use.
+
+"Collapsed" deserves a word, because it is not silence and people expect
+silence. A real SID does not check the whole address it is being written to, so
+one chip answers everywhere in `$D400`–`$D7FF`. A tune written for two chips
+sends one stream of notes to `$D400` and another to `$D420`, and on a machine
+with a single SID *both* land on it. Six voices' worth of instructions arrive
+at a chip that has three, each one overwriting the last. What you hear is a
+recognisable tune with something badly wrong in it, which is why it reads as a
+broken chip rather than a wrong tune.
+
+The two outputs never mix inside the equipment. The Ultimate's emulated SIDs
+reach its own jack and nothing else; the Commodore's internal SID reaches the
+AV cable and nothing else. Choosing between them means choosing which lead you
+plug in — there is no setting for it, because there is nothing in either device
+to set.
 
 ### Letting the Machine Pick the Tunes
 

@@ -428,6 +428,42 @@ Ultimate-only — on a backend with no configuration interface there is no
 hardware to reconfigure, so the declarations feed the verdict alone and the
 tune plays on whatever the machine actually carries.
 
+### When a Tune Wants More Chips Than the Machine Has
+
+On a link with no routing surface, a tune driving chips past `$D400` needs the
+machine to have them already. Chip 0 is never in question — every C64 has a SID
+at `$D400` — so the check is on the rest: a tune address with no
+`host_sid_chips` entry gets a warning, once per run, naming the address and both
+readings of it (a mistaken tune pick, or an undeclared mod).
+
+The warning depends on no declaration at all, which is the point of it. A
+partly-declared machine already gets `$D420 → no chip declared` in its verdict,
+but the default configuration declares nothing, and that is the state a
+mistakenly-picked `_2SID.sid` is likeliest to arrive in. Warning from "this
+machine has one SID" is safe precisely because the alternative is hardware
+somebody chose to install.
+
+What each configuration produces for a two-chip tune:
+
+| Link | `[hardware]` declares | Result |
+|---|---|---|
+| U64 | anything | Chips are routed per tune; no warning applies |
+| U2+ / TR+ | nothing | **WARNING** naming `$D420`; no verdict line (nothing to render) |
+| U2+ / TR+ | `host_sid_model` only | **WARNING** naming `$D420`; verdict covers `$D400` only |
+| U2+ / TR+ | `host_sid_chips` without `$D420` | **WARNING** naming `$D420`; verdict adds `$D420 → no chip declared` |
+| U2+ / TR+ | `host_sid_chips` with `$D420` | No warning; per-chip verdict for both |
+
+Two details in the wording. On a U2+ the emulated SIDs do play the tune as
+authored, so the warning there points at the Ultimate's own jack rather than
+claiming the tune is broken — and it *replaces* the two-outputs warning from
+["Matching the Chip to the Tune"](#matching-the-chip-to-the-tune) for that tune,
+which attributes the AV output's problem to the chip model and would be the
+wrong diagnosis here. A later
+model-mismatched tune still gets that warning normally. And a second chip
+mapped outside `$D400`–`$D7FF` is described as making no sound rather than
+collapsing, because cartridge I/O is not SID space and nothing answers there at
+all.
+
 ### Picking Tunes the Machine Can Play
 
 The declarations above answer "what does this machine carry?". On a link that

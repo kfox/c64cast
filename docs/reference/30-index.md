@@ -217,7 +217,7 @@ Every name c64cast answers to — 414 of them — and the pages that discuss eac
 | Term | See |
 |---|---|
 | `halo` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
-| `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `--heartbeat` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `heartbeat` | [`debug` (A)](20-appendix-a-configuration.md#debug), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `height_frac` | [`spectrum_bitmap` (C)](22-appendix-c-overlays.md#spectrum_bitmap) |
@@ -232,8 +232,8 @@ Every name c64cast answers to — 414 of them — and the pages that discuss eac
 | `host` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host_dma_servo` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
-| `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
+| `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
+| `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has) |
 | `host_sid_tune_match` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `hue_corrections` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hue_corrections_replace_defaults` | [`color` (A)](20-appendix-a-configuration.md#color) |

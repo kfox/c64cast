@@ -562,5 +562,136 @@ class DeclaredChipsThroughLogTest(unittest.TestCase):
         self.assertNotIn("convention", " ".join(r.getMessage() for r in cm.records))
 
 
+class UnplaceableChipsWarningTest(unittest.TestCase):
+    """The multi-SID-tune-on-a-single-SID-machine warning: fires with no
+    declaration at all, because that is the configuration a mistaken tune pick
+    is likeliest to arrive under."""
+
+    def setUp(self):
+        sr._unplaceable_logged = False
+        sr._output_split_logged = False
+        sr._assumed_model_logged = False
+
+    @staticmethod
+    def _api(*, chips=(), host_model=None, sid_config=False) -> FakeAPI:
+        from c64cast.hw.backend import HardwareProfile
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake TR",
+            family="fake",
+            supports_config=False,
+            supports_sid_config=sid_config,
+            host_sid_model=host_model,
+            host_sid_chips=chips,
+        )
+        return api
+
+    def _warning(self, api, addresses, required=()) -> str | None:
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            # A log line is guaranteed only when something is declared, so give
+            # every case one to catch — assertLogs fails on an empty block.
+            sr.log.info("probe")
+            sr.log_resolved_audio(api, addresses, required)
+        hits = [r.getMessage() for r in cm.records if "drives" in r.getMessage()]
+        return hits[0] if hits else None
+
+    def test_undeclared_machine_is_warned_about_a_2sid_tune(self):
+        message = self._warning(self._api(), (0xD400, 0xD420))
+        assert message is not None
+        self.assertIn("drives 2 SID chips ($D400, $D420)", message)
+        self.assertIn("not declared to have one at $D420", message)
+        self.assertIn("$D400-$D7FF", message)
+        self.assertIn("host_sid_chips", message)
+
+    def test_single_sid_tune_is_never_warned_about(self):
+        self.assertIsNone(self._warning(self._api(), (0xD400,), ("8580",)))
+        self.assertIsNone(self._warning(self._api(host_model="6581"), (0xD400,), ("6581",)))
+
+    def test_a_fully_declared_dual_sid_mod_is_not_warned_about(self):
+        api = self._api(chips=((0xD400, "6581"), (0xD420, "8580")))
+        self.assertIsNone(self._warning(api, (0xD400, 0xD420), ("6581", "8580")))
+
+    def test_a_partly_declared_machine_is_warned_about_the_missing_chip(self):
+        api = self._api(chips=((0xD400, "6581"),))
+        message = self._warning(api, (0xD400, 0xD420))
+        assert message is not None
+        self.assertIn("not declared to have one at $D420", message)
+
+    def test_a_link_that_routes_chips_itself_never_warns(self):
+        # The U64 re-places chips per tune, so there is no fixed hardware for a
+        # tune to outgrow.
+        api = self._api(sid_config=True)
+        self.assertIsNone(self._warning(api, (0xD400, 0xD420)))
+
+    def test_a_chip_outside_sid_space_is_described_as_silent_not_collapsed(self):
+        message = self._warning(self._api(), (0xD400, 0xDE00))
+        assert message is not None
+        self.assertIn("cartridge I/O", message)
+        self.assertNotIn("$D400-$D7FF", message)
+
+    def test_stated_once_per_run(self):
+        api = self._api()
+        self.assertIsNotNone(self._warning(api, (0xD400, 0xD420)))
+        self.assertIsNone(self._warning(api, (0xD400, 0xD420)))
+
+
+class UnplaceableChipsOnEmuSurfaceTest(unittest.TestCase):
+    """The same warning on a U2+, where the emulated SIDs do play the tune as
+    authored and only the C64's own output collapses."""
+
+    def setUp(self):
+        sr._unplaceable_logged = False
+        sr._output_split_logged = False
+
+    @staticmethod
+    def _api(*, host_model: str | None = None, curve: str = "6581") -> FakeAPI:
+        from dataclasses import replace
+
+        api = FakeAPI.u2plus()
+        api.config_store["Audio Output Settings"] = {
+            "SID Left": "Enabled",
+            "SID Left Base": "Snoop $D400",
+            "SID Left Filter Curve": curve,
+            "SID Right": "Enabled",
+            "SID Right Base": "Snoop $D420",
+            "SID Right Filter Curve": curve,
+            "Vol EmuSid1": " 0 dB",
+            "Vol EmuSid2": " 0 dB",
+            "Pan EmuSid1": "Left 3",
+            "Pan EmuSid2": "Right 3",
+        }
+        if host_model is not None:
+            api.profile = replace(api.profile, host_sid_model=host_model)
+        return api
+
+    def test_warning_points_at_the_ultimates_own_output(self):
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(self._api(), (0xD400, 0xD420), ("6581", "6581"))
+        warned = [r.getMessage() for r in cm.records if "drives" in r.getMessage()]
+        self.assertEqual(len(warned), 1)
+        self.assertIn("plays as authored on the Ultimate's own audio output", warned[0])
+        self.assertIn("Listen on the Ultimate's audio jack", warned[0])
+
+    def test_it_replaces_the_output_split_warning_rather_than_doubling_it(self):
+        # Both end in "listen on the Ultimate's jack"; the split warning blames
+        # the chip model, which is the wrong cause here.
+        api = self._api(host_model="6581")
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(api, (0xD400, 0xD420), ("6581", "6581"))
+        messages = " ".join(r.getMessage() for r in cm.records)
+        self.assertIn("drives 2 SID chips", messages)
+        self.assertNotIn("on the wrong chip model", messages)
+
+    def test_a_later_model_mismatch_still_gets_the_split_warning(self):
+        # Suppression is per tune, not a global mute: the sentinel is only
+        # spent when the split warning actually fires.
+        sr.log_resolved_audio(self._api(host_model="6581"), (0xD400, 0xD420), ("6581", "6581"))
+        later = self._api(host_model="6581", curve="8580")
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
+            sr.log_resolved_audio(later, (0xD400,), ("8580",))
+        self.assertIn("on the wrong chip model", " ".join(r.getMessage() for r in cm.records))
+
+
 if __name__ == "__main__":
     unittest.main()
