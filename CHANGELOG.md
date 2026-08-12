@@ -252,18 +252,27 @@ the version and stamps it with the date.
 
 ### Changed
 
-- **Frames no longer stall on scene cuts on the Ultimate.** The delta-upload
-  path decided how to split a changed region into writes by counting bytes,
-  which is the wrong currency on socket DMA: a write there costs ~5.2 ms
-  regardless of payload up to ~2.4 KB, so splitting a region into pieces
-  multiplied its cost while the byte count went down. It now prices both
-  options against a per-backend measured cost model and picks the cheaper.
-  On a high-motion mhires clip the mean frame went from 18.1 ms to 13.3 ms and
-  the worst frame from 104.4 ms to 26.0 ms — the visible hitch on scene cuts,
-  where a wide sparse change is most likely. Wide changes also now push only
-  the range that actually changed instead of re-uploading the whole region.
-  Nothing to configure. TeensyROM+ playback is unaffected: that link *is*
-  byte-bound, and the same model keeps the existing behaviour there.
+- **Less data on the wire every frame, and no more stalls on scene cuts.** The
+  delta-upload path decided how to split a changed region into writes by
+  counting bytes, which is the wrong currency on socket DMA: a write there
+  costs ~5.2 ms regardless of payload up to ~2.4 KB, so splitting a region into
+  pieces multiplied its cost while the byte count obediently went down. It now
+  prices both options against a per-backend measured cost model and picks the
+  cheaper, and a change that covers most of a region pushes only the range that
+  actually changed rather than re-uploading the whole thing.
+
+  Measured on an Ultimate 64 over a minute of video per mode, at an unchanged
+  write rate and frame rate: **~25% fewer bytes** on the host-DMA bitmap path
+  (220 → 166 KiB/s) and **~28% fewer** in the character modes (41 → 30 KiB/s).
+  Offline against the same clip, the frames that used to be split worst — wide
+  sparse changes, i.e. scene cuts — went from 104 ms to 26 ms, and the mean
+  frame from 18.1 ms to 13.3 ms.
+
+  Nothing to configure. The bitmap figures are for the host-DMA path; an
+  Ultimate with its REU enabled already stages `hires`/`mhires` bitmaps through
+  the REU bank-swap instead, and those are unaffected (their screen and color
+  RAM still benefit). TeensyROM+ playback is unaffected in kind: that link *is*
+  byte-bound, and the same model keeps its existing chunking behaviour.
 
 - **The baked `mahoney_ultisid` table has been re-measured** against the
   emulated core in isolation. It reproduces the original curve almost exactly,
