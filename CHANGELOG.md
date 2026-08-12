@@ -14,6 +14,16 @@ the version and stamps it with the date.
 
 ### Added
 
+- **A multi-SID tune on a single-SID machine now says so.** On a link that
+  can't route chips (TeensyROM+, Ultimate II+), a tune driving an address past
+  `$D400` that no `[hardware].host_sid_chips` entry covers gets a warning once
+  per run, naming the address and both readings of it: a multi-SID tune picked
+  by mistake, or a dual-SID mod that hasn't been declared. Previously only a
+  machine that *had* declared its chips was told — which is backwards, since
+  the default configuration declares nothing and is where a mistaken pick is
+  likeliest to land. On an Ultimate II+ the warning points at the Ultimate's
+  own audio jack, where the tune does play as authored.
+
 - **`[hardware].host_sid_tune_match` picks tunes your C64's own SID chips can
   play.** When a `waveform` scene points at a directory or glob, `"prefer"`
   tries tunes that fit the chips you've declared before the rest — the right

@@ -1089,41 +1089,37 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertEqual(category["SID Left Filter Curve"], "6581")
         self.assertEqual(category["SID Left Combined Waveforms"], "6581")
 
-    def test_multi_sid_on_a_bare_link_does_not_claim_only_d400_sounds(self):
+    def _2sid_scene_messages(self, api) -> str:
+        """Run a 2SID tune through setup() on a bare link and collect every
+        SID-hardware message it produces."""
+        from c64cast.sid import sid_resolved
+
+        sid_resolved._unplaceable_logged = False
+        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
+            f.write(make_psid(second_sid_addr=0xD420, payload=bytes(2048)))
+            path = f.name
+        self.addCleanup(os.unlink, path)
+        from c64cast.sid.waveform import WaveformScene
+
+        with self.assertLogs("c64cast.sid", level="INFO") as cm:
+            WaveformScene(api, audio=None, file=path).setup()
+        return " ".join(r.getMessage() for r in cm.records)
+
+    def test_multi_sid_on_a_bare_link_does_not_claim_the_second_chip_is_lost(self):
         # A machine with an internal dual-SID mod answers at the tune's second
-        # address in its own hardware, so the flat "only $D400 will be audible"
+        # address in its own hardware, so warning that nothing will play there
         # would be a false claim about working hardware.
         from dataclasses import replace
 
-        from c64cast.sid.waveform import WaveformScene
-
         api = FakeAPI()  # bare: no config API at all
         api.profile = replace(api.profile, host_sid_chips=((0xD400, "6581"), (0xD420, "8580")))
-        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
-            f.write(make_psid(second_sid_addr=0xD420, payload=bytes(2048)))
-            path = f.name
-        self.addCleanup(os.unlink, path)
+        messages = self._2sid_scene_messages(api)
+        self.assertNotIn("multi-SID tune by mistake", messages)
+        self.assertIn("$D420 → host SID (8580 declared)", messages)
 
-        with self.assertLogs("c64cast.sid.waveform", level="INFO") as cm:
-            WaveformScene(api, audio=None, file=path).setup()
-        messages = " ".join(r.getMessage() for r in cm.records)
-        self.assertNotIn("only $D400", messages)
-
-    def test_multi_sid_on_an_undeclared_machine_still_says_only_d400(self):
-        # Undeclared, the single-SID reading is the right default — but it now
-        # names the declaration that would change the answer.
-        from c64cast.sid.waveform import WaveformScene
-
-        api = FakeAPI()  # bare: no config API at all
-        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
-            f.write(make_psid(second_sid_addr=0xD420, payload=bytes(2048)))
-            path = f.name
-        self.addCleanup(os.unlink, path)
-
-        with self.assertLogs("c64cast.sid.waveform", level="INFO") as cm:
-            WaveformScene(api, audio=None, file=path).setup()
-        messages = " ".join(r.getMessage() for r in cm.records)
-        self.assertIn("only $D400", messages)
+    def test_multi_sid_on_an_undeclared_machine_warns_about_the_second_chip(self):
+        messages = self._2sid_scene_messages(FakeAPI())  # bare: nothing declared
+        self.assertIn("not declared to have one at $D420", messages)
         self.assertIn("host_sid_chips", messages)
 
     def test_cycle_style_advances_song(self):

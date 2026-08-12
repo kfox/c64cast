@@ -52,6 +52,14 @@ the mod has already done in silicon what the U64 does in config. Such a
 machine is declared per chip with ``[hardware].host_sid_chips``, and
 :func:`describe_declared_chips` gives every tune chip its own verdict, which
 matters most where these mods usually land: one 6581 and one 8580 at once.
+
+Most machines have no such mod, though, and a multi-SID tune on one of them is
+usually a tune picked by mistake. The declared-chip verdict can only say so
+once someone has declared their chips, which leaves the default configuration
+— nothing declared — silent about exactly the case most likely to be an error.
+:func:`_warn_unplaceable_chips` closes that: it needs no declaration, because
+"this machine has one SID" is the safe assumption to warn from when the
+alternative is a mod the user would have had to install deliberately.
 """
 
 from __future__ import annotations
@@ -99,6 +107,15 @@ _assumed_model_logged = False
 # reporting the mismatch; the advice about which cable to listen to is the same
 # every time, so it is said once rather than at every scene activation.
 _output_split_logged = False
+
+# Set once a tune has been found to drive more chips than the machine can place.
+# Same reasoning as the two above: the condition is a property of the machine
+# and the tune choice, not something a listener needs restated per scene.
+_unplaceable_logged = False
+
+# A real SID decodes its address only partially and answers all of this range,
+# so a second chip addressed anywhere inside it lands on the first one.
+_SID_DECODE_WINDOW = range(0xD400, 0xD800)
 
 
 @dataclass(frozen=True)
@@ -375,6 +392,85 @@ def _warn_output_split(*, emu_clean: bool, host: ResolvedAudio) -> None:
     )
 
 
+def _unplaceable_chips(api: C64Backend, addresses: Sequence[int]) -> tuple[int, ...]:
+    """The tune's chip addresses that nothing on this machine will answer as a
+    SID of its own: the ones past the first, on a link with no routing surface,
+    with no ``[hardware].host_sid_chips`` entry to say a mod covers them.
+
+    Chip 0 is excluded rather than checked against the declaration: every C64
+    has a SID at ``$D400``, so it is placeable whether or not anyone has
+    declared it, and including it would fire this on ordinary single-SID
+    tunes."""
+    if getattr(api.profile, "supports_sid_config", False):
+        return ()
+    declared = dict(getattr(api.profile, "host_sid_chips", ()))
+    return tuple(address for address in addresses[1:] if address not in declared)
+
+
+def _warn_unplaceable_chips(api: C64Backend, addresses: Sequence[int], *, emulated: bool) -> bool:
+    """Say, once per run, that this tune asks for more SID chips than the
+    machine has — and return whether that is the case, logged or not.
+
+    The gap this fills is which machines get told. A partly-declared machine
+    already gets ``$D420 → no chip declared`` in its verdict, but the common
+    case is a machine that has declared nothing at all, and there the verdict
+    is silent about the second chip (``host_sid_model`` describes one chip) or
+    absent entirely. That is backwards: the person who described their hardware
+    carefully is warned, and the person likeliest to have grabbed a 2SID tune
+    by mistake hears only the result.
+
+    Stated as a consequence rather than a configuration fact, for the same
+    reason as :func:`_warn_output_split`: the symptom reaches a listener as a
+    scratchy mess, which reads as a broken tune or a failing SID rather than as
+    a tune this machine was never able to play.
+
+    Returns True on the condition, not on having logged, so a caller can
+    suppress a second which-cable message for the same tune on a later pass."""
+    global _unplaceable_logged
+    extra = _unplaceable_chips(api, addresses)
+    if not extra:
+        return False
+    if _unplaceable_logged:
+        return True
+    _unplaceable_logged = True
+    chips = ", ".join(f"${address:04X}" for address in addresses)
+    missing = ", ".join(f"${address:04X}" for address in extra)
+    if any(address in _SID_DECODE_WINDOW for address in extra):
+        fate = (
+            "a single SID answers all of $D400-$D7FF, so both chips' writes land on "
+            "that one chip and the tune will not sound as written"
+        )
+    else:
+        fate = (
+            "those addresses are cartridge I/O rather than SID space, so writes to "
+            "them make no sound at all"
+        )
+    if emulated:
+        log.warning(
+            "sid hardware: this tune drives %d SID chips (%s) and this machine is not "
+            "declared to have one at %s. It plays as authored on the Ultimate's own "
+            "audio output, but through the C64's AV output %s — you may have picked a "
+            "multi-SID tune by mistake. Listen on the Ultimate's audio jack, or "
+            "declare an internal dual-SID mod with [hardware].host_sid_chips.",
+            len(addresses),
+            chips,
+            missing,
+            fate,
+        )
+    else:
+        log.warning(
+            "sid hardware: this tune drives %d SID chips (%s) and this machine is not "
+            "declared to have one at %s. On a stock C64 %s — you may have picked a "
+            "multi-SID tune by mistake. Play a single-SID tune, or declare an internal "
+            "dual-SID mod with [hardware].host_sid_chips.",
+            len(addresses),
+            chips,
+            missing,
+            fate,
+        )
+    return True
+
+
 def _log_declared_audio(
     api: C64Backend, addresses: Sequence[int], required_models: Sequence[str | None]
 ) -> None:
@@ -449,6 +545,7 @@ def log_resolved_audio(
         return
     if not getattr(api.profile, "supports_sid_config", False):
         state = read_emusid_hardware_state(api)
+        unplaceable = _warn_unplaceable_chips(api, addresses, emulated=state is not None)
         if state is None:
             _log_declared_audio(api, addresses, required_models)
             return
@@ -457,7 +554,12 @@ def log_resolved_audio(
             # Label the host route as a *group* rather than trailing the phrase
             # after it: with two declared chips a suffix reads as if only the
             # last fragment were on the machine's own output.
-            _warn_output_split(emu_clean=resolved.clean, host=host)
+            if not unplaceable:
+                # Both messages end in "listen on the Ultimate's jack", but the
+                # split warning attributes the AV output's problem to the chip
+                # model, which is the wrong diagnosis when the real cause is a
+                # chip that isn't there. The more specific one has already run.
+                _warn_output_split(emu_clean=resolved.clean, host=host)
             resolved = ResolvedAudio(
                 summary=f"{resolved.summary}; on the machine's own audio output: {host.summary}",
                 clean=resolved.clean and host.clean,

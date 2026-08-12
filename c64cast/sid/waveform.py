@@ -1030,20 +1030,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 log_resolved_audio(self.api, self._sid_addresses, self._required_sid_models())
                 return
             if self._n_sids >= 2:
-                # A machine with an internal dual-SID mod answers at the tune's
-                # extra addresses in its own hardware, so "only $D400 sounds"
-                # would be a false claim about working hardware. The declaration
-                # is the only way this link can know which case it's in; the
-                # resolved-audio line below reports it either way.
-                declared = tuple(getattr(self.api.profile, "host_sid_chips", ()))
                 log.info(
                     "waveform: %d-SID tune but backend has no SID config API — "
-                    "showing every chip's scope; %s",
+                    "showing every chip's scope",
                     self._n_sids,
-                    "audibility is whatever this machine's own SIDs cover"
-                    if declared
-                    else "only $D400 will be audible unless this machine has a "
-                    "dual-SID mod (declare it with [hardware].host_sid_chips)",
                 )
             if self._sid_model != "off":
                 log.info(
