@@ -273,7 +273,10 @@ Performance tips (these are what makes the bundled modes hit 30+ fps):
   mode has nested searches (see how MCM does it).
 * Replace Python loops with `np.argmin` / fancy indexing.
 * `write_region` only sends the diff — let the delta cache do its job.
-  Don't write your own diff layer on top.
+  Don't write your own diff layer on top. It also decides *how* to cut the
+  diff into writes by the connected link's measured cost, which is inverted
+  between the Ultimate and the TeensyROM+; a hand-rolled diff would be tuned
+  for whichever one you happened to test on.
 
 ## Adding an Interstitial Background
 

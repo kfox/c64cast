@@ -663,6 +663,17 @@ measurement above shows.
   vs. the per-region cache; this is why static char-mode scenes are
   cheap (most frames write nothing). Any new code path that issues
   N small writes per frame should be a yellow flag.
+
+  The reason count is the lever, measured: **payload is free below
+  ~2.4 KB**. A write of 8 bytes and a write of 2 KB both cost ~5.2 ms,
+  and only past that knee does cost start rising (~1.85 µs/byte). So
+  splitting one write into two doubles its price no matter how few bytes
+  each carries, while widening a write to cover a clean gap is free.
+  That is the whole basis of `write_region`'s chunking decision — see
+  [the cost model in the architecture notes](architecture/hardware-io.md#the-chunking-decision-is-per-link-because-the-two-links-are-opposites),
+  and re-measure with `scripts/diags/link_cost_model.py`. **It is a
+  per-link fact, not a general one**: the TeensyROM+ charges ~0.29 ms
+  per write and is otherwise all payload, so there bytes are the lever.
 * **A scene targeting >30 fps with ≥2 writes/frame will saturate the
   pipe.** big_text at 50 fps with 1 write/frame is the canonical
   example — it produces exactly 50 writes/s, so on REST every frame's
