@@ -83,6 +83,19 @@ host_sid_chips = {}                 # internal SID chips as address = model, for
                                     # $D400 included. Such tunes already play on
                                     # both chips with nothing routed; this only
                                     # affects what c64cast reports.
+host_sid_tune_match = "off"         # bias a multi-file waveform pool toward
+                                    # tunes those chips can play as authored —
+                                    # right model, and a chip at every address
+                                    # the tune drives (off | prefer | require).
+                                    # "prefer" tries fitting tunes first and
+                                    # falls back to the rest; "require" skips
+                                    # non-fitting tunes outright (still falling
+                                    # back if nothing fits, with a warning).
+                                    # Needs host_sid_chips or an explicit
+                                    # host_sid_model — an assumed model is never
+                                    # acted on. Only host_sid_chips can skip a
+                                    # 2SID tune: host_sid_model names one chip
+                                    # without claiming it is the only one.
 dump_char_rom = true                # on the first run against a machine, read
                                     # its character ROM and cache it under the
                                     # data dir, so C64 text renders in the real

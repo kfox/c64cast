@@ -413,7 +413,9 @@ with no declared chip is reported as such rather than omitted.
 No routing is involved anywhere in this. A multi-SID tune on such a machine
 plays on both chips because the tune writes to both addresses and the chips are
 already there — the mod has done in silicon what a U64 does in configuration.
-The declaration only affects what c64cast *says*.
+The declaration affects what c64cast *says*, and — through
+`host_sid_tune_match` below — which tune a directory pool picks. It never
+changes a chip.
 
 > [!NOTE]
 > A second SID mapped into cartridge I/O (`$DE00`/`$DF00`, an option on several
@@ -425,6 +427,56 @@ All of this is best-effort and restored at teardown. Model *matching* is
 Ultimate-only — on a backend with no configuration interface there is no
 hardware to reconfigure, so the declarations feed the verdict alone and the
 tune plays on whatever the machine actually carries.
+
+### Picking Tunes the Machine Can Play
+
+The declarations above answer "what does this machine carry?". On a link that
+cannot re-place chips, a tune the machine does not suit stays that way — the
+chip is what it is. `[hardware].host_sid_tune_match` acts on the one variable
+that *is* free: which tune a multi-file `waveform` pool picks.
+
+| Value | Behavior |
+|---|---|
+| `off` (default) | The pool is untouched. |
+| `prefer` | Fitting tunes are tried first; the rest remain as a fallback tail. |
+| `require` | Non-fitting tunes are dropped from the pool. |
+
+A tune *fits* when the declarations would produce a clean resolved-audio
+verdict for it: the right model on every chip, and a chip declared at every
+address the tune drives. The check runs through the same renderers as that
+verdict rather than re-deriving the match, so a pick and the line logged moments
+later cannot disagree. Only the PSID header of each candidate is read, so
+ordering a large directory costs a few hundred short reads, not a full load per
+tune.
+
+Three cases are deliberately no-ops, and in each the pool is left exactly as it
+was:
+
+- **A link that reads the real SID state** (the U64 multi-SID surface). It
+  re-places chips per tune, so no tune is a poor fit to begin with.
+- **An assumed host model.** `host_sid_model = "auto"` resolves through the
+  NTSC/PAL convention, and that is too weak a basis for dropping tunes out of
+  someone's directory. The verdict may warn on a guess; selection will not act
+  on one. Declaring the model — or the chips — turns the feature on.
+- **Nothing declared at all** (`host_sid_model = "unknown"`, no
+  `host_sid_chips`).
+
+What each declaration buys differs. `host_sid_chips` describes the whole
+machine, so a tune driving an address it does not list fails the check — that is
+what skips 2SID tunes on a single-SID machine. `host_sid_model` alone judges the
+primary chip's *model* only: it names a chip without claiming it is the only
+one, and inferring a chip count from it would reject working tunes on a machine
+whose second chip c64cast was simply never told about.
+
+`require` still falls back to the full pool, with a `WARNING`, when nothing
+fits. A mis-declared machine — or a directory of tunes for a model the user does
+not have — is a configuration mistake, and degrading to the unfiltered pool
+surfaces it as a line in the log instead of a scene that can never start.
+
+Setting `[ultimate64].sid_model` to `6581` or `8580` makes *that* the model
+every chip must match, and `off` disables model matching entirely, leaving only
+the address check. This is the same `required_models_for` resolution the verdict
+uses.
 
 ## Placing and Balancing Voices
 

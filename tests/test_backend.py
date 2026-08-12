@@ -206,6 +206,13 @@ class MakeBackendTest(unittest.TestCase):
             api = make_backend(cfg)
             self.assertFalse(api.profile.host_sid_model_assumed)
 
+    def test_host_sid_tune_match_resolved_onto_the_profile(self):
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            cfg = self._cfg(system="NTSC")
+            self.assertEqual(make_backend(cfg).profile.host_sid_tune_match, "off")
+            cfg.hardware.host_sid_tune_match = "require"
+            self.assertEqual(make_backend(cfg).profile.host_sid_tune_match, "require")
+
     def test_direct_construction_defaults_to_ultimate_profile(self):
         with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
             from c64cast.hw.api import Ultimate64API

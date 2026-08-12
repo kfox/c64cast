@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 19 sections and 152 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 19 sections and 153 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -186,8 +186,9 @@ Hardware backend selection.
 
 ```toml
 [hardware]
-backend = "ultimate"     # ultimate | teensyrom
-host_sid_model = "auto"  # auto | 6581 | 8580 | unknown
+backend = "ultimate"         # ultimate | teensyrom
+host_sid_model = "auto"      # auto | 6581 | 8580 | unknown
+host_sid_tune_match = "off"  # off | prefer | require
 dump_char_rom = true
 ```
 
@@ -197,6 +198,7 @@ dump_char_rom = true
 | **`backend`**<br>*Type:* `str`<br>*Default:* `'ultimate'` | Hardware backend family driving the C64. Choices: `ultimate`, `teensyrom`. |
 | **`host_sid_model`**<br>*Type:* `str`<br>*Default:* `'auto'` | SID chip model in the C64 being driven, so a tune asking for the other model still gets a warning on links that can't read the SID hardware state (e.g. TeensyROM). 'auto' assumes 6581 on NTSC / 8580 on PAL and logs that assumption; 'unknown' opts out of model-match verdicts. Ignored where the live SID state is readable (U64). Choices: `auto`, `6581`, `8580`, `unknown`. |
 | **`host_sid_chips`**<br>*Type:* `dict[str, str]`<br>*Default:* `{}` | Internal SID chips in the C64 being driven, as address=model (e.g. d400='6581', d420='8580') — for machines with a dual-SID mod, whose second chip host_sid_model can't describe. When set it supersedes host_sid_model, so no NTSC/PAL assumption is made. Ignored where the live SID state is readable (U64). |
+| **`host_sid_tune_match`**<br>*Type:* `str`<br>*Default:* `'off'` | Bias a multi-file waveform pool toward tunes the C64's own SID chips can play as authored (right model, and a chip at every address the tune drives). 'prefer' tries fitting tunes first but falls back to the rest; 'require' skips non-fitting tunes outright. Needs host_sid_chips or an explicit host_sid_model — an assumed model is never acted on. Ignored where the live SID state is readable (U64), which re-places chips per tune instead. Choices: `off`, `prefer`, `require`. |
 | **`dump_char_rom`**<br>*Type:* `bool`<br>*Default:* `True` | On the first run against a machine, read its character ROM and cache it, so C64 text renders in the real C64 font instead of a built-in ASCII substitute. One ~1s step, never repeated; set false to skip it entirely. |
 
 ## `[interstitial]`

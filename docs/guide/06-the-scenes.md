@@ -326,6 +326,41 @@ left to guess at. List all of them, including the one at `$D400`.
 > which uses that same address range for its own registers. If your machine is
 > configured that way, move the SID to `$D420` or `$D500`.
 
+### Letting the Machine Pick the Tunes
+
+Everything above is about *describing* your machine. There is one thing c64cast
+can do about a mismatch, and it is not a hardware setting: when a waveform scene
+points at a whole directory, it can pick from that directory with your chips in
+mind.
+
+```toml
+[hardware]
+host_sid_chips = { d400 = "6581" }
+host_sid_tune_match = "prefer"
+```
+
+`"prefer"` tries tunes your chips can play as written before the rest — the
+right model, and a chip at every address the tune drives. A single-SID machine
+stops landing on two-chip tunes whose second voice-set goes nowhere, and a 6581
+machine stops landing on tunes composed on an 8580. Nothing is thrown away: if
+none of the tunes fit, one plays anyway, because a directory with nothing in it
+that suits your machine is still better than a silent scene.
+
+`"require"` is the stricter version — non-fitting tunes are dropped from the
+pool rather than merely deprioritised. It still falls back to the whole
+directory when nothing at all fits, and says so in the log, so a mistyped chip
+table shows up as a warning instead of a scene that never starts.
+
+The default is `"off"`: a directory you pointed at is a statement about what you
+want played, and quietly narrowing it is a decision that ought to be yours.
+
+Two things worth knowing. This never acts on the NTSC/PAL guess — if you have
+not declared your chips, nothing is filtered, because dropping tunes out of your
+own directory on the strength of a convention is not a fair trade. And only
+`host_sid_chips` can skip a two-chip tune: `host_sid_model` names one chip
+without claiming it is the only one, so on its own it checks the model and
+leaves the chip count alone.
+
 > [!NOTE]
 > The waveform scene needs a bitmap display mode, and it needs the Web
 > Remote Control Service from Chapter 1, because starting the player is a

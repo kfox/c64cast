@@ -56,6 +56,10 @@ HOST_SID_MODEL_CHOICES = ("auto", "6581", "8580", "unknown")
 # is asserting exists, so there is nothing to infer — "unknown" covers a chip
 # whose model they don't know.
 HOST_SID_CHIP_MODEL_CHOICES = ("6581", "8580", "unknown")
+# How a multi-entry waveform pool treats a tune the machine's own chips can't
+# render as authored. "prefer" is a bias, not a filter: it only changes which
+# candidate is tried first, so a pool with no match still plays something.
+HOST_SID_TUNE_MATCH_CHOICES = ("off", "prefer", "require")
 # The window a PSID second/third-SID address byte can land in ($D000 | byte<<4,
 # see sid_host_emu._decode_extra_sid_addr), so a declared chip address and a
 # tune's declared chip address are range-checked against the same bounds.
@@ -255,6 +259,29 @@ class HardwareCfg:
             "a dual-SID mod, whose second chip host_sid_model can't describe. "
             "When set it supersedes host_sid_model, so no NTSC/PAL assumption "
             "is made. Ignored where the live SID state is readable (U64).",
+        },
+    )
+    # Tune *selection*, as opposed to the chip configuration above: on a link
+    # that can't re-place chips, a 2SID tune or a wrong-model tune is heard as
+    # authored on the Ultimate's own output and as mush through the C64's AV
+    # output, and no setting can change that. What can be changed is which tune
+    # a directory pool picks.
+    #
+    # Default "off" because a directory the user pointed at is a statement of
+    # what they want played, and quietly narrowing it to what this machine
+    # renders best is their call to make. Acts only on a declaration, never on
+    # the NTSC/PAL assumption — see sid_resolved.host_chip_fit.
+    host_sid_tune_match: str = field(
+        default="off",
+        metadata={
+            "help": "Bias a multi-file waveform pool toward tunes the C64's own "
+            "SID chips can play as authored (right model, and a chip at every "
+            "address the tune drives). 'prefer' tries fitting tunes first but "
+            "falls back to the rest; 'require' skips non-fitting tunes outright. "
+            "Needs host_sid_chips or an explicit host_sid_model — an assumed "
+            "model is never acted on. Ignored where the live SID state is "
+            "readable (U64), which re-places chips per tune instead.",
+            "choices": HOST_SID_TUNE_MATCH_CHOICES,
         },
     )
     dump_char_rom: bool = field(
@@ -2841,6 +2868,17 @@ def _validate_host_sid_chips(hw: HardwareCfg) -> None:
             )
 
 
+def _validate_host_sid_tune_match(hw: HardwareCfg) -> None:
+    """Check [hardware].host_sid_tune_match at load/doctor time. A typo would
+    otherwise read as "off" and silently do nothing, which is indistinguishable
+    from the feature not working."""
+    if hw.host_sid_tune_match not in HOST_SID_TUNE_MATCH_CHOICES:
+        raise ValueError(
+            f"hardware.host_sid_tune_match = {hw.host_sid_tune_match!r} — want one of "
+            f"{', '.join(HOST_SID_TUNE_MATCH_CHOICES)}"
+        )
+
+
 def _validate_force_palette(color: ColorCfg) -> None:
     """Range-check + normalize the [color].force_palette_colors knob at
     load/doctor time so a bad value surfaces before the playlist runs, not
@@ -2934,6 +2972,7 @@ def _apply_toml_sections(cfg: Config, data: dict[str, Any], *, source: str) -> N
     _validate_sid_panning(cfg.ultimate64)
     _validate_sid_volume(cfg.ultimate64)
     _validate_host_sid_chips(cfg.hardware)
+    _validate_host_sid_tune_match(cfg.hardware)
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out

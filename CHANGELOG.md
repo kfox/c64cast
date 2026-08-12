@@ -14,6 +14,19 @@ the version and stamps it with the date.
 
 ### Added
 
+- **`[hardware].host_sid_tune_match` picks tunes your C64's own SID chips can
+  play.** When a `waveform` scene points at a directory or glob, `"prefer"`
+  tries tunes that fit the chips you've declared before the rest — the right
+  model, and a chip at every address the tune drives — so a single-SID machine
+  stops landing on 2SID tunes whose second voice-set goes nowhere, and a 6581
+  machine stops landing on tunes composed on an 8580. `"require"` drops the
+  misfits outright. Both fall back to the whole pool (with a warning) when
+  nothing fits, so a mistyped chip table shows up in the log instead of as a
+  scene that never starts. Default `"off"`. It never acts on the NTSC/PAL
+  guess: declare `host_sid_chips`, or set `host_sid_model` explicitly, to turn
+  it on. Only `host_sid_chips` can skip a 2SID tune — `host_sid_model` names one
+  chip without claiming it is the only one.
+
 - **`[hardware].host_sid_chips` describes a machine with an internal dual-SID
   mod.** A C64 fitted with an ARM2SID, SIDFX or DualSID answers at a second
   address in its own hardware, often at the other chip model — much of the

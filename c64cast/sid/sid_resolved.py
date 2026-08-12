@@ -264,6 +264,51 @@ def describe_declared_chips(
     return ResolvedAudio("; ".join(fragments), clean=ok)
 
 
+def host_chip_fit(
+    api: C64Backend,
+    addresses: Sequence[int],
+    required_models: Sequence[str | None] = (),
+) -> bool | None:
+    """Whether the machine's *own* SID chips can play a tune driving chips at
+    `addresses` as authored — the same judgement :func:`log_resolved_audio`
+    renders after the fact, asked ahead of time so a multi-file pool can pick a
+    tune that will pass it.
+
+    Routed through the same renderers as the verdict rather than re-deriving
+    the match: a picker that disagreed with the line logged moments later would
+    be worse than no picker at all.
+
+    Note what each declaration buys. ``host_sid_chips`` describes the whole
+    machine, so a tune driving a chip at an address it doesn't list fails —
+    that is what skips 2SID tunes on a single-SID machine. ``host_sid_model``
+    alone judges the primary chip's model only: it names a chip without
+    claiming it is the only one, and inferring a chip *count* from it would
+    reject working tunes on a machine whose second chip we were simply never
+    told about.
+
+    ``None`` means "no opinion", and a caller must treat it as "don't filter":
+
+    * a link that reads the real SID state (U64) re-places chips per tune, so
+      there is no fixed hardware for a tune to fit or miss;
+    * ``host_sid_model = "unknown"`` with no ``host_sid_chips`` declares nothing
+      to judge against;
+    * an *assumed* model is the NTSC/PAL convention, and dropping tunes out of
+      someone's directory on the strength of a guess is not a trade worth
+      making — the verdict may warn on a guess, but selection won't act on one.
+    """
+    if getattr(api.profile, "supports_sid_config", False):
+        return None
+    if chips := tuple(getattr(api.profile, "host_sid_chips", ())):
+        return describe_declared_chips(chips, addresses, required_models).clean
+    host_model = getattr(api.profile, "host_sid_model", None)
+    if host_model is None or getattr(api.profile, "host_sid_model_assumed", False):
+        return None
+    if not addresses:
+        return None
+    required = required_models[0] if required_models else None
+    return describe_declared_audio(host_model, False, addresses[0], required).clean
+
+
 def _declared_host_verdict(
     api: C64Backend, addresses: Sequence[int], required_models: Sequence[str | None]
 ) -> ResolvedAudio | None:

@@ -455,6 +455,67 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
         self.assertNotIn("emusid", cm.records[-1].getMessage())
 
 
+class HostChipFitTest(unittest.TestCase):
+    """host_chip_fit — the same verdict the log renders, asked ahead of time so
+    a multi-file pool can pick a tune the machine's own chips can play."""
+
+    @staticmethod
+    def _api(*, chips=(), host_model=None, assumed=False, sid_config=False) -> FakeAPI:
+        from c64cast.hw.backend import HardwareProfile
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake TR",
+            family="fake",
+            supports_config=False,
+            supports_sid_config=sid_config,
+            host_sid_model=host_model,
+            host_sid_model_assumed=assumed,
+            host_sid_chips=chips,
+        )
+        return api
+
+    def test_declared_chips_accept_a_tune_they_cover(self):
+        api = self._api(chips=((0xD400, "6581"), (0xD420, "8580")))
+        self.assertIs(sr.host_chip_fit(api, (0xD400, 0xD420), ("6581", "8580")), True)
+
+    def test_declared_chips_reject_a_wrong_model(self):
+        api = self._api(chips=((0xD400, "6581"),))
+        self.assertIs(sr.host_chip_fit(api, (0xD400,), ("8580",)), False)
+
+    def test_declared_chips_reject_a_tune_driving_an_address_they_do_not_cover(self):
+        # The 2SID-on-a-single-SID-machine case: nothing answers $D420, so the
+        # second chip's part is simply not played.
+        api = self._api(chips=((0xD400, "6581"),))
+        self.assertIs(sr.host_chip_fit(api, (0xD400, 0xD420), ("6581", "6581")), False)
+
+    def test_host_sid_model_judges_the_primary_chip_only(self):
+        # It names a chip without claiming it is the only one, so a second
+        # chip we were never told about must not reject the tune.
+        api = self._api(host_model="6581")
+        self.assertIs(sr.host_chip_fit(api, (0xD400, 0xD420), ("6581", "6581")), True)
+        self.assertIs(sr.host_chip_fit(api, (0xD400,), ("8580",)), False)
+
+    def test_an_assumed_model_yields_no_opinion(self):
+        api = self._api(host_model="6581", assumed=True)
+        self.assertIsNone(sr.host_chip_fit(api, (0xD400,), ("8580",)))
+
+    def test_an_undeclared_machine_yields_no_opinion(self):
+        api = self._api()
+        self.assertIsNone(sr.host_chip_fit(api, (0xD400,), ("8580",)))
+
+    def test_a_link_that_reads_the_real_chips_yields_no_opinion(self):
+        # The U64 re-places chips per tune, so no tune is a poor fit.
+        api = self._api(chips=((0xD400, "6581"),), sid_config=True)
+        self.assertIsNone(sr.host_chip_fit(api, (0xD400,), ("8580",)))
+
+    def test_no_model_requirement_fits(self):
+        # sid_model = "off" drops model matching entirely; addressing still counts.
+        api = self._api(chips=((0xD400, "6581"),))
+        self.assertIs(sr.host_chip_fit(api, (0xD400,), ()), True)
+        self.assertIs(sr.host_chip_fit(api, (0xD400, 0xD420), ()), False)
+
+
 class DeclaredChipsThroughLogTest(unittest.TestCase):
     """log_resolved_audio on a link that can't read SID state, for a machine
     whose chips are declared per chip rather than by a single model."""
