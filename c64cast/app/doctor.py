@@ -1274,7 +1274,7 @@ def _probe_u64_services(
 
 def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """On a backend with no REU (e.g. TeensyROM), report that a config's
-    REU-staged opt-in is ignored. cli.build_stack coerces these off to the
+    REU-staged opt-in is ignored. session.build_stack coerces these off to the
     host-DMA paths, so this is informational, not a failure."""
     wants, reasons = hw_provision.wants_reu(cfg)
     if not wants or getattr(api, "profile", None) is None or api.profile.supports_reu:  # type: ignore[attr-defined]

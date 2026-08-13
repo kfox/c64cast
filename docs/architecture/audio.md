@@ -202,7 +202,7 @@ Default `true`, so the REU paths that hard-require it work without the manual F2
 
 *When it fires.* Only when the config **hard**-requires the REU: `[audio].use_reu_pump`, or an explicit `[video].use_reu_staged = true`. This is the same `hw_provision.wants_reu` condition the doctor's REU probe checks. The `"auto"` default is deliberately excluded, because it self-heals to the host-DMA double-buffer path, which is also tear-free.
 
-*What it does.* `cli.build_stack` calls `hw_provision.provision_reu(api, cfg)` after the probe and **before** `_resolve_reu_available`, so that probe sees the now-enabled REU. It enables `"RAM Expansion Unit"` and grows `"REU Size"` to `16 MB` via `api.put_config_item` (`PUT /v1/configs/<cat>/<item>?value=…`, verified live and no-reboot in the firmware's `effectuate_settings`). 16 MB covers every c64cast REU offset — the audio ring near 1 MB, the video staging region near 14 MB — and is both the maximum and FPGA-backed, so it costs nothing.
+*What it does.* `session.build_stack` calls `hw_provision.provision_reu(api, cfg)` after the probe and **before** `_resolve_reu_available`, so that probe sees the now-enabled REU. It enables `"RAM Expansion Unit"` and grows `"REU Size"` to `16 MB` via `api.put_config_item` (`PUT /v1/configs/<cat>/<item>?value=…`, verified live and no-reboot in the firmware's `effectuate_settings`). 16 MB covers every c64cast REU offset — the audio ring near 1 MB, the video staging region near 14 MB — and is both the maximum and FPGA-backed, so it costs nothing.
 
 *Restoring.* The change is live and **volatile**, never saved to flash, so it reverts on the next power-cycle even if teardown's restore is missed. `teardown_stack` calls `hw_provision.restore_reu` while the REST session is still open to put the originals back; those originals ride on `SystemStack.reu_restore`, which survives SIGHUP and control-plane reloads since they reuse the same `api`.
 
@@ -454,7 +454,7 @@ When `"auto"` goes looking and finds no calibration on a **live** run (`be` is a
 
 Three code paths, deliberately non-overlapping:
 
-* `cli.build_stack` threads the already-probed `api` through, so **playback** resolution is precise.
+* `session.build_stack` threads the already-probed `api` through, so **playback** resolution is precise.
 * `doctor._probe_dac_calibration_status` — wired into `_probe_connectivity`, category `connectivity`, subject `"{name} (DAC calibration)"` — is equally precise for a live run.
 * `doctor._validate_dac_curve_cfg` (category `audio`, always runs) only flags an unknown name or a `digi_boost` conflict. These are genuinely offline, hardware-identity-independent checks.
 
@@ -653,7 +653,7 @@ Since `VideoScene` dedups, re-pushing only on a genuinely new source frame, the 
 
 Because the ring lives in REU SDRAM, `wants_sampler` also pulls the REU into `wants_reu`, so `provision_reu` enables the REU at 16 MB for a sampler run. A useful side effect: that makes `"auto"` video resolve to the tear-free REU bank-swap path. The sampler installs no `$0314` IRQ, so REU-staged video and the sampler coexist with no IRQ contention.
 
-`hw_provision.sampler_is_available(api)` — map enabled and a channel audible — feeds `cli._resolve_sampler_available`, and `_probe_sampler_status` reports the state in `--doctor`.
+`hw_provision.sampler_is_available(api)` — map enabled and a channel audible — feeds `session._resolve_sampler_available`, and `_probe_sampler_status` reports the state in `--doctor`.
 
 ## `dsp.py` — host-side audio DSP for the 4-bit DAC path
 

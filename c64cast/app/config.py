@@ -2934,7 +2934,7 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
     the launch/pad keys and applying the remaining scene-spec fields — the same
     field set (and `_apply_section` path) a declared ``[[scenes]]`` block uses,
     so a clip inherits every scene knob for free. Called by the launch engine's
-    build factory (see cli.build_stack / performance.PerformanceSession).
+    build factory (see session.build_stack / performance.PerformanceSession).
 
     `loop` and `duration_s` interact: a looping non-video clip is forced to
     ``duration_s = 0`` (run forever) so it holds until another clip fires; the
