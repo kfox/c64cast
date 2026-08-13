@@ -12,6 +12,7 @@ from __future__ import annotations
 import threading
 import unittest
 import warnings
+from typing import Any
 from unittest.mock import MagicMock
 
 try:
@@ -115,6 +116,68 @@ class BuildAppConstructionTest(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             build_app(playlists={}, config_loaders={}, interstitial_factories={})
         self.assertIn("at least one playlist", str(cm.exception))
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
+class RegistryTest(unittest.TestCase):
+    """`build_app_for_registry` reads its playlists through providers called
+    per request, so one app can serve a host that starts and stops sessions
+    under it. No session ⇒ 503 on every data/action route, and the *same*
+    responses as `build_app` once one is running."""
+
+    def _client(self, registry: dict) -> Any:
+        from c64cast.control.control_plane import build_app_for_registry
+
+        app = build_app_for_registry(
+            lambda: registry,
+            lambda: {n: (lambda p=p: p.scenes) for n, p in registry.items()},
+            lambda: {n: (lambda: lambda nm: None) for n in registry},
+        )
+        return TestClient(app)
+
+    def test_every_route_is_503_while_idle(self):
+        client = self._client({})
+        for method, path in (
+            ("get", "/status"),
+            ("get", "/scenes"),
+            ("post", "/pause"),
+            ("post", "/resume"),
+            ("post", "/skip"),
+            ("post", "/reload"),
+        ):
+            with self.subTest(path=path):
+                r = getattr(client, method)(path)
+                self.assertEqual(r.status_code, 503)
+                self.assertIn("no session", r.json()["detail"])
+
+    def test_a_session_appearing_is_picked_up_without_a_rebuild(self):
+        registry: dict = {}
+        client = self._client(registry)
+        self.assertEqual(client.get("/status").status_code, 503)
+        registry["system"] = _fake_playlist("system")
+        r = client.get("/status")
+        self.assertEqual(r.status_code, 200)
+        # Same unwrapped single-system shape build_app hands back.
+        self.assertEqual(r.json()["current_scene"], "system-scene-0")
+
+    def test_a_session_going_away_returns_to_503(self):
+        registry = {"system": _fake_playlist("system")}
+        client = self._client(registry)
+        self.assertEqual(client.post("/pause").status_code, 200)
+        registry.clear()
+        self.assertEqual(client.post("/pause").status_code, 503)
+
+    def test_a_new_generation_replaces_the_old_playlists(self):
+        # A restarted session swaps in fresh Playlists under the same names;
+        # a route holding the old map would act on a torn-down generation.
+        first = _fake_playlist("system")
+        registry = {"system": first}
+        client = self._client(registry)
+        second = _fake_playlist("system")
+        registry["system"] = second
+        client.post("/skip")
+        self.assertTrue(second.skip_event.is_set())
+        self.assertFalse(first.skip_event.is_set())
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")

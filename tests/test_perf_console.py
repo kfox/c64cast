@@ -97,7 +97,7 @@ class _FakePlaylist:
 
 def _bridge(**kw: Any) -> tuple[PerfBridge, _FakePlaylist]:
     pl = _FakePlaylist(**kw)
-    return PerfBridge([("c64cast", pl)]), pl
+    return PerfBridge(lambda: [("c64cast", pl)]), pl
 
 
 class PerfBridgeTest(unittest.TestCase):
@@ -245,10 +245,39 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertEqual(armed["beats_remaining"], 0.0)
 
     def test_multi_system_flag(self):
-        bridge = PerfBridge([("a", _FakePlaylist()), ("b", _FakePlaylist())])
+        bridge = PerfBridge(lambda: [("a", _FakePlaylist()), ("b", _FakePlaylist())])
         st = bridge.state()
         self.assertTrue(st["multi"])
         self.assertEqual([s["name"] for s in st["systems"]], ["a", "b"])
+
+
+class PerfBridgeRegistryTest(unittest.TestCase):
+    """The bridge reads its systems through a provider, so a host can start and
+    stop sessions under a console that stays connected."""
+
+    def test_systems_are_re_read_per_call(self):
+        systems: list[tuple[str, Any]] = []
+        bridge = PerfBridge(lambda: systems)
+        self.assertEqual(bridge.state()["systems"], [])
+        systems.append(("late", _FakePlaylist(scene_name="after")))
+        st = bridge.state()
+        self.assertEqual(st["systems"][0]["current_scene"], "after")
+
+    def test_commands_with_no_session_are_refused_not_raised(self):
+        bridge = PerfBridge(lambda: [])
+        # Every write reports "not addressed" rather than IndexErroring on an
+        # empty ensemble — an idle console still has live buttons.
+        self.assertFalse(bridge.launch(None, 1))
+        self.assertFalse(bridge.tap(None))
+        self.assertFalse(bridge.fx_bypass(None, 0, False))
+        self.assertFalse(bridge.fx_param(None, 0, "decay", 0.5))
+        self.assertFalse(bridge.look(None, 1, save=True))
+        self.assertFalse(bridge.apply({"action": "tap"}))
+
+    def test_state_with_no_session_is_empty_not_an_error(self):
+        st = PerfBridge(lambda: []).state()
+        self.assertFalse(st["multi"])
+        self.assertEqual(st["systems"], [])
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")
@@ -307,6 +336,37 @@ class PerfEndpointsTest(unittest.TestCase):
             msg = ws.receive_json()
             self.assertIn("systems", msg)
             self.assertEqual(msg["systems"][0]["name"], "c64cast")
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")
+class PerfIdleTest(unittest.TestCase):
+    """The console outlives the session: with nothing running it stays
+    loadable and reports an empty ensemble, where the control-plane data
+    routes answer 503."""
+
+    def _client(self) -> Any:
+        from c64cast.control.control_plane import build_app_for_registry
+
+        app = build_app_for_registry(dict, dict, dict)
+        return TestClient(app)
+
+    def test_page_still_served(self):
+        r = self._client().get("/perf")
+        self.assertEqual(r.status_code, 200)
+
+    def test_state_is_empty_not_503(self):
+        r = self._client().get("/perf/state")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["systems"], [])
+
+    def test_command_reports_not_ok(self):
+        r = self._client().post("/perf/command", json={"action": "tap"})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["ok"])
+
+    def test_ws_pushes_the_empty_state(self):
+        with self._client().websocket_connect("/perf/ws") as ws:
+            self.assertEqual(ws.receive_json()["systems"], [])
 
 
 if __name__ == "__main__":

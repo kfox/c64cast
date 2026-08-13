@@ -38,7 +38,7 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from c64cast.app.playlist import Playlist
@@ -172,33 +172,42 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
 class PerfBridge:
     """Read/write bridge between the web console and the per-system playlists.
 
-    Holds the ensemble as an ordered ``[(name, Playlist)]`` list (one system for
-    a single-system run). Reads build the console state snapshot; writes go
-    through the same performance engine the MIDI surface uses (clip launch →
-    ``pl.performance.enqueue``, tap → ``pl.tempo.tap``, fx → a GIL-atomic layer
-    write). Every method is cheap in-memory work — no DMA, no lock needed beyond
-    the engine's own queues."""
+    Takes a **provider** of the ensemble as an ordered ``[(name, Playlist)]``
+    list (one system for a single-system run), called per read and per command:
+    the console's server can outlive the session it drives (a host that starts
+    and stops shows), so the set of systems is a moving target and an empty one
+    just means nothing is running. Reads build the console state snapshot;
+    writes go through the same performance engine the MIDI surface uses (clip
+    launch → ``pl.performance.enqueue``, tap → ``pl.tempo.tap``, fx → a
+    GIL-atomic layer write). Every method is cheap in-memory work — no DMA, no
+    lock needed beyond the engine's own queues.
 
-    def __init__(self, systems: list[tuple[str, Playlist]]) -> None:
-        if not systems:
-            raise ValueError("PerfBridge needs at least one system")
+    An idle console gets an empty ``systems`` list rather than the ``503`` the
+    control-plane routes answer with: the page is the gig-day fallback surface
+    and has to stay loadable and self-explanatory between shows."""
+
+    def __init__(self, systems: Callable[[], list[tuple[str, Playlist]]]) -> None:
         self._systems = systems
-        self._by_name = dict(systems)
 
     # -- reads ---------------------------------------------------------------
 
     def state(self) -> dict[str, Any]:
+        systems = self._systems()
         return {
-            "multi": len(self._systems) > 1,
-            "systems": [_system_state(name, pl) for name, pl in self._systems],
+            "multi": len(systems) > 1,
+            "systems": [_system_state(name, pl) for name, pl in systems],
         }
 
     def _resolve(self, system: str | None) -> Playlist | None:
         """The target playlist for a command: the named system, or the first
-        system when unnamed (the single-system common case)."""
+        system when unnamed (the single-system common case). ``None`` when the
+        name is unknown — or when no session is running at all."""
+        systems = self._systems()
+        if not systems:
+            return None
         if system is None:
-            return self._systems[0][1]
-        return self._by_name.get(system)
+            return systems[0][1]
+        return dict(systems).get(system)
 
     # -- writes --------------------------------------------------------------
 
@@ -412,13 +421,26 @@ function apply(s) {
     const t = sys.tempo;
     clock = {bpm: t.bpm, phase: t.beat_phase, running: t.running,
              bpb: t.beats_per_bar, at: performance.now()};
+  } else {
+    clock.running = false;   // stop the pulse rather than free-run a dead grid
   }
   render();
 }
 
 function render() {
   const sys = curSys();
-  if (!sys) return;
+  if (!sys) {
+    // No session (a host between shows). Clear the grids: leaving the last
+    // show's pads up invites a tap that goes nowhere.
+    ['tabs', 'clips', 'fx', 'looks'].forEach((id) => {
+      document.getElementById(id).innerHTML = '';
+    });
+    document.getElementById('run').className = 'chip';
+    document.getElementById('run').textContent = 'idle';
+    document.getElementById('scene').textContent = 'No session running.';
+    document.getElementById('countin').textContent = '';
+    return;
+  }
   // Tabs (only when more than one system).
   const tabs = document.getElementById('tabs');
   if (state.multi) {

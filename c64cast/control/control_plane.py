@@ -16,6 +16,11 @@ multiple systems apply to every system. The convention reads as
 Lives behind the `control` optional dep group (fastapi + uvicorn). The
 server runs in a background thread so it doesn't block any render loop;
 each system's Playlist + per-system reload closures are the shared state.
+
+`build_app_for_registry` reads that state through providers called per
+request, so one app can outlive the session it acts on (a host that starts
+and stops shows under a server that keeps listening); `build_app` is the
+one-shot CLI's fixed-map form of it.
 """
 
 from __future__ import annotations
@@ -33,6 +38,15 @@ log = logging.getLogger(__name__)
 
 SceneFactory = Callable[[], list[Scene]]
 InterstitialFactory = Callable[[], Callable[[str], Scene]]
+
+# Providers, not maps: the app outlives any one session. A long-lived host
+# (`--serve`) starts and stops sessions under a server that keeps running, so
+# the playlists a request acts on are whatever the *current* session owns —
+# and there may be none. build_app's fixed-map form is these three closed over
+# constants.
+PlaylistRegistry = Callable[[], Mapping[str, Playlist]]
+LoaderRegistry = Callable[[], Mapping[str, SceneFactory]]
+InterstitialRegistry = Callable[[], Mapping[str, InterstitialFactory]]
 
 
 class ControlServer:
@@ -103,13 +117,17 @@ def _scenes_for(pl: Playlist) -> dict[str, Any]:
     }
 
 
-def build_app(
-    playlists: Mapping[str, Playlist],
-    config_loaders: Mapping[str, SceneFactory],
-    interstitial_factories: Mapping[str, InterstitialFactory],
+def build_app_for_registry(
+    playlists: PlaylistRegistry,
+    config_loaders: LoaderRegistry,
+    interstitial_factories: InterstitialRegistry,
 ):
-    """Build the FastAPI app. Split from start_control_server so tests can
-    drive it with a TestClient without binding a real socket."""
+    """Build the FastAPI app over registry providers, consulted per request.
+
+    An empty playlist registry means no session is running: every route
+    answers `503` rather than the app being torn down and rebuilt around each
+    session, which would drop the listening socket (and every connected
+    console) on each show change."""
     try:
         from fastapi import FastAPI, HTTPException, Query
     except ImportError as e:
@@ -117,19 +135,22 @@ def build_app(
             "control plane requires fastapi: uv tool install --force 'c64cast[all]'"
         ) from e
 
-    if not playlists:
-        raise ValueError("control plane needs at least one playlist")
-
-    names = list(playlists.keys())
-
-    def _resolve(system: str | None) -> list[str]:
+    def _resolve(system: str | None) -> tuple[Mapping[str, Playlist], list[str]]:
         """Map the optional `?system=` query param to one or more system
         names. None / "all" → every system; a known name → just that one;
-        unknown → 404 listing the valid names."""
+        unknown → 404 listing the valid names; no session at all → 503.
+
+        Returns the registry snapshot alongside the names: a handler that
+        called the provider a second time could pause one generation's
+        playlists and report another's."""
+        current = playlists()
+        if not current:
+            raise HTTPException(503, "no session running")
+        names = list(current.keys())
         if system is None or system == "all":
-            return names
-        if system in playlists:
-            return [system]
+            return current, names
+        if system in current:
+            return current, [system]
         raise HTTPException(404, f"unknown system {system!r}; known: {names}")
 
     app = FastAPI(title="c64cast", version="0.1.0")
@@ -140,37 +161,37 @@ def build_app(
 
     @app.get("/status")
     def status(system: str | None = Query(default=None)):
-        targets = _resolve(system)
+        current, targets = _resolve(system)
         if system is not None and system != "all":
-            return _status_for(playlists[targets[0]])
+            return _status_for(current[targets[0]])
         if len(targets) == 1 and system is None:
-            return _status_for(playlists[targets[0]])
-        return {"systems": {n: _status_for(playlists[n]) for n in targets}}
+            return _status_for(current[targets[0]])
+        return {"systems": {n: _status_for(current[n]) for n in targets}}
 
     @app.get("/scenes")
     def scenes(system: str | None = Query(default=None)):
-        targets = _resolve(system)
+        current, targets = _resolve(system)
         if system is not None and system != "all":
-            return _scenes_for(playlists[targets[0]])
+            return _scenes_for(current[targets[0]])
         if len(targets) == 1 and system is None:
-            return _scenes_for(playlists[targets[0]])
-        return {"systems": {n: _scenes_for(playlists[n]) for n in targets}}
+            return _scenes_for(current[targets[0]])
+        return {"systems": {n: _scenes_for(current[n]) for n in targets}}
 
     @app.post("/pause")
     def pause(system: str | None = Query(default=None)):
-        targets = _resolve(system)
+        current, targets = _resolve(system)
         for n in targets:
-            playlists[n].pause_event.set()
+            current[n].pause_event.set()
         return {"ok": True, "paused": targets}
 
     @app.post("/resume")
     def resume(system: str | None = Query(default=None)):
-        targets = _resolve(system)
+        current, targets = _resolve(system)
         resumed: list[str] = []
         skipped: list[str] = []
         for n in targets:
-            if playlists[n].pause_event.is_set():
-                playlists[n].resume_event.set()
+            if current[n].pause_event.is_set():
+                current[n].resume_event.set()
                 resumed.append(n)
             else:
                 skipped.append(n)
@@ -181,32 +202,34 @@ def build_app(
 
     @app.post("/skip")
     def skip(system: str | None = Query(default=None)):
-        targets = _resolve(system)
+        current, targets = _resolve(system)
         for n in targets:
             # skip_event matches the CTRL-key path so the run loop applies
             # it at a clean frame boundary, not racing process_frame.
-            playlists[n].skip_event.set()
+            current[n].skip_event.set()
         return {"ok": True, "skipped": targets}
 
     @app.post("/reload")
     def reload(system: str | None = Query(default=None)):
-        targets = _resolve(system)
+        current, targets = _resolve(system)
+        loaders = config_loaders()
+        factories = interstitial_factories()
         reloaded: dict[str, int] = {}
         errors: dict[str, str] = {}
         for n in targets:
             # A system without a path-on-disk (e.g. defaults-only single-
             # system mode) has no reload loader. Surface that as a per-
             # system error rather than KeyErroring out.
-            if n not in config_loaders:
+            if n not in loaders:
                 errors[n] = "no config file to reload from"
                 continue
             try:
-                new_scenes = config_loaders[n]()
-                new_factory = interstitial_factories[n]()
+                new_scenes = loaders[n]()
+                new_factory = factories[n]()
             except Exception as e:
                 errors[n] = str(e)
                 continue
-            playlists[n].request_reload(new_scenes, new_factory)
+            current[n].request_reload(new_scenes, new_factory)
             reloaded[n] = len(new_scenes)
         if errors and not reloaded:
             # Every requested reload failed — surface as a server error
@@ -222,9 +245,25 @@ def build_app(
     # `from __future__ import annotations`) so the WebSocket param injects.
     from .perf_console import PerfBridge, register_perf_routes
 
-    register_perf_routes(app, PerfBridge(list(playlists.items())))
+    register_perf_routes(app, PerfBridge(lambda: list(playlists().items())))
 
     return app
+
+
+def build_app(
+    playlists: Mapping[str, Playlist],
+    config_loaders: Mapping[str, SceneFactory],
+    interstitial_factories: Mapping[str, InterstitialFactory],
+):
+    """Build the FastAPI app around one session's fixed maps — the one-shot
+    CLI's shape, where the app and the session live and die together. Split
+    from start_control_server so tests can drive it with a TestClient without
+    binding a real socket."""
+    if not playlists:
+        raise ValueError("control plane needs at least one playlist")
+    return build_app_for_registry(
+        lambda: playlists, lambda: config_loaders, lambda: interstitial_factories
+    )
 
 
 def start_control_server(
