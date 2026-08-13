@@ -12,6 +12,14 @@ SocketDMA path would push.
     scripts/diags/video_render_probe.py path.mp4 --mode mhires --palette percell
     scripts/diags/video_render_probe.py path.mp4 --max-frames 600   # sample head
     scripts/diags/video_render_probe.py path.mp4 --csv out/churn.csv # per-frame dump
+    scripts/diags/video_render_probe.py path.mp4 --threads 1        # board benchmark
+
+It also times the *host* side of each frame — decode and the CPU render path —
+against the modelled link cost, which makes it the portable benchmark for
+deciding whether a candidate machine can drive c64cast. Whichever of the two is
+larger is what bounds the frame rate; on every link measured so far it is the
+link, and the host has headroom to spare. Pin `--threads 1` to compare two
+machines by single-core speed rather than by core count.
 
 Two flash mechanisms it surfaces (both produce a brief whole-screen change on
 real HW because $D021 lands in one tiny DMA write while the 8 KB bitmap is
@@ -33,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 import _diaglib as d  # noqa: F401 — inserts repo root on sys.path
 import numpy as np
@@ -111,9 +120,20 @@ def main() -> int:
     )
     ap.add_argument("--top", type=int, default=50, help="how many flip/full-upload events to print")
     ap.add_argument("--csv", default=None, help="write per-frame churn to this path")
+    ap.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="pin decode + OpenCV to N threads (0 = auto). Use 1 to compare "
+        "machines by single-core speed instead of by core count",
+    )
     args = ap.parse_args()
 
     import av
+    import cv2
+
+    if args.threads:
+        cv2.setNumThreads(args.threads)
 
     mode = _build_display_mode(args.mode, palette_mode=args.palette)
     api = RecordingBackend()
@@ -125,7 +145,11 @@ def main() -> int:
 
     container = av.open(args.video)
     v = container.streams.video[0]
-    v.thread_type = "AUTO"
+    if args.threads:
+        v.thread_type = "NONE"
+        v.thread_count = args.threads
+    else:
+        v.thread_type = "AUTO"
     fps = float(v.average_rate) if v.average_rate else 30.0
 
     bg: list[int | None] = []
@@ -133,12 +157,28 @@ def main() -> int:
     writes: list[int] = []
     costs: list[float] = []
     region_rows: list[dict[str, int]] = []
-    rows: list[tuple[int, int, int, int, int, int, float]] = []
-    for n, frame in enumerate(container.decode(v)):
-        if args.max_frames and n >= args.max_frames:
+    rows: list[tuple[int, int, int, int, int, int, float, float, float]] = []
+    decode_s: list[float] = []
+    render_s: list[float] = []
+    # Stepped by hand rather than with `for ... in container.decode(v)` so the
+    # generator advance — where the decoder actually runs — can be timed apart
+    # from the render path it feeds.
+    frames = container.decode(v)
+    n = 0
+    while not (args.max_frames and n >= args.max_frames):
+        t0 = time.perf_counter()
+        try:
+            frame = next(frames)
+        except StopIteration:
             break
+        img = frame.to_ndarray(format="bgr24")
+        t1 = time.perf_counter()
         api.reset_frame()
-        mode.render(api, frame.to_ndarray(format="bgr24"))
+        mode.render(api, img)
+        t2 = time.perf_counter()
+        n += 1
+        decode_s.append(t1 - t0)
+        render_s.append(t2 - t1)
         rb = api.region_bytes
         rw = api.region_writes
         bg.append(api.d021)
@@ -156,6 +196,8 @@ def main() -> int:
                 api.d021 if api.d021 is not None else -1,
                 nw,
                 api.frame_cost_s * 1000.0,
+                (t1 - t0) * 1000.0,
+                (t2 - t1) * 1000.0,
             )
         )
     container.close()
@@ -215,6 +257,42 @@ def main() -> int:
         f"not payload — the part extra writes multiply"
     )
 
+    d_arr = np.array(decode_s)
+    r_arr = np.array(render_s)
+    h_arr = d_arr + r_arr
+    threads = f"{args.threads} thread(s)" if args.threads else "auto threads"
+    print(f"\nhost CPU per frame ({threads}):")
+    for label, series in (("decode", d_arr), ("render", r_arr), ("total", h_arr)):
+        print(
+            f"  {label:>6}: mean {series.mean() * 1000:6.2f} ms  "
+            f"median {np.median(series) * 1000:6.2f} ms  "
+            f"p95 {np.percentile(series, 95) * 1000:6.2f} ms  "
+            f"max {series.max() * 1000:6.2f} ms"
+        )
+    host_fps_cap = 1.0 / h_arr.mean() if h_arr.mean() > 0 else float("inf")
+    print(f"  → host ceiling at the mean frame: {host_fps_cap:.1f} fps")
+    # Both ceilings are only meaningful against the source rate — a clip whose
+    # host and link ceilings both sit well above it is bound by neither, and
+    # calling the nearer one "the bottleneck" would misread comfortable headroom
+    # as a constraint.
+    binding, cap = min((("link", mean_fps_cap), ("host", host_fps_cap)), key=lambda p: p[1])
+    if cap >= fps:
+        print(
+            f"  → neither side binds a {fps:.1f} fps source "
+            f"(link {mean_fps_cap:.1f} / host {host_fps_cap:.1f} fps)"
+        )
+    elif binding == "host":
+        # Every mode resizes the source down to its own small target, so compose
+        # cost tracks the SOURCE resolution rather than the mode — ~30 ms/frame
+        # from 4K in any mode, ~5 ms from 720p. Naming the fix beats naming the
+        # ratio, because the fix is nearly always the media and not the board.
+        print(
+            f"  → HOST-bound: {cap:.1f} fps against a {fps:.1f} fps source. "
+            f"Compose cost tracks source resolution — pre-scale the media."
+        )
+    else:
+        print(f"  → LINK-bound: {cap:.1f} fps against a {fps:.1f} fps source.")
+
     # A region split across several writes is write_region's chunked branch
     # firing. Priced against pushing that region whole, which is the only
     # comparison that says whether the split paid for itself.
@@ -262,6 +340,8 @@ def main() -> int:
                     "bg0",
                     "writes",
                     "cost_ms",
+                    "decode_ms",
+                    "render_ms",
                 ]
             )
             for i, r in enumerate(rows):
