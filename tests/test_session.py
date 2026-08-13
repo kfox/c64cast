@@ -25,7 +25,12 @@ from c64cast.app import session
 
 
 def _loaded(names: list[str], *, is_ensemble: bool = False) -> cfgmod.LoadResult:
+    # Audio off by default: validate_configs rejects an audio-enabled config
+    # outright when sounddevice is missing, which would otherwise make every
+    # assertion below depend on whether the 'mic' extra is installed.
     cfgs = [cfgmod.Config() for _ in names]
+    for cfg in cfgs:
+        cfg.audio.enabled = False
     return cfgmod.LoadResult(
         cfgs=cfgs,
         names=list(names),
@@ -107,8 +112,6 @@ class ValidateConfigsTest(unittest.TestCase):
 
     def test_clean_configs_pass(self):
         loaded = _loaded(["a", "b"])
-        for cfg in loaded.cfgs:
-            cfg.audio.enabled = False
         session.validate_configs(loaded, loaded.cfgs)  # no raise
 
     def test_transport_coercion_runs_before_any_stack_is_built(self):
@@ -116,7 +119,6 @@ class ValidateConfigsTest(unittest.TestCase):
         # MIDI mapping must force it off — and it has to happen here, because
         # build_stack bakes the flag into the AudioStreamer constructor.
         loaded = _loaded(["a"])
-        loaded.cfgs[0].audio.enabled = False
         loaded.cfgs[0].audio.use_reu_pump = True
         loaded.master_midi_control.enabled = True
         loaded.master_midi_control.cc_map = [{"cc": 1, "action": "transport.seek"}]
