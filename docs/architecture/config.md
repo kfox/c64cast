@@ -196,6 +196,8 @@ The module exists because a session's lifecycle has to be callable independently
 
 Playlist threads are `daemon=False` — a daemon thread is killed at interpreter exit, which can cut an in-flight DMA and wedge the machine into needing a power cycle. `join_playlists` would rather give each thread 5s and log a stuck one.
 
+The caller that starts and stops sessions *over time* — rather than once, like the CLI — is [`serve.py`'s `SessionManager`](control.md#appservepy--the-session-supervisor).
+
 ## `connect.py` — scheme-aware connection targets
 
 `parse_connection_uri` decomposes the one `-u/--url` target string (or `$C64CAST_URL`) into the existing config fields — `[hardware].backend` plus the `[ultimate64]`/`[teensyrom]` connection fields — which remain the canonical store a TOML sets directly; `hw.backend.make_backend` reads them unchanged, so this module is purely the CLI/env front end. The single string replaced five flags (`--backend`, `--tr-transport`, `--tr-serial-port`, `--tr-host`, `--dma-port`) in the same change that folded the standalone `cast` entry point into `c64cast`: one scheme-aware target points the CLI at any supported device, because the scheme selects the backend *and* its transport/endpoint together. Rare per-link knobs (`dma_port`, `tcp_port`, `baud`, `storage`) ride as `?query` params so they never become flags.

@@ -47,6 +47,22 @@ the version and stamps it with the date.
   reach it. Being a shared secret over plain HTTP, the token is a lock on the
   door and not a reason to expose the port; `SECURITY.md` says where it stops.
 
+- **A session supervisor (`c64cast/app/serve.py`), groundwork for the web
+  console.** `SessionManager` owns one session at a time and moves it through
+  `idle → starting → running → stopping → idle`, so a single process can start,
+  stop and switch shows instead of ending when its show does. It carries the
+  parts that only matter once a session outlives the command that started it:
+  a settle window between teardown and the next start (the U64's DMA service
+  refuses new connections for a few seconds after one closes, and a camera
+  refuses to reopen straight after release), a poller that notices when a
+  non-looping show ends by itself, a bounded log tail so a failure to start can
+  be read somewhere other than the terminal, and a run marker that resets the
+  machine on the next start if the previous run died mid-show.
+
+  Nothing runs it yet — there is no new flag, config key or endpoint in this
+  release, and running c64cast is unchanged. The daemon that drives it comes
+  next.
+
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
   link.** It reported the modelled cost of getting a frame *onto the wire* but
   nothing about the cost of producing one, so it could not answer whether a

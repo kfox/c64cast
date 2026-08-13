@@ -144,6 +144,16 @@ def controllers_dir() -> Path:
     return data_root() / "controllers"
 
 
+def run_marker_path() -> Path:
+    """The long-lived host's run marker (``<data root>/run.json``).
+
+    Written when a session reaches ``running`` and removed when it comes down
+    cleanly, so a marker found at the next start means the previous run died
+    with the machine still mid-show — see
+    :class:`c64cast.app.serve.SessionManager`."""
+    return data_root() / "run.json"
+
+
 # ---------------------------------------------------------------------------
 # Packaged (read-only) resources
 # ---------------------------------------------------------------------------
