@@ -388,7 +388,9 @@ class BackendTest(unittest.TestCase):
         # of $4000 (~61 Hz PLAY) -> divider 2, patched at the player MC.
         b, t = self._backend(read=True)
         b._sid_player_layout = _DEFAULT_PLAYER_LAYOUT
-        for _ in range(8):  # 8 latch samples: ack + 2 data bytes each
+        # One ack + 2 data bytes per latch sample; count from the constant so
+        # a change to the sample burst doesn't silently starve this fake.
+        for _ in range(b._DIVIDER_LATCH_SAMPLES):
             t.queue_token(TOK_ACK)
             t.queue_raw(b"\x00\x40")  # $4000 little-endian on the wire
         t.queue_token(TOK_ACK)  # divider write

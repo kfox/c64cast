@@ -63,6 +63,28 @@ ROM line. If it says *not installed*, connect the Commodore and run
 `c64cast --dump-char-rom`, or hand it a copy with
 `c64cast --install-char-rom PATH`.
 
+**I turned on `sid_video_mode` and now the capture is torn, rolling, or
+black.** Retiming the machine to PAL changes what goes out the HDMI socket,
+and some capture devices cannot lock to it. Raise the Ultimate's HDMI scan
+resolution — `[ultimate64] hdmi_scan_resolution` defaults to `"auto"`, which
+does this for you, but you can pin it to `"HD (720p)"` or `"FullHD (1080p)"`.
+The capture device sees the Ultimate's upscaler, not the C64's own timing, and
+720p is friendlier than 576p50.
+
+**I use the composite output and retiming made it worse.** Over HDMI the
+Ultimate's scaler hides the difference; over composite it does not. c64cast
+keeps your colour encoding, but the field rate changes with the timing, and a
+television built for one standard may not lock to the other's rate. A PAL
+machine retimed to NTSC sends PAL colour at 60 Hz, which most modern sets cope
+with; an NTSC machine retimed to PAL sends NTSC colour at 50 Hz, which is
+fussier and often comes out in black and white. The sound is unaffected, other
+than the pitch change you were after.
+
+If you have no picture at all, hold **C=** and **P** (for PAL) or **C=** and
+**N** (for NTSC) while the Ultimate boots. That forces the video mode back to
+something you can see. Nothing c64cast changes here is written to the
+Ultimate's flash, so switching it off and on again also clears it.
+
 ## The Sound Is Wrong
 
 **It sounds rough, quantized, metallic.** If you are on the `$D418` DAC,
@@ -81,6 +103,25 @@ defaults to **Quiet**. Set it to **Writes**; Chapter 1 has the steps.
 **No audio at all.** Check that `[audio] enabled` is true and that you did
 not pass `--no-audio`. For microphone input, check that the `mic` feature is
 installed and that `-D` names the right device.
+
+**SID tunes play too fast.** Most tunes were written for PAL machines, which
+run at about 50 frames a second, but the interrupt the player uses ticks at 60
+on either standard — so a PAL tune used to come out nearly twenty percent
+quick. `[ultimate64] sid_play_rate` now defaults to `"auto"`, which plays each
+tune at its own speed. If you grew up hearing these tunes fast and prefer them
+that way, set it to `"off"`.
+
+**SID tunes sound slightly sharp.** That is the processor clock rather than
+the tempo — an NTSC machine runs 3.8% faster than a PAL one, which is about
+two thirds of a semitone. Fixing it means retiming the machine itself: set
+`[ultimate64] sid_video_mode = "auto"` on a C64U or Ultimate 64. Read the note
+about capture devices under "The Picture Is Wrong" first, because the HDMI
+output mode changes with it.
+
+**Everything looks slightly wrong at once — speed, pitch, frame rate.** That
+is `[ultimate64] system` disagreeing with the machine. One setting feeds all of
+those, so a wrong value moves them together. Leave it at `"auto"` and c64cast
+asks the machine what it is.
 
 ## The Playlist Misbehaves
 

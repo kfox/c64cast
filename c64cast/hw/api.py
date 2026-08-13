@@ -47,12 +47,24 @@ import requests
 from .backend import (
     EMUSID_MIXER_CATEGORY,
     SID_CONFIG_CATEGORIES,
+    SYSTEM_MODE_CATEGORY,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
     BufferedWriteBackend,
     HardwareProfile,
 )
-from .c64 import CIA1, CPU, KERNAL, ROM, U64_API, VECTORS
+from .c64 import (
+    CIA1,
+    CPU,
+    KERNAL,
+    ROM,
+    U64_API,
+    VECTORS,
+    actual_rate_for_latch,
+    cia1_latch_for_rate,
+    frame_rate,
+    kernal_cia1_latch,
+)
 from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError
 
 __all__ = ["Ultimate64API", "SocketDMAError", "ParsedPsid", "parse_psid_for_player"]
@@ -697,6 +709,12 @@ def _build_basic_sys_stub(sys_addr: int) -> bytes:
     )  # end of program
 
 
+# PSID v2+ flags ($76-$77, big-endian): clock is bits 2-3 of the LOW byte.
+# Same table as sid_host_emu._CLOCK_TABLE, duplicated because hw must not
+# import sid; tests/test_api.py asserts they agree.
+_PSID_CLOCK_TABLE = {0: "?", 1: "PAL", 2: "NTSC", 3: "PAL+NTSC"}
+
+
 class ParsedPsid(NamedTuple):
     """A PSID file post-validation, ready to drive both the C64-side player
     and the host-side py65 emulator. `payload` has any inline load-address
@@ -711,6 +729,20 @@ class ParsedPsid(NamedTuple):
     start_song: int
     song_to_play: int
     payload: bytes
+    # PSID v2+ clock flag: "PAL", "NTSC", "PAL+NTSC", "?" or None (v1 header).
+    # Decoded here as well as in sid_host_emu.parse_sid_header because `hw`
+    # must not import `sid`; tests/test_api.py pins the two against each other.
+    clock: str | None = None
+    # PSID `speed` word ($12-$15, big-endian): one bit per subtune, 0 = the
+    # tune expects PLAY once per video frame ("vsync"), 1 = its INIT programs
+    # CIA #1 Timer A and self-times. Songs past 32 reuse bit 31.
+    speed: int = 0
+
+    def song_is_vsync(self, song: int | None = None) -> bool:
+        """True when subtune `song` (1-based; default `song_to_play`) expects
+        PLAY once per video frame rather than off its own CIA timer."""
+        bit = min((song if song is not None else self.song_to_play) - 1, 31)
+        return not (self.speed >> bit) & 1
 
 
 def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
@@ -744,6 +776,7 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
         )
     if magic != b"PSID":
         raise ValueError(f"not a SID file (expected PSID/RSID magic, got {magic!r})")
+    version = int.from_bytes(sid_bytes[4:6], "big")
     data_offset = int.from_bytes(sid_bytes[6:8], "big")
     load_addr = int.from_bytes(sid_bytes[8:10], "big")
     init_addr = int.from_bytes(sid_bytes[10:12], "big")
@@ -800,6 +833,9 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
     song_to_play = song if song > 0 else start_song
     if song_to_play < 1 or song_to_play > num_songs:
         raise ValueError(f"song {song_to_play} out of range 1..{num_songs}")
+    clock = None
+    if version >= 2 and len(sid_bytes) >= 0x78:
+        clock = _PSID_CLOCK_TABLE[(sid_bytes[0x77] >> 2) & 0x03]
     return ParsedPsid(
         load_addr=load_addr,
         init_addr=init_addr,
@@ -808,6 +844,8 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
         start_song=start_song,
         song_to_play=song_to_play,
         payload=payload,
+        clock=clock,
+        speed=int.from_bytes(sid_bytes[0x12:0x16], "big"),
     )
 
 
@@ -863,6 +901,18 @@ class _SidPlayerMixin(BufferedWriteBackend):
         # reinit restores it when a cycle target needs no override, so a prior
         # subtune's $36 override can't leak into a $37 subtune.
         self._sid_player_default_play_bank: int | None = None
+        # The tune currently loaded + the [ultimate64].sid_play_rate setting it
+        # was launched with. Kept because the PSID speed flag is PER SUBTUNE:
+        # cue_song_reinit has to re-decide whether the new song is vsync-timed.
+        self._sid_parsed: ParsedPsid | None = None
+        self._sid_play_rate: str | float | None = None
+        # True once _apply_play_rate has actually written a latch, so teardown
+        # only writes the kernal default back over a latch we put there.
+        self._sid_play_rate_applied = False
+        # What a vsync tune's PLAY is really being called at right now — the
+        # retuned rate, or the KERNAL's jiffy rate when we left it alone. The
+        # scope's host emulator ticks at this so it stays locked to the audio.
+        self._sid_vsync_play_rate_hz: float | None = None
         # Wall-clock instant the real SID began playing (set by run_sid_player
         # when audio starts synchronously, or by begin_sid_audio when deferred).
         # Exposed via sid_audio_start_time() for the scope's host-emu clock.
@@ -940,6 +990,7 @@ class _SidPlayerMixin(BufferedWriteBackend):
         avoid: bytes | bytearray | None = None,
         play_bank: int | None = None,
         defer_audio: bool = False,
+        play_rate: str | float | None = None,
     ) -> None:
         """Play a SID on the real 6510 without going through the firmware's
         own SID-player UI.
@@ -965,20 +1016,36 @@ class _SidPlayerMixin(BufferedWriteBackend):
              PLAY then chains to kernal $EA31, then spins forever in `JMP *` (so
              the kernal IRQ keeps firing PLAY + updating $028D for the keyboard
              poller; returning to BASIC would syntax-error on INIT-clobbered ZP).
-          6. Measure the post-INIT CIA #1 Timer A rate and patch the player MC's
+          6. Measure the post-INIT CIA #1 Timer A rate, optionally retune it to
+             the tune's own PLAY rate (`play_rate`), and patch the player MC's
              kernal-chain divider so fast-PLAY tunes don't run SCNKEY every tick.
 
         `song` is the 1-based subtune; pass 0 to use the SID's default.
+
+        `play_rate` sets what a *vsync-timed* tune's PLAY is called at, by
+        reprogramming CIA #1 Timer A after INIT (see `_apply_play_rate` for why
+        after, and for the gates):
+
+          * None / "off" — leave the KERNAL's jiffy latch alone. That is ~60 Hz
+            on BOTH standards, so a PAL tune plays ~19.7% fast. This was the
+            only behaviour before the option existed.
+          * "auto" — the frame rate of the tune's own PSID clock flag, so a PAL
+            tune plays at ~50.12 Hz on either machine.
+          * a float — that rate in Hz, for every vsync tune regardless of flag.
+
+        CIA-timed (multispeed) tunes are never touched: their INIT programs
+        Timer A itself and is the authority on their tempo.
 
         `defer_audio=True` loads the player but leaves it silent until
         `begin_sid_audio()` — WaveformScene uses it to bring the oscilloscope up
         before the first note. A backend that can't defer (the Ultimate's
         synchronous `run_prg`) starts immediately and ignores the flag.
 
-        v1 limitations: PSID only; PAL/NTSC speed flag ignored (kernal-default
-        CIA #1 rate). See [docs/caveats.md] for the full rationale.
+        v1 limitations: PSID only. See [docs/caveats.md] for the full rationale.
         """
         parsed = parse_psid_for_player(sid_bytes, song=song)
+        self._sid_parsed = parsed
+        self._sid_play_rate = play_rate
         self._warn_if_payload_snooped(parsed)
         layout = _choose_player_layout(parsed, avoid)
         self._sid_player_layout = layout
@@ -1071,13 +1138,24 @@ class _SidPlayerMixin(BufferedWriteBackend):
         # rate — re-measure and re-patch the tick divider. Longer settle than
         # run_sid_player's path: cue takes effect on the NEXT kernal IRQ, then
         # the stub runs INIT, then we want to observe the post-INIT latch.
-        self._tune_play_divider(settle_s=0.08)
+        # The PSID speed flag is per-subtune, so the play-rate decision is
+        # re-made here for `song` rather than inherited from the start song.
+        self._tune_play_divider(settle_s=0.08, song=song)
 
-    # CIA #1 Timer A latch sampling for [_tune_play_divider].
-    # Reads are 1 byte each, and the timer counts down from latch to 0 then
-    # reloads. Eight reads span enough time to catch a value within ~10% of the
-    # latch even at the highest PLAY rates we care about.
-    _DIVIDER_LATCH_SAMPLES = 8
+    # CIA #1 Timer A latch sampling for [_tune_play_divider]. $DC04/$DC05 are
+    # write-only; a read returns the live down-count, so the latch is estimated
+    # as the max over a burst of reads.
+    #
+    # That max is biased LOW, and by more than it looks: the count is roughly
+    # uniform over [0, latch], so the max of n reads averages n/(n+1) of the
+    # true latch and the tail is fat — at n=8, one run in six lands below 0.8
+    # and one in sixty below 0.6. Measured on hardware, an 8-sample burst
+    # against a kernal 60 Hz jiffy reported 75.6 Hz.
+    #
+    # 16 keeps that tail off `_apply_play_rate`'s self-timed floor (a false
+    # trip there silently skips the tempo correction) and costs ~110 ms of
+    # REST reads once per tune, inside a settle window that already exists.
+    _DIVIDER_LATCH_SAMPLES = 16
 
     # Target kernal-services rate. SCNKEY at >= 30 Hz keeps $028D updating fast
     # enough for the 10 Hz keyboard poller.
@@ -1091,10 +1169,114 @@ class _SidPlayerMixin(BufferedWriteBackend):
     # introduces <2% error, well within the rounding tolerance.
     _DIVIDER_PHI2_HZ = 1_000_000
 
-    def _tune_play_divider(self, settle_s: float = 0.2) -> int:
-        """Sample CIA #1 Timer A to estimate the SID's PLAY rate, then
-        live-patch the player MC's tick divider so the kernal IRQ tail (SCNKEY +
-        UDTIM + cursor blink at $EA31) only runs every Nth PLAY tick.
+    # Floor, as a fraction of this machine's kernal latch, below which the
+    # sampled post-INIT latch is taken as proof the tune reprogrammed Timer A
+    # regardless of what its speed flag claims — see `_apply_play_rate`.
+    _PLAY_RATE_SELF_TIMED_BELOW = 0.6
+
+    def target_play_rate_hz(self, song: int | None = None) -> float | None:
+        """The rate PLAY should be called at for the loaded tune's subtune
+        `song`, or None to leave the KERNAL's jiffy latch alone.
+
+        None whenever: no tune is loaded, the setting is off, the subtune is
+        CIA-timed (it self-times — its INIT is the authority), or the setting
+        is "auto" and the tune declares no single definite standard (a v1
+        header, "PAL+NTSC", or "?" — there is nothing to infer from)."""
+        parsed, setting = self._sid_parsed, self._sid_play_rate
+        if parsed is None or setting is None or setting == "off":
+            return None
+        if not parsed.song_is_vsync(song):
+            return None
+        if isinstance(setting, str):
+            return frame_rate(parsed.clock) if parsed.clock in ("PAL", "NTSC") else None
+        return float(setting)
+
+    def _apply_play_rate(self, sampled_latch: int, song: int | None = None) -> float | None:
+        """Reprogram CIA #1 Timer A so a vsync-timed tune's PLAY runs at its
+        own frame rate. Returns the resulting rate in Hz, or None if nothing
+        was written.
+
+        WHY THIS RUNS AFTER INIT rather than before: on the Ultimate the player
+        is kicked via `run_prg`, which soft-resets the C64 — and the KERNAL's
+        reset path reloads Timer A. Any latch written before the kick is gone
+        before the first PLAY. So the write lands here, ~200 ms in, and the
+        gates below are what keep it off tunes that time themselves.
+
+        Two gates, because the PSID speed flag alone is not trustworthy enough
+        to overwrite a tune's own timer with:
+
+          * the flag must say vsync (`target_play_rate_hz`), and
+          * the latch sampled after INIT must not already be far below this
+            machine's kernal default. A tune running 2x/3x/4x multispeed sits
+            at 1/2, 1/3, 1/4 of it — well clear of the noise in an 8-sample
+            max of a free-running down-counter, which is what `sampled_latch`
+            is.
+
+        Best-effort: a failed write logs and returns None, leaving the tune at
+        the kernal rate exactly as before."""
+        rate = self.target_play_rate_hz(song)
+        if rate is None:
+            return None
+        system = self.profile.system
+        floor = kernal_cia1_latch(system) * self._PLAY_RATE_SELF_TIMED_BELOW
+        if sampled_latch < floor:
+            log.info(
+                "SID player: tune is flagged vsync but INIT left CIA1 at ~$%04X "
+                "(well under this machine's kernal $%04X) — treating it as "
+                "self-timed and leaving its rate alone",
+                sampled_latch,
+                kernal_cia1_latch(system),
+            )
+            return None
+        latch = cia1_latch_for_rate(rate, system)
+        try:
+            self.write_memory(
+                f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+            )
+            self.flush()
+        except Exception:
+            log.warning("SID player: could not set the PLAY rate to %.3f Hz", rate, exc_info=True)
+            return None
+        self._sid_play_rate_applied = True
+        return actual_rate_for_latch(latch, system)
+
+    def sid_vsync_play_rate_hz(self) -> float:
+        """The rate a vsync-timed tune's PLAY is actually being called at on
+        this machine right now — the retuned rate when `_apply_play_rate`
+        wrote one, else the KERNAL's own jiffy rate.
+
+        Note the fallback is ~60 Hz on BOTH standards: the jiffy IRQ is a
+        wall-clock service, not a frame interrupt. Anything modelling the
+        tune's progress (the scope's host emulator) has to tick at this, not at
+        the video frame rate."""
+        if self._sid_vsync_play_rate_hz is not None:
+            return self._sid_vsync_play_rate_hz
+        system = self.profile.system
+        return actual_rate_for_latch(kernal_cia1_latch(system), system)
+
+    def restore_kernal_play_rate(self) -> None:
+        """Put CIA #1 Timer A back to this machine's kernal default, undoing
+        `_apply_play_rate`. Called at SID-scene teardown so the jiffy clock,
+        SCNKEY and the cursor blink resume at ~60 Hz. No-op when the rate was
+        never overridden. Best-effort — teardown must not raise."""
+        self._sid_vsync_play_rate_hz = None
+        if not self._sid_play_rate_applied:
+            return
+        self._sid_play_rate_applied = False
+        latch = kernal_cia1_latch(self.profile.system)
+        try:
+            self.write_memory(
+                f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+            )
+        except Exception as e:
+            log.debug("SID player: kernal PLAY-rate restore failed: %s", e)
+
+    def _tune_play_divider(self, settle_s: float = 0.2, song: int | None = None) -> int:
+        """Sample CIA #1 Timer A to estimate the SID's PLAY rate, retune it to
+        the tune's own rate when `[ultimate64].sid_play_rate` asks for that
+        (`_apply_play_rate`), then live-patch the player MC's tick divider so
+        the kernal IRQ tail (SCNKEY + UDTIM + cursor blink at $EA31) only runs
+        every Nth PLAY tick.
 
         Returns the patched N (1 = chain every tick = legacy behavior).
         Best-effort: a read or write failure logs and returns 1 without raising.
@@ -1129,6 +1311,21 @@ class _SidPlayerMixin(BufferedWriteBackend):
             )
             return 1
         play_rate_hz = self._DIVIDER_PHI2_HZ / max_count
+        retuned = self._apply_play_rate(max_count, song)
+        if retuned is not None:
+            log.info(
+                "SID player: vsync %s tune — PLAY retuned %.2fHz -> %.2fHz (CIA1 latch $%04X)",
+                (self._sid_parsed.clock if self._sid_parsed else None) or "?",
+                play_rate_hz,
+                retuned,
+                cia1_latch_for_rate(retuned, self.profile.system),
+            )
+            play_rate_hz = retuned
+        # Record what a vsync tune's PLAY now runs at, for the scope's clock.
+        # A CIA-timed tune's own rate isn't this and isn't wanted here — the
+        # host emulator derives that from the latch its INIT wrote.
+        if self._sid_parsed is not None and self._sid_parsed.song_is_vsync(song):
+            self._sid_vsync_play_rate_hz = play_rate_hz
         divider = max(1, int(play_rate_hz / self._DIVIDER_TARGET_KERNAL_HZ))
         if divider > self._DIVIDER_MAX:
             divider = self._DIVIDER_MAX
@@ -1575,11 +1772,12 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         return [category for category in categories if isinstance(category, str)]
 
     def refine_capabilities(self) -> None:
-        """One cheap REST call resolving which SID config surface this device
+        """One cheap REST call resolving which config surfaces this device
         actually carries: revoke the U64 multi-SID surface the family profile
         claims optimistically when its categories are absent (Ultimate II+),
-        and grant the U2+ emulated-stereo-SID surface when its category is
-        present. Category presence, not the ``product`` string, is the test:
+        and grant the U2+ emulated-stereo-SID surface and the U64 System Mode
+        surface when their categories are present. Category presence, not the
+        ``product`` string, is the test:
         the category list is the actual contract and tracks firmware
         differences within one product, the product string is presentation.
 
@@ -1601,6 +1799,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         has_emusid = EMUSID_MIXER_CATEGORY in categories
         if has_emusid != self.profile.supports_emusid_mixer:
             self.profile = replace(self.profile, supports_emusid_mixer=has_emusid)
+
+        has_system_mode = SYSTEM_MODE_CATEGORY in categories
+        if has_system_mode != self.profile.supports_system_mode:
+            self.profile = replace(self.profile, supports_system_mode=has_system_mode)
 
         missing = [c for c in SID_CONFIG_CATEGORIES if c not in categories]
         if not missing or not self.profile.supports_sid_config:

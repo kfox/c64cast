@@ -515,6 +515,7 @@ class SidFileAudioSource:
         sid_model: str = "auto",
         sid_panning: Sequence[int | str] | None = None,
         sid_volume: Sequence[int | str] | None = None,
+        sid_play_rate: str | float | None = None,
     ):
         self._api = api
         self.file_spec = file
@@ -525,6 +526,8 @@ class SidFileAudioSource:
         # caller (sid_autoconfig.resolve_sid_model_cfg). "auto"/"6581"/
         # "8580"/"off". See setup()/teardown().
         self._sid_model = sid_model
+        # [ultimate64].sid_play_rate — see api.run_sid_player.
+        self._sid_play_rate = sid_play_rate
         # [ultimate64].sid_panning — empty/None means the auto spread.
         self._sid_panning = list(sid_panning or ())
         # [ultimate64].sid_volume — empty/None means "0 dB for a source that
@@ -685,7 +688,13 @@ class SidFileAudioSource:
         self._apply_sid_mixer()
         # May raise (RSID / load<$0820 / under KERNAL) — propagate to
         # SourceScene.setup, which aborts the scene cleanly.
-        self._api.run_sid_player(self.sid_bytes, song=self.song, avoid=avoid, play_bank=play_bank)
+        self._api.run_sid_player(
+            self.sid_bytes,
+            song=self.song,
+            avoid=avoid,
+            play_bank=play_bank,
+            play_rate=self._sid_play_rate,
+        )
 
         # Spin up the host-side feature stream for reactive visuals. The tune
         # already passed run_sid_player (and the host-emu preflight in

@@ -58,7 +58,15 @@ import time
 from typing import TYPE_CHECKING
 
 from c64cast._pollthread import PollThread
-from c64cast.hw.c64 import CIA1, KERNAL, REU, VECTORS, cpu_clock
+from c64cast.hw.c64 import (
+    CIA1,
+    KERNAL,
+    REU,
+    VECTORS,
+    actual_rate_for_latch,
+    cia1_latch_for_rate,
+    kernal_cia1_latch,
+)
 
 from .asid import _ASID_REG_TO_OFFSET
 
@@ -105,12 +113,6 @@ DEFAULT_HARD_RESTART_WAIT_UNITS = 2
 MAX_OPS_PER_CHIP = 28
 OP_BYTES = 4  # addr_lo, addr_hi, value, wait
 _SLOT_ALIGN = 16  # round slot size up to this so single-SID → 128 (plan pins it)
-
-# NTSC kernal default CIA #1 Timer A latch ($4025 → ~60.0 Hz), restored on
-# teardown so the next kernal IRQ runs at the stock jiffy rate (see audio_handlers.py's
-# identically-named constant; PAL differs but the timer keeps running and a
-# reset clears it either way).
-KERNAL_CIA1_TIMER_A_LATCH_NTSC = 0x4025
 
 # Producer buffering depth / watermarks (in slots). Unlike the FPGA sampler
 # (fed by a demuxer that races ahead of real time, so it can grow its lead), an
@@ -400,21 +402,6 @@ def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BAS
     a.emit(0x60)  # RTS
 
     return a.resolve()
-
-
-def cia1_latch_for_rate(rate_hz: float, system: str) -> int:
-    """CIA #1 Timer A latch for a consume rate: ``round(cpu_clock/rate) - 1``,
-    clamped to a valid 16-bit timer value (≥ 1)."""
-    if rate_hz <= 0:
-        raise ValueError(f"rate must be positive, got {rate_hz}")
-    latch = round(cpu_clock(system) / rate_hz) - 1
-    return max(1, min(latch, 0xFFFF))
-
-
-def actual_rate_for_latch(latch: int, system: str) -> float:
-    """The exact rate the CIA clocks a given latch: ``cpu_clock / (latch + 1)``.
-    The read head is computed from this so it matches the hardware exactly."""
-    return cpu_clock(system) / (latch + 1)
 
 
 def tick_divider_for_rate(rate_hz: float) -> int:
@@ -769,7 +756,7 @@ class AsidRingPlayer:
             self.api.write_regs(
                 f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
             )
-            latch = KERNAL_CIA1_TIMER_A_LATCH_NTSC
+            latch = kernal_cia1_latch(self.system)
             self.api.write_memory(
                 f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
             )

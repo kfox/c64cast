@@ -79,6 +79,13 @@ class SystemStack:
     # composite-keyed "category\x1ffield" -> original, restored at teardown. None
     # when nothing changed (already enabled, no-sampler backend, or --skip-probe).
     sampler_restore: dict[str, str] | None = None
+    # Video-output fields auto-provisioned for this run (System Mode and/or
+    # HDMI Scan Resolution — hw_provision.provision_video_output), field name ->
+    # the original label to restore at teardown. None when nothing changed
+    # (sid_video_mode off + hdmi_scan_resolution auto/keep, timing already
+    # right, a non-U64 backend, or --skip-probe). Volatile, so a missed restore
+    # clears on power-cycle.
+    video_output_restore: dict[str, str] | None = None
     framebuffer: Framebuffer | None = None
     preview_window: PreviewWindow | None = None
     recorder: StreamRecorder | None = None

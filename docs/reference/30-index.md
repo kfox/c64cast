@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 414 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 417 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -218,6 +218,7 @@ Every name c64cast answers to — 414 of them — and the pages that discuss eac
 |---|---|
 | `halo` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `hdmi_scan_resolution` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `--heartbeat` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `heartbeat` | [`debug` (A)](20-appendix-a-configuration.md#debug), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `height_frac` | [`spectrum_bitmap` (C)](22-appendix-c-overlays.md#spectrum_bitmap) |
@@ -462,6 +463,8 @@ Every name c64cast answers to — 414 of them — and the pages that discuss eac
 | `sid_filter_cutoff` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `sid_model` | [Machine Settings (1)](02-config-rules.md#machine-settings), [Matching the Chip to the Tune (4)](05-sound-and-music.md#matching-the-chip-to-the-tune), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
 | `sid_panning` | [`sid_panning` (4)](05-sound-and-music.md#sid_panning), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
+| `sid_play_rate` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
+| `sid_video_mode` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `sid_volume` | [`sid_volume` (4)](05-sound-and-music.md#sid_volume), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | single-scene mode | [Single-Scene Mode (1)](02-config-rules.md#single-scene-mode), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
 | `sink_height` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
@@ -486,7 +489,7 @@ Every name c64cast answers to — 414 of them — and the pages that discuss eac
 | `--suggest-palette` | [`color` (A)](20-appendix-a-configuration.md#color), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `swipe_velocity` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `--system` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Connection (G)](26-appendix-g-cli-flags.md#connection), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
-| `system` | [NTSC or PAL (1)](02-config-rules.md#ntsc-or-pal), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [The Control Plane (6)](07-inputs-and-outputs.md#the-control-plane) |
+| `system` | [NTSC or PAL (1)](02-config-rules.md#ntsc-or-pal), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard) |
 
 ## T
 
@@ -516,7 +519,7 @@ Every name c64cast answers to — 414 of them — and the pages that discuss eac
 | `units` | [`weather` (C)](22-appendix-c-overlays.md#weather) |
 | `--url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Flags in Ensemble Mode (1)](02-config-rules.md#flags-in-ensemble-mode) |
 | `url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings) |
-| `use_reu_pump` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
+| `use_reu_pump` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `use_reu_staged` | [The Preview Window (6)](07-inputs-and-outputs.md#the-preview-window), [`video` (A)](20-appendix-a-configuration.md#video) |
 
 ## V

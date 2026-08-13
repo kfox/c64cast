@@ -699,13 +699,17 @@ class WaveformSceneTest(unittest.TestCase):
         assert ntsc.target_fps is not None  # narrows Scene's float | None
         self.assertAlmostEqual(ntsc.target_fps, 30.0)
         self.assertAlmostEqual(ntsc._frame_time_s, 1.0 / 30.0)
-        self.assertAlmostEqual(ntsc._video_hz, 60.0)  # poll cadence unchanged
+        # _video_hz is the rate PLAY is really called at, not the video frame
+        # rate: PLAY rides the kernal jiffy IRQ, which the KERNAL runs at ~60 Hz
+        # on BOTH standards. It only differs once [ultimate64].sid_play_rate
+        # retunes CIA #1 Timer A, which FakeAPI never does.
+        self.assertAlmostEqual(ntsc._video_hz, 60.0, places=1)
         pal = WaveformScene(
             FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="PAL"
         )
         assert pal.target_fps is not None
         self.assertAlmostEqual(pal.target_fps, 25.0)
-        self.assertAlmostEqual(pal._video_hz, 50.0)
+        self.assertAlmostEqual(pal._video_hz, 60.0, places=1)
 
     def test_explicit_target_fps_overrides_half_rate_default(self):
         """An explicit target_fps (CLI/TOML) still wins over the half-rate
@@ -947,12 +951,12 @@ class WaveformSceneTest(unittest.TestCase):
         # assertLogs (outer) asserts it and keeps it off the console.
         with self.assertLogs("c64cast.sid.waveform", level="WARNING"):
             with self.assertRaises(ValueError):
-                WaveformScene(MagicMock(), audio=None, file=self.sid_path, song=99)
+                WaveformScene(FakeAPI(), audio=None, file=self.sid_path, song=99)
 
     def test_song_defaults_to_header_start_song(self):
         from c64cast.sid.waveform import WaveformScene
 
-        scene = WaveformScene(MagicMock(), audio=None, file=self.sid_path, song=0)
+        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path, song=0)
         # Header start_song was 1.
         self.assertEqual(scene.song, 1)
 

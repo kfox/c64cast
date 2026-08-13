@@ -113,12 +113,49 @@
         },
         "system": {
           "type": "string",
-          "description": "Target video system timing (affects frame rate + SID PLAY rate).",
+          "description": "Machine timing standard (affects frame rate, CPU clock, SID PLAY rate). 'auto' reads it from the Ultimate's live System Mode; on a backend that can't be asked, or under --skip-probe, it falls back to NTSC.",
           "enum": [
+            "auto",
             "NTSC",
             "PAL"
           ],
-          "default": "NTSC"
+          "default": "auto"
+        },
+        "sid_play_rate": {
+          "type": [
+            "string",
+            "number"
+          ],
+          "description": "PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); 'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so PAL tunes run ~20% fast \u2014 the pre-1.9 behaviour); a number pins every vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always self-time and are never overridden.",
+          "enum": [
+            "auto",
+            "off"
+          ],
+          "default": "auto"
+        },
+        "sid_video_mode": {
+          "type": "string",
+          "description": "Switch the Ultimate's System Mode so the machine's PAL/NTSC timing matches [ultimate64].system, correcting SID pitch (phi2 differs 3.8% between standards). 'off' leaves it alone. Ultimate 64 only; live and volatile, restored at teardown. Changes the HDMI output mode.",
+          "enum": [
+            "off",
+            "auto"
+          ],
+          "default": "off"
+        },
+        "hdmi_scan_resolution": {
+          "type": "string",
+          "description": "The Ultimate 64's HDMI upscaler. 'auto' raises SD to HD (720p) only when sid_video_mode retimes the machine \u2014 PAL timing at SD puts 576p50 on the wire and some capture devices cannot lock to it, while the same machine at 720p50 captures cleanly. 'keep' never touches it; a scan-mode label sets it for the run (the 'PC' modes are passed through from the firmware but are untested under PAL timing). Live and volatile, restored at teardown. Newer U64 boards only (older firmware has no such setting).",
+          "enum": [
+            "auto",
+            "keep",
+            "SD (480p/576p)",
+            "HD (720p)",
+            "FullHD (1080p)",
+            "PC 800 x 600",
+            "PC 1024 x 768",
+            "PC 1280 x 1024"
+          ],
+          "default": "auto"
         },
         "dma_port": {
           "type": "integer",

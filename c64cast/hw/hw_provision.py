@@ -25,6 +25,8 @@ from typing import NamedTuple
 
 from c64cast.app.config import Config
 
+from .backend import SYSTEM_MODE_CATEGORY
+
 log = logging.getLogger(__name__)
 
 
@@ -454,3 +456,345 @@ def restore_sampler(api: object, restore: dict[str, str] | None) -> None:
             log.warning("sampler: could not restore %s = %s: %s", fieldname, value, e)
         else:
             log.info("sampler: restored %s = %s", fieldname, value)
+
+
+# ---- System Mode (PAL/NTSC machine timing) --------------------------------
+# The Ultimate's "System Mode" enum names look like they select a video
+# standard. They do not: the *suffix* selects the machine timing and the
+# *prefix* selects only the analog chroma encoding. From the firmware's
+# timing table (1541ultimate software/u64/color_timings.cc), cross-checked by
+# measuring phi2 + the VIC raster line count on a real unit:
+#
+#   PAL, NTSC-50, NTSC-50/L  -> 63 cycles/line, 312 lines, phi2 985248  (PAL)
+#   NTSC, PAL-60, PAL-60/L   -> 65 cycles/line, 263 lines, phi2 1022727 (NTSC)
+#
+# So "NTSC-50" is a PAL-timed machine emitting NTSC colour, and "PAL-60" is an
+# NTSC-timed machine emitting PAL colour. Over HDMI the pairs are
+# indistinguishable. The "/L" variants differ only in the colour-burst phase
+# table (~0.1% fast) and matter to analog output alone.
+#
+# The mapping therefore looks backwards on purpose — do not "fix" it.
+SYSTEM_MODE_FIELD = "System Mode"
+
+SYSTEM_MODE_TIMING: dict[str, str] = {
+    "PAL": "PAL",
+    "NTSC-50": "PAL",
+    "NTSC-50/L": "PAL",
+    "NTSC": "NTSC",
+    "PAL-60": "NTSC",
+    "PAL-60/L": "NTSC",
+}
+
+# Which System Mode to select for a target timing, by analog chroma preference.
+# Keyed (timing, chroma) -> firmware label. Over HDMI both columns are the same
+# picture; the choice only matters on the composite/S-Video output.
+#
+# On composite the four hybrids are the classic non-standard combinations
+# (color_timings.cc): "PAL-60" is PAL chroma at a 60 Hz field rate (c_pal_60_*,
+# no VIDEO_FMT_NTSC_ENCODING), "NTSC-50" is NTSC chroma at 50 Hz
+# (c_ntsc_50_*). Preserving the chroma keeps a set able to DECODE COLOUR, but
+# the field rate still changes underneath it — a single-standard analog display
+# may simply not lock. PAL-60 is the more widely tolerated of the two.
+SYSTEM_MODE_FOR: dict[tuple[str, str], str] = {
+    ("PAL", "pal"): "PAL",
+    ("PAL", "ntsc"): "NTSC-50",
+    ("NTSC", "pal"): "PAL-60",
+    ("NTSC", "ntsc"): "NTSC",
+}
+
+# The "/L" hybrids lock the colour subcarrier to an exact line ratio instead of
+# free-running it, and the firmware calls them the "best timing match to
+# original C64" — c_pal_60_281_5 / c_ntsc_50_228_5 carry slightly LONGER
+# periods (84422 / 81385) than their free-running siblings (84372 / 81300), so
+# it is the PLAIN hybrids that run ~0.1% fast, not the locked ones.
+#
+# There is deliberately no attempt to carry a /L choice across a retime: every
+# /L mode IS a hybrid, and retiming a hybrid always lands on the other
+# standard's plain mode, which has no locked form ("PAL" and "NTSC" are already
+# standard-locked). A composite user who picked /L for its accuracy therefore
+# loses it for the duration of a `sid_video_mode` run and gets it back at
+# teardown — one more reason that setting is opt-in.
+
+# The HDMI upscaler, in the same category. Present only on the newer U64 board
+# (firmware u64_config.cc guards it behind `#if U64 == 2`), so the read has to
+# tolerate it being absent rather than assume it.
+#
+# It matters here because of how capture devices behave, not how the C64 does:
+# at SD, PAL timing puts 576p50 on the wire, and some HDMI capture devices
+# cannot lock to it — the picture tears or rolls. The same machine upscaled to
+# 720p50/1080p50 captures cleanly on the same device (HW-verified on two
+# different capture devices, which disagreed at SD and agreed at HD).
+HDMI_RESOLUTION_FIELD = "HDMI Scan Resolution"
+HDMI_RESOLUTION_SD = "SD (480p/576p)"
+# What "auto" raises SD to. 720p50 rather than 1080p50: it is the lower of the
+# two HW-verified modes, so it asks less of both the upscaler and the capture
+# card. The four "PC" modes are exposed but NOT verified under PAL timing.
+HDMI_RESOLUTION_AUTO_TARGET = "HD (720p)"
+# The firmware's scan_modes[] labels, in order (u64_config.cc).
+HDMI_RESOLUTION_CHOICES: tuple[str, ...] = (
+    HDMI_RESOLUTION_SD,
+    "HD (720p)",
+    "FullHD (1080p)",
+    "PC 800 x 600",
+    "PC 1024 x 768",
+    "PC 1280 x 1024",
+)
+
+# Escape hatch, worth naming wherever we tell a user we changed their video
+# mode: holding C= plus P (PAL) or N (NTSC) at Ultimate boot forces System Mode
+# back, for a display or capture device that can't show what it was set to. The
+# firmware scans the keyboard once during configurator init and overrides
+# CFG_SYSTEM_MODE (u64_config.cc: key 0x10 -> index 0 = PAL, 0x0E -> index 1 =
+# NTSC). CTRL works identically — keyboard_c64.cc's modifier_map gives C= and
+# CTRL distinct bits, but keymaps[] points both at the same keymap_control
+# table, which is where those two codes come from.
+#
+# It resets ONLY System Mode, not the scan resolution — but every write this
+# module makes is volatile, so a power-cycle clears those regardless.
+SYSTEM_MODE_BOOT_OVERRIDE_HINT = (
+    "If a video mode leaves you with no picture, hold C= and P (PAL) or C= and "
+    "N (NTSC) at Ultimate boot to force System Mode back; c64cast's changes are "
+    "volatile and clear on a power-cycle either way."
+)
+
+
+def read_system_mode(api: object) -> str | None:
+    """Read the Ultimate's live "System Mode" label (e.g. ``"NTSC-50"``), or
+    None when it can't be read (see `read_video_output`)."""
+    return read_video_output(api)[0]
+
+
+def read_system_timing(api: object) -> str | None:
+    """The machine's *timing* standard (``"PAL"``/``"NTSC"``) from its live
+    System Mode, or None when it can't be read or the label is unknown to
+    `SYSTEM_MODE_TIMING` (a firmware that grew a new mode — better to fall back
+    to the configured value than to guess)."""
+    label = read_system_mode(api)
+    if label is None:
+        return None
+    timing = SYSTEM_MODE_TIMING.get(label)
+    if timing is None:
+        log.warning(
+            "system: unrecognized System Mode %r — cannot derive PAL/NTSC timing "
+            "from it. Set [ultimate64].system explicitly.",
+            label,
+        )
+    return timing
+
+
+def read_video_output(api: object) -> tuple[str | None, str | None]:
+    """Read the Ultimate's live ``(System Mode, HDMI Scan Resolution)`` labels.
+
+    Either element is None when it can't be read: the whole category is absent
+    (the Ultimate II+ has none), the query failed, or — for the scan resolution
+    specifically — the board is an older U64 whose firmware doesn't register
+    that field at all. One GET covers both; they share a category."""
+    section, _data, err = fetch_config_section(
+        api, SYSTEM_MODE_CATEGORY, field_hint=SYSTEM_MODE_FIELD
+    )
+    if err is not None or not section:
+        return None, None
+    mode = section.get(SYSTEM_MODE_FIELD)
+    res = section.get(HDMI_RESOLUTION_FIELD)
+    return (
+        mode if isinstance(mode, str) else None,
+        res if isinstance(res, str) else None,
+    )
+
+
+def provision_video_output(api: object, cfg: Config) -> dict[str, str] | None:
+    """Set the Ultimate's video output up for this run — LIVE + VOLATILE.
+
+    Two related fields, one category, one restore dict:
+
+      * **System Mode** (opt-in, ``[ultimate64].sid_video_mode``) — retimes the
+        machine so its PAL/NTSC standard matches ``[ultimate64].system``. That
+        corrects SID *pitch*, since phi2 differs 3.8% between the standards.
+        Playback *tempo* is a separate lever needing no video change at all —
+        see `[ultimate64].sid_play_rate` and
+        `c64cast.hw.api.Ultimate64API.run_sid_player`.
+      * **HDMI Scan Resolution** (``[ultimate64].hdmi_scan_resolution``) — the
+        upscaler. Its default, ``"auto"``, exists to clean up after the switch
+        above: PAL timing at SD puts 576p50 on the wire, which some capture
+        devices cannot lock to, and the same machine at 720p50 captures fine.
+        So "auto" raises SD to HD *only when this function also changed the
+        timing* — c64cast fixes what it broke and leaves a machine it didn't
+        retime alone. ``"keep"`` never touches it; an explicit label sets it
+        for the run regardless.
+
+    Returns the original ``{field: value}`` for `restore_video_output`, or None
+    when nothing changed. Gated so `cli.build_stack` can call it
+    unconditionally: the backend must expose the category
+    (`profile.supports_system_mode` — Ultimate 64 only) and a probe must be
+    allowed (never write config we can't first read back).
+
+    The System Mode change retunes the HDMI output, so it is resolved once per
+    run rather than per scene: every switch costs the capture device a re-lock.
+    Callers reset the C64 afterwards so the KERNAL re-runs its PAL/NTSC
+    autodetect against the new timing. Best-effort throughout — a failed REST
+    call logs and returns whatever was changed so far, so teardown still
+    restores it."""
+    profile = getattr(api, "profile", None)
+    if profile is None or not getattr(profile, "supports_system_mode", False):
+        return None
+    if cfg.debug.skip_probe:
+        return None
+    want_res = cfg.ultimate64.hdmi_scan_resolution
+    if cfg.ultimate64.sid_video_mode == "off" and want_res in ("auto", "keep"):
+        return None
+
+    import requests
+
+    current_mode, current_res = read_video_output(api)
+    if current_mode is None:
+        log.warning(
+            "sid_video_mode: the Ultimate's video output config could not be "
+            "read — leaving it unchanged."
+        )
+        return None
+
+    restore: dict[str, str] = {}
+    retimed = False
+    if cfg.ultimate64.sid_video_mode != "off":
+        retimed = _switch_system_mode(api, cfg, current_mode, restore)
+
+    # Raise SD only when we just retimed the machine (see the docstring); an
+    # explicit label applies either way.
+    target_res = want_res
+    if want_res == "auto":
+        target_res = (
+            HDMI_RESOLUTION_AUTO_TARGET if retimed and current_res == HDMI_RESOLUTION_SD else "keep"
+        )
+    if target_res != "keep" and current_res is not None and target_res != current_res:
+        try:
+            api.put_config_item(SYSTEM_MODE_CATEGORY, HDMI_RESOLUTION_FIELD, target_res)  # type: ignore[attr-defined]
+        except requests.RequestException as e:
+            log.warning("hdmi_scan_resolution: could not set %s: %s", target_res, e)
+        else:
+            restore[HDMI_RESOLUTION_FIELD] = current_res
+            log.info(
+                "hdmi_scan_resolution: %s -> %s%s — live, volatile, restored at teardown.",
+                current_res,
+                target_res,
+                " (SD at this timing is what some capture devices fail to lock to)"
+                if want_res == "auto"
+                else "",
+            )
+    return restore or None
+
+
+def _switch_system_mode(api: object, cfg: Config, current: str, restore: dict[str, str]) -> bool:
+    """Apply the System Mode half of `provision_video_output`. Records the
+    original in `restore` and returns True when the machine was actually
+    retimed."""
+    import requests
+
+    cur_timing = SYSTEM_MODE_TIMING.get(current)
+    if cur_timing is None:
+        return False
+    want_timing = "NTSC" if cfg.ultimate64.system.upper() == "NTSC" else "PAL"
+    if cur_timing == want_timing:
+        return False
+    # Keep the analog chroma encoding the machine is already set for — a user
+    # on composite has chosen it deliberately, and over HDMI it makes no
+    # difference either way.
+    chroma = "ntsc" if current.startswith("NTSC") else "pal"
+    target = SYSTEM_MODE_FOR[(want_timing, chroma)]
+    try:
+        api.put_config_item(SYSTEM_MODE_CATEGORY, SYSTEM_MODE_FIELD, target)  # type: ignore[attr-defined]
+    except requests.RequestException as e:
+        log.warning("sid_video_mode: could not set System Mode to %s: %s", target, e)
+        return False
+    restore[SYSTEM_MODE_FIELD] = current
+    log.info(
+        "sid_video_mode: System Mode %s -> %s (%s timing) for this run — live, "
+        "volatile (reverts on power-cycle), restored at teardown. The HDMI "
+        "output mode changes with it; your capture device has to re-lock. %s",
+        current,
+        target,
+        want_timing,
+        SYSTEM_MODE_BOOT_OVERRIDE_HINT,
+    )
+    return True
+
+
+def restore_video_output(api: object, restore: dict[str, str] | None) -> None:
+    """Put the video-output fields changed by `provision_video_output` back at
+    teardown. No-op when nothing was provisioned. Best-effort — a failed restore
+    just logs (the change was volatile anyway, so a power-cycle clears it)."""
+    if not restore:
+        return
+
+    import requests
+
+    for fieldname, value in restore.items():
+        try:
+            api.put_config_item(SYSTEM_MODE_CATEGORY, fieldname, value)  # type: ignore[attr-defined]
+        except requests.RequestException as e:
+            log.warning("video output: could not restore U64 %s = %s: %s", fieldname, value, e)
+        else:
+            log.info("video output: restored U64 %s = %s", fieldname, value)
+
+
+def resolve_system(cfg: Config, api: object) -> None:
+    """Settle `[ultimate64].system = "auto"` against the machine's live System
+    Mode, and fold the result back into the already-built hardware profile.
+
+    Must run after the backend exists rather than inside `make_backend`: the
+    profile bakes `default_fps` + `host_sid_model` from the system at
+    construction time, which is before there is any API to ask. So those fields
+    are rebuilt in place once the answer is known.
+
+    An explicitly configured system always wins — it stays the way to describe
+    a machine the probe can't read (a TeensyROM-driven C64, `--skip-probe`) —
+    but it is checked against the live mode and a disagreement is warned about,
+    because every timing constant in the run derives from this one field.
+    """
+    import dataclasses
+
+    from .backend import resolve_host_sid_model
+
+    profile = getattr(api, "profile", None)
+    configured = cfg.ultimate64.system
+    live = (
+        read_system_timing(api)
+        if profile is not None
+        and not cfg.debug.skip_probe
+        and getattr(profile, "supports_system_mode", False)
+        else None
+    )
+    if configured == "auto":
+        if live is None:
+            log.info(
+                "[ultimate64].system = auto: this backend can't report its "
+                "PAL/NTSC timing%s — assuming NTSC. Set it explicitly if that's "
+                "wrong (every frame-rate and clock constant depends on it).",
+                " (--skip-probe)" if cfg.debug.skip_probe else "",
+            )
+        else:
+            log.info("[ultimate64].system = auto -> %s (read from the machine)", live)
+        cfg.ultimate64.system = live or "NTSC"
+    elif live is not None and live != configured.upper():
+        log.warning(
+            "[ultimate64].system = %s but the machine is running %s timing. "
+            "Frame rate, CPU clock and SID PLAY rate will all be computed for "
+            "the wrong standard. Use 'auto', or fix one of the two.",
+            configured,
+            live,
+        )
+
+    if profile is None:
+        return
+    # The profile was built from the pre-resolution value; rebuild what derives
+    # from it.
+    system = cfg.ultimate64.system
+    host_model, host_model_assumed = resolve_host_sid_model(cfg.hardware.host_sid_model, system)
+    if profile.host_sid_chips:
+        host_model_assumed = False
+    api.profile = dataclasses.replace(  # type: ignore[attr-defined]
+        profile,
+        system=system,
+        default_fps=60.0 if system == "NTSC" else 50.0,
+        host_sid_model=host_model,
+        host_sid_model_assumed=host_model_assumed,
+    )

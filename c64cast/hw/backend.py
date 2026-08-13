@@ -119,6 +119,11 @@ class HardwareProfile:
     #   refine_capabilities from the device's category list, so it stays
     #   False on an unprobed run (which then behaves exactly as before the
     #   flag existed).
+    supports_system_mode: bool = False  # the Ultimate 64's "System Mode" enum
+    #   (PAL / NTSC / PAL-60 / NTSC-50 machine timing — see
+    #   SYSTEM_MODE_CATEGORY). Registered by the U64 firmware only; the
+    #   Ultimate II+ has no such category. Granted by refine_capabilities from
+    #   the device's category list, so it stays False on an unprobed run.
     supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
@@ -128,6 +133,11 @@ class HardwareProfile:
     write_transport: str = "socket_dma"  # "socket_dma" | "tr_serial" | "tr_tcp"
 
     # ---- timing / throughput limits ------------------------------------
+    system: str = "NTSC"  # resolved machine timing standard ("NTSC"/"PAL").
+    #   Set by make_backend from [ultimate64].system and re-folded by
+    #   cli._resolve_system once the live System Mode has been read. Carried
+    #   here so anything holding a backend (the SID player's CIA math) can
+    #   reach the machine's clock without also holding the Config.
     default_fps: float = 60.0  # resolved system rate (NTSC/PAL)
     max_fps: float | None = None  # per-variant cap on top of default_fps
     max_write_rate_hz: float | None = None  # sustained write ceiling (pacing)
@@ -211,6 +221,15 @@ SID_CONFIG_CATEGORIES = (
 # SID_CONFIG_CATEGORIES above. tests/test_backend.py pins this to the
 # canonical constant in c64cast/sid/emusid_mixer.py (hw must not import sid).
 EMUSID_MIXER_CATEGORY = "Audio Output Settings"
+
+# The category carrying the Ultimate 64's "System Mode" (PAL / NTSC / PAL-60 /
+# NTSC-50 machine timing). Registered by the U64 firmware only — the Ultimate
+# II+ drives a real C64 whose timing is the C64's own — so presence in
+# GET /v1/configs is a clean per-device test, same rationale as
+# SID_CONFIG_CATEGORIES above. What the enum's labels actually select is
+# documented in c64cast/hw/hw_provision.py (SYSTEM_MODE_TIMING); it is not
+# what the names suggest.
+SYSTEM_MODE_CATEGORY = "U64 Specific Settings"
 
 # The Ultimate family (Ultimate 64, Ultimate II+). The two are protocol-
 # equivalent for c64cast's purposes, so they share one profile for now;
@@ -410,12 +429,28 @@ class C64Backend(ABC):
         avoid: bytes | bytearray | None = None,
         play_bank: int | None = None,
         defer_audio: bool = False,
+        play_rate: str | float | None = None,
     ) -> None:
         """Load + start a SID tune on the real 6510. `defer_audio=True` loads the
         player but leaves it silent until `begin_sid_audio()` — used by
         WaveformScene so the oscilloscope is on screen before the first note (on
-        backends that can defer; others start immediately and ignore the flag)."""
+        backends that can defer; others start immediately and ignore the flag).
+        `play_rate` is `[ultimate64].sid_play_rate` — what a vsync-timed tune's
+        PLAY should be called at; None/"off" leaves the kernal jiffy rate."""
         raise BackendCapabilityError("run_sid_player")
+
+    def restore_kernal_play_rate(self) -> None:
+        """Undo a `run_sid_player(play_rate=...)` retune of CIA #1 Timer A at
+        teardown. No-op on backends without a SID player."""
+        return
+
+    def sid_vsync_play_rate_hz(self) -> float:
+        """The rate a vsync-timed tune's PLAY is actually being called at, which
+        is the KERNAL's jiffy rate (~60 Hz on BOTH standards) unless
+        `run_sid_player(play_rate=...)` retuned it."""
+        from .c64 import actual_rate_for_latch, kernal_cia1_latch
+
+        return actual_rate_for_latch(kernal_cia1_latch(self.profile.system), self.profile.system)
 
     def begin_sid_audio(self) -> None:
         """Release a SID start deferred by `run_sid_player(defer_audio=True)`.
@@ -828,10 +863,12 @@ def make_backend(cfg: Config) -> C64Backend:
     backend = cfg.hardware.backend
     # NTSC/PAL is orthogonal to the hardware variant; fold the resolved
     # system rate into the profile here so the playlist reads one number.
-    fps = 60.0 if cfg.ultimate64.system == "NTSC" else 50.0
-    host_model, host_model_assumed = resolve_host_sid_model(
-        cfg.hardware.host_sid_model, cfg.ultimate64.system
-    )
+    # `system = "auto"` can't be settled yet (it needs a live REST read, and
+    # there is no API until this function returns) — assume NTSC and let
+    # cli._resolve_system re-fold these three fields once the answer is in.
+    system = "NTSC" if cfg.ultimate64.system == "auto" else cfg.ultimate64.system
+    fps = 60.0 if system == "NTSC" else 50.0
+    host_model, host_model_assumed = resolve_host_sid_model(cfg.hardware.host_sid_model, system)
     host_chips = resolve_host_sid_chips(cfg.hardware.host_sid_chips)
     if host_chips:
         # An explicit chip list describes the machine outright, so the NTSC/PAL
@@ -844,6 +881,7 @@ def make_backend(cfg: Config) -> C64Backend:
 
         profile = replace(
             ULTIMATE_PROFILE,
+            system=system,
             default_fps=fps,
             host_sid_model=host_model,
             host_sid_model_assumed=host_model_assumed,
@@ -909,6 +947,7 @@ def make_backend(cfg: Config) -> C64Backend:
             raise ValueError(f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)")
         profile = replace(
             TEENSYROM_PROFILE,
+            system=system,
             default_fps=fps,
             write_transport=transport_kind,
             host_sid_model=host_model,

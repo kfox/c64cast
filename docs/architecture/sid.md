@@ -68,6 +68,152 @@ The TR also has no REUWRITE, so `cli._coerce_reu_for_backend` forces `use_reu_pu
 
 See [caveats.md](../caveats.md) → "SID playback uses a C64-side player PRG", including the TeensyROM vector-swap subsection, for the full rationale.
 
+## System timing — PAL/NTSC, PLAY rate, and the Ultimate's System Mode
+
+Two independent errors used to ride on a SID played through this path, with two
+independent levers. Keeping them apart is the whole point of this section.
+
+### What the Ultimate's "System Mode" labels actually select
+
+From the firmware's timing table (`software/u64/color_timings.cc`),
+cross-checked by measuring φ2 and the VIC raster line count on a real unit:
+
+| System Mode | cycles/line | φ2 | lines | HDMI out |
+|---|---|---|---|---|
+| `PAL` | 63 | 985 248 | 312 | 720×576 @ 50.12 |
+| `NTSC` | 65 | 1 022 727 | 263 | 640×480 @ 59.83 |
+| `PAL-60` | 65 | 1 022 727 | 263 | 640×480 @ 59.83 |
+| `NTSC-50` | 63 | 985 248 | 312 | 720×576 @ 50.16 |
+
+The **suffix selects the machine timing**; the **prefix selects only the analog
+chroma encoding** (`VIDEO_FMT_NTSC_ENCODING`). So `NTSC-50` is a PAL-timed
+machine emitting NTSC colour, and `PAL-60` is an NTSC-timed machine emitting PAL
+colour — over HDMI the pairs are the same picture.
+
+### What retiming does to the composite output
+
+Over HDMI the prefix is invisible: the upscaler emits RGB either way, and the
+only thing a capture device notices is 576p50 vs 480p60. On composite/S-Video
+the prefix is the whole colour signal, so the hybrids are the classic
+non-standard combinations:
+
+| Mode | chroma | field rate | subcarrier |
+|---|---|---|---|
+| `PAL` | PAL | 50 Hz | standard (`c_pal_50_283_5`) |
+| `NTSC` | NTSC | 60 Hz | standard (`c_ntsc_60_227_5`) |
+| `PAL-60` | PAL | 60 Hz | free-running (`c_pal_60_free`) |
+| `NTSC-50` | NTSC | 50 Hz | free-running (`c_ntsc_50_free`) |
+| `PAL-60/L` | PAL | 60 Hz | locked, 281.5 (`c_pal_60_281_5`) |
+| `NTSC-50/L` | NTSC | 50 Hz | locked, 228.5 (`c_ntsc_50_228_5`) |
+
+`_switch_system_mode` preserves the chroma prefix deliberately, so a set that
+could decode colour before still can. But **the field rate changes underneath
+it**, and that is what a single-standard analog display may refuse to lock. In
+practice `PAL-60` (what a PAL machine becomes when retimed to NTSC) is widely
+tolerated by multi-standard sets and capture hardware; `NTSC-50` is rarer and
+more likely to come out monochrome or unstable. A pure NTSC set fed `PAL-60`
+usually locks sync and loses colour.
+
+Audio is unaffected as a signal path — the SID's output leaves by the same AV
+connector regardless of video mode. What does change is *pitch*, because φ2
+changed, and that is the entire point of the switch. It is identical on HDMI
+and composite.
+
+The `/L` variants lock the colour subcarrier to an exact line ratio rather than
+free-running it, and the firmware's own comment calls them the "best timing
+match to original C64". Their periods are slightly *longer* (84422 / 81385 vs
+84372 / 81300), so it is the plain hybrids that run ~0.1% fast. c64cast makes no
+attempt to carry a `/L` choice across a retime: every `/L` mode is a hybrid, and
+retiming a hybrid always lands on the other standard's plain mode, which has no
+locked form. A composite user who chose `/L` loses it for the run and gets it
+back at teardown — one more reason `sid_video_mode` is opt-in.
+
+`hw_provision.SYSTEM_MODE_TIMING` encodes exactly this, which is why that table
+looks backwards. It is not.
+
+The switch applies live over REST with no Ultimate reboot — the firmware's
+effectuate path only re-runs the PLL. c64cast still resets the *C64* afterwards
+so the KERNAL re-runs its PAL/NTSC autodetect against the new timing.
+
+### The defect: PLAY does not run once per frame
+
+The C64-side player chains PLAY onto the **kernal's CIA #1 Timer A jiffy IRQ**.
+That IRQ is a *wall-clock service* — TI$, SCNKEY, cursor blink — not a frame
+interrupt, so the KERNAL programs it to ≈60 Hz on **both** standards (`$4025`
+PAL, `$4295` NTSC; `c64.kernal_cia1_latch`).
+
+A PAL vsync tune therefore played at 60.0 Hz instead of 50.12 — **+19.7%
+tempo** — on a PAL machine as well as an NTSC one. Switching System Mode does
+not touch this; it only changes φ2, i.e. **pitch**.
+
+Over the 61 245 tunes in a full HVSC, ~80% are PAL + vsync, the population
+taking the full error. PAL CIA-timed tunes (~10%) self-time from their own INIT
+and drift only by the 3.8% clock ratio.
+
+| lever | fixes | costs |
+|---|---|---|
+| CIA #1 Timer A latch (`[ultimate64].sid_play_rate`) | tempo (+19.7%) | nothing — software only, no video change |
+| System Mode (`[ultimate64].sid_video_mode`) | pitch (+3.8%) | an HDMI mode switch + capture re-lock |
+
+Hence the defaults: the tempo fix is on, the pitch fix is opt-in.
+
+### Why the latch is written *after* INIT
+
+On the Ultimate the player is kicked via `run_prg`, which soft-resets the C64 —
+and the KERNAL's reset path reloads Timer A. A latch written before the kick is
+gone before the first PLAY. So `_apply_play_rate` runs from
+`_tune_play_divider`, ~200 ms in, reusing the latch sample that function already
+takes.
+
+Writing after INIT means a multispeed tune's own latch is already in place, so
+two gates decide whether to overwrite it:
+
+1. **The PSID speed bit for this subtune must say vsync.** The word at `$12` is
+   one bit per subtune (0 = vsync, 1 = CIA-timed), which is why
+   `cue_song_reinit` re-decides per subtune rather than inheriting the start
+   song's answer.
+2. **The sampled post-INIT latch must not already be far below the kernal
+   default.** A 2×/3×/4× multispeed sits at 1/2, 1/3, 1/4 of it — well clear of
+   the noise in an 8-sample max of a free-running down-counter. This catches
+   tunes whose speed bit lies.
+
+The latch is computed from the **machine's** clock for the **tune's** rate
+(`cia1_latch_for_rate(frame_rate(tune_clock), machine_system)`), so tempo comes
+out right on either machine; only pitch stays standard-dependent.
+
+`WaveformScene._video_hz` reads `api.sid_vsync_play_rate_hz()` rather than
+assuming 50/60 from the configured system — the scope's host emulator has to
+advance the song at whatever PLAY is really being called at. It is re-read after
+`run_sid_player` and after each subtune cue.
+
+The REU audio pump reprograms the same timer, so `scene_factory` drops the
+tempo correction (with a log) when `[audio].use_reu_pump` is on rather than
+letting the two overwrite each other.
+
+### `[ultimate64].system = "auto"`
+
+This one field sets the CPU clock, the frame rate, the DAC NMI latches and the
+scope rate at once, and a wrong value is silent. `hw_provision.resolve_system`
+reads it off the machine's live System Mode after the backend opens — it cannot
+happen in `make_backend`, which bakes `default_fps` and `host_sid_model` from it
+before any API exists, so those profile fields are re-folded once the answer is
+known. An explicit value still wins (it is how you describe a TeensyROM-driven
+C64), but disagreeing with the machine logs a warning and is a `--doctor` error.
+
+### Capture devices and 576p50
+
+PAL timing at the Ultimate's SD scan resolution puts 576p50 on the wire, and
+capture devices disagree about it: one tested device produced a torn/rolling
+picture, another locked cleanly. Raising **HDMI Scan Resolution** to HD (720p)
+made the first device lock — the upscaler's output is what the capture card
+sees. `[ultimate64].hdmi_scan_resolution = "auto"` (the default) therefore
+raises SD to HD *only when c64cast itself retimed the machine*: clean up after
+our own change, leave a machine we did not touch alone.
+
+Recovery, worth knowing before changing video modes: holding **C= and P** (PAL)
+or **C= and N** (NTSC) at Ultimate boot forces System Mode back. Every write
+c64cast makes here is live + volatile, so a power-cycle clears it regardless.
+
 ## `waveform.py` + `sidemu.py` + `sid_host_emu.py` — SID oscilloscope scene
 
 `WaveformScene` (inherits `VoiceScopeRenderer`) plays a SID file on the U64 via `api.run_sid_player(...)` (DMA SID payload + 73-byte 6502 player relocated per-tune by `_choose_player_layout` — default $C300, bumped past the SID payload on overlap — then POST a matching `10 SYS <player_base>` BASIC stub via `runners:run_prg`) and visualizes the three SID voices' waveforms across the full screen. Display is bitmap-only (320×200 hires). Voices stack vertically — voice 1 top, voice 3 bottom.

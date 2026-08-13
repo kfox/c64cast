@@ -27,7 +27,7 @@ from c64cast.audio import dac_calibration
 from c64cast.audio.audio import AUDIO_AVAILABLE, resolve_audio_input_device
 from c64cast.audio.dac_capture_device import CaptureUnavailableError
 from c64cast.audio.dac_slot_ring import MeasurementError
-from c64cast.hw import char_rom
+from c64cast.hw import char_rom, hw_provision
 from c64cast.hw.backend import make_backend
 
 from . import config as cfgmod
@@ -487,6 +487,10 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
         idx = resolve_audio_input_device(args.audio_device)
         dev = idx if idx >= 0 else None
     be = make_backend(cfg)
+    # A calibration is keyed per system, so settle `system = "auto"` against
+    # the machine before measuring — otherwise an unresolved "auto" would file
+    # a PAL machine's curve under NTSC.
+    hw_provision.resolve_system(cfg, be)
     try:
         run = dac_calibration.run_calibration(
             be, cfg, device=dev, log_fn=lambda m: log.info("%s", m)

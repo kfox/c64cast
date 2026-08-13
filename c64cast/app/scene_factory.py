@@ -1687,6 +1687,27 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
     return scene
 
 
+def _resolve_sid_play_rate(cfg: Config) -> str | float | None:
+    """`[ultimate64].sid_play_rate`, forced off when something else in the run
+    owns CIA #1 Timer A.
+
+    The REU audio pump reprograms Timer A to its own matched rate
+    (audio.py's `_arm_reu_pump`). Retuning the same timer for the SID's PLAY
+    rate would have the two overwrite each other, so the pump — which is
+    load-bearing for audio continuity — wins and the tempo correction is
+    dropped with a note rather than left to fight."""
+    if cfg.ultimate64.sid_play_rate in (None, "off"):
+        return None
+    if cfg.audio.use_reu_pump:
+        log.info(
+            "[ultimate64].sid_play_rate is ignored while [audio].use_reu_pump "
+            "is on — the REU pump owns CIA #1 Timer A. Vsync tunes play at the "
+            "kernal jiffy rate (PAL tunes ~20%% fast)."
+        )
+        return None
+    return cfg.ultimate64.sid_play_rate
+
+
 def _build_waveform(ctx: _SceneBuildContext) -> Scene:
     s, cfg = ctx.s, ctx.cfg
     # If duration_s is unset AND a songlengths DB is configured, let the
@@ -1713,6 +1734,7 @@ def _build_waveform(ctx: _SceneBuildContext) -> Scene:
         sid_model=resolve_sid_model_cfg(cfg),
         sid_panning=cfg.ultimate64.sid_panning,
         sid_volume=cfg.ultimate64.sid_volume,
+        sid_play_rate=_resolve_sid_play_rate(cfg),
     )
     if s.name:
         scene.name = s.name
@@ -1787,6 +1809,7 @@ def _build_generative_sid(ctx: _SceneBuildContext, gen: GenerativeSource, name: 
         sid_model=resolve_sid_model_cfg(cfg),
         sid_panning=cfg.ultimate64.sid_panning,
         sid_volume=cfg.ultimate64.sid_volume,
+        sid_play_rate=_resolve_sid_play_rate(cfg),
     )
     scene = SourceScene(ctx.api, None, mode, gen, audio_src, name, color=cfg.color)
     # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at full

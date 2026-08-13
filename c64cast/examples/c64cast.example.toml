@@ -122,7 +122,66 @@ storage = "sd"                      # "sd" | "usb" — where helper PRGs upload 
 
 [ultimate64]
 url = "http://192.168.2.64"         # bare hostname or IP works too
-system = "NTSC"                     # NTSC | PAL (affects fps, frame_time, cycles)
+system = "auto"                     # "auto" | NTSC | PAL — the machine's timing
+                                    # standard (affects fps, frame_time, CPU
+                                    # clock, SID PLAY rate). "auto" reads the
+                                    # Ultimate's live System Mode; it falls back
+                                    # to NTSC on a backend that can't be asked
+                                    # or under --skip-probe.
+sid_play_rate = "auto"              # PLAY-call rate for VSYNC-timed SID tunes.
+                                    #   "auto" (default) = the tune's own frame
+                                    #     rate from its PSID clock flag, so a PAL
+                                    #     tune plays at ~50.12 Hz.
+                                    #   "off" = leave the kernal jiffy rate alone.
+                                    #     That is ~60 Hz on BOTH standards (the
+                                    #     jiffy IRQ is a wall-clock service, not a
+                                    #     frame interrupt), so PAL tunes run ~20%
+                                    #     fast — which is how they sounded before
+                                    #     this setting existed.
+                                    #   a number = pin every vsync tune to that
+                                    #     rate in Hz (59.826 = NTSC frame rate,
+                                    #     50.125 = PAL).
+                                    # CIA-timed (multispeed) tunes self-time from
+                                    # their own INIT and are never overridden.
+                                    # Ignored while [audio].use_reu_pump is on
+                                    # (the pump owns CIA #1 Timer A).
+sid_video_mode = "off"              # "off" | "auto". "auto" switches the
+                                    # Ultimate 64's System Mode so the machine's
+                                    # PAL/NTSC timing matches [ultimate64].system,
+                                    # correcting SID PITCH (the CPU clock differs
+                                    # 3.8% between standards). Off by default
+                                    # because it retunes the HDMI output (576p50
+                                    # vs 480p60) and every capture device has to
+                                    # re-lock — some handle 576p50 poorly. Live
+                                    # and volatile; restored at teardown. U64
+                                    # only (the Ultimate II+ has no such setting).
+                                    # RECOVERY: if a video mode leaves you with
+                                    # no picture, hold C= and P (PAL) or C= and
+                                    # N (NTSC) at Ultimate boot to force System
+                                    # Mode back. c64cast's changes are volatile
+                                    # and clear on a power-cycle either way.
+hdmi_scan_resolution = "auto"       # the U64's HDMI upscaler. "auto" | "keep" |
+                                    # a scan-mode label ("SD (480p/576p)",
+                                    # "HD (720p)", "FullHD (1080p)", "PC 800 x
+                                    # 600", "PC 1024 x 768", "PC 1280 x 1024").
+                                    #   "auto" (default) raises SD to HD (720p)
+                                    #     ONLY when sid_video_mode above retimes
+                                    #     the machine. PAL timing at SD puts
+                                    #     576p50 on the wire and some HDMI
+                                    #     capture devices can't lock to it (torn
+                                    #     or rolling picture) — the same machine
+                                    #     at 720p50 captures cleanly. So c64cast
+                                    #     cleans up after its own switch and
+                                    #     leaves a machine it didn't retime alone.
+                                    #   "keep" never touches it.
+                                    #   a label sets it for the whole run. Only
+                                    #     HD/FullHD are verified against PAL
+                                    #     timing; the "PC" modes are passed
+                                    #     through from the firmware untested.
+                                    # Live and volatile; restored at teardown.
+                                    # Newer U64 boards only — older firmware
+                                    # doesn't register the setting, and c64cast
+                                    # stays quiet when it's absent.
 dma_port = 64                       # TCP port for the Ultimate DMA Service
                                     # (enable on the U64 via F2 → Network
                                     # Settings → Ultimate DMA Service)

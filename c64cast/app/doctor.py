@@ -1263,6 +1263,7 @@ def _probe_u64_services(
             message=f"DMA + REST reachable at {url} ({status})",
         )
     ]
+    out.extend(_probe_system_mode(name, cfg, api))
     out.extend(_probe_reu_status(name, cfg, api))
     out.extend(_probe_sid_status(name, cfg, api))
     out.extend(_probe_sampler_status(name, cfg, api))
@@ -1417,6 +1418,56 @@ def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
                 "a U2+ ships its emulated SID disabled. A working physical SID "
                 "chip can sound without this."
             ),
+        )
+    ]
+
+
+def _probe_system_mode(name: str, cfg: Config, api: object) -> list[Diagnostic]:
+    """Compare `[ultimate64].system` against the machine's live System Mode.
+
+    This one field sets the CPU clock, the frame rate, the DAC NMI latches and
+    the SID PLAY rate all at once, and a wrong value is silent — everything
+    just runs at the other standard's numbers. So report it wherever the
+    machine can answer:
+      * ok    — "auto" (it will be read at run time), or an explicit value that
+                matches
+      * error — an explicit value that disagrees with the machine
+      * (quiet) — a backend with no System Mode surface, or an unreadable one
+    """
+    subject = f"{name} (system)"
+    live = hw_provision.read_system_timing(api)
+    if live is None:
+        return []
+    configured = cfg.ultimate64.system
+    if configured == "auto":
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message=f"system = auto resolves to {live} on this machine",
+            )
+        ]
+    if configured.upper() == live:
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message=f"system = {configured} matches the machine",
+            )
+        ]
+    return [
+        Diagnostic(
+            level="error",
+            category="connectivity",
+            subject=subject,
+            message=(
+                f"[ultimate64].system = {configured} but the machine is running {live} timing"
+            ),
+            hint="Frame rate, CPU clock, DAC NMI rate and SID PLAY rate are all "
+            'computed from this. Set system = "auto" to read it from the '
+            "machine, or change one of the two to agree.",
         )
     ]
 
