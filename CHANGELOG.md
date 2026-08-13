@@ -12,6 +12,27 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/diags/video_render_probe.py` now times the host as well as the
+  link.** It reported the modelled cost of getting a frame *onto the wire* but
+  nothing about the cost of producing one, so it could not answer whether a
+  given machine is fast enough to drive c64cast at all — the question that
+  decides whether the host can be a small single-board computer instead of a
+  laptop. It now reports decode / render / total wall-clock milliseconds per
+  frame alongside the existing per-region write cost, and names which side, if
+  either, actually binds the source frame rate. `--threads N` pins decode and
+  OpenCV to N threads so two machines can be compared by single-core speed
+  rather than by core count, and the per-frame CSV gains `decode_ms` and
+  `render_ms`.
+
+  The measurement it makes easy to see: compose cost tracks the **source
+  resolution**, not the display mode, because every mode resizes the source down
+  to its own small target and that resize reads every source pixel. One frame
+  costs ~30 ms from 4K in any mode and ~3.4-6.7 ms from 720p. So the media, not
+  the renderer, is usually what decides whether the host or the link is the
+  bottleneck — which is why the verdict line names pre-scaling as the fix.
+
 ### Fixed
 
 - **PAL SID tunes no longer play ~20% fast.** The C64-side SID player chains
