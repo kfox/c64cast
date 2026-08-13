@@ -536,7 +536,7 @@ Two mechanical constraints, both from cv2's HighGUI:
   and serviced from the process's main thread — a hard Cocoa requirement on
   macOS, where an off-thread `namedWindow` raises "Unknown C++ exception from
   OpenCV code" out of the first call. Playlists all run on worker threads, so
-  `cli._pump_previews_until_done` pumps the window from the parked main
+  `session._pump_previews_until_done` pumps the window from the parked main
   thread. (This is why the window is *not* a background thread like the
   recorder: the pre-cv2 pygame implementation was threaded, and therefore
   never actually worked on macOS.)

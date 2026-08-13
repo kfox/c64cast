@@ -1,6 +1,6 @@
 """Live U64 hardware auto-provisioning over the Ultimate REST config API.
 
-`cli.build_stack` calls `provision_reu`/`provision_sampler` on every run: when
+`session.build_stack` calls `provision_reu`/`provision_sampler` on every run: when
 the config needs a feature the firmware has switched off, they enable it LIVE
 + VOLATILE (never saved to flash, so even a missed restore reverts on
 power-cycle) and hand back the originals for `restore_reu`/`restore_sampler`
@@ -161,7 +161,7 @@ def provision_reu(api: object, cfg: Config) -> dict[str, str] | None:
 
     Returns the original ``{field: value}`` to hand back to `restore_reu` at
     teardown, or None when nothing was changed (so a no-op is cheap to detect).
-    Gated entirely here so `cli.build_stack` can call it unconditionally:
+    Gated entirely here so `session.build_stack` can call it unconditionally:
 
       * ``[ultimate64].auto_reu`` must be on (default true),
       * the backend must have an REU (``profile.supports_reu`` — Ultimate only),
@@ -254,7 +254,7 @@ def reu_is_enabled(api: object) -> bool | None:
     """Query the Ultimate's REU enable state over REST.
 
     Returns True/False when the firmware reports it, or None when the query
-    failed or the response shape was unrecognized. Used by cli.build_stack to
+    failed or the response shape was unrecognized. Used by session.build_stack to
     resolve the [video].use_reu_staged "auto" setting — a None (can't tell) is
     treated as "not available" there so auto degrades to host-DMA rather than
     staging into a REU that might be off (which would silently freeze video)."""
@@ -345,7 +345,7 @@ def sampler_is_available(api: object) -> bool | None:
     mixer channel is not OFF). None when the REST query failed; False when the
     feature is absent / mapped-off / muted.
 
-    Used by `cli._resolve_sampler_available` to resolve [audio].backend — None
+    Used by `session._resolve_sampler_available` to resolve [audio].backend — None
     or False degrades to the 4-bit DAC. Run AFTER `provision_sampler` so a box
     this run just enabled reads as available."""
     state = read_sampler_config(api)
@@ -623,7 +623,7 @@ def provision_video_output(api: object, cfg: Config) -> dict[str, str] | None:
         for the run regardless.
 
     Returns the original ``{field: value}`` for `restore_video_output`, or None
-    when nothing changed. Gated so `cli.build_stack` can call it
+    when nothing changed. Gated so `session.build_stack` can call it
     unconditionally: the backend must expose the category
     (`profile.supports_system_mode` — Ultimate 64 only) and a probe must be
     allowed (never write config we can't first read back).

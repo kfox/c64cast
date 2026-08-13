@@ -300,7 +300,7 @@ def ensure_installed(be: C64Backend, cfg: Config) -> bool:
     its ROM should still cast, with the cv2 fallback it would have had anyway.
     A failure logs the `--install-char-rom` escape route once and moves on.
 
-    Called from `cli.build_stack` right after the reset + BASIC clear loop:
+    Called from `session.build_stack` right after the reset + BASIC clear loop:
     the machine is idle, nothing has painted yet, and the Ultimate's kick
     (which soft-resets) can re-establish the clear loop behind us."""
     if not cfg.hardware.dump_char_rom:

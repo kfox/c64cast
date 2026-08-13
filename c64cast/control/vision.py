@@ -416,7 +416,7 @@ class VisionController:
         self._cycle_event = cycle_event
         self._poll.start()
 
-    def stop(self):
+    def stop(self) -> None:
         self._poll.stop()
         try:
             self.recognizer.close()
@@ -426,7 +426,7 @@ class VisionController:
     def bind_performance(self, playlist: Any) -> None:
         """Route RUNNING-state gestures to the clip-launch grid instead of
         transport (Live DJ/VJ Phase 6). `playlist` is the owning Playlist; wired
-        by cli.build_stack when [vision].performance is on. Call before/after
+        by session.build_stack when [vision].performance is on. Call before/after
         start() interchangeably — the poll loop reads `self._perf` each tick."""
         self._perf = playlist
 

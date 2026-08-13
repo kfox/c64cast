@@ -549,7 +549,7 @@ class WebcamSource:
         with self._lock:
             return None if self._latest is None else self._latest.copy()
 
-    def release(self):
+    def release(self) -> None:
         self._poll.stop()
         with self._lock:
             self._latest = None

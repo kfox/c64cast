@@ -225,7 +225,7 @@ class Playlist:
         # from pads quantized to `tempo`; all scene mutation runs on the playlist
         # thread inside `service` (called from `_advance`), never on the MIDI
         # reader thread. `build_performance_scene` is the injected factory
-        # (cli.build_stack) that turns a clip dict into a Scene — None until
+        # (session.build_stack) that turns a clip dict into a Scene — None until
         # wired, which makes the grid inert.
         from c64cast.control.performance import PerformanceSession, default_look_store
 

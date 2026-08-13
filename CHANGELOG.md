@@ -12,6 +12,24 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Changed
+
+- **The session lifecycle moved out of `cli.py` into a new `c64cast/app/session.py`.**
+  Building each system's stack, running the playlists and tearing it all down
+  were inlined in the CLI's `_run_session`, which meant a session could only
+  exist for as long as the process did — there was no way to start, stop and
+  restart one from a longer-lived host. They are now five composable steps
+  (`validate_configs`, `build_session`, `start_services`, `run_foreground`,
+  `teardown_session`) over a `Session` object, and `_run_session` is their
+  composition plus the signal handling only a foreground CLI can do.
+
+  Nothing about running c64cast changes. `cli` re-exports every moved name
+  (`build_stack`, `teardown_stack`, `_run_playlists`, `StackBuildError`, …), so
+  anything importing them from `c64cast.app.cli` — including the diag scripts
+  under `scripts/` — keeps working. The one split worth knowing about is that
+  config validation is now hardware-free and separable from the build, which is
+  what lets a caller reject a bad config without disturbing a running session.
+
 ### Added
 
 - **`scripts/diags/video_render_probe.py` now times the host as well as the

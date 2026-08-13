@@ -14,10 +14,10 @@ SDL, and every other desktop toolkit) may only create and service a
 window on the main thread, which on macOS is a hard Cocoa requirement —
 an off-thread `namedWindow` raises "Unknown C++ exception from OpenCV
 code" straight out of the first call. Every playlist already runs on its
-own worker thread (`cli._run_playlists`), leaving the main thread blocked
+own worker thread (`session._run_playlists`), leaving the main thread blocked
 in `join()`, so the main thread is both the only legal place to pump a
 window and the one with nothing else to do. Hence the open/pump/close
-shape: `cli._pump_previews_until_done` owns the lifecycle.
+shape: `session._pump_previews_until_done` owns the lifecycle.
 """
 
 from __future__ import annotations
@@ -158,7 +158,7 @@ class StreamRecorder:
     def frame_count(self) -> int:
         return self._frame_count
 
-    def start(self):
+    def start(self) -> None:
         w, h = 320 * self.scale, 200 * self.scale
         # Pyright's bundled cv2 stubs miss VideoWriter_fourcc — exists at runtime.
         cc = cv2.VideoWriter_fourcc(*self.fourcc)  # pyright: ignore[reportAttributeAccessIssue]
@@ -173,7 +173,7 @@ class StreamRecorder:
         self._poll.start()
         log.info("recording: %s @ %dx%d %dfps (%s)", self.output_path, w, h, self.fps, self.fourcc)
 
-    def stop(self):
+    def stop(self) -> None:
         self._poll.stop()
         if self._writer is not None:
             self._writer.release()
