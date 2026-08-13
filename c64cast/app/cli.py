@@ -668,6 +668,7 @@ def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) ->
         # config surface). Under --skip-probe the flags stay optimistic and
         # the per-call error handling absorbs any missing surface, as before.
         api.refine_capabilities()
+    hw_provision.resolve_system(cfg, api)
     return api
 
 
@@ -848,6 +849,16 @@ def build_stack(
     # live + volatile) when a video scene will use it. Runs BEFORE
     # _resolve_sampler_available so the probe sees it on; restored at teardown.
     sampler_restore = hw_provision.provision_sampler(api, cfg)
+    # Video output: the opt-in System Mode retime ([ultimate64].sid_video_mode,
+    # which fixes SID PITCH) plus the HDMI upscaler that keeps capture working
+    # across it ([ultimate64].hdmi_scan_resolution). Resolved once per run —
+    # every switch changes the HDMI output mode and costs the capture device a
+    # re-lock. The C64 reset that follows makes the KERNAL re-run its PAL/NTSC
+    # autodetect against the new timing; it also has to happen before any scene
+    # has painted, which is why this sits here.
+    video_output_restore = hw_provision.provision_video_output(api, cfg)
+    if video_output_restore is not None and api.profile.supports_reset:
+        api.reset()
 
     audio = _build_audio(cfg, api)
 
@@ -867,6 +878,7 @@ def build_stack(
         log.error("%s", e)
         if audio is not None:
             audio.close()
+        hw_provision.restore_video_output(api, video_output_restore)
         hw_provision.restore_sampler(api, sampler_restore)
         hw_provision.restore_reu(api, reu_restore)
         api.close()
@@ -973,6 +985,7 @@ def build_stack(
         reu_restore=reu_restore,
         sampler_available=sampler_available,
         sampler_restore=sampler_restore,
+        video_output_restore=video_output_restore,
         framebuffer=framebuffer,
         preview_window=preview_window,
         recorder=recorder,
@@ -1001,6 +1014,12 @@ def teardown_stack(stack: SystemStack) -> None:
         ("REU restore", lambda: hw_provision.restore_reu(stack.api, stack.reu_restore)),
         # Same for the Ultimate Audio sampler map/mixer auto-provisioning.
         ("sampler restore", lambda: hw_provision.restore_sampler(stack.api, stack.sampler_restore)),
+        # Same for an opt-in System Mode / scan-resolution switch. Before the
+        # reset below, so the KERNAL re-autodetects against the restored timing.
+        (
+            "video output restore",
+            lambda: hw_provision.restore_video_output(stack.api, stack.video_output_restore),
+        ),
         ("U64 reset", stack.api.reset),
         ("API close", stack.api.close),
         ("camera release", lambda: stack.source.release() if stack.source else None),

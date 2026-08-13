@@ -589,7 +589,7 @@ def _prompt_globals(q) -> tuple[str, str] | None:  # type: ignore[no-untyped-def
     url = q.text("Ultimate 64 URL", default=cfgmod.Ultimate64Cfg().url).ask()
     if url is None:
         return None
-    system = q.select("Video system", choices=list(cfgmod.SYSTEM_CHOICES), default="NTSC").ask()
+    system = q.select("Machine timing", choices=list(cfgmod.SYSTEM_CHOICES), default="auto").ask()
     if system is None:
         return None
     return url, system

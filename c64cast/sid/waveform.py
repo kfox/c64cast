@@ -335,6 +335,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         sid_model: str = "auto",
         sid_panning: Sequence[int | str] | None = None,
         sid_volume: Sequence[int | str] | None = None,
+        sid_play_rate: str | float | None = None,
     ):
         """Initialize the scene.
 
@@ -455,7 +456,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # the metadata row alongside the SID's composed-for standard so a
         # mismatch (e.g. a PAL tune on this NTSC machine) is visible.
         self._system = "PAL" if system.upper() == "PAL" else "NTSC"
-        self._video_hz = 50.0 if system.upper() == "PAL" else 60.0
+        self._sid_play_rate = sid_play_rate
+        # The rate a VSYNC tune's PLAY actually runs at on this machine. NOT
+        # the video frame rate: PLAY rides the kernal jiffy IRQ, which is ~60 Hz
+        # on both standards unless [ultimate64].sid_play_rate retunes it. The
+        # backend is the authority (it does the retuning); re-read in setup()
+        # once the tune is loaded and the rate is settled.
+        self._video_hz = api.sid_vsync_play_rate_hz()
         # Host-emu clock anchor. The poll thread derives its PLAY-tick count
         # from wall-clock elapsed since the real SID started (set in setup()
         # after run_sid_player), not from the number of poll wakeups — see
@@ -947,6 +954,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 avoid=avoid,
                 play_bank=play_bank,
                 defer_audio=True,
+                play_rate=self._sid_play_rate,
             )
         except Exception as e:
             log.error(
@@ -978,6 +986,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # Resolve the host-emu PLAY rate for this tune (vsync vs CIA
         # multispeed) and (re)build the poll thread at that period — the
         # pool re-pick above may have loaded a different tune. Then start it.
+        # Re-read the vsync rate first: run_sid_player has settled whether this
+        # tune's PLAY was retuned to its native frame rate or left on the
+        # kernal jiffy, and the scope has to advance the song at whichever won.
+        self._video_hz = self.api.sid_vsync_play_rate_hz()
         self._resolve_poll_rate()
         self._poll.start()
 
@@ -1163,6 +1175,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # the SID is genuinely quiet before the next scene begins.
         try:
             self.api.restore_kernal_irq_vector()
+            # Then CIA #1 Timer A back to the kernal default, undoing any
+            # PLAY-rate retune, so the jiffy clock / SCNKEY / cursor blink
+            # resume at ~60 Hz for the next scene. Vector first for the same
+            # reason as the ordering note above. No-op when never retuned.
+            self.api.restore_kernal_play_rate()
             self.api.flush()
             for base in self._sid_addresses:
                 if base != SID.BASE:
@@ -1438,6 +1455,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 self._last_y[i] = None
         self._sid_start_time = now
         self._ticks_done = 0
+        # The new subtune may carry a different PSID speed flag, so the cue's
+        # re-tune decision may have landed differently — re-read the rate.
+        self._video_hz = self.api.sid_vsync_play_rate_hz()
         self._resolve_poll_rate()
         self._poll.start()
 

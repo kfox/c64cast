@@ -332,12 +332,6 @@ REU_PUMP_CHUNK_SIZE_HEAVY_BUS = 80
 # both NTSC and PAL because it's a ratio of periods, not an absolute time.
 REU_PUMP_CIA1_LATCH = 0x3FFF
 
-# NTSC kernal default CIA #1 Timer A latch ($4025 = 16421 → ~60.0 Hz),
-# restored when the REU pump disarms so the next kernal IRQ runs at the
-# stock jiffy rate. PAL's default differs slightly, but the timer keeps
-# running either way and the next reset clears it, so the NTSC value is fine.
-CIA1_TIMER_A_LATCH_KERNAL_NTSC = 0x4025
-
 # --- C64-side REU-pump rate governor -------------------------------------
 # The pump (CIA #1 rate) produces at the fixed nominal rate; video DMA
 # bus-halts throttle the NMI *reader* below nominal, so the pump out-produces

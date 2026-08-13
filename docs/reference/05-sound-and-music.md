@@ -294,8 +294,69 @@ overwrite the oscilloscope's bitmap. When the scene's `file` is a directory or
 a glob, a refused candidate is skipped and another drawn, so a folder of mixed
 tunes still plays.
 
-The PAL/NTSC speed flag in the header is ignored; the tune is played at the
-kernal's default interrupt rate.
+### Tempo, Pitch, and the Machine's Standard
+
+A tune composed for a PAL machine has two ways of coming out wrong on an NTSC
+one, and they are separate problems with separate fixes.
+
+**Tempo.** The player chains PLAY onto the kernal's interrupt, and the kernal
+runs that interrupt at about 60 Hz on *both* standards — it is a clock service,
+counting toward the jiffy timer and the keyboard scan, not something tied to
+the video frame. A PAL tune expects to be called 50.12 times a second, so
+played this way it runs nearly twenty percent fast, on a PAL machine as much as
+an NTSC one.
+
+`[ultimate64].sid_play_rate` decides what to do:
+
+| Value | Effect |
+|---|---|
+| `"auto"` (default) | PLAY at the tune's own frame rate, from its header's clock flag |
+| `"off"` | Leave the kernal rate alone — every vsync tune plays at ~60 Hz |
+| a number | Pin every vsync tune to that rate in Hz |
+
+`"off"` is the behaviour that predates the setting, and it is a legitimate
+preference: a great many people know these tunes at the speed an NTSC machine
+played them. An explicit number is the same choice made deliberately —
+`59.826` is the NTSC frame rate, `50.125` is PAL.
+
+A multispeed tune programs its own timer from INIT and is never overridden.
+c64cast checks two things before touching the rate: the header's per-subtune
+speed flag has to say the tune expects one call per frame, and the timer value
+actually in place after INIT has to look like the kernal's rather than a
+multispeed one. The second check is what protects tunes whose header lies.
+
+The correction is also dropped, with a note in the log, when
+`[audio].use_reu_pump` is on — that path programs the same timer for its own
+purposes and there is only one of it.
+
+**Pitch.** The processor clock is 985 248 Hz on PAL and 1 022 727 Hz on NTSC.
+Everything the SID produces scales with it, so a PAL tune on an NTSC-timed
+machine is sharp by 3.8%, about two thirds of a semitone, whatever the PLAY
+rate is. The only fix is to retime the machine.
+
+On an Ultimate 64 that is its System Mode setting, and
+`[ultimate64].sid_video_mode = "auto"` will switch it to match
+`[ultimate64].system` for the run — live, never written to flash, and restored
+when the run ends. It is off by default because the HDMI output mode changes
+with it, from 480p60 to 576p50, and every display and capture device on the
+other end has to re-lock. Some capture devices do not manage 576p50 at all;
+`[ultimate64].hdmi_scan_resolution` exists to raise the Ultimate's upscaler to
+720p when that happens, and its `"auto"` default does so whenever c64cast is
+the thing that retimed the machine.
+
+If a video mode ever leaves you looking at nothing, hold **C= and P** or
+**C= and N** while the Ultimate boots to force it back to PAL or NTSC.
+
+One asymmetry worth knowing before you turn it on: over HDMI, retiming costs
+you a re-lock and nothing else, because the Ultimate's upscaler emits RGB and
+the standard's colour encoding never reaches the cable. Over composite it costs
+more. c64cast keeps the colour encoding the machine was set for, so a television
+that decoded colour still can, but the field rate changes underneath it — and a
+television built for one standard may not lock to the other's rate at all. A PAL
+machine retimed to NTSC emits PAL colour at 60 Hz, which most multi-standard
+sets tolerate; an NTSC machine retimed to PAL emits NTSC colour at 50 Hz, which
+is rarer and more often comes out monochrome. Audio is unaffected either way,
+apart from the pitch change you asked for.
 
 ### How the Oscilloscope Knows
 

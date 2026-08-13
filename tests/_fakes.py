@@ -22,6 +22,7 @@ from collections.abc import Iterator
 from unittest import mock
 
 from c64cast.hw.backend import HardwareProfile
+from c64cast.hw.c64 import actual_rate_for_latch, kernal_cia1_latch
 
 
 @contextlib.contextmanager
@@ -150,6 +151,7 @@ class FakeAPI:
             family="fake",
             supports_config=supports_config,
             supports_sid_config=supports_config,
+            supports_system_mode=supports_config,
         )
         return api
 
@@ -207,10 +209,19 @@ class FakeAPI:
         return None
 
     def run_sid_player(
-        self, sid_bytes, song=0, timeout=5.0, *, avoid=None, play_bank=None, defer_audio=False
+        self,
+        sid_bytes,
+        song=0,
+        timeout=5.0,
+        *,
+        avoid=None,
+        play_bank=None,
+        defer_audio=False,
+        play_rate=None,
     ):
         self.sid_played = (bytes(sid_bytes), song)
         self.sid_played_avoid = avoid
+        self.sid_played_play_rate = play_rate
         self.sid_played_play_bank = play_bank
         self.sid_deferred = defer_audio
         # Mirror the real backends: when not deferred, audio starts now; when
@@ -253,6 +264,14 @@ class FakeAPI:
     def restore_kernal_irq_vector(self):
         self.regs["RESTORE_IRQ"] = ()
 
+    def restore_kernal_play_rate(self):
+        self.regs["RESTORE_PLAY_RATE"] = ()
+
+    def sid_vsync_play_rate_hz(self):
+        # The kernal jiffy rate — ~60 Hz on both standards (see
+        # c64.kernal_cia1_latch); a fake never retunes it.
+        return actual_rate_for_latch(kernal_cia1_latch(self.profile.system), self.profile.system)
+
     def close(self):
         pass
 
@@ -271,13 +290,17 @@ def make_psid(
     second_sid_addr: int = 0,
     model: str | None = None,
     second_model: str | None = None,
+    clock: str | None = None,
+    speed: int = 0,
     payload: bytes | tuple[int, ...] | list[int] = (0x60, 0x60),
 ) -> bytes:
     """Minimal runnable PSID v2: real header fields + payload, enough for
     parse_psid_for_player + SidHostEmu to run INIT/PLAY (the defaults are an
     RTS init and play). A nonzero `second_sid_addr` ($D420-style base) makes
     it a v3 2SID header. `model` / `second_model` ("6581"/"8580") set the
-    per-chip model bits in the v2+ flags field. PSID is a real external format
+    per-chip model bits in the v2+ flags field, `clock` ("PAL"/"NTSC"/
+    "PAL+NTSC") the clock bits, and `speed` the per-subtune speed word (bit N
+    set = subtune N+1 is CIA-timed). PSID is a real external format
     — its byte offsets live here once, so a typo'd field fails every consumer
     instead of just the one file that happened to re-type it."""
     header = bytearray(124)
@@ -289,13 +312,20 @@ def make_psid(
     header[12:14] = play.to_bytes(2, "big")
     header[14:16] = num_songs.to_bytes(2, "big")
     header[16:18] = start_song.to_bytes(2, "big")
+    header[0x12:0x16] = speed.to_bytes(4, "big")
     if second_sid_addr:
         header[4:6] = (3).to_bytes(2, "big")  # secondSIDAddress is v3+
         header[0x7A] = (second_sid_addr >> 4) & 0xFF
     # v2+ flags at $76-$77 (big-endian): sidModel1 is bits 4-5 and sidModel2
     # bits 6-7, both in the low byte $77. 1 = 6581, 2 = 8580.
     bits = {"6581": 1, "8580": 2}
-    flags = bits.get(model or "", 0) << 4 | bits.get(second_model or "", 0) << 6
+    # clock is bits 2-3 of the same low byte: 1 = PAL, 2 = NTSC, 3 = both.
+    clock_bits = {"PAL": 1, "NTSC": 2, "PAL+NTSC": 3}
+    flags = (
+        bits.get(model or "", 0) << 4
+        | bits.get(second_model or "", 0) << 6
+        | clock_bits.get(clock or "", 0) << 2
+    )
     header[0x76:0x78] = flags.to_bytes(2, "big")
     return bytes(header) + bytes(payload)
 

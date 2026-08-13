@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 19 sections and 153 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 19 sections and 156 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -372,16 +372,19 @@ Ultimate 64 target + transport.
 ```toml
 [ultimate64]
 url = "http://192.168.2.64"
-system = "NTSC"              # NTSC | PAL
-dma_port = 64
-auto_reu = true
+system = "auto"              # auto | NTSC | PAL
+sid_play_rate = "auto"       # auto | off
+sid_video_mode = "off"       # off | auto
 ```
 
 <!-- table: fields -->
 | Field | Description |
 |---|---|
 | **`url`**<br>*Type:* `str`<br>*Default:* `'http://192.168.2.64'` | Base URL of the Ultimate 64 (REST + DMA host). |
-| **`system`**<br>*Type:* `str`<br>*Default:* `'NTSC'` | Target video system timing (affects frame rate + SID PLAY rate). Choices: `NTSC`, `PAL`. |
+| **`system`**<br>*Type:* `str`<br>*Default:* `'auto'` | Machine timing standard (affects frame rate, CPU clock, SID PLAY rate). 'auto' reads it from the Ultimate's live System Mode; on a backend that can't be asked, or under `--skip-probe`, it falls back to NTSC. Choices: `auto`, `NTSC`, `PAL`. |
+| **`sid_play_rate`**<br>*Type:* `str \| float`<br>*Default:* `'auto'` | PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); 'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so PAL tunes run ~20% fast — the pre-1.9 behaviour); a number pins every vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always self-time and are never overridden. Choices: `auto`, `off`. |
+| **`sid_video_mode`**<br>*Type:* `str`<br>*Default:* `'off'` | Switch the Ultimate's System Mode so the machine's PAL/NTSC timing matches [ultimate64].system, correcting SID pitch (phi2 differs 3.8% between standards). 'off' leaves it alone. Ultimate 64 only; live and volatile, restored at teardown. Changes the HDMI output mode. Choices: `off`, `auto`. |
+| **`hdmi_scan_resolution`**<br>*Type:* `str`<br>*Default:* `'auto'` | The Ultimate 64's HDMI upscaler. 'auto' raises SD to HD (720p) only when sid_video_mode retimes the machine — PAL timing at SD puts 576p50 on the wire and some capture devices cannot lock to it, while the same machine at 720p50 captures cleanly. 'keep' never touches it; a scan-mode label sets it for the run (the 'PC' modes are passed through from the firmware but are untested under PAL timing). Live and volatile, restored at teardown. Newer U64 boards only (older firmware has no such setting). Choices: `auto`, `keep`, `SD (480p/576p)`, `HD (720p)`, `FullHD (1080p)`, `PC 800 x 600`, `PC 1024 x 768`, `PC 1280 x 1024`. |
 | **`dma_port`**<br>*Type:* `int`<br>*Default:* `64` | TCP port of the U64 Ultimate DMA Service (firmware default 64). |
 | **`dma_password`**<br>*Type:* `str \| None`<br>*Default:* `None` | U64 network password, if set. Prefer the C64CAST_DMA_PASSWORD env var over committing it here. |
 | **`auto_reu`**<br>*Type:* `bool`<br>*Default:* `True` | Auto-enable + size the U64 REU (live, volatile, restored at teardown) for runs that hard-require it ([audio].use_reu_pump or explicit [video].use_reu_staged = true). Removes the manual F2 enable step. false = manage the REU yourself. No effect on no-REU backends or under `--skip-probe`. |

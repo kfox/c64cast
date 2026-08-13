@@ -61,7 +61,14 @@ from c64cast.hw.api import (
     parse_psid_for_player,
 )
 from c64cast.hw.backend import BackendCapabilityError
-from c64cast.hw.c64 import CPU, VECTORS, VIC
+from c64cast.hw.c64 import (
+    CPU,
+    VECTORS,
+    VIC,
+    cia1_latch_for_rate,
+    frame_rate,
+    kernal_cia1_latch,
+)
 from c64cast.hw.socket_dma import SocketDMAError
 
 
@@ -1316,3 +1323,181 @@ class DumpCharRomTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParsedPsidTimingTest(unittest.TestCase):
+    """parse_psid_for_player decodes the two header fields the PLAY-rate lock
+    depends on: the clock flag and the per-subtune speed word."""
+
+    def test_clock_flag_round_trips(self):
+        from c64cast.hw.api import parse_psid_for_player
+
+        for label in ("PAL", "NTSC", "PAL+NTSC"):
+            parsed = parse_psid_for_player(make_psid(clock=label))
+            self.assertEqual(parsed.clock, label)
+        # No clock bits set at all is the header's "unknown", not None.
+        self.assertEqual(parse_psid_for_player(make_psid()).clock, "?")
+
+    def test_clock_table_matches_the_sid_module(self):
+        # hw must not import sid, so the table is duplicated. Pin them together.
+        from c64cast.hw.api import _PSID_CLOCK_TABLE
+        from c64cast.sid.sid_host_emu import _CLOCK_TABLE
+
+        self.assertEqual(_PSID_CLOCK_TABLE, _CLOCK_TABLE)
+
+    def test_speed_word_is_per_subtune(self):
+        from c64cast.hw.api import parse_psid_for_player
+
+        # Subtunes 1 and 3 CIA-timed (bits 0 and 2), 2 and 4 vsync.
+        sid = make_psid(num_songs=4, speed=0b0101)
+        for song, vsync in ((1, False), (2, True), (3, False), (4, True)):
+            parsed = parse_psid_for_player(sid, song=song)
+            self.assertIs(parsed.song_is_vsync(), vsync, f"song {song}")
+
+    def test_songs_past_32_reuse_the_top_bit(self):
+        from c64cast.hw.api import parse_psid_for_player
+
+        parsed = parse_psid_for_player(make_psid(num_songs=40, speed=1 << 31), song=40)
+        self.assertFalse(parsed.song_is_vsync())
+
+    def test_speed_defaults_to_all_vsync(self):
+        from c64cast.hw.api import parse_psid_for_player
+
+        self.assertTrue(parse_psid_for_player(make_psid()).song_is_vsync())
+
+
+class SidPlayRateTest(unittest.TestCase):
+    """The PLAY-rate lock: a vsync tune's PLAY rides the kernal jiffy IRQ,
+    which is ~60 Hz on BOTH standards — so a PAL tune runs ~19.7% fast unless
+    CIA #1 Timer A is reprogrammed. `_apply_play_rate` does that, after INIT
+    (the Ultimate's run_prg kick soft-resets and the KERNAL reloads the latch,
+    so a pre-kick write would not survive)."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        patch.object(self.api, "flush").start()
+        self.writes: list[tuple[str, str]] = []
+        patch.object(
+            self.api,
+            "write_memory",
+            side_effect=lambda a, d: self.writes.append((a, d)),
+        ).start()
+
+    def tearDown(self):
+        patch.stopall()
+        with patch.object(self.api.socket_dma, "close"):
+            self.api.close()
+
+    def _load(
+        self,
+        *,
+        clock: str | None = None,
+        speed: int = 0,
+        play_rate: str | float | None = "auto",
+        system: str = "NTSC",
+        song: int = 1,
+    ):
+        from c64cast.hw.api import parse_psid_for_player
+
+        self.api.profile = replace(self.api.profile, system=system)
+        sid = make_psid(clock=clock, speed=speed, num_songs=4)
+        self.api._sid_parsed = parse_psid_for_player(sid, song=song)
+        self.api._sid_play_rate = play_rate
+
+    # A sampled latch that says "the kernal default is still in place" — i.e.
+    # INIT did not reprogram Timer A. The sample is the max of 8 reads of a
+    # free-running down-counter, so it sits somewhat below the true latch.
+    def _kernal_sample(self, system="NTSC"):
+        return int(kernal_cia1_latch(system) * 0.97)
+
+    def test_pal_vsync_tune_is_retuned_to_the_pal_frame_rate(self):
+        self._load(clock="PAL")
+        rate = self.api._apply_play_rate(self._kernal_sample())
+        assert rate is not None
+        self.assertAlmostEqual(rate, frame_rate("PAL"), places=1)
+        # Latch computed against the MACHINE's clock (NTSC here), for the
+        # TUNE's rate — that is what makes tempo right on either machine.
+        self.assertEqual(
+            self.writes, [("DC04", _latch_hex(cia1_latch_for_rate(frame_rate("PAL"), "NTSC")))]
+        )
+
+    def test_pal_tune_on_a_pal_machine_uses_the_pal_clock(self):
+        self._load(clock="PAL", system="PAL")
+        self.api._apply_play_rate(self._kernal_sample("PAL"))
+        self.assertEqual(
+            self.writes, [("DC04", _latch_hex(cia1_latch_for_rate(frame_rate("PAL"), "PAL")))]
+        )
+
+    def test_ntsc_tune_on_an_ntsc_machine_is_a_near_noop(self):
+        self._load(clock="NTSC")
+        rate = self.api._apply_play_rate(self._kernal_sample())
+        assert rate is not None
+        self.assertAlmostEqual(rate, frame_rate("NTSC"), places=1)
+
+    def test_cia_timed_subtune_is_never_touched(self):
+        self._load(clock="PAL", speed=0b0001, song=1)
+        self.assertIsNone(self.api._apply_play_rate(self._kernal_sample()))
+        self.assertEqual(self.writes, [])
+
+    def test_off_leaves_the_kernal_rate_alone(self):
+        self._load(clock="PAL", play_rate="off")
+        self.assertIsNone(self.api._apply_play_rate(self._kernal_sample()))
+        self.assertEqual(self.writes, [])
+
+    def test_none_leaves_the_kernal_rate_alone(self):
+        self._load(clock="PAL", play_rate=None)
+        self.assertIsNone(self.api._apply_play_rate(self._kernal_sample()))
+        self.assertEqual(self.writes, [])
+
+    def test_an_explicit_rate_pins_every_vsync_tune(self):
+        # This is how you keep hearing PAL tunes at NTSC speed on purpose.
+        self._load(clock="PAL", play_rate=59.826)
+        rate = self.api._apply_play_rate(self._kernal_sample())
+        assert rate is not None
+        self.assertAlmostEqual(rate, 59.826, places=1)
+
+    def test_an_ambiguous_clock_flag_gets_no_opinion(self):
+        for label in ("PAL+NTSC", "?", None):
+            with self.subTest(clock=label):
+                self._load(clock=label)
+                self.assertIsNone(self.api._apply_play_rate(self._kernal_sample()))
+
+    def test_a_multispeed_latch_overrides_a_lying_vsync_flag(self):
+        # Flagged vsync, but INIT left Timer A at half the kernal latch — a 2x
+        # multispeed. Trust the machine over the metadata.
+        self._load(clock="PAL")
+        sampled = kernal_cia1_latch("NTSC") // 2
+        self.assertIsNone(self.api._apply_play_rate(sampled))
+        self.assertEqual(self.writes, [])
+
+    def test_a_failed_write_degrades_instead_of_raising(self):
+        self._load(clock="PAL")
+        patch.object(self.api, "write_memory", side_effect=RuntimeError("boom")).start()
+        self.assertIsNone(self.api._apply_play_rate(self._kernal_sample()))
+
+    def test_teardown_only_writes_back_over_a_latch_we_set(self):
+        self._load(clock="PAL")
+        self.api.restore_kernal_play_rate()
+        self.assertEqual(self.writes, [])
+        self.api._apply_play_rate(self._kernal_sample())
+        self.writes.clear()
+        self.api.restore_kernal_play_rate()
+        self.assertEqual(self.writes, [("DC04", _latch_hex(kernal_cia1_latch("NTSC")))])
+        # Idempotent: a second teardown writes nothing more.
+        self.writes.clear()
+        self.api.restore_kernal_play_rate()
+        self.assertEqual(self.writes, [])
+
+    def test_vsync_rate_defaults_to_the_kernal_jiffy_not_the_frame_rate(self):
+        # The bug this whole feature exists for: PLAY is NOT once per frame.
+        self.api.profile = replace(self.api.profile, system="PAL")
+        self.assertAlmostEqual(self.api.sid_vsync_play_rate_hz(), 60.0, places=1)
+        self.assertNotAlmostEqual(self.api.sid_vsync_play_rate_hz(), frame_rate("PAL"), places=1)
+
+
+def _latch_hex(latch: int) -> str:
+    """The write_memory payload for a CIA #1 Timer A latch (lo byte, hi byte)."""
+    return f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"

@@ -353,7 +353,7 @@ class RunInitShellTest(unittest.TestCase):
                 "Select overlays": lambda choices: [c for c in choices if c.startswith("clock")],
                 "clock.": "",  # leave clock params default
                 "Ultimate 64 URL": "http://example.lan",
-                "Video system": "PAL",
+                "Machine timing": "PAL",
                 "Write to": out,  # text() special-cases this
                 "Write ": True,  # "Write <path>?"
                 "Launch": False,
@@ -413,7 +413,7 @@ class RunInitShellTest(unittest.TestCase):
                 "Interleave": False,
                 "Customize": False,
                 "Ultimate 64 URL": "http://example.lan",
-                "Video system": "NTSC",
+                "Machine timing": "NTSC",
                 "Write to": out,
                 "Write ": True,
                 "Launch": False,

@@ -17,6 +17,51 @@ at the right corner of the system.
 
 ## Audio symptoms
 
+### "SID tunes play too fast" (or: too slow, since I changed something)
+
+A SID's PLAY routine is driven off the kernal's jiffy IRQ, and the KERNAL
+runs that at ≈60 Hz on **both** PAL and NTSC machines — it is a wall-clock
+service, not a frame interrupt. A tune composed for PAL expects ~50.12 Hz,
+so it used to come out **+19.7% fast** regardless of what the machine was
+set to.
+
+`[ultimate64] sid_play_rate` decides what happens now:
+
+- `"auto"` (default) — PLAY at the tune's own frame rate, read from its
+  PSID clock flag. PAL tunes play at PAL tempo.
+- `"off"` — leave the kernal rate alone. This is exactly the old
+  behaviour; use it if you have been listening to PAL tunes at NTSC speed
+  and prefer them that way.
+- a number — pin every vsync tune to that rate in Hz. `59.826` is the NTSC
+  frame rate, `50.125` is PAL.
+
+Two things `sid_play_rate` deliberately does *not* do:
+
+- **Multispeed tunes are never touched.** A CIA-timed tune programs its own
+  timer from INIT and is the authority on its tempo.
+- **It doesn't change pitch.** Tempo and pitch are separate errors here.
+  Pitch comes from the CPU clock, which differs 3.8% between the standards,
+  and the only fix is retiming the machine — see the next entry.
+
+Also check `[audio] use_reu_pump`: the REU audio pump owns the same timer,
+so the tempo correction is dropped (with a log line) when it is on.
+
+### "SID tunes are in the wrong key / slightly sharp"
+
+The CPU clock is 985 248 Hz on PAL and 1 022 727 Hz on NTSC — a 3.8%
+difference, about 0.64 of a semitone. A PAL tune on an NTSC-timed machine
+is sharp by that much no matter what the PLAY rate is.
+
+The fix is to retime the machine, which on an Ultimate 64 means its System
+Mode. Set `[ultimate64] sid_video_mode = "auto"` and c64cast will switch it
+to match `[ultimate64] system` for the run, live and volatile, restoring it
+at teardown.
+
+It is off by default for a reason: **the HDMI output mode changes with it**
+(576p50 instead of 480p60) and your capture device or display has to
+re-lock. See "Changing System Mode killed my capture" below before turning
+it on.
+
 ### "Audio sounds robotic / metallic / quantized"
 
 Mostly working as intended — the SID's `$D418` DAC is inherently low-fi, and
@@ -145,6 +190,39 @@ and the C64 is just playing back what you said. Use headphones for
 talking and the C64 for ambient/music.
 
 ## Video symptoms
+
+### "Changing System Mode killed my capture / display"
+
+PAL machine timing at the Ultimate's SD scan resolution puts 576p50 on the
+HDMI wire, and not every capture device can lock to it — the symptom is a
+torn or rolling picture rather than a clean failure. Two devices tested on
+the same machine disagreed: one tore, one was fine.
+
+**Raise the scan resolution.** What the capture card sees is the Ultimate's
+upscaler output, not the C64's native timing, and 720p50 captures cleanly on
+hardware that fails at 576p50. `[ultimate64] hdmi_scan_resolution` defaults
+to `"auto"`, which does this for you — but only when c64cast itself retimed
+the machine, so it never touches a setting on a machine it left alone. Set
+it to `"HD (720p)"` or `"FullHD (1080p)"` to pin it for the whole run.
+
+**If you have no picture at all:** hold **C= and P** (for PAL) or **C= and
+N** (for NTSC) while the Ultimate boots. The firmware scans the keyboard
+once at startup and forces System Mode to that standard, which gets you back
+to a display you can see. Every video-output change c64cast makes is live
+and volatile, so a plain power cycle also clears it.
+
+The four "PC" scan modes are passed through from the firmware but have not
+been tested under PAL timing.
+
+### "The frame rate / clock / SID rate all seem wrong at once"
+
+That is the signature of `[ultimate64] system` disagreeing with the machine
+— one field feeds the CPU clock, the frame rate, the DAC NMI latches and the
+SID PLAY rate, so a wrong value moves all of them together.
+
+Set `system = "auto"` (the default) and c64cast reads it off the Ultimate's
+live System Mode at startup. `--doctor` reports the disagreement as an error
+if you would rather pin it explicitly.
 
 ### "Webcam shows but everything is solid black / one color"
 

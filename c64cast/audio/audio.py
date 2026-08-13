@@ -55,6 +55,7 @@ from c64cast.hw.c64 import (
     SID,
     VECTORS,
     halt_quantum_bytes,
+    kernal_cia1_latch,
 )
 
 from .audio_handlers import (
@@ -62,7 +63,6 @@ from .audio_handlers import (
     AUDIO_QUEUE_MAX_BLOBS,
     AUDIO_WRITE_RATE_SHARE,
     BACKPRESSURE_SPIN_S,
-    CIA1_TIMER_A_LATCH_KERNAL_NTSC,
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
     HOST_DMA_SERVO_TARGET_GAP,
@@ -1886,11 +1886,9 @@ class AudioStreamer:
             self.api.write_regs(
                 f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
             )
-            # Restore CIA #1 Timer A latch to the NTSC kernal default
-            # (CIA1_TIMER_A_LATCH_KERNAL_NTSC). PAL kernal uses a slightly
-            # different value but the timer keeps running either way;
-            # the kernal will overwrite this if it needs to.
-            latch = CIA1_TIMER_A_LATCH_KERNAL_NTSC
+            # Restore CIA #1 Timer A to this machine's kernal default so the
+            # jiffy clock, SCNKEY and the cursor blink resume at ~60 Hz.
+            latch = kernal_cia1_latch(self.system)
             self.api.write_memory(
                 f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
             )

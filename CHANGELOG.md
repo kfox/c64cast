@@ -12,7 +12,56 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Fixed
+
+- **PAL SID tunes no longer play ~20% fast.** The C64-side SID player chains
+  PLAY onto the kernal's CIA #1 Timer A interrupt, which the KERNAL runs at
+  ≈60 Hz on *both* standards — it is a wall-clock service (TI$, SCNKEY, cursor
+  blink), not a frame interrupt. Nothing in the `.sid` path ever reprogrammed
+  it, so a tune composed for PAL's 50.12 Hz ran at 60.0 on a PAL machine as
+  much as an NTSC one: **+19.7% tempo**, across roughly 80% of a full HVSC.
+  New `[ultimate64].sid_play_rate` (default `"auto"`) sets the latch to the
+  tune's own frame rate. `"off"` restores the previous behaviour for anyone who
+  knows these tunes at NTSC speed and prefers them that way, and an explicit
+  number in Hz pins every vsync tune to one rate. CIA-timed (multispeed) tunes
+  self-time from their own INIT and are never overridden — the correction is
+  gated on both the header's per-subtune speed flag and the timer value
+  actually in place after INIT, so a tune whose header lies is still safe. The
+  oscilloscope's host emulator now ticks at the real PLAY rate rather than
+  assuming the video frame rate, which also fixes a latent scope/audio desync
+  under `system = "PAL"`.
+- **The kernal CIA #1 restore latch was the wrong standard's.** Both the ASID
+  ring player and the REU audio pump wrote `$4025` back at teardown while
+  documenting it as the NTSC default; `$4025` is PAL's and NTSC's is `$4295`.
+  The jiffy clock therefore ran ~3.8% fast on NTSC after either teardown, until
+  the next reset. Both now go through `c64.kernal_cia1_latch(system)`.
+
 ### Added
+
+- **`[ultimate64].system` defaults to `"auto"`** and is read from the
+  Ultimate's live System Mode at startup. This one field feeds the CPU clock,
+  the frame rate, the DAC NMI latches and the SID PLAY rate, and a hand-set
+  value that disagreed with the machine moved all of them at once, silently.
+  An explicit value still wins — it remains how you describe a machine the
+  probe can't ask, such as a TeensyROM-driven C64 — but a disagreement now logs
+  a warning and is an error-level `--doctor` finding. Falls back to NTSC under
+  `--skip-probe` or on a backend without the setting.
+- **`[ultimate64].sid_video_mode`** (default `"off"`) switches the Ultimate
+  64's System Mode so the machine's PAL/NTSC timing matches
+  `[ultimate64].system`, correcting SID *pitch* — the CPU clock differs 3.8%
+  between the standards, about two thirds of a semitone. Independent of the
+  tempo fix above and opt-in because it retunes the HDMI output (576p50 rather
+  than 480p60), so every display and capture device has to re-lock. Applied
+  live and volatile, followed by a C64 reset so the KERNAL re-runs its PAL/NTSC
+  autodetect, and restored at teardown. Ultimate 64 only.
+- **`[ultimate64].hdmi_scan_resolution`** (default `"auto"`) drives the
+  Ultimate 64's HDMI upscaler. PAL timing at SD puts 576p50 on the wire and
+  some capture devices cannot lock to it — the same machine at 720p50 captures
+  cleanly. `"auto"` raises SD to HD only when `sid_video_mode` retimed the
+  machine, so c64cast cleans up after its own change and leaves a machine it
+  didn't retime alone; `"keep"` never touches it, and a scan-mode label pins it
+  for the run. Newer U64 boards only (older firmware doesn't register the
+  setting, and c64cast stays quiet when it's absent).
 
 - **`--doctor` now reports unknown config keys as findings.** A key no section
   accepts is dropped as before, but it is now a warn-level row under a new

@@ -29,7 +29,7 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | Flag | Description |
 |---|---|
 | **`-u`, `--url`**<br>`TARGET` | Connection target selecting the hardware backend + endpoint (default: $C64CAST_URL, else http://192.168.2.64). Schemes: u64://HOST or http(s)://HOST (Ultimate 64 / II+); tr:// (TeensyROM+ USB serial, auto-detected), tr:///dev/cu.usbmodemXYZ or tr://COM3 (serial device), tr://HOST (TeensyROM+ TCP). Rare knobs as query params, e.g. u64://host?dma_port=64 or tr://host?tcp_port=2113. |
-| **`-s`, `--system`**<br>`NTSC`, `PAL` | Target system timing (default: NTSC) |
+| **`-s`, `--system`**<br>`NTSC`, `PAL` | Target system timing (default: auto) |
 | **`--sid-model`**<br>`auto`, `6581`, `8580`, `off` | Auto-configure the SID chip model per .sid PSID header, remapping to a matching physical socket or an UltiSID core if needed ('off' disables) (default: auto) |
 
 ## Quick Playback (With Media Args)

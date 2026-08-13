@@ -686,6 +686,78 @@ measurement above shows.
   REST. Re-measuring REST means pointing the writes at `requests.put`
   in a scratch branch; nothing in the shipped code exercises it.
 
+There is a sharper reason than throughput to keep writes off REST: a
+`POST /v1/machine:writemem` was observed to **wedge the Ultimate's web
+server**. Afterwards the unit still answered ping and the DMA socket on
+port 64 kept working normally, but every HTTP request was accepted and
+then dropped (curl exit 56) for 25+ minutes, until a power cycle. That
+takes `readmem`, `reset` and `run_prg` down with it — i.e. everything
+c64cast genuinely needs REST for. Socket DMA is not merely the faster
+write path; it is the one that doesn't put the REST surface at risk.
+
+## SID PLAY rides the kernal jiffy IRQ, which is ~60 Hz on both standards
+
+The C64-side SID player chains PLAY onto the kernal's CIA #1 Timer A
+IRQ. That interrupt is a wall-clock service (TI$, SCNKEY, cursor blink),
+**not** a frame interrupt, so the KERNAL programs it to ≈60 Hz on PAL as
+well as NTSC. A PAL vsync tune played through it therefore runs **+19.7%
+fast** — on a PAL machine too. Changing the Ultimate's System Mode does
+not fix this; it changes φ2, which is pitch, not tempo.
+
+`[ultimate64].sid_play_rate` (default `"auto"`) reprograms the latch to
+the tune's own frame rate. `"off"` restores the old behaviour if you are
+used to hearing PAL tunes at NTSC speed, and an explicit number in Hz
+pins every vsync tune to one rate. CIA-timed (multispeed) tunes always
+self-time from their own INIT and are never overridden.
+
+Full mechanism, including why the latch is written after INIT rather
+than before: [docs/architecture/sid.md](architecture/sid.md) → "System
+timing".
+
+## Not every capture device survives 576p50
+
+PAL machine timing at the Ultimate's SD scan resolution puts 576p50 on
+the HDMI wire, and capture devices disagree about whether that is
+acceptable. Of two tested on the same machine and cable, one produced a
+torn/rolling picture in every PAL-timed mode and the other locked
+cleanly at ~25 fps delivered.
+
+Raising **HDMI Scan Resolution** to HD (720p) or FullHD (1080p) fixed
+the failing device: what the capture card sees is the upscaler's output,
+not the C64's native timing. `[ultimate64].hdmi_scan_resolution` defaults
+to `"auto"`, which raises SD to HD only when `sid_video_mode` retimed the
+machine — c64cast cleans up after its own change and leaves a machine it
+didn't retime alone. The four "PC" scan modes are passed through from the
+firmware but have not been tested under PAL timing.
+
+If a video mode ever leaves you with no picture at all: hold **C= and P**
+(PAL) or **C= and N** (NTSC) at Ultimate boot to force System Mode back.
+Every video-output write c64cast makes is live + volatile, so a power
+cycle clears it regardless.
+
+### Composite output pays a different price than HDMI
+
+Retiming the machine changes the analog signal in a way the upscaler
+hides from HDMI. c64cast preserves the chroma encoding across a switch,
+so a set that decoded colour before still can — but the **field rate**
+changes with the timing, and a single-standard analog display may simply
+not lock to it.
+
+An NTSC-timed machine retimed to PAL emits `NTSC-50`: NTSC colour at
+50 Hz. A PAL-timed one retimed to NTSC emits `PAL-60`: PAL colour at
+60 Hz. `PAL-60` is the friendlier of the two — most multi-standard sets
+and capture devices handle it — while `NTSC-50` is rarer and more likely
+to come out monochrome or unstable. A pure NTSC set fed `PAL-60`
+generally locks sync and loses colour.
+
+Audio is unaffected as a signal path; it leaves by the same connector
+either way. Its *pitch* changes, because φ2 did, which is the point.
+
+If you run composite and picked one of the `/L` modes for its locked
+colour subcarrier, note that a `sid_video_mode` run gives that up: every
+`/L` mode is a hybrid, and retiming a hybrid always lands on the other
+standard's plain mode, which has no locked form. Teardown restores it.
+
 ## `WaveformScene` duration
 
 The U64's sidplay endpoint doesn't tell us when a tune ends, and the

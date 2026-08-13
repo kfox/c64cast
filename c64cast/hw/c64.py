@@ -383,6 +383,59 @@ def cpu_clock(system: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Frame rate + CIA #1 Timer A timing.
+# ---------------------------------------------------------------------------
+# A VIC-II frame is (cycles per raster line) x (lines per frame), so the frame
+# rate follows from the CPU clock rather than being an independent constant.
+# Spelled out this way because the round numbers ("50 Hz", "60 Hz") are both
+# ~0.25% off and that error compounds against the CIA latch derived from them.
+CYCLES_PER_FRAME_PAL: Final = 63 * 312  # 19656
+CYCLES_PER_FRAME_NTSC: Final = 65 * 263  # 17095
+
+FRAME_HZ_PAL: Final = CLOCK_PAL / CYCLES_PER_FRAME_PAL  # 50.1246
+FRAME_HZ_NTSC: Final = CLOCK_NTSC / CYCLES_PER_FRAME_NTSC  # 59.8261
+
+
+def frame_rate(system: str) -> float:
+    """Return the VIC-II frame rate in Hz for the given system."""
+    return FRAME_HZ_NTSC if system.upper() == "NTSC" else FRAME_HZ_PAL
+
+
+# The value the KERNAL's reset path leaves in CIA #1 Timer A, per standard.
+# Both give ~60 Hz: the jiffy IRQ is a wall-clock service (TI$, SCNKEY, cursor
+# blink), not a frame interrupt, so the KERNAL does NOT tick it at the PAL
+# frame rate. That is exactly why a PAL vsync tune driven off this IRQ plays
+# ~19.7% fast unless something reprograms the latch (see
+# docs/architecture/sid.md -> "System timing").
+KERNAL_CIA1_LATCH_PAL: Final = 0x4025  # 16421 -> 59.996 Hz
+KERNAL_CIA1_LATCH_NTSC: Final = 0x4295  # 17045 -> 59.999 Hz
+
+
+def kernal_cia1_latch(system: str) -> int:
+    """The CIA #1 Timer A latch the KERNAL installs at reset, for `system`.
+
+    Anything that reprograms Timer A writes this back on teardown so the jiffy
+    clock, SCNKEY and the cursor blink resume at the stock rate.
+    """
+    return KERNAL_CIA1_LATCH_NTSC if system.upper() == "NTSC" else KERNAL_CIA1_LATCH_PAL
+
+
+def cia1_latch_for_rate(rate_hz: float, system: str) -> int:
+    """CIA #1 Timer A latch for a consume rate: ``round(cpu_clock/rate) - 1``,
+    clamped to a valid 16-bit timer value (>= 1)."""
+    if rate_hz <= 0:
+        raise ValueError(f"rate must be positive, got {rate_hz}")
+    latch = round(cpu_clock(system) / rate_hz) - 1
+    return max(1, min(latch, 0xFFFF))
+
+
+def actual_rate_for_latch(latch: int, system: str) -> float:
+    """The exact rate the CIA clocks a given latch: ``cpu_clock / (latch + 1)``.
+    A consumer's read head is computed from this so it matches the hardware."""
+    return cpu_clock(system) / (latch + 1)
+
+
+# ---------------------------------------------------------------------------
 # NMI audio sample-rate safety budget.
 # ---------------------------------------------------------------------------
 # The $D418 DAC NMI handler (audio_handlers.NMI_ROUTINE) pulls one sample per fire. If

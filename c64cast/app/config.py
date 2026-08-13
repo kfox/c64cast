@@ -45,7 +45,24 @@ log = logging.getLogger(__name__)
 # …) but are duplicated here so config.py stays import-light (no numpy / cv2
 # pulled in just to load a TOML). tests/test_introspect.py asserts each list
 # stays in sync with its source of truth, so the duplication can't drift.
-SYSTEM_CHOICES = ("NTSC", "PAL")
+SYSTEM_CHOICES = ("auto", "NTSC", "PAL")
+# [ultimate64].sid_play_rate. "auto"/"off" plus any positive float (Hz), so the
+# schema carries this as a union rather than a plain enum — see schema.py.
+SID_PLAY_RATE_CHOICES = ("auto", "off")
+SID_VIDEO_MODE_CHOICES = ("off", "auto")
+# [ultimate64].hdmi_scan_resolution. "auto"/"keep" plus the firmware's own
+# scan_modes[] labels; mirrors hw_provision.HDMI_RESOLUTION_CHOICES, which
+# tests/test_introspect.py pins this against.
+HDMI_SCAN_RESOLUTION_CHOICES = (
+    "auto",
+    "keep",
+    "SD (480p/576p)",
+    "HD (720p)",
+    "FullHD (1080p)",
+    "PC 800 x 600",
+    "PC 1024 x 768",
+    "PC 1280 x 1024",
+)
 # Mirrors backend.BACKENDS; duplicated here so config.py stays import-light
 # (it doesn't pull in api.py). tests/test_introspect.py asserts they match.
 _BACKEND_CHOICES = ("ultimate", "teensyrom")
@@ -346,10 +363,57 @@ class Ultimate64Cfg:
         metadata={"help": "Base URL of the Ultimate 64 (REST + DMA host)."},
     )
     system: str = field(
-        default="NTSC",
+        default="auto",
         metadata={
-            "help": "Target video system timing (affects frame rate + SID PLAY rate).",
+            "help": "Machine timing standard (affects frame rate, CPU clock, SID PLAY "
+            "rate). 'auto' reads it from the Ultimate's live System Mode; on a "
+            "backend that can't be asked, or under --skip-probe, it falls back to NTSC.",
             "choices": SYSTEM_CHOICES,
+        },
+    )
+    # Fixing SID playback TEMPO. The kernal's jiffy IRQ — which the SID player
+    # chains PLAY onto — runs at ~60 Hz on BOTH standards, so a PAL vsync tune
+    # plays ~19.7% fast unless something reprograms CIA #1 Timer A. This does.
+    # Orthogonal to sid_video_mode below, which fixes pitch.
+    sid_play_rate: str | float = field(
+        default="auto",
+        metadata={
+            "help": "PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's "
+            "native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); "
+            "'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so "
+            "PAL tunes run ~20% fast — the pre-1.9 behaviour); a number pins every "
+            "vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always "
+            "self-time and are never overridden.",
+            "choices": SID_PLAY_RATE_CHOICES,
+        },
+    )
+    # Fixing SID playback PITCH. Opt-in because it retunes the HDMI output
+    # (576p50 vs 480p60) and every capture device has to re-lock — some don't
+    # handle 576p50 well at all.
+    sid_video_mode: str = field(
+        default="off",
+        metadata={
+            "help": "Switch the Ultimate's System Mode so the machine's PAL/NTSC "
+            "timing matches [ultimate64].system, correcting SID pitch (phi2 differs "
+            "3.8% between standards). 'off' leaves it alone. Ultimate 64 only; live "
+            "and volatile, restored at teardown. Changes the HDMI output mode.",
+            "choices": SID_VIDEO_MODE_CHOICES,
+            "applies_to": "ultimate",
+        },
+    )
+    hdmi_scan_resolution: str = field(
+        default="auto",
+        metadata={
+            "help": "The Ultimate 64's HDMI upscaler. 'auto' raises SD to HD (720p) "
+            "only when sid_video_mode retimes the machine — PAL timing at SD puts "
+            "576p50 on the wire and some capture devices cannot lock to it, while "
+            "the same machine at 720p50 captures cleanly. 'keep' never touches it; "
+            "a scan-mode label sets it for the run (the 'PC' modes are passed "
+            "through from the firmware but are untested under PAL timing). Live and "
+            "volatile, restored at teardown. Newer U64 boards only (older firmware "
+            "has no such setting).",
+            "choices": HDMI_SCAN_RESOLUTION_CHOICES,
+            "applies_to": "ultimate",
         },
     )
     # See docs/guide/04-setting-up.md for how to enable the DMA service on the
