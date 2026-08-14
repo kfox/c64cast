@@ -1,15 +1,38 @@
-import type { ConfigIndex, LogLine, SessionStatus } from "./types";
+import type {
+  ConfigDetail,
+  ConfigIndex,
+  ConfigWritten,
+  Introspection,
+  LogLine,
+  SessionStatus,
+  ValidationReport,
+} from "./types";
 
 /** A non-2xx answer, carrying the status so a caller can tell "you may not"
  *  (403) from "that config is broken" (422) without parsing prose. */
 export class ApiError extends Error {
   readonly status: number;
+  /** The parsed body, kept whole: a refused config write answers 422 with the
+   *  full validation report, and a screen that only got the message would have
+   *  to ask for it again to show the loader's own diagnostics. */
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body: unknown = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
+}
+
+/** The report inside a 422 from a config write, if that is what this is. */
+export function reportOf(e: unknown): ValidationReport | null {
+  if (!(e instanceof ApiError) || e.status !== 422) return null;
+  const detail = (e.body as { detail?: unknown } | null)?.detail;
+  if (detail && typeof detail === "object" && "messages" in detail) {
+    return detail as ValidationReport;
+  }
+  return null;
 }
 
 /** FastAPI puts the message in `detail`, which is a string for the errors this
@@ -50,9 +73,21 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
   }
   if (!response.ok) {
-    throw new ApiError(response.status, detailOf(parsed, `${response.status} ${response.statusText}`));
+    const message = detailOf(parsed, `${response.status} ${response.statusText}`);
+    throw new ApiError(response.status, message, parsed);
   }
   return parsed as T;
+}
+
+/** A config ref is `<root-label>/<relative path>`, and its separators are part
+ *  of the route (`{ref:path}`), so each segment is escaped on its own rather
+ *  than the whole string — a name with a space or a `#` in it still addresses
+ *  the file it names. */
+function refPath(ref: string): string {
+  return ref
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
 }
 
 export interface SessionSnapshot extends SessionStatus {
@@ -63,6 +98,23 @@ export interface SessionSnapshot extends SessionStatus {
 export const api = {
   session: () => request<SessionSnapshot>("GET", "/api/session"),
   configs: () => request<ConfigIndex>("GET", "/api/configs"),
+
+  /** Describes the code, not the run, so it cannot change while the host is
+   *  up — see `introspection()` in introspect.ts, which fetches it once. */
+  introspect: () => request<Introspection>("GET", "/api/introspect"),
+
+  config: (ref: string) => request<ConfigDetail>("GET", `/api/configs/${refPath(ref)}`),
+
+  /** Load `text` as if it were saved, without saving it. The same check a save
+   *  makes, offered separately so the editor can show the reason before the
+   *  file is at stake. */
+  checkConfig: (ref: string, text: string) =>
+    request<ValidationReport>("POST", `/api/configs/${refPath(ref)}/validate`, { text }),
+
+  /** Refused with 422 if the text does not load — the store never writes a
+   *  config that cannot run. */
+  saveConfig: (ref: string, text: string) =>
+    request<ConfigWritten>("PUT", `/api/configs/${refPath(ref)}`, { text }),
 
   /** `start`, `switch` and `stop` all answer 202: the supervisor has claimed
    *  the transition, not finished it. What actually happened arrives on the

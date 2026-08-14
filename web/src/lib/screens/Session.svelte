@@ -149,7 +149,7 @@
     {#if index === null}
       <p class="text-sm text-[var(--ink-dim)]">Loading…</p>
     {:else}
-      <ConfigList {index} bind:value={chosen} />
+      <ConfigList {index} value={chosen} onselect={(ref) => (chosen = ref)} />
     {/if}
   </section>
 

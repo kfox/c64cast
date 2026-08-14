@@ -2,15 +2,26 @@
   import { onDestroy, onMount } from "svelte";
 
   import { Console } from "$lib/console.svelte";
+  import { Router } from "$lib/router.svelte";
+  import ConfigScreen from "$lib/screens/Config.svelte";
   import SessionScreen from "$lib/screens/Session.svelte";
 
   // One feed for the whole app, owned by the shell and handed down. Screens
-  // added later (the performance surface, the config editor) read the same
-  // frames rather than opening sockets of their own.
+  // added later (the performance surface) read the same frames rather than
+  // opening sockets of their own.
   const host = new Console();
+  const router = new Router();
 
   onMount(() => host.connect());
-  onDestroy(() => host.close());
+  onDestroy(() => {
+    host.close();
+    router.dispose();
+  });
+
+  const tabs: { screen: "session" | "config"; label: string }[] = [
+    { screen: "session", label: "Session" },
+    { screen: "config", label: "Configs" },
+  ];
 </script>
 
 <div class="mx-auto flex min-h-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
@@ -33,8 +44,27 @@
     </p>
   </header>
 
+  <nav class="flex gap-1 border-b border-[var(--edge)]" aria-label="Screens">
+    {#each tabs as tab (tab.screen)}
+      <button
+        onclick={() => router.go(tab.screen)}
+        aria-current={router.screen === tab.screen ? "page" : undefined}
+        class="-mb-px min-h-11 border-b-2 px-4 text-sm font-medium
+               {router.screen === tab.screen
+          ? 'border-[var(--accent)] text-[var(--ink)]'
+          : 'border-transparent text-[var(--ink-dim)] hover:text-[var(--ink)]'}"
+      >
+        {tab.label}
+      </button>
+    {/each}
+  </nav>
+
   <main class="flex-1">
-    <SessionScreen {host} />
+    {#if router.screen === "config"}
+      <ConfigScreen {host} {router} />
+    {:else}
+      <SessionScreen {host} />
+    {/if}
   </main>
 
   <footer class="text-xs text-[var(--ink-dim)]">

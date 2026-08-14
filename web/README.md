@@ -46,9 +46,11 @@ reason.
 
 | Path | What |
 |---|---|
-| `src/App.svelte` | The shell: owns the one state feed and hands it down |
-| `src/lib/api.ts` | `fetch` wrappers; `ApiError` carries the status |
+| `src/App.svelte` | The shell: owns the one state feed and the router, and hands both down |
+| `src/lib/api.ts` | `fetch` wrappers; `ApiError` carries the status and the body |
 | `src/lib/console.svelte.ts` | The `/api/ws` feed as one reactive object |
+| `src/lib/router.svelte.ts` | Which screen is showing, kept in the address bar |
+| `src/lib/introspect.ts` | `/api/introspect`, fetched once, indexed for lookup |
 | `src/lib/types.ts` | Hand-written mirrors of the daemon's JSON |
 | `src/lib/components/` | Presentational pieces |
 | `src/lib/screens/` | One file per screen |

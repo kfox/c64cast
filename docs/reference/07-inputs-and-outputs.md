@@ -463,12 +463,24 @@ after one closes, and a camera will not reopen instantly either.
 
 ### The Console
 
-Opening the host's address in a browser gets the console: which configuration
-is loaded, what the machine is doing, the list of configurations it can see,
-buttons to start, switch, reload and stop, and the host's log as it happens.
-The state arrives over the WebSocket rather than by polling, so the page follows
-a show being started from somewhere else — another browser, a MIDI controller,
-`curl` — without being told.
+Opening the host's address in a browser gets the console. **Session** is which
+configuration is loaded, what the machine is doing, the list of configurations
+it can see, buttons to start, switch, reload and stop, and the host's log as it
+happens. The state arrives over the WebSocket rather than by polling, so the
+page follows a show being started from somewhere else — another browser, a MIDI
+controller, `curl` — without being told.
+
+**Configs** is the editor. Pick a file and it comes up two ways. *Settings* is
+the generated view: every scene and every setting the file changes, each with
+the same one-line explanation `--describe` prints, what it may be set to, and a
+`live` mark on the ones a running show would pick up without a restart. The
+values shown are what the loader actually resolved, so a machine setting or a
+default that a file never mentions still shows through — untick *only what this
+file changes* to see all of it. *Source* is the file itself, editable, with
+**Check** to load it without saving and **Save** to write it back. An edit you
+have not saved survives clicking away to another file and is marked in the list,
+so nothing is lost by looking at something else. A configuration is addressed by
+its own URL — `/config/shows/gig.toml` — which makes it a link worth sending.
 
 It is built and **shipped inside the package**, so there is nothing to install
 and no build step: `uv sync` and `pip install` both give you a console. It is
@@ -510,7 +522,8 @@ A save is validated before it lands: text that does not load is refused with
 `422` and the file is untouched. What was there is copied to a hidden sibling
 (`.gig.toml.bak`) first, which is the only undo there is. Reading a
 configuration returns its raw text *and* a per-field view marking everything you
-have not changed, which is what a form uses to show only what you set. Ensemble
+have not changed, which is what the console's form uses to show only what you
+set. Ensemble
 master files read but have no such view — they are authored across several files
 — so they are edited as text.
 

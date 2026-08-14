@@ -136,6 +136,25 @@ the version and stamps it with the date.
   unchanged and still on the same host, and a checkout that has never run
   `make web` falls back to it with a line in the log saying so.
 
+- **The console can read and edit configurations.** A second screen lists the
+  `.toml` files under `[web].config_roots` and opens one two ways. *Settings* is
+  generated: every scene and every setting the file changes, each with the same
+  explanation `--describe` prints, what it may be set to, and a `live` mark on
+  the ones a running show picks up without a restart — and the values are what
+  the loader actually resolved, so a machine setting or a default the file never
+  mentions still shows through. Untick *only what this file changes* to see all
+  167 of them. *Source* is the file itself, with **Check** to load it without
+  saving and **Save** to write it back; a save that would not load is refused
+  and the file is untouched, and what was there is kept in a hidden sibling.
+
+  Editing is only as strong as the loader's own validation, which does not check
+  scene `type` or a `generative` `source` against the registry — a typo there
+  saves cleanly and fails when the show is built. `--doctor` still catches it.
+
+  An unsaved edit survives clicking away to another file and is marked in the
+  list, and a configuration has its own address (`/config/shows/gig.toml`) that
+  a reload and the back button both respect.
+
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
   link.** It reported the modelled cost of getting a frame *onto the wire* but
   nothing about the cost of producing one, so it could not answer whether a
