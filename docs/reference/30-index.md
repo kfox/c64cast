@@ -116,7 +116,7 @@ Every name c64cast answers to — 432 of them — and the pages that discuss eac
 | `date_format` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `[debug]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `decay` (effect) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [`effect` (F)](25-appendix-f-live-targets.md#effect), [The Software (J)](29-appendix-j-glossary.md#the-software) |
-| `--describe` | [What Is In Here](01-introduction.md#what-is-in-here), [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [The Scene Types (2)](03-vocabulary.md#the-scene-types) |
+| `--describe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [The Scene Types (2)](03-vocabulary.md#the-scene-types), [The Console (6)](07-inputs-and-outputs.md#the-console) |
 | `--device` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Flags in Ensemble Mode (1)](02-config-rules.md#flags-in-ensemble-mode) |
 | `device` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Machine Settings (1)](02-config-rules.md#machine-settings), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings) |
 | `device` (audio) | [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone), [`audio` (A)](20-appendix-a-configuration.md#audio), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
