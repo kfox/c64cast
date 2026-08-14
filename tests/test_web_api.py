@@ -48,13 +48,17 @@ except (ImportError, RuntimeError):
     WebSocketDisconnect = Exception  # type: ignore[misc,assignment]
 
 from c64cast.app import config as cfgmod
-from c64cast.app import serve, session
+from c64cast.app import config_store, serve, session
 from c64cast.app.serve import SessionState
 
 TOKEN = "full-token-value"
 VIEWER = "viewer-token-value"
 AUTH = {"X-C64Cast-Token": TOKEN}
 VIEWER_AUTH = {"X-C64Cast-Token": VIEWER}
+
+# A config the loader accepts, so the browser routes exercise the real
+# validate-before-write path rather than a patched one.
+GIG_TOML = '[color]\ndither = "atkinson"\n\n[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
 
 # Long enough for a loaded CI box, short enough that a stuck transition fails
 # the run rather than hanging it.
@@ -173,17 +177,20 @@ class _Build:
 
 class _Factory:
     """The request factory the routes hold: hands back a request, or raises
-    the way a config that doesn't validate would."""
+    the way a config that doesn't validate would. Records the path it was asked
+    for, which is how the start-by-ref tests see what the store resolved."""
 
     def __init__(self, error: BaseException | None = None) -> None:
         self.error = error
         self.calls = 0
+        self.paths: list[str | None] = []
 
-    def __call__(self) -> serve.StartRequest:
+    def __call__(self, path: str | None = None) -> serve.StartRequest:
         self.calls += 1
+        self.paths.append(path)
         if self.error is not None:
             raise self.error
-        return _request("a")
+        return _request("a", config_path=path or "show.toml")
 
 
 class WebApiTestCase(unittest.TestCase):
@@ -193,6 +200,10 @@ class WebApiTestCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.marker = Path(tmp.name) / "run.json"
+        self.root = Path(tmp.name).resolve() / "shows"
+        self.root.mkdir()
+        (self.root / "gig.toml").write_text(GIG_TOML, encoding="utf-8")
+        self.store = config_store.ConfigStore([str(self.root)])
         self.build = _Build()
         self.factory = _Factory()
         self.log_buffer = serve.SessionLogBuffer(capacity=50)
@@ -209,6 +220,7 @@ class WebApiTestCase(unittest.TestCase):
     def app(self, **kwargs) -> Any:
         kwargs.setdefault("token", TOKEN)
         kwargs.setdefault("viewer_token", VIEWER)
+        kwargs.setdefault("store", self.store)
         return serve.build_daemon_app(
             self.manager, self.factory, log_buffer=self.log_buffer, **kwargs
         )
@@ -439,6 +451,113 @@ class StateFeedTest(WebApiTestCase):
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
+class ConfigBrowserTest(WebApiTestCase):
+    """The jail itself is tested in tests/test_config_store.py; what these add
+    is that each of its refusals reaches the caller as a distinguishable status
+    rather than a 500."""
+
+    def test_the_listing_names_the_roots_and_their_configs(self):
+        with self.client() as c:
+            body = c.get("/api/configs", headers=AUTH).json()
+        self.assertEqual([r["label"] for r in body["roots"]], ["shows"])
+        self.assertEqual([f["path"] for f in body["files"]], ["shows/gig.toml"])
+
+    def test_a_read_carries_the_text_and_the_form(self):
+        with self.client() as c:
+            r = c.get("/api/configs/shows/gig.toml", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["text"], GIG_TOML)
+        self.assertTrue(r.json()["form"]["sections"])
+
+    def test_a_ref_that_leaves_its_root_is_forbidden(self):
+        # The traversal is percent-encoded because an HTTP client collapses a
+        # literal `..` in the URL before it is ever sent — the encoded form is
+        # the one that actually reaches the route.
+        refs = ("shows/%2e%2e/%2e%2e/etc/passwd.toml", "elsewhere/x.toml", "shows/notes.txt")
+        with self.client() as c:
+            for ref in refs:
+                r = c.get(f"/api/configs/{ref}", headers=AUTH)
+                self.assertEqual(r.status_code, 403, f"{ref} was not refused")
+
+    def test_a_missing_config_is_a_404(self):
+        with self.client() as c:
+            self.assertEqual(c.get("/api/configs/shows/nope.toml", headers=AUTH).status_code, 404)
+
+    def test_a_write_validates_first_and_replaces_the_file(self):
+        text = GIG_TOML.replace("atkinson", "ordered")
+        with self.client() as c:
+            r = c.put("/api/configs/shows/gig.toml", headers=AUTH, json={"text": text})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), text)
+
+    def test_a_write_that_does_not_validate_is_a_422_carrying_the_reason(self):
+        with self.client() as c:
+            r = c.put(
+                "/api/configs/shows/gig.toml",
+                headers=AUTH,
+                json={"text": '[color]\ndither = "nonsense"\n'},
+            )
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("dither", r.json()["detail"]["error"])
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def test_validate_reports_without_touching_the_file(self):
+        with self.client() as c:
+            r = c.post(
+                "/api/configs/shows/gig.toml/validate",
+                headers=AUTH,
+                json={"text": '[color]\ndither = "nonsense"\n'},
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["ok"])
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def test_a_viewer_may_read_but_not_write(self):
+        with self.client() as c:
+            self.assertEqual(c.get("/api/configs", headers=VIEWER_AUTH).status_code, 200)
+            r = c.put("/api/configs/shows/gig.toml", headers=VIEWER_AUTH, json={"text": GIG_TOML})
+        self.assertEqual(r.status_code, 403)
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
+class StartByRefTest(WebApiTestCase):
+    def test_a_start_with_no_body_runs_what_the_host_was_launched_with(self):
+        with self.client() as c:
+            self.assertEqual(c.post("/api/session/start", headers=AUTH).status_code, 202)
+        self.assertEqual(self.factory.paths, [None])
+
+    def test_a_named_config_reaches_the_factory_as_an_absolute_path(self):
+        with self.client() as c:
+            r = c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(self.factory.paths, [str(self.root / "gig.toml")])
+        self.assertReaches(SessionState.RUNNING)
+        self.assertEqual(self.manager.status().config_path, str(self.root / "gig.toml"))
+
+    def test_a_config_outside_the_roots_never_reaches_the_factory(self):
+        with self.client() as c:
+            r = c.post("/api/session/start", headers=AUTH, json={"config": "/etc/passwd.toml"})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.factory.paths, [])
+        self.assertEqual(self.manager.state, SessionState.IDLE)
+
+    def test_switch_takes_a_ref_too(self):
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.RUNNING, generation=1)
+            r = c.post("/api/session/switch", headers=AUTH, json={"config": "shows/gig.toml"})
+        self.assertEqual(r.status_code, 202)
+        self.assertReaches(SessionState.RUNNING, generation=2)
+        self.assertEqual(self.factory.paths, [None, str(self.root / "gig.toml")])
+
+    def test_a_body_that_is_not_json_is_a_400(self):
+        with self.client() as c:
+            r = c.post("/api/session/start", headers=AUTH, content=b"{nope")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.build.calls, 0)
+
+
 class EveryApiRouteIsProtectedTest(WebApiTestCase):
     def test_no_token_no_api(self):
         from c64cast.control.auth import PUBLIC_PATHS
@@ -522,32 +641,46 @@ class RequestFactoryTest(unittest.TestCase):
     def test_the_factory_reloads_and_validates_on_every_call(self):
         loads = 0
 
-        def load():
+        def load(path):
             nonlocal loads
             loads += 1
             req = _request("a")
-            return req.loaded, req.cfgs
+            return argparse.Namespace(overwrite=False, config=path), req.loaded, req.cfgs
 
-        args = argparse.Namespace(overwrite=False)
-        factory = serve.make_request_factory(args, load, config_path="show.toml")
+        factory = serve.make_request_factory(load, config_path="show.toml")
         with mock.patch.object(serve, "validate_configs") as validate:
-            first = factory()
-            factory()
+            first = factory(None)
+            factory(None)
         self.assertEqual(loads, 2)
         self.assertEqual(validate.call_count, 2)
         self.assertEqual(first.config_path, "show.toml")
 
-    def test_a_validation_failure_reaches_the_caller(self):
-        def load():
-            req = _request("a")
-            return req.loaded, req.cfgs
+    def test_a_named_path_reaches_the_loader_and_the_status(self):
+        seen: list[str | None] = []
 
-        factory = serve.make_request_factory(argparse.Namespace(overwrite=False), load)
+        def load(path):
+            seen.append(path)
+            req = _request("a")
+            return argparse.Namespace(overwrite=False, config=path), req.loaded, req.cfgs
+
+        factory = serve.make_request_factory(load, config_path="launch.toml")
+        with mock.patch.object(serve, "validate_configs"):
+            req = factory("/shows/other.toml")
+        self.assertEqual(seen, ["/shows/other.toml"])
+        self.assertEqual(req.config_path, "/shows/other.toml")
+        self.assertEqual(req.args.config, "/shows/other.toml")
+
+    def test_a_validation_failure_reaches_the_caller(self):
+        def load(path):
+            req = _request("a")
+            return argparse.Namespace(overwrite=False), req.loaded, req.cfgs
+
+        factory = serve.make_request_factory(load)
         with mock.patch.object(
             serve, "validate_configs", side_effect=session.SessionConfigError(5)
         ):
             with self.assertRaises(session.SessionConfigError):
-                factory()
+                factory(None)
 
 
 if __name__ == "__main__":

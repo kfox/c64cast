@@ -886,6 +886,11 @@ autostart = false                   # start this config on launch, rather than
                                     #   waiting for a browser to ask
 settle_s = 3.0                      # hardware cool-off between one session's
                                     #   teardown and the next one's build
+# Directories the console may browse and edit .toml configs in — nothing
+# outside them is readable or writable, symlinks included. Empty = wherever
+# the host was launched from. A config you can save can name media anywhere,
+# so treat write access as shell-equivalent and keep the token private.
+config_roots = []
 
 [midi_control]
 # Process-wide MIDI control surface for live performance: scene jumps,

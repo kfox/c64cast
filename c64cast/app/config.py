@@ -398,7 +398,7 @@ class Ultimate64Cfg:
             "3.8% between standards). 'off' leaves it alone. Ultimate 64 only; live "
             "and volatile, restored at teardown. Changes the HDMI output mode.",
             "choices": SID_VIDEO_MODE_CHOICES,
-            "applies_to": "ultimate",
+            "applies_to": ("ultimate",),
         },
     )
     hdmi_scan_resolution: str = field(
@@ -413,7 +413,7 @@ class Ultimate64Cfg:
             "volatile, restored at teardown. Newer U64 boards only (older firmware "
             "has no such setting).",
             "choices": HDMI_SCAN_RESOLUTION_CHOICES,
-            "applies_to": "ultimate",
+            "applies_to": ("ultimate",),
         },
     )
     # See docs/guide/04-setting-up.md for how to enable the DMA service on the
@@ -2249,6 +2249,18 @@ class WebCfg:
             "help": "Seconds to leave the hardware alone between tearing one session "
             "down and building the next: the U64's DMA service refuses new connections "
             "for a few seconds after one closes, and a camera will not reopen instantly."
+        },
+    )
+    # A list rather than one directory because show configs and the packaged
+    # examples usually live apart, and copying one next to the other to make it
+    # visible is how a config browser starts growing a file manager.
+    config_roots: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "Directories the web console may browse and edit .toml configs in. "
+            "Empty = the directory the host was launched from. Nothing outside these "
+            "is readable or writable, symlinks included; a config saved here can still "
+            "name media anywhere, so treat write access as shell-equivalent."
         },
     )
 

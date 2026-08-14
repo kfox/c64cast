@@ -721,11 +721,25 @@ def main(argv=None) -> int:
     if web_cfg.enabled:
         from . import serve
 
-        # The loader, not the loaded result: every start re-runs it, so a TOML
-        # edited while the host is up takes effect on the next show.
-        return serve.run_daemon(
-            args, web_cfg, lambda: _resolve_configs(args), config_path=args.config or ""
-        )
+        def load_for_serve(
+            path: str | None,
+        ) -> tuple[argparse.Namespace, cfgmod.LoadResult, list[cfgmod.Config]]:
+            """Resolve one start's configs. The loader, not the loaded result:
+            every start re-runs it, so a TOML edited while the host is up takes
+            effect on the next show.
+
+            A browser-chosen path gets its own copy of the namespace — the
+            resolver reads (and rewrites) ``config`` on the one it is handed,
+            and clobbering the launch namespace would redefine what a start
+            with no path means for the rest of the host's life."""
+            if path is None:
+                return (args, *_resolve_configs(args))
+            sub = argparse.Namespace(**vars(args))
+            sub.config = path
+            sub.inputs = []  # a named config isn't quick playback
+            return (sub, *_resolve_configs(sub))
+
+        return serve.run_daemon(web_cfg, load_for_serve, config_path=args.config or "")
 
     return _run_session(args, loaded, cfgs)
 

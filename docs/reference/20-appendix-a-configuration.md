@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 20 sections and 166 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 20 sections and 167 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -466,6 +466,7 @@ autostart = false
 | **`viewer_token`**<br>*Type:* `str`<br>*Default:* `''` | Optional second token granting read-only access (GET/HEAD only): watch the state feed, but never start, stop or edit. Prefer the C64CAST_WEB_VIEWER_TOKEN env var. |
 | **`autostart`**<br>*Type:* `bool`<br>*Default:* `False` | Start the config the host was launched with as soon as it comes up, rather than waiting for a browser to ask (headless / launchd boxes). |
 | **`settle_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Seconds to leave the hardware alone between tearing one session down and building the next: the U64's DMA service refuses new connections for a few seconds after one closes, and a camera will not reopen instantly. |
+| **`config_roots`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Directories the web console may browse and edit .toml configs in. Empty = the directory the host was launched from. Nothing outside these is readable or writable, symlinks included; a config saved here can still name media anywhere, so treat write access as shell-equivalent. |
 
 ## `[wled]`
 

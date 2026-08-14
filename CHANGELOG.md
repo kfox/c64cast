@@ -93,6 +93,29 @@ the version and stamps it with the date.
   `settle_s`. The browser UI itself comes next; this release is the API it will
   talk to.
 
+- **The web console can browse and edit configs, and start the one you pick.**
+  `[web].config_roots` lists the directories it may read and write `.toml` files
+  in (empty = wherever the host was launched from), and `GET /api/configs`,
+  `GET`/`PUT /api/configs/{path}` and `POST /api/configs/{path}/validate` are how
+  a show gets authored without a shell. `POST /api/session/start` now takes an
+  optional `{"config": "shows/gig.toml"}` naming any of them, so one host can run
+  a whole folder of shows rather than only the file it was launched with.
+
+  Files are named by root (`shows/gig.toml`) rather than by path, and nothing
+  outside a root is readable or writable — including through a symbolic link
+  planted inside one — nor is anything that is not a `.toml`. A save is loaded
+  and validated before it lands, so text that cannot run is refused with `422`
+  and the file is untouched; what was there is copied to a hidden sibling
+  (`.gig.toml.bak`) first. A read returns the raw text *and* a per-field view
+  marking everything still at its default, which is what the form editor will
+  render. Ensemble masters read but have no such view — they are authored across
+  several files — so they are edited as text.
+
+  **A full token is now shell-equivalent on that host.** The root list bounds
+  which files may be edited, not what a saved file can reach: a config names
+  media paths and URLs a session will open. `viewer_token` cannot write at all,
+  and `SECURITY.md` has the full note.
+
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
   link.** It reported the modelled cost of getting a frame *onto the wire* but
   nothing about the cost of producing one, so it could not answer whether a
