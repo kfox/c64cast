@@ -29,7 +29,10 @@ Token sources, in order: ``Authorization: Bearer`` → ``X-C64Cast-Token`` →
 can set no headers on a WebSocket handshake or on a plain navigation; hitting
 ``/api/login?token=…`` once trades the token for an ``HttpOnly; SameSite=Strict``
 cookie, after which the console's page loads and its WebSocket authenticate
-themselves. ``?token=`` stays the curl/scripting escape hatch.
+themselves. ``?token=`` stays the curl/scripting escape hatch. The cookie is
+written from the *configured* secret rather than from the caller's string (see
+``_set_cookie``), so no request data reaches a response header even in a future
+where the checks get reordered.
 
 Roles: the token grants ``full``, the optional second token grants ``viewer``,
 and a viewer may only issue read methods — which covers ``/pause``, ``/skip``,
@@ -198,10 +201,16 @@ def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
     from fastapi import Request
     from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-    def _set_cookie(response: Response, presented: str) -> None:
+    def _set_cookie(response: Response, role: str) -> None:
+        """Write the cookie from the **configured** secret the role names, not
+        from the string the caller sent. The two are byte-equal by the time
+        this runs — `match_role` is what decided the role — so this changes no
+        behaviour; it moves the guarantee from an equality check a few lines
+        up into the statement that actually builds the header, where a later
+        reordering can't step around it (CodeQL py/cookie-injection)."""
         response.set_cookie(
             COOKIE_NAME,
-            presented,
+            token if role == "full" else viewer_token,
             httponly=True,
             samesite="strict",
             path="/",
@@ -215,10 +224,11 @@ def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
     @app.get(LOGIN_PATH)
     def login_get(request: Request) -> Response:
         presented = request.query_params.get("token")
-        if presented is None or match_role(presented, token, viewer_token) is None:
+        role = match_role(presented, token, viewer_token)
+        if role is None:
             return _denied()
         redirect = RedirectResponse(_safe_next(request.query_params.get("next")), status_code=303)
-        _set_cookie(redirect, presented)
+        _set_cookie(redirect, role)
         return redirect
 
     @app.post(LOGIN_PATH)
@@ -231,11 +241,11 @@ def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
                 body = None
             if isinstance(body, dict) and isinstance(body.get("token"), str):
                 presented = body["token"]
-        role = match_role(presented, token, viewer_token) if presented else None
-        if role is None or presented is None:
+        role = match_role(presented, token, viewer_token)
+        if role is None:
             return _denied()
         ok = JSONResponse({"ok": True, "role": role})
-        _set_cookie(ok, presented)
+        _set_cookie(ok, role)
         return ok
 
 

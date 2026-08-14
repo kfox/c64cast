@@ -320,6 +320,14 @@ class LoginTest(unittest.TestCase):
         # The jar now authenticates everything else, as a browser's would.
         self.assertEqual(client.get("/status").status_code, 200)
 
+    def test_cookie_carries_the_configured_secret_not_the_callers_string(self):
+        # Byte-equal by the time the cookie is written, so this can only ever
+        # fail if the route starts echoing the request back — which is the
+        # shape CodeQL flags and the shape a reordering would reintroduce.
+        app, _pl = _app()
+        r = TestClient(app).get("/api/login", params={"token": VIEWER}, follow_redirects=False)
+        self.assertIn(f"{COOKIE_NAME}={VIEWER};", r.headers["set-cookie"])
+
     def test_next_must_stay_on_this_server(self):
         app, _pl = _app()
         r = TestClient(app).get(
