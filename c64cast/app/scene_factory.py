@@ -189,6 +189,40 @@ def resolve_double_buffer(
     return bool(setting)
 
 
+def resolve_flicker_blend(
+    setting: bool,
+    display: str,
+    *,
+    has_buffer_overlays: bool = False,
+    audio_reu_pump_active: bool = False,
+) -> bool:
+    """Resolve [color].flicker_blend for one scene's display mode (the
+    field-alternating page flip — see modes_irq.FLICKER_SWAP_IRQ_HANDLER).
+
+    Opt-in, so there is no "auto" to resolve; this only decides where an
+    explicit true can actually be honoured. Three gates, all structural:
+
+      * hires only. mhires' third color lives in color RAM at $D800, which is
+        not VIC-banked and not selected by $D018, so only part of its picture
+        could alternate; the char modes keep per-cell color there too. This
+        also excludes the fixed-2-color edges styling, which picks no color to
+        blend: _build_display_mode reaches it through the separate
+        "hires_edges" display name, never through "hires".
+      * no buffer-painting text overlay. The second screen page sits at the
+        $0C00 offset, which is also where overlays/big_text.py page-flips its
+        own strip; the two cannot both own it.
+      * not while the REU mic pump is running, which owns $0314.
+
+    Blending brings its own bank-swapping double-buffer, so the caller clears
+    both use_reu_staged and double_buffer when this returns True — neither of
+    those handlers carries the $D018 phase toggle, and all three want $0314."""
+    if not setting:
+        return False
+    if display != "hires":
+        return False
+    return not (has_buffer_overlays or audio_reu_pump_active)
+
+
 def resolve_audio_backend(
     setting: str,
     *,
@@ -236,6 +270,7 @@ def _build_display_mode(
     text_double_height: bool = False,
     dither_method: str = "none",
     cell_strategy: str = "frequency",
+    flicker_blend: bool = False,
 ) -> DisplayMode:
     # border/background may be a C64 color name or an index; resolve to a plain
     # index here — the single point every scene's border/background flows
@@ -276,6 +311,8 @@ def _build_display_mode(
             dither_strength=dither_strength,
             perceptual=perceptual,
             cell_pick=color.hires_cell_pick,
+            flicker_blend=flicker_blend,
+            flicker_max_luma_delta=color.flicker_max_luma_delta,
         )
     if name == "petscii":
         return PETSCIIDisplayMode(
@@ -546,6 +583,24 @@ def _display_mode_for_scene(
             audio_reu_pump_active=cfg.audio.use_reu_pump,
         )
     )
+    # Flicker blend needs the $D018 phase toggle, which neither of the other two
+    # swap handlers carries — so where it engages it takes over the double-buffer
+    # slot and pushes REU staging aside, extending the mutual exclusion those two
+    # already have. force_host_dma gates it for the same reason it gates the
+    # others: a SID-audio scene's player owns $0314.
+    flicker_blend = (
+        False
+        if force_host_dma
+        else resolve_flicker_blend(
+            cfg.color.flicker_blend,
+            display,
+            has_buffer_overlays=has_buffer_overlays,
+            audio_reu_pump_active=cfg.audio.use_reu_pump,
+        )
+    )
+    if flicker_blend:
+        use_reu_staged = False
+        double_buffer = False
     return _build_display_mode(
         display,
         palette_mode=s.palette_mode,
@@ -559,6 +614,7 @@ def _display_mode_for_scene(
         text_double_height=s.text_double_height,
         dither_method=resolve_dither_method(cfg.color.dither, s.type),
         cell_strategy=resolve_cell_strategy(cfg.color.cell_strategy, s.type),
+        flicker_blend=flicker_blend,
     )
 
 

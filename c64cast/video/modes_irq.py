@@ -832,6 +832,108 @@ assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 35, (
 )
 
 
+# ---------------------------------------------------------------------------
+# Flicker blend ([color].flicker_blend) — page-flip every field
+# ---------------------------------------------------------------------------
+# The host-DMA sibling above, plus an unconditional per-field toggle of the
+# $D018 screen-matrix nibble between the two page offsets (c64.D018_HIRES_PAGE_A
+# / _B). Two screen pages holding different colour nibbles over one shared
+# bitmap therefore alternate at the VIC field rate, and the eye fuses each cell's
+# pair into a colour the VIC cannot draw. See video/flicker.py for which pairs
+# are eligible and why.
+#
+# The toggle is deliberately ahead of the ready-flag check: the alternation is
+# the C64's job and must free-run at the field rate whatever the host is doing,
+# which is the whole reason this does not need 50-60 fps over the link. Only the
+# double-buffer commit ($DD00 + $D021) waits on a staged frame.
+#
+# That commit is additionally gated on landing in phase 0, so a bank swap can
+# never transpose the A/B page roles — without it a swap arriving on an odd
+# field would put field A's nibbles on field B's slot for the rest of the scene,
+# which is invisible on a still frame and reads as a colour shift on motion.
+#
+# X is used as the page index and is NOT saved here: kernal $FF48 pushed A/X/Y
+# before vectoring through $0314 and $EA81 pulls them back, the same reason the
+# handler above gets away with clobbering A.
+#
+# Tracker at $C700 (FRAME_TRACKER_ADDR), 6 bytes:
+#   $C700 : bg0 value to write to $D021
+#   $C701 : pending bank value ($97 = bank 0, $95 = bank 2)
+#   $C702 : ready flag (1 = frame staged) — host arms, handler clears
+#   $C703 : field phase, handler-owned (toggles 0/1 every raster IRQ)
+#   $C704 : $D018 for phase 0 (page A)
+#   $C705 : $D018 for phase 1 (page B)
+FLICKER_TRACKER_OFF_BG0 = 0  # $C700
+FLICKER_TRACKER_OFF_BANK = 1  # $C701
+FLICKER_TRACKER_OFF_READY = 2  # $C702
+FLICKER_TRACKER_OFF_PHASE = 3  # $C703
+FLICKER_TRACKER_OFF_D018 = 4  # $C704 / $C705, indexed by phase
+FLICKER_TRACKER_LEN = 6
+
+FLICKER_SWAP_IRQ_HANDLER = bytes(
+    [
+        0xAD,
+        0x19,
+        0xD0,  # 0  LDA $D019         ; VIC IRQ status
+        0x29,
+        0x01,  # 3  AND #$01          ; raster bit
+        0xF0,
+        0x2B,  # 5  BEQ +43 → 50      ; not raster → chain
+        0x8D,
+        0x19,
+        0xD0,  # 7  STA $D019         ; ack raster (A = $01)
+        0xAD,
+        0x03,
+        0xC7,  # 10 LDA $C703         ; field phase
+        0x49,
+        0x01,  # 13 EOR #$01          ; flip it
+        0x8D,
+        0x03,
+        0xC7,  # 15 STA $C703
+        0xAA,  # 18 TAX               ; X = new phase (0 or 1)
+        0xBD,
+        0x04,
+        0xC7,  # 19 LDA $C704,X       ; that phase's $D018
+        0x8D,
+        0x18,
+        0xD0,  # 22 STA $D018         ; commit in vblank — page flip, no tear
+        0xAD,
+        0x02,
+        0xC7,  # 25 LDA $C702         ; ready flag
+        0xF0,
+        0x14,  # 28 BEQ +20 → 50      ; no new frame → chain
+        0x8A,  # 30 TXA               ; phase back into A (sets Z)
+        0xD0,
+        0x11,  # 31 BNE +17 → 50      ; commit only on phase 0 → chain
+        0xAD,
+        0x00,
+        0xC7,  # 33 LDA $C700         ; bg0
+        0x8D,
+        0x21,
+        0xD0,  # 36 STA $D021
+        0xAD,
+        0x01,
+        0xC7,  # 39 LDA $C701         ; pending bank value
+        0x8D,
+        0x00,
+        0xDD,  # 42 STA $DD00         ; swap bank (tear-free at vblank)
+        0xA9,
+        0x00,  # 45 LDA #$00
+        0x8D,
+        0x02,
+        0xC7,  # 47 STA $C702         ; clear ready flag
+        0x4C,
+        0x31,
+        0xEA,  # 50 JMP $EA31         ; chain to kernal
+    ]
+)
+assert len(FLICKER_SWAP_IRQ_HANDLER) == 53, (
+    "FLICKER_SWAP_IRQ_HANDLER length changed — the three branch offsets (+43, "
+    "+20, +17, all targeting the JMP $EA31 chain at offset 50) must be "
+    "recomputed before changing. See the offsets in the byte-comment column."
+)
+
+
 # CIA #2 PORT_A bank-select values (also defined in c64.CIA2 but pulled
 # here so the per-frame push has them as Python ints, not strings — fewer
 # allocations on the hot path).
@@ -852,6 +954,7 @@ def install_bank_swap_irq(
     tracker_len: int = FRAME_TRACKER_LEN,
     *,
     audio_pump_active: bool = False,
+    tracker_init: bytes | None = None,
 ) -> None:
     """Bring up the bank-swap raster IRQ.
 
@@ -888,7 +991,16 @@ def install_bank_swap_irq(
     # Zero the frame tracker — ready flag (last byte) = 0 means the first
     # IRQ after install skips the DMA path until the host stages a real
     # frame.
-    api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", bytes(tracker_len))
+    #
+    # `tracker_init` overrides those zeros for handlers with a field the IRQ
+    # *reads* unconditionally rather than only behind the ready flag — the
+    # flicker handler's $D018 page pair. Zeros there would point VIC at the
+    # $0000 matrix offset for the field or two before the first frame stages,
+    # so the seed has to be in place before step 5 arms the raster source.
+    tracker = bytes(tracker_len) if tracker_init is None else tracker_init
+    if len(tracker) != tracker_len:
+        raise ValueError(f"tracker_init must be {tracker_len} bytes, got {len(tracker)}")
+    api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
     # 1) Mask CIA #1 (jiffy IRQ would otherwise vector through $0314 mid-install).
     api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
     # 2) Disable VIC IRQ sources (raster + sprite collisions + light pen).

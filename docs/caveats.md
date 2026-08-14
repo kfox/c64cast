@@ -504,6 +504,46 @@ REUWRITE opcode, so [cli.py](../c64cast/app/cli.py) coerces any `use_reu_pump`
 audio through the host-DMA NMI DAC and video through host-DMA; `--doctor`
 reports the same.)
 
+## Flicker blending flashes at 25/30 Hz, and cameras can't see it
+
+`[color].flicker_blend = true` makes hires hold two screen pages and alternate
+them at the VIC field rate, so the eye fuses each cell's pair of hardware colors
+into a shade the machine cannot draw. It is off by default, and there are two
+reasons worth reading before turning it on.
+
+**It is a flashing image.** Each color is shown every other field, so a blended
+region alternates at **25 Hz on PAL and 30 Hz on NTSC** — inside the frequency
+band recognized as a photosensitive-seizure risk (ITU-R BT.1702). What makes
+alternation hazardous is luminance modulation depth, which is exactly the same
+quantity that decides whether a pair reads as a *color* or as *flicker*. So
+`[color].flicker_max_luma_delta` is a safety control, not a quality knob: at the
+0.075 default only ~21 of the 120 possible pairs qualify, all of them close
+enough in brightness to fuse rather than strobe. That number is not a guess —
+candidate pairs were shown as flat bands on a CRT and judged by eye, and
+everything up to ΔY 0.0155 read as a solid color while the first visible flicker
+was at 0.1214. The default sits between the two, and c64cast refuses anything
+above 0.12 outright. NTSC's 30 Hz fuses noticeably better than PAL's 25 Hz. Don't
+point this at an audience without knowing that, and leave the cap alone unless
+you have a reason.
+
+**It does not survive being filmed.** A capture card records individual fields,
+so it captures the flicker rather than the fusion — a 30 fps capture of a
+50/60 Hz alternating display samples one page, or beats between them, and looks
+far worse than the plain palette would. This is not hypothetical: it is why the
+technique's best-known use, Dragon Breed's dragon, looks broken in 30 fps
+longplays and correct in 50 fps ones. If your output is a capture card, this
+feature costs you quality rather than adding it.
+
+c64cast's own `[preview]` window and `[recording]` MP4 are the exception, and for
+once they are *more* faithful than a camera: they reconstruct from the outbound
+write stream rather than filming the screen, so they fuse the two pages
+arithmetically and show the blended color with no flicker at all. Use those to
+judge the result, not a capture of the HDMI output.
+
+Because of the second point, this also can't be checked the usual way with the
+`hw-visual-verify` skill. Capture at 60 fps and average consecutive frame pairs
+offline, then compare against the preview's render.
+
 ## Preview window fidelity + limits
 
 `[preview] enabled = true` opens a desktop window mirroring the C64. It is a

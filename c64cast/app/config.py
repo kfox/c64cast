@@ -1964,6 +1964,35 @@ class ColorCfg:
             "apply": "live",
         },
     )
+    flicker_blend: bool = field(
+        default=False,
+        metadata={
+            "help": "Temporal color blending for hires: hold two screen pages and "
+            "alternate them at the VIC field rate, so the eye fuses each cell's "
+            "pair of hardware colors into a shade the VIC cannot draw. Targets "
+            "gradient banding — a chromatic gradient improves 27-34%, a photo ~1% — "
+            "because spatial dither already synthesizes intermediate colors where "
+            "there is texture to hide them in. OFF by default: the alternation is "
+            "seen at 25 Hz (PAL) / 30 Hz (NTSC), and it does not survive a 30 fps "
+            "capture. Hires 'normal' style only.",
+            "applies_to": ("hires",),
+        },
+    )
+    flicker_max_luma_delta: float = field(
+        default=0.075,
+        metadata={
+            "help": "How far apart in brightness the two colors of a flicker pair "
+            "may be, 0..0.12, as a fraction of peak white in linear light. This "
+            "is a photosensitivity control as much as a quality one — what makes "
+            "alternation dangerous, and what makes it read as flicker rather than "
+            "color, is luminance modulation depth. Measured on a CRT, pairs up to "
+            "0.0155 read as solid and the first visible flicker was at 0.1214, so "
+            "0.075 (default) sits mid-gap and admits ~21 of the 120 pairs. Above "
+            "0.10 warns; above 0.12 is refused. Which pairs qualify depends on "
+            "[hardware].host_palette, since it is the emitted light that fuses.",
+            "applies_to": ("hires",),
+        },
+    )
     motion_smoothing: float = field(
         default=0.25,
         metadata={

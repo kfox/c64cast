@@ -183,6 +183,7 @@ class CIA2:
 class VIC_BANK_0:
     BASE: Final = 0x0000
     SCREEN: Final = 0x0400  # $D018 matrix nibble = 1
+    SCREEN_ALT: Final = 0x0C00  # flicker-blend second page — see D018_HIRES_PAGE_*
     BITMAP: Final = 0x2000  # $D018 bitmap nibble = 4
     CHAR_ROM: Final = 0x1000  # $D018 char nibble = 4 (kernal-mapped)
 
@@ -190,8 +191,23 @@ class VIC_BANK_0:
 class VIC_BANK_2:
     BASE: Final = 0x8000
     SCREEN: Final = 0x8400  # same $D018 ($14) as bank 0
+    SCREEN_ALT: Final = 0x8C00  # same $D018 ($38) as bank 0's alt page
     BITMAP: Final = 0xA000  # same $D018 ($18) hires offset
     CHAR_ROM: Final = 0x9000  # kernal-mapped char-ROM in bank 2
+
+
+# Flicker-blend page pair for the hires bitmap modes: bitmap pinned at the
+# $2000 offset, screen matrix alternating between the $0400 and $0C00 offsets.
+# Both values are bank-relative (the property the block above describes), so one
+# pair is correct in bank 0 and bank 2 alike and the alternation survives a
+# $DD00 double-buffer swap untouched.
+#
+# $0C00 rather than $0800: $0801 is where run_prg drops a PRG, so a screen page
+# there would be shot through by the clear-loop / SID player upload. It is the
+# same page overlays/big_text.py picked, for the same reason — which is why the
+# two cannot be live at once (resolve_flicker_blend gates on buffer overlays).
+D018_HIRES_PAGE_A: Final = 0x18  # matrix offset $0400, bitmap offset $2000
+D018_HIRES_PAGE_B: Final = 0x38  # matrix offset $0C00, bitmap offset $2000
 
 
 # ---------------------------------------------------------------------------
@@ -587,3 +603,12 @@ class RegionID:
     # above. Color RAM ($D800) is shared/un-banked, so it stays on COLOR.
     BITMAP_BANK2: Final = 6000  # $A000 (8000 bytes), VIC bank 2
     SCREEN_BANK2: Final = 6001  # $8400 (1000 bytes), VIC bank 2
+
+    # Flicker blend ([color].flicker_blend). The field-B screen page is a
+    # second 1000-byte matrix per bank, alternating with the field-A page
+    # above at the VIC field rate. Same reasoning as the bank-2 split: each
+    # page must diff against its own prior content, and the two pages differ
+    # by construction (that difference IS the blend), so sharing an ID would
+    # make every frame look fully dirty on both.
+    SCREEN_ALT: Final = 6002  # $0C00 (1000 bytes), VIC bank 0
+    SCREEN_ALT_BANK2: Final = 6003  # $8C00 (1000 bytes), VIC bank 2

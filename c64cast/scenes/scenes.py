@@ -1099,6 +1099,7 @@ class SlideshowScene(MediaFileMixin, Scene):
             _build_display_mode,
             _resolve_slideshow_display,
             resolve_double_buffer,
+            resolve_flicker_blend,
             resolve_use_reu_staged,
         )
 
@@ -1120,6 +1121,20 @@ class SlideshowScene(MediaFileMixin, Scene):
                 getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
             ),
         )
+        # Re-resolved per concrete mode for the same reason the other two are:
+        # "random" only settles on hires for some of its picks, and blending is
+        # hires-only. Where it engages it takes the double-buffer slot (see
+        # resolve_flicker_blend).
+        flicker = resolve_flicker_blend(
+            self._color.flicker_blend,
+            new_name,
+            has_buffer_overlays=any(
+                getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
+            ),
+            audio_reu_pump_active=self._audio_reu_pump_active,
+        )
+        if flicker:
+            reu_staged = False
         self.display_mode = _build_display_mode(
             new_name,
             palette_mode=self._palette_mode,
@@ -1127,7 +1142,9 @@ class SlideshowScene(MediaFileMixin, Scene):
             background=self._background,
             style=self._style,
             use_reu_staged=reu_staged,
-            double_buffer=resolve_double_buffer(
+            double_buffer=False
+            if flicker
+            else resolve_double_buffer(
                 self._double_buffer_setting,
                 new_name,
                 use_reu_staged=reu_staged,
@@ -1136,6 +1153,7 @@ class SlideshowScene(MediaFileMixin, Scene):
             audio_reu_pump_active=self._audio_reu_pump_active,
             color=self._color,
             text_double_height=self._text_double_height,
+            flicker_blend=flicker,
         )
         log.info("slideshow: display = random → %s", new_name)
 

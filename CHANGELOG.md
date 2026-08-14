@@ -54,6 +54,34 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **`[color].flicker_blend` — colors the C64 cannot draw, by alternating two of
+  the ones it can.** Hires holds two screen pages over one shared bitmap and
+  flips between them every video field, so the eye fuses each cell's pair into an
+  intermediate shade — the trick Dragon Breed and Mayhem in Monsterland used. The
+  alternation is driven by a C64-side raster IRQ and free-runs at the VIC field
+  rate no matter how fast the host is pushing, so it needs no unusual link speed,
+  no REU and no sampler; the host just uploads the pair, for one extra
+  1000-byte page per frame. What it actually fixes is **gradient banding**, not
+  the palette in general — spatial dither already synthesizes intermediate colors
+  wherever there is texture to hide them in, so a chromatic gradient improves
+  27-34% — how much depends on which pairs the machine's palette makes
+  eligible — while a photograph improves ~1%.
+
+  **Off by default, deliberately.** A blended area alternates at 25 Hz (PAL) /
+  30 Hz (NTSC), which is inside the recognized photosensitive-seizure band, so
+  `[color].flicker_max_luma_delta` (default 0.075, hard-capped at 0.12) limits
+  how far apart in brightness a pair may be — the quantity that governs both the
+  hazard and whether a pair reads as color rather than flicker. The threshold is
+  measured rather than assumed: pairs were shown as flat bands on a CRT, and
+  everything up to ΔY 0.0155 read as a solid color while the first visible
+  flicker was at 0.1214, so the default sits mid-gap. Which pairs qualify
+  follows `[hardware].host_palette`, because what fuses is the light a
+  particular machine emits. It also does not
+  survive a 30 fps capture: a card records the flicker, not the fusion. c64cast's
+  own preview and `[recording]` do show the fused result correctly, because they
+  reconstruct from the write stream instead of filming the screen. See
+  [caveats.md](docs/caveats.md) before enabling it.
+
 - **The C64's screen, in the browser.** The console could author a show, start
   it, tune it and save it without ever showing you what any of that did —
   checking meant looking at the television the Commodore is plugged into. The

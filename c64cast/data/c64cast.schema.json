@@ -726,6 +726,16 @@
           ],
           "default": "error-min"
         },
+        "flicker_blend": {
+          "type": "boolean",
+          "description": "Temporal color blending for hires: hold two screen pages and alternate them at the VIC field rate, so the eye fuses each cell's pair of hardware colors into a shade the VIC cannot draw. Targets gradient banding \u2014 a chromatic gradient improves 27-34%, a photo ~1% \u2014 because spatial dither already synthesizes intermediate colors where there is texture to hide them in. OFF by default: the alternation is seen at 25 Hz (PAL) / 30 Hz (NTSC), and it does not survive a 30 fps capture. Hires 'normal' style only.",
+          "default": false
+        },
+        "flicker_max_luma_delta": {
+          "type": "number",
+          "description": "How far apart in brightness the two colors of a flicker pair may be, 0..0.12, as a fraction of peak white in linear light. This is a photosensitivity control as much as a quality one \u2014 what makes alternation dangerous, and what makes it read as flicker rather than color, is luminance modulation depth. Measured on a CRT, pairs up to 0.0155 read as solid and the first visible flicker was at 0.1214, so 0.075 (default) sits mid-gap and admits ~21 of the 120 pairs. Above 0.10 warns; above 0.12 is refused. Which pairs qualify depends on [hardware].host_palette, since it is the emitted light that fuses.",
+          "default": 0.075
+        },
         "motion_smoothing": {
           "type": "number",
           "description": "Temporal smoothing for mhires percell mode, 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. The default 0.25 was picked by hardware A/B as the best ghost/flicker balance. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes.",

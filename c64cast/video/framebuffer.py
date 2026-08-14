@@ -27,8 +27,15 @@ from pathlib import Path
 import numpy as np
 
 from c64cast.app import paths
-from c64cast.hw.c64 import SCREEN, VIC
+from c64cast.hw.c64 import SCREEN, VECTORS, VIC
 
+from .flicker import fuse_indices
+from .modes_irq import (
+    BANK_SWAP_IRQ_HANDLER_ADDR,
+    FLICKER_SWAP_IRQ_HANDLER,
+    FLICKER_TRACKER_OFF_D018,
+    FRAME_TRACKER_ADDR,
+)
 from .palette import C64_PALETTE_BGR
 
 log = logging.getLogger(__name__)
@@ -140,6 +147,29 @@ class Framebuffer:
 
     # ---- bitmap modes -------------------------------------------------------
 
+    def _flicker_page_b(self, ram: bytes) -> int | None:
+        """Address of the second screen page when flicker blending is live, else
+        None.
+
+        Detected purely from the outbound write stream — the IRQ vector points
+        at the swap handler AND the handler bytes at that address are the flicker
+        flavour — so the mirror keeps reconstructing rather than being told
+        anything out of band. Checking the vector matters: teardown unhooks
+        $0314 but leaves both the handler and its tracker in RAM, so the page
+        bytes alone would keep reporting a blend into the next scene."""
+        vector = ram[VECTORS.IRQ] | (ram[VECTORS.IRQ + 1] << 8)
+        if vector != BANK_SWAP_IRQ_HANDLER_ADDR:
+            return None
+        installed = ram[
+            BANK_SWAP_IRQ_HANDLER_ADDR : BANK_SWAP_IRQ_HANDLER_ADDR + len(FLICKER_SWAP_IRQ_HANDLER)
+        ]
+        if installed != FLICKER_SWAP_IRQ_HANDLER:
+            return None
+        page_b = ram[FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018 + 1]
+        # $D018's matrix nibble is bank-relative; the mirror models bank 0 only
+        # (see caveats.md), which is where a flicker scene's first frame lands.
+        return ((page_b >> 4) & 0x0F) * 0x400
+
     def _render_hires(self, ram: bytes) -> np.ndarray:
         """320×200 hires bitmap. Each 8×8 cell has FG (high nibble of screen
         RAM byte) and BG (low nibble)."""
@@ -154,12 +184,25 @@ class Framebuffer:
         ).reshape(25, 40)
         fg = (screen >> 4) & 0x0F
         bg = screen & 0x0F
+        page_b = self._flicker_page_b(ram)
+        if page_b is None:
+            fg_palette = C64_PALETTE_BGR[fg]
+            bg_palette = C64_PALETTE_BGR[bg]
+        else:
+            # Fuse the two fields' cell colours once, then render a single pass:
+            # equivalent to alternating them, and it is the frame the eye
+            # integrates. Both pages share the bitmap, so only the colours differ.
+            screen_b = np.frombuffer(ram[page_b : page_b + SCREEN.N_CELLS], dtype=np.uint8).reshape(
+                25, 40
+            )
+            fg_palette = fuse_indices(fg, (screen_b >> 4) & 0x0F)
+            bg_palette = fuse_indices(bg, screen_b & 0x0F)
         img = np.empty((200, 320, 3), dtype=np.uint8)
         for cy in range(25):
             for cx in range(40):
                 cell = bitmap[cy, cx]
-                fg_col = C64_PALETTE_BGR[fg[cy, cx]]
-                bg_col = C64_PALETTE_BGR[bg[cy, cx]]
+                fg_col = fg_palette[cy, cx]
+                bg_col = bg_palette[cy, cx]
                 for row in range(8):
                     bits = cell[row]
                     for col in range(8):
