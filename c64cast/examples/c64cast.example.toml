@@ -860,6 +860,12 @@ listen_sample_rate = 44100          # audio_source = "listen" capture rate (full
 enabled = false                     # requires the `control` extra
 host = "127.0.0.1"
 port = 8765
+# Shared-token auth. Empty = open to anything that can reach the port (the
+# historical behaviour, fine on loopback). Set it before binding `host` to a
+# LAN address; prefer the C64CAST_CONTROL_TOKEN env var over a value here.
+# Browsers trade the token for a cookie at /api/login?token=…&next=/perf.
+token = ""
+viewer_token = ""                   # optional read-only token (GET only)
 
 [midi_control]
 # Process-wide MIDI control surface for live performance: scene jumps,

@@ -13,7 +13,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/sid_resolved.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
-* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
+* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
 * **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/session.py`, `app/doctor.py`, `app/playlist.py`, `app/recording_metadata.py`
 
@@ -43,6 +43,7 @@ the two lists account for every module in the tree.
 | `scenes/backgrounds.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `scenes/bitmap_text.py` | [Scenes, sources & overlays](architecture/scenes.md#bitmap_textpy--the-shared-glyph-rasterizer) |
 | `hw/c64.py` | [Hardware I/O & transports](architecture/hardware-io.md#c64py--the-hardware-constant-register) |
+| `control/auth.py` | [Control surfaces & live performance](architecture/control.md#authpy--shared-token-gate-optional) |
 | `control/camera.py` | [Control surfaces & live performance](architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra) |
 | `hw/char_rom.py` | [Hardware I/O & transports](architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine) |
 | `app/cli.py` | [Config, CLI & ensemble](architecture/config.md#clipy) |

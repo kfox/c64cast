@@ -2166,6 +2166,25 @@ class ControlPlaneCfg:
     port: int = field(
         default=8765, metadata={"help": "Bind port for the control-plane HTTP server."}
     )
+    # Precedence: C64CAST_CONTROL_TOKEN env var > this field > none (open),
+    # mirroring `dma_password` so a config that lives in a shared repo doesn't
+    # have to carry the credential.
+    token: str = field(
+        default="",
+        metadata={
+            "help": "Shared token required on every control-plane request, including "
+            "the /perf console and its WebSocket. Empty = no authentication (the "
+            "historical behaviour). Prefer the C64CAST_CONTROL_TOKEN env var."
+        },
+    )
+    viewer_token: str = field(
+        default="",
+        metadata={
+            "help": "Optional second token granting read-only access (GET/HEAD only): "
+            "the /perf console watches but can't launch. Ignored unless `token` is set. "
+            "Prefer the C64CAST_CONTROL_VIEWER_TOKEN env var."
+        },
+    )
 
 
 _MIDI_CC_TYPE_CHOICES = ("cc", "note", "pc", "mmc")
@@ -3662,9 +3681,10 @@ def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
     option (so "user didn't pass it" is distinguishable from "user passed
     the default").
 
-    Also folds in the C64CAST_DMA_PASSWORD env var as the final layer of
-    precedence (env > config > default) so the U64 network password can be
-    supplied without putting it in a checked-in TOML file."""
+    Also folds in the C64CAST_DMA_PASSWORD, C64CAST_CONTROL_TOKEN and
+    C64CAST_CONTROL_VIEWER_TOKEN env vars as the final layer of precedence
+    (env > config > default) so credentials can be supplied without putting
+    them in a checked-in TOML file."""
     for dest, (section, key) in CLI_TO_CFG.items():
         if not hasattr(args, dest):
             continue
@@ -3675,4 +3695,10 @@ def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
     env_pw = os.environ.get("C64CAST_DMA_PASSWORD")
     if env_pw is not None:
         cfg.ultimate64.dma_password = env_pw
+    env_token = os.environ.get("C64CAST_CONTROL_TOKEN")
+    if env_token is not None:
+        cfg.control.token = env_token
+    env_viewer = os.environ.get("C64CAST_CONTROL_VIEWER_TOKEN")
+    if env_viewer is not None:
+        cfg.control.viewer_token = env_viewer
     return cfg

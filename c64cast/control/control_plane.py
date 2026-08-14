@@ -121,13 +121,21 @@ def build_app_for_registry(
     playlists: PlaylistRegistry,
     config_loaders: LoaderRegistry,
     interstitial_factories: InterstitialRegistry,
+    *,
+    token: str = "",
+    viewer_token: str = "",
 ):
     """Build the FastAPI app over registry providers, consulted per request.
 
     An empty playlist registry means no session is running: every route
     answers `503` rather than the app being torn down and rebuilt around each
     session, which would drop the listening socket (and every connected
-    console) on each show change."""
+    console) on each show change.
+
+    `token` gates the whole app (see `auth.install_auth`); empty leaves it
+    open, which is the historical behaviour. The gate is installed here rather
+    than by the caller so an app built somewhere new can't ship unauthenticated
+    by omission."""
     try:
         from fastapi import FastAPI, HTTPException, Query
     except ImportError as e:
@@ -247,6 +255,12 @@ def build_app_for_registry(
 
     register_perf_routes(app, PerfBridge(lambda: list(playlists().items())))
 
+    # Last, so the middleware wraps every route above — including /perf/ws,
+    # which a per-route dependency could only reject after accept().
+    from .auth import install_auth
+
+    install_auth(app, token=token, viewer_token=viewer_token)
+
     return app
 
 
@@ -254,6 +268,9 @@ def build_app(
     playlists: Mapping[str, Playlist],
     config_loaders: Mapping[str, SceneFactory],
     interstitial_factories: Mapping[str, InterstitialFactory],
+    *,
+    token: str = "",
+    viewer_token: str = "",
 ):
     """Build the FastAPI app around one session's fixed maps — the one-shot
     CLI's shape, where the app and the session live and die together. Split
@@ -262,7 +279,11 @@ def build_app(
     if not playlists:
         raise ValueError("control plane needs at least one playlist")
     return build_app_for_registry(
-        lambda: playlists, lambda: config_loaders, lambda: interstitial_factories
+        lambda: playlists,
+        lambda: config_loaders,
+        lambda: interstitial_factories,
+        token=token,
+        viewer_token=viewer_token,
     )
 
 
@@ -272,10 +293,25 @@ def start_control_server(
     playlists: Mapping[str, Playlist],
     config_loaders: Mapping[str, SceneFactory],
     interstitial_factories: Mapping[str, InterstitialFactory],
+    token: str = "",
+    viewer_token: str = "",
 ) -> ControlServer:
     """Build the FastAPI app + start a uvicorn server. Returns the server
     handle (caller calls `.stop()` at shutdown)."""
-    app = build_app(playlists, config_loaders, interstitial_factories)
+    if token:
+        log.info("control plane: token authentication ON%s", " (+ viewer)" if viewer_token else "")
+    elif host not in ("127.0.0.1", "localhost", "::1"):
+        # Not fatal: binding wide open is what this surface has always done,
+        # and breaking those runs to add a security feature isn't a trade the
+        # user asked for. The web console's own listener does refuse.
+        log.warning(
+            "control plane: bound to %s with no [control] token — "
+            "anything that can reach the port can drive the run",
+            host,
+        )
+    app = build_app(
+        playlists, config_loaders, interstitial_factories, token=token, viewer_token=viewer_token
+    )
     server = ControlServer(host, port, app)
     server.start()
     return server

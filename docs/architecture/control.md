@@ -10,6 +10,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`camera.py` — camera enumeration + name/VID:PID device selection (optional `camera` extra)](#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra)
 * [`vision.py` — webcam gesture control (optional, camera-as-input)](#visionpy--webcam-gesture-control-optional-camera-as-input)
 * [`control_plane.py` — HTTP control plane (optional)](#control_planepy--http-control-plane-optional)
+* [`auth.py` — shared-token gate (optional)](#authpy--shared-token-gate-optional)
 * [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
 * [`tempo.py` — process-wide musical beat grid (Live DJ/VJ Phase 1)](#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)
 * [`performance.py` — clip-launch grid (Live DJ/VJ Phase 2)](#performancepy--clip-launch-grid-live-djvj-phase-2)
@@ -85,6 +86,21 @@ The same three events are fed by the keyboard poller, so HTTP and the C64 keyboa
 **The app is built over a registry, not a fixed map.** `build_app_for_registry(playlists, config_loaders, interstitial_factories)` takes three *providers* — zero-arg callables — and consults them inside each request; `build_app(...)` is the same thing with the three maps closed over as constants, and is what the one-shot CLI uses (it keeps its construction-time `ValueError` on an empty map, because a CLI run with no playlists is a bug, not a state). The indirection exists for the web console's long-lived host, where sessions start and stop under a server that keeps listening: rebuilding the app per session would drop the socket, every connected console and the `/perf` WebSocket on every show change. An empty registry means no session is running and every data/action route answers **`503 no session running`** — the one status a client can tell apart from "the server is gone".
 
 `_resolve` takes **one snapshot of the registry per request** and hands it back alongside the resolved names, so a handler can't pause one generation's playlists and report another's — the maps are swapped wholesale by the session lifecycle while requests are in flight.
+
+## `auth.py` — shared-token gate (optional)
+
+`[control] token` (or `$C64CAST_CONTROL_TOKEN`, which wins) turns the whole control plane — routes, `/perf` console, WebSocket — into a token-gated surface. Empty is the default and leaves it open, which is what it has always been; `start_control_server` logs a warning when a non-loopback `host` is bound without one, but does not refuse, since breaking existing LAN-bound runs isn't a trade a security feature gets to make for the user. `viewer_token` adds a second credential that may only issue `GET`/`HEAD`/`OPTIONS`.
+
+**One pure-ASGI middleware, not a per-route dependency**, for two reasons that are not stylistic:
+
+* `BaseHTTPMiddleware` and every `Depends`-based scheme are invisible to `websocket` scopes, and `BaseHTTPMiddleware` buffers response bodies — which would ruin the binary preview stream the web console adds later.
+* A WebSocket rejected from inside its handler can only close **after** `accept()`, which a browser reports as an ordinary disconnect. Closing before accept makes uvicorn answer the handshake with an HTTP `403`, the one outcome a client can tell apart from a server restart.
+
+`install_auth` is called from `build_app_for_registry` rather than by its callers, so an app built somewhere new can't ship open by omission, and `tests/test_control_auth.py` walks `app.routes` asserting every path outside `PUBLIC_PATHS` refuses an unauthenticated caller.
+
+**Token sources, in order:** `Authorization: Bearer` → `X-C64Cast-Token` → `?token=` → the `c64cast_token` cookie. The last two exist because a browser can set no headers on a plain navigation or a WebSocket handshake. `GET /api/login?token=…&next=/perf` — the only public path — trades the token for an `HttpOnly; SameSite=Strict` cookie and redirects, after which the console page and its socket authenticate themselves; `POST /api/login` does the same from a JSON body, for a login form that shouldn't put the credential in a URL. `next` is constrained to a single-leading-slash path, since `//host` and `https://host` are both offsite to a browser. No `Secure` flag: the control plane speaks plain HTTP on a LAN, and a Secure cookie would simply never come back.
+
+**The one hole the middleware cannot plug** is `/perf/ws`. A socket is a single `GET` handshake, so method-based role enforcement can't see the command frames that arrive afterwards — `perf_ws` reads `scope["c64cast_role"]` itself and drops inbound frames from a viewer. The state payload carries `role` for the same reason: the page greys nothing out, but shows a `read-only` chip instead of letting every pad tap fail silently against a 403.
 
 ## `midi_control.py` — process-wide MIDI control surface (optional, live performance)
 

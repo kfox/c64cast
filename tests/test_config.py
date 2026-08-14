@@ -1000,6 +1000,48 @@ class DmaPasswordEnvTest(unittest.TestCase):
         self.assertEqual(merged.ultimate64.dma_password, "from-config")
 
 
+class ControlTokenEnvTest(unittest.TestCase):
+    """C64CAST_CONTROL_TOKEN / _VIEWER_TOKEN ride the same final merge_cli
+    layer as the DMA password, so a config file shared between machines (or
+    committed) doesn't have to carry the credential."""
+
+    def _args(self) -> argparse.Namespace:
+        return argparse.Namespace(**dict.fromkeys(cfgmod.CLI_TO_CFG))
+
+    def _clean_env(self) -> dict[str, str]:
+        drop = {"C64CAST_CONTROL_TOKEN", "C64CAST_CONTROL_VIEWER_TOKEN"}
+        return {k: v for k, v in os.environ.items() if k not in drop}
+
+    def test_env_sets_both_tokens(self):
+        with mock.patch.dict(
+            os.environ,
+            {"C64CAST_CONTROL_TOKEN": "full-t", "C64CAST_CONTROL_VIEWER_TOKEN": "view-t"},
+        ):
+            merged = cfgmod.merge_cli(cfgmod.Config(), self._args())
+        self.assertEqual(merged.control.token, "full-t")
+        self.assertEqual(merged.control.viewer_token, "view-t")
+
+    def test_env_overrides_config_value(self):
+        cfg = cfgmod.Config()
+        cfg.control.token = "from-config"
+        with mock.patch.dict(os.environ, {"C64CAST_CONTROL_TOKEN": "from-env"}):
+            merged = cfgmod.merge_cli(cfg, self._args())
+        self.assertEqual(merged.control.token, "from-env")
+
+    def test_no_env_keeps_config_value(self):
+        cfg = cfgmod.Config()
+        cfg.control.token = "from-config"
+        with mock.patch.dict(os.environ, self._clean_env(), clear=True):
+            merged = cfgmod.merge_cli(cfg, self._args())
+        self.assertEqual(merged.control.token, "from-config")
+
+    def test_default_is_no_token(self):
+        with mock.patch.dict(os.environ, self._clean_env(), clear=True):
+            merged = cfgmod.merge_cli(cfgmod.Config(), self._args())
+        self.assertEqual(merged.control.token, "")
+        self.assertEqual(merged.control.viewer_token, "")
+
+
 class BuildersTableTest(unittest.TestCase):
     def test_every_scene_type_has_a_builder(self):
         # A new entry in SCENE_TYPES must land in _BUILDERS the day it's

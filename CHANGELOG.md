@@ -32,6 +32,21 @@ the version and stamps it with the date.
 
 ### Added
 
+- **The HTTP control plane can be locked with a shared token.** `[control].token`
+  (or `$C64CAST_CONTROL_TOKEN`, which wins) is required on every route from then
+  on — including the `/perf` console page and its WebSocket. Scripts send it as
+  `Authorization: Bearer`, `X-C64Cast-Token` or `?token=`; a browser visits
+  `/api/login?token=…` once and gets an `HttpOnly; SameSite=Strict` cookie, after
+  which the console authenticates itself. An optional `[control].viewer_token`
+  grants reads only: the console watches the show and displays a `read-only`
+  chip, but pause, skip, reload and clip launches are refused.
+
+  The default is empty, which is exactly today's behaviour — open to anything
+  that can reach the port. What changes without a token is one log line: binding
+  a non-loopback `host` now warns that the run is drivable by anyone who can
+  reach it. Being a shared secret over plain HTTP, the token is a lock on the
+  door and not a reason to expose the port; `SECURITY.md` says where it stops.
+
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
   link.** It reported the modelled cost of getting a frame *onto the wire* but
   nothing about the cost of producing one, so it could not answer whether a

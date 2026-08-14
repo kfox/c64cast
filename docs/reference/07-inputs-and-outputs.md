@@ -322,6 +322,42 @@ Every route takes an optional `?system=` naming one system of an ensemble, or
 `all`. Omitted, a single-system run answers for its one playlist and an ensemble
 answers for every system at once.
 
+### Locking It
+
+The server answers anyone who can reach the port. On loopback that is the same
+audience as your keyboard; bound to a LAN address it is not, which is what
+`[control].token` is for:
+
+```toml
+[control]
+enabled = true
+host = "0.0.0.0"
+# or $C64CAST_CONTROL_TOKEN, which wins:
+token = "a-long-random-string"
+viewer_token = "another-one"      # may read, may not touch
+```
+
+With a token set, every route needs it — including the console page and its
+WebSocket. A script sends it as `Authorization: Bearer …`, as `X-C64Cast-Token`,
+or as `?token=…`. A browser can do none of those on a plain navigation, so open
+
+```
+http://HOST:8765/api/login?token=a-long-random-string
+```
+
+once: it stores the token in a cookie and drops you on the console, and
+everything the page does from then on is authenticated. The token defaults to
+empty, which is the historical behaviour — open. Prefer the environment variable
+to a value in a file you might commit or share.
+
+A `viewer_token` is the same page with the writes removed: reads succeed, pause,
+skip, reload and every clip launch are refused, and the console shows a
+`read-only` chip so the refusal is visible rather than mysterious.
+
+This is a shared secret over plain HTTP on your own network — a lock on the
+door, not a bank vault. It does not make the port safe to expose to the
+internet; nothing here does.
+
 ### What a Reload Re-Reads
 
 A reload rebuilds **`[[scenes]]` and `[interstitial]`**, and nothing else. The
