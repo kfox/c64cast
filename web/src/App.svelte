@@ -2,8 +2,9 @@
   import { onDestroy, onMount } from "svelte";
 
   import { Console } from "$lib/console.svelte";
-  import { Router } from "$lib/router.svelte";
+  import { Router, type Screen } from "$lib/router.svelte";
   import ConfigScreen from "$lib/screens/Config.svelte";
+  import LiveScreen from "$lib/screens/Live.svelte";
   import SessionScreen from "$lib/screens/Session.svelte";
 
   // One feed for the whole app, owned by the shell and handed down. Screens
@@ -18,8 +19,9 @@
     router.dispose();
   });
 
-  const tabs: { screen: "session" | "config"; label: string }[] = [
+  const tabs: { screen: Screen; label: string }[] = [
     { screen: "session", label: "Session" },
+    { screen: "live", label: "Live" },
     { screen: "config", label: "Configs" },
   ];
 </script>
@@ -62,6 +64,8 @@
   <main class="flex-1">
     {#if router.screen === "config"}
       <ConfigScreen {host} {router} />
+    {:else if router.screen === "live"}
+      <LiveScreen {host} {router} />
     {:else}
       <SessionScreen {host} />
     {/if}

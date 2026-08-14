@@ -482,6 +482,21 @@ have not saved survives clicking away to another file and is marked in the list,
 so nothing is lost by looking at something else. A configuration is addressed by
 its own URL — `/config/shows/gig.toml` — which makes it a link worth sending.
 
+**Live** is the performance surface, and it is the screen to have open at a
+gig. Along the top is the beat grid: the tempo, a pulse on the current beat,
+where that tempo came from, and **Tap** to set it by hand. Below it the clip
+grid, one pad per `[[performance.clips]]` entry, lit green for the clip
+playing and amber for one waiting on its quantize boundary — with a count-in
+beside the tempo saying how many beats are left. Pads are pressed and released
+rather than clicked, so a `gate` clip holds for as long as your finger is down.
+The effect rack lists the current scene's chain with a bypass button and a
+slider per knob, generated from what each effect declares, so it cannot offer
+one the effect does not have. The eight look pads at the bottom recall a saved
+look; arm **SAVE** first and a pad stores the current clip and effect chain
+instead. Everything here drives the same engine a MIDI controller drives — a
+pad tapped in the browser and a pad tapped on the grid are the same launch —
+and an ensemble puts each machine on its own tab, at its own URL.
+
 It is built and **shipped inside the package**, so there is nothing to install
 and no build step: `uv sync` and `pip install` both give you a console. It is
 also gated exactly like the rest of the surface, which means the first thing an

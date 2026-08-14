@@ -75,7 +75,7 @@ Every name c64cast answers to — 432 of them — and the pages that discuss eac
 | character ROM | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Three Network Services (1)](02-config-rules.md#the-three-network-services), [The Character ROM (5)](06-under-the-hood.md#the-character-rom) |
 | `charset_path` | [`preview` (A)](20-appendix-a-configuration.md#preview), [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
 | clip grid | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [The Performance Console (6)](07-inputs-and-outputs.md#the-performance-console), [The Clip Grid (6)](07-inputs-and-outputs.md#the-clip-grid) |
-| `clips` | [Performing (6)](07-inputs-and-outputs.md#performing), [`performance` (A)](20-appendix-a-configuration.md#performance), [The Demos (H)](27-appendix-h-examples.md#the-demos) |
+| `clips` | [The Console (6)](07-inputs-and-outputs.md#the-console), [Performing (6)](07-inputs-and-outputs.md#performing), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `clock` | [The Overlays (2)](03-vocabulary.md#the-overlays), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `clock_port` | [Clock (6)](07-inputs-and-outputs.md#clock), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `col` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`logo` (C)](22-appendix-c-overlays.md#logo) |

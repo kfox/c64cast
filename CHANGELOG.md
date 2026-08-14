@@ -155,6 +155,25 @@ the version and stamps it with the date.
   list, and a configuration has its own address (`/config/shows/gig.toml`) that
   a reload and the back button both respect.
 
+- **The console has a performance screen.** *Live* is the beat grid, the clip
+  grid, the effect rack and the look pads on one page: the tempo with a pulse on
+  the current beat and **Tap** to set it by hand, a pad per
+  `[[performance.clips]]` entry lit for what is playing and for what is waiting
+  on its quantize boundary (with the count-in in beats), a bypass button and a
+  slider for every knob the current scene's effects declare, and eight pads that
+  recall a saved look — or store one, with **SAVE** armed.
+
+  It drives the same engine a MIDI controller drives, so a pad tapped in a
+  browser and a pad tapped on a grid are the same launch, and it is the same
+  live feed the rest of the console already reads rather than a second
+  connection. Pads are pressed and released rather than clicked, so a `gate`
+  clip holds while your finger is down. An ensemble puts each machine on its own
+  tab and its own address (`/live/left`). A read-only token watches all of it and
+  drives none of it.
+
+  The zero-dependency `/perf` console is unchanged and still the gig-day
+  fallback; this is the same surface with the rest of the host beside it.
+
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
   link.** It reported the modelled cost of getting a frame *onto the wire* but
   nothing about the cost of producing one, so it could not answer whether a

@@ -1,4 +1,4 @@
-import type { LogLine, Role, SessionStatus, StateFrame } from "./types";
+import type { LogLine, PerfSystem, Role, SessionStatus, StateFrame } from "./types";
 
 /** How many log lines the browser keeps. The daemon's own buffer holds 500 and
  *  hands a new connection the last 200; matching its ceiling means a console
@@ -48,6 +48,13 @@ export class Console {
    *  the way the status feed rounds it. */
   get hardwareWait(): number {
     return this.session?.hardware_wait_s ?? 0;
+  }
+
+  /** The performance state of each running system, in ensemble order. Empty
+   *  between shows — the bridge answers an idle host with no systems rather
+   *  than an error, so the live screen has something honest to render. */
+  get systems(): PerfSystem[] {
+    return this.frame.systems ?? [];
   }
 
   connect(): void {
