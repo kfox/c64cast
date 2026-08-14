@@ -904,6 +904,16 @@
           "type": "integer",
           "description": "Bind port for the control-plane HTTP server.",
           "default": 8765
+        },
+        "token": {
+          "type": "string",
+          "description": "Shared token required on every control-plane request, including the /perf console and its WebSocket. Empty = no authentication (the historical behaviour). Prefer the C64CAST_CONTROL_TOKEN env var.",
+          "default": ""
+        },
+        "viewer_token": {
+          "type": "string",
+          "description": "Optional second token granting read-only access (GET/HEAD only): the /perf console watches but can't launch. Ignored unless `token` is set. Prefer the C64CAST_CONTROL_VIEWER_TOKEN env var.",
+          "default": ""
         }
       }
     },

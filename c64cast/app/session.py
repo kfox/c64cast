@@ -1042,6 +1042,8 @@ def start_services(sess: Session) -> None:
                 playlists={st.name: st.playlist for st in stacks},
                 config_loaders=config_loaders,
                 interstitial_factories=interstitial_factories,
+                token=control_cfg.token,
+                viewer_token=control_cfg.viewer_token,
             )
         except RuntimeError as e:
             log.error("control plane disabled: %s", e)

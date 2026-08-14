@@ -28,19 +28,30 @@ out in a new release rather than as patches to older ones.
 ## What c64cast exposes on your network
 
 c64cast is a LAN tool for hardware sitting on your desk. Several of its features
-open network listeners, and **none of them authenticate callers** — that is by
-design, not an oversight, and it is why none of them belong on an
+open network listeners, and **all but one of them authenticate no callers** —
+that is by design, not an oversight, and it is why none of them belong on an
 internet-facing interface. Do not port-forward them, and do not run them on an
-untrusted network.
+untrusted network. The exception is the HTTP control plane, which can be put
+behind a shared token (below); that is a lock on the door, not a reason to
+expose the port.
 
 | Surface | Default | Exposure |
 |---|---|---|
-| HTTP control plane (`[control]`) | off; binds `127.0.0.1:8765` | Any `POST /pause`, `/skip`, `/reload` from anything that can reach the port controls the run. Localhost-only unless you change `host`. |
-| Phone/web performance console | off; shares the control-plane server | Rides the same port, so reaching it from a phone means binding the control plane to a LAN address — which exposes the control plane too. |
+| HTTP control plane (`[control]`) | off; binds `127.0.0.1:8765`; **no token** | Unauthenticated by default: any `POST /pause`, `/skip`, `/reload` from anything that can reach the port controls the run. Localhost-only unless you change `host`. Setting `[control].token` (or `$C64CAST_CONTROL_TOKEN`) requires that token on every route, including the console and its WebSocket; `viewer_token` grants reads only. |
+| Phone/web performance console | off; shares the control-plane server | Rides the same port, so reaching it from a phone means binding the control plane to a LAN address — which exposes the control plane too, under the same token or the same absence of one. |
 | WLED bridge Mode 1 (`[wled].listen`) | off; binds `0.0.0.0:8080` when enabled | Presents a virtual WLED device on the LAN, deliberately reachable so the WLED app and Home Assistant can discover it via mDNS. The WLED JSON API has no authentication concept, so anything on the LAN can change scenes and live parameters. |
 | WLED audio-sync broadcast (`[wled]` Mode 3) | off | Plaintext UDP to multicast `239.0.0.1:11988`. Carries audio-feature data, not audio. |
 | WLED pixel sink (`wled` scene) | off | Accepts an unauthenticated realtime pixel stream (DDP / WLED UDP) from LedFx or xLights. |
 | Ultimate 64 / TeensyROM+ link | required | Outbound only. Writes go over the Ultimate DMA Service (TCP 64) and REST; the C64 side has no meaningful access control, so anything that can reach your U64 can already drive it with or without c64cast. |
+
+The control-plane token is a shared secret sent over plain HTTP, so it is
+readable by anything that can watch the traffic on your network. It stops a
+housemate's laptop and a curious phone, not an attacker on the wire. It is
+supplied through `$C64CAST_CONTROL_TOKEN` / `$C64CAST_CONTROL_VIEWER_TOKEN` or
+the `[control].token` / `viewer_token` config keys, and has **no CLI flag** for
+the same reason the DMA password doesn't. c64cast warns when the control plane
+binds a non-loopback address with no token, but does not refuse — the surface
+predates the token, and breaking those runs is not the token's business.
 
 The Ultimate's optional DMA password is supplied through the
 `C64CAST_DMA_PASSWORD` environment variable or the `[ultimate64].dma_password`

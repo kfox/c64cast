@@ -378,6 +378,7 @@ _PERF_HTML = """<!doctype html>
     <div class="bpm" id="bpm">--<small> bpm</small></div>
     <span class="chip" id="src">internal</span>
     <span class="chip" id="run">idle</span>
+    <span class="chip" id="role" hidden>read-only</span>
     <div class="beats" id="beats"></div>
     <button id="tap">TAP</button>
   </div>
@@ -416,6 +417,9 @@ function curSys() {
 
 function apply(s) {
   state = s;
+  // A viewer token's writes are rejected by the server with a 403; say so
+  // instead of letting every pad tap look like a dead grid.
+  document.getElementById('role').hidden = s.role !== 'viewer';
   const sys = curSys();
   if (sys) {
     const t = sys.tempo;
@@ -649,13 +653,21 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
 
     ws_clients: set[Any] = set()
 
+    def _with_role(state: dict[str, Any], scope: Mapping[str, Any]) -> dict[str, Any]:
+        """Tag a snapshot with the caller's auth role (``None`` when the server
+        runs without a token). The page greys itself out for a ``viewer``
+        rather than letting taps fail silently against the 403 the auth
+        middleware answers writes with."""
+        state["role"] = scope.get("c64cast_role")
+        return state
+
     @app.get("/perf")
     def perf_page() -> Response:
         return Response(content=_PERF_HTML, media_type="text/html")
 
     @app.get("/perf/state")
-    def perf_state() -> dict[str, Any]:
-        return bridge.state()
+    def perf_state(request: Request) -> dict[str, Any]:
+        return _with_role(bridge.state(), request.scope)
 
     @app.post("/perf/command")
     async def perf_command(request: Request) -> dict[str, Any]:
@@ -667,17 +679,20 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
     async def perf_ws(websocket: WebSocket) -> None:
         await websocket.accept()
         ws_clients.add(websocket)
+        # The one gap the auth middleware can't cover: a socket is a single
+        # `GET` handshake, so inbound command frames have to be dropped here.
+        read_only = websocket.scope.get("c64cast_role") == "viewer"
         try:
             # Push a fresh snapshot on a fixed cadence; the client extrapolates the
             # beat pulse locally in between. A receive with timeout lets a client
             # command frame (if any) through without blocking the push loop.
             while True:
-                await websocket.send_json(bridge.state())
+                await websocket.send_json(_with_role(bridge.state(), websocket.scope))
                 try:
                     msg = await asyncio.wait_for(websocket.receive_json(), timeout=_PUSH_INTERVAL_S)
                 except TimeoutError:
                     continue
-                if isinstance(msg, Mapping):
+                if isinstance(msg, Mapping) and not read_only:
                     bridge.apply(msg)
         except WebSocketDisconnect:
             pass

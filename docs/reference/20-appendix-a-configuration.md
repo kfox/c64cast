@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 19 sections and 156 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 19 sections and 158 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -115,6 +115,8 @@ port = 8765
 | **`enabled`**<br>*Type:* `bool`<br>*Default:* `False` | Run the HTTP control plane (pause/resume/skip/reload); requires the 'control' extra. |
 | **`host`**<br>*Type:* `str`<br>*Default:* `'127.0.0.1'` | Bind address for the control-plane HTTP server. |
 | **`port`**<br>*Type:* `int`<br>*Default:* `8765` | Bind port for the control-plane HTTP server. |
+| **`token`**<br>*Type:* `str`<br>*Default:* `''` | Shared token required on every control-plane request, including the /perf console and its WebSocket. Empty = no authentication (the historical behaviour). Prefer the C64CAST_CONTROL_TOKEN env var. |
+| **`viewer_token`**<br>*Type:* `str`<br>*Default:* `''` | Optional second token granting read-only access (GET/HEAD only): the /perf console watches but can't launch. Ignored unless `token` is set. Prefer the C64CAST_CONTROL_VIEWER_TOKEN env var. |
 
 ## `[debug]`
 

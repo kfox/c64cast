@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 417 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 419 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -505,6 +505,7 @@ Every name c64cast answers to — 417 of them — and the pages that discuss eac
 | `text_color` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`interstitial` (A)](20-appendix-a-configuration.md#interstitial) |
 | `text_double_height` | [Overlays (2)](03-vocabulary.md#overlays), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `time_base` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
+| `token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [`control` (A)](20-appendix-a-configuration.md#control) |
 | `trails` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `transport` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Driving a Video (6)](07-inputs-and-outputs.md#driving-a-video), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `tunnel` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
@@ -535,6 +536,7 @@ Every name c64cast answers to — 417 of them — and the pages that discuss eac
 | `video` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`video` (2)](03-vocabulary.md#video), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `--videos` | [Playlist (G)](26-appendix-g-cli-flags.md#playlist) |
 | `videos_dir` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
+| `viewer_token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [`control` (A)](20-appendix-a-configuration.md#control) |
 | `--vision` | [Vision Input (G)](26-appendix-g-cli-flags.md#vision-input) |
 | `[vision]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `--vision-model` | [Vision Input (G)](26-appendix-g-cli-flags.md#vision-input) |
