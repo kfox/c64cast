@@ -13,7 +13,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/sid_resolved.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
-* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
+* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `app/serve.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
 * **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/session.py`, `app/doctor.py`, `app/playlist.py`, `app/recording_metadata.py`
 
@@ -99,6 +99,7 @@ the two lists account for every module in the tree.
 | `app/scene_factory.py` | [Config, CLI & ensemble](architecture/config.md#scene_factorypy) |
 | `scenes/scenes.py` | [Scenes, sources & overlays](architecture/scenes.md#scenespy--scene-state-machine) |
 | `app/session.py` | [Config, CLI & ensemble](architecture/config.md#sessionpy--the-session-lifecycle) |
+| `app/serve.py` | [Control surfaces & live performance](architecture/control.md#appservepy--the-session-supervisor) |
 | `scenes/setup_progress.py` | [Scenes, sources & overlays](architecture/scenes.md#setup_progresspy--the-video-setup-progress-bar) |
 | `app/schema.py` | [Config, CLI & ensemble](architecture/config.md#schemapy--the-editor-surface) |
 | `sid/emusid_mixer.py` | [SID playback & the oscilloscope](architecture/sid.md#emusid_mixerpy--u2-emulated-stereo-sid-snoop-routing--model-matching) |

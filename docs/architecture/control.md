@@ -11,6 +11,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`vision.py` — webcam gesture control (optional, camera-as-input)](#visionpy--webcam-gesture-control-optional-camera-as-input)
 * [`control_plane.py` — HTTP control plane (optional)](#control_planepy--http-control-plane-optional)
 * [`auth.py` — shared-token gate (optional)](#authpy--shared-token-gate-optional)
+* [`app/serve.py` — the session supervisor](#appservepy--the-session-supervisor)
 * [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
 * [`tempo.py` — process-wide musical beat grid (Live DJ/VJ Phase 1)](#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)
 * [`performance.py` — clip-launch grid (Live DJ/VJ Phase 2)](#performancepy--clip-launch-grid-live-djvj-phase-2)
@@ -101,6 +102,27 @@ The same three events are fed by the keyboard poller, so HTTP and the C64 keyboa
 **Token sources, in order:** `Authorization: Bearer` → `X-C64Cast-Token` → `?token=` → the `c64cast_token` cookie. The last two exist because a browser can set no headers on a plain navigation or a WebSocket handshake. `GET /api/login?token=…&next=/perf` — the only public path — trades the token for an `HttpOnly; SameSite=Strict` cookie and redirects, after which the console page and its socket authenticate themselves; `POST /api/login` does the same from a JSON body, for a login form that shouldn't put the credential in a URL. `next` is constrained to a single-leading-slash path, since `//host` and `https://host` are both offsite to a browser. No `Secure` flag: the control plane speaks plain HTTP on a LAN, and a Secure cookie would simply never come back.
 
 **The one hole the middleware cannot plug** is `/perf/ws`. A socket is a single `GET` handshake, so method-based role enforcement can't see the command frames that arrive afterwards — `perf_ws` reads `scope["c64cast_role"]` itself and drops inbound frames from a viewer. The state payload carries `role` for the same reason: the page greys nothing out, but shows a `read-only` chip instead of letting every pad tap fail silently against a 403.
+
+## `app/serve.py` — the session supervisor
+
+The web console's first non-HTTP piece, and the one the rest of it is built on. `SessionManager` owns at most one [`Session`](config.md#sessionpy--the-session-lifecycle) at a time and serialises every transition behind one lock: `idle → starting → running → stopping → idle`, with `error` as where a failed build parks its diagnostic. `error` is deliberately not sticky — `start()` from it is legal, because a machine that was unreachable a minute ago usually isn't now.
+
+**Everything slow runs off the caller's thread.** `build_session` blocks for many seconds (open the backend, reset, settle, install the char ROM, probe the REU and the sampler) and teardown is not much cheaper, so `start()` and `stop()` return as soon as the transition is claimed and the caller watches the state feed. What deliberately does *not* run off-thread is validation: `validate_configs` is pure and hardware-free, so a bad config is refused synchronously — which is the whole reason that split exists.
+
+**`start()` never implicitly stops.** Replacing a running show is `switch()`, so the one path that has to get stop → settle → start right is the one path that does it; `start()` while running raises `SupervisorBusy` (an HTTP `409`). `wait_for(state, generation=…)` takes a generation because "wait until running" is ambiguous across a switch — the show being replaced is running too.
+
+**The build seam is a `publish` callback, not just a return value.** A build that fails *after* the stacks are up has already taken the hardware; handing the session over the moment it exists keeps "no hardware is left held" on the single path out of a generation, rather than splitting it between the supervisor and every build function. That is why a failed build routes through `stopping` on its way to `error` instead of jumping there.
+
+| Mechanism | Exists because |
+|---|---|
+| `hardware_free_at` cooldown | The U64's DMA service refuses new connections for a few seconds after one closes ([caveats](../caveats.md)), and AVFoundation refuses to reopen a camera straight after `WebcamSource.release()`. Two facts, one timer, checked on the way *in* to a build so the UI can say "waiting for hardware" — and re-armed after a marker recovery, which opens and closes a backend of its own. |
+| The `session-reap` poller | A non-looping show ends by itself. The CLI notices because it is parked in a join; a daemon has nothing watching, so a poller drives `running → stopping`. An *empty* thread list is not "finished" — it is a session whose playlists never started. |
+| The run marker (`<data root>/run.json`) | A segfault in OpenCV or PyAV kills the process with the machine mid-show — the same exposure the one-shot CLI has. A marker found at the next start means the last run died, so `default_safe_state` opens a bare backend, resets, and closes before anything else touches the hardware. Deliberately *not* `_open_backend`: its probe, char-ROM install and provisioning could each fail and abandon the reset, which is the one thing that has to happen. |
+| `SessionLogBuffer` | A hardware failure's diagnostic goes to the log and nowhere else. In the CLI that is fine — the user is looking at the terminal. A daemon's user is looking at a browser, so records are kept in a bounded deque tagged by generation, or the only answer the UI can give is "it didn't start". |
+
+Supervisor threads are `daemon=False`, unlike every other background thread in the project, for the same reason the playlist threads are: these are the threads that tear the hardware *down*, and a daemon thread is killed at interpreter exit — mid-teardown, with the machine still held. The reap poller is a plain `PollThread` (it only observes).
+
+Two things a supervised session must never inherit from the CLI: signal handlers, since `signal.signal` raises off the main thread, and `Session.interactive`, which stays False so the live-tune `input()` prompt can't hang the stop path forever.
 
 ## `midi_control.py` — process-wide MIDI control surface (optional, live performance)
 
