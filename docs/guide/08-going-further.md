@@ -115,7 +115,10 @@ button by the door.
 turns the program into a server that holds the Commodore and starts and stops
 shows on request, rather than running one playlist and exiting — handy for a
 machine in the corner of a room you would rather drive from a phone than from a
-terminal. It prints a link with its own password in it when it starts.
+terminal. It prints a link with its own password in it when it starts. Point
+`[web].config_roots` at the folder your playlists live in and it will list them,
+edit them, and start whichever one you pick — with the caveat that anyone
+holding that password can then run whatever those files describe.
 
 **Hand gestures** work if you have a webcam and the optional `vision`
 feature: pinch to pause, swipe to skip, open hand to cycle. It is exactly as

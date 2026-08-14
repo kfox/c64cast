@@ -28,6 +28,13 @@ free. Log lines ride along by sequence number rather than as a re-sent tail:
 the push cadence is ~3/sec and re-sending 500 lines each time would dwarf
 everything else on the socket.
 
+``/api/configs`` is the other half: browse, read and edit the host's configs, so
+a show can be authored and then started without a shell. Every path goes through
+:class:`~c64cast.app.config_store.ConfigStore`, which is also what turns the
+``config`` a start request may name into something safe to hand the loader —
+the jail is not repeated here, because a second copy of it is a second thing to
+get wrong.
+
 Like :mod:`perf_console` and :mod:`auth`, this module deliberately does **not**
 ``from __future__ import annotations``: the WebSocket route annotates its
 parameter with a name imported inside :func:`register_web_routes`, and
@@ -36,12 +43,21 @@ skip the injection entirely.
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from c64cast.app import introspect
 from c64cast.app.config import ConfigError
+from c64cast.app.config_store import (
+    ConfigInvalid,
+    ConfigNotFound,
+    ConfigStore,
+    ConfigStoreError,
+    ConfigTooLarge,
+    PathRejected,
+)
 from c64cast.app.playlist import Playlist
 from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
@@ -58,10 +74,21 @@ _PUSH_INTERVAL_S = 0.35
 _LOG_BACKLOG = 200
 
 #: A request factory re-reads the config from disk and validates it, so a
-#: start picks up an edit made since the host launched. It raises
-#: ConfigError / SessionConfigError, which is what a 422 is built from.
-RequestFactory = Callable[[], StartRequest]
+#: start picks up an edit made since the host launched. Its argument is the
+#: config path to run, or None for the one the host was launched with. It
+#: raises ConfigError / SessionConfigError, which is what a 422 is built from.
+RequestFactory = Callable[[str | None], StartRequest]
 PlaylistRegistry = Callable[[], Mapping[str, Playlist]]
+
+#: How a refusal from the config store reaches the caller. The store is
+#: app-level and says nothing about HTTP; the mapping lives here so it doesn't
+#: have to.
+_STORE_STATUS: tuple[tuple[type[ConfigStoreError], int], ...] = (
+    (ConfigInvalid, 422),
+    (ConfigNotFound, 404),
+    (ConfigTooLarge, 413),
+    (PathRejected, 403),
+)
 
 
 def _status_payload(status: SessionStatus, log_buffer: Any) -> dict[str, Any]:
@@ -76,6 +103,7 @@ def register_web_routes(
     manager: SessionManager,
     request_factory: RequestFactory,
     playlists: PlaylistRegistry,
+    store: ConfigStore,
     log_buffer: Any = None,
 ) -> None:
     """Register the ``/api/*`` routes on an existing FastAPI ``app``.
@@ -95,12 +123,12 @@ def register_web_routes(
     # so it cannot change while the process is up.
     introspection: dict[str, Any] = {}
 
-    def _make_request() -> StartRequest:
+    def _make_request(path: str | None) -> StartRequest:
         """Load + validate, mapping either failure to a 422 the browser can
         render. `SessionConfigError` carries the CLI's exit code, which is the
         closest thing to a machine-readable reason the validators produce."""
         try:
-            return request_factory()
+            return request_factory(path)
         except SessionConfigError as e:
             raise HTTPException(
                 422, f"config did not validate (exit code {e.exit_code}); see the log"
@@ -110,6 +138,38 @@ def register_web_routes(
 
     def _busy(e: SupervisorBusy) -> HTTPException:
         return HTTPException(409, str(e))
+
+    def _store_error(e: ConfigStoreError) -> HTTPException:
+        for kind, status in _STORE_STATUS:
+            if isinstance(e, kind):
+                detail = getattr(e, "report", None) or str(e)
+                return HTTPException(status, detail)
+        return HTTPException(400, str(e))
+
+    def _resolve_ref(ref: str | None) -> str | None:
+        """A browser names a config by ref; the loader wants a filesystem path.
+        This is the only crossing between the two, and the store is what makes
+        it safe."""
+        if not ref:
+            return None
+        try:
+            return str(store.resolve(str(ref)))
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    async def _body(request: Request) -> Mapping[str, Any]:
+        """The optional JSON body of a POST. Absent is not an error — a start
+        with no body is a start of whatever the host was launched with."""
+        raw = await request.body()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except ValueError as e:
+            raise HTTPException(400, "request body is not JSON") from e
+        if not isinstance(parsed, Mapping):
+            raise HTTPException(400, "request body must be a JSON object")
+        return parsed
 
     def _session_state(scope: Mapping[str, Any]) -> dict[str, Any]:
         state = _status_payload(manager.status(), log_buffer)
@@ -131,8 +191,8 @@ def register_web_routes(
         return state
 
     @app.post("/api/session/start", status_code=202)
-    def api_start() -> dict[str, Any]:
-        req = _make_request()
+    async def api_start(request: Request) -> dict[str, Any]:
+        req = _make_request(_resolve_ref((await _body(request)).get("config")))
         try:
             generation = manager.start(req)
         except SupervisorBusy as e:
@@ -146,8 +206,8 @@ def register_web_routes(
         return {"ok": True, "stopping": manager.stop(), "state": str(manager.state)}
 
     @app.post("/api/session/switch", status_code=202)
-    def api_switch() -> dict[str, Any]:
-        req = _make_request()
+    async def api_switch(request: Request) -> dict[str, Any]:
+        req = _make_request(_resolve_ref((await _body(request)).get("config")))
         try:
             generation = manager.switch(req)
         except SupervisorBusy as e:
@@ -162,6 +222,41 @@ def register_web_routes(
             raise _busy(e) from e
         return {"ok": True, "generation": manager.generation}
 
+    # -- the config browser -------------------------------------------------
+
+    @app.get("/api/configs")
+    def api_configs() -> dict[str, Any]:
+        return store.index()
+
+    # Registered before the bare `{ref:path}` route so a POST can't be read as
+    # a write to a file whose name happens to end in "/validate".
+    @app.post("/api/configs/{ref:path}/validate")
+    async def api_config_validate(ref: str, request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        try:
+            return store.validate_text(str(body.get("text", "")), ref)
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    @app.get("/api/configs/{ref:path}")
+    def api_config_read(ref: str) -> dict[str, Any]:
+        try:
+            return store.read(ref)
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    @app.put("/api/configs/{ref:path}")
+    async def api_config_write(ref: str, request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        if "text" not in body:
+            raise HTTPException(400, 'a config write needs a "text" key')
+        try:
+            return store.write(ref, str(body["text"]))
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    # -- the state feed -----------------------------------------------------
+
     def _apply_command(cmd: Mapping[str, Any]) -> bool:
         """Session commands over the socket, falling through to the
         performance engine for everything else — one inbound channel, so a
@@ -170,17 +265,19 @@ def register_web_routes(
         if action is None:
             return bool(bridge.apply(cmd))
         try:
+            ref = cmd.get("config")
+            path = str(store.resolve(str(ref))) if ref else None
             if action == "start":
-                manager.start(request_factory())
+                manager.start(request_factory(path))
             elif action == "switch":
-                manager.switch(request_factory())
+                manager.switch(request_factory(path))
             elif action == "stop":
                 manager.stop()
             elif action == "reload":
                 manager.reload()
             else:
                 return False
-        except (SupervisorBusy, SessionConfigError, ConfigError) as e:
+        except (SupervisorBusy, SessionConfigError, ConfigError, ConfigStoreError) as e:
             # The socket has no status code; the refusal shows up as the state
             # simply not changing, so say why in the log the console renders.
             log.warning("web console: %s refused: %s", action, e)

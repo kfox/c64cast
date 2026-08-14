@@ -13,6 +13,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`auth.py` — shared-token gate (optional)](#authpy--shared-token-gate-optional)
 * [`app/serve.py` — the session supervisor](#appservepy--the-session-supervisor)
 * [`web_api.py` — the web console's API + the host (`--serve`)](#web_apipy--the-web-consoles-api--the-host---serve)
+* [`config_store.py` — the config browser and its root jail](#config_storepy--the-config-browser-and-its-root-jail)
 * [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
 * [`tempo.py` — process-wide musical beat grid (Live DJ/VJ Phase 1)](#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)
 * [`performance.py` — clip-launch grid (Live DJ/VJ Phase 2)](#performancepy--clip-launch-grid-live-djvj-phase-2)
@@ -149,6 +150,20 @@ The status code is the design:
 **The main thread is the preview thread.** HighGUI may only create and service a window there, and under `--serve` it is parked in `pump_forever` rather than in a join, so windows are opened when a generation appears and closed when it goes. Repeatedly opening and closing them across sessions in one process is the least-exercised corner of this design, which is why every call into a window is contained: `[preview]` under a host is "works from a terminal", not a supported deployment. The browser preview ([`u64_stream.py`](hardware-io.md), still to come) is the daemon's real answer.
 
 Shutdown order is load-bearing: the session comes down *before* the server, so a console watching the state feed sees the machine stop rather than the socket vanish mid-teardown.
+
+## `config_store.py` — the config browser and its root jail
+
+`GET /api/configs`, `GET`/`PUT /api/configs/{ref}` and `POST /api/configs/{ref}/validate` are what let a show be authored and then started without a shell. This is the first thing in c64cast that hands part of the host's filesystem to the network, so the boundary is a module of its own rather than a few checks inside a route: the jail is testable without HTTP, and a second caller can't reach the filesystem by a different path than the first. `web_api.py` maps its refusals onto status codes (`403` outside a root, `404` missing, `413` oversized, `422` won't validate) and does not re-implement any of them.
+
+**Refs, not paths.** A file is addressed as `<root-label>/<relative>`, where the label is the root directory's own basename (`shows`, `shows-2` if two roots collide). Bare relative paths were the obvious alternative and were rejected: with more than one root they are ambiguous, and "first root that has it" is exactly the rule that quietly resolves to a different file than the operator meant. The same ref is what `POST /api/session/start` takes as its optional `{"config": …}` — one crossing between what a browser names and what the loader opens, and the store is what makes it safe.
+
+**The check that holds is `resolve()` + `is_relative_to`.** Roots are resolved once at construction, so a symlink *inside* a root pointing out of it fails like any other escape; rejecting `..` up front only buys a better error message. Listing walks `followlinks=False`, which drops symlinked directories and the loop protection comes free. Note that an HTTP client collapses a literal `..` in a URL before it is ever sent, so the traversal case that actually reaches the route is the percent-encoded one — which is what the test uses.
+
+**A write validates first**, through `config.load_master` + `validate_configs` on a scratch file **in the target's own directory** — an ensemble master resolves its per-system paths relative to itself, so validating one anywhere else reports missing files that are not missing. Refusing to save a config that cannot run is the point of having the editor talk to the loader at all; `POST …/validate` is what lets a UI see the error first. `validate_configs` writes its diagnostic to the log and raises an exit code, so the store collects what it logged rather than restructuring eight validators to return messages.
+
+The replaced text goes to a dotfile sibling (`.gig.toml.bak`, invisible to the listing) because a remote overwrite of a show config otherwise has no undo at all. Ensemble masters read fine but come back with `kind: "ensemble"` and no form data — `config_serialize` refuses them by design, so the raw text editor is the whole story for one. The DMA password is withheld from the form via `config_serialize.SECRET_FIELDS`, the same list that keeps it out of a serialized config; the raw `text` is still the file, because this is an editor, not a redactor.
+
+**What a ref bounds is which files are edited, not what a config can reach.** A saved TOML names media paths and URLs a session will open and `yt-dlp` will fetch, so remote config write access is equivalent to local shell-ish reach. That is why the full token gates it, why a `viewer` cannot write, and why `config_roots` defaults to the one directory the host was launched from rather than to anything broader.
 
 ## `midi_control.py` — process-wide MIDI control surface (optional, live performance)
 

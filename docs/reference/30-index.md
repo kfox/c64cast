@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 431 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 432 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -96,6 +96,7 @@ Every name c64cast answers to — 431 of them — and the pages that discuss eac
 | `--compat` | [What Is In Here](01-introduction.md#what-is-in-here), [Choosing a Display Mode for an Overlay (2)](03-vocabulary.md#choosing-a-display-mode-for-an-overlay), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `compress` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `--config` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [The Ensemble Cascade (1)](02-config-rules.md#the-ensemble-cascade) |
+| `config_roots` | [Browsing And Editing Configurations (6)](07-inputs-and-outputs.md#browsing-and-editing-configurations), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `[control]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`control` (A)](20-appendix-a-configuration.md#control) |
 | `controller_profile` | [Learning a Controller (6)](07-inputs-and-outputs.md#learning-a-controller), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `corner` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`callsign` (C)](22-appendix-c-overlays.md#callsign), [`clock` (C)](22-appendix-c-overlays.md#clock) |
@@ -376,7 +377,7 @@ Every name c64cast answers to — 431 of them — and the pages that discuss eac
 | `palette_mode` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing) |
 | `palette_mode` (mode) | [Notation](01-introduction.md#notation), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `password` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
-| `path` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Recording (6)](07-inputs-and-outputs.md#recording) |
+| `path` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host) |
 | `[performance]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `performance` | [Gestures (6)](07-inputs-and-outputs.md#gestures), [`vision` (A)](20-appendix-a-configuration.md#vision), [The Demos (H)](27-appendix-h-examples.md#the-demos) |
 | `persistence` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
@@ -545,7 +546,7 @@ Every name c64cast answers to — 431 of them — and the pages that discuss eac
 | `video` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`video` (2)](03-vocabulary.md#video), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `--videos` | [Playlist (G)](26-appendix-g-cli-flags.md#playlist) |
 | `videos_dir` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
-| `viewer_token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [The Token Is Not Optional Here (6)](07-inputs-and-outputs.md#the-token-is-not-optional-here), [`control` (A)](20-appendix-a-configuration.md#control) |
+| `viewer_token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [Browsing And Editing Configurations (6)](07-inputs-and-outputs.md#browsing-and-editing-configurations), [The Token Is Not Optional Here (6)](07-inputs-and-outputs.md#the-token-is-not-optional-here) |
 | `viewer_token` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `viewer_token` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `--vision` | [Vision Input (G)](26-appendix-g-cli-flags.md#vision-input) |

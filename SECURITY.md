@@ -39,6 +39,7 @@ That is a lock on the door, not a reason to expose the port.
 |---|---|---|
 | HTTP control plane (`[control]`) | off; binds `127.0.0.1:8765`; **no token** | Unauthenticated by default: any `POST /pause`, `/skip`, `/reload` from anything that can reach the port controls the run. Localhost-only unless you change `host`. Setting `[control].token` (or `$C64CAST_CONTROL_TOKEN`) requires that token on every route, including the console and its WebSocket; `viewer_token` grants reads only. |
 | Web console host (`--serve` / `[web]`) | off; binds `127.0.0.1:8123`; **always token-gated** | The only surface that starts and stops hardware on request, so it has no unauthenticated mode: with no token configured, one is generated, stored `0600` under the data directory, and printed at startup. The control-plane routes and the performance console ride the same port and the same token. `viewer_token` grants reads only. A full token is remote control of the machine — the sessions it starts open whatever media paths and URLs the configuration names. |
+| Web console config browser (`[web].config_roots`) | the directory the host was launched from | The only surface that reads and writes files on the host. Confined to the configured roots (resolved, so a symbolic link out of one is refused) and to `.toml` names, and a write must load before it lands. A full token is required — `viewer_token` cannot write. See the note below on what that access is actually worth. |
 | Phone/web performance console | off; shares the control-plane server | Rides the same port, so reaching it from a phone means binding the control plane to a LAN address — which exposes the control plane too, under the same token or the same absence of one. |
 | WLED bridge Mode 1 (`[wled].listen`) | off; binds `0.0.0.0:8080` when enabled | Presents a virtual WLED device on the LAN, deliberately reachable so the WLED app and Home Assistant can discover it via mDNS. The WLED JSON API has no authentication concept, so anything on the LAN can change scenes and live parameters. |
 | WLED audio-sync broadcast (`[wled]` Mode 3) | off | Plaintext UDP to multicast `239.0.0.1:11988`. Carries audio-feature data, not audio. |
@@ -59,6 +60,13 @@ The web console's token works the same way and is supplied the same way
 `token_file` / `viewer_token`, no CLI flag). The difference is that it has no
 "off": that surface has no history to preserve and it owns the hardware, so a
 host with no token configured mints one rather than binding open.
+
+**Treat a full web-console token as shell-equivalent on that host.** The root
+list bounds *which files the browser may edit*, not what a saved file can then
+reach: a configuration names media paths and URLs that a session will open and
+that `yt-dlp` will fetch. Confining the editor is worth doing — it is why
+`config_roots` defaults to one directory rather than the whole filesystem — but
+it is a blast-radius limit on the editing, not a sandbox around the run.
 
 The Ultimate's optional DMA password is supplied through the
 `C64CAST_DMA_PASSWORD` environment variable or the `[ultimate64].dma_password`

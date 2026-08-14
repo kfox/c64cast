@@ -78,7 +78,7 @@ from c64cast.control.transport import atomic_write_text
 from c64cast.video.preview import PreviewWindow
 
 from . import config as cfgmod
-from . import paths
+from . import config_store, paths
 from .session import (
     Session,
     build_session,
@@ -697,12 +697,21 @@ def request_from_configs(
 #: rather than imported, because `cli` imports this module to dispatch
 #: ``--serve``. Called on every start, so an edit to the TOML lands on the next
 #: one without restarting the host.
-ConfigLoader = Callable[[], tuple[cfgmod.LoadResult, list[cfgmod.Config]]]
+#:
+#: The argument is the config path to run, or ``None`` for the one the host was
+#: launched with. It hands back the ``Namespace`` it resolved *against* as well
+#: as the configs: a start on a browser-chosen path can't reuse the launch
+#: namespace (its ``config`` names a different file, and ``build_session`` reads
+#: it), and mutating the shared one instead would leave the next default start
+#: pointing at whatever was launched last.
+ConfigLoader = Callable[
+    [str | None], tuple[argparse.Namespace, cfgmod.LoadResult, list[cfgmod.Config]]
+]
 
 
 def make_request_factory(
-    args: argparse.Namespace, load: ConfigLoader, *, config_path: str = ""
-) -> Callable[[], StartRequest]:
+    load: ConfigLoader, *, config_path: str = ""
+) -> Callable[[str | None], StartRequest]:
     """Wrap a config loader into the "give me something to run" callable the
     API routes hold.
 
@@ -710,10 +719,10 @@ def make_request_factory(
     is refused before any transition is claimed — see the ``422`` note in
     :mod:`c64cast.control.web_api`."""
 
-    def factory() -> StartRequest:
-        loaded, cfgs = load()
+    def factory(path: str | None = None) -> StartRequest:
+        args, loaded, cfgs = load(path)
         validate_configs(loaded, cfgs)
-        return request_from_configs(args, loaded, cfgs, config_path=config_path)
+        return request_from_configs(args, loaded, cfgs, config_path=path or config_path)
 
     return factory
 
@@ -768,11 +777,12 @@ def _generated_token() -> str:
 
 def build_daemon_app(
     manager: SessionManager,
-    request_factory: Callable[[], StartRequest],
+    request_factory: Callable[[str | None], StartRequest],
     *,
     token: str,
     viewer_token: str = "",
     log_buffer: SessionLogBuffer | None = None,
+    store: config_store.ConfigStore | None = None,
 ) -> Any:
     """The host's FastAPI app: the control plane over the *current* session,
     plus the ``/api/*`` routes that create and destroy sessions.
@@ -808,6 +818,7 @@ def build_daemon_app(
         request_factory=request_factory,
         playlists=playlists,
         log_buffer=log_buffer,
+        store=store if store is not None else config_store.ConfigStore(),
     )
     return app
 
@@ -870,7 +881,6 @@ def pump_forever(manager: SessionManager, shutdown: threading.Event, poll_s: flo
 
 
 def run_daemon(
-    args: argparse.Namespace,
     web_cfg: cfgmod.WebCfg,
     load: ConfigLoader,
     *,
@@ -890,13 +900,19 @@ def run_daemon(
     log_buffer = SessionLogBuffer()
     log_buffer.install()
     manager = SessionManager(settle_s=web_cfg.settle_s, log_buffer=log_buffer)
-    factory = make_request_factory(args, load, config_path=config_path)
+    factory = make_request_factory(load, config_path=config_path)
+    store = config_store.ConfigStore(web_cfg.config_roots)
 
     try:
         from c64cast.control.control_plane import ControlServer
 
         app = build_daemon_app(
-            manager, factory, token=token, viewer_token=viewer_token, log_buffer=log_buffer
+            manager,
+            factory,
+            token=token,
+            viewer_token=viewer_token,
+            log_buffer=log_buffer,
+            store=store,
         )
         server = ControlServer(web_cfg.host, web_cfg.port, app, label="web console")
     except RuntimeError as e:
@@ -932,11 +948,15 @@ def run_daemon(
     )
     if viewer_token:
         log.info("web console: a read-only token is configured as well")
+    log.info(
+        "web console: editable config roots: %s",
+        ", ".join(f"{r.label} = {r.path}" for r in store.roots) or "none",
+    )
 
     try:
         if web_cfg.autostart:
             try:
-                manager.start(factory())
+                manager.start(factory(None))
             except Exception:
                 log.exception("autostart failed; the host is up and idle")
         pump_forever(manager, shutdown)

@@ -961,6 +961,11 @@
           "type": "number",
           "description": "Seconds to leave the hardware alone between tearing one session down and building the next: the U64's DMA service refuses new connections for a few seconds after one closes, and a camera will not reopen instantly.",
           "default": 3.0
+        },
+        "config_roots": {
+          "type": "array",
+          "description": "Directories the web console may browse and edit .toml configs in. Empty = the directory the host was launched from. Nothing outside these is readable or writable, symlinks included; a config saved here can still name media anywhere, so treat write access as shell-equivalent.",
+          "default": []
         }
       }
     },

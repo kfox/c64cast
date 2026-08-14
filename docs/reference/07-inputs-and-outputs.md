@@ -436,11 +436,15 @@ shows those routes answer `503`: the machine is idle, not broken.
 | Route | Does |
 |---|---|
 | `GET /api/session` | Where the host is: `idle`, `starting`, `running`, `stopping` or `error`, with the current systems, the last error and a tail of the log |
-| `POST /api/session/start` | Build and run the configuration the host was launched with |
+| `POST /api/session/start` | Build and run a configuration — the launched one, or the `config` named in the body |
 | `POST /api/session/stop` | Bring the running show down and put the machine back |
 | `POST /api/session/switch` | Stop, wait for the hardware, and start again — re-reading the file |
 | `POST /api/session/reload` | The same reload the control plane offers |
 | `GET /api/introspect` | Every configuration section, scene type, overlay, display mode and live target, as JSON |
+| `GET /api/configs` | The configurations the host can see, and the roots they live under |
+| `GET /api/configs/{path}` | One configuration: its text, its settings with a "left at the default" flag on each, and any stray keys |
+| `PUT /api/configs/{path}` | Replace it — validated first, and the previous text kept |
+| `POST /api/configs/{path}/validate` | Check text without saving it |
 | `WS /api/ws` | Live state: the performance payload, the session state, and new log lines as they happen |
 
 The configuration is re-read from disk on every start, so editing the file and
@@ -455,6 +459,44 @@ touches the machine, so a typo costs a response, not a show.
 After one show ends the next start waits out `settle_s` seconds. This is not
 politeness: the Ultimate's DMA service refuses new connections for a few seconds
 after one closes, and a camera will not reopen instantly either.
+
+### Browsing And Editing Configurations
+
+`config_roots` lists the directories the console may read and write `.toml`
+files in. Leave it empty and it is wherever the host was launched from:
+
+```toml
+[web]
+config_roots = ["~/shows", "~/experiments"]
+```
+
+Files are named by root rather than by path — `shows/gig.toml`, not
+`/home/you/shows/gig.toml` — and the root's label is its own directory name.
+Nothing outside a root is readable or writable, including through a symbolic
+link planted inside one, and nothing but `.toml` is addressable at all. Those
+same names are what `start` accepts:
+
+```bash
+curl -X POST -H "X-C64Cast-Token: $TOK" \
+     -d '{"config": "shows/gig.toml"}' \
+     http://127.0.0.1:8123/api/session/start
+```
+
+A save is validated before it lands: text that does not load is refused with
+`422` and the file is untouched. What was there is copied to a hidden sibling
+(`.gig.toml.bak`) first, which is the only undo there is. Reading a
+configuration returns its raw text *and* a per-field view marking everything you
+have not changed, which is what a form uses to show only what you set. Ensemble
+master files read but have no such view — they are authored across several files
+— so they are edited as text.
+
+> [!WARNING]
+> A configuration you can save names media paths and URLs that a show will then
+> open, and a video source can be an address on the internet. Being able to
+> write configurations remotely is therefore close to being able to run things
+> on the host: the root list bounds *which files are edited*, not what a saved
+> file can reach. Keep the full token private, and hand out `viewer_token` to
+> anyone who only needs to watch.
 
 ### The Token Is Not Optional Here
 

@@ -48,8 +48,10 @@ DEFAULT_SCHEMA_PATH = _published_schema_url(__version__)
 
 # Never written to disk — it's a secret, supplied via the C64CAST_DMA_PASSWORD
 # env var or hand-added to a non-committed file (see docs/reference/). Omitting
-# it keeps the serializer safe to point at a checked-in path.
-_SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
+# it keeps the serializer safe to point at a checked-in path. Public because
+# `config_store` withholds the same fields from the web console's form data —
+# one list, so a secret can't be safe in the file and visible in the browser.
+SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
 
 # List-of-table fields that must render as [[parent.child]] blocks AFTER the
 # parent's scalar keys (TOML forbids scalar keys after a sub-table header is
@@ -175,7 +177,7 @@ def _emit_section(
     section = getattr(cfg, sd.name)
     body: list[str] = []
     for fd in sd.fields:
-        if (sd.name, fd.name) in _SECRET_FIELDS:
+        if (sd.name, fd.name) in SECRET_FIELDS:
             continue
         if sd.name == "color" and fd.name == _COLOR_TABLE_ARRAY:
             continue  # emitted as [[color.hue_corrections]] below
@@ -263,7 +265,7 @@ def dumps(
                   human writes a config). False = write every set field.
     schema_path — value for the leading ``#:schema`` directive; None omits it.
 
-    The DMA password is never emitted (see `_SECRET_FIELDS`). Raises
+    The DMA password is never emitted (see `SECRET_FIELDS`). Raises
     `SerializeError` for ensemble masters or non-finite floats."""
     if cfg.ensemble is not None:
         raise SerializeError(
