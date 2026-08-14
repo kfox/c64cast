@@ -14,6 +14,18 @@ the version and stamps it with the date.
 
 ### Changed
 
+- **A bad scene is now refused before the machine is opened.** Config validation
+  checked each system's settings but stopped short of its scenes, so a mistake
+  inside a `[[scenes]]` block — an unknown `type`, a `generative` `source` that
+  doesn't exist, a `duration_s` on a video scene — only surfaced a few seconds
+  into the run, after the link had been opened and the C64 reset. It is caught
+  up front instead, with the same exit code (3) and the same message, plus the
+  name of the scene that failed. Scenes marked `follower_only` are checked too:
+  they are built when a broadcast picks them up, so a bad one used to surface
+  mid-show. The web console gets this for free — **Check** and **Save** now
+  refuse a config whose scenes won't build, rather than accepting it and
+  failing at the next start.
+
 - **The session lifecycle moved out of `cli.py` into a new `c64cast/app/session.py`.**
   Building each system's stack, running the playlists and tearing it all down
   were inlined in the CLI's `_run_session`, which meant a session could only
@@ -31,6 +43,20 @@ the version and stamps it with the date.
   what lets a caller reject a bad config without disturbing a running session.
 
 ### Added
+
+- **A configuration can be changed a setting at a time, without composing TOML.**
+  `PATCH /api/configs/{path}` takes named changes — a section (or a scene index)
+  and a field, with a value or `reset` to put it back to its default — and the
+  host loads the file, applies them, writes it back through the config
+  serializer and validates the result. This is what the console's generated
+  *Settings* view will save through; today it is the API, and the *Source*
+  editor is still how the console writes. A change that would produce a config that
+  can't run is refused with the file untouched, and the text it replaced is kept
+  as a hidden sibling either way. Two things it deliberately won't do: it can't
+  add or remove scenes (that stays with the text editor), and it refuses a file
+  carrying a DMA password outright, because writing that file back out would
+  drop the password. Comments do not survive a save this way — the raw editor is
+  still the right surface for a config you've annotated by hand.
 
 - **The HTTP control plane can be locked with a shared token.** `[control].token`
   (or `$C64CAST_CONTROL_TOKEN`, which wins) is required on every route from then

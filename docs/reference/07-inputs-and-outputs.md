@@ -444,6 +444,7 @@ shows those routes answer `503`: the machine is idle, not broken.
 | `GET /api/configs` | The configurations the host can see, and the roots they live under |
 | `GET /api/configs/{path}` | One configuration: its text, its settings with a "left at the default" flag on each, and any stray keys |
 | `PUT /api/configs/{path}` | Replace it — validated first, and the previous text kept |
+| `PATCH /api/configs/{path}` | Change named settings and let the host compose and write the file |
 | `POST /api/configs/{path}/validate` | Check text without saving it |
 | `WS /api/ws` | Live state: the performance payload, the session state, and new log lines as they happen |
 | `GET /` | The console itself — the browser interface to all of the above |
