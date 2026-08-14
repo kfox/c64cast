@@ -27,11 +27,19 @@ from unittest import mock
 from c64cast.app import config as cfgmod
 from c64cast.app import config_store
 
-GOOD = '[color]\ndither = "atkinson"\n\n[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
+# `[audio].enabled` defaults on and `validate_configs` refuses it when
+# sounddevice is absent, which is the CI job's environment — a fixture that
+# validates only on a developer's machine tests nothing.
+GOOD = (
+    '[audio]\nenabled = false\n\n[color]\ndither = "atkinson"\n\n'
+    '[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
+)
 BROKEN = '[color]\ndither = "atkinson"\n\n[[scenes\n'
 # Trips `scene_factory.validate_dither_cfg`, i.e. the branch that logs a
-# diagnostic and raises an exit code rather than failing to parse.
-INVALID = '[color]\ndither = "nonsense"\n'
+# diagnostic and raises an exit code rather than failing to parse. Audio off
+# for the same reason `GOOD` has it off — the audio check runs first, and a
+# fixture that fails for a different reason on CI proves nothing.
+INVALID = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
 MASTER = """
 [ensemble]
 systems = [
@@ -267,7 +275,7 @@ class ValidateTest(StoreTestCase):
 
 class WriteTest(StoreTestCase):
     def test_a_write_lands_and_reads_back(self):
-        text = GOOD.replace("mcm", "hires")
+        text = GOOD.replace("atkinson", "ordered")
         out = self.store.write("shows/gig.toml", text)
         self.assertTrue(out["ok"])
         self.assertEqual((self.shows / "gig.toml").read_text(encoding="utf-8"), text)
@@ -278,7 +286,7 @@ class WriteTest(StoreTestCase):
         self.assertIn("shows/new.toml", [f["path"] for f in self.store.index()["files"]])
 
     def test_the_previous_contents_are_kept_as_a_hidden_sibling(self):
-        out = self.store.write("shows/gig.toml", GOOD.replace("mcm", "hires"))
+        out = self.store.write("shows/gig.toml", GOOD.replace("atkinson", "ordered"))
         self.assertEqual(out["backup"], ".gig.toml.bak")
         self.assertEqual((self.shows / ".gig.toml.bak").read_text(encoding="utf-8"), GOOD)
 

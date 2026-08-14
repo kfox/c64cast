@@ -58,7 +58,13 @@ VIEWER_AUTH = {"X-C64Cast-Token": VIEWER}
 
 # A config the loader accepts, so the browser routes exercise the real
 # validate-before-write path rather than a patched one.
-GIG_TOML = '[color]\ndither = "atkinson"\n\n[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
+GIG_TOML = (
+    '[audio]\nenabled = false\n\n[color]\ndither = "atkinson"\n\n'
+    '[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
+)
+# Refused by `validate_configs`, not by the TOML parser — audio off so the
+# audio check (which runs first) can't be what fails instead.
+BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
 
 # Long enough for a loaded CI box, short enough that a stuck transition fails
 # the run rather than hanging it.
@@ -193,7 +199,13 @@ class _Factory:
         return _request("a", config_path=path or "show.toml")
 
 
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class WebApiTestCase(unittest.TestCase):
+    """Every case below drives the assembled app, so the skip lives here rather
+    than on each subclass: `unittest` propagates it, and a class inserted
+    between a decorator and the one it was meant for is exactly how this file
+    once shipped an unguarded test."""
+
     def setUp(self) -> None:
         import tempfile
 
@@ -235,7 +247,6 @@ class WebApiTestCase(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class SessionLifecycleTest(WebApiTestCase):
     def test_start_is_accepted_and_returns_the_generation(self):
         with self.client() as c:
@@ -312,7 +323,6 @@ class SessionLifecycleTest(WebApiTestCase):
             self.assertEqual(c.post("/api/session/reload", headers=AUTH).status_code, 200)
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class SessionStatusTest(WebApiTestCase):
     def test_idle_status_shape(self):
         with self.client() as c:
@@ -351,7 +361,6 @@ class SessionStatusTest(WebApiTestCase):
         self.assertEqual(body["log_seq"], self.log_buffer.seq)
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class IntrospectRouteTest(WebApiTestCase):
     def test_introspect_carries_the_metadata_the_schema_drops(self):
         with self.client() as c:
@@ -374,7 +383,6 @@ class IntrospectRouteTest(WebApiTestCase):
         self.assertTrue(all(p["default"] is None for p in required))
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class ControlPlaneUnderTheHostTest(WebApiTestCase):
     def test_control_routes_answer_503_until_a_session_exists(self):
         with self.client() as c:
@@ -394,7 +402,6 @@ class ControlPlaneUnderTheHostTest(WebApiTestCase):
         self.assertTrue(sess.stacks[0].playlist.skip_event.is_set())
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class StateFeedTest(WebApiTestCase):
     def test_the_feed_carries_the_perf_payload_plus_the_session(self):
         with self.client() as c:
@@ -450,8 +457,6 @@ class StateFeedTest(WebApiTestCase):
         self.assertEqual(self.manager.state, SessionState.RUNNING)
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class ConfigBrowserTest(WebApiTestCase):
     """The jail itself is tested in tests/test_config_store.py; what these add
     is that each of its refusals reaches the caller as a distinguishable status
@@ -496,7 +501,7 @@ class ConfigBrowserTest(WebApiTestCase):
             r = c.put(
                 "/api/configs/shows/gig.toml",
                 headers=AUTH,
-                json={"text": '[color]\ndither = "nonsense"\n'},
+                json={"text": BAD_TOML},
             )
         self.assertEqual(r.status_code, 422)
         self.assertIn("dither", r.json()["detail"]["error"])
@@ -507,7 +512,7 @@ class ConfigBrowserTest(WebApiTestCase):
             r = c.post(
                 "/api/configs/shows/gig.toml/validate",
                 headers=AUTH,
-                json={"text": '[color]\ndither = "nonsense"\n'},
+                json={"text": BAD_TOML},
             )
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.json()["ok"])
@@ -520,7 +525,6 @@ class ConfigBrowserTest(WebApiTestCase):
         self.assertEqual(r.status_code, 403)
 
 
-@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class StartByRefTest(WebApiTestCase):
     def test_a_start_with_no_body_runs_what_the_host_was_launched_with(self):
         with self.client() as c:
