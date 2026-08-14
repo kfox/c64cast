@@ -728,6 +728,15 @@ color_match = "auto"
 # (video/webcam/generative, where frequency's stability avoids per-frame churn).
 cell_strategy = "auto"
 #
+# hires_cell_pick: how hires chooses each 8×8 cell's foreground color against the
+# global background (hires "normal" style only — the edges styles are fixed
+# 2-color). "error-min" (default) picks the color that minimizes that cell's own
+# reconstruction error. "sample" reads a single pixel per cell instead: about
+# 0.8 ms/frame cheaper, but measurably worse on BOTH accuracy and frame-to-frame
+# stability — a one-pixel read tracks sensor noise directly, where a whole-cell
+# average filters it out — so it is only worth choosing under a tight CPU budget.
+hires_cell_pick = "error-min"
+#
 # motion_smoothing: temporal smoothing for mhires percell mode, 0..1 (mhires +
 # palette_mode=percell only). The percell path smooths its per-cell color
 # choices over time — an EMA over per-cell color counts plus per-pixel/per-cell

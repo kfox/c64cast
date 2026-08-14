@@ -788,6 +788,12 @@ COLOR_MATCH_MODES: tuple[str, ...] = ("rgb", "perceptual")
 # importing the heavy modes module; modes._pick_cell_colors implements them.
 CELL_STRATEGIES: tuple[str, ...] = ("frequency", "luminance", "contrast", "error-min")
 
+# How the hires "normal" style picks each 8×8 cell's foreground against the
+# global background (the [color].hires_cell_pick knob). Here for the same reason
+# as CELL_STRATEGIES above — config.py validates against it and must not import
+# the modes tree; modes/hires.py implements them.
+HIRES_CELL_PICKS: tuple[str, ...] = ("error-min", "sample")
+
 
 def _bgr_to_lab(flat_pixels: np.ndarray) -> np.ndarray:
     """Convert (N, 3) float32 BGR pixels (0..255) to (N, 3) float32 Lab.

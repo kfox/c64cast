@@ -14,6 +14,22 @@ the version and stamps it with the date.
 
 ### Changed
 
+- **Hires picks each cell's color by fitting the whole cell, not by sampling one
+  pixel of it.** A hires cell gets two colors and one is the global background,
+  so the remaining choice decides most of the frame — and it was being made by
+  reading a single pixel per 8×8 cell. Fitting the cell instead cuts
+  reconstruction error by about a quarter on photographic content (−24 % mean
+  Lab, holding across every `dither` setting), and the gain scales with how much
+  a cell's own pixels disagree: nothing on a smooth gradient, ≈−32 % on
+  high-frequency detail. It also turns out to be *stabler* than what it
+  replaced, which is the opposite of the trade the old approach was made for — a
+  one-pixel read follows sensor noise directly, while a whole-cell fit averages
+  it out, so a static subject under noise now stops rewriting the screen
+  entirely instead of churning ≈33 bytes a frame. Costs ≈0.8 ms/frame, reusing
+  the distance matrix the quantizer already builds. Set
+  `[color].hires_cell_pick = "sample"` for the old behavior under a tight CPU
+  budget.
+
 - **A bad scene is now refused before the machine is opened.** Config validation
   checked each system's settings but stopped short of its scenes, so a mistake
   inside a `[[scenes]]` block — an unknown `type`, a `generative` `source` that

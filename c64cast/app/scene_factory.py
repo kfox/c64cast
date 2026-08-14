@@ -275,6 +275,7 @@ def _build_display_mode(
             dither_method=dither_method,
             dither_strength=dither_strength,
             perceptual=perceptual,
+            cell_pick=color.hires_cell_pick,
         )
     if name == "petscii":
         return PETSCIIDisplayMode(

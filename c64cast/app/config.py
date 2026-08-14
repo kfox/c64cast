@@ -29,7 +29,12 @@ from c64cast.sid.sid_autoconfig import SID_MODEL_CHOICES
 from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
-from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
+from c64cast.video.palette import (
+    CELL_STRATEGIES,
+    COLOR_MATCH_MODES,
+    HIRES_CELL_PICKS,
+    resolve_color,
+)
 
 from . import paths
 
@@ -1907,6 +1912,20 @@ class ColorCfg:
             "(video/webcam/generative, where frequency's stability avoids "
             "per-frame slot churn). Only affects mhires with palette_mode=percell.",
             "choices": ("auto",) + CELL_STRATEGIES,
+        },
+    )
+    hires_cell_pick: str = field(
+        default="error-min",
+        metadata={
+            "help": "How hires picks each 8×8 cell's foreground color against the "
+            "global background. 'error-min' (default) picks the color minimizing "
+            "that cell's own reconstruction error. 'sample' reads a single pixel "
+            "per cell — ~0.8 ms/frame cheaper, but measurably worse on both "
+            "accuracy and frame-to-frame stability, so it's for tight CPU budgets "
+            "only. Only affects the hires 'normal' style (the edges styles are "
+            "fixed 2-color).",
+            "choices": HIRES_CELL_PICKS,
+            "apply": "live",
         },
     )
     motion_smoothing: float = field(
