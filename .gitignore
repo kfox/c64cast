@@ -4,8 +4,11 @@ __pycache__/
 *$py.class
 *.so
 *.egg-info/
-build/
-dist/
+# Anchored: `build/` and `dist/` unanchored would also swallow the committed
+# web-console bundle at c64cast/web/dist/, and a re-include cannot resurrect a
+# path whose parent directory is itself excluded.
+/build/
+/dist/
 .eggs/
 
 # Coverage / test artifacts
@@ -57,6 +60,11 @@ recordings/
 *.mov
 # video production planning, demo configs, and footage
 videos/
+# The web console's build tooling. `web/` (the sources) and c64cast/web/dist/
+# (the committed bundle) are both tracked — that bundle is what lets a `uv
+# sync` install serve the console with no Node anywhere.
+web/node_modules/
+web/.vite/
 
 # Assets — only the directory READMEs are tracked. Drop your own files
 # under assets/<subdir>/ and they will be ignored (most have unclear

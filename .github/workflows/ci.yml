@@ -73,6 +73,29 @@ jobs:
       - name: The whole site renders
         run: make site-check PY="uv run --no-project python"
 
+  # The web console's bundle is committed under c64cast/web/dist so that
+  # installing c64cast never needs Node. That only stays true if the bundle is
+  # actually current, so rebuild it here and fail on a diff — the same drift
+  # gate the JSON schema and the generated reference appendices already have.
+  # Node is needed by this job alone; nothing else in CI, and nothing a user
+  # runs, touches it.
+  web:
+    name: web console (bundle matches its sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # `make web` is `npm ci` + svelte-check + vite build, so a type error in
+      # the UI fails here too rather than shipping in a committed bundle.
+      - name: Rebuild the console
+        run: make web
+      - name: The committed bundle is current
+        run: git diff --exit-code -- c64cast/web/dist
+
   lint-and-test:
     name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -123,10 +146,15 @@ jobs:
         # gated `@skipUnless(HAVE_MIDI)`, so without it those tests silently
         # skip and the module reads as uncovered. The tests never open a real
         # port (they patch mido / use scripted ports), so they run headless.
+        # `web` (fastapi + uvicorn + websockets) is included for the same
+        # reason: every HTTP-surface suite is gated
+        # `@skipUnless(HAVE_TESTCLIENT)`, so without it the control plane, the
+        # token gate, the config browser and the web console all read as
+        # covered while running nothing. Three pure-Python wheels.
         # --frozen: use uv.lock exactly, error if it's out of date
         # --no-default-groups: skip [tool.uv] default-groups (which is [dev])
         # --group dev: pull in the dev dependency group
-        run: uv sync --frozen --no-default-groups --group dev --extra midi
+        run: uv sync --frozen --no-default-groups --group dev --extra midi --extra web
 
       # Ruff lint + format are enforced in the `pre-commit` job above (single
       # style gate), so they're intentionally not repeated here.
@@ -179,10 +207,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Install dev deps
-        # Include the `midi` extra so the @skipUnless(HAVE_MIDI) MidiScene
-        # suite runs here — otherwise midi_scene.py reads as uncovered and
-        # tanks the codecov patch/project gates. See the lint-and-test job.
-        run: uv sync --frozen --no-default-groups --group dev --extra midi
+        # Include the `midi` and `web` extras so the @skipUnless(HAVE_MIDI) and
+        # @skipUnless(HAVE_TESTCLIENT) suites run here — otherwise midi_scene.py
+        # and every HTTP surface read as uncovered and tank the codecov
+        # patch/project gates. See the lint-and-test job.
+        run: uv sync --frozen --no-default-groups --group dev --extra midi --extra web
 
       - name: Coverage
         # `make coverage` (scripts/coverage.sh) is the single source of truth:

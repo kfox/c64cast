@@ -115,10 +115,16 @@ button by the door.
 turns the program into a server that holds the Commodore and starts and stops
 shows on request, rather than running one playlist and exiting — handy for a
 machine in the corner of a room you would rather drive from a phone than from a
-terminal. It prints a link with its own password in it when it starts. Point
+terminal. It prints a link with its own password in it when it starts; opening
+that link gives you a page showing what the Commodore is doing, the playlists
+the host can see, and buttons to start, switch and stop them. Point
 `[web].config_roots` at the folder your playlists live in and it will list them,
 edit them, and start whichever one you pick — with the caveat that anyone
 holding that password can then run whatever those files describe.
+
+The page is part of c64cast, so there is nothing to install and no separate
+service to run. It updates itself as the show changes, which means it also
+follows a playlist someone else started from a controller across the room.
 
 **Hand gestures** work if you have a webcam and the optional `vision`
 feature: pinch to pause, swipe to skip, open hand to cycle. It is exactly as

@@ -14,6 +14,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`app/serve.py` — the session supervisor](#appservepy--the-session-supervisor)
 * [`web_api.py` — the web console's API + the host (`--serve`)](#web_apipy--the-web-consoles-api--the-host---serve)
 * [`config_store.py` — the config browser and its root jail](#config_storepy--the-config-browser-and-its-root-jail)
+* [`web_static.py` — the console's built UI, committed and served](#web_staticpy--the-consoles-built-ui-committed-and-served)
 * [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
 * [`tempo.py` — process-wide musical beat grid (Live DJ/VJ Phase 1)](#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)
 * [`performance.py` — clip-launch grid (Live DJ/VJ Phase 2)](#performancepy--clip-launch-grid-live-djvj-phase-2)
@@ -164,6 +165,16 @@ Shutdown order is load-bearing: the session comes down *before* the server, so a
 The replaced text goes to a dotfile sibling (`.gig.toml.bak`, invisible to the listing) because a remote overwrite of a show config otherwise has no undo at all. Ensemble masters read fine but come back with `kind: "ensemble"` and no form data — `config_serialize` refuses them by design, so the raw text editor is the whole story for one. The DMA password is withheld from the form via `config_serialize.SECRET_FIELDS`, the same list that keeps it out of a serialized config; the raw `text` is still the file, because this is an editor, not a redactor.
 
 **What a ref bounds is which files are edited, not what a config can reach.** A saved TOML names media paths and URLs a session will open and `yt-dlp` will fetch, so remote config write access is equivalent to local shell-ish reach. That is why the full token gates it, why a `viewer` cannot write, and why `config_roots` defaults to the one directory the host was launched from rather than to anything broader.
+
+## `web_static.py` — the console's built UI, committed and served
+
+The browser UI lives in `web/` at the repo root as Svelte 5 + Vite + TypeScript + Tailwind sources, and Vite compiles it into `c64cast/web/dist/`, which is **committed and shipped as package data**. That is the load-bearing decision: a `uv sync` install has no Node, no npm and frequently no route to a registry, so a build step at install time would mean the console simply does not exist for most users. Node is required to *change* the UI, never to run it. `make web` rebuilds the bundle, CI rebuilds it and fails on a diff, and `web/README.md` says so where somebody editing the sources will read it.
+
+Committing build output has two consequences, and both are configured rather than left at the tool's defaults. **Asset names are fixed** (`assets/app.js`, `assets/app.css`) instead of content-hashed: a hash adds a new file to git on every rebuild and leaves the old one behind, which makes the artefact unreviewable. **The server therefore sends `Cache-Control: no-cache`** on everything, because a browser holding a cached `app.js` across an upgrade would run yesterday's console against today's API — the cache-busting the hashes would have bought is paid for a round trip at a time instead, which on a LAN is the cheaper half of the trade.
+
+`mount_web_app` registers three routes and must be registered **last**, after every API route, because the third is a catch-all: `/` serves the shell, `/assets/{name}` serves one file with an allowlisted suffix, and `/{path:path}` serves the shell again so the client can grow routes without a server change. What that catch-all refuses is read off `app.routes` at mount time rather than listed in the module — a mistyped `/api/sessions` answering `200 text/html` is worse than a `404` because `fetch` parses it as success, and a hand-written list of paths to protect is a second copy of the route table. A missing bundle is not an error: `--serve` from a checkout that never ran `make web` comes up with the API and the zero-dependency `/perf` page, which is the reason that page was kept.
+
+Nothing here does its own auth. The console is mounted onto an app the token middleware already wraps, so the shell is gated exactly like the API it talks to — which is also why an unauthenticated *navigation* gets an HTML form from `auth.login_page` rather than a line of plain text: the daemon prints a URL with the token in it at startup, and a phone whose cookie has gone otherwise has nowhere to put it back. A `fetch` keeps the plain-text 401, and a `viewer` refused a write keeps its `403` — re-entering a token that is working changes nothing.
 
 ## `midi_control.py` — process-wide MIDI control surface (optional, live performance)
 

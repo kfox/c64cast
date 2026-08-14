@@ -29,7 +29,7 @@ SYNC := $(if $(CI),,sync)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema \
+.PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema web \
         guide reference card books guide-figures reference-figures \
         reference-appendices site site-check
 
@@ -84,6 +84,7 @@ help:
 	@echo "  doctor     offline env + config diagnostics (desynced .venv, drift)"
 	@echo "  bench      scripts/bench.py — async write pipeline"
 	@echo "  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata"
+	@echo "  web        rebuild the web console into c64cast/web/dist (needs Node)"
 	@echo "  guide      render docs/guide/*.md to the User's Guide PDF (needs typst)"
 	@echo "  reference  render docs/reference/*.md to the Reference Guide PDF (needs typst)"
 	@echo "  card       render docs/card/*.md to the Performance Card PDF (needs typst)"
@@ -136,6 +137,20 @@ bench:
 # run this after changing any config dataclass field or overlay constructor.
 schema:
 	$(PY) -m c64cast --print-schema > c64cast/data/c64cast.schema.json
+
+# Rebuild the web console. Its output is committed under c64cast/web/dist so an
+# install never needs Node — which means a source change and its rebuilt bundle
+# belong in the same commit, and CI reruns this and fails on a diff. `npm ci`
+# rather than `npm install`: the lockfile is the pinned build, exactly as
+# uv.lock is for Python. Node is not a Python package, so say so plainly rather
+# than failing with "command not found".
+web:
+	@command -v npm >/dev/null 2>&1 || { \
+	  echo "Building the web console needs Node, which is not a Python package."; \
+	  echo "Install it with:  brew install node"; \
+	  echo "(see https://nodejs.org for other platforms)"; \
+	  exit 1; }
+	cd web && npm ci --no-audit --no-fund && npm run build
 
 # Redraw the guide's placeholder figures. Real captures saved over the same
 # filenames are detected and left alone; see the script's --force-all escape.

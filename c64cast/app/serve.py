@@ -792,6 +792,7 @@ def build_daemon_app(
     change, which is exactly what the registry providers exist to avoid."""
     from c64cast.control.control_plane import build_app_for_registry
     from c64cast.control.web_api import register_web_routes
+    from c64cast.control.web_static import mount_web_app
 
     def playlists() -> dict[str, Any]:
         sess = manager.session
@@ -820,6 +821,9 @@ def build_daemon_app(
         log_buffer=log_buffer,
         store=store if store is not None else config_store.ConfigStore(),
     )
+    # Last: its fallback is a catch-all, so anything registered after it would
+    # be unreachable.
+    mount_web_app(app)
     return app
 
 
@@ -940,11 +944,18 @@ def run_daemon(
         signal.signal(sighup, _on_sighup)
 
     server.start()
+    # Straight to the console when there is one, and to the zero-dependency
+    # `/perf` page when the bundle was never built — the printed URL is the
+    # only entry point a phone gets, so it has to land somewhere useful.
+    from c64cast.control.web_static import bundle_dir
+
+    landing = "/" if bundle_dir() is not None else "/perf"
     log.info(
-        "web console: open http://%s:%d/api/login?token=%s&next=/perf",
+        "web console: open http://%s:%d/api/login?token=%s&next=%s",
         web_cfg.host,
         web_cfg.port,
         token,
+        landing,
     )
     if viewer_token:
         log.info("web console: a read-only token is configured as well")

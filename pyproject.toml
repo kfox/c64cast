@@ -262,13 +262,22 @@ include = ["c64cast*"]
 # real — without it consumers see an untyped package, even though we run
 # `mypy --strict` on the state-bearing modules and pyright across the tree.
 #
-# `examples/` and `data/` are the reason those two trees live *under* the
-# package rather than at the repo root: setuptools can only package files
+# `examples/`, `data/` and `web/dist/` are the reason those trees live *under*
+# the package rather than at the repo root: setuptools can only package files
 # inside a package directory, and an installed user with no checkout still
-# needs the demos (`--config example:NAME`, `--list-examples`) and the JSON
-# schema the demos' `#:schema ../data/…` directive points at.
+# needs the demos (`--config example:NAME`, `--list-examples`), the JSON schema
+# the demos' `#:schema ../data/…` directive points at, and the compiled web
+# console. `web/dist/` is committed build output (sources live in `web/` at the
+# repo root, `make web` compiles them) precisely so `uv sync` never needs Node.
 [tool.setuptools.package-data]
-c64cast = ["py.typed", "data/*.json", "examples/*.toml", "examples/*/*.toml"]
+c64cast = [
+    "py.typed",
+    "data/*.json",
+    "examples/*.toml",
+    "examples/*/*.toml",
+    "web/dist/*",
+    "web/dist/assets/*",
+]
 
 # --- ruff ------------------------------------------------------------------
 [tool.ruff]

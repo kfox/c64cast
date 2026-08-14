@@ -582,6 +582,26 @@ class EveryApiRouteIsProtectedTest(WebApiTestCase):
                     r = c.request(method, path)
                     self.assertEqual(r.status_code, 401, f"{method} {path} was not gated")
 
+    def test_the_console_itself_is_gated(self):
+        # The app shell and its assets sit behind the same token as the API
+        # they talk to. A browser reaches them through /api/login, which is why
+        # nothing here is in PUBLIC_PATHS.
+        with TestClient(self.app()) as c:
+            for path in ("/", "/assets/app.js", "/some/client/route"):
+                with self.subTest(path=path):
+                    self.assertEqual(c.get(path).status_code, 401)
+
+    def test_the_console_is_served_once_authenticated(self):
+        with TestClient(self.app()) as c:
+            r = c.get("/", headers=AUTH)
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("/assets/app.js", r.text)
+
+    def test_a_viewer_may_load_the_console(self):
+        # Read-only is a role inside the console, not a different console.
+        with TestClient(self.app()) as c:
+            self.assertEqual(c.get("/", headers=VIEWER_AUTH).status_code, 200)
+
     def test_a_viewer_cannot_start_a_show(self):
         with self.client() as c:
             self.assertEqual(c.post("/api/session/start", headers=VIEWER_AUTH).status_code, 403)

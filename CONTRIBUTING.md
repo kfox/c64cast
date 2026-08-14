@@ -84,6 +84,7 @@ whether or not the current shell has `.venv` activated:
 | `make typecheck` | `mypy --strict` on the state-bearing modules + `pyright` across the tree |
 | `make doctor` | offline environment + config diagnostics |
 | `make schema` | regenerate `c64cast/data/c64cast.schema.json` from the config metadata |
+| `make web` | rebuild the web console into `c64cast/web/dist` (needs Node — only if you changed `web/`) |
 | `make guide` | render the User's Guide to a typeset PDF (needs `typst`) |
 | `make bench` | the async write-pipeline benchmark |
 
@@ -117,6 +118,11 @@ Several tests exist purely to stop documentation from drifting — the JSON sche
 against the config metadata, the annotated example TOML against the dataclass
 fields, the `all` extra against the union of the other extras. If one of those
 fails, the fix is usually to regenerate rather than to edit the test.
+
+The web console is the same idea in build output rather than in docs: its
+sources are in `web/` and its compiled bundle is committed under
+`c64cast/web/dist` so that installing c64cast never needs Node. Change the
+sources and `make web` in the same commit — CI rebuilds it and fails on a diff.
 
 ## Hardware for development
 
