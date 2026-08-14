@@ -9,18 +9,23 @@
  * rather than something reimplemented on top of it.
  */
 
-export type Screen = "session" | "config";
+export type Screen = "session" | "config" | "live";
 
 interface Route {
   screen: Screen;
-  /** Whatever followed the screen's own segment — a config ref, for `config`. */
+  /** Whatever followed the screen's own segment — a config ref for `config`, a
+   *  system name for `live`. */
   tail: string;
 }
 
+/** The screens that own a path segment. `session` is the root and so has none. */
+const NAMED: readonly Screen[] = ["config", "live"];
+
 function parse(pathname: string): Route {
   const parts = pathname.split("/").filter((p) => p !== "");
-  if (parts[0] === "config") {
-    return { screen: "config", tail: parts.slice(1).map(decodeURIComponent).join("/") };
+  const head = parts[0] as Screen;
+  if (NAMED.includes(head)) {
+    return { screen: head, tail: parts.slice(1).map(decodeURIComponent).join("/") };
   }
   return { screen: "session", tail: "" };
 }
@@ -48,7 +53,7 @@ export class Router {
   }
 
   go(screen: Screen, tail = ""): void {
-    const path = screen === "session" ? "/" : `/config${tail ? `/${encode(tail)}` : ""}`;
+    const path = screen === "session" ? "/" : `/${screen}${tail ? `/${encode(tail)}` : ""}`;
     if (path === window.location.pathname) return;
     // `pushState` rather than `replaceState`: choosing a different config is a
     // step the reader may want to walk back out of.

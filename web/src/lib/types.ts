@@ -179,6 +179,72 @@ export interface ConfigWritten {
   systems: string[];
 }
 
+// -- the performance surface: what the running show is doing right now ------
+
+/** One system's beat grid, from `perf_console._tempo_dict`. The two phases are
+ *  sampled against a single instant so a client can extrapolate from them. */
+export interface TempoState {
+  bpm: number;
+  running: boolean;
+  source: string;
+  beats_per_bar: number;
+  beat_phase: number;
+  bar_phase: number;
+}
+
+/** One configured clip slot, with the state the bridge stamps on it. */
+export interface Clip {
+  slot: number;
+  name: string;
+  type: string | null;
+  pad: number | null;
+  pad_type: string;
+  launch: string;
+  quantize: string;
+  loop: boolean;
+  state: "active" | "armed" | "loaded";
+}
+
+/** The clip waiting on a quantize boundary. `beats_remaining` is null when the
+ *  clock is stopped — nothing to count in, the launch is immediate. */
+export interface ArmedClip {
+  slot: number;
+  quantize: string;
+  beats_remaining: number | null;
+}
+
+/** One declared `LIVE_PARAMS` field. `norm` is the slider position; `value` is
+ *  what the layer actually holds. */
+export interface FxParam {
+  name: string;
+  value: number;
+  min: number;
+  max: number;
+  norm: number;
+}
+
+export interface FxLayer {
+  index: number;
+  name: string;
+  enabled: boolean;
+  mod_source: string;
+  params: FxParam[];
+}
+
+/** One system's whole performance state — `perf_console._system_state`. */
+export interface PerfSystem {
+  name: string;
+  current_scene: string | null;
+  tempo: TempoState;
+  active_slot: number | null;
+  armed: ArmedClip | null;
+  clips: Clip[];
+  effects: FxLayer[];
+  /** Slots that hold a saved look, so a recall pad lights only when there is
+   *  something to recall. */
+  looks: number[];
+}
+
 /** A frame off `/api/ws`: the performance console's payload with the
  *  supervisor bolted on. Only the keys this app reads are named; the rest
  *  arrive untouched for the screens that will. */
@@ -186,5 +252,7 @@ export interface StateFrame {
   role?: Role;
   session?: SessionStatus;
   log?: LogLine[];
+  multi?: boolean;
+  systems?: PerfSystem[];
   [key: string]: unknown;
 }
