@@ -49,6 +49,7 @@ from c64cast.control.auth import (
     _presented_token,
     _safe_next,
     install_auth,
+    login_page,
     match_role,
 )
 
@@ -358,6 +359,55 @@ class LoginTest(unittest.TestCase):
         self.assertEqual(client.post("/api/login", content=b"not json").status_code, 401)
         self.assertEqual(client.post("/api/login", json={"token": 7}).status_code, 401)
         self.assertEqual(client.post("/api/login", json={}).status_code, 401)
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
+class LoginPageTest(unittest.TestCase):
+    """A 401 answers a *browser* with somewhere to put the token.
+
+    The daemon prints a URL with the token in it at startup, and that is the
+    only entry point a phone gets — so a console whose cookie has gone needs a
+    front door, not a line of plain text. Everything that is not a navigation
+    keeps the plain-text 401 it had, because a `fetch` reading a login page as
+    its error message is worse than useless."""
+
+    def test_a_navigation_gets_a_form(self):
+        app, _pl = _app()
+        r = TestClient(app).get("/status", headers={"Accept": "text/html,*/*"})
+        self.assertEqual(r.status_code, 401)
+        self.assertTrue(r.headers["content-type"].startswith("text/html"))
+        self.assertIn('action="/api/login"', r.text)
+        self.assertIn('name="token"', r.text)
+
+    def test_the_form_returns_to_where_the_browser_was_going(self):
+        app, _pl = _app()
+        r = TestClient(app).get("/scenes", headers={"Accept": "text/html"})
+        self.assertIn('name="next" value="/scenes"', r.text)
+
+    def test_the_return_path_cannot_leave_this_server(self):
+        # `next` is reflected into the page, so it goes through the same
+        # `_safe_next` the redirect uses rather than a second, weaker check.
+        app, _pl = _app()
+        page = login_page("//evil.example")
+        self.assertIn('value="/perf"', page)
+        self.assertNotIn("evil.example", page)
+        self.assertNotIn("<script", login_page('"><script>alert(1)</script>'))
+
+    def test_a_fetch_still_gets_plain_text(self):
+        app, _pl = _app()
+        r = TestClient(app).get("/status", headers={"Accept": "application/json"})
+        self.assertEqual(r.status_code, 401)
+        self.assertTrue(r.headers["content-type"].startswith("text/plain"))
+        self.assertEqual(r.text, "authentication required")
+
+    def test_a_viewer_denied_a_write_does_not_get_a_login_page(self):
+        # 403, not 401: the token is fine and re-entering it changes nothing.
+        app, _pl = _app()
+        r = TestClient(app).post(
+            "/pause", headers={"Accept": "text/html", "X-C64Cast-Token": VIEWER}
+        )
+        self.assertEqual(r.status_code, 403)
+        self.assertTrue(r.headers["content-type"].startswith("text/plain"))
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")

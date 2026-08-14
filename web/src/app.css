@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/* One token layer, defined light-first and swapped under `.dark`, so a
+   component never spells a raw colour. The accents are the VIC-II's own blues
+   (`C64_PALETTE_BGR` entries 6 and 14 read back as RGB) — the console sits
+   next to the machine it drives and may as well look like it. */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --color-c64-blue: #3e31a2;
+  --color-c64-lightblue: #7c70da;
+  --color-c64-cyan: #6fd3d3;
+  --color-c64-green: #58ce58;
+  --color-c64-yellow: #efe95c;
+  --color-c64-red: #d94f4f;
+}
+
+@layer base {
+  :root {
+    --surface: #f5f5f7;
+    --panel: #ffffff;
+    --panel-alt: #ececed;
+    --edge: #d4d4d8;
+    --ink: #18181b;
+    --ink-dim: #52525b;
+    --accent: #3e31a2;
+    --accent-ink: #ffffff;
+  }
+
+  .dark {
+    --surface: #121216;
+    --panel: #1b1b21;
+    --panel-alt: #232329;
+    --edge: #33333c;
+    --ink: #ececf1;
+    --ink-dim: #9b9baa;
+    --accent: #7c70da;
+    --accent-ink: #12121a;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background: var(--surface);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    /* The console is a phone-first surface at a gig: never let a wide log line
+       or a long config path drag the whole page sideways. */
+    overflow-x: hidden;
+  }
+
+  /* Safari on iOS zooms the page when a focused input is under 16px. */
+  input,
+  select,
+  textarea {
+    font-size: max(1rem, 16px);
+  }
+}
+
+@utility panel {
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 0.75rem;
+}

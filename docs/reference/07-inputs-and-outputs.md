@@ -446,6 +446,7 @@ shows those routes answer `503`: the machine is idle, not broken.
 | `PUT /api/configs/{path}` | Replace it — validated first, and the previous text kept |
 | `POST /api/configs/{path}/validate` | Check text without saving it |
 | `WS /api/ws` | Live state: the performance payload, the session state, and new log lines as they happen |
+| `GET /` | The console itself — the browser interface to all of the above |
 
 The configuration is re-read from disk on every start, so editing the file and
 posting `start` again runs the edit — no restart of the host. Starting takes
@@ -459,6 +460,29 @@ touches the machine, so a typo costs a response, not a show.
 After one show ends the next start waits out `settle_s` seconds. This is not
 politeness: the Ultimate's DMA service refuses new connections for a few seconds
 after one closes, and a camera will not reopen instantly either.
+
+### The Console
+
+Opening the host's address in a browser gets the console: which configuration
+is loaded, what the machine is doing, the list of configurations it can see,
+buttons to start, switch, reload and stop, and the host's log as it happens.
+The state arrives over the WebSocket rather than by polling, so the page follows
+a show being started from somewhere else — another browser, a MIDI controller,
+`curl` — without being told.
+
+It is built and **shipped inside the package**, so there is nothing to install
+and no build step: `uv sync` and `pip install` both give you a console. It is
+also gated exactly like the rest of the surface, which means the first thing an
+unvisited browser sees is a box asking for the token — paste the one the host
+printed and it is remembered, on that browser, until you clear its cookies.
+
+If you are working on the console's own source, that lives in `web/` in the
+repository and `make web` rebuilds it; only that needs Node.
+
+The older `/perf` performance console is still there, on the same host, and
+still has no dependencies of its own. If a bundle was never built — a checkout
+that has not run `make web` — the host says so at startup and serves `/perf`
+instead.
 
 ### Browsing And Editing Configurations
 
@@ -506,8 +530,11 @@ and stops hardware, so if no token is configured one is generated, stored
 
 ```
 web console: open
-  http://127.0.0.1:8123/api/login?token=…&next=/perf
+  http://127.0.0.1:8123/api/login?token=…&next=/
 ```
+
+Opening it trades the token for a cookie and lands on the console. A browser
+that arrives without one gets a form to paste it into instead.
 
 Set `[web].token` (or `$C64CAST_WEB_TOKEN`, which wins) to choose your own, or
 `token_file` to keep it out of the configuration entirely. `viewer_token` grants
@@ -524,7 +551,7 @@ the Commodore, and closes it again. That makes a host under `launchd` or
 at that reset.
 
 A preview window under `--serve` works from a terminal but is not a supported
-way to run one; a browser-side preview is the intended answer and is still to
+way to run one; a preview in the console is the intended answer and is still to
 come.
 
 ## Performing

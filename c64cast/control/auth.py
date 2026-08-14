@@ -47,6 +47,7 @@ FastAPI mis-read them as query params.
 """
 
 import hmac
+import html
 import logging
 from collections.abc import Iterable, MutableMapping
 from http.cookies import SimpleCookie
@@ -70,6 +71,39 @@ READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DEFAULT_NEXT = "/perf"
 
 Scope = MutableMapping[str, Any]
+
+# The 401 a *browser* gets when someone opens the console's address without
+# having logged in. Plain text is the right answer for a fetch or a curl and
+# the wrong one for the front door: the daemon prints a URL with the token in
+# it at startup, and a phone that has lost its cookie has nowhere else to put
+# that token back. Deliberately a `GET` form, which is the same exchange the
+# startup URL performs — `POST /api/login` exists so a *scripted* login can
+# keep the token out of a URL, and this page has no script at all. Inline
+# everything: the bundle it would otherwise link to is itself behind this gate.
+_LOGIN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light"><title>c64cast</title>
+<style>
+ :root{color-scheme:dark light}
+ body{margin:0;min-height:100vh;display:grid;place-items:center;background:#121216;
+      color:#ececf1;font:16px/1.5 system-ui,-apple-system,sans-serif}
+ form{width:min(22rem,90vw);display:grid;gap:.75rem}
+ h1{margin:0;font:600 1.25rem/1.2 ui-monospace,Menlo,monospace}
+ p{margin:0;color:#9b9baa;font-size:.875rem}
+ input,button{font:inherit;border-radius:.5rem;padding:.7rem .85rem;border:1px solid #33333c}
+ input{background:#1b1b21;color:inherit}
+ button{background:#7c70da;color:#12121a;border-color:transparent;font-weight:600}
+</style></head><body>
+<form method="get" action="/api/login">
+ <h1>c64cast</h1>
+ <p>This console needs its access token. The host prints one at startup.</p>
+ <input type="password" name="token" placeholder="Access token"
+        autocomplete="current-password" autofocus required>
+ <input type="hidden" name="next" value="{next}">
+ <button type="submit">Unlock</button>
+</form></body></html>
+"""
 
 
 def match_role(presented: str | None, token: str, viewer_token: str = "") -> str | None:
@@ -118,6 +152,23 @@ def _presented_token(scope: Scope) -> str | None:
         if morsel is not None:
             return morsel.value
     return None
+
+
+def _wants_html(scope: Scope) -> bool:
+    """Whether this looks like a browser navigating, rather than a fetch.
+
+    ``Accept`` is the only signal available before the app is reached, and it
+    is enough: a navigation asks for ``text/html`` first, while the console's
+    own requests all ask for ``application/json``."""
+    for raw_key, raw_val in scope.get("headers", []):
+        if bytes(raw_key).lower() == b"accept":
+            return b"text/html" in bytes(raw_val).lower()
+    return False
+
+
+def login_page(next_path: str = "") -> str:
+    """The unauthenticated front door, pointed back at ``next_path``."""
+    return _LOGIN_PAGE.replace("{next}", html.escape(_safe_next(next_path), quote=True))
 
 
 class TokenAuthMiddleware:
@@ -172,9 +223,16 @@ class TokenAuthMiddleware:
             await receive()
             await send({"type": "websocket.close", "code": 1008})
             return
-        body = detail.encode("utf-8")
+        html_page = status == 401 and _wants_html(scope)
+        if html_page:
+            body = login_page(scope.get("path", "")).encode("utf-8")
+        else:
+            body = detail.encode("utf-8")
         headers = [
-            (b"content-type", b"text/plain; charset=utf-8"),
+            (
+                b"content-type",
+                b"text/html; charset=utf-8" if html_page else b"text/plain; charset=utf-8",
+            ),
             (b"content-length", str(len(body)).encode("ascii")),
         ]
         if status == 401:

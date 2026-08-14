@@ -15,11 +15,18 @@
 # rev whenever you `uv lock --upgrade-package ruff`, or formatting will differ
 # between local `make fmt` and the pre-commit/CI check.
 
+# Two trees these hooks must not touch, for the same underlying reason: they
+# are byte-for-byte copies of something produced elsewhere, so "fixing" them
+# makes them differ from their source.
+#
 # docs/shared/fonts/ holds third-party OFL fonts and their license texts,
-# vendored byte-for-byte from upstream. The whitespace fixers happily rewrite
-# a license file, which is not ours to reformat. Its README is ours, so that
-# one stays in.
-exclude: '^docs/shared/fonts/(?!README\.md)'
+# vendored from upstream — a license file is not ours to reformat. Its README
+# is ours, so that one stays in.
+#
+# c64cast/web/dist/ is the web console compiled by Vite. A whitespace fixer
+# rewriting minified output would make every commit disagree with a fresh
+# `make web`, and CI's drift check would then fail permanently.
+exclude: '^(docs/shared/fonts/(?!README\.md)|c64cast/web/dist/)'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks

@@ -90,8 +90,7 @@ the version and stamps it with the date.
   `$C64CAST_WEB_TOKEN` / `token_file` choose your own, and `viewer_token` grants
   the same read-only role the control plane's does. New `[web]` section:
   `enabled` (the same switch as `--serve`), `host`, `port`, `autostart` and
-  `settle_s`. The browser UI itself comes next; this release is the API it will
-  talk to.
+  `settle_s`. The browser interface over this API is below.
 
 - **The web console can browse and edit configs, and start the one you pick.**
   `[web].config_roots` lists the directories it may read and write `.toml` files
@@ -115,6 +114,27 @@ the version and stamps it with the date.
   which files may be edited, not what a saved file can reach: a config names
   media paths and URLs a session will open. `viewer_token` cannot write at all,
   and `SECURITY.md` has the full note.
+
+- **The web console has a console.** Opening a `--serve` host's address in a
+  browser now gets a page rather than a route list: which configuration is
+  loaded, what the machine is doing, the configurations the host can see,
+  buttons to start, switch, reload and stop, and the host's log as it happens.
+  State arrives over `WS /api/ws` instead of by polling, so the page follows a
+  show started from anywhere else — another browser, a MIDI controller, `curl` —
+  without being told.
+
+  It ships **inside the package**, already built, so `uv sync` and `pip install`
+  both give you a working console and neither needs Node. Node is required only
+  to change the interface: the sources are Svelte 5 + Vite + TypeScript +
+  Tailwind under `web/` in the repository, `make web` rebuilds them, and CI
+  fails if the committed bundle and its sources disagree.
+
+  The page is gated exactly like the API it talks to — nothing about it is
+  public — so a browser arriving without the cookie is now given a form to paste
+  the token into rather than a line of plain text. Scripted callers keep the
+  plain-text `401` they had. The zero-dependency `/perf` performance console is
+  unchanged and still on the same host, and a checkout that has never run
+  `make web` falls back to it with a line in the log saying so.
 
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
   link.** It reported the modelled cost of getting a frame *onto the wire* but

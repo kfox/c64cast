@@ -173,14 +173,22 @@ class TestPublishedFiles(unittest.TestCase):
         # from the checkout and 404s for everyone who installed.
         patterns = _load()["tool"]["setuptools"]["package-data"]["c64cast"]
         pkg = os.path.join(_REPO, "c64cast")
+        # `web/dist` is committed build output rather than source, and it is
+        # the one an installer misses most visibly: without it `--serve` comes
+        # up with an API and no console at all.
+        wanted = {
+            "examples": (".toml",),
+            "data": (".json",),
+            os.path.join("web", "dist"): (".html", ".js", ".css"),
+        }
         shipped = [
             os.path.relpath(os.path.join(root, name), pkg)
-            for sub in ("examples", "data")
+            for sub, suffixes in wanted.items()
             for root, _dirs, files in os.walk(os.path.join(pkg, sub))
             for name in files
-            if os.path.splitext(name)[1] in (".toml", ".json")
+            if os.path.splitext(name)[1] in suffixes
         ]
-        self.assertTrue(shipped, "no packaged examples/schema found at all")
+        self.assertTrue(shipped, "no packaged examples/schema/console found at all")
         for rel in shipped:
             with self.subTest(file=rel):
                 posix = rel.replace(os.sep, "/")

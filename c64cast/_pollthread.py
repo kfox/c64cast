@@ -12,6 +12,13 @@ and the target owns its own loop and pacing:
 
     self._poll = PollThread(self._worker, name="obs-status", manual=True)
     # worker signature: def _worker(stop: threading.Event) -> None
+
+`start()` and `stop()` are serialised against each other, because they are not
+always called from the same thread: the session supervisor starts its reaper
+from a build worker and stops it from whoever is shutting the host down.
+Without that, a `stop()` landing between the moment `start()` publishes the
+thread object and the moment it actually starts it joins a thread that has
+never run, which `threading` rejects outright.
 """
 
 from __future__ import annotations
@@ -43,6 +50,10 @@ class PollThread:
         self._join_timeout = join_timeout
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Reentrant so a target that stops its own poller deadlocks on the
+        # join it was always going to (joining the current thread), rather
+        # than on the lock, where the cause would be much harder to read.
+        self._lifecycle = threading.RLock()
 
     @property
     def stop_event(self) -> threading.Event:
@@ -52,17 +63,22 @@ class PollThread:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> None:
-        if self.is_running():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name=self._name)
-        self._thread.start()
+        with self._lifecycle:
+            if self.is_running():
+                return
+            self._stop.clear()
+            thread = threading.Thread(target=self._run, daemon=True, name=self._name)
+            # Started before it is published, so `stop()` can never reach a
+            # thread object that has not run yet.
+            thread.start()
+            self._thread = thread
 
     def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=self._join_timeout)
-            self._thread = None
+        with self._lifecycle:
+            self._stop.set()
+            if self._thread is not None:
+                self._thread.join(timeout=self._join_timeout)
+                self._thread = None
 
     def _run(self) -> None:
         if self._manual:
