@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 19 sections and 158 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 20 sections and 166 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -442,6 +442,30 @@ min_detection_confidence = 0.7
 | **`hold_threshold_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Seconds a pinch must be held while paused to resume. |
 | **`mirror`**<br>*Type:* `bool`<br>*Default:* `True` | Mirror the frame before tracking so swipe direction matches the mirrored webcam view. |
 | **`performance`**<br>*Type:* `bool`<br>*Default:* `False` | Live DJ/VJ Phase 6: remap the RUNNING-state gestures to clip-launch performance actions instead of transport — swipe = launch the next [[performance.clips]] slot, pinch-hold = bypass effect layer 0, open-hand-hold = bypass effect layer 1. Off (default) keeps the transport mapping (swipe=skip, pinch=pause, open-hand=cycle style). Pinch-hold-to-resume while paused is unchanged either way. Needs a [[performance.clips]] grid for the clip-advance gesture to do anything. |
+
+## `[web]`
+
+Web console host (`--serve`): a long-lived server that owns the hardware and starts/stops sessions on request (extra).
+
+```toml
+[web]
+enabled = false
+host = "127.0.0.1"
+port = 8123
+autostart = false
+```
+
+<!-- table: fields -->
+| Field | Description |
+|---|---|
+| **`enabled`**<br>*Type:* `bool`<br>*Default:* `False` | Run the web console host instead of a one-shot session — the server owns the C64 and starts/stops shows on request (same as `--serve`); requires the 'web' extra. |
+| **`host`**<br>*Type:* `str`<br>*Default:* `'127.0.0.1'` | Bind address for the web console host. |
+| **`port`**<br>*Type:* `int`<br>*Default:* `8123` | Bind port for the web console host. |
+| **`token`**<br>*Type:* `str`<br>*Default:* `''` | Shared token required on every web-console request. Empty = read `token_file`, else generate one under the data dir and print it at startup (this surface is never unauthenticated). Prefer the C64CAST_WEB_TOKEN env var. |
+| **`token_file`**<br>*Type:* `str`<br>*Default:* `''` | Read the shared token from this file instead of storing it in the config (one line, whitespace-stripped). Ignored when `token` or C64CAST_WEB_TOKEN is set. |
+| **`viewer_token`**<br>*Type:* `str`<br>*Default:* `''` | Optional second token granting read-only access (GET/HEAD only): watch the state feed, but never start, stop or edit. Prefer the C64CAST_WEB_VIEWER_TOKEN env var. |
+| **`autostart`**<br>*Type:* `bool`<br>*Default:* `False` | Start the config the host was launched with as soon as it comes up, rather than waiting for a browser to ask (headless / launchd boxes). |
+| **`settle_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Seconds to leave the hardware alone between tearing one session down and building the next: the U64's DMA service refuses new connections for a few seconds after one closes, and a camera will not reopen instantly. |
 
 ## `[wled]`
 

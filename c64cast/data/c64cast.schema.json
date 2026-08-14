@@ -917,6 +917,53 @@
         }
       }
     },
+    "web": {
+      "type": "object",
+      "description": "Web console host (--serve): a long-lived server that owns the hardware and starts/stops sessions on request (extra).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Run the web console host instead of a one-shot session \u2014 the server owns the C64 and starts/stops shows on request (same as --serve); requires the 'web' extra.",
+          "default": false
+        },
+        "host": {
+          "type": "string",
+          "description": "Bind address for the web console host.",
+          "default": "127.0.0.1"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Bind port for the web console host.",
+          "default": 8123
+        },
+        "token": {
+          "type": "string",
+          "description": "Shared token required on every web-console request. Empty = read `token_file`, else generate one under the data dir and print it at startup (this surface is never unauthenticated). Prefer the C64CAST_WEB_TOKEN env var.",
+          "default": ""
+        },
+        "token_file": {
+          "type": "string",
+          "description": "Read the shared token from this file instead of storing it in the config (one line, whitespace-stripped). Ignored when `token` or C64CAST_WEB_TOKEN is set.",
+          "default": ""
+        },
+        "viewer_token": {
+          "type": "string",
+          "description": "Optional second token granting read-only access (GET/HEAD only): watch the state feed, but never start, stop or edit. Prefer the C64CAST_WEB_VIEWER_TOKEN env var.",
+          "default": ""
+        },
+        "autostart": {
+          "type": "boolean",
+          "description": "Start the config the host was launched with as soon as it comes up, rather than waiting for a browser to ask (headless / launchd boxes).",
+          "default": false
+        },
+        "settle_s": {
+          "type": "number",
+          "description": "Seconds to leave the hardware alone between tearing one session down and building the next: the U64's DMA service refuses new connections for a few seconds after one closes, and a camera will not reopen instantly.",
+          "default": 3.0
+        }
+      }
+    },
     "midi_control": {
       "type": "object",
       "description": "MIDI CC control surface for live performance: scene jumps, style cycling, transport, live effect params (extra).",

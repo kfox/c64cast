@@ -111,6 +111,12 @@ offering endpoints to pause, resume, skip and reload. It is the practical
 way to wire c64cast into a stream deck, a home automation system, or a
 button by the door.
 
+**A host that stays up** is the larger version of that idea. `c64cast --serve`
+turns the program into a server that holds the Commodore and starts and stops
+shows on request, rather than running one playlist and exiting — handy for a
+machine in the corner of a room you would rather drive from a phone than from a
+terminal. It prints a link with its own password in it when it starts.
+
 **Hand gestures** work if you have a webcam and the optional `vision`
 feature: pinch to pause, swipe to skip, open hand to cycle. It is exactly as
 silly and as delightful as it sounds.

@@ -154,6 +154,17 @@ def run_marker_path() -> Path:
     return data_root() / "run.json"
 
 
+def web_token_path() -> Path:
+    """The web console's generated shared token (``<data root>/web_token``).
+
+    Written ``0600`` the first time ``--serve`` runs without a token
+    configured. It lives beside the DAC calibrations and WLED presets rather
+    than in the config file so a config can be checked into a repo, and it is
+    generated rather than optional because that surface starts and stops
+    hardware — see :func:`c64cast.app.serve.resolve_tokens`."""
+    return data_root() / "web_token"
+
+
 # ---------------------------------------------------------------------------
 # Packaged (read-only) resources
 # ---------------------------------------------------------------------------

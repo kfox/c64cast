@@ -63,6 +63,36 @@ the version and stamps it with the date.
   release, and running c64cast is unchanged. The daemon that drives it comes
   next.
 
+- **`c64cast --serve` runs a web console host.** With the new `web` extra, the
+  program stops being a one-shot command and becomes a server that owns the
+  Commodore and starts and stops shows on request — the practical shape for a
+  machine you would rather drive from a phone than from the terminal it is
+  plugged into. Everything `[control]` already served (`/status`, `/reload`, the
+  `/perf` console) rides the same port; between shows those routes answer `503`
+  rather than pretending a session exists.
+
+  The new routes are `GET /api/session` and `POST /api/session/{start,stop,
+  switch,reload}` for the lifecycle, `GET /api/introspect` for the whole config
+  model as JSON (including the `apply` and `applies_to` metadata the JSON Schema
+  drops), and `WS /api/ws` for live state — the performance payload, the session
+  state, and new log lines as they happen. The configuration is re-read from
+  disk on every start, so editing a file and starting again runs the edit with
+  no restart of the host. A start answers `202` and reports through the socket,
+  because building a session takes seconds of hardware time; a start while
+  something is running is a `409` rather than a silent replacement (that is what
+  `switch` is for); and a config that will not run is a `422` refused before
+  anything touches the machine.
+
+  **This surface is never unauthenticated.** Unlike `[control]`, which stays
+  open by default because that is what it has always done, a host with no token
+  configured generates one, stores it `0600` under the data directory, and
+  prints a ready-to-open login URL at startup. `[web].token` /
+  `$C64CAST_WEB_TOKEN` / `token_file` choose your own, and `viewer_token` grants
+  the same read-only role the control plane's does. New `[web]` section:
+  `enabled` (the same switch as `--serve`), `host`, `port`, `autostart` and
+  `settle_s`. The browser UI itself comes next; this release is the API it will
+  talk to.
+
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
   link.** It reported the modelled cost of getting a frame *onto the wire* but
   nothing about the cost of producing one, so it could not answer whether a

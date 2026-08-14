@@ -75,6 +75,13 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | **`--videos`**<br>`VIDEOS` | Directory containing videos (.mp4, .avi, .mkv, .mov, .webm, .m4v) (default: assets/videos) |
 | **`--loop`, `--no-loop`** | Loop the playlist after the last scene finishes (`--no-loop` = exit after one pass; useful for "play one video and quit") (default: True) |
 
+## Web Console
+
+<!-- table: fields -->
+| Flag | Description |
+|---|---|
+| **`--serve`** | Run the web console host instead of a one-shot session: an HTTP server that owns the hardware and starts/stops shows on request (default bind 127.0.0.1:8123; configure under [web]; requires the 'web' extra). Prints a login URL carrying the shared token. |
+
 ## Introspection
 
 <!-- table: fields -->

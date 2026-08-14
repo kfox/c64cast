@@ -2187,6 +2187,72 @@ class ControlPlaneCfg:
     )
 
 
+@dataclass
+class WebCfg:
+    """The long-lived web console host (`--serve`). Off by default; requires
+    the `web` extra.
+
+    Unlike [control], which serves *alongside* a session the CLI already owns,
+    this replaces the process model: the server starts first and owns the
+    sessions, so `enabled` and `--serve` mean the same thing."""
+
+    enabled: bool = field(
+        default=False,
+        metadata={
+            "help": "Run the web console host instead of a one-shot session — the "
+            "server owns the C64 and starts/stops shows on request (same as --serve); "
+            "requires the 'web' extra."
+        },
+    )
+    host: str = field(
+        default="127.0.0.1", metadata={"help": "Bind address for the web console host."}
+    )
+    port: int = field(default=8123, metadata={"help": "Bind port for the web console host."})
+    # No "empty = open" option, unlike [control]: this surface starts and stops
+    # hardware, so an absent token is generated and persisted rather than
+    # standing for "no authentication". Precedence: C64CAST_WEB_TOKEN env var >
+    # this field > `token_file` > the generated one under the data dir.
+    token: str = field(
+        default="",
+        metadata={
+            "help": "Shared token required on every web-console request. Empty = read "
+            "`token_file`, else generate one under the data dir and print it at startup "
+            "(this surface is never unauthenticated). Prefer the C64CAST_WEB_TOKEN env var."
+        },
+    )
+    token_file: str = field(
+        default="",
+        metadata={
+            "help": "Read the shared token from this file instead of storing it in the "
+            "config (one line, whitespace-stripped). Ignored when `token` or "
+            "C64CAST_WEB_TOKEN is set."
+        },
+    )
+    viewer_token: str = field(
+        default="",
+        metadata={
+            "help": "Optional second token granting read-only access (GET/HEAD only): "
+            "watch the state feed, but never start, stop or edit. Prefer the "
+            "C64CAST_WEB_VIEWER_TOKEN env var."
+        },
+    )
+    autostart: bool = field(
+        default=False,
+        metadata={
+            "help": "Start the config the host was launched with as soon as it comes up, "
+            "rather than waiting for a browser to ask (headless / launchd boxes)."
+        },
+    )
+    settle_s: float = field(
+        default=3.0,
+        metadata={
+            "help": "Seconds to leave the hardware alone between tearing one session "
+            "down and building the next: the U64's DMA service refuses new connections "
+            "for a few seconds after one closes, and a camera will not reopen instantly."
+        },
+    )
+
+
 _MIDI_CC_TYPE_CHOICES = ("cc", "note", "pc", "mmc")
 _MIDI_ACTION_CHOICES = (
     "pause",
@@ -2628,6 +2694,7 @@ class Config:
     dsp: DSPCfg = field(default_factory=DSPCfg)
     audio_features: AudioFeaturesCfg = field(default_factory=AudioFeaturesCfg)
     control: ControlPlaneCfg = field(default_factory=ControlPlaneCfg)
+    web: WebCfg = field(default_factory=WebCfg)
     midi_control: MidiControlCfg = field(default_factory=MidiControlCfg)
     performance: PerformanceCfg = field(default_factory=PerformanceCfg)
     menu: MenuCfg = field(default_factory=MenuCfg)
@@ -3115,6 +3182,7 @@ _TOML_SCALAR_SECTIONS: tuple[str, ...] = (
     "dsp",
     "audio_features",
     "control",
+    "web",
     "midi_control",
     "performance",
     "menu",
@@ -3348,6 +3416,7 @@ def _parse_ensemble_section(data: dict[str, Any]) -> EnsembleCfg:
 #   [video]    — device index identifies a physical capture device.
 #   [control]  — there is one control plane shared across the ensemble (see
 #                control_plane refactor), wired from the master config.
+#   [web]      — likewise process-wide: one host serves the whole ensemble.
 _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("hardware", frozenset()),
     # serial_port + host are per-system (each TR has its own device/IP),
@@ -3449,7 +3518,9 @@ class LoadResult:
     `master_control` holds the master TOML's [control] section (in
     single-system mode this is just the loaded config's [control]).
     `master_midi_control` is the [midi_control] analog — also process-wide,
-    not per-system-cascaded (see _CASCADE_SECTIONS).
+    not per-system-cascaded (see _CASCADE_SECTIONS); `master_web` is the
+    [web] one, and defaults to a blank section for the callers that build a
+    LoadResult without a master TOML at all (quick playback).
 
     `unknown_keys` carries every stray TOML key found across all layers
     (machine settings, master, per-system) so `--doctor` can report them as
@@ -3461,6 +3532,7 @@ class LoadResult:
     is_ensemble: bool
     master_control: ControlPlaneCfg
     master_midi_control: MidiControlCfg
+    master_web: WebCfg = field(default_factory=WebCfg)
     unknown_keys: list[UnknownKey] = field(default_factory=list)
 
 
@@ -3488,6 +3560,7 @@ def load_master(path: str | None) -> LoadResult:
                 is_ensemble=False,
                 master_control=cfg.control,
                 master_midi_control=cfg.midi_control,
+                master_web=cfg.web,
             )
         path = DEFAULT_CONFIG_PATH
 
@@ -3512,6 +3585,7 @@ def load_master(path: str | None) -> LoadResult:
             is_ensemble=False,
             master_control=cfg.control,
             master_midi_control=cfg.midi_control,
+            master_web=cfg.web,
             unknown_keys=_dedupe_unknown(unknown),
         )
 
@@ -3539,6 +3613,7 @@ def load_master(path: str | None) -> LoadResult:
         ("preview", defaults.preview),
         ("recording", defaults.recording),
         ("control", defaults.control),
+        ("web", defaults.web),
         ("midi_control", defaults.midi_control),
         ("performance", defaults.performance),
         ("menu", defaults.menu),
@@ -3599,6 +3674,7 @@ def load_master(path: str | None) -> LoadResult:
         is_ensemble=True,
         master_control=defaults.control,
         master_midi_control=defaults.midi_control,
+        master_web=defaults.web,
         unknown_keys=_dedupe_unknown(unknown),
     )
 
@@ -3665,6 +3741,7 @@ CLI_TO_CFG = {
     "vision_model": ("vision", "model_path"),
     "videos": ("playlist", "videos_dir"),
     "loop": ("playlist", "loop"),
+    "serve": ("web", "enabled"),
     "verbose": ("debug", "verbose"),
     "heartbeat": ("debug", "heartbeat"),
     "skip_probe": ("debug", "skip_probe"),

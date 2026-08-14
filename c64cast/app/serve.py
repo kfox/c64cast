@@ -63,6 +63,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import threading
 import time
 from collections import deque
@@ -74,6 +75,7 @@ from typing import Any
 
 from c64cast._pollthread import PollThread
 from c64cast.control.transport import atomic_write_text
+from c64cast.video.preview import PreviewWindow
 
 from . import config as cfgmod
 from . import paths
@@ -82,9 +84,11 @@ from .session import (
     build_session,
     join_playlists,
     reload_all,
+    reload_registries,
     start_playlists,
     start_services,
     teardown_session,
+    validate_configs,
 )
 
 log = logging.getLogger("c64cast")
@@ -233,11 +237,17 @@ class SessionLogBuffer(logging.Handler):
         #: Set by the supervisor, so a line can be attributed to the run it
         #: belongs to rather than to whatever is running when it is read.
         self.generation = 0
+        #: Monotonic line counter. A follower asks for what it hasn't seen by
+        #: number, which is what lets the state feed carry the log without
+        #: re-sending the whole tail three times a second.
+        self.seq = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            self.seq += 1
             self._records.append(
                 {
+                    "seq": self.seq,
                     "t": record.created,
                     "level": record.levelname,
                     "name": record.name,
@@ -254,6 +264,12 @@ class SessionLogBuffer(logging.Handler):
         if generation is not None:
             rows = [r for r in rows if r["generation"] == generation]
         return rows[-limit:] if limit > 0 else rows
+
+    def since(self, seq: int) -> list[dict[str, Any]]:
+        """Lines newer than ``seq``, oldest first. A follower that fell far
+        enough behind for its lines to age out of the deque silently skips
+        them — the alternative is a console that can never catch up."""
+        return [r for r in self._records if r["seq"] > seq]
 
     def install(self, logger_name: str = "c64cast") -> None:
         logging.getLogger(logger_name).addHandler(self)
@@ -671,3 +687,261 @@ def request_from_configs(
     """Build a :class:`StartRequest` from an already-validated load. A one-liner
     that exists so callers don't have to remember the field order."""
     return StartRequest(args=args, loaded=loaded, cfgs=list(cfgs), config_path=config_path)
+
+
+# ---------------------------------------------------------------------------
+# The host: one server, many sessions
+# ---------------------------------------------------------------------------
+
+#: Produces the per-system configs to run — the CLI's own resolver, handed in
+#: rather than imported, because `cli` imports this module to dispatch
+#: ``--serve``. Called on every start, so an edit to the TOML lands on the next
+#: one without restarting the host.
+ConfigLoader = Callable[[], tuple[cfgmod.LoadResult, list[cfgmod.Config]]]
+
+
+def make_request_factory(
+    args: argparse.Namespace, load: ConfigLoader, *, config_path: str = ""
+) -> Callable[[], StartRequest]:
+    """Wrap a config loader into the "give me something to run" callable the
+    API routes hold.
+
+    Validation happens here, on the request thread, so a config that can't run
+    is refused before any transition is claimed — see the ``422`` note in
+    :mod:`c64cast.control.web_api`."""
+
+    def factory() -> StartRequest:
+        loaded, cfgs = load()
+        validate_configs(loaded, cfgs)
+        return request_from_configs(args, loaded, cfgs, config_path=config_path)
+
+    return factory
+
+
+def resolve_tokens(cfg: cfgmod.WebCfg) -> tuple[str, str]:
+    """Settle the host's credentials: ``(token, viewer_token)``.
+
+    Precedence for the full token is env → config → ``token_file`` →
+    generated-and-persisted, and the last step is why this never returns an
+    empty string. ``[control]`` may run unauthenticated because that is what it
+    has always done and breaking those runs isn't a trade a security feature
+    gets to make; this surface has no history to preserve and starts hardware,
+    so "no token" is not one of its states."""
+    token = os.environ.get("C64CAST_WEB_TOKEN") or cfg.token
+    if not token and cfg.token_file:
+        path = Path(paths.expand_user(cfg.token_file))
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            raise RuntimeError(f"could not read [web] token_file {path}: {e}") from e
+        if not token:
+            raise RuntimeError(f"[web] token_file {path} is empty")
+    if not token:
+        token = _generated_token()
+    viewer = os.environ.get("C64CAST_WEB_VIEWER_TOKEN") or cfg.viewer_token
+    return token, viewer
+
+
+def _generated_token() -> str:
+    """Read (or mint) the persisted token under the data dir, ``0600``.
+
+    Persisted rather than regenerated per run so a phone that has the URL
+    bookmarked keeps working across restarts."""
+    import secrets
+
+    path = paths.web_token_path()
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    token = secrets.token_urlsafe(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, token + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        log.warning("could not restrict permissions on %s", path)
+    return token
+
+
+def build_daemon_app(
+    manager: SessionManager,
+    request_factory: Callable[[], StartRequest],
+    *,
+    token: str,
+    viewer_token: str = "",
+    log_buffer: SessionLogBuffer | None = None,
+) -> Any:
+    """The host's FastAPI app: the control plane over the *current* session,
+    plus the ``/api/*`` routes that create and destroy sessions.
+
+    One app, built once and never rebuilt: tearing it down per session would
+    drop the listening socket and every connected console on each show
+    change, which is exactly what the registry providers exist to avoid."""
+    from c64cast.control.control_plane import build_app_for_registry
+    from c64cast.control.web_api import register_web_routes
+
+    def playlists() -> dict[str, Any]:
+        sess = manager.session
+        if sess is None:
+            return {}
+        return {st.name: st.playlist for st in sess.stacks}
+
+    def _registries(index: int) -> dict[str, Any]:
+        sess = manager.session
+        if sess is None:
+            return {}
+        return reload_registries(sess)[index]
+
+    app = build_app_for_registry(
+        playlists,
+        lambda: _registries(0),
+        lambda: _registries(1),
+        token=token,
+        viewer_token=viewer_token,
+    )
+    register_web_routes(
+        app,
+        manager=manager,
+        request_factory=request_factory,
+        playlists=playlists,
+        log_buffer=log_buffer,
+    )
+    return app
+
+
+def _open_previews(sess: Session | None) -> list[PreviewWindow]:
+    if sess is None:
+        return []
+    windows = [st.preview_window for st in sess.stacks if st.preview_window is not None]
+    for w in windows:
+        try:
+            w.open()
+        except Exception:
+            log.exception("preview window failed to open")
+    return [w for w in windows if w.is_open]
+
+
+def _close_previews(windows: list[PreviewWindow]) -> None:
+    for w in windows:
+        try:
+            w.close()
+        except Exception:
+            log.exception("preview window failed to close")
+
+
+def pump_forever(manager: SessionManager, shutdown: threading.Event, poll_s: float = 0.05) -> None:
+    """Park the main thread for the life of the host, servicing whatever
+    preview windows the current session owns.
+
+    HighGUI may only create and service a window on the process's main thread,
+    and under ``--serve`` that thread is here rather than in a join. Opening
+    and closing windows repeatedly across sessions in one process is the
+    least-exercised corner of this design — ``[preview]`` under a host is
+    documented as "works from a terminal", not a supported deployment — so
+    every call into a window is contained rather than allowed to take the host
+    down with it."""
+    opened: list[PreviewWindow] = []
+    generation = -1
+    try:
+        while not shutdown.is_set():
+            sess = manager.session
+            gen = sess.generation if sess is not None else 0
+            if gen != generation:
+                _close_previews(opened)
+                opened = _open_previews(sess)
+                generation = gen
+            if not opened:
+                shutdown.wait(poll_s)
+                continue
+            for w in opened:
+                try:
+                    w.pump()
+                except Exception:
+                    log.exception("preview window failed to draw")
+            # The user closing the window doesn't stop the show; it just stops
+            # this loop from drawing one (the CLI's pump does the same).
+            if not any(w.is_open for w in opened):
+                opened = []
+    finally:
+        _close_previews(opened)
+
+
+def run_daemon(
+    args: argparse.Namespace,
+    web_cfg: cfgmod.WebCfg,
+    load: ConfigLoader,
+    *,
+    config_path: str = "",
+) -> int:
+    """Serve the web console until interrupted. The CLI's ``--serve`` body.
+
+    Ordering is load-bearing on the way out: stop the session *before* the
+    server, so a console watching the state feed sees the machine come down
+    rather than the socket vanish mid-teardown."""
+    try:
+        token, viewer_token = resolve_tokens(web_cfg)
+    except RuntimeError as e:
+        log.error("%s", e)
+        return 2
+
+    log_buffer = SessionLogBuffer()
+    log_buffer.install()
+    manager = SessionManager(settle_s=web_cfg.settle_s, log_buffer=log_buffer)
+    factory = make_request_factory(args, load, config_path=config_path)
+
+    try:
+        from c64cast.control.control_plane import ControlServer
+
+        app = build_daemon_app(
+            manager, factory, token=token, viewer_token=viewer_token, log_buffer=log_buffer
+        )
+        server = ControlServer(web_cfg.host, web_cfg.port, app, label="web console")
+    except RuntimeError as e:
+        log.error("web console unavailable: %s", e)
+        log_buffer.uninstall()
+        return 2
+
+    shutdown = threading.Event()
+
+    def _on_stop_signal(signum: int, _frame: Any) -> None:
+        log.info("%s received; shutting down the host", signal.Signals(signum).name)
+        shutdown.set()
+
+    def _on_sighup(_signum: int, _frame: Any) -> None:
+        log.info("SIGHUP received")
+        try:
+            manager.reload()
+        except SupervisorBusy as e:
+            log.warning("reload ignored: %s", e)
+
+    signal.signal(signal.SIGTERM, _on_stop_signal)
+    signal.signal(signal.SIGINT, _on_stop_signal)
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is not None:
+        signal.signal(sighup, _on_sighup)
+
+    server.start()
+    log.info(
+        "web console: open http://%s:%d/api/login?token=%s&next=/perf",
+        web_cfg.host,
+        web_cfg.port,
+        token,
+    )
+    if viewer_token:
+        log.info("web console: a read-only token is configured as well")
+
+    try:
+        if web_cfg.autostart:
+            try:
+                manager.start(factory())
+            except Exception:
+                log.exception("autostart failed; the host is up and idle")
+        pump_forever(manager, shutdown)
+    finally:
+        manager.close()
+        server.stop()
+        log_buffer.uninstall()
+    return 0
