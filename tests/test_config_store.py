@@ -312,6 +312,140 @@ class WriteTest(StoreTestCase):
                 self.store.write("shows/gig.toml", GOOD)
 
 
+class PatchTest(StoreTestCase):
+    """The generated form's save path: load, set, re-serialise, write.
+
+    What these pin down is that a patch can only reach what the form rendered,
+    and that the file it produces still loads — the round-trip itself
+    (`load(dumps(cfg)) == cfg`) is already property-tested next door."""
+
+    def _read(self) -> str:
+        return (self.shows / "gig.toml").read_text(encoding="utf-8")
+
+    def test_a_field_edit_lands_in_the_file(self):
+        out = self.store.patch(
+            "shows/gig.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+        )
+        self.assertTrue(out["ok"])
+        self.assertIn('dither = "ordered"', self._read())
+        self.assertEqual(
+            cfgmod.load_master(str(self.shows / "gig.toml")).cfgs[0].color.dither, "ordered"
+        )
+
+    def test_reset_removes_the_key_the_way_the_form_unsets_it(self):
+        # `minimal = true` is what drops it: a field back at its default is a
+        # field a human wouldn't have written.
+        self.store.patch("shows/gig.toml", [{"section": "color", "field": "dither", "reset": True}])
+        self.assertNotIn("dither", self._read())
+
+    def test_several_edits_apply_in_one_write(self):
+        out = self.store.patch(
+            "shows/gig.toml",
+            [
+                {"section": "color", "field": "dither", "value": "ordered"},
+                {"scene": 0, "field": "duration_s", "value": 12.0},
+            ],
+        )
+        self.assertEqual(len(out["edits"]), 2)
+        text = self._read()
+        self.assertIn('dither = "ordered"', text)
+        self.assertIn("duration_s = 12.0", text)
+
+    def test_the_previous_text_is_kept_as_a_sibling(self):
+        out = self.store.patch(
+            "shows/gig.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+        )
+        self.assertEqual(out["backup"], ".gig.toml.bak")
+        self.assertEqual((self.shows / ".gig.toml.bak").read_text(encoding="utf-8"), GOOD)
+
+    def test_an_edit_that_breaks_the_config_is_refused_and_changes_nothing(self):
+        with self.assertRaises(config_store.ConfigInvalid):
+            self.store.patch(
+                "shows/gig.toml", [{"section": "color", "field": "dither", "value": "nonsense"}]
+            )
+        self.assertEqual(self._read(), GOOD)
+
+    def test_an_unknown_section_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/gig.toml", [{"section": "nope", "field": "dither", "value": "ordered"}]
+            )
+
+    def test_an_unknown_field_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch("shows/gig.toml", [{"section": "color", "field": "nope", "value": 1}])
+
+    def test_a_field_from_another_scene_type_is_rejected(self):
+        # `file` belongs to a video scene; the fixture's scene is `blank`.
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch("shows/gig.toml", [{"scene": 0, "field": "file", "value": "x.mp4"}])
+
+    def test_a_scene_index_out_of_range_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch("shows/gig.toml", [{"scene": 7, "field": "duration_s", "value": 1.0}])
+
+    def test_an_edit_naming_both_a_section_and_a_scene_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/gig.toml",
+                [{"section": "color", "scene": 0, "field": "dither", "value": "ordered"}],
+            )
+
+    def test_an_edit_with_no_value_and_no_reset_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch("shows/gig.toml", [{"section": "color", "field": "dither"}])
+
+    def test_something_that_is_not_an_edit_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch("shows/gig.toml", ["dither = ordered"])
+
+    def test_the_dma_password_is_never_edited_or_dropped(self):
+        # A round-trip would silently delete it, so the whole file is refused.
+        path = self.shows / "secret.toml"
+        path.write_text(GOOD + '\n[ultimate64]\ndma_password = "hunter2"\n', encoding="utf-8")
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/secret.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+            )
+        self.assertIn("hunter2", path.read_text(encoding="utf-8"))
+
+    def test_an_ensemble_master_is_not_form_editable(self):
+        (self.shows / "left.toml").write_text(GOOD, encoding="utf-8")
+        (self.shows / "right.toml").write_text(GOOD, encoding="utf-8")
+        (self.shows / "master.toml").write_text(MASTER, encoding="utf-8")
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/master.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+            )
+
+    def test_a_config_that_does_not_parse_has_nothing_to_edit(self):
+        (self.shows / "broken.toml").write_text(BROKEN, encoding="utf-8")
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/broken.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+            )
+
+    def test_a_patch_outside_a_root_is_refused(self):
+        with self.assertRaises(config_store.PathRejected):
+            self.store.patch("shows/../escaped.toml", [])
+
+    def test_the_files_own_schema_directive_survives(self):
+        (self.shows / "pinned.toml").write_text(
+            "#:schema ./local.schema.json\n" + GOOD, encoding="utf-8"
+        )
+        self.store.patch(
+            "shows/pinned.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+        )
+        text = (self.shows / "pinned.toml").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("#:schema ./local.schema.json"))
+
+    def test_a_file_without_a_schema_directive_does_not_grow_one(self):
+        self.store.patch(
+            "shows/gig.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+        )
+        self.assertNotIn("#:schema", self._read())
+
+
 class DescribeTest(unittest.TestCase):
     def test_every_section_of_a_blank_config_is_all_defaults(self):
         form = config_store.describe(cfgmod.Config())

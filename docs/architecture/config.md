@@ -180,13 +180,13 @@ The module exists because a session's lifecycle has to be callable independently
 
 | Step | Does |
 |---|---|
-| `validate_configs(loaded, cfgs)` | Every per-system check, plus the coercions a feature combination forces (`_coerce_reu_for_transport`). Raises `SessionConfigError(exit_code)`. |
+| `validate_configs(loaded, cfgs)` | Every per-system check and every scene in it (`scene_factory.validate_scene_cfg`), plus the coercions a feature combination forces (`_coerce_reu_for_transport`). Raises `SessionConfigError(exit_code)`. |
 | `build_session(args, loaded, cfgs)` | Profiler install, `Ensemble` allocation, the `build_stack` loop, ensemble binding. Returns a `Session`. |
 | `start_services(sess)` | Control plane, MIDI listener, WLED device — each independently guarded. |
 | `run_foreground(sess)` | Start the playlist threads and block until they finish. |
 | `teardown_session(sess)` | MIDI → WLED → control → stacks reversed → live-tune save-back. |
 
-**`validate_configs` is pure and hardware-free on purpose.** That is what lets a caller reject a bad config without disturbing a session that is already running — the alternative, accepting a start request and failing twenty seconds later inside `build_stack`, is a much worse answer to give a user.
+**`validate_configs` is pure and hardware-free on purpose.** That is what lets a caller reject a bad config without disturbing a session that is already running — the alternative, accepting a start request and failing twenty seconds later inside `build_stack`, is a much worse answer to give a user. The scene checks are part of it for that reason: `validate_scene_cfg` is hardware-free too (`doctor` has always called it without an api, an audio streamer or a source), so running it here moves a bad scene ahead of the machine being opened and reset. A scene failure keeps exit code 3 — what `build_stack` already returned once `scenes_from_config` reached the same error — so the failure moved, it did not change identity.
 
 **A failed build leaves no hardware held.** `build_session` tears down the stacks that did come up, in reverse, before `StackBuildError` propagates.
 

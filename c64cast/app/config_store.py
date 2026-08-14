@@ -25,6 +25,30 @@ tries. The replaced text goes to a dotfile sibling — invisible to the listing,
 recoverable by hand — because a remote overwrite of a show config otherwise has
 no undo at all.
 
+**:meth:`ConfigStore.patch` is how the generated form saves**, and it round-trips
+through the dataclasses rather than editing text: load, set the named fields,
+re-serialise, then hand the result to the same :meth:`ConfigStore.write` a raw
+save goes through. Splicing values into the TOML text was the alternative and is
+worse in every direction — it needs a writer that understands where a key lives
+(and where to put one that isn't there yet), and it can produce a file whose text
+no longer means what the form showed. Going through the loader means a form save
+is exactly a load-modify-dump, and the round-trip is already property-tested.
+
+What that costs is the file's *prose*: comments and hand-authored layout do not
+survive a re-serialise, and a config carrying a secret is refused outright rather
+than saved back without it (the serializer never emits ``SECRET_FIELDS``, so a
+round-trip would silently drop a password the operator put there). Both are why
+the raw text editor stays the primary surface and the form is the convenience —
+and why the replaced text is on disk as a sibling before the new one lands.
+
+A third consequence is shared with every other save-back in the project (the
+wizard, the on-C64 menu's live-tune save): what is written is the config the
+loader *resolved*, and ``minimal`` measures against the dataclass defaults — so
+a machine setting that differs from a shipped default is written into the file it
+was only ever layered under. Fixing that means teaching ``config_serialize`` to
+emit against a machine-overlaid baseline, which belongs to all three callers
+rather than to this one.
+
 What a ref bounds is *which files are edited*, not what a config can then
 reach: a saved TOML names media paths and URLs that a session will open. Remote
 config write access is equivalent to local shell-ish reach, which is why the
@@ -36,8 +60,9 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -77,6 +102,11 @@ class ConfigNotFound(ConfigStoreError):
 
 class ConfigTooLarge(ConfigStoreError):
     """Past :data:`MAX_BYTES` — refused rather than read into memory."""
+
+
+class EditRejected(ConfigStoreError):
+    """A form edit named something this store won't set. Distinct from
+    :class:`ConfigInvalid`, which is a legal edit whose *result* doesn't run."""
 
 
 class ConfigInvalid(ConfigStoreError):
@@ -205,6 +235,79 @@ def describe(cfg: cfgmod.Config) -> dict[str, Any]:
             }
         )
     return {"sections": sections, "scenes": scenes}
+
+
+def _editable_fields() -> dict[str, frozenset[str]]:
+    """Section name -> the fields a form edit may set, straight from
+    ``introspect`` so the editable surface is the one ``describe`` renders."""
+    return {
+        sd.name: frozenset(
+            fd.name for fd in sd.fields if (sd.name, fd.name) not in config_serialize.SECRET_FIELDS
+        )
+        for sd in introspect.config_sections()
+    }
+
+
+def _editable_scene_fields(scene_type: str) -> frozenset[str]:
+    for st in introspect.scene_types():
+        if st.name == scene_type:
+            # `overlays` is in the form as its own list rather than a field, so
+            # `describe` drops it from the field list — but it is still a scene
+            # field an editor can replace wholesale.
+            return frozenset({fd.name for fd in st.fields} | {"overlays"})
+    raise EditRejected(f"unknown scene type {scene_type!r}")
+
+
+def _schema_directive(text: str) -> str | None:
+    """The file's own ``#:schema`` line, or None. Kept rather than regenerated:
+    a config pinned to a local schema path should stay pinned to it, and one
+    that never had the directive shouldn't grow one from being edited."""
+    lines = text.lstrip().splitlines()
+    if lines and lines[0].startswith("#:schema "):
+        return lines[0][len("#:schema ") :].strip() or None
+    return None
+
+
+def _apply_edit(cfg: cfgmod.Config, edit: object) -> dict[str, Any]:
+    """Set one field on a loaded config, and describe what was set."""
+    if not isinstance(edit, Mapping):
+        raise EditRejected(f"an edit is an object, got {type(edit).__name__}")
+    field = str(edit.get("field", "")).strip()
+    if not field:
+        raise EditRejected("an edit needs a `field`")
+    section = edit.get("section")
+    scene = edit.get("scene")
+    if (section is None) == (scene is None):
+        raise EditRejected(f"{field}: an edit names either a `section` or a `scene`, not both")
+
+    if section is not None:
+        allowed = _editable_fields().get(str(section))
+        if allowed is None:
+            raise EditRejected(f"[{section}] is not a config section")
+        if field not in allowed:
+            raise EditRejected(f"[{section}] has no editable field {field!r}")
+        target: Any = getattr(cfg, str(section))
+        blank: Any = getattr(cfgmod.Config(), str(section))
+        where: dict[str, Any] = {"section": str(section)}
+    else:
+        if not isinstance(scene, int) or isinstance(scene, bool):
+            raise EditRejected(f"a scene is named by its index, got {scene!r}")
+        if not 0 <= scene < len(cfg.scenes):
+            raise EditRejected(f"no scene at index {scene} (the config has {len(cfg.scenes)})")
+        target = cfg.scenes[scene]
+        if field not in _editable_scene_fields(target.type):
+            raise EditRejected(f"a {target.type!r} scene has no editable field {field!r}")
+        blank = cfgmod.SceneCfg()
+        where = {"scene": scene}
+
+    if edit.get("reset"):
+        value = deepcopy(getattr(blank, field))
+    elif "value" in edit:
+        value = edit["value"]
+    else:
+        raise EditRejected(f"{field}: an edit needs a `value`, or `reset = true`")
+    setattr(target, field, value)
+    return {**where, "field": field, "value": _value(value)}
 
 
 class ConfigStore:
@@ -472,3 +575,57 @@ class ConfigStore:
             "unknown_keys": report["unknown_keys"],
             "systems": report["systems"],
         }
+
+    def patch(self, ref: str, edits: Sequence[Any]) -> dict[str, Any]:
+        """Set fields on an existing config and write it back.
+
+        Each edit names a ``section`` (or a ``scene`` index) and a ``field``,
+        plus either a ``value`` or ``reset = true`` to put the field back to its
+        dataclass default — the only way a form can *remove* a key, and the
+        inverse of the ``is_default`` flag :func:`describe` reports.
+
+        Fields come from ``introspect``, so an edit can only reach what the form
+        actually rendered: a scene's own type's fields, never another type's.
+        Adding or removing scenes is not an edit — that is a structural change,
+        and the raw text editor owns it.
+
+        Everything after the last edit is :meth:`write`: the result is validated
+        as a whole, the previous text is kept as a sibling, and a config that no
+        longer runs is refused with the file untouched."""
+        path = self.resolve(ref)
+        original = self._read_text(path)
+        try:
+            loaded = cfgmod.load_master(str(path))
+        except (cfgmod.ConfigError, ValueError) as e:
+            raise EditRejected(
+                f"{ref} does not load, so the form has nothing to edit — fix it as text first: {e}"
+            ) from e
+        if loaded.is_ensemble:
+            raise EditRejected(
+                f"{ref} is an ensemble master; those are authored as text (the "
+                "serializer refuses them by design). Edit the per-system configs."
+            )
+        cfg = loaded.cfgs[0]
+        blank = cfgmod.Config()
+        for section, name in sorted(config_serialize.SECRET_FIELDS):
+            if getattr(getattr(cfg, section), name) != getattr(getattr(blank, section), name):
+                raise EditRejected(
+                    f"{ref} carries [{section}].{name}, which is never written back — "
+                    "saving the form would drop it. Edit this file as text, or move "
+                    "the secret to its environment variable."
+                )
+
+        applied = [_apply_edit(cfg, e) for e in edits]
+        try:
+            text = config_serialize.dumps(
+                cfg,
+                annotate=False,
+                minimal=True,
+                schema_path=_schema_directive(original),
+            )
+        except config_serialize.SerializeError as e:
+            raise EditRejected(f"{ref} can't be written back: {e}") from e
+        out = self.write(ref, text)
+        out["edits"] = applied
+        out["text"] = text
+        return out

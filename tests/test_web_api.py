@@ -525,6 +525,57 @@ class ConfigBrowserTest(WebApiTestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class ConfigFormSaveTest(WebApiTestCase):
+    """`PATCH` — the generated form's save. The edit semantics live in
+    tests/test_config_store.py; these are the route's own answers."""
+
+    def _patch(self, c, edits, *, headers=AUTH):
+        return c.patch("/api/configs/shows/gig.toml", headers=headers, json={"edits": edits})
+
+    def test_a_field_edit_is_composed_into_the_file_by_the_server(self):
+        with self.client() as c:
+            r = self._patch(c, [{"section": "color", "field": "dither", "value": "ordered"}])
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertIn('dither = "ordered"', body["text"])
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), body["text"])
+
+    def test_an_edit_that_breaks_the_config_is_a_422_and_the_file_stands(self):
+        with self.client() as c:
+            r = self._patch(c, [{"section": "color", "field": "dither", "value": "nonsense"}])
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def test_an_edit_naming_something_that_is_not_a_field_is_a_400(self):
+        with self.client() as c:
+            r = self._patch(c, [{"section": "color", "field": "nope", "value": 1}])
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_patch_with_no_edits_list_is_a_400(self):
+        with self.client() as c:
+            r = c.patch("/api/configs/shows/gig.toml", headers=AUTH, json={"text": GIG_TOML})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_ref_that_leaves_its_root_is_forbidden_here_too(self):
+        with self.client() as c:
+            r = c.patch(
+                "/api/configs/shows/%2e%2e/%2e%2e/etc/passwd.toml",
+                headers=AUTH,
+                json={"edits": []},
+            )
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_viewer_cannot_save_the_form(self):
+        with self.client() as c:
+            r = self._patch(
+                c,
+                [{"section": "color", "field": "dither", "value": "ordered"}],
+                headers=VIEWER_AUTH,
+            )
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+
 class StartByRefTest(WebApiTestCase):
     def test_a_start_with_no_body_runs_what_the_host_was_launched_with(self):
         with self.client() as c:

@@ -41,6 +41,7 @@ from c64cast.video.video import WebcamSource
 from . import config as cfgmod
 from . import paths, scene_factory
 from .ensemble import Ensemble, SystemStack
+from .orchestrator import OrchestratorError
 from .playlist import FollowerSceneFactory, Playlist
 from .profiler import FrameProfiler, NullProfiler, set_profiler
 
@@ -847,8 +848,9 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
 
 
 def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> None:
-    """Check every per-system config, and coerce the settings that a feature
-    combination rules out, before anything opens hardware.
+    """Check every per-system config and every scene in it, and coerce the
+    settings that a feature combination rules out, before anything opens
+    hardware.
 
     Pure and hardware-free by construction: a caller that owns a running
     session can reject a bad config without disturbing it. Raises
@@ -886,6 +888,17 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             raise SessionConfigError(5) from e
+        # Every scene, including the follower-only ones (built lazily at
+        # broadcast time, so without this a bad one surfaces mid-show). Exit
+        # code 3 is what `build_stack` already returns when `scenes_from_config`
+        # raises the same error a few seconds later — the failure moves ahead of
+        # the hardware, it doesn't change identity.
+        for idx, s in enumerate(cfg.scenes):
+            try:
+                scene_factory.validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
+            except (ValueError, OrchestratorError) as e:
+                log.error("scene %s: %s", s.name or f"{s.type}#{idx}", e)
+                raise SessionConfigError(3) from e
 
 
 def _follower_scene_factory(st: SystemStack, cfg: cfgmod.Config) -> FollowerSceneFactory:

@@ -29,7 +29,10 @@ the push cadence is ~3/sec and re-sending 500 lines each time would dwarf
 everything else on the socket.
 
 ``/api/configs`` is the other half: browse, read and edit the host's configs, so
-a show can be authored and then started without a shell. Every path goes through
+a show can be authored and then started without a shell. Two ways to save, and
+the split matters: ``PUT`` takes the text a client composed (the raw editor),
+while ``PATCH`` takes named field edits and lets the server compose the text
+through the config dataclasses (the generated form). Every path goes through
 :class:`~c64cast.app.config_store.ConfigStore`, which is also what turns the
 ``config`` a start request may name into something safe to hand the loader —
 the jail is not repeated here, because a second copy of it is a second thing to
@@ -56,6 +59,7 @@ from c64cast.app.config_store import (
     ConfigStore,
     ConfigStoreError,
     ConfigTooLarge,
+    EditRejected,
     PathRejected,
 )
 from c64cast.app.playlist import Playlist
@@ -88,6 +92,7 @@ _STORE_STATUS: tuple[tuple[type[ConfigStoreError], int], ...] = (
     (ConfigNotFound, 404),
     (ConfigTooLarge, 413),
     (PathRejected, 403),
+    (EditRejected, 400),
 )
 
 
@@ -252,6 +257,21 @@ def register_web_routes(
             raise HTTPException(400, 'a config write needs a "text" key')
         try:
             return store.write(ref, str(body["text"]))
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    # The generated form's save. PUT replaces the file with the text a client
+    # composed; PATCH names fields and lets the *server* compose the text, so a
+    # form never has to know how a TOML is written — and two consoles editing
+    # different fields of one config don't overwrite each other's sections.
+    @app.patch("/api/configs/{ref:path}")
+    async def api_config_patch(ref: str, request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        edits = body.get("edits")
+        if not isinstance(edits, list):
+            raise HTTPException(400, 'a config patch needs an "edits" list')
+        try:
+            return store.patch(ref, edits)
         except ConfigStoreError as e:
             raise _store_error(e) from e
 
