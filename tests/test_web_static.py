@@ -134,13 +134,23 @@ class MountTest(unittest.TestCase):
         self.assertEqual(self._client().get("/assets/secrets.txt").status_code, 404)
 
     def test_an_asset_cannot_escape_the_bundle(self) -> None:
-        # A client collapses a literal `..` in a URL before sending it, so the
-        # form that actually reaches the route is percent-encoded.
+        # Nothing a client sends becomes a path component — the name is looked
+        # up in the catalog — so this is a missing key rather than a traversal
+        # that was caught. A client collapses a literal `..` in a URL before
+        # sending it, so the form that reaches the route is percent-encoded.
         outside = Path(self._tmp.name).parent / "outside.js"
         outside.write_text("nope", encoding="utf-8")
         self.addCleanup(outside.unlink)
         r = self._client().get(f"/assets/%2e%2e/%2e%2e/{outside.name}")
         self.assertEqual(r.status_code, 404)
+
+    def test_the_catalog_is_a_snapshot_taken_at_mount(self) -> None:
+        # The consequence of cataloguing rather than resolving: a rebuild under
+        # a running host needs a restart. That is the dev-server's job, and it
+        # is the price of the route never touching a client-supplied path.
+        client = self._client()
+        (self.dist / "assets" / "late.js").write_text("later", encoding="utf-8")
+        self.assertEqual(client.get("/assets/late.js").status_code, 404)
 
     def test_an_unknown_path_falls_back_to_the_shell(self) -> None:
         # What lets the client grow routes without a server change.

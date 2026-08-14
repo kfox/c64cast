@@ -13,6 +13,8 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from collections.abc import Callable
+from unittest import mock
 
 from c64cast._pollthread import PollThread
 
@@ -178,6 +180,82 @@ class LifecycleTest(unittest.TestCase):
         poll.stop()
         self.assertLess(time.monotonic() - t0, 2.0, "stop() must not wait past join_timeout")
         self.assertFalse(poll.is_running())
+
+
+class ConcurrentLifecycleTest(unittest.TestCase):
+    """`start()` and `stop()` are not always called from the same thread.
+
+    The session supervisor starts its reaper from a build worker and stops it
+    from whoever is shutting the host down, which is what turned a latent
+    ordering bug here into an intermittent CI failure — on two matrix legs out
+    of twelve, since it needs the two calls to interleave."""
+
+    def test_a_stop_racing_a_start_does_not_join_an_unstarted_thread(self):
+        # The window was between publishing the thread object and starting it:
+        # a `stop()` arriving there found a non-None `_thread` that had never
+        # run, and `Thread.join` rejects that outright. Held open here rather
+        # than hunted for, so the test fails deterministically without the fix.
+        inside_start = threading.Event()
+        release = threading.Event()
+        original = threading.Thread.start
+
+        def slow_start(thread: threading.Thread) -> None:
+            if thread.name == "racy":
+                inside_start.set()
+                release.wait(2.0)
+            original(thread)
+
+        poll = PollThread(lambda: None, name="racy", period=60.0)
+        self.addCleanup(poll.stop)
+
+        with mock.patch.object(threading.Thread, "start", slow_start):
+            starter = threading.Thread(target=poll.start, name="starter")
+            starter.start()
+            self.assertTrue(inside_start.wait(2.0))
+
+            failure: list[BaseException] = []
+
+            def stopper() -> None:
+                try:
+                    poll.stop()
+                except BaseException as e:  # noqa: BLE001 - the assertion is the raise
+                    failure.append(e)
+
+            stopping = threading.Thread(target=stopper, name="stopper")
+            stopping.start()
+            release.set()
+            starter.join(2.0)
+            stopping.join(2.0)
+
+        self.assertEqual(failure, [], f"stop() raced start(): {failure}")
+
+    def test_hammering_start_and_stop_from_two_threads_stays_quiet(self):
+        poll = PollThread(lambda: None, name="hammer", period=0.001, join_timeout=0.05)
+        self.addCleanup(poll.stop)
+        failures: list[BaseException] = []
+        done = threading.Event()
+
+        def churn(action: Callable[[], None]) -> None:
+            try:
+                while not done.is_set():
+                    action()
+            except BaseException as e:  # noqa: BLE001 - the assertion is the raise
+                failures.append(e)
+
+        threads = [
+            threading.Thread(target=churn, args=(poll.start,)),
+            threading.Thread(target=churn, args=(poll.stop,)),
+        ]
+        for t in threads:
+            t.start()
+        # Bounded by iterations rather than by a clock: enough interleavings to
+        # have caught the original bug, and no wall-time in the suite.
+        for _ in range(2000):
+            poll.is_running()
+        done.set()
+        for t in threads:
+            t.join(2.0)
+        self.assertEqual(failures, [], f"concurrent start/stop raised: {failures}")
 
 
 if __name__ == "__main__":

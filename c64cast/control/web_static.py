@@ -24,6 +24,13 @@ LAN costs a round trip and buys correctness. Content-hashed names would be the
 other answer, and were rejected: they add a file to git on every rebuild and
 leave the old one behind, which makes a committed artefact unreviewable.
 
+Serving by hand means owning the traversal question, and the answer here is to
+not have one: the bundle's files are **catalogued at mount time** and a request
+looks its name up as a dictionary key. Nothing a client sends ever becomes a
+path component, so there is no ``..`` to normalise and no containment check to
+get subtly wrong — and no static analyser has to be persuaded that the check
+was correct.
+
 Nothing here is behind its own auth check. The app is mounted onto an app the
 token middleware already wraps, so the shell is gated exactly like the API it
 talks to — a browser reaches the console by way of ``/api/login?token=…``,
@@ -104,6 +111,19 @@ def mount_web_app(app: Any, *, directory: Path | None = None) -> bool:
 
     index = dist / INDEX_NAME
     assets = (dist / ASSETS_NAME).resolve()
+    # Catalogued once at mount rather than resolved per request, so a request
+    # *names a key* and never contributes a path component: there is no
+    # traversal question to answer, and no `is_relative_to` check standing
+    # between a user string and the filesystem. The bundle is a handful of
+    # files with fixed names, so the map is cheap and complete. A rebuild while
+    # the host is up therefore needs a restart — which is what `npm run dev`
+    # is for, and not something a deployment does.
+    catalog: dict[str, tuple[Path, str]] = {}
+    if assets.is_dir():
+        for entry in sorted(assets.iterdir()):
+            media_type = _CONTENT_TYPES.get(entry.suffix.lower())
+            if media_type is not None and entry.is_file():
+                catalog[entry.name] = (entry, media_type)
     # Plus the asset prefix itself: a path under it that no file backs is a
     # broken bundle, not a client route, and answering it with the shell would
     # hide that behind a page that loads and does nothing.
@@ -118,16 +138,10 @@ def mount_web_app(app: Any, *, directory: Path | None = None) -> bool:
 
     @app.get(f"/{ASSETS_NAME}/{{name}}")
     def web_asset(name: str) -> Response:
-        # `name` is a single path segment, so it cannot contain a separator —
-        # but it can still arrive percent-encoded as `..`, and the resolved
-        # containment check is the one that holds either way.
-        target = (assets / name).resolve()
-        if not target.is_relative_to(assets) or not target.is_file():
+        entry = catalog.get(name)
+        if entry is None:
             raise HTTPException(404, "no such asset")
-        media_type = _CONTENT_TYPES.get(target.suffix.lower())
-        if media_type is None:
-            raise HTTPException(404, "no such asset")
-        return _no_cache(target, media_type)
+        return _no_cache(*entry)
 
     @app.get("/")
     def web_index() -> Response:
