@@ -77,11 +77,11 @@ class ControlServer:
             lambda stop: self._server.run(), name="control-plane", manual=True, join_timeout=2.0
         )
 
-    def start(self):
+    def start(self) -> None:
         self._poll.start()
         log.info("%s: listening on http://%s:%d", self.label, self.host, self.port)
 
-    def stop(self):
+    def stop(self) -> None:
         self._server.should_exit = True
         self._poll.stop()
 

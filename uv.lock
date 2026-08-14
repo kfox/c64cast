@@ -180,6 +180,11 @@ video = [
 vision = [
     { name = "mediapipe" },
 ]
+web = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+    { name = "websockets" },
+]
 wizard = [
     { name = "questionary" },
 ]
@@ -215,6 +220,7 @@ requires-dist = [
     { name = "cv2-enumerate-cameras", marker = "extra == 'camera'", specifier = ">=1.3.3,<2" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.140.0,<1" },
     { name = "fastapi", marker = "extra == 'control'", specifier = ">=0.140.0,<1" },
+    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.140.0,<1" },
     { name = "fastapi", marker = "extra == 'wled'", specifier = ">=0.140.0,<1" },
     { name = "mediapipe", marker = "extra == 'all'", specifier = ">=0.10.35,<1.1" },
     { name = "mediapipe", marker = "extra == 'vision'", specifier = ">=0.10.35,<1.1" },
@@ -238,15 +244,17 @@ requires-dist = [
     { name = "sounddevice", marker = "extra == 'mic'", specifier = ">=0.5.5,<0.6" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.51.0,<1" },
     { name = "uvicorn", marker = "extra == 'control'", specifier = ">=0.51.0,<1" },
+    { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.51.0,<1" },
     { name = "uvicorn", marker = "extra == 'wled'", specifier = ">=0.51.0,<1" },
     { name = "websockets", marker = "extra == 'all'", specifier = ">=16.1.1,<18" },
+    { name = "websockets", marker = "extra == 'web'", specifier = ">=16.1.1,<18" },
     { name = "websockets", marker = "extra == 'wled'", specifier = ">=16.1.1,<18" },
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.7.4" },
     { name = "yt-dlp", marker = "extra == 'yt'", specifier = ">=2026.7.4" },
     { name = "zeroconf", marker = "extra == 'all'", specifier = ">=0.150.0,<1" },
     { name = "zeroconf", marker = "extra == 'wled'", specifier = ">=0.150.0,<1" },
 ]
-provides-extras = ["mic", "video", "control", "obs", "midi", "logging", "tr", "vision", "wizard", "camera", "yt", "wled", "all"]
+provides-extras = ["mic", "video", "control", "obs", "midi", "logging", "tr", "vision", "wizard", "camera", "yt", "wled", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [

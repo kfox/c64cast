@@ -5,7 +5,7 @@ generated: true
 
 # Optional Extras
 
-The 12 groups of dependency that a plain install leaves out, what each one unlocks, the module `c64cast --doctor` imports to tell you it is there, and the packages it brings with it.
+The 13 groups of dependency that a plain install leaves out, what each one unlocks, the module `c64cast --doctor` imports to tell you it is there, and the packages it brings with it.
 
 ## The Extras
 
@@ -23,6 +23,7 @@ Extras do not accumulate. Installing `c64cast[midi]` over `c64cast[video]` leave
 | **`tr`**<br>`serial` | TeensyROM serial backend. `pyserial>=3.5,<4`. |
 | **`video`**<br>`av` | video scenes, video interleaving. `av>=18.0.0,<19`. |
 | **`vision`**<br>`mediapipe` | [vision] enabled gesture control. `mediapipe>=0.10.35,<1.1`. |
+| **`web`**<br>`websockets` | `--serve` web console host. `fastapi>=0.140.0,<1`, `uvicorn>=0.51.0,<1`, `websockets>=16.1.1,<18`. |
 | **`wizard`**<br>`questionary` | `--init` config wizard. `questionary>=2.1.1,<3`. |
 | **`wled`**<br>`zeroconf` | [wled].listen virtual WLED device. `zeroconf>=0.150.0,<1`, `fastapi>=0.140.0,<1`, `uvicorn>=0.51.0,<1`, `websockets>=16.1.1,<18`. |
 | **`yt`**<br>`yt_dlp` | cast URL playback (YouTube et al.). `yt-dlp>=2026.7.4`. |

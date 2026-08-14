@@ -45,6 +45,7 @@ _SECTION_DC = {
     "dsp": cfgmod.DSPCfg,
     "audio_features": cfgmod.AudioFeaturesCfg,
     "control": cfgmod.ControlPlaneCfg,
+    "web": cfgmod.WebCfg,
     "midi_control": cfgmod.MidiControlCfg,
     "performance": cfgmod.PerformanceCfg,
     "menu": cfgmod.MenuCfg,

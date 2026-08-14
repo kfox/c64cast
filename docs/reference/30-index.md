@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 419 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 431 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -33,6 +33,7 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `auto_fit_strength` | [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `auto_reu` | [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
+| `autostart` | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `axis` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 
 ## B
@@ -164,6 +165,7 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `enabled` (preview) | [The Preview Window (6)](07-inputs-and-outputs.md#the-preview-window), [`preview` (A)](20-appendix-a-configuration.md#preview) |
 | `enabled` (recording) | [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
 | `enabled` (vision) | [Gestures (6)](07-inputs-and-outputs.md#gestures), [`vision` (A)](20-appendix-a-configuration.md#vision) |
+| `enabled` (web) | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `epicycle` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `expander` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `expander_attack_ms` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
@@ -232,6 +234,7 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `host` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`control` (A)](20-appendix-a-configuration.md#control), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
+| `host` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `host_dma_servo` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
 | `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has) |
@@ -389,9 +392,10 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `[playlist]` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
 | `poll_hz` | [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `poll_interval_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
-| `port` | [`control` (A)](20-appendix-a-configuration.md#control), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control), [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
+| `port` | [`control` (A)](20-appendix-a-configuration.md#control), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `port` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `port` (midi_control) | [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
+| `port` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `posterize` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `pre_emphasis` | [`dsp` (A)](20-appendix-a-configuration.md#dsp), [`blank` (B)](21-appendix-b-scene-types.md#blank), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
 | `[preview]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`preview` (A)](20-appendix-a-configuration.md#preview) |
@@ -455,6 +459,8 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `scrolling_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`scrolling_text` (C)](22-appendix-c-overlays.md#scrolling_text), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `separator` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `serial_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
+| `--serve` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Living Through a Crash (6)](07-inputs-and-outputs.md#living-through-a-crash), [`web` (A)](20-appendix-a-configuration.md#web) |
+| `settle_s` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `setup_progress_bar` | [`video` (A)](20-appendix-a-configuration.md#video) |
 | `shape` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `show_date` | [`clock` (C)](22-appendix-c-overlays.md#clock) |
@@ -505,7 +511,10 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `text_color` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`interstitial` (A)](20-appendix-a-configuration.md#interstitial) |
 | `text_double_height` | [Overlays (2)](03-vocabulary.md#overlays), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `time_base` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
-| `token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [`control` (A)](20-appendix-a-configuration.md#control) |
+| `token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [The Token Is Not Optional Here (6)](07-inputs-and-outputs.md#the-token-is-not-optional-here), [`control` (A)](20-appendix-a-configuration.md#control) |
+| `token` (control) | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [`control` (A)](20-appendix-a-configuration.md#control) |
+| `token` (web) | [The Token Is Not Optional Here (6)](07-inputs-and-outputs.md#the-token-is-not-optional-here), [`web` (A)](20-appendix-a-configuration.md#web) |
+| `token_file` | [The Token Is Not Optional Here (6)](07-inputs-and-outputs.md#the-token-is-not-optional-here), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `trails` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `transport` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Driving a Video (6)](07-inputs-and-outputs.md#driving-a-video), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `tunnel` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
@@ -536,7 +545,9 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `video` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`video` (2)](03-vocabulary.md#video), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `--videos` | [Playlist (G)](26-appendix-g-cli-flags.md#playlist) |
 | `videos_dir` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
-| `viewer_token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [`control` (A)](20-appendix-a-configuration.md#control) |
+| `viewer_token` | [Locking It (6)](07-inputs-and-outputs.md#locking-it), [The Token Is Not Optional Here (6)](07-inputs-and-outputs.md#the-token-is-not-optional-here), [`control` (A)](20-appendix-a-configuration.md#control) |
+| `viewer_token` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
+| `viewer_token` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `--vision` | [Vision Input (G)](26-appendix-g-cli-flags.md#vision-input) |
 | `[vision]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `--vision-model` | [Vision Input (G)](26-appendix-g-cli-flags.md#vision-input) |
@@ -550,7 +561,8 @@ Every name c64cast answers to — 419 of them — and the pages that discuss eac
 | `waveform` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`waveform` (2)](03-vocabulary.md#waveform), [`waveform` (B)](21-appendix-b-scene-types.md#waveform) |
 | `waveform_colors` | [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi), [`waveform` (B)](21-appendix-b-scene-types.md#waveform) |
 | `weather` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`weather` (C)](22-appendix-c-overlays.md#weather), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
-| web console | [Generators (3)](04-display-pipeline.md#generators), [One Surface for the Whole Ensemble (6)](07-inputs-and-outputs.md#one-surface-for-the-whole-ensemble), [A Generator or an Effect (7)](08-extending.md#a-generator-or-an-effect) |
+| `[web]` | [`web` (A)](20-appendix-a-configuration.md#web) |
+| web console | [Generators (3)](04-display-pipeline.md#generators), [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Web Console (G)](26-appendix-g-cli-flags.md#web-console) |
 | `webcam` | [Frame Rate (2)](03-vocabulary.md#frame-rate), [`webcam` (2)](03-vocabulary.md#webcam), [`webcam` (B)](21-appendix-b-scene-types.md#webcam) |
 | `[wled]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`wled` (2)](03-vocabulary.md#wled), [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `wled` | [`wled` (2)](03-vocabulary.md#wled), [WLED (6)](07-inputs-and-outputs.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |

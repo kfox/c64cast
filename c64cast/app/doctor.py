@@ -82,6 +82,10 @@ _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("wizard", "questionary", "--init config wizard"),
     ("yt", "yt_dlp", "cast URL playback (YouTube et al.)"),
     ("wled", "zeroconf", "[wled].listen virtual WLED device"),
+    # Probed on `websockets` rather than fastapi: `control` already covers
+    # fastapi, and the state feed is the part that silently does nothing when
+    # uvicorn has no WebSocket implementation to upgrade with.
+    ("web", "websockets", "--serve web console host"),
 )
 
 # Hard dependencies (top-level module, what uses it). These are declared in

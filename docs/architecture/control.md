@@ -12,6 +12,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`control_plane.py` — HTTP control plane (optional)](#control_planepy--http-control-plane-optional)
 * [`auth.py` — shared-token gate (optional)](#authpy--shared-token-gate-optional)
 * [`app/serve.py` — the session supervisor](#appservepy--the-session-supervisor)
+* [`web_api.py` — the web console's API + the host (`--serve`)](#web_apipy--the-web-consoles-api--the-host---serve)
 * [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
 * [`tempo.py` — process-wide musical beat grid (Live DJ/VJ Phase 1)](#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)
 * [`performance.py` — clip-launch grid (Live DJ/VJ Phase 2)](#performancepy--clip-launch-grid-live-djvj-phase-2)
@@ -123,6 +124,31 @@ The web console's first non-HTTP piece, and the one the rest of it is built on. 
 Supervisor threads are `daemon=False`, unlike every other background thread in the project, for the same reason the playlist threads are: these are the threads that tear the hardware *down*, and a daemon thread is killed at interpreter exit — mid-teardown, with the machine still held. The reap poller is a plain `PollThread` (it only observes).
 
 Two things a supervised session must never inherit from the CLI: signal handlers, since `signal.signal` raises off the main thread, and `Session.interactive`, which stays False so the live-tune `input()` prompt can't hang the stop path forever.
+
+## `web_api.py` — the web console's API + the host (`--serve`)
+
+`--serve` (or `[web] enabled = true`, the same switch) replaces the process model rather than adding a surface to it: instead of running one config and exiting, c64cast becomes a server that owns the hardware and starts and stops shows on request. `serve.run_daemon` is that process — resolve the credentials, build one app, start uvicorn, and park the main thread in `pump_forever` — and `web_api.register_web_routes` is what the browser talks to.
+
+**One app, built once.** The control-plane routes and the `/api/*` routes ride the same FastAPI app on the same port, because a host console with two addresses isn't one console. The app is built before any session exists and never rebuilt: [`build_app_for_registry`](#control_planepy--http-control-plane-optional)'s providers resolve `manager.session` per request, so a show change doesn't drop the listening socket and every connected browser with it.
+
+The status code is the design:
+
+| Route | Answers | Why |
+|---|---|---|
+| `POST /api/session/{start,switch}` | `202` | Building blocks for many seconds on hardware; the supervisor claims the transition and returns, and the caller watches `/api/ws`. A route that waited would hold a request open across a machine reset. |
+| …the same, while busy | `409` | Mapped from `SupervisorBusy`, never from a state check in the route: reading the state and *then* acting on it races the reap poller, and the supervisor's own lock is the only place that decision can be made. |
+| …with a config that won't run | `422` | The payoff for `validate_configs` being pure: the start that would have failed twenty seconds into a build fails immediately, with the supervisor still idle. `switch` gets this too, so a typo can't take down a running show. |
+| `POST /api/session/stop` | `202`, always | A console that stops twice, or stops a show that just ended by itself, has got what it asked for. |
+
+`GET /api/introspect` serves `introspect.as_dict()` — the same model behind `--describe`, the JSON Schema and `--init`, as JSON. The console reads *this* rather than the committed schema file because the schema deliberately drops `apply` ("does this take effect live?") and `applies_to` ("is this field meaningful for this scene type?"), which are exactly what a form needs to render. It is built once per process: it describes the code, not the run.
+
+`WS /api/ws` is the `/perf` payload with a `session` key added, so a console that already renders the performance surface gains the supervisor for free. Log lines ride along **by sequence number** rather than as a re-sent tail — at ~3 pushes/sec, re-sending 500 lines each time would dwarf everything else on the socket. Inbound frames carrying `{"session": …}` drive the supervisor and everything else falls through to the performance engine, so a console needs one connection rather than two; like `perf_ws`, this route drops inbound frames from a `viewer` itself, which is the one hole the auth middleware cannot plug.
+
+**The console is never unauthenticated.** `[control]` may run open because that is what it has always done and breaking those runs isn't a trade a security feature gets to make for the user; this surface has no history to preserve and it starts hardware, so `resolve_tokens` falls back to minting one (`secrets.token_urlsafe(32)`, persisted `0600` beside the DAC calibrations) and prints a ready-to-open login URL rather than binding open. Precedence is `$C64CAST_WEB_TOKEN` → `[web].token` → `token_file` → generated.
+
+**The main thread is the preview thread.** HighGUI may only create and service a window there, and under `--serve` it is parked in `pump_forever` rather than in a join, so windows are opened when a generation appears and closed when it goes. Repeatedly opening and closing them across sessions in one process is the least-exercised corner of this design, which is why every call into a window is contained: `[preview]` under a host is "works from a terminal", not a supported deployment. The browser preview ([`u64_stream.py`](hardware-io.md), still to come) is the daemon's real answer.
+
+Shutdown order is load-bearing: the session comes down *before* the server, so a console watching the state feed sees the machine stop rather than the socket vanish mid-teardown.
 
 ## `midi_control.py` — process-wide MIDI control surface (optional, live performance)
 

@@ -994,12 +994,47 @@ def build_session(
     )
 
 
+def reload_registries(sess: Session) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The per-system reload closures the control plane's ``POST /reload``
+    calls: ``(config_loaders, interstitial_factories)``, keyed by system name.
+
+    A system with no file on disk (defaults-only single-system, quick
+    playback) simply isn't in the maps — the route reports that per system
+    rather than failing the whole call. Built here rather than inline in
+    :func:`start_services` because a long-lived host builds the same two maps
+    against whichever session is current, through a provider."""
+    args, loaded, stacks = sess.args, sess.loaded, sess.stacks
+    # Default-arg `st=st, p=p` captures by value to avoid the late-binding bug
+    # where every lambda would see the last loop iteration's st.
+    config_loaders = {
+        st.name: (
+            lambda st=st, p=p: scene_factory.scenes_from_config(
+                cfgmod.merge_cli(cfgmod.load(p), args),
+                st.api,
+                st.audio,
+                st.source,
+                is_ensemble=loaded.is_ensemble,
+                reu_available=st.reu_available,
+                sampler_available=st.sampler_available,
+            )
+        )
+        for st, p in zip(stacks, loaded.paths, strict=True)
+        if p is not None
+    }
+    interstitial_factories = {
+        st.name: (lambda st=st, p=p: interstitial_factory(st.api, cfgmod.load(p).interstitial))
+        for st, p in zip(stacks, loaded.paths, strict=True)
+        if p is not None
+    }
+    return config_loaders, interstitial_factories
+
+
 def start_services(sess: Session) -> None:
     """Start the optional process-wide surfaces: the HTTP control plane, the
     MIDI control listener, and the WLED virtual device. Each is independently
     guarded — a surface that can't start logs and is skipped, never taking the
     session down with it. Handles land on `sess` for teardown_session."""
-    args, loaded, cfgs, stacks = sess.args, sess.loaded, sess.cfgs, sess.stacks
+    loaded, cfgs, stacks = sess.loaded, sess.cfgs, sess.stacks
 
     # Optional FastAPI control plane. One server for the whole ensemble;
     # endpoints take ?system=NAME (defaults to all systems in multi
@@ -1011,31 +1046,7 @@ def start_services(sess: Session) -> None:
         try:
             from c64cast.control.control_plane import start_control_server
 
-            # Per-system reload closures. Default-arg `st=st, p=p`
-            # captures by value to avoid the late-binding bug where
-            # every lambda would see the last loop iteration's st.
-            config_loaders = {
-                st.name: (
-                    lambda st=st, p=p: scene_factory.scenes_from_config(
-                        cfgmod.merge_cli(cfgmod.load(p), args),
-                        st.api,
-                        st.audio,
-                        st.source,
-                        is_ensemble=loaded.is_ensemble,
-                        reu_available=st.reu_available,
-                        sampler_available=st.sampler_available,
-                    )
-                )
-                for st, p in zip(stacks, loaded.paths, strict=True)
-                if p is not None
-            }
-            interstitial_factories = {
-                st.name: (
-                    lambda st=st, p=p: interstitial_factory(st.api, cfgmod.load(p).interstitial)
-                )
-                for st, p in zip(stacks, loaded.paths, strict=True)
-                if p is not None
-            }
+            config_loaders, interstitial_factories = reload_registries(sess)
             sess.control_server = start_control_server(
                 control_cfg.host,
                 control_cfg.port,

@@ -168,6 +168,12 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
     ),
     ("control", cfgmod.ControlPlaneCfg, "HTTP control plane (extra)."),
     (
+        "web",
+        cfgmod.WebCfg,
+        "Web console host (--serve): a long-lived server that owns the hardware "
+        "and starts/stops sessions on request (extra).",
+    ),
+    (
         "midi_control",
         cfgmod.MidiControlCfg,
         "MIDI CC control surface for live performance: scene jumps, style "
@@ -534,6 +540,108 @@ def compat_matrix() -> tuple[list[ModeDoc], list[tuple[OverlayDoc, list[bool]]]]
     modes = display_modes()
     rows = [(ov, [overlay_mode_ok(ov, m)[0] for m in modes]) for ov in overlay_docs()]
     return modes, rows
+
+
+# ---------------------------------------------------------------------------
+# JSON (the web console's copy of this model)
+# ---------------------------------------------------------------------------
+
+
+def _jsonable(val: object) -> object:
+    """Coerce a default to something `json` can carry. Only two shapes need it:
+    the ``REQUIRED`` sentinel, and the tuples/lists a list-valued field
+    defaults to."""
+    if val is REQUIRED:
+        return None
+    if isinstance(val, (tuple, list)):
+        return [_jsonable(v) for v in val]
+    if isinstance(val, (str, int, float, bool)) or val is None:
+        return val
+    return str(val)
+
+
+def as_dict() -> dict[str, Any]:
+    """The whole introspection model as JSON-serialisable data.
+
+    The web console renders this rather than the committed JSON Schema because
+    the schema deliberately drops the two things a UI needs most: ``apply``
+    (does changing this take effect live, or does it need a rebuild?) and
+    ``applies_to`` (which scene types is this field even meaningful for). A
+    plain ``dataclasses.asdict`` would carry them, but it would also emit the
+    ``REQUIRED`` sentinel, which `json` can't encode."""
+
+    def field_dict(fd: FieldDoc) -> dict[str, Any]:
+        return {
+            "name": fd.name,
+            "type": fd.type,
+            "default": _jsonable(fd.default),
+            "required": fd.default is REQUIRED,
+            "help": fd.help,
+            "choices": list(fd.choices),
+            "applies_to": list(fd.applies_to),
+            "apply": fd.apply,
+        }
+
+    def param_dict(pd: ParamDoc) -> dict[str, Any]:
+        return {
+            "name": pd.name,
+            "type": pd.type,
+            "default": _jsonable(pd.default),
+            "required": pd.required,
+            "help": pd.help,
+        }
+
+    return {
+        "sections": [
+            {"name": s.name, "help": s.help, "fields": [field_dict(f) for f in s.fields]}
+            for s in config_sections()
+        ],
+        "scene_types": [
+            {
+                "name": s.name,
+                "help": s.help,
+                "displays": list(s.displays),
+                "fields": [field_dict(f) for f in s.fields],
+            }
+            for s in scene_types()
+        ],
+        "overlays": [
+            {
+                "name": o.name,
+                "help": o.help,
+                "params": [param_dict(p) for p in o.params],
+                "requires_petscii": o.requires_petscii,
+                "requires_audio": o.requires_audio,
+                "compatible_modes": list(o.compatible_modes),
+                "supports_bitmap_text": o.supports_bitmap_text,
+            }
+            for o in overlay_docs()
+        ],
+        "modes": [
+            {
+                "name": m.name,
+                "runtime_name": m.runtime_name,
+                "is_bitmapped": m.is_bitmapped,
+                "is_petscii_compatible": m.is_petscii_compatible,
+                "is_bitmap_text_compatible": m.is_bitmap_text_compatible,
+                "help": m.help,
+            }
+            for m in display_modes()
+        ],
+        "live_targets": [
+            {
+                "target": t.target,
+                "holder": t.holder,
+                "group": t.group,
+                "kind": t.kind,
+                "lo": t.lo,
+                "hi": t.hi,
+                "choices": list(t.choices),
+                "owners": list(t.owners),
+            }
+            for t in live_targets()
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

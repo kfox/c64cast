@@ -867,6 +867,26 @@ port = 8765
 token = ""
 viewer_token = ""                   # optional read-only token (GET only)
 
+[web]
+# The web console host (`c64cast --serve`): instead of running this config
+# once and exiting, c64cast becomes a server that owns the hardware and
+# starts/stops shows on request. Requires the `web` extra. Everything the
+# [control] plane serves rides on the same port.
+enabled = false                     # same switch as --serve
+host = "127.0.0.1"
+port = 8123
+# This surface is never unauthenticated (it starts and stops hardware, and
+# will edit config files). Leave `token` empty and one is generated, stored
+# 0600 under the data dir, and printed as a ready-to-open login URL at
+# startup; prefer the C64CAST_WEB_TOKEN env var over a value here.
+token = ""
+token_file = ""                     # read the token from a file instead
+viewer_token = ""                   # optional read-only token (GET only)
+autostart = false                   # start this config on launch, rather than
+                                    #   waiting for a browser to ask
+settle_s = 3.0                      # hardware cool-off between one session's
+                                    #   teardown and the next one's build
+
 [midi_control]
 # Process-wide MIDI control surface for live performance: scene jumps,
 # style cycling, transport, and live effect/generator parameter sweeps

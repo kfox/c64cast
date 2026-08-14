@@ -91,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     vision_def = cfgmod.VisionCfg()
     playlist_def = cfgmod.PlaylistCfg()
     debug_def = cfgmod.DebugCfg()
+    web_def = cfgmod.WebCfg()
 
     p = argparse.ArgumentParser(
         prog="c64cast",
@@ -254,6 +255,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Loop the playlist after the last scene finishes "
         "(--no-loop = exit after one pass; useful for "
         f'"play one video and quit") (default: {playlist_def.loop})',
+    )
+
+    web = p.add_argument_group("web console")
+    web.add_argument(
+        "--serve",
+        action="store_true",
+        default=None,
+        help="Run the web console host instead of a one-shot session: an HTTP "
+        "server that owns the hardware and starts/stops shows on request "
+        f"(default bind {web_def.host}:{web_def.port}; configure under [web]; "
+        "requires the 'web' extra). Prints a login URL carrying the shared token.",
     )
 
     intro = p.add_argument_group("introspection")
@@ -698,6 +710,22 @@ def main(argv=None) -> int:
 
     if args.doctor:
         return run_doctor(loaded, cfgs)
+
+    # The web console replaces the process model rather than adding a surface
+    # to it: the server starts first and owns every session that follows, so
+    # `--serve` and `[web].enabled` are the same switch. [web] is process-wide
+    # (like [control]), hence the master in ensemble mode.
+    web_cfg = loaded.master_web if loaded.is_ensemble else cfgs[0].web
+    if args.serve:
+        web_cfg.enabled = True
+    if web_cfg.enabled:
+        from . import serve
+
+        # The loader, not the loaded result: every start re-runs it, so a TOML
+        # edited while the host is up takes effect on the next show.
+        return serve.run_daemon(
+            args, web_cfg, lambda: _resolve_configs(args), config_path=args.config or ""
+        )
 
     return _run_session(args, loaded, cfgs)
 

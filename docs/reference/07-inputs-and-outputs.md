@@ -413,6 +413,78 @@ trip per beat.
 Nothing on the console writes to the on-screen display. Performance feedback
 stays off the audience's screen.
 
+## The Web Console Host
+
+`c64cast --serve` (or `[web].enabled`, the same switch, with the `web` extra)
+changes what the program *is*. Instead of running one configuration and exiting,
+it becomes a server that holds the Commodore and starts and stops shows on
+request:
+
+```toml
+[web]
+enabled = true
+host = "127.0.0.1"
+port = 8123
+autostart = false      # start the launched config immediately
+settle_s = 3.0         # hardware cool-off between shows
+```
+
+Everything the control plane serves rides on that same port — `/status`,
+`/reload`, the performance console — so there is one address, not two. Between
+shows those routes answer `503`: the machine is idle, not broken.
+
+| Route | Does |
+|---|---|
+| `GET /api/session` | Where the host is: `idle`, `starting`, `running`, `stopping` or `error`, with the current systems, the last error and a tail of the log |
+| `POST /api/session/start` | Build and run the configuration the host was launched with |
+| `POST /api/session/stop` | Bring the running show down and put the machine back |
+| `POST /api/session/switch` | Stop, wait for the hardware, and start again — re-reading the file |
+| `POST /api/session/reload` | The same reload the control plane offers |
+| `GET /api/introspect` | Every configuration section, scene type, overlay, display mode and live target, as JSON |
+| `WS /api/ws` | Live state: the performance payload, the session state, and new log lines as they happen |
+
+The configuration is re-read from disk on every start, so editing the file and
+posting `start` again runs the edit — no restart of the host. Starting takes
+several seconds (opening the link, resetting the machine, probing what it has),
+so `start` and `switch` answer `202 Accepted` immediately and the WebSocket
+reports what happened. A start while something is already running is refused
+with `409` rather than silently replacing it; that is what `switch` is for. A
+configuration that will not run is refused with `422` **before** anything
+touches the machine, so a typo costs a response, not a show.
+
+After one show ends the next start waits out `settle_s` seconds. This is not
+politeness: the Ultimate's DMA service refuses new connections for a few seconds
+after one closes, and a camera will not reopen instantly either.
+
+### The Token Is Not Optional Here
+
+Unlike the control plane, this surface has no unauthenticated mode. It starts
+and stops hardware, so if no token is configured one is generated, stored
+`0600` under the data directory, and printed at startup as a URL you can open:
+
+```
+web console: open
+  http://127.0.0.1:8123/api/login?token=…&next=/perf
+```
+
+Set `[web].token` (or `$C64CAST_WEB_TOKEN`, which wins) to choose your own, or
+`token_file` to keep it out of the configuration entirely. `viewer_token` grants
+the same read-only role the control plane's does: watch the state feed, but
+never start, stop or edit.
+
+### Living Through a Crash
+
+A host writes a small marker file while a show runs and removes it on the way
+down. If it finds one at the next start, the previous run died with the machine
+still mid-show — so before building anything it opens a bare connection, resets
+the Commodore, and closes it again. That makes a host under `launchd` or
+`systemd` strictly safer than the one-shot command, which has no second chance
+at that reset.
+
+A preview window under `--serve` works from a terminal but is not a supported
+way to run one; a browser-side preview is the intended answer and is still to
+come.
+
 ## Performing
 
 Three pieces sit on top of the playlist: a beat grid, a clip-launch grid, and the
