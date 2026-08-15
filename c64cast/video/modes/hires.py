@@ -23,7 +23,13 @@ from c64cast.video.modes_irq import (
     push_bitmap_via_reu,
     uninstall_bank_swap_irq,
 )
-from c64cast.video.palette import C64_PALETTE_BGR, COLOR_MATCH_MODES, quantize_flat_for
+from c64cast.video.palette import (
+    C64_PALETTE_BGR,
+    COLOR_MATCH_MODES,
+    HIRES_CELL_PICKS,
+    PERCEPTUAL_DIST_SCALE,
+    quantize_distances_for,
+)
 
 from .base import ORDERED_DITHER_OFFSET_FNS, BitmapComposeBuffers
 from .bitmap import BitmapDisplayMode, engage_bitmap_mode
@@ -33,19 +39,50 @@ log = logging.getLogger(__name__)
 
 HIRES_STYLES = ("normal", "edges", "edges_inverted")
 
+# Per-cell foreground stickiness for the error-min pick, in d² space (the units
+# quantize_distances returns — scaled by PERCEPTUAL_DIST_SCALE under the Lab
+# metric, the same convention the percell bonuses in base.py use).
+#
+# Well below base.py's per-pixel 5000 because the quantity is different: this
+# thresholds a mean d² over a cell's 64 pixels, which averages most of the
+# sensor noise out before the comparison ever happens, where the percell bonus
+# thresholds one pixel's own distance. Swept on a noisy static subject and a
+# panning one: 2000 already takes static-subject screen churn to zero for +0.06
+# Lab on the panning case, and everything above it only buys lag — 5000 costs
+# +0.28, 15000 +1.05, 50000 +6.6, for progressively less churn benefit. Since
+# this is a decision hysteresis and not a smoother, over-damping shows up
+# directly as motion inaccuracy, so the knee is the right place to sit.
+HIRES_CELL_HYSTERESIS_BONUS = 2000.0
+
+
+def _pack_screen(fg: np.ndarray, bg: int) -> np.ndarray:
+    """Pack per-cell foreground + global background palette indices into the
+    1000-byte VIC screen matrix (hi nibble = fg, lo nibble = bg)."""
+    return ((np.asarray(fg).astype(np.uint8) << 4) | np.uint8(bg & 0x0F)).ravel()
+
 
 def _validate_hires_style(style: str) -> None:
     if style not in HIRES_STYLES:
         raise ValueError(f"hires style must be one of {HIRES_STYLES}, got {style!r}")
 
 
+def _validate_cell_pick(pick: str) -> None:
+    if pick not in HIRES_CELL_PICKS:
+        raise ValueError(f"hires cell_pick must be one of {HIRES_CELL_PICKS}, got {pick!r}")
+
+
 class HiresDisplayMode(BitmapDisplayMode):
     """320×200 bitmap.
 
     style:
-      "normal"          — luma-quantized: per-cell sampled fg + dominant bg.
+      "normal"          — luma-quantized: per-cell fg + dominant bg.
       "edges"           — Canny edges in white on black.
       "edges_inverted"  — Canny edges in black on white (negative print).
+
+    cell_pick: how the "normal" style chooses each cell's foreground.
+      "error-min" (default) minimises the cell's own error; "sample" reads
+      one pixel per cell. See _errmin_fg for why the accurate pick is also
+      the stabler one.
 
     use_reu_staged: opt into the REU bank-swap double-buffer pipeline.
       Each frame's bitmap + screen are REUWRITE-staged into REU SRAM
@@ -69,7 +106,11 @@ class HiresDisplayMode(BitmapDisplayMode):
     # are live; it does NOT apply the adaptive color fit (no auto_fit_strength)
     # and has no palette_mode / per-cell axis.
     LIVE_PARAMS = {"dither_strength": (0.0, 2.0)}
-    LIVE_CHOICES = {"dither_method": DITHER_METHODS, "color_match": COLOR_MATCH_MODES}
+    LIVE_CHOICES = {
+        "dither_method": DITHER_METHODS,
+        "color_match": COLOR_MATCH_MODES,
+        "cell_pick": HIRES_CELL_PICKS,
+    }
 
     def __init__(
         self,
@@ -81,9 +122,16 @@ class HiresDisplayMode(BitmapDisplayMode):
         dither_method: str = "none",
         dither_strength: float = 0.5,
         perceptual: bool = False,
+        cell_pick: str = "error-min",
     ):
         _validate_hires_style(style)
+        _validate_cell_pick(cell_pick)
         self.style = style
+        # Which colour each cell's foreground takes ([color].hires_cell_pick).
+        # Only the "normal" style picks colour at all — the edges styles are
+        # fixed 2-colour, so this is a no-op there, same as _perceptual.
+        self._cell_pick = cell_pick
+        self._last_fg: np.ndarray | None = None
         # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
         # Only the "normal" style quantizes color (bg + per-cell fg samples); the
         # edges styles are fixed 2-color, so this is a no-op there.
@@ -127,6 +175,60 @@ class HiresDisplayMode(BitmapDisplayMode):
         edges styles). Hires carries no d²-space penalty to rescale."""
         self._perceptual = value == "perceptual"
         return f"color_match={value}"
+
+    def set_cell_pick(self, value: str) -> str:
+        """Live-swap the per-cell foreground pick. Drops the hysteresis state:
+        the two strategies choose from the same 16 entries but by different
+        criteria, so carrying a "previous pick" across the swap would hold the
+        old strategy's answers for a frame."""
+        _validate_cell_pick(value)
+        self._cell_pick = value
+        self._last_fg = None
+        return f"cell_pick={value}"
+
+    def _errmin_fg(self, dist: np.ndarray, bg: int) -> tuple[np.ndarray, np.ndarray]:
+        """Pick each cell's foreground by minimising that cell's own error, and
+        return (per-cell fg (25, 40), per-pixel fg mask (200, 320)).
+
+        Every pixel ends up showing whichever of {bg, fg} is nearer, so a
+        candidate's cost for a cell is exactly that elementwise minimum averaged
+        over the cell's 64 pixels — no search, one argmin over the 16 entries.
+        The distance matrix it needs is the one the quantizer already built.
+
+        The `"sample"` alternative reads a single pixel per cell instead. It was
+        kept for a long time on the grounds that it costs less and holds still
+        better, and the second half of that turns out not to survive
+        measurement: against `"sample"` on a noisy static subject this scores
+        -34% mean Lab error AND drops per-frame screen churn to zero (`"sample"`
+        sits at ~33 bytes/frame), because a one-pixel read tracks sensor noise
+        directly while a whole-cell mean averages it out. It is the more
+        accurate pick and the stabler one at once; the cost half of the claim is
+        real but small (≈+0.8 ms/frame). `"sample"` stays available for the
+        tightest CPU budgets.
+        """
+        entries = dist.shape[1]
+        # (1000, 64, E): each cell's 8×8 pixels against every candidate. Same
+        # row/col interleave the dither path uses for pixels_cell below.
+        per_cell = (
+            dist.reshape(25, 8, 40, 8, entries).transpose(0, 2, 1, 3, 4).reshape(1000, 64, entries)
+        )
+        d_bg = per_cell[:, :, bg : bg + 1]
+        cell_cost = np.minimum(d_bg, per_cell).mean(axis=1)  # (1000, E)
+        best = cell_cost.argmin(axis=1)
+        prev = self._last_fg
+        if prev is not None and prev.shape == best.shape:
+            rows = np.arange(cell_cost.shape[0])
+            bonus = HIRES_CELL_HYSTERESIS_BONUS * (
+                PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
+            )
+            keep = cell_cost[rows, prev] <= cell_cost[rows, best] + bonus
+            best = np.where(keep, prev, best)
+        self._last_fg = best
+        rows2 = np.arange(1000)[:, None]
+        cols = np.arange(64)[None, :]
+        is_fg_cell = per_cell[rows2, cols, best[:, None]] < d_bg[:, :, 0]
+        is_fg = is_fg_cell.reshape(25, 40, 8, 8).transpose(0, 2, 1, 3).reshape(200, 320)
+        return best.reshape(25, 40), is_fg
 
     def setup(self, api):
         super().setup(api)
@@ -214,15 +316,20 @@ class HiresDisplayMode(BitmapDisplayMode):
             if offset_fn is not None:
                 offset = offset_fn(200, 320, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            quantized = quantize_flat_for(flat, perceptual=self._perceptual).reshape(200, 320)
+            dist = quantize_distances_for(flat, perceptual=self._perceptual)  # (64000, 16)
+            quantized = dist.argmin(axis=1).reshape(200, 320)
             counts = np.bincount(quantized.ravel(), minlength=16)
             bg = int(counts.argmax())
-            sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
+            if self._cell_pick == "error-min":
+                sample_fg, is_fg = self._errmin_fg(dist, bg)
+            else:
+                sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
+                is_fg = quantized != bg
             if self._dither_method in ("floyd-steinberg", "atkinson"):
                 # Re-dither each 8×8 cell's own pixels against its 2-color set
-                # {bg, cell fg} — the fg PICK stays the cheap single-pixel
-                # sample above (temporal stability / cost), only the per-pixel
-                # fill dithers.
+                # {bg, cell fg}, replacing the nearest-of-two assignment above.
+                # Only the per-pixel fill dithers — the cell's two colours are
+                # already fixed by this point, whichever way they were picked.
                 pixels_cell = (
                     flat.reshape(200, 320, 3)
                     .reshape(25, 8, 40, 8, 3)
@@ -240,8 +347,6 @@ class HiresDisplayMode(BitmapDisplayMode):
                     pixels_cell, cand_bgr, self._dither_method, self._dither_strength
                 )
                 is_fg = codes.reshape(25, 40, 8, 8).transpose(0, 2, 1, 3).reshape(200, 320) == 1
-            else:
-                is_fg = quantized != bg
             fg_const: int | None = None
         else:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -263,9 +368,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         if fg_const is not None:
             screen_ram = np.full(1000, (fg_const << 4) | bg, dtype=np.uint8)
         else:
-            assert quantized is not None
-            sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
-            screen_ram = ((sample_fg << 4) | bg).astype(np.uint8).ravel()
+            screen_ram = _pack_screen(sample_fg, bg)
 
         return {
             "bitmap": bitmap_ram,

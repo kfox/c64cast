@@ -335,6 +335,29 @@ It threads through `_build_display_mode` / `_display_mode_for_scene` alongside `
 
 Hardware A/B on the U64 (busy slideshow, Cam Link): error-min holds high-detail regions subtly better than frequency, with no regression. luminance and contrast can add off-color speckle in near-flat regions, because they force a tonal extreme onto a lone outlier pixel. Hence `auto` only ever selects error-min or frequency, leaving the other two as opt-in creative controls.
 
+### `[color].hires_cell_pick` — which color fills a hires cell
+
+`"error-min"` (default) `| "sample"`. Hires gets two colors per 8×8 cell and one of them is spent on the global background, so the single remaining choice — which foreground the cell takes — decides most of the frame. This selects how it is made. Only the `"normal"` style picks color at all; the two `edges` styles are fixed 2-color, so the knob is inert there, exactly like `color_match`.
+
+**`"sample"`** reads one pixel per cell (`quantized[4::8, 4::8]`). Cheap, and the historical default.
+
+**`"error-min"`** (`HiresDisplayMode._errmin_fg`) picks the entry minimizing that cell's own reconstruction error. Because every pixel ends up showing whichever of `{bg, fg}` is nearer, a candidate's cost for a cell is exactly that elementwise minimum averaged over its 64 pixels — so there is no search, just one `argmin` over the 16 entries of a `(1000, 64, 16)` view of the distance matrix **the quantizer already built**. It reuses `quantize_distances_for`'s output rather than recomputing anything, which is why the whole change costs ≈0.8 ms/frame.
+
+**Why it replaced the sample as the default.** The sample was kept on the grounds that it costs less *and holds still better*, and the second half does not survive measurement. Against `"sample"` on a noisy static subject, error-min scores **−34 % mean Lab error** and drops per-frame screen churn to **zero** (`"sample"` sits at ≈33 bytes/frame), because a one-pixel read tracks sensor noise directly while a whole-cell mean averages it out. It is the more accurate pick and the stabler one at once. The cost half of the claim is real but small, so `"sample"` stays available for tight CPU budgets.
+
+**Where the gain comes from.** Entirely from intra-cell variance — the two only diverge when a cell's own pixels disagree, and the advantage tracks that almost linearly:
+
+| intra-cell std dev | example content | error-min vs sample |
+|---|---|---|
+| ≈1 | smooth gradient | ±0 % |
+| ≈4 | soft/blurred | ±0 % |
+| ≈14 | flat color patches | −13 % |
+| ≈73 | high-frequency detail | −32 % |
+
+On the repo's photo set it lands at **−24 %**, consistently across every `dither_method` (−26 % to −33 %). A flat or smoothly graded test fixture asserts nothing about it, which is what `tests/test_hires_cell_pick.py`'s `textured_frame` exists to avoid.
+
+**Hysteresis.** `HIRES_CELL_HYSTERESIS_BONUS` (2000, d² space, scaled by `PERCEPTUAL_DIST_SCALE` under the Lab metric like base.py's percell bonuses) keeps a cell's previous pick unless this frame beats it by that margin. Well below the per-pixel 5000 because the quantity differs: this thresholds a *mean* over 64 pixels, which has already averaged most of the noise out. Swept on noisy static and panning sequences — 2000 takes static churn to zero for +0.06 Lab on the panning case, and everything above only buys lag (5000 → +0.28, 15000 → +1.05, 50000 → +6.6). Since it is a decision hysteresis and not a smoother, over-damping shows up directly as motion inaccuracy, so it sits at the knee. `set_cell_pick` drops the state on a live swap — the strategies choose by different criteria, so a carried-over "previous pick" would hold the old strategy's answers for a frame.
+
 ### `[color].motion_smoothing` — temporal smoothing / after-images
 
 Range 0..1, default 0.25. A single dial over the mhires `percell` path's two *temporal* flicker-suppression buffers. No-op on every other mode and palette_mode — only percell carries them.

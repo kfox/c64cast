@@ -5,7 +5,7 @@ generated: true
 
 # Live-Tune Targets
 
-The 26 parameters a MIDI knob, pad or web-console control can move while a show is running. Each names the `target` of a `param` action in `[[midi_control.cc_map]]`: the holder that heads its section, a dot, and the parameter. A knob sweeps a scalar or bucket-selects a choice; a pad steps a choice on.
+The 27 parameters a MIDI knob, pad or web-console control can move while a show is running. Each names the `target` of a `param` action in `[[midi_control.cc_map]]`: the holder that heads its section, a dot, and the parameter. A knob sweeps a scalar or bucket-selects a choice; a pad steps a choice on.
 
 ## Mapping One
 
@@ -30,6 +30,7 @@ The display mode's color pipeline. A row's target is `mode.` and its name.
 | `dither_strength` | `scalar` | `0 – 2` | `mcm`, `hires`, `mhires` |
 | `dither_method` | `choice` | `none`, `ordered`, `blue_noise`, `floyd-steinberg`, `atkinson` | `mcm`, `hires`, `mhires` |
 | `palette_mode` | `choice` | `percell`, `cheap`, `vivid`, `grayscale` | `mcm`, `mhires` |
+| `cell_pick` | `choice` | `error-min`, `sample` | `hires` |
 | `motion_smoothing` | `scalar` | `0 – 1` | `mhires` |
 | `cell_strategy` | `choice` | `frequency`, `luminance`, `contrast`, `error-min` | `mhires` |
 

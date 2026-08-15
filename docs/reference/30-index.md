@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 432 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 434 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -69,6 +69,7 @@ Every name c64cast answers to — 432 of them — and the pages that discuss eac
 | `callsign` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`callsign` (C)](22-appendix-c-overlays.md#callsign), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | camera | [Validation (1)](02-config-rules.md#validation), [Cameras and Microphones (6)](07-inputs-and-outputs.md#cameras-and-microphones), [Choosing a Camera (6)](07-inputs-and-outputs.md#choosing-a-camera) |
 | `cc_map` | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [Learning a Controller (6)](07-inputs-and-outputs.md#learning-a-controller), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
+| `cell_pick` (mode) | [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `cell_strategy` | [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [What to Give Up First (5)](06-under-the-hood.md#what-to-give-up-first), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
 | `cell_strategy` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `channel_boost` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [`color` (A)](20-appendix-a-configuration.md#color) |
@@ -229,6 +230,7 @@ Every name c64cast answers to — 432 of them — and the pages that discuss eac
 | `--help` | [Options (G)](26-appendix-g-cli-flags.md#options) |
 | `hiphotic` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `hires` | [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video) |
+| `hires_cell_pick` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hires_edges` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow) |
 | `hold_threshold_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `hopalong` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |

@@ -15,6 +15,7 @@ generated: true
 | `dither_strength` | `0 – 2` | `mcm`, `hires`, `mhires` |
 | `dither_method` | `5 values` | `mcm`, `hires`, `mhires` |
 | `palette_mode` | `4 values` | `mcm`, `mhires` |
+| `cell_pick` | `2 values` | `hires` |
 | `motion_smoothing` | `0 – 1` | `mhires` |
 | `cell_strategy` | `4 values` | `mhires` |
 
