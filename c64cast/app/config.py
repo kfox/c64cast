@@ -307,6 +307,25 @@ class HardwareCfg:
             "choices": HOST_SID_TUNE_MATCH_CHOICES,
         },
     )
+    # The 16 colors the display shows are a property of the machine driving it,
+    # not of the link — an Ultimate 64's FPGA VIC and a real VIC-II are ~25
+    # counts per channel apart, and the quantizer picks indices by distance, so
+    # aiming at the wrong table sends ~19% of pixels to the wrong color. Same
+    # reasoning as host_sid_model above: declared here, resolved against the
+    # machine when the machine can answer.
+    host_palette: str = field(
+        default="auto",
+        metadata={
+            "help": "The 16 colors the C64 being driven actually emits, which "
+            "the quantizer aims at. 'auto' (default) reads it from the machine "
+            "where it can — an Ultimate 64 reports its own palette — and "
+            "otherwise assumes a real VIC-II. 'u64' is the Ultimate 64's own "
+            "table; 'pepto' is the classic VIC-II rendering, right for a real "
+            "C64 (so for an Ultimate II+, and for a TeensyROM+ in a breadbin). "
+            "Can also be the path to a VICE .vpl file, which is how to describe "
+            "a machine with a custom palette loaded.",
+        },
+    )
     dump_char_rom: bool = field(
         default=True,
         metadata={

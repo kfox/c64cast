@@ -299,6 +299,7 @@ class _FakeVideoApi:
         *,
         system_mode: str | None = "NTSC",
         scan_resolution: str | None = "SD (480p/576p)",
+        palette_definition: str | None = "",
         supports_system_mode: bool = True,
         put_error: Exception | None = None,
     ) -> None:
@@ -316,6 +317,8 @@ class _FakeVideoApi:
             settings["System Mode"] = system_mode
         if scan_resolution is not None:
             settings["HDMI Scan Resolution"] = scan_resolution
+        if palette_definition is not None:
+            settings["Palette Definition"] = palette_definition
         resp = mock.MagicMock()
         resp.json.return_value = {"U64 Specific Settings": settings, "errors": []}
         resp.raise_for_status = mock.MagicMock()
@@ -572,3 +575,75 @@ class ResolveSystemTest(unittest.TestCase):
         hw_provision.resolve_system(cfg, api)
         self.assertEqual(cfg.ultimate64.system, "PAL")
         self.assertEqual(api.profile.system, "PAL")
+
+
+def _palette_cfg(host_palette: str = "auto") -> cfgmod.Config:
+    return _cfg(
+        f'''
+        [ultimate64]
+        url = "http://fake"
+        system = "NTSC"
+        [hardware]
+        host_palette = "{host_palette}"
+        [[scenes]]
+        type = "webcam"
+        display = "hires"
+    '''
+    )
+
+
+class ResolvePaletteTest(unittest.TestCase):
+    """hw_provision.resolve_palette() — settles host_palette = "auto" against
+    the machine and points the color pipeline at what it emits."""
+
+    def setUp(self):
+        from c64cast.video import palette as pal
+
+        # The active palette is process-wide, so every case here has to put it
+        # back or it leaks into whatever test runs next.
+        before = pal.C64_PALETTE_BGR.copy(), pal.active_host_palette_name()
+        self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
+        hw_provision._palette_resolved = False
+        self.addCleanup(setattr, hw_provision, "_palette_resolved", False)
+        self.pal = pal
+
+    def test_auto_takes_the_ultimates_own_table(self):
+        hw_provision.resolve_palette(_palette_cfg(), _FakeVideoApi())
+        self.assertEqual(self.pal.active_host_palette_name(), "u64")
+        self.assertEqual(tuple(self.pal.C64_PALETTE_BGR[8]), (32.0, 78.0, 152.0))
+
+    def test_auto_assumes_a_real_vic_off_an_ultimate(self):
+        hw_provision.resolve_palette(_palette_cfg(), _FakeVideoApi(supports_system_mode=False))
+        self.assertEqual(self.pal.active_host_palette_name(), "pepto")
+
+    def test_auto_assumes_a_real_vic_under_skip_probe(self):
+        cfg = _palette_cfg()
+        cfg.debug.skip_probe = True
+        hw_provision.resolve_palette(cfg, _FakeVideoApi())
+        self.assertEqual(self.pal.active_host_palette_name(), "pepto")
+
+    def test_an_explicit_value_wins_over_the_machine(self):
+        hw_provision.resolve_palette(_palette_cfg("pepto"), _FakeVideoApi())
+        self.assertEqual(self.pal.active_host_palette_name(), "pepto")
+
+    def test_a_custom_vpl_on_the_machine_warns(self):
+        api = _FakeVideoApi(palette_definition="mine.vpl")
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+            hw_provision.resolve_palette(_palette_cfg(), api)
+        joined = "".join(logs.output)
+        self.assertIn("mine.vpl", joined)
+        # Falls back to the firmware table rather than refusing to run.
+        self.assertEqual(self.pal.active_host_palette_name(), "u64")
+
+    def test_an_ensemble_disagreement_warns_and_keeps_the_first(self):
+        hw_provision.resolve_palette(_palette_cfg(), _FakeVideoApi())
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+            hw_provision.resolve_palette(_palette_cfg("pepto"), _FakeVideoApi())
+        self.assertIn("differs from the one already in effect", "".join(logs.output))
+        self.assertEqual(self.pal.active_host_palette_name(), "u64")
+
+    def test_an_ensemble_agreement_is_quiet(self):
+        api = _FakeVideoApi()
+        hw_provision.resolve_palette(_palette_cfg(), api)
+        with self.assertNoLogs("c64cast.hw.hw_provision", level="WARNING"):
+            hw_provision.resolve_palette(_palette_cfg(), api)

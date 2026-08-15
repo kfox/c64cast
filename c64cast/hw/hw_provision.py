@@ -21,6 +21,7 @@ failed REST call logs + degrades instead of failing the run.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import NamedTuple
 
 from c64cast.app.config import Config
@@ -525,6 +526,13 @@ SYSTEM_MODE_FOR: dict[tuple[str, str], str] = {
 # 720p50/1080p50 captures cleanly on the same device (HW-verified on two
 # different capture devices, which disagreed at SD and agreed at HD).
 HDMI_RESOLUTION_FIELD = "HDMI Scan Resolution"
+
+# The Ultimate's loaded palette file, in the same category as System Mode.
+# Empty means the firmware is driving its built-in table (which is what
+# palette.U64_PALETTE_BGR transcribes); non-empty names a .vpl the user loaded
+# onto the machine, whose contents live in the Ultimate's own flash and are not
+# reachable over the REST API.
+PALETTE_FIELD = "Palette Definition"
 HDMI_RESOLUTION_SD = "SD (480p/576p)"
 # What "auto" raises SD to. 720p50 rather than 1080p50: it is the lower of the
 # two HW-verified modes, so it asks less of both the upscaler and the capture
@@ -798,3 +806,95 @@ def resolve_system(cfg: Config, api: object) -> None:
         host_sid_model=host_model,
         host_sid_model_assumed=host_model_assumed,
     )
+
+
+def read_palette_definition(api: object) -> str | None:
+    """The Ultimate's loaded palette filename, ``""`` for its built-in table, or
+    None when the field can't be read (not a U64, query failed, older firmware).
+
+    Distinguishing ``""`` from None is the point: the empty string is a positive
+    answer that the firmware palette is in effect, None is no answer at all.
+    """
+    section, _data, err = fetch_config_section(
+        api, SYSTEM_MODE_CATEGORY, field_hint=SYSTEM_MODE_FIELD
+    )
+    if err is not None or not section:
+        return None
+    value = section.get(PALETTE_FIELD)
+    return value if isinstance(value, str) else None
+
+
+def resolve_palette(cfg: Config, api: object) -> None:
+    """Settle `[hardware].host_palette` and point the render pipeline at the
+    colors this machine emits.
+
+    Runs from the same place as `resolve_system` and for the same reason: what
+    the machine reports about itself can only be read once the backend exists.
+    Everything downstream reads the palette through
+    :mod:`c64cast.video.palette`, so this is the one place that has to get it
+    right — quantization, dither error diffusion, fades, and flicker-pair
+    eligibility all measure distances against it.
+
+    A configured value always wins, and is the only way to describe a machine
+    that can't answer: a real C64 behind a TeensyROM+, or an Ultimate carrying a
+    custom .vpl (whose contents live in the machine's flash, out of REST's
+    reach — so point host_palette at a local copy of the same file).
+    """
+    from c64cast.video.palette import active_host_palette_name, set_host_palette
+
+    global _palette_resolved
+    name, table = _resolve_palette_table(cfg, api)
+    if _palette_resolved:
+        # The active palette is process-wide (see `palette.set_host_palette`),
+        # so an ensemble of machines that render the 16 colors differently can
+        # only be right about one of them. Say which, rather than letting the
+        # second machine quietly inherit the first machine's colors.
+        active = active_host_palette_name()
+        if active != name:
+            log.warning(
+                "ensemble: this system's palette (%s) differs from the one "
+                "already in effect (%s), and the color pipeline holds one "
+                "palette for the whole process — keeping %s, so colors are "
+                "matched against the wrong 16 on the other machine.",
+                name,
+                active,
+                active,
+            )
+        return
+    _palette_resolved = True
+    set_host_palette(table, name=name)
+
+
+def _resolve_palette_table(cfg: Config, api: object) -> tuple[str, Sequence[Sequence[int]]]:
+    """``(name, BGR table)`` for this machine — see `resolve_palette`."""
+    from c64cast.video.palette import HOST_PALETTES, resolve_host_palette
+
+    configured = cfg.hardware.host_palette
+    if configured != "auto":
+        log.info("[hardware].host_palette = %s", configured)
+        return configured, resolve_host_palette(configured)
+
+    profile = getattr(api, "profile", None)
+    is_u64 = profile is not None and getattr(profile, "supports_system_mode", False)
+    if not is_u64 or cfg.debug.skip_probe:
+        # Every other machine in reach is a real C64 — the Ultimate II+ and the
+        # TeensyROM+ both drive one, and neither has a palette of its own.
+        log.debug("[hardware].host_palette = auto -> pepto (real VIC-II assumed)")
+        return "pepto", HOST_PALETTES["pepto"]
+
+    loaded = read_palette_definition(api)
+    if loaded:
+        log.warning(
+            "[hardware].host_palette = auto: this Ultimate has the custom "
+            "palette %r loaded, which it won't serve over the network — "
+            "assuming the built-in table instead, so colors will be matched "
+            "against the wrong 16. Point host_palette at a local copy of that "
+            ".vpl to fix it.",
+            loaded,
+        )
+    log.info("[hardware].host_palette = auto -> u64 (read from the machine)")
+    return "u64", HOST_PALETTES["u64"]
+
+
+# Whether resolve_palette has already set the process-wide palette this run.
+_palette_resolved = False

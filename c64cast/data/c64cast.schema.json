@@ -45,6 +45,11 @@
           ],
           "default": "off"
         },
+        "host_palette": {
+          "type": "string",
+          "description": "The 16 colors the C64 being driven actually emits, which the quantizer aims at. 'auto' (default) reads it from the machine where it can \u2014 an Ultimate 64 reports its own palette \u2014 and otherwise assumes a real VIC-II. 'u64' is the Ultimate 64's own table; 'pepto' is the classic VIC-II rendering, right for a real C64 (so for an Ultimate II+, and for a TeensyROM+ in a breadbin). Can also be the path to a VICE .vpl file, which is how to describe a machine with a custom palette loaded.",
+          "default": "auto"
+        },
         "dump_char_rom": {
           "type": "boolean",
           "description": "On the first run against a machine, read its character ROM and cache it, so C64 text renders in the real C64 font instead of a built-in ASCII substitute. One ~1s step, never repeated; set false to skip it entirely.",
