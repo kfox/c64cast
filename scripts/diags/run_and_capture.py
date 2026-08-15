@@ -7,6 +7,15 @@ re-created as ``/tmp/run_and_capture.sh`` — committed here so it stops driftin
     scripts/diags/run_and_capture.py --config c.toml -t 30 --frames 6
     scripts/diags/run_and_capture.py --config c.toml -t 20 --no-audio
     scripts/diags/run_and_capture.py --config c.toml -t 20 --no-reset  # keep state to inspect
+    scripts/diags/run_and_capture.py --config c.toml -t 20 --field-burst 12
+
+``--field-burst`` grabs N *consecutive* frames mid-run via hdmi_capture.burst,
+for anything that changes between video fields rather than between seconds — a
+raster split, a $D018 page flip, a two-field colour alternation. ``--burst``
+cannot resolve those: it deliberately down-samples to --burst-fps to cover a
+multi-second window, and it inherits the device's 1080p default, whose 25 fps
+aliases onto a 25 Hz alternation. The two answer different questions, so a
+"does it alternate, and cleanly?" run usually wants both.
 
 Ordering matters (and is the reason a shared harness beats ad-hoc shells):
 the audio capture starts BEFORE c64cast so the ~5s boot + first-PLAY window
@@ -78,6 +87,20 @@ def main() -> int:
         "scene-setup progress bars that the spread --frames miss (0 = off)",
     )
     ap.add_argument("--burst-fps", type=float, default=6.0, help="burst grab rate (frames/sec)")
+    ap.add_argument(
+        "--field-burst",
+        type=int,
+        default=0,
+        metavar="N",
+        help="grab N CONSECUTIVE frames once, mid-run, for between-field changes",
+    )
+    ap.add_argument(
+        "--field-burst-at",
+        type=float,
+        default=0.5,
+        metavar="FRAC",
+        help="where in the active window to take the field burst (0..1, default 0.5)",
+    )
     ap.add_argument("--no-audio", action="store_true", help="skip audio capture")
     ap.add_argument(
         "--no-reset",
@@ -198,6 +221,24 @@ def main() -> int:
                 n_burst += 1
             cap.release()
             print(f"[burst] {n_burst} frames over {args.burst:g}s -> {out}/{args.label}_burst*.png")
+        if args.field_burst > 0:
+            from hdmi_capture import burst as field_burst
+
+            at = boot_margin + max(0.0, args.seconds - 1.0) * args.field_burst_at
+            wait = at - (time.time() - t0)
+            if wait > 0:
+                time.sleep(wait)
+            frames, measured = field_burst(
+                args.cv2_index, args.field_burst, size=(1280, 720), fps=60
+            )
+            for i, frame in enumerate(frames):
+                p = out / f"{args.label}_field{i:02d}.png"
+                d.save_image(frame, p, max_width=0)  # native: fields differ by a nibble
+            print(
+                f"[field] {len(frames)} consecutive frames at {measured:.1f} fps "
+                f"-> {out}/{args.label}_field*.png"
+            )
+
         for ft in frame_times:
             wait = ft - (time.time() - t0)
             if wait > 0:
