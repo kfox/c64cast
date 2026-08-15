@@ -6,8 +6,9 @@ import difflib
 import logging
 import re
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -170,27 +171,175 @@ def resolve_color(token: int | str, *, default: int | None = None) -> int:
     )
 
 
-C64_PALETTE_BGR = np.array(
-    [
-        [0, 0, 0],
-        [255, 255, 255],
-        [0, 0, 136],
-        [238, 255, 170],
-        [204, 68, 204],
-        [85, 204, 0],
-        [170, 0, 0],
-        [119, 238, 238],
-        [85, 136, 221],
-        [0, 68, 102],
-        [119, 119, 255],
-        [51, 51, 51],
-        [119, 119, 119],
-        [102, 255, 170],
-        [255, 136, 0],
-        [187, 187, 187],
-    ],
-    dtype=np.float32,
+# --- Host palettes ----------------------------------------------------------
+# The 16 colors are fixed in the sense that a program cannot change them, but
+# what they *are* depends on the machine: a VIC-II's analog output, a
+# reimplementation's RGB table, or whatever .vpl the user loaded. The quantizer
+# has to aim at the colors the display will actually show, so the active table
+# is selected per run from [hardware].host_palette (see set_host_palette).
+
+# The classic RGB rendering of a real VIC-II's output, on the 0/68/85/.../255
+# lattice that emulators settled on. The right table for a C64 whose own VIC is
+# driving the display — an Ultimate II+ or a TeensyROM+ in a breadbin.
+PEPTO_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (0, 0, 0),
+    (255, 255, 255),
+    (0, 0, 136),
+    (238, 255, 170),
+    (204, 68, 204),
+    (85, 204, 0),
+    (170, 0, 0),
+    (119, 238, 238),
+    (85, 136, 221),
+    (0, 68, 102),
+    (119, 119, 255),
+    (51, 51, 51),
+    (119, 119, 119),
+    (102, 255, 170),
+    (255, 136, 0),
+    (187, 187, 187),
 )
+
+# The Ultimate 64's own table (the firmware's `default_colors`), which its FPGA
+# VIC drives to both HDMI and composite. Captured off the HDMI output it comes
+# back within 4 counts per channel, so this is measurement-confirmed rather
+# than transcribed hopefully; the residual is a uniform ~2-count black-level
+# offset in the capture chain, not a palette difference.
+#
+# It is a long way from PEPTO_PALETTE_BGR — 25.5 counts mean, 60 at worst on
+# Orange — and quantizing against the wrong one of the two is not cosmetic:
+# it costs ~13% mean Lab error and sends ~19% of pixels to a different palette
+# index than the one that actually fits best.
+U64_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (0x00, 0x00, 0x00),
+    (0xF7, 0xF7, 0xF7),
+    (0x34, 0x2F, 0x8D),
+    (0xCD, 0xD4, 0x6A),
+    (0xA4, 0x35, 0x98),
+    (0x42, 0xB4, 0x4C),
+    (0xB1, 0x29, 0x2C),
+    (0x5D, 0xEF, 0xEF),
+    (0x20, 0x4E, 0x98),
+    (0x00, 0x38, 0x5B),
+    (0x6D, 0x67, 0xD1),
+    (0x4A, 0x4A, 0x4A),
+    (0x7B, 0x7B, 0x7B),
+    (0x93, 0xEF, 0x9F),
+    (0xEF, 0x6A, 0x6D),
+    (0xB2, 0xB2, 0xB2),
+)
+
+HOST_PALETTES: dict[str, tuple[tuple[int, int, int], ...]] = {
+    "pepto": PEPTO_PALETTE_BGR,
+    "u64": U64_PALETTE_BGR,
+}
+
+# The active table. Mutated in place by set_host_palette rather than rebound,
+# because half the render pipeline holds a direct reference to this array from
+# import time and rebinding the name here would leave all of them on the old
+# colors.
+C64_PALETTE_BGR = np.array(PEPTO_PALETTE_BGR, dtype=np.float32)
+
+# Modules that keep their own palette-derived tables register a rebuild hook
+# here, so swapping the host palette can't leave one of them on stale colors.
+_PALETTE_LISTENERS: list[Callable[[], None]] = []
+
+
+def on_palette_change(rebuild: Callable[[], None]) -> None:
+    """Register `rebuild` to run whenever the active host palette changes."""
+    _PALETTE_LISTENERS.append(rebuild)
+
+
+def parse_vpl(text: str) -> list[tuple[int, int, int]]:
+    """The 16 BGR triples in a VICE ``.vpl`` palette file.
+
+    Format is one ``RR GG BB`` hex triple per color, ``#`` comments and blank
+    lines ignored. Some files carry a fourth per-line value (VICE's dither
+    column); it is not a palette component, so it is dropped rather than
+    treated as alpha.
+    """
+    colors: list[tuple[int, int, int]] = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            raise ValueError(f"{lineno}: want 'RR GG BB', got {raw.strip()!r}")
+        try:
+            r, g, b = (int(p, 16) for p in parts[:3])
+        except ValueError as exc:
+            raise ValueError(f"{lineno}: non-hex color component in {raw.strip()!r}") from exc
+        if not all(0 <= v <= 255 for v in (r, g, b)):
+            raise ValueError(f"{lineno}: color component out of range in {raw.strip()!r}")
+        colors.append((b, g, r))  # palette is BGR order
+    if len(colors) != 16:
+        raise ValueError(f"want 16 colors, found {len(colors)}")
+    return colors
+
+
+def resolve_host_palette(name: str) -> tuple[tuple[int, int, int], ...]:
+    """The BGR table named by ``[hardware].host_palette``: a built-in name, or
+    the path to a VICE ``.vpl`` file. Raises ValueError with the known names."""
+    known = HOST_PALETTES.get(name)
+    if known is not None:
+        return known
+    path = Path(name).expanduser()
+    if path.suffix.lower() == ".vpl" or path.exists():
+        try:
+            return tuple(parse_vpl(path.read_text(encoding="utf-8", errors="replace")))
+        except OSError as exc:
+            raise ValueError(f"cannot read palette file {path}: {exc}") from exc
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from exc
+    raise ValueError(
+        f"unknown host palette {name!r} — known palettes: "
+        f"{', '.join(sorted(HOST_PALETTES))}, or the path to a VICE .vpl file"
+    )
+
+
+# Which palette the active table came from, for the ensemble conflict check.
+_ACTIVE_PALETTE_NAME = "pepto"
+
+
+def active_host_palette_name() -> str:
+    """The name the active palette was last set from."""
+    return _ACTIVE_PALETTE_NAME
+
+
+def set_host_palette(colors: Sequence[Sequence[int]] | np.ndarray, *, name: str = "custom") -> None:
+    """Point the whole render pipeline at the 16 BGR colors the host emits.
+
+    Call once, before any rendering. Every palette-derived table is rebuilt in
+    place, including the ones other modules imported by reference, so there is
+    no window where two of them disagree about what color 8 is.
+
+    Process-wide, which an ensemble driving machines with *different* palettes
+    would need to be per-system. Threading a palette through every quantizer,
+    dither buffer and fade LUT to serve that case would cost far more than the
+    case is worth, so `hw_provision.resolve_palette` warns and keeps the first
+    instead — same trade the frame profiler above it already makes.
+    """
+    table = np.asarray(colors, dtype=np.float32)
+    if table.shape != (16, 3):
+        raise ValueError(f"host palette must be 16 BGR triples, got shape {table.shape}")
+    global _ACTIVE_PALETTE_NAME
+    _ACTIVE_PALETTE_NAME = name
+    if np.array_equal(table, C64_PALETTE_BGR):
+        return
+    global _WPAL, _PAL_NORMSQ, _PAL_LAB_T, _PAL_LAB_NORMSQ, _PALETTE_HUES_DEG
+    C64_PALETTE_BGR[:] = table
+    PALETTE_LUMA[:] = C64_PALETTE_BGR @ np.array([0.114, 0.587, 0.299], dtype=np.float32)
+    _PALETTE_LAB[:] = _palette_lab()
+    _WPAL = (C64_PALETTE_BGR * _W).T
+    _PAL_NORMSQ = (C64_PALETTE_BGR**2) @ _W
+    _PAL_LAB_T = _PALETTE_LAB.T.copy()
+    _PAL_LAB_NORMSQ = (_PALETTE_LAB**2).sum(axis=1)
+    _PALETTE_HUES_DEG = _compute_palette_hues()
+    _FADE_LUT_CACHE.clear()
+    for rebuild in _PALETTE_LISTENERS:
+        rebuild()
+
 
 C64_SPECTRUM_INDICES = np.array([2, 8, 7, 5, 13, 3, 14, 6, 4, 10])
 

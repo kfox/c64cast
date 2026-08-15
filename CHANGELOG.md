@@ -12,6 +12,25 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Colors are now matched against the palette your machine actually emits.**
+  The 16 C64 colors are fixed, but what they *are* depends on the machine: an
+  Ultimate 64's video output and a real VIC-II's are about 25 counts per channel
+  apart, and 60 apart on Orange. c64cast measured everything against the VIC-II
+  rendering regardless, which is not a tint that the eye discounts — the
+  quantizer picks colors by distance, so the wrong table sends pixels to the
+  wrong color outright. On an Ultimate 64 that was **18.8% of pixels** and
+  **+12.9% mean perceptual error**, worst on the grays, browns and orange.
+
+  The new `[hardware].host_palette` defaults to `"auto"`, which asks the machine
+  and needs no configuration: an Ultimate 64 reports its own palette, and
+  anything else is driving a real C64 (an Ultimate II+ and a TeensyROM+ both do,
+  and neither has a palette of its own) so the VIC-II rendering is assumed. Set
+  it to `"u64"` or `"pepto"` to state it outright, or to the path of a VICE
+  `.vpl` file to describe a machine with a custom palette loaded — an Ultimate
+  won't serve its own `.vpl` over the network, so point this at a local copy.
+
 ### Changed
 
 - **Hires picks each cell's color by fitting the whole cell, not by sampling one

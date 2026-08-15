@@ -337,6 +337,9 @@ def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) ->
         # the per-call error handling absorbs any missing surface, as before.
         api.refine_capabilities()
     hw_provision.resolve_system(cfg, api)
+    # Before anything renders: every color decision in the run is a distance
+    # measured against these 16.
+    hw_provision.resolve_palette(cfg, api)
     return api
 
 

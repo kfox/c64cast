@@ -96,6 +96,24 @@ host_sid_tune_match = "off"         # bias a multi-file waveform pool toward
                                     # acted on. Only host_sid_chips can skip a
                                     # 2SID tune: host_sid_model names one chip
                                     # without claiming it is the only one.
+host_palette = "auto"               # the 16 colors the C64 being driven really
+                                    # emits, which every color decision is
+                                    # measured against. "auto" reads it from the
+                                    # machine where it can (an Ultimate 64
+                                    # reports its own) and otherwise assumes a
+                                    # real VIC-II. "u64" is the Ultimate 64's own
+                                    # table; "pepto" is the classic VIC-II
+                                    # rendering — right for a real C64, so for an
+                                    # Ultimate II+ and for a TeensyROM+ in a
+                                    # breadbin. The two are ~25 counts per
+                                    # channel apart, enough to send ~19% of
+                                    # pixels to a different color, so this is
+                                    # worth getting right. Can also be the path
+                                    # to a VICE .vpl file, which is how to
+                                    # describe a machine with a custom palette
+                                    # loaded — an Ultimate won't serve its own
+                                    # .vpl over the network, so point this at a
+                                    # local copy of the same file.
 dump_char_rom = true                # on the first run against a machine, read
                                     # its character ROM and cache it under the
                                     # data dir, so C64 text renders in the real

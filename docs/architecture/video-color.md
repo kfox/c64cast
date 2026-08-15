@@ -9,6 +9,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`video.py` — WebcamSource (shared broker) + AVFileSource (PyAV)](#videopy--webcamsource-shared-broker--avfilesource-pyav)
 * [`modes/` — DisplayMode hierarchy](#modes--displaymode-hierarchy)
 * [`modes_irq.py` — C64-side IRQ handlers + REU push helpers](#modes_irqpy--c64-side-irq-handlers--reu-push-helpers)
+* [`palette.py` — which 16 colors the machine emits (`[hardware].host_palette`)](#palettepy--which-16-colors-the-machine-emits-hardwarehost_palette)
 * [`rolling_palette.py` + `palette.py` — forced-palette remap](#rolling_palettepy--palettepy--forced-palette-remap)
 * [Framerate pacing & frame-dropping](#framerate-pacing--frame-dropping)
 * [`framebuffer.py` + `preview.py` — the software mirror behind preview and recording](#framebufferpy--previewpy--the-software-mirror-behind-preview-and-recording)
@@ -465,6 +466,20 @@ NMI audio lives on the `$FFFA` vector, independent of this `$0314` raster IRQ, s
 Everything the tear-free bitmap pipelines upload to C64 RAM, split out of `modes.py` (2026-08) so the 6502 layer lives apart from the `DisplayMode` hierarchy that drives it: the `$C500` bank-swap raster IRQ handlers (hires 61 B, mhires 83 B, the chunked mhires+audio merged dispatcher 176 B, and the 35 B host-DMA page-flip sibling for no-REU backends), the `$C700` frame-tracker layouts each handler reads at vblank, the REU staging addresses near 14 MB (`REU_VIDEO_*`), the merged-dispatcher builder `_make_merged_handler`, and the `install_bank_swap_irq` / `uninstall_bank_swap_irq` bring-up/teardown plus the per-frame `push_screen_via_reu` / `push_bitmap_via_reu` / `push_mhires_via_reu` helpers.
 
 The module is pure Python over `C64Backend` — no numpy, no cv2 — which is what qualifies it for `mypy --strict` (it's in the pyproject strict-files list; the `modes/` renderers stay out for those import reasons). The two `[video]` subsections above (`use_reu_staged`, `double_buffer`) describe when each pipeline engages; the byte-level rationale (branch-offset asserts, the NMI-collapse chunking math, the Cam Link FFT history behind the merged dispatcher) lives with the bytes in the module's own comments. Coverage: `tests/test_reu_video.py` and `tests/test_bitmap_compose.py` verify the handler bytes, tracker packing, and install/teardown sequences against `FakeAPI`'s write log — nothing about them changed in the split.
+
+## `palette.py` — which 16 colors the machine emits (`[hardware].host_palette`)
+
+Every color decision in the pipeline is a distance measured against a table of 16 BGR triples, so that table has to be the colors the display will actually show. It is not one table: a real VIC-II and an Ultimate 64's FPGA reimplementation are **~25 counts per channel apart on average, 60 at worst** (Orange), which is not a rounding difference.
+
+**Measured, not assumed.** Captured off a U64's HDMI output, the firmware's own `default_colors` table (`software/u64/u64_config.cc`) comes back within **4 counts per channel** — and the residual is a uniform ~2-count black-level offset in the capture chain, present on Black too, so the table is exact. `U64_PALETTE_BGR` transcribes it; `PEPTO_PALETTE_BGR` is the classic VIC-II rendering that was previously the only table.
+
+**What aiming at the wrong one costs.** Quantizing against a table the machine doesn't use is not a uniform tint that a viewer's eye discounts — the quantizer picks *indices* by distance, so a wrong table changes which color a pixel becomes. Measured over `assets/pictures/` at 320×200, against a U64 it costs **+12.9% mean Lab error** and sends **18.8% of pixels to a different index**, concentrated in the grays and warm colors (of all pixels: Dark Gray 4.2%, White 3.2%, Black 3.0%, Orange 2.4%, Light Red 2.0%). Per image it ranges from +4.4% to +30%, worst where the source is saturated.
+
+**Resolution** is `hw_provision.resolve_palette`, a sibling of `resolve_system` and running from the same place for the same reason: what the machine reports about itself can only be read once the backend exists. `"auto"` reads the Ultimate's `Palette Definition` field and takes its built-in table; everything else is a real C64 (an Ultimate II+ and a TeensyROM+ both *drive* one, and neither has a palette of its own — the TR+ is a cartridge and emits no colors at all), so the VIC-II table is assumed. A machine carrying a custom `.vpl` is detected and warned about but cannot be read: the file lives in the Ultimate's flash and the REST API will not serve it, so `host_palette` takes a path to a local copy instead (`parse_vpl`).
+
+**The swap mutates in place.** `set_host_palette` writes through `C64_PALETTE_BGR[:]` rather than rebinding the name, because half the render pipeline — `framebuffer.py`, the display modes, `flicker.py` — binds the array at import time and a rebind would leave all of them painting the old colors. Modules with their own palette-derived tables register a rebuild hook (`on_palette_change`); `flicker.py` does, because which two colors fuse is a statement about emitted luminance and a stale table there would admit pairs that visibly flicker on that machine.
+
+The active palette is **process-wide**. An ensemble driving machines that render the 16 colors differently would need it per-system; threading a palette through every quantizer, dither buffer and fade LUT to serve that case costs far more than the case is worth, so `resolve_palette` keeps the first and warns — the same trade the frame profiler makes for its per-scene timings.
 
 ## `rolling_palette.py` + `palette.py` — forced-palette remap
 
