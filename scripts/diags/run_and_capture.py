@@ -101,6 +101,11 @@ def main() -> int:
         metavar="FRAC",
         help="where in the active window to take the field burst (0..1, default 0.5)",
     )
+    ap.add_argument(
+        "--field-burst-size",
+        default="1280x720",
+        help="stream size to request for the field burst (default 1280x720)",
+    )
     ap.add_argument("--no-audio", action="store_true", help="skip audio capture")
     ap.add_argument(
         "--no-reset",
@@ -228,9 +233,8 @@ def main() -> int:
             wait = at - (time.time() - t0)
             if wait > 0:
                 time.sleep(wait)
-            frames, measured = field_burst(
-                args.cv2_index, args.field_burst, size=(1280, 720), fps=60
-            )
+            fw, fh = (int(v) for v in args.field_burst_size.lower().split("x"))
+            frames, measured = field_burst(args.cv2_index, args.field_burst, size=(fw, fh), fps=60)
             for i, frame in enumerate(frames):
                 p = out / f"{args.label}_field{i:02d}.png"
                 d.save_image(frame, p, max_width=0)  # native: fields differ by a nibble
