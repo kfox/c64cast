@@ -1,35 +1,91 @@
 <script lang="ts">
+  import { ApiError, api, reportOf } from "$lib/api";
+  import Button from "$lib/components/Button.svelte";
   import FieldRow from "$lib/components/FieldRow.svelte";
   import type { DocIndex } from "$lib/introspect";
-  import type { ConfigForm, FormField, FormScene, FormSection } from "$lib/types";
+  import type {
+    ConfigEdit,
+    ConfigForm,
+    ConfigPatched,
+    FormField,
+    FormScene,
+    FormSection,
+    ValidationReport,
+  } from "$lib/types";
 
   interface Props {
     form: ConfigForm;
     docs: DocIndex;
-    /** Hide every field still sitting at its default. On by default: a config
-     *  has 167 settable fields and a show file names a dozen of them, and the
-     *  dozen is the question being asked. */
-    onlyChanged: boolean;
+    /** The config ref this form belongs to — what the save PATCHes. */
+    path: string;
+    readOnly: boolean;
+    /** Edits typed but not saved, held by the screen so that clicking another
+     *  file to compare against doesn't discard them. Keyed by row. */
+    pending: Record<string, ConfigEdit>;
+    onpending: (next: Record<string, ConfigEdit>) => void;
+    onsaved: (written: ConfigPatched) => void;
   }
 
-  let { form, docs, onlyChanged }: Props = $props();
+  let { form, docs, path, readOnly, pending, onpending, onsaved }: Props = $props();
 
-  function shown(fields: FormField[]): FormField[] {
-    return onlyChanged ? fields.filter((f) => !f.is_default) : fields;
+  /** Hide every field still sitting at its baseline. On by default: a config
+   *  has 167 settable fields and a show file names a dozen of them, and the
+   *  dozen is the question being asked. */
+  let onlyChanged = $state(true);
+  let query = $state("");
+  let report = $state<ValidationReport | null>(null);
+  let problem = $state("");
+  let saved = $state("");
+  let busy = $state(false);
+
+  // Half-typed values, kept here rather than beside the edits: a number that
+  // isn't one yet is a state of this screen, not something worth carrying to
+  // another file and back.
+  let invalid = $state<Record<string, string>>({});
+
+  const edits = $derived(Object.values(pending));
+  const blocked = $derived(Object.values(invalid).some(Boolean));
+
+  /** A row's identity. The wire shape names a section *or* a scene index, and
+   *  so does this — one string, so a lookup never has to reconstruct which. */
+  const sectionKey = (section: string, field: string) => `s:${section}.${field}`;
+  const sceneKey = (index: number, field: string) => `n:${index}.${field}`;
+
+  function shown(fields: FormField[], key: (f: FormField) => string): FormField[] {
+    return fields.filter((f) => {
+      // An unsaved edit is never hidden by a filter — losing sight of one is
+      // how it gets saved by accident or lost by surprise.
+      if (pending[key(f)]) return true;
+      // Searching is asking for a field by name, which is the one move the
+      // "only what this file changes" filter would defeat.
+      if (query) return matches(f.name);
+      return !onlyChanged || !f.is_default;
+    });
+  }
+
+  function matches(name: string): boolean {
+    return name.toLowerCase().includes(query.trim().toLowerCase());
   }
 
   // A section with nothing to say disappears rather than leaving an empty
   // heading — with the filter on, that is most of them.
   const sections = $derived(
     form.sections
-      .map((s: FormSection) => ({ section: s, fields: shown(s.fields) }))
+      .map((s: FormSection) => ({
+        section: s,
+        fields: shown(s.fields, (f) => sectionKey(s.name, f.name)),
+      }))
       .filter((row) => row.fields.length > 0),
   );
 
   // Scenes always show: they are what the file is *for*, and one with every
   // field at its default is still a scene the playlist will run.
   const scenes = $derived(
-    form.scenes.map((sc: FormScene) => ({ scene: sc, fields: shown(sc.fields) })),
+    form.scenes.map((sc: FormScene, i: number) => ({
+      scene: sc,
+      index: i,
+      fields: shown(sc.fields, (f) => sceneKey(i, f.name)),
+    })),
   );
 
   function overlayEntries(overlay: unknown): [string, unknown][] {
@@ -41,9 +97,100 @@
     const type = (overlay as { type?: unknown } | null)?.type;
     return typeof type === "string" ? type : "overlay";
   }
+
+  /** What the row shows: the edit if there is one, else what is on disk. A
+   *  cleared row shows what it will fall back to, which is the whole point of
+   *  clearing it. */
+  function shownValue(field: FormField, key: string): unknown {
+    const edit = pending[key];
+    if (!edit) return field.value;
+    return edit.reset ? field.baseline : edit.value;
+  }
+
+  function stage(key: string, edit: ConfigEdit, field: FormField, value: unknown, error: string): void {
+    invalid = { ...invalid, [key]: error };
+    if (error) return;
+    // Typing the stored value back is not an edit. Compared as JSON because a
+    // list or a table is a value here like any other.
+    const same = JSON.stringify(value) === JSON.stringify(field.value);
+    onpending(same ? without(key) : { ...pending, [key]: { ...edit, value } });
+  }
+
+  /** Stop setting the field here. On a row the file never set, that is the
+   *  same as dropping the edit — there is nothing on disk to reset. */
+  function clear(key: string, edit: ConfigEdit, field: FormField): void {
+    invalid = { ...invalid, [key]: "" };
+    onpending(field.is_default ? without(key) : { ...pending, [key]: { ...edit, reset: true } });
+  }
+
+  function revert(key: string): void {
+    invalid = { ...invalid, [key]: "" };
+    onpending(without(key));
+  }
+
+  function without(key: string): Record<string, ConfigEdit> {
+    const next = { ...pending };
+    delete next[key];
+    return next;
+  }
+
+  function discard(): void {
+    invalid = {};
+    report = null;
+    problem = "";
+    saved = "";
+    onpending({});
+  }
+
+  async function save(): Promise<void> {
+    report = null;
+    problem = "";
+    saved = "";
+    busy = true;
+    try {
+      const written = await api.patchConfig(path, edits);
+      const what = edits.length === 1 ? "1 change" : `${edits.length} changes`;
+      saved = written.backup
+        ? `Saved ${what}. The previous version is in ${written.backup}.`
+        : `Saved ${what}.`;
+      invalid = {};
+      onsaved(written);
+    } catch (e) {
+      // A refused save answers 422 with the whole validation report — the same
+      // shape the text editor's Check returns, shown the same way rather than
+      // reduced to one line. The edits stay staged: the file is untouched, so
+      // what is on screen is still what the user meant to write.
+      const refused = reportOf(e);
+      if (refused) report = refused;
+      else if (e instanceof ApiError) problem = e.message;
+      else problem = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
 </script>
 
 <div class="space-y-6">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <input
+      type="search"
+      bind:value={query}
+      placeholder="Find a setting…"
+      aria-label="Find a setting"
+      class="min-h-11 min-w-48 flex-1 rounded-lg border border-[var(--edge)] bg-[var(--panel-alt)]
+             px-3 text-sm focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+    />
+    <label class="flex items-center gap-2 text-sm" class:opacity-40={query}>
+      <input type="checkbox" bind:checked={onlyChanged} disabled={!!query} class="size-4" />
+      Only what this file changes
+    </label>
+  </div>
+  <p class="-mt-4 text-xs text-[var(--ink-dim)]">
+    Values are what the loader resolved, so machine settings and defaults show through. Saving
+    writes only what this file changes; <span class="font-mono">Clear</span> takes a setting back out
+    of it.
+  </p>
+
   <section>
     <h3 class="mb-2 text-sm font-semibold tracking-wide uppercase">Scenes</h3>
     {#if scenes.length === 0}
@@ -52,7 +199,7 @@
       </p>
     {/if}
     <div class="space-y-4">
-      {#each scenes as row, i (i)}
+      {#each scenes as row (row.index)}
         {@const doc = docs.sceneType(row.scene.type)}
         <article class="rounded-lg border border-[var(--edge)] p-3">
           <header class="mb-2">
@@ -69,14 +216,26 @@
 
           {#each row.fields as field (field.name)}
             {@const fd = docs.sceneField(row.scene.type, field.name)}
+            {@const key = sceneKey(row.index, field.name)}
+            {@const edit = { scene: row.index, field: field.name }}
             <FieldRow
               name={field.name}
-              value={field.value}
+              value={shownValue(field, key)}
+              baseline={field.baseline}
               changed={!field.is_default}
+              dirty={!!pending[key]}
+              error={invalid[key] ?? ""}
+              editable={!readOnly && field.name !== "type"}
+              locked={field.name === "type"
+                ? "A scene's type decides what its other fields mean, so changing it rewrites the block — edit this file as source."
+                : ""}
               help={fd?.help ?? ""}
               type={fd?.type ?? ""}
               choices={fd?.choices ?? []}
               live={fd?.apply === "live"}
+              onedit={(v, e) => stage(key, edit, field, v, e)}
+              onclear={() => clear(key, edit, field)}
+              onrevert={() => revert(key)}
             />
           {/each}
 
@@ -85,7 +244,9 @@
             {@const od = docs.overlay(kind)}
             <!-- Overlays are shown whole rather than filtered: an overlay only
                  exists in a config because somebody asked for it, so every key
-                 in one is a deliberate answer. -->
+                 in one is a deliberate answer. They are also the one part of a
+                 scene the form does not edit — an overlay list is replaced
+                 wholesale or not at all, which is the text editor's job. -->
             <div class="mt-3 rounded-md bg-[var(--panel-alt)] p-2">
               <p class="font-mono text-xs">overlay: {kind}</p>
               {#if od?.help}
@@ -106,7 +267,11 @@
     <h3 class="mb-2 text-sm font-semibold tracking-wide uppercase">Settings</h3>
     {#if sections.length === 0}
       <p class="text-sm text-[var(--ink-dim)]">
-        Every setting is at its default — this configuration is its scenes and nothing else.
+        {#if query}
+          No setting is named like that.
+        {:else}
+          Every setting is at its default — this configuration is its scenes and nothing else.
+        {/if}
       </p>
     {/if}
     <div class="space-y-4">
@@ -119,18 +284,74 @@
           {/if}
           {#each row.fields as field (field.name)}
             {@const fd = docs.field(row.section.name, field.name)}
+            {@const key = sectionKey(row.section.name, field.name)}
+            {@const edit = { section: row.section.name, field: field.name }}
             <FieldRow
               name={field.name}
-              value={field.value}
+              value={shownValue(field, key)}
+              baseline={field.baseline}
               changed={!field.is_default}
+              dirty={!!pending[key]}
+              error={invalid[key] ?? ""}
+              editable={!readOnly}
               help={fd?.help ?? ""}
               type={fd?.type ?? ""}
               choices={fd?.choices ?? []}
               live={fd?.apply === "live"}
+              onedit={(v, e) => stage(key, edit, field, v, e)}
+              onclear={() => clear(key, edit, field)}
+              onrevert={() => revert(key)}
             />
           {/each}
         </article>
       {/each}
     </div>
   </section>
+
+  {#if readOnly}
+    <p class="text-sm text-[var(--ink-dim)]">
+      This console holds a read-only token, so the settings are shown but cannot be written.
+    </p>
+  {:else}
+    <!-- Sticky: the form is longer than a screen and the save belongs where
+         the hands are, not at the end of a scroll. -->
+    <div
+      class="sticky bottom-0 -mx-5 mt-2 flex flex-wrap items-center gap-2 border-t
+             border-[var(--edge)] bg-[var(--panel)] px-5 py-3"
+    >
+      <Button variant="primary" disabled={busy || blocked || edits.length === 0} onclick={save}>
+        {edits.length === 1 ? "Save 1 change" : `Save ${edits.length} changes`}
+      </Button>
+      <Button disabled={busy || edits.length === 0} onclick={discard}>Discard</Button>
+      {#if blocked}
+        <span class="text-xs text-c64-red">Something typed isn't a value yet.</span>
+      {:else if edits.length}
+        <span class="text-xs text-c64-yellow">unsaved changes</span>
+      {/if}
+    </div>
+  {/if}
+
+  {#if saved}
+    <p class="rounded-lg border border-c64-green/50 px-3 py-2 text-sm text-c64-green">{saved}</p>
+  {/if}
+
+  {#if problem}
+    <p class="rounded-lg border border-c64-red/50 px-3 py-2 text-sm text-c64-red">{problem}</p>
+  {/if}
+
+  {#if report}
+    <div class="rounded-lg border border-c64-red/50 px-3 py-2 text-sm text-c64-red">
+      <p>{report.error ?? "This configuration would not load."}</p>
+      {#if report.messages.length}
+        <ul class="mt-1 list-disc pl-5 font-mono text-xs">
+          {#each report.messages as message, i (i)}
+            <li>{message}</li>
+          {/each}
+        </ul>
+      {/if}
+      <p class="mt-1 text-xs text-[var(--ink-dim)]">
+        The file is untouched and the changes are still staged.
+      </p>
+    </div>
+  {/if}
 </div>

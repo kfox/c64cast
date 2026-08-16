@@ -70,7 +70,12 @@
 </script>
 
 <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
-  <section class="panel p-5 lg:col-start-1">
+  <!-- `min-w-0` on every grid item, here and on the other screens: a grid item
+       is min-content-sized by default, so one long log line or one unbroken
+       path makes the *page* wider than the phone it is being read on and every
+       screen scrolls sideways. The panels that hold wide content scroll it
+       themselves; this is what lets them. -->
+  <section class="panel min-w-0 p-5 lg:col-start-1">
     <header class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <h2 class="text-lg font-semibold">Session</h2>
       <StateBadge state={phase} stale={!host.connected} />
@@ -141,7 +146,7 @@
     {/if}
   </section>
 
-  <section class="panel p-5 lg:col-start-2 lg:row-start-1">
+  <section class="panel min-w-0 p-5 lg:col-start-2 lg:row-start-1">
     <header class="mb-3 flex items-center justify-between gap-3">
       <h2 class="text-lg font-semibold">Configurations</h2>
       <Button onclick={refreshIndex}>Refresh</Button>
@@ -153,7 +158,7 @@
     {/if}
   </section>
 
-  <section class="panel p-5 lg:col-span-2">
+  <section class="panel min-w-0 p-5 lg:col-span-2">
     <h2 class="mb-3 text-lg font-semibold">Log</h2>
     <LogPane lines={host.log} />
   </section>

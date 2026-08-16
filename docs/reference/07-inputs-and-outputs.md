@@ -477,11 +477,36 @@ the same one-line explanation `--describe` prints, what it may be set to, and a
 `live` mark on the ones a running show would pick up without a restart. The
 values shown are what the loader actually resolved, so a machine setting or a
 default that a file never mentions still shows through — untick *only what this
-file changes* to see all of it. *Source* is the file itself, editable, with
-**Check** to load it without saving and **Save** to write it back. An edit you
-have not saved survives clicking away to another file and is marked in the list,
-so nothing is lost by looking at something else. A configuration is addressed by
-its own URL — `/config/shows/gig.toml` — which makes it a link worth sending.
+file changes* to see all of it, or type a name into *Find a setting* to go
+straight to one whatever the filter says.
+
+Every row is editable. A setting gets the control its type asks for — a switch,
+a picker of exactly the values it accepts, a number, a box of JSON for a list or
+a table — and an edited row is marked, counted, and saved in one go by **Save**;
+**Undo** drops one edit and **Discard** drops them all. **Clear** is the other
+direction: it stops the file setting a field at all, and the row shows what will
+apply instead. Nothing is written until you save, and a save that would produce
+a file that cannot run is refused with the loader's own reason, the file
+untouched and the edits still on screen. What the form cannot do is structural:
+adding or removing a scene, changing a scene's `type`, and editing an overlay
+are the *Source* editor's, because each of them rewrites the block rather than
+setting a value in it.
+
+*Source* is the file itself, editable, with **Check** to load it without saving
+and **Save** to write it back. An edit you have not saved — in either view —
+survives clicking away to another file and is marked in the list, so nothing is
+lost by looking at something else. A configuration is addressed by its own URL —
+`/config/shows/gig.toml` — which makes it a link worth sending. When the file
+on screen is the one the session is running, the screen says so and offers
+**Reload scenes**, because saving to disk and putting it on the C64 are two
+different acts.
+
+> [!NOTE]
+> The form saves the file, not the machine. A value that comes from your machine
+> settings (`~/.config/c64cast/settings.toml`) shows in the form as the resolved
+> value but is *not* written into the show file — set it in the form and it is
+> written, **Clear** it and the machine setting shows through again. That keeps
+> a show file portable: it says what the show is, not what this machine is.
 
 **Live** is the performance surface, and it is the screen to have open at a
 gig. Along the top is the beat grid: the tempo, a pulse on the current beat,
@@ -537,9 +562,13 @@ curl -X POST -H "X-C64Cast-Token: $TOK" \
 A save is validated before it lands: text that does not load is refused with
 `422` and the file is untouched. What was there is copied to a hidden sibling
 (`.gig.toml.bak`) first, which is the only undo there is. Reading a
-configuration returns its raw text *and* a per-field view marking everything you
-have not changed, which is what the console's form uses to show only what you
-set. Ensemble
+configuration returns its raw text *and* a per-field view carrying each value,
+what it falls back to when the file stops naming it, and whether the two agree —
+which is what the console's form uses to show only what you set, and to say what
+**Clear** will leave behind. `PATCH` takes named field edits rather than text
+and lets the host compose the file through the same dataclasses the loader uses,
+so the browser never writes TOML and two consoles editing different settings do
+not overwrite each other. Ensemble
 master files read but have no such view — they are authored across several files
 — so they are edited as text.
 

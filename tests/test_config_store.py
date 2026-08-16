@@ -348,6 +348,15 @@ class PatchTest(StoreTestCase):
             cfgmod.load_master(str(self.shows / "gig.toml")).cfgs[0].color.dither, "ordered"
         )
 
+    def test_a_scenes_type_is_not_a_field_edit(self):
+        # Changing it would reinterpret every other field in the block, and the
+        # re-serialise would then drop the ones the new type has no use for —
+        # a save that quietly loses what the scene said. Text editor's job.
+        with self.assertRaises(config_store.EditRejected) as caught:
+            self.store.patch("shows/gig.toml", [{"scene": 0, "field": "type", "value": "video"}])
+        self.assertIn("as text", str(caught.exception))
+        self.assertIn('type = "blank"', self._read())
+
     def test_reset_removes_the_key_the_way_the_form_unsets_it(self):
         # `minimal = true` is what drops it: a field back at its default is a
         # field a human wouldn't have written.

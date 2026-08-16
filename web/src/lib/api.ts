@@ -1,6 +1,8 @@
 import type {
   ConfigDetail,
+  ConfigEdit,
   ConfigIndex,
+  ConfigPatched,
   ConfigWritten,
   Introspection,
   LogLine,
@@ -115,6 +117,14 @@ export const api = {
    *  config that cannot run. */
   saveConfig: (ref: string, text: string) =>
     request<ConfigWritten>("PUT", `/api/configs/${refPath(ref)}`, { text }),
+
+  /** The form's save. `PUT` replaces the file with text this app composed;
+   *  `PATCH` names fields and lets the server compose it through the same
+   *  dataclasses the loader uses — so the browser never writes TOML, and two
+   *  consoles editing different fields don't overwrite each other's sections.
+   *  Refused the same way a `PUT` is: 422 with the whole validation report. */
+  patchConfig: (ref: string, edits: ConfigEdit[]) =>
+    request<ConfigPatched>("PATCH", `/api/configs/${refPath(ref)}`, { edits }),
 
   /** `start`, `switch` and `stop` all answer 202: the supervisor has claimed
    *  the transition, not finished it. What actually happened arrives on the

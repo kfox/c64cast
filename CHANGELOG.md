@@ -12,6 +12,39 @@ the version and stamps it with the date.
 
 ## [Unreleased]
 
+### Added
+
+- **The web console's Settings view now edits.** Every scene field and every
+  setting in a configuration gets the control its type asks for — a switch, a
+  picker holding exactly the values the loader accepts, a number, a box of JSON
+  for a list or a table — with the same one-line explanation `--describe`
+  prints beside it. Edited rows are marked and counted; **Save** writes them in
+  one request, **Undo** drops one and **Discard** drops all of them. **Clear**
+  is the other direction: it stops the file setting a field at all, and shows
+  you what will apply instead before you commit to it. A save that would
+  produce a file that cannot run is refused with the loader's own reason, the
+  file untouched and your edits still on screen.
+
+  The browser never writes TOML: `PATCH /api/configs/{ref}` takes named field
+  edits and the host composes the file through the same dataclasses the loader
+  reads, so a form save is a load-modify-dump of the tested serializer — and
+  two consoles editing different settings do not overwrite each other's
+  sections. What the form deliberately cannot do is structural: adding or
+  removing a scene, changing a scene's `type`, and editing an overlay each
+  rewrite a block rather than set a value in it, and stay with the *Source*
+  editor.
+
+- **A finder above the form.** "Only what this file changes" is the right
+  default for reading a config and the wrong one for adding to it — the field
+  you want is the one the file doesn't mention yet. Typing a name into *Find a
+  setting* searches all 167 of them regardless of the filter, and a row you
+  have edited is never hidden by either.
+
+- **The Configs screen says when you are looking at the running show**, and
+  offers **Reload scenes** there. Saving to disk and putting the change on the
+  C64 are two different acts, and the reflex for the second one — restart the
+  show — costs a machine reset.
+
 ### Fixed
 
 - **A saved configuration no longer absorbs your machine's settings.** Machine
@@ -33,6 +66,11 @@ the version and stamps it with the date.
   file does not set it), and **Clear** on a field puts the machine's value back
   rather than the shipped default. A DMA password living in the machine
   settings, where it is legal, no longer blocks editing an unrelated config.
+
+- **The console no longer scrolls sideways on a phone.** One long log line or
+  one absolute path made the whole page wider than the screen — 1195 px of it
+  in a 430 px viewport — because a panel grew to fit its widest content instead
+  of letting that content scroll inside it. Every screen fits its viewport now.
 
 - **Colors are now matched against the palette your machine actually emits.**
   The 16 C64 colors are fixed, but what they *are* depends on the machine: an

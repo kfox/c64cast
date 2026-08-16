@@ -522,7 +522,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `trails` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `transport` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Driving a Video (6)](07-inputs-and-outputs.md#driving-a-video), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `tunnel` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
-| `type` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
+| `type` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [The Console (6)](07-inputs-and-outputs.md#the-console) |
 
 ## U
 

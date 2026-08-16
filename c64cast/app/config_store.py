@@ -274,7 +274,14 @@ def _editable_scene_fields(scene_type: str) -> frozenset[str]:
             # `overlays` is in the form as its own list rather than a field, so
             # `describe` drops it from the field list — but it is still a scene
             # field an editor can replace wholesale.
-            return frozenset({fd.name for fd in st.fields} | {"overlays"})
+            #
+            # `type` is *not* editable, and it is the one field that has to be
+            # named to say so. It decides which of the other fields mean
+            # anything, so changing it here doesn't edit the scene — it
+            # reinterprets it, and the re-serialise then drops every field the
+            # new type has no use for. That is a structural change and belongs
+            # with the text editor, next to adding and removing scenes.
+            return frozenset({fd.name for fd in st.fields} | {"overlays"}) - {"type"}
     raise EditRejected(f"unknown scene type {scene_type!r}")
 
 
@@ -320,6 +327,11 @@ def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> di
         if not 0 <= scene < len(cfg.scenes):
             raise EditRejected(f"no scene at index {scene} (the config has {len(cfg.scenes)})")
         target = cfg.scenes[scene]
+        if field == "type":
+            raise EditRejected(
+                "a scene's `type` decides what its other fields mean, so changing it "
+                "rewrites the block rather than editing it — edit this file as text."
+            )
         if field not in _editable_scene_fields(target.type):
             raise EditRejected(f"a {target.type!r} scene has no editable field {field!r}")
         blank = cfgmod.SceneCfg()

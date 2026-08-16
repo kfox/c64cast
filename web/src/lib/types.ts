@@ -112,6 +112,11 @@ export interface Introspection {
 export interface FormField {
   name: string;
   value: unknown;
+  /** What the field falls back to when this file says nothing — the machine
+   *  settings layer, not the dataclass default `FieldDoc.default` carries. It
+   *  is what a `reset` edit leaves behind, so a form can show that before
+   *  asking for one. */
+  baseline: unknown;
   is_default: boolean;
 }
 
@@ -177,6 +182,25 @@ export interface ConfigWritten {
   backup: string | null;
   unknown_keys: UnknownKey[];
   systems: string[];
+}
+
+/** One field edit for `PATCH /api/configs/{ref}`. Names a `section` or a
+ *  `scene` by index — never both — and carries either a `value` or `reset`,
+ *  which puts the field back to what the layer underneath the file says. The
+ *  server composes the TOML from these, so nothing here writes TOML. */
+export interface ConfigEdit {
+  section?: string;
+  scene?: number;
+  field: string;
+  value?: unknown;
+  reset?: boolean;
+}
+
+/** `PATCH /api/configs/{ref}` — a write, plus what the server made of the
+ *  edits and the text it composed from them. */
+export interface ConfigPatched extends ConfigWritten {
+  edits: ConfigEdit[];
+  text: string;
 }
 
 // -- the performance surface: what the running show is doing right now ------
